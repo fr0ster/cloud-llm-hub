@@ -3,7 +3,7 @@
 ## 1. Foundation Setup
 - [x] Define the vision: a cloud-hosted hub orchestrating multiple MCP servers, an LLM agent, and optional UI.
 - [x] Establish the GitHub repository structure (`infra/`, services/, agents/, `docs/`).
-- [ ] Draft initial architecture decision records (ADRs) covering security, deployment, and integration strategy.
+- [x] Draft initial architecture decision records (ADRs) covering security, deployment, and integration strategy.
 - [ ] Create baseline continuous integration (GitHub Actions) for linting and tests.
 
 ## 2. Infrastructure & Security
