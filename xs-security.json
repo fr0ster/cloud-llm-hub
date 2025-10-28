@@ -1,0 +1,29 @@
+{
+  "xsappname": "cloud-llm-hub-${space}",
+  "tenant-mode": "shared",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.proxyAccess",
+      "description": "Access to MCP proxy endpoints exposed by the hub."
+    }
+  ],
+  "role-templates": [
+    {
+      "name": "CloudLLMHubProxy",
+      "description": "Grants access to MCP proxy features.",
+      "scope-references": [
+        "$XSAPPNAME.proxyAccess"
+      ]
+    }
+  ],
+  "role-collections": [
+    {
+      "name": "Cloud LLM Hub Proxy Access",
+      "description": "Assign to users or service keys that may call the MCP proxy.",
+      "role-template-references": [
+        "$XSAPPNAME.CloudLLMHubProxy"
+      ]
+    }
+  ],
+  "attributes": []
+}

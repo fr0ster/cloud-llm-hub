@@ -19,6 +19,18 @@ File or Folder | Purpose
 - (in VS Code simply choose _**Terminal** > Run Task > cds watch_)
 - Start adding content, for example, a [db/schema.cds](db/schema.cds).
 
+## Authentication & Proxying
+
+- XSUAA configuration resides in [`xs-security.json`](xs-security.json); it defines a single `proxyAccess` scope for MCP calls via the hub.
+- `srv/mcp-proxy.cds` exposes `McpProxyService` guarded by `@requires: 'proxyAccess'`.
+- The service currently responds with a stub health result and will proxy MCP requests once backends are wired.
+
+## Project Documentation
+
+- [Roadmap](docs/roadmap.md)
+- [ADR Catalog](docs/adrs)
+- [Changelog](CHANGELOG.md)
+
 
 ## Learn More
 

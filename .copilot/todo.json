@@ -1,0 +1,5 @@
+[
+	"Відновити валідний JSON у package.json, зокрема секцію cds.requires з профілями development/production та mocked користувачем",
+	"Перевірити npm install / tsc після правок",
+	"Протестувати cds watch --profile development для Health"
+]
