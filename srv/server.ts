@@ -1,7 +1,15 @@
 /**
  * Custom server.ts for CAP bootstrap.
  * This file is automatically loaded by CAP and registers streaming endpoints.
+ * 
+ * CRITICAL: Environment variables must be set BEFORE imports
+ * The mcp-abap-adt submodule has auto-start code that runs on import
  */
+
+// Set BEFORE any imports that might load the submodule
+process.env.MCP_SKIP_AUTO_START = 'true';
+process.env.MCP_SKIP_ENV_LOAD = 'true';
+process.env.TLS_REJECT_UNAUTHORIZED = '0';
 
 import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
@@ -89,8 +97,8 @@ async function handleSSE(req: Request, res: Response): Promise<any> {
   log.info('SSE connection opened', { user: user.id });
 
   try {
-    // Get embedded MCP server instance
-    const mcpServer = await getMCPServer();
+    // Get embedded MCP server instance (created per-request with SAP config from headers)
+    const mcpServer = await getMCPServer(req);
     
     if (!mcpServer || !mcpServer.server) {
       log.error('MCP server not initialized');
@@ -156,8 +164,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   log.info('Stream-HTTP connection opened', { user: user.id });
 
   try {
-    // Get embedded MCP server instance
-    const mcpServer = await getMCPServer();
+    // Get embedded MCP server instance (created per-request with SAP config from headers)
+    const mcpServer = await getMCPServer(req);
     
     if (!mcpServer || !mcpServer.transport) {
       log.error('MCP transport not initialized');
