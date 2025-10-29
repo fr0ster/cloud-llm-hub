@@ -1,4 +1,4 @@
-@requires: 'proxyAccess'
+@requires: 'MCP_Connector'
 @path: 'mcp'
 service McpProxyService {
   function Health() returns HealthStatus;

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "cloud-llm-hub-stream": {
+      "type": "stream-http",
+      "endpoint": "http://localhost:4004/mcp/stream/http",
+      "headers": {
+        "Authorization": "Basic YWxpY2U6",
+        "Content-Type": "application/x-ndjson"
+      },
+      "description": "MCP Proxy Stream-HTTP endpoint (development mode)"
+    }
+  }
+}

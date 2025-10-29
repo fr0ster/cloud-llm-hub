@@ -5,6 +5,18 @@
     {
       "name": "$XSAPPNAME.proxyAccess",
       "description": "Access to MCP proxy endpoints exposed by the hub."
+    },
+    {
+      "name": "$XSAPPNAME.MCP_Connect",
+      "description": "Connect to MCP stream endpoints"
+    },
+    {
+      "name": "$XSAPPNAME.MCP_Read",
+      "description": "Read MCP stream data"
+    },
+    {
+      "name": "$XSAPPNAME.MCP_Admin",
+      "description": "Admin operations on MCP proxy"
     }
   ],
   "role-templates": [
@@ -14,6 +26,23 @@
       "scope-references": [
         "$XSAPPNAME.proxyAccess"
       ]
+    },
+    {
+      "name": "MCP_Connector",
+      "description": "Basic MCP access - connect and read streams",
+      "scope-references": [
+        "$XSAPPNAME.MCP_Connect",
+        "$XSAPPNAME.MCP_Read"
+      ]
+    },
+    {
+      "name": "MCP_Admin",
+      "description": "Full administrative access to MCP proxy",
+      "scope-references": [
+        "$XSAPPNAME.MCP_Admin",
+        "$XSAPPNAME.MCP_Connect",
+        "$XSAPPNAME.MCP_Read"
+      ]
     }
   ],
   "role-collections": [
@@ -22,6 +51,20 @@
       "description": "Assign to users or service keys that may call the MCP proxy.",
       "role-template-references": [
         "$XSAPPNAME.CloudLLMHubProxy"
+      ]
+    },
+    {
+      "name": "MCP Connector Access",
+      "description": "Basic MCP stream access for users and service keys.",
+      "role-template-references": [
+        "$XSAPPNAME.MCP_Connector"
+      ]
+    },
+    {
+      "name": "MCP Admin Access",
+      "description": "Full MCP proxy administrative access.",
+      "role-template-references": [
+        "$XSAPPNAME.MCP_Admin"
       ]
     }
   ],

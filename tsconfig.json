@@ -1,14 +1,15 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "skipLibCheck": true,
     "sourceMap": true,
-    "noEmit": true,
+    "outDir": "./",
+    "rootDir": "./",
     "paths": {
       "@sap/cds": [
         "./node_modules/@cap-js/cds-types"
@@ -21,5 +22,9 @@
   "include": [
     "srv/**/*.ts",
     "test/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "gen"
   ]
 }
