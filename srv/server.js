@@ -82,8 +82,8 @@ async function handleSSE(req, res) {
     }
     log.info('SSE connection opened', { user: user.id });
     try {
-        // Get embedded MCP server instance
-        const mcpServer = await (0, mcp_manager_1.getMCPServer)();
+        // Get embedded MCP server instance (created per-request with SAP config from headers)
+        const mcpServer = await (0, mcp_manager_1.getMCPServer)(req);
         if (!mcpServer || !mcpServer.server) {
             log.error('MCP server not initialized');
             return res.status(503).send('Service Unavailable: MCP server not ready');
@@ -137,8 +137,8 @@ async function handleStreamHTTP(req, res) {
     }
     log.info('Stream-HTTP connection opened', { user: user.id });
     try {
-        // Get embedded MCP server instance
-        const mcpServer = await (0, mcp_manager_1.getMCPServer)();
+        // Get embedded MCP server instance (created per-request with SAP config from headers)
+        const mcpServer = await (0, mcp_manager_1.getMCPServer)(req);
         if (!mcpServer || !mcpServer.transport) {
             log.error('MCP transport not initialized');
             return res.status(503).send('Service Unavailable: MCP transport not ready');
