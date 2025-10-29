@@ -1,0 +1,23 @@
+{
+  "VCAP_SERVICES": {
+    "xsuaa": [
+      {
+        "name": "mcp-xsuaa",
+        "label": "xsuaa",
+        "tags": ["xsuaa"],
+        "credentials": {
+          "xsappname": "cloud-llm-hub-dev",
+          "tenantmode": "shared",
+          "url": "https://<your-subdomain>.authentication.<region>.hana.ondemand.com",
+          "clientid": "<your-client-id>",
+          "clientsecret": "<your-client-secret>",
+          "verificationkey": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
+          "uaadomain": "authentication.<region>.hana.ondemand.com",
+          "identityzone": "<your-subdomain>",
+          "identityzoneid": "<zone-id>",
+          "tenantid": "<tenant-id>"
+        }
+      }
+    ]
+  }
+}

@@ -3,14 +3,17 @@
   "version": "1.0.0",
   "description": "A simple CAP project.",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.2",
     "@sap/cds": "^9",
+    "@sap/xsenv": "^4",
+    "@sap/xssec": "^4",
     "express": "^4",
-    "@sap/xssec": "^4"
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@cap-js/sqlite": "^2",
-    "@cap-js/cds-types": "^0.15.0",
     "@cap-js/cds-typer": ">=0.1",
+    "@cap-js/cds-types": "^0.15.0",
+    "@cap-js/sqlite": "^2",
     "@types/node": "^22.0.0",
     "tsx": "^4",
     "typescript": "^5"
@@ -22,23 +25,31 @@
   "cds": {
     "requires": {
       "auth": {
-        "kind": "xsuaa"
-      },
-      "[development]": {
-        "auth": {
+        "kind": "xsuaa",
+        "[development]": {
           "kind": "mocked",
           "users": {
             "alice": {
               "roles": [
-                "proxyAccess"
+                "MCP_Connector",
+                "MCP_Admin"
+              ]
+            },
+            "bob": {
+              "roles": [
+                "MCP_Connector"
               ]
             }
           }
+        },
+        "[production]": {
+          "kind": "xsuaa"
         }
       },
-      "[production]": {
-        "auth": {
-          "kind": "xsuaa"
+      "mcpTarget": {
+        "kind": "rest",
+        "credentials": {
+          "url": "http://127.0.0.1:7070"
         }
       }
     }

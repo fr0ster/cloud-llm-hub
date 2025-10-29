@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "cloud-llm-hub-sse": {
+      "type": "sse",
+      "endpoint": "http://localhost:4004/mcp/stream/sse",
+      "headers": {
+        "Authorization": "Basic YWxpY2U6"
+      },
+      "timeoutMs": 0,
+      "description": "MCP Proxy SSE endpoint (development mode)"
+    }
+  }
+}
