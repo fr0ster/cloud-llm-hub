@@ -31,9 +31,9 @@ type AbapConnection = BaseAbapConnection;
 // Cache of MCP server instances by SAP URL
 interface CachedInstance {
   server: any;
-  transport: StreamableHTTPServerTransport;
   created: number;
   connection?: AbapConnection;
+  transport?: StreamableHTTPServerTransport;
 }
 
 const instanceCache = new Map<string, CachedInstance>();
@@ -108,6 +108,15 @@ function cleanCache(): void {
   const now = Date.now();
   for (const [key, value] of instanceCache.entries()) {
     if (now - value.created > CACHE_TTL) {
+      if (value.transport) {
+        void value.transport.close().catch((err: Error) => {
+          cds.log('mcp-manager').warn('Failed to close MCP transport during cache cleanup', {
+            cacheKey: key,
+            error: err.message
+          });
+        });
+        value.transport = undefined;
+      }
       value.connection?.reset();
       instanceCache.delete(key);
     }
@@ -117,7 +126,10 @@ function cleanCache(): void {
 /**
  * Get or create MCP server instance with transport for given SAP config
  */
-export async function getMCPServer(req: Request): Promise<{ server: any; transport: StreamableHTTPServerTransport }> {
+export async function getMCPServer(req: Request): Promise<{
+  server: any;
+  withTransport: <T>(handler: (transport: StreamableHTTPServerTransport) => Promise<T>) => Promise<T>;
+}> {
   const log = cds.log('mcp-manager');
 
   try {
@@ -136,7 +148,12 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
         await refreshBtpOnPremConnection(cached.connection as BtpOnPremDestinationConnection, connectivityContext);
       }
       log.debug('Using cached MCP instance', { cacheKey });
-      return cached;
+      return {
+        server: cached.server,
+        withTransport: async <T>(handler: (transport: StreamableHTTPServerTransport) => Promise<T>): Promise<T> => {
+          return handleWithTransport(cacheKey, cached, req, handler);
+        }
+      };
     }
 
     log.info('Creating new MCP server instance', { 
@@ -194,21 +211,8 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
     // Restore env vars (for other code that might need them)
     Object.assign(process.env, oldEnv);
     
-    // Create streamable HTTP transport
-    const streamTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableJsonResponse: false,
-      allowedOrigins: undefined,
-      allowedHosts: undefined,
-      enableDnsRebindingProtection: false
-    });
-    
-    // Connect transport to MCP server
-    await mcpServerInstance.server.connect(streamTransport);
-    
     const instance: CachedInstance = {
       server: mcpServerInstance,
-      transport: streamTransport,
       created: Date.now(),
       connection
     };
@@ -218,11 +222,57 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
     
     log.info('MCP server instance created and cached', { cacheKey });
     
-    return instance;
+    return {
+      server: instance.server,
+      withTransport: async <T>(handler: (transport: StreamableHTTPServerTransport) => Promise<T>): Promise<T> => {
+        return handleWithTransport(cacheKey, instance, req, handler);
+      }
+    };
   } catch (err: any) {
     log.error('Failed to create MCP server instance', err);
     throw err;
   }
+}
+
+async function handleWithTransport<T>(
+  cacheKey: string,
+  entry: CachedInstance,
+  req: Request,
+  handler: (transport: StreamableHTTPServerTransport) => Promise<T>
+): Promise<T> {
+  const log = cds.log('mcp-manager');
+
+  const requestSessionIdHeader = req.headers['mcp-session-id'];
+  const isInitializationRequest = !requestSessionIdHeader;
+
+  if (!entry.transport || isInitializationRequest) {
+    if (entry.transport) {
+      log.info('Resetting MCP transport before new initialization', { cacheKey });
+      try {
+        await entry.transport.close();
+      } catch (err: any) {
+        log.warn('Failed to close existing MCP transport during reset', { cacheKey, error: err.message });
+      }
+      entry.transport = undefined;
+    }
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      enableJsonResponse: false,
+      allowedOrigins: undefined,
+      allowedHosts: undefined,
+      enableDnsRebindingProtection: false
+    });
+
+    await entry.server.server.connect(transport);
+    entry.transport = transport;
+  }
+
+  if (!entry.transport) {
+    throw new Error('MCP transport failed to initialize');
+  }
+
+  return handler(entry.transport);
 }
 
 /**
@@ -232,6 +282,12 @@ export function clearCache(): void {
   const log = cds.log('mcp-manager');
   log.info('Clearing MCP instance cache', { count: instanceCache.size });
   for (const instance of instanceCache.values()) {
+    if (instance.transport) {
+      void instance.transport.close().catch((err: Error) => {
+        log.warn('Failed to close MCP transport during cache clear', { error: err.message });
+      });
+      instance.transport = undefined;
+    }
     instance.connection?.reset();
   }
   instanceCache.clear();
