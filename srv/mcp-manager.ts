@@ -9,19 +9,40 @@ import cds from '@sap/cds';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
+import type {
+  SapConfig,
+  BaseAbapConnection
+} from '../submodules/mcp-abap-adt/dist/lib/connection/BaseAbapConnection.js';
+import {
+  BtpOnPremDestinationConnection,
+  shouldUseConnectivity,
+  extractConnectivityContext,
+  createBtpOnPremConnection,
+  refreshBtpOnPremConnection,
+  clearConnectivityCaches
+} from './connections';
 
 // Import MCP server class
 // @ts-ignore - no types in mcp-abap-adt
 import { mcp_abap_adt_server } from '../submodules/mcp-abap-adt/dist/index.js';
 
+type AbapConnection = BaseAbapConnection;
+
 // Cache of MCP server instances by SAP URL
-const instanceCache = new Map<string, { server: any; transport: StreamableHTTPServerTransport; created: number }>();
+interface CachedInstance {
+  server: any;
+  transport: StreamableHTTPServerTransport;
+  created: number;
+  connection?: AbapConnection;
+}
+
+const instanceCache = new Map<string, CachedInstance>();
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 /**
  * Extract SAP configuration from request headers
  */
-function extractSapConfig(req: Request): any {
+function extractSapConfig(req: Request): SapConfig {
   const log = cds.log('mcp-manager');
   
   const sapUrl = req.headers['x-sap-url'] as string;
@@ -35,9 +56,9 @@ function extractSapConfig(req: Request): any {
     throw new Error('Missing X-SAP-URL header');
   }
 
-  const config: any = {
+  const config: SapConfig = {
     url: sapUrl,
-    authType: sapAuthType === 'xsuaa' ? 'jwt' : sapAuthType
+    authType: (sapAuthType === 'xsuaa' ? 'jwt' : sapAuthType) as SapConfig['authType']
   };
 
   if (sapClient) {
@@ -76,7 +97,7 @@ function extractSapConfig(req: Request): any {
 /**
  * Get cache key for MCP instance
  */
-function getCacheKey(sapConfig: any): string {
+function getCacheKey(sapConfig: SapConfig): string {
   return `${sapConfig.url}:${sapConfig.authType}`;
 }
 
@@ -87,6 +108,7 @@ function cleanCache(): void {
   const now = Date.now();
   for (const [key, value] of instanceCache.entries()) {
     if (now - value.created > CACHE_TTL) {
+      value.connection?.reset();
       instanceCache.delete(key);
     }
   }
@@ -99,9 +121,10 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
   const log = cds.log('mcp-manager');
 
   try {
-    // Extract SAP config from headers
     const sapConfig = extractSapConfig(req);
     const cacheKey = getCacheKey(sapConfig);
+    const useConnectivity = shouldUseConnectivity(req);
+    const connectivityContext = extractConnectivityContext(req);
 
     // Clean old instances periodically
     cleanCache();
@@ -109,6 +132,9 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
     // Check cache
     const cached = instanceCache.get(cacheKey);
     if (cached) {
+      if (useConnectivity && cached.connection instanceof BtpOnPremDestinationConnection) {
+        await refreshBtpOnPremConnection(cached.connection as BtpOnPremDestinationConnection, connectivityContext);
+      }
       log.debug('Using cached MCP instance', { cacheKey });
       return cached;
     }
@@ -117,6 +143,14 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
       sapUrl: sapConfig.url, 
       authType: sapConfig.authType 
     });
+
+    let connection: BtpOnPremDestinationConnection | undefined;
+    if (useConnectivity) {
+      if (sapConfig.authType !== 'basic') {
+        throw new Error('On-premise connectivity requires basic authentication (username/password).');
+      }
+      connection = await createBtpOnPremConnection(sapConfig, connectivityContext);
+    }
     
     // ВАЖЛИВО: Очищаємо env перед створенням інстансу
     // Субмодуль може все ще мати cached config з .env файлу
@@ -139,11 +173,23 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
     delete process.env.SAP_PASSWORD;
     
     // Create MCP server instance with SAP config
-    const mcpServerInstance = new mcp_abap_adt_server({
-      sapConfig,
+    const serverOptions: {
+      sapConfig?: SapConfig;
+      connection?: AbapConnection;
+      allowProcessExit: boolean;
+      registerSignalHandlers: boolean;
+    } = {
       allowProcessExit: false,
       registerSignalHandlers: false
-    });
+    };
+
+    if (connection) {
+      serverOptions.connection = connection;
+    } else {
+      serverOptions.sapConfig = sapConfig;
+    }
+
+    const mcpServerInstance = new mcp_abap_adt_server(serverOptions);
     
     // Restore env vars (for other code that might need them)
     Object.assign(process.env, oldEnv);
@@ -160,7 +206,12 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
     // Connect transport to MCP server
     await mcpServerInstance.server.connect(streamTransport);
     
-    const instance = { server: mcpServerInstance, transport: streamTransport, created: Date.now() };
+    const instance: CachedInstance = {
+      server: mcpServerInstance,
+      transport: streamTransport,
+      created: Date.now(),
+      connection
+    };
     
     // Cache instance
     instanceCache.set(cacheKey, instance);
@@ -180,7 +231,11 @@ export async function getMCPServer(req: Request): Promise<{ server: any; transpo
 export function clearCache(): void {
   const log = cds.log('mcp-manager');
   log.info('Clearing MCP instance cache', { count: instanceCache.size });
+  for (const instance of instanceCache.values()) {
+    instance.connection?.reset();
+  }
   instanceCache.clear();
+  clearConnectivityCaches();
 }
 
 // Cleanup cache on shutdown

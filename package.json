@@ -8,6 +8,8 @@
     "@sap/xsenv": "^4",
     "@sap/xssec": "^4",
     "express": "^4",
+    "axios": "^1.7.7",
+    "https-proxy-agent": "^7.0.2",
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {

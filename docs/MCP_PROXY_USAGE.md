@@ -57,6 +57,32 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 
 ## 📡 Endpoints
 
+## 🌐 BTP Connectivity (On-Premise Destinations)
+
+When the proxy runs on SAP BTP and must reach an on-premise ABAP system via Cloud Connector, provide the following headers with each request:
+
+- `X-SAP-Connectivity-Mode: onprem` — activates the connectivity proxy integration.
+- `X-SAP-Connectivity-Location-ID` (optional) — forwards the Cloud Connector location ID when multiple tunnels exist.
+- `X-SAP-Connectivity-Auth` (optional) — bearer token for principal propagation (`SAP-Connectivity-Authentication`).
+
+Prerequisites:
+
+- A bound Connectivity service instance (`tag: connectivity`).
+- A destination that uses Basic authentication (username/password) to the on-premise system.
+- The application will fetch the proxy OAuth token automatically and reuse it per request.
+
+Example curl snippet enabling the connectivity path:
+
+```bash
+curl -X POST \
+  -H "Authorization: Basic YWxpY2U6" \
+  -H "X-SAP-Connectivity-Mode: onprem" \
+  -H "X-SAP-Connectivity-Location-ID: EU10-A" \
+  -H "Content-Type: application/x-ndjson" \
+  --data-binary @request.ndjson \
+  https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/http
+```
+
 ### SSE Endpoint: `GET /mcp/stream/sse`
 
 Server-Sent Events stream with automatic heartbeat and reconnection hints.
