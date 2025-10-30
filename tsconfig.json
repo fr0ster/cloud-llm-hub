@@ -8,7 +8,7 @@
     "strict": true,
     "skipLibCheck": true,
     "sourceMap": true,
-    "outDir": "./",
+    "outDir": "./dist",
     "rootDir": "./",
     "paths": {
       "@sap/cds": [
@@ -21,7 +21,8 @@
   },
   "include": [
     "srv/**/*.ts",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "types/**/*.d.ts"
   ],
   "exclude": [
     "node_modules",
