@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [Unreleased]
+### Added
+- Streamable HTTP session lifecycle documentation in `docs/MCP_PROXY_USAGE.md`, clarifying how `Mcp-Session-Id` is negotiated and reused.
+
+### Changed
+- Reworked `srv/mcp-manager.ts` to reuse the same MCP transport across session-bound requests while resetting cleanly when a new initialization arrives.
+- Updated `README.md` with an accurate project overview, session handling guidance, and documentation map.
+
 ## [0.2.0] - 2025-10-29
 ### Added
 - **SSE Endpoint** (`GET /mcp/stream/sse`): Server-Sent Events streaming with heartbeat (15s), reconnection hints, and no buffering.

@@ -175,6 +175,14 @@ while (true) {
 }
 ```
 
+### Streamable HTTP Session Lifecycle
+
+- The first request that initializes the MCP session **must omit** the `Mcp-Session-Id` header. The proxy will return a freshly generated session identifier in the response headers.
+- All follow-up requests must echo that identifier via `Mcp-Session-Id`, otherwise the proxy interprets the call as a new initialization attempt and tears down the previous transport.
+- Cline, Claude Desktop, and other Streamable HTTP clients automatically forward the header once they receive it; if you write a custom integration, capture the header returned by the proxy and attach it to every subsequent POST.
+- To deliberately reset the session (for example, after rotating SAP credentials), drop the `Mcp-Session-Id` header or restart the proxy. The next request will negotiate a new session cleanly.
+- The proxy caches initialized MCP server instances per SAP URL for 30 minutes. Reusing the session prevents "Invalid Request: Server already initialized" errors and keeps the tool catalog hot between calls.
+
 ## 🔧 Cline Integration
 
 ### SSE Configuration (`cline.json`)
@@ -217,6 +225,22 @@ while (true) {
 ```
 
 ## 🧪 Testing
+
+### Оновлення токенів для Cline
+
+Якщо ви отримуєте новий JWT через утиліту субмодуля (`sap-abap-auth-browser auth ...`), синхронізуйте його з налаштуваннями Cline:
+
+```bash
+npm run update:cline -- --connection cloud-llm-hub
+
+# або одним кроком отримайте токен із service key
+npm run update:cline -- \
+  --connection cloud-llm-hub \
+  --service-key path/to/service-key.json \
+  --browser system
+```
+
+Скрипт прочитає (або попередньо оновить) `submodules/mcp-abap-adt/.env` і перезапише файл `cline_mcp_settings.json`, оновивши заголовки `X-SAP-*` для вибраного підключення. Кастомний шлях до файлу чи явний токен можна вказати через прапорці `--settings`, `--env`, `--token`. Щоб не відкривати браузер автоматично, додайте `--browser none`.
 
 ### Health Check
 

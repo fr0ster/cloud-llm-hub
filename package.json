@@ -21,7 +21,8 @@
     "typescript": "^5"
   },
   "scripts": {
-    "start": "cds-serve"
+    "start": "cds-serve",
+    "update:cline": "tsx scripts/update-cline-connection.ts"
   },
   "private": true,
   "cds": {

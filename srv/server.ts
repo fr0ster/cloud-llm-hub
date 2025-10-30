@@ -167,13 +167,14 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     // Get embedded MCP server instance (created per-request with SAP config from headers)
     const mcpServer = await getMCPServer(req);
     
-    if (!mcpServer || !mcpServer.transport) {
-      log.error('MCP transport not initialized');
+    if (!mcpServer || !mcpServer.withTransport) {
+      log.error('MCP transport factory not available');
       return res.status(503).send('Service Unavailable: MCP transport not ready');
     }
 
-    // Delegate to MCP SDK transport - це робить всю роботу за нас!
-    await mcpServer.transport.handleRequest(req, res);
+    await mcpServer.withTransport(async transport => {
+      await transport.handleRequest(req, res);
+    });
     
     log.info('Stream-HTTP request handled', { user: user.id });
 

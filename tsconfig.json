@@ -22,7 +22,8 @@
   "include": [
     "srv/**/*.ts",
     "test/**/*.ts",
-    "types/**/*.d.ts"
+    "types/**/*.d.ts",
+    "scripts/**/*.ts"
   ],
   "exclude": [
     "node_modules",
