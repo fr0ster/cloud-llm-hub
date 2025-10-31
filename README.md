@@ -32,7 +32,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 - XSUAA scopes and role collections live in [`xs-security.json`](xs-security.json). The proxy maps scopes to CAP roles via a custom auth shim.
 - On-premise connectivity is handled via the Connectivity service; headers such as `X-SAP-Connectivity-Mode` are processed in `srv/connections.ts`.
-- The `scripts/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. It can be copied into any project and executed via `node` or `npx` without cloning this repository (see [`docs/MCP_PROXY_USAGE.md`](docs/MCP_PROXY_USAGE.md#refreshing-cline-tokens)).
+- The `scripts/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. A portable variant lives in `scripts/update-cline-connection-standalone.js`. Both workflows are documented in [`docs/MCP_CONFIG_UPDATE_HOWTO.md`](docs/MCP_CONFIG_UPDATE_HOWTO.md).
 
 ## Tooling & Tests
 
@@ -43,6 +43,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 ## Documentation Map
 
 - [MCP Proxy Usage](docs/MCP_PROXY_USAGE.md)
+- [MCP Config Update How-To](docs/MCP_CONFIG_UPDATE_HOWTO.md)
 - [Implementation Report](docs/IMPLEMENTATION_REPORT.md)
 - [Architecture Decision Records](docs/adrs)
 - [Roadmap](docs/roadmap.md)

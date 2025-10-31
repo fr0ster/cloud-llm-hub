@@ -31,6 +31,15 @@ function parseArgs(argv) {
       case '--scope':
         scopeArgument = (argv[++i] ?? '').toLowerCase();
         break;
+      case '--destination-name':
+        options.destinationName = argv[++i];
+        break;
+      case '--connectivity-mode':
+        options.connectivityMode = (argv[++i] ?? '').toLowerCase();
+        break;
+      case '--connectivity-location-id':
+        options.connectivityLocationId = argv[++i];
+        break;
       case '--sap-token':
       case '--token':
         options.sapToken = argv[++i];
@@ -124,6 +133,11 @@ Options:
       --service-key <path>   Refresh SAP JWT via sap-abap-auth-browser using the provided service key
       --sap-auth-script <path>  Optional path to sap-abap-auth-browser.js (defaults to bundled/submodule copy)
       --browser <name>       Pass --browser to sap-abap-auth-browser (chrome|edge|firefox|system|none)
+
+  Destination usage:
+    --destination-name <name>      Destination to reference via X-SAP-Destination header
+    --connectivity-mode <mode>     onprem | internet (default: internet)
+    --connectivity-location-id <id>  Cloud Connector location id for on-premise destinations
 
   MCP authentication (Cline ➜ MCP proxy):
       --mcp-auth-header <value>  Override Authorization header directly (alias: --auth-header)
@@ -437,6 +451,50 @@ function applyMcpAuth(headers, options) {
   return updated;
 }
 
+function normalizeConnectivityMode(mode) {
+  if (!mode) {
+    return undefined;
+  }
+  const normalized = mode.toLowerCase();
+  if (normalized === 'onprem' || normalized === 'internet') {
+    return normalized;
+  }
+  return undefined;
+}
+
+function applyDestinationHeaders(headers, options) {
+  const updated = [];
+  const destinationName = options.destinationName?.trim();
+  const locationId = options.connectivityLocationId?.trim();
+
+  if (destinationName) {
+    setHeaderValue(headers, 'x-sap-destination', destinationName, updated);
+  } else {
+    setHeaderValue(headers, 'x-sap-destination', undefined, updated);
+  }
+
+  let connectivityMode = normalizeConnectivityMode(options.connectivityMode);
+  if (!connectivityMode && locationId) {
+    connectivityMode = 'onprem';
+  }
+  if (connectivityMode === 'onprem') {
+    setHeaderValue(headers, 'x-sap-connectivity-mode', 'onprem', updated);
+    if (locationId) {
+      setHeaderValue(headers, 'x-sap-connectivity-location-id', locationId, updated);
+    } else {
+      setHeaderValue(headers, 'x-sap-connectivity-location-id', undefined, updated);
+    }
+  } else if (connectivityMode === 'internet') {
+    setHeaderValue(headers, 'x-sap-connectivity-mode', 'internet', updated);
+    setHeaderValue(headers, 'x-sap-connectivity-location-id', undefined, updated);
+  } else {
+    setHeaderValue(headers, 'x-sap-connectivity-mode', undefined, updated);
+    setHeaderValue(headers, 'x-sap-connectivity-location-id', undefined, updated);
+  }
+
+  return updated;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const updateSap = options.updateScope === 'sap' || options.updateScope === 'all';
@@ -467,7 +525,7 @@ async function main() {
   const sapConfigPromise = updateSap ? readEnvFile(envPath) : Promise.resolve({});
   const [config, sapConfig] = await Promise.all([configPromise, sapConfigPromise]);
 
-  if (updateSap) {
+  if (updateSap && !options.destinationName) {
     const envFilePresent = await fileExists(envPath);
     if (!envFilePresent && !options.sapToken) {
       console.warn(`⚠️  .env file not found (${envPath}). Provide --sap-token or refresh the file via the authorization utility.`);
@@ -490,7 +548,14 @@ async function main() {
   const updatedHeaders = [];
   let jwt;
 
-  if (updateSap) {
+  if (updateSap && options.destinationName) {
+    const destinationUpdated = applyDestinationHeaders(connection.headers, {
+      destinationName: options.destinationName,
+      connectivityMode: options.connectivityMode,
+      connectivityLocationId: options.connectivityLocationId
+    });
+    updatedHeaders.push(...destinationUpdated);
+  } else if (updateSap) {
     const result = applySapConfigToHeaders(connection.headers, sapConfig, {
       token: options.sapToken,
       authType: options.sapAuthType,
@@ -546,4 +611,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, applySapConfigToHeaders, applyMcpAuth };
+module.exports = { parseArgs, applySapConfigToHeaders, applyMcpAuth, applyDestinationHeaders };
