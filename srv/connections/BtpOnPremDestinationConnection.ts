@@ -1,13 +1,13 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import type { AbapRequestOptions } from '@fr0ster/mcp-abap-adt/lib/connection/AbapConnection';
+import type { AbapRequestOptions } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';
 import {
   OnPremAbapConnection as OnPremAbapConnectionImpl
-} from '@fr0ster/mcp-abap-adt/lib/connection/OnPremAbapConnection';
+} from '@fr0ster/mcp-abap-adt/dist/lib/connection/OnPremAbapConnection';
 import type {
   OnPremAbapConnection as OnPremAbapConnectionType
-} from '@fr0ster/mcp-abap-adt/lib/connection/OnPremAbapConnection';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/lib/sapConfig';
+} from '@fr0ster/mcp-abap-adt/dist/lib/connection/OnPremAbapConnection';
+import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
 
 export interface ConnectivityProxyConfig {
   host: string;

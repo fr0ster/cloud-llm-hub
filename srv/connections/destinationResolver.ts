@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/lib/sapConfig';
+import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- xsenv does not ship type definitions
 const xsenv = require('@sap/xsenv');

@@ -1,5 +1,5 @@
 {
-  "xsappname": "cloud-llm-hub-${space}",
+  "xsappname": "cloud-llm-hub-${space-guid}",
   "tenant-mode": "shared",
   "scopes": [
     {

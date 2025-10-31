@@ -20,6 +20,8 @@
     "ENDCLASS",
     "matnr",
     "developer",
+    "onprem",
+    "onpremise",
     "PURBOOK",
     "RMSNPSRC",
     "runbooks",
