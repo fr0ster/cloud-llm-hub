@@ -22,7 +22,7 @@
   },
   "scripts": {
     "start": "cds-serve",
-    "update:cline": "tsx scripts/update-cline-connection.ts"
+    "update:cline": "node scripts/update-cline-connection.js"
   },
   "private": true,
   "cds": {

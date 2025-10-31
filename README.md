@@ -8,7 +8,7 @@ File or Folder | Purpose
 `db/` | CAP data models (currently unused, reserved for future persistence)
 `srv/` | MCP proxy implementation (`mcp-proxy.ts`, `mcp-manager.ts`, connectivity helpers)
 `docs/` | End-user and operator documentation (usage guides, ADRs, testing cheatsheets)
-`scripts/` | Utility scripts (e.g., `update-cline-connection.ts` for Cline header sync)
+`scripts/` | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)
 `submodules/` | External MCP providers (notably `mcp-abap-adt`)
 
 ## Quick Start
@@ -32,7 +32,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 - XSUAA scopes and role collections live in [`xs-security.json`](xs-security.json). The proxy maps scopes to CAP roles via a custom auth shim.
 - On-premise connectivity is handled via the Connectivity service; headers such as `X-SAP-Connectivity-Mode` are processed in `srv/connections.ts`.
-- The `scripts/update-cline-connection.ts` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and ensures headers stay lowercase for Express compatibility.
+- The `scripts/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. It can be copied into any project and executed via `node` or `npx` without cloning this repository (see [`docs/MCP_PROXY_USAGE.md`](docs/MCP_PROXY_USAGE.md#refreshing-cline-tokens)).
 
 ## Tooling & Tests
 
