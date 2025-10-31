@@ -17,6 +17,10 @@
     {
       "name": "$XSAPPNAME.MCP_Admin",
       "description": "Admin operations on MCP proxy"
+    },
+    {
+      "name": "$XSAPPNAME.MCP_Connector",
+      "description": "MCP_Connector"
     }
   ],
   "role-templates": [

@@ -102,6 +102,30 @@ curl -X POST \
   https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/http
 ```
 
+## 🚢 Deploying to SAP BTP via MTA
+
+The project now ships with an `mta.yaml` descriptor and build hooks that streamline SAP BTP Cloud Foundry deployment.
+
+1. **Build the CAP artifacts**
+
+  ```bash
+  npx cds build --production
+  ```
+
+2. **Create the MTAR** (requires the SAP `mbt` tool or the Cloud MTA Build Tool):
+
+  ```bash
+  mbt build --mtar cloud-llm-hub.mtar
+  ```
+
+3. **Deploy to Cloud Foundry**
+
+  ```bash
+  cf deploy mta_archives/cloud-llm-hub.mtar
+  ```
+
+The descriptor provisions two application modules (CAP service + approuter) and binds XSUAA and Destination instances out of the box. Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
+
 ### SSE Endpoint: `GET /mcp/stream/sse`
 
 Server-Sent Events stream with automatic heartbeat and reconnection hints.
