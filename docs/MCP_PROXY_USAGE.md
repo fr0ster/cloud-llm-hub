@@ -59,19 +59,38 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 
 ## 🌐 BTP Connectivity (On-Premise Destinations)
 
-When the proxy runs on SAP BTP and must reach an on-premise ABAP system via Cloud Connector, provide the following headers with each request:
+When the proxy runs on SAP BTP and needs to reach an on-premise ABAP system via Cloud Connector, there are two supported options for supplying connection details:
 
-- `X-SAP-Connectivity-Mode: onprem` — activates the connectivity proxy integration.
-- `X-SAP-Connectivity-Location-ID` (optional) — forwards the Cloud Connector location ID when multiple tunnels exist.
-- `X-SAP-Connectivity-Auth` (optional) — bearer token for principal propagation (`SAP-Connectivity-Authentication`).
+1. **Preferred: let the Destination service drive the configuration.**
+  - Add the header `X-SAP-Destination: <destination-name>`.
+  - The proxy resolves the destination via the Destination service, builds the `SapConfig`, automatically enables Connectivity for `ProxyType=OnPremise`, propagates `CloudConnectorLocationId`, and reuses the issued access token until it expires.
+  - Optionally include `X-SAP-Client` to override the `sap-client` maintained in the destination.
 
-Prerequisites:
+2. **Manual headers (fallback when destinations are unavailable).**
+  - `X-SAP-Connectivity-Mode: onprem` — enables the Connectivity integration.
+  - `X-SAP-Connectivity-Location-ID` (optional) — Cloud Connector location ID when multiple tunnels exist.
+  - `X-SAP-Connectivity-Auth` (optional) — bearer token for principal propagation (`SAP-Connectivity-Authentication`).
 
-- A bound Connectivity service instance (`tag: connectivity`).
-- A destination that uses Basic authentication (username/password) to the on-premise system.
-- The application will fetch the proxy OAuth token automatically and reuse it per request.
+### Prerequisites
 
-Example curl snippet enabling the connectivity path:
+- Destination (`tag: destination`) and Connectivity (`tag: connectivity`) service instances must be bound to the application.
+- The destination stores ABAP system credentials using **Basic** or **OAuth2 Client Credentials**. For OAuth, the proxy requests the JWT used for `X-SAP-JWT-TOKEN` automatically.
+- No SAP credentials need to be provided in headers when a destination is used—the proxy fetches everything from the service binding.
+
+### Request examples
+
+**Using a destination:**
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <xsuaa-token>" \
+  -H "X-SAP-Destination: ERP-OnPrem" \
+  -H "Content-Type: application/x-ndjson" \
+  --data-binary @request.ndjson \
+  https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/http
+```
+
+**Manual Connectivity headers:**
 
 ```bash
 curl -X POST \
@@ -226,21 +245,21 @@ while (true) {
 
 ## 🧪 Testing
 
-### Оновлення токенів для Cline
+### Refreshing Cline tokens
 
-Якщо ви отримуєте новий JWT через утиліту субмодуля (`sap-abap-auth-browser auth ...`), синхронізуйте його з налаштуваннями Cline:
+Whenever you obtain a fresh JWT via the submodule utility (`sap-abap-auth-browser auth ...`), sync it with the local Cline settings:
 
 ```bash
 npm run update:cline -- --connection cloud-llm-hub
 
-# або одним кроком отримайте токен із service key
+# Or generate a token from a service key in one step
 npm run update:cline -- \
   --connection cloud-llm-hub \
   --service-key path/to/service-key.json \
   --browser system
 ```
 
-Скрипт прочитає (або попередньо оновить) `submodules/mcp-abap-adt/.env` і перезапише файл `cline_mcp_settings.json`, оновивши заголовки `X-SAP-*` для вибраного підключення. Кастомний шлях до файлу чи явний токен можна вказати через прапорці `--settings`, `--env`, `--token`. Щоб не відкривати браузер автоматично, додайте `--browser none`.
+The script reads (and optionally updates) `submodules/mcp-abap-adt/.env`, then rewrites `cline_mcp_settings.json`, keeping all `X-SAP-*` headers in sync for the selected connection. Custom locations or explicit tokens can be supplied via `--settings`, `--env`, or `--token`. Add `--browser none` to prevent the helper from launching a browser.
 
 ### Health Check
 
