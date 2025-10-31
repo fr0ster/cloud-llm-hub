@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file. The format 
 - Updated `README.md` with an accurate project overview, session handling guidance, and documentation map.
 - Extended `docs/MCP_PROXY_USAGE.md` with standalone CLI usage instructions and BTP deployment steps.
 - Added `@sap/cds-dk` dev dependency to support `cds build` during MTA packaging.
+- `docs/ASSISTANT_GUIDELINES.md` snapshot describing project essentials for new assistant sessions.
 
 ## [0.2.0] - 2025-10-29
 ### Added
@@ -23,7 +24,11 @@ All notable changes to this project will be documented in this file. The format 
 - **XSUAA Security Model**: New scopes (`MCP_Connect`, `MCP_Read`, `MCP_Admin`) and roles (`MCP_Connector`, `MCP_Admin`).
 - **Development Profile**: Mock users (alice with admin, bob with connector access).
 - **MCP Backend Integration**: Configuration for `mcp-abap-adt` backend at `http://127.0.0.1:7070`.
+- Consolidated documentation references so Quick Start and testing steps now live in `README.md`, `docs/MCP_PROXY_USAGE.md`, and `docs/TESTING_CHEAT_SHEET.md`.
 - **Comprehensive Documentation**:
+### Removed
+- Deprecated documents (`docs/QUICK_START.md`, `docs/QUICK_START_ASCII.txt`, `docs/TZ_MCP_SSE_StreamHTTP_Proxy_UA.md`, `docs/TZ_MCP_SSE_StreamHTTP_Proxy_XSUAA_v1.3.md`, `docs/TESTING_GUIDE.md`, `docs/IMPLEMENTATION_REPORT.md`) that duplicated current guides or obsolete specs.
+
   - `docs/MCP_PROXY_USAGE.md` - Full usage guide with curl/JavaScript examples
   - `docs/examples/` - Cline configuration examples for SSE and Stream-HTTP
   - `README.new.md` - Updated project README with streaming endpoints documentation
