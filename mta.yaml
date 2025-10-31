@@ -8,8 +8,11 @@ build-parameters:
   before-all:
     - builder: custom
       commands:
+        - npm ci --prefix submodules/mcp-abap-adt
+        - npm run build --prefix submodules/mcp-abap-adt
         - npm ci
         - npx cds build --production
+        - node scripts/copy-mcp-submodule.js
 modules:
   - name: cloud-llm-hub-srv
     type: nodejs
@@ -55,8 +58,8 @@ resources:
       service-plan: application
       path: ./xs-security.json
       config:
-        xsappname: cloud-llm-hub-${org}-${space}
-        tenant-mode: dedicated
+        xsappname: cloud-llm-hub-${space-guid}
+        tenant-mode: shared
         oauth2-configuration:
           redirect-uris:
             - https://*~{app-api/app-uri}/**

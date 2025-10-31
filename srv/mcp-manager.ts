@@ -9,8 +9,8 @@ import cds from '@sap/cds';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
-import type { BaseAbapConnection } from '@fr0ster/mcp-abap-adt/lib/connection/BaseAbapConnection';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/lib/sapConfig';
+import type { BaseAbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/BaseAbapConnection';
+import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
 import {
   BtpOnPremDestinationConnection,
   shouldUseConnectivity,

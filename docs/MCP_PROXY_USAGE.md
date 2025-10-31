@@ -124,7 +124,7 @@ The project now ships with an `mta.yaml` descriptor and build hooks that streaml
   cf deploy mta_archives/cloud-llm-hub.mtar
   ```
 
-The descriptor provisions two application modules (CAP service + approuter) and binds XSUAA and Destination instances out of the box. Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
+The descriptor provisions two application modules (CAP service + approuter) and binds XSUAA and Destination instances out of the box. The `before-all` hook compiles `submodules/mcp-abap-adt`, then copies its built assets into `gen/srv/submodules`, ensuring the packaged MTAR contains the MCP backend automatically. Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
 
 ### SSE Endpoint: `GET /mcp/stream/sse`
 

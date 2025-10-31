@@ -3,7 +3,7 @@ import type { Request } from 'express';
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- xsenv has no type definitions
 const xsenv = require('@sap/xsenv');
 
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/lib/sapConfig';
+import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
 import { BtpOnPremDestinationConnection } from './BtpOnPremDestinationConnection';
 import type { ConnectivityProxyConfig, BtpOnPremConnectionOptions } from './BtpOnPremDestinationConnection';
 
