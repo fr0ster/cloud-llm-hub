@@ -50,6 +50,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Deployment Notes
 
-- Use `cds build --production` before pushing to SAP BTP.
+- Use `cds build --production` or run the MTA build (`mbt build`) before pushing to SAP BTP.
+- The generated `mta.yaml` packages both the CAP service and approuter; adjust resource plans there and deploy with `cf deploy mta_archives/cloud-llm-hub.mtar`.
 - Ensure XSUAA and (optionally) Connectivity instances are bound in Cloud Foundry.
 - For local XSUAA testing, copy `default-env.json.template` to `default-env.json` and fill in service credentials.

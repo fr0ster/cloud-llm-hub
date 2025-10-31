@@ -5,10 +5,14 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 ### Added
 - Streamable HTTP session lifecycle documentation in `docs/MCP_PROXY_USAGE.md`, clarifying how `Mcp-Session-Id` is negotiated and reused.
+- Standalone `scripts/update-cline-connection.js` utility with documentation for copying and running it outside the repository.
+- Multi-Target Application descriptor (`mta.yaml`) with default modules and service bindings for SAP BTP Cloud Foundry deployments.
 
 ### Changed
 - Reworked `srv/mcp-manager.ts` to reuse the same MCP transport across session-bound requests while resetting cleanly when a new initialization arrives.
 - Updated `README.md` with an accurate project overview, session handling guidance, and documentation map.
+- Extended `docs/MCP_PROXY_USAGE.md` with standalone CLI usage instructions and BTP deployment steps.
+- Added `@sap/cds-dk` dev dependency to support `cds build` during MTA packaging.
 
 ## [0.2.0] - 2025-10-29
 ### Added
