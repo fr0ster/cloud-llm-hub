@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 ### Added
 - Streamable HTTP session lifecycle documentation in `docs/MCP_PROXY_USAGE.md`, clarifying how `Mcp-Session-Id` is negotiated and reused.
 - Standalone `scripts/update-cline-connection.js` utility with documentation for copying and running it outside the repository.
+- Lightweight `scripts/update-cline-connection-standalone.js` CLI and `docs/MCP_CONFIG_UPDATE_HOWTO.md` walkthrough for updating Cline MCP configs without repository context.
 - Multi-Target Application descriptor (`mta.yaml`) with default modules and service bindings for SAP BTP Cloud Foundry deployments.
 - Automated MTA build hook that compiles and bundles the `mcp-abap-adt` submodule, plus a production dependency on `dotenv` to satisfy the embedded server at runtime.
 
