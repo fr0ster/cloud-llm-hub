@@ -9,12 +9,20 @@ interface CliOptions {
   connectionName: string;
   settingsPath?: string;
   envPath?: string;
-  token?: string;
-  authHeader?: string;
+  sapToken?: string;
+  sapAuthType?: string;
+  sapUsername?: string;
+  sapPassword?: string;
+  mcpAuthType?: string;
+  mcpUsername?: string;
+  mcpPassword?: string;
+  mcpToken?: string;
+  mcpAuthHeader?: string;
   dryRun?: boolean;
   force?: boolean;
   serviceKey?: string;
   browser?: string;
+  updateScope?: 'sap' | 'mcp' | 'all';
 }
 
 interface ClineConfig {
@@ -41,8 +49,10 @@ interface SapEnvConfig {
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     connectionName: '',
-    dryRun: false
+    dryRun: false,
+    updateScope: 'all'
   };
+  let scopeArgument: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -57,11 +67,38 @@ function parseArgs(argv: string[]): CliOptions {
       case '--env':
         options.envPath = argv[++i];
         break;
-      case '--token':
-        options.token = argv[++i];
+      case '--update':
+      case '--scope':
+        scopeArgument = (argv[++i] ?? '').toLowerCase();
         break;
+      case '--sap-token':
+      case '--token':
+        options.sapToken = argv[++i];
+        break;
+      case '--sap-auth-type':
+        options.sapAuthType = argv[++i];
+        break;
+      case '--sap-username':
+        options.sapUsername = argv[++i];
+        break;
+      case '--sap-password':
+        options.sapPassword = argv[++i];
+        break;
+      case '--mcp-auth-header':
       case '--auth-header':
-        options.authHeader = argv[++i];
+        options.mcpAuthHeader = argv[++i];
+        break;
+      case '--mcp-auth-type':
+        options.mcpAuthType = argv[++i];
+        break;
+      case '--mcp-username':
+        options.mcpUsername = argv[++i];
+        break;
+      case '--mcp-password':
+        options.mcpPassword = argv[++i];
+        break;
+      case '--mcp-token':
+        options.mcpToken = argv[++i];
         break;
       case '--dry-run':
         options.dryRun = true;
@@ -94,6 +131,17 @@ function parseArgs(argv: string[]): CliOptions {
     process.exit(1);
   }
 
+  if (scopeArgument) {
+    if (scopeArgument === 'both' || scopeArgument === 'all') {
+      options.updateScope = 'all';
+    } else if (scopeArgument === 'sap' || scopeArgument === 'mcp') {
+      options.updateScope = scopeArgument;
+    } else {
+      console.error('❌  Invalid value for --update. Use sap, mcp, or all.');
+      process.exit(1);
+    }
+  }
+
   return options;
 }
 
@@ -104,14 +152,27 @@ Usage: npx tsx scripts/update-cline-connection.ts --connection <name> [options]
 
 Options:
   -c, --connection <name>   MCP connection name in Cline (required)
+    --update <scope>       Update scope: sap | mcp | all (default: all, alias: --scope)
       --settings <path>      Path to cline_mcp_settings.json (defaults to the standard location)
       --env <path>           Path to the SAP .env file (defaults to submodules/mcp-abap-adt/.env)
-      --token <value>        JWT value for X-SAP-JWT-TOKEN (falls back to .env when omitted)
-      --auth-header <value>  Authorization header value (for example "Bearer <token>")
       --dry-run              Preview changes without writing the file
       --force                Skip confirmations and warnings when possible
-      --service-key <path>   Refresh JWT via sap-abap-auth-browser using the provided service key
+      --service-key <path>   Refresh SAP JWT via sap-abap-auth-browser using the provided service key
       --browser <name>       Pass --browser to sap-abap-auth-browser (chrome|edge|firefox|system|none)
+
+  MCP authentication (Cline ➜ MCP proxy):
+    --mcp-auth-header <value>  Override Authorization header directly (alias: --auth-header)
+      --mcp-auth-type <type>     basic | jwt | bearer | none (auto-detected when possible)
+      --mcp-username <value>     Username for MCP basic auth
+      --mcp-password <value>     Password for MCP basic auth
+      --mcp-token <value>        Token for MCP bearer authentication
+
+  SAP backend authentication (MCP proxy ➜ ABAP):
+      --sap-auth-type <type>     jwt | basic (defaults to .env or jwt)
+      --sap-username <value>     SAP username for basic auth
+      --sap-password <value>     SAP password for basic auth
+      --sap-token <value>        SAP JWT token (alias: --token)
+
   -h, --help                 Show this help message
 `);
 }
@@ -263,84 +324,182 @@ interface JwtUsage {
   source: 'env' | 'arg';
 }
 
+function getHeaderValue(headers: Record<string, string>, key: string): string | undefined {
+  const normalizedKey = key.toLowerCase();
+  const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
+  return existingKey ? headers[existingKey] : undefined;
+}
+
+function setHeaderValue(
+  headers: Record<string, string>,
+  key: string,
+  value: string | undefined,
+  updated: string[]
+): void {
+  const normalizedKey = key.toLowerCase();
+  const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
+
+  if (typeof value === 'string' && value.length > 0) {
+    if (existingKey && existingKey !== normalizedKey) {
+      delete headers[existingKey];
+      if (!updated.includes(existingKey)) {
+        updated.push(existingKey);
+      }
+    }
+    headers[normalizedKey] = value;
+    if (!updated.includes(normalizedKey)) {
+      updated.push(normalizedKey);
+    }
+  } else if (existingKey) {
+    delete headers[existingKey];
+    if (!updated.includes(existingKey)) {
+      updated.push(existingKey);
+    }
+  }
+}
+
 function applySapConfigToHeaders(
   headers: Record<string, string>,
   sapConfig: SapEnvConfig,
-  tokenOverride?: string,
-  authHeaderOverride?: string
+  overrides: {
+    token?: string;
+    authType?: string;
+    username?: string;
+    password?: string;
+  }
 ): { updated: string[]; jwt?: JwtUsage } {
   const updatedKeys: string[] = [];
 
-  const setHeader = (key: string, value: string | undefined) => {
-    const normalizedKey = key.toLowerCase();
-    const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
+  setHeaderValue(headers, 'x-sap-url', sapConfig.SAP_URL, updatedKeys);
+  setHeaderValue(headers, 'x-sap-client', sapConfig.SAP_CLIENT, updatedKeys);
 
-    if (existingKey && existingKey !== key) {
-      delete headers[existingKey];
-      updatedKeys.push(existingKey);
-    }
+  const authTypeSource =
+    overrides.authType ?? sapConfig.SAP_AUTH_TYPE ?? getHeaderValue(headers, 'x-sap-auth-type') ?? 'jwt';
+  const authType = authTypeSource.toLowerCase();
 
-    if (typeof value === 'string' && value.length > 0) {
-      headers[normalizedKey] = value;
-      updatedKeys.push(normalizedKey);
-    } else if (headers[normalizedKey]) {
-      delete headers[normalizedKey];
-      updatedKeys.push(normalizedKey);
-    }
-  };
+  if (!['jwt', 'basic'].includes(authType)) {
+    throw new Error(`Unsupported SAP authentication type "${authTypeSource}". Use jwt or basic.`);
+  }
 
-  setHeader('x-sap-url', sapConfig.SAP_URL);
-  setHeader('x-sap-client', sapConfig.SAP_CLIENT);
-
-  const authTypeRaw = sapConfig.SAP_AUTH_TYPE ?? headers['X-SAP-AUTH-TYPE'] ?? headers['x-sap-auth-type'];
-  const authType = (authTypeRaw ?? 'jwt').toLowerCase();
-  setHeader('x-sap-auth-type', authType);
+  setHeaderValue(headers, 'x-sap-auth-type', authType, updatedKeys);
 
   if (authType === 'jwt') {
-    const tokenSource: JwtUsage['source'] = tokenOverride ? 'arg' : 'env';
-    const token = tokenOverride ?? sapConfig.SAP_JWT_TOKEN;
+    const tokenSource: JwtUsage['source'] = overrides.token ? 'arg' : 'env';
+    const token = overrides.token ?? sapConfig.SAP_JWT_TOKEN;
     if (!token) {
-  throw new Error('JWT token not found. Provide --token or add SAP_JWT_TOKEN to the .env file.');
+      throw new Error('JWT token not found. Provide --sap-token or add SAP_JWT_TOKEN to the .env file.');
     }
-    setHeader('x-sap-jwt-token', token);
-    if (authHeaderOverride) {
-      setHeader('authorization', authHeaderOverride);
-    }
+    setHeaderValue(headers, 'x-sap-jwt-token', token, updatedKeys);
+    setHeaderValue(headers, 'x-sap-username', undefined, updatedKeys);
+    setHeaderValue(headers, 'x-sap-password', undefined, updatedKeys);
     return { updated: updatedKeys, jwt: { value: token, source: tokenSource } };
-  } else if (authType === 'basic') {
-    setHeader('x-sap-username', sapConfig.SAP_USERNAME);
-    setHeader('x-sap-password', sapConfig.SAP_PASSWORD);
-    if (authHeaderOverride) {
-      setHeader('authorization', authHeaderOverride);
-    }
   }
+
+  const username = overrides.username ?? sapConfig.SAP_USERNAME;
+  const password = overrides.password ?? sapConfig.SAP_PASSWORD;
+  if (!username || !password) {
+    throw new Error(
+      'Basic auth requires both username and password. Provide --sap-username/--sap-password or set SAP_USERNAME/SAP_PASSWORD in the .env file.'
+    );
+  }
+
+  setHeaderValue(headers, 'x-sap-username', username, updatedKeys);
+  setHeaderValue(headers, 'x-sap-password', password, updatedKeys);
+  setHeaderValue(headers, 'x-sap-jwt-token', undefined, updatedKeys);
 
   return { updated: updatedKeys };
 }
 
+function applyMcpAuth(
+  headers: Record<string, string>,
+  options: {
+    authType?: string;
+    username?: string;
+    password?: string;
+    token?: string;
+    authHeader?: string;
+  }
+): string[] {
+  const updated: string[] = [];
+
+  if (!options.authHeader && !options.authType && !options.username && !options.password && !options.token) {
+    return updated;
+  }
+
+  if (options.authHeader) {
+    setHeaderValue(headers, 'authorization', options.authHeader, updated);
+    return updated;
+  }
+
+  let authType = options.authType?.toLowerCase();
+  if (!authType) {
+    if (options.username && options.password) {
+      authType = 'basic';
+    } else if (options.token) {
+      authType = 'jwt';
+    }
+  }
+
+  switch (authType) {
+    case 'basic': {
+      const { username, password } = options;
+      if (!username || !password) {
+        throw new Error('MCP basic auth requires both --mcp-username and --mcp-password.');
+      }
+      const encoded = Buffer.from(`${username}:${password}`).toString('base64');
+      setHeaderValue(headers, 'authorization', `Basic ${encoded}`, updated);
+      break;
+    }
+    case 'jwt':
+    case 'bearer': {
+      const token = options.token;
+      if (!token) {
+        throw new Error('MCP JWT authentication requires --mcp-token.');
+      }
+      setHeaderValue(headers, 'authorization', `Bearer ${token}`, updated);
+      break;
+    }
+    case 'none':
+      setHeaderValue(headers, 'authorization', undefined, updated);
+      break;
+    default:
+      throw new Error('Unsupported MCP auth type. Use basic, jwt, bearer, none, or provide --mcp-auth-header.');
+  }
+
+  return updated;
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  const updateSap = options.updateScope === 'sap' || options.updateScope === 'all';
+  const updateMcp = options.updateScope === 'mcp' || options.updateScope === 'all';
+
   const settingsPath = options.settingsPath ?? getDefaultSettingsPath();
   const defaultEnvPath = getDefaultEnvPath();
   const envPath = options.envPath ?? defaultEnvPath;
 
   if (options.serviceKey) {
-    console.log('🔄  Running sap-abap-auth-browser to refresh the JWT...');
-    await runServiceKeyAuth({ serviceKey: options.serviceKey, browser: options.browser });
-    console.log('✅  JWT updated using the provided service key.');
-  if (options.envPath && path.resolve(process.cwd(), envPath) !== defaultEnvPath) {
-      console.warn('⚠️  Warning: sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.');
+    if (!updateSap) {
+      console.warn('⚠️  Ignoring --service-key because the update scope does not include SAP credentials.');
+    } else {
+      console.log('🔄  Running sap-abap-auth-browser to refresh the JWT...');
+      await runServiceKeyAuth({ serviceKey: options.serviceKey, browser: options.browser });
+      console.log('✅  JWT updated using the provided service key.');
+      if (options.envPath && path.resolve(process.cwd(), envPath) !== defaultEnvPath) {
+        console.warn('⚠️  sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.');
+      }
     }
   }
 
-  const [config, sapConfig] = await Promise.all([
-    readJsonFile<ClineConfig>(settingsPath),
-    readEnvFile(envPath)
-  ]);
+  const configPromise = readJsonFile<ClineConfig>(settingsPath);
+  const sapConfigPromise = updateSap ? readEnvFile(envPath) : Promise.resolve({} as SapEnvConfig);
+  const [config, sapConfig] = await Promise.all([configPromise, sapConfigPromise]);
 
-  const envFilePresent = await fileExists(envPath);
-  if (!envFilePresent && !options.token) {
-    console.warn(`⚠️  .env file not found (${envPath}). Provide --token or create the .env via the authorization utility.`);
+  if (updateSap) {
+    const envFilePresent = await fileExists(envPath);
+    if (!envFilePresent && !options.sapToken) {
+      console.warn(`⚠️  .env file not found (${envPath}). Provide --sap-token or refresh the file via the authorization utility.`);
+    }
   }
 
   if (!config.mcpServers) {
@@ -352,28 +511,46 @@ async function main(): Promise<void> {
     const available = Object.keys(config.mcpServers).length
       ? Object.keys(config.mcpServers).join(', ')
       : 'none';
-    throw new Error(
-      `Connection "${options.connectionName}" not found. Available: ${available}`
-    );
+    throw new Error(`Connection "${options.connectionName}" not found. Available: ${available}`);
   }
 
   connection.headers = connection.headers ?? {};
-  const { updated, jwt } = applySapConfigToHeaders(
-    connection.headers,
-    sapConfig,
-    options.token,
-    options.authHeader
-  );
+  const updatedHeaders: string[] = [];
+  let jwt: JwtUsage | undefined;
 
-  if (jwt && jwt.source === 'env' && !options.force) {
+  if (updateSap) {
+    const { updated, jwt: sapJwt } = applySapConfigToHeaders(connection.headers, sapConfig, {
+      token: options.sapToken,
+      authType: options.sapAuthType,
+      username: options.sapUsername,
+      password: options.sapPassword
+    });
+    updatedHeaders.push(...updated);
+    if (sapJwt) {
+      jwt = sapJwt;
+    }
+  }
+
+  if (updateMcp) {
+    const mcpUpdated = applyMcpAuth(connection.headers, {
+      authType: options.mcpAuthType,
+      username: options.mcpUsername,
+      password: options.mcpPassword,
+      token: options.mcpToken,
+      authHeader: options.mcpAuthHeader
+    });
+    updatedHeaders.push(...mcpUpdated);
+  }
+
+  if (updateSap && jwt && jwt.source === 'env' && !options.force) {
     const expiration = getJwtExpiration(jwt.value);
     if (!expiration) {
-      console.warn('⚠️  Unable to determine JWT expiration from .env.');
+      console.warn('⚠️  Unable to determine SAP JWT expiration from .env.');
     } else if (expiration <= Date.now()) {
-      console.warn(`⚠️  JWT from .env has already expired (exp: ${formatTimestamp(expiration)}).`);
+      console.warn(`⚠️  SAP JWT from .env has already expired (exp: ${formatTimestamp(expiration)}).`);
       const confirmed = await confirmPrompt('Continue with this token? [y/N] ');
       if (!confirmed) {
-        console.log('Operation cancelled. Refresh the token or provide it via --token.');
+        console.log('Operation cancelled. Refresh the token or provide it via --sap-token.');
         process.exit(0);
       }
     }
@@ -386,7 +563,8 @@ async function main(): Promise<void> {
     console.log(`✅ File updated: ${settingsPath}`);
   }
 
-  console.log(`ℹ️  Updated headers: ${updated.join(', ') || 'none'}`);
+  const uniqueUpdated = [...new Set(updatedHeaders)];
+  console.log(`ℹ️  Updated headers: ${uniqueUpdated.length ? uniqueUpdated.join(', ') : 'none'}`);
 }
 
 main().catch((error) => {
