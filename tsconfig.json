@@ -16,6 +16,12 @@
       ],
       "#cds-models/*": [
         "./@cds-models/*"
+      ],
+      "@fr0ster/mcp-abap-adt": [
+        "./submodules/mcp-abap-adt/dist/index"
+      ],
+      "@fr0ster/mcp-abap-adt/*": [
+        "./submodules/mcp-abap-adt/dist/*"
       ]
     }
   },
