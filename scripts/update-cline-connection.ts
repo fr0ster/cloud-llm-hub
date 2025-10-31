@@ -89,7 +89,7 @@ function parseArgs(argv: string[]): CliOptions {
   }
 
   if (!options.connectionName) {
-    console.error('❌  Потрібно вказати назву підключення (--connection <name>).');
+    console.error('❌  Connection name is required (--connection <name>).');
     printHelp();
     process.exit(1);
   }
@@ -98,21 +98,21 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 function printHelp(): void {
-  console.log(`Оновлення MCP підключення для Cline
+  console.log(`Update MCP connection settings for Cline
 
-Використання: npx tsx scripts/update-cline-connection.ts --connection <name> [опції]
+Usage: npx tsx scripts/update-cline-connection.ts --connection <name> [options]
 
-Опції:
-  -c, --connection <name>   Ім'я MCP підключення в Cline (обов'язково)
-      --settings <path>      Шлях до cline_mcp_settings.json (стандартний шлях використовується за замовчуванням)
-      --env <path>           Шлях до .env з параметрами SAP (стандартно submodules/mcp-abap-adt/.env)
-      --token <value>        JWT-токен для заголовка X-SAP-JWT-TOKEN (якщо не задано, береться з .env)
-      --auth-header <value>  Значення заголовка Authorization (наприклад "Bearer <token>")
-      --dry-run              Показати зміни, але не записувати файл
-      --force                Ігнорувати попередження та використовувати дані без підтвердження
-      --service-key <path>   Запустити оновлення JWT через sap-abap-auth-browser із вказаним service key
-      --browser <name>       Передати параметр --browser до sap-abap-auth-browser (chrome|edge|firefox|system|none)
-  -h, --help                 Вивести цю довідку
+Options:
+  -c, --connection <name>   MCP connection name in Cline (required)
+      --settings <path>      Path to cline_mcp_settings.json (defaults to the standard location)
+      --env <path>           Path to the SAP .env file (defaults to submodules/mcp-abap-adt/.env)
+      --token <value>        JWT value for X-SAP-JWT-TOKEN (falls back to .env when omitted)
+      --auth-header <value>  Authorization header value (for example "Bearer <token>")
+      --dry-run              Preview changes without writing the file
+      --force                Skip confirmations and warnings when possible
+      --service-key <path>   Refresh JWT via sap-abap-auth-browser using the provided service key
+      --browser <name>       Pass --browser to sap-abap-auth-browser (chrome|edge|firefox|system|none)
+  -h, --help                 Show this help message
 `);
 }
 
@@ -146,7 +146,7 @@ async function readJsonFile<T>(filePath: string): Promise<T> {
     const raw = await fs.readFile(filePath, 'utf8');
     return JSON.parse(raw) as T;
   } catch (error: any) {
-    throw new Error(`Не вдалося прочитати ${filePath}: ${error.message}`);
+  throw new Error(`Failed to read ${filePath}: ${error.message}`);
   }
 }
 
@@ -170,7 +170,7 @@ async function runServiceKeyAuth(options: { serviceKey: string; browser?: string
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`sap-abap-auth-browser завершився з кодом ${code}`));
+  reject(new Error(`sap-abap-auth-browser exited with code ${code}`));
       }
     });
   });
@@ -194,7 +194,7 @@ async function fileExists(filePath: string): Promise<boolean> {
 async function ensureFile(filePath: string, description: string): Promise<string> {
   const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
   if (!(await fileExists(absolutePath))) {
-    throw new Error(`${description} не знайдено: ${absolutePath}`);
+  throw new Error(`${description} not found: ${absolutePath}`);
   }
   return absolutePath;
 }
@@ -217,7 +217,7 @@ async function readEnvFile(filePath: string): Promise<SapEnvConfig> {
     if (error.code === 'ENOENT') {
       return {};
     }
-    throw new Error(`Не вдалося прочитати .env (${filePath}): ${error.message}`);
+  throw new Error(`Failed to read .env (${filePath}): ${error.message}`);
   }
 }
 
@@ -255,7 +255,7 @@ async function confirmPrompt(message: string): Promise<boolean> {
   });
   rl.close();
   const normalized = answer.trim().toLowerCase();
-  return normalized === 'y' || normalized === 'yes' || normalized === 'т' || normalized === 'так';
+  return normalized === 'y' || normalized === 'yes';
 }
 
 interface JwtUsage {
@@ -300,7 +300,7 @@ function applySapConfigToHeaders(
     const tokenSource: JwtUsage['source'] = tokenOverride ? 'arg' : 'env';
     const token = tokenOverride ?? sapConfig.SAP_JWT_TOKEN;
     if (!token) {
-      throw new Error('JWT-токен не знайдено. Передайте --token або додайте SAP_JWT_TOKEN у .env.');
+  throw new Error('JWT token not found. Provide --token or add SAP_JWT_TOKEN to the .env file.');
     }
     setHeader('x-sap-jwt-token', token);
     if (authHeaderOverride) {
@@ -325,11 +325,11 @@ async function main(): Promise<void> {
   const envPath = options.envPath ?? defaultEnvPath;
 
   if (options.serviceKey) {
-    console.log('🔄  Запускаю оновлення JWT через sap-abap-auth-browser...');
+    console.log('🔄  Running sap-abap-auth-browser to refresh the JWT...');
     await runServiceKeyAuth({ serviceKey: options.serviceKey, browser: options.browser });
-    console.log('✅  JWT оновлено за допомогою service key.');
+    console.log('✅  JWT updated using the provided service key.');
   if (options.envPath && path.resolve(process.cwd(), envPath) !== defaultEnvPath) {
-      console.warn('⚠️  Увага: sap-abap-auth-browser оновив токен у стандартному .env субмодуля. Передайте однаковий шлях через --env, якщо потрібен інший файл.');
+      console.warn('⚠️  Warning: sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.');
     }
   }
 
@@ -340,20 +340,20 @@ async function main(): Promise<void> {
 
   const envFilePresent = await fileExists(envPath);
   if (!envFilePresent && !options.token) {
-    console.warn(`⚠️  Файл .env не знайдено (${envPath}). Передайте --token або створіть .env через утиліту авторизації.`);
+    console.warn(`⚠️  .env file not found (${envPath}). Provide --token or create the .env via the authorization utility.`);
   }
 
   if (!config.mcpServers) {
-    throw new Error('Файл конфігурації не містить секції mcpServers.');
+    throw new Error('Configuration file is missing the mcpServers section.');
   }
 
   const connection = config.mcpServers[options.connectionName];
   if (!connection) {
     const available = Object.keys(config.mcpServers).length
       ? Object.keys(config.mcpServers).join(', ')
-      : 'відсутні';
+      : 'none';
     throw new Error(
-      `Підключення "${options.connectionName}" не знайдено. Доступні: ${available}`
+      `Connection "${options.connectionName}" not found. Available: ${available}`
     );
   }
 
@@ -368,25 +368,25 @@ async function main(): Promise<void> {
   if (jwt && jwt.source === 'env' && !options.force) {
     const expiration = getJwtExpiration(jwt.value);
     if (!expiration) {
-      console.warn('⚠️  Не вдалося визначити термін дії JWT із .env.');
+      console.warn('⚠️  Unable to determine JWT expiration from .env.');
     } else if (expiration <= Date.now()) {
-      console.warn(`⚠️  JWT із .env вже прострочений (exp: ${formatTimestamp(expiration)}).`);
-      const confirmed = await confirmPrompt('Продовжити з цим токеном? [y/N] ');
+      console.warn(`⚠️  JWT from .env has already expired (exp: ${formatTimestamp(expiration)}).`);
+      const confirmed = await confirmPrompt('Continue with this token? [y/N] ');
       if (!confirmed) {
-        console.log('Операцію скасовано. Оновіть токен або передайте його через --token.');
+        console.log('Operation cancelled. Refresh the token or provide it via --token.');
         process.exit(0);
       }
     }
   }
 
   if (options.dryRun) {
-    console.log('🛈 Режим перевірки (--dry-run). Файл не буде перезаписано.');
+    console.log('🛈 Dry-run mode (--dry-run). The file will not be modified.');
   } else {
     await writeJsonFile(settingsPath, config);
-    console.log(`✅ Файл оновлено: ${settingsPath}`);
+    console.log(`✅ File updated: ${settingsPath}`);
   }
 
-  console.log(`ℹ️  Оновлено заголовки: ${updated.join(', ') || 'нічого'}`);
+  console.log(`ℹ️  Updated headers: ${updated.join(', ') || 'none'}`);
 }
 
 main().catch((error) => {

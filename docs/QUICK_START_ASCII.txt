@@ -1,10 +1,10 @@
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                    🚀 MCP PROXY QUICK START                               ║
-║                   За 5 хвилин до роботи з Cline                           ║
+║                   Up and running with Cline in minutes                     ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ КРОК 1: Запустити сервіс (1 хвилина)                                   │
+│ STEP 1: Start the service (1 minute)                                    │
 └─────────────────────────────────────────────────────────────────────────┘
 
   Terminal 1:
@@ -13,23 +13,23 @@
   │ $ cds watch --profile development                                   │
   │                                                                      │
   │ [cds] - server listening on { url: 'http://localhost:4004' }       │
-  │ ✅ Сервіс запущений!                                                │
+  │ ✅ Service is running!                                              │
   └─────────────────────────────────────────────────────────────────────┘
 
-  Перевірка:
+  Check it:
   ┌─────────────────────────────────────────────────────────────────────┐
   │ $ curl http://localhost:4004/mcp/Health                            │
   │ {"status":"UP","timestamp":"2025-10-29..."}                        │
   └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ КРОК 2: Налаштувати Cline (2 хвилини)                                  │
+│ STEP 2: Configure Cline (2 minutes)                                     │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  2.1. Відкрити Cline MCP Settings:
-       VS Code: Ctrl+Shift+P → "Cline: Edit MCP Settings"
+  2.1. Open the Cline MCP settings:
+    VS Code: Ctrl+Shift+P → "Cline: Edit MCP Settings"
        
-  2.2. Додати конфігурацію:
+  2.2. Add this configuration:
   
   ┌─────────────────────────────────────────────────────────────────────┐
   │ {                                                                   │
@@ -45,39 +45,39 @@
   │ }                                                                   │
   └─────────────────────────────────────────────────────────────────────┘
   
-  💡 Або скопіюй готовий: docs/examples/cline-sse-dev.json
+  💡 Or copy the ready-made file: docs/examples/cline-sse-dev.json
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ КРОК 3: Перезапустити Cline (30 секунд)                                │
+│ STEP 3: Reload Cline (30 seconds)                                       │
 └─────────────────────────────────────────────────────────────────────────┘
 
   VS Code: Ctrl+Shift+P → "Reload Window"
   
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  🔄 Перезапуск VS Code window...                                    │
-  │  ✅ Готово!                                                          │
+  │  🔄 Reloading the VS Code window...                                 │
+  │  ✅ Done!                                                           │
   └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ КРОК 4: Перевірка підключення (1 хвилина)                              │
+│ STEP 4: Verify the connection (1 minute)                               │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  4.1. Відкрити Cline panel
+  4.1. Open the Cline panel
   
-  4.2. У чаті написати:
+  4.2. In the chat, type:
   
   ┌─────────────────────────────────────────────────────────────────────┐
   │ @mcp list tools                                                     │
   │                                                                      │
-  │ або                                                                  │
+  │ or                                                                   │
   │                                                                      │
   │ Show me available MCP tools                                         │
   └─────────────────────────────────────────────────────────────────────┘
   
-  4.3. Очікуваний результат:
+  4.3. Expected result:
   
   ┌─────────────────────────────────────────────────────────────────────┐
-  │ 🎉 Cline показує список MCP tools з mcp-abap-adt:                   │
+  │ 🎉 Cline lists MCP tools from mcp-abap-adt:                         │
   │                                                                      │
   │ ✅ Available MCP Tools:                                             │
   │    - tool1: Description                                             │
@@ -86,11 +86,11 @@
   └─────────────────────────────────────────────────────────────────────┘
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║                           ✅ ВСЕ ПРАЦЮЄ!                                  ║
+║                           ✅ ALL SET!                                     ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 🔍 Швидка перевірка через curl (без Cline)                             │
+│ 🔍 Quick curl check (without Cline)                                    │
 └─────────────────────────────────────────────────────────────────────────┘
 
   SSE Test:
@@ -105,47 +105,47 @@
   │ : ping                                                               │
   │                                                                      │
   │ : ping                                                               │
-  │ ✅ Працює!                                                           │
+  │ ✅ Works!                                                           │
   └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 🐛 Troubleshooting                                                      │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  ❌ Проблема: Cline не бачить MCP сервер
-  ✅ Рішення:
-     1. Перевір endpoint: http://localhost:4004/mcp/stream/sse
-     2. Перевір Authorization: Basic YWxpY2U6
-     3. Reload Window (Ctrl+Shift+P)
+  ❌ Issue: Cline cannot see the MCP server
+  ✅ Fix:
+    1. Endpoint must be http://localhost:4004/mcp/stream/sse
+    2. Authorization: Basic YWxpY2U6
+    3. Reload Window (Ctrl+Shift+P)
 
-  ❌ Проблема: Connection refused
-  ✅ Рішення:
-     curl http://localhost:4004/mcp/Health
-     Якщо не працює → запусти: cds watch --profile development
+  ❌ Issue: Connection refused
+  ✅ Fix:
+    curl http://localhost:4004/mcp/Health
+    If it fails → start: cds watch --profile development
 
-  ❌ Проблема: 401 Unauthorized
-  ✅ Рішення:
-     Перевір Authorization header:
-     echo -n "alice:" | base64  # Має бути: YWxpY2U6
+  ❌ Issue: 401 Unauthorized
+  ✅ Fix:
+    Check the Authorization header:
+    echo -n "alice:" | base64  # Expected: YWxpY2U6
 
-  ❌ Проблема: 502 Bad Gateway (upstream)
-  ℹ️  Це нормально! Backend mcp-abap-adt не запущений.
-     Авторизація працює, але немає upstream сервера.
-     Запусти backend:
-     cd external/mcp-abap-adt && npm install && npm start
+  ❌ Issue: 502 Bad Gateway (upstream)
+  ℹ️  Normal while the mcp-abap-adt backend is offline.
+    Auth works, but there is no upstream server.
+    Start the backend:
+    cd external/mcp-abap-adt && npm install && npm start
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 📊 Перевірочний чеклист                                                 │
+│ 📊 Checklist                                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  ☐ Сервіс запущений (curl localhost:4004/mcp/Health → 200)
-  ☐ Cline config створений з правильними credentials
-  ☐ Cline перезапущений (Reload Window)
-  ☐ Cline показує MCP tools у чаті
-  ☐ (Опційно) Backend mcp-abap-adt запущений
+  ☐ Service responds (curl localhost:4004/mcp/Health → 200)
+  ☐ Cline config saved with correct credentials
+  ☐ Cline reloaded (Reload Window)
+  ☐ Cline shows MCP tools in the chat
+  ☐ (Optional) mcp-abap-adt backend running
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 🔐 Користувачі (Development Mode)                                      │
+│ 🔐 Users (development mode)                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 
   ┌────────┬──────────────────────┬────────────────────────────────────┐
@@ -155,49 +155,49 @@
   │ bob    │ Ym9iOg==             │ MCP_Connector                      │
   └────────┴──────────────────────┴────────────────────────────────────┘
 
-  Генерація credential:
+  Generate credentials:
   ┌─────────────────────────────────────────────────────────────────────┐
   │ $ echo -n "alice:" | base64                                         │
   │ YWxpY2U6                                                            │
   └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 🎯 Готові конфігурації                                                  │
+│ 🎯 Ready-to-use configs                                                 │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  docs/examples/cline-sse-dev.json        ← SSE (розробка)
-  docs/examples/cline-stream-dev.json     ← Stream-HTTP (розробка)
-  docs/examples/cline-sse-prod.json       ← SSE (production з JWT)
+  docs/examples/cline-sse-dev.json        ← SSE (development)
+  docs/examples/cline-stream-dev.json     ← Stream-HTTP (development)
+  docs/examples/cline-sse-prod.json       ← SSE (production with JWT)
 
-  Скопіюй потрібну конфігурацію у Cline MCP Settings!
+  Copy the file you need into the Cline MCP Settings.
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 📚 Детальна документація                                                │
+│ 📚 Additional documentation                                             │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  docs/QUICK_START.md            - Цей гайд з детальними поясненнями
-  docs/TESTING_GUIDE.md          - Повний посібник з тестування
-  docs/TESTING_CHEAT_SHEET.md    - Copy-paste команди
-  docs/MCP_PROXY_USAGE.md        - Usage guide з прикладами
-  docs/IMPLEMENTATION_REPORT.md  - Звіт про реалізацію
+  docs/QUICK_START.md            - Full quick start guide
+  docs/TESTING_GUIDE.md          - Comprehensive testing manual
+  docs/TESTING_CHEAT_SHEET.md    - Copy-paste commands
+  docs/MCP_PROXY_USAGE.md        - Usage guide with examples
+  docs/IMPLEMENTATION_REPORT.md  - Implementation report
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 🚀 Автоматичні тести                                                    │
+│ 🚀 Automated tests                                                      │
 └─────────────────────────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────────────────────────────┐
   │ $ cd test/smoke                                                     │
   │ $ ./test-auth-interactive.sh                                        │
   │                                                                      │
-  │ 🧪 Запускає всі тести авторизації автоматично                       │
-  │ 🎨 З кольоровим виводом та детальними результатами                  │
+  │ 🧪 Runs the full authorization suite automatically                  │
+  │ 🎨 Includes colored output and detailed results                     │
   └─────────────────────────────────────────────────────────────────────┘
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║              🎉 ГОТОВО! MCP Proxy працює з Cline!                        ║
+║              🎉 DONE! MCP Proxy works with Cline!                         ║
 ║                                                                           ║
-║  Тепер можеш використовувати MCP tools через Cline                       ║
-║  Всі запити автоматично авторизуються через XSUAA                        ║
+║  You can now use MCP tools through Cline                                 ║
+║  All requests are authorized via XSUAA                                   ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
                             Happy coding! 🚀
