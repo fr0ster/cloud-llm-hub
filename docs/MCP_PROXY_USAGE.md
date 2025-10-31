@@ -247,19 +247,45 @@ while (true) {
 
 ### Refreshing Cline tokens
 
-Whenever you obtain a fresh JWT via the submodule utility (`sap-abap-auth-browser auth ...`), sync it with the local Cline settings:
+Use `scripts/update-cline-connection.js` to keep `cline_mcp_settings.json` synchronized with the credentials you currently use.
+
+#### Inside this repository
 
 ```bash
 npm run update:cline -- --connection cloud-llm-hub
 
-# Or generate a token from a service key in one step
+# Regenerate a SAP JWT via the helper tool and update the settings in one go
 npm run update:cline -- \
   --connection cloud-llm-hub \
   --service-key path/to/service-key.json \
   --browser system
 ```
 
-The script reads (and optionally updates) `submodules/mcp-abap-adt/.env`, then rewrites `cline_mcp_settings.json`, keeping all `X-SAP-*` headers in sync for the selected connection. Custom locations or explicit tokens can be supplied via `--settings`, `--env`, or `--token`. Add `--browser none` to prevent the helper from launching a browser.
+#### Standalone usage (copy just the script)
+
+1. Download `scripts/update-cline-connection.js` into any project (for example via `curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/master/scripts/update-cline-connection.js`).
+2. Run it with plain Node.js and point it to your Cline profile:
+
+```bash
+node update-cline-connection.js \
+  --connection cloud-llm-hub \
+  --settings ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json \
+  --update all \
+  --mcp-token <bearer-or-jwt-token> \
+  --sap-token <sap-jwt-token>
+```
+
+Only the script is required—no other files from this repository. When the ABAP submodule (and its `.env`) is absent, supply credentials explicitly by using `--sap-token` (or `--sap-username/--sap-password`) and the MCP headers via `--mcp-*` flags. Pass `--sap-auth-script <path>` if you keep `sap-abap-auth-browser.js` outside of the original submodule.
+
+#### Helpful flags
+
+- `--update sap|mcp|all` controls which side of the connection is touched.
+- `--sap-auth-type`, `--sap-token`, `--sap-username`, `--sap-password` toggle JWT vs. basic authentication for the ABAP backend.
+- `--mcp-auth-type`, `--mcp-token`, `--mcp-username`, `--mcp-password`, `--mcp-auth-header` set the authorization header Cline sends to the MCP proxy.
+- `--sap-auth-script` defines the location of `sap-abap-auth-browser.js` when regenerating tokens from a service key without the git submodule present.
+- `--dry-run` prints the changes without rewriting the settings file.
+
+The script picks defaults for the Cline settings file and the ABAP `.env` automatically. If neither the submodule nor a local `.env` is found, you will be prompted to pass explicit values.
 
 ### Health Check
 

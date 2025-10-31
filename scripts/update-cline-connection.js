@@ -1,58 +1,18 @@
-#!/usr/bin/env tsx
-import { promises as fs } from 'fs';
-import path from 'path';
-import os from 'os';
-import readline from 'readline';
-import { spawn } from 'child_process';
+#!/usr/bin/env node
 
-interface CliOptions {
-  connectionName: string;
-  settingsPath?: string;
-  envPath?: string;
-  sapToken?: string;
-  sapAuthType?: string;
-  sapUsername?: string;
-  sapPassword?: string;
-  mcpAuthType?: string;
-  mcpUsername?: string;
-  mcpPassword?: string;
-  mcpToken?: string;
-  mcpAuthHeader?: string;
-  dryRun?: boolean;
-  force?: boolean;
-  serviceKey?: string;
-  browser?: string;
-  updateScope?: 'sap' | 'mcp' | 'all';
-}
+const fs = require('fs').promises;
+const path = require('path');
+const os = require('os');
+const readline = require('readline');
+const { spawn } = require('child_process');
 
-interface ClineConfig {
-  mcpServers?: Record<string, ClineConnection>;
-}
-
-interface ClineConnection {
-  type?: string;
-  url?: string;
-  headers?: Record<string, string>;
-  [key: string]: unknown;
-}
-
-interface SapEnvConfig {
-  SAP_URL?: string;
-  SAP_CLIENT?: string;
-  SAP_AUTH_TYPE?: string;
-  SAP_JWT_TOKEN?: string;
-  SAP_USERNAME?: string;
-  SAP_PASSWORD?: string;
-  [key: string]: string | undefined;
-}
-
-function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = {
+function parseArgs(argv) {
+  const options = {
     connectionName: '',
     dryRun: false,
     updateScope: 'all'
   };
-  let scopeArgument: string | undefined;
+  let scopeArgument;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -112,6 +72,9 @@ function parseArgs(argv: string[]): CliOptions {
       case '--browser':
         options.browser = argv[++i];
         break;
+      case '--sap-auth-script':
+        options.sapAuthScript = argv[++i];
+        break;
       case '-h':
       case '--help':
         printHelp();
@@ -145,23 +108,25 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
-function printHelp(): void {
+function printHelp() {
+  const entryName = path.basename(__filename);
   console.log(`Update MCP connection settings for Cline
 
-Usage: npx tsx scripts/update-cline-connection.ts --connection <name> [options]
+Usage: node ${entryName} --connection <name> [options]
 
 Options:
   -c, --connection <name>   MCP connection name in Cline (required)
-    --update <scope>       Update scope: sap | mcp | all (default: all, alias: --scope)
+      --update <scope>       Update scope: sap | mcp | all (default: all, alias: --scope)
       --settings <path>      Path to cline_mcp_settings.json (defaults to the standard location)
-      --env <path>           Path to the SAP .env file (defaults to submodules/mcp-abap-adt/.env)
+      --env <path>           Path to the SAP .env file (defaults to submodules/mcp-abap-adt/.env or ./\\.env)
       --dry-run              Preview changes without writing the file
       --force                Skip confirmations and warnings when possible
       --service-key <path>   Refresh SAP JWT via sap-abap-auth-browser using the provided service key
+      --sap-auth-script <path>  Optional path to sap-abap-auth-browser.js (defaults to bundled/submodule copy)
       --browser <name>       Pass --browser to sap-abap-auth-browser (chrome|edge|firefox|system|none)
 
   MCP authentication (Cline ➜ MCP proxy):
-    --mcp-auth-header <value>  Override Authorization header directly (alias: --auth-header)
+      --mcp-auth-header <value>  Override Authorization header directly (alias: --auth-header)
       --mcp-auth-type <type>     basic | jwt | bearer | none (auto-detected when possible)
       --mcp-username <value>     Username for MCP basic auth
       --mcp-password <value>     Password for MCP basic auth
@@ -177,7 +142,7 @@ Options:
 `);
 }
 
-function getDefaultSettingsPath(): string {
+function getDefaultSettingsPath() {
   return path.join(
     os.homedir(),
     '.config',
@@ -190,39 +155,70 @@ function getDefaultSettingsPath(): string {
   );
 }
 
-function getDefaultEnvPath(): string {
-  return path.join(process.cwd(), 'submodules', 'mcp-abap-adt', '.env');
+async function getDefaultEnvPath() {
+  const submoduleEnv = path.join(process.cwd(), 'submodules', 'mcp-abap-adt', '.env');
+  if (await fileExists(submoduleEnv)) {
+    return submoduleEnv;
+  }
+
+  const localEnv = path.join(process.cwd(), '.env');
+  if (await fileExists(localEnv)) {
+    return localEnv;
+  }
+
+  return submoduleEnv;
 }
 
-function getSubmoduleRoot(): string {
-  return path.join(process.cwd(), 'submodules', 'mcp-abap-adt');
+function getScriptDirectory() {
+  return __dirname;
 }
 
-function getAuthScriptPath(): string {
-  return path.join(getSubmoduleRoot(), 'tools', 'sap-abap-auth-browser.js');
+async function resolveAuthScriptPath(scriptOverride) {
+  const candidates = [];
+
+  if (scriptOverride) {
+    candidates.push(scriptOverride);
+  }
+
+  const scriptDir = getScriptDirectory();
+  candidates.push(path.join(scriptDir, 'sap-abap-auth-browser.js'));
+  candidates.push(path.join(process.cwd(), 'sap-abap-auth-browser.js'));
+  candidates.push(path.join(process.cwd(), 'tools', 'sap-abap-auth-browser.js'));
+  candidates.push(path.join(process.cwd(), 'submodules', 'mcp-abap-adt', 'tools', 'sap-abap-auth-browser.js'));
+
+  for (const candidate of candidates) {
+    const absolute = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
+    if (await fileExists(absolute)) {
+      return { scriptPath: absolute, cwd: path.dirname(absolute) };
+    }
+  }
+
+  throw new Error(
+    'sap-abap-auth-browser.js not found. Provide --sap-auth-script <path> or copy the helper next to this script.'
+  );
 }
 
-async function readJsonFile<T>(filePath: string): Promise<T> {
+async function readJsonFile(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw) as T;
-  } catch (error: any) {
-  throw new Error(`Failed to read ${filePath}: ${error.message}`);
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Failed to read ${filePath}: ${error.message}`);
   }
 }
 
-async function runServiceKeyAuth(options: { serviceKey: string; browser?: string }): Promise<void> {
-  const scriptPath = await ensureFile(getAuthScriptPath(), 'sap-abap-auth-browser.js');
+async function runServiceKeyAuth(options) {
+  const scriptInfo = await resolveAuthScriptPath(options.scriptOverride);
   const serviceKeyPath = await ensureFile(options.serviceKey, 'Service key');
 
-  const args = [scriptPath, 'auth', '--key', serviceKeyPath];
+  const args = [scriptInfo.scriptPath, 'auth', '--key', serviceKeyPath];
   if (options.browser) {
     args.push('--browser', options.browser);
   }
 
-  await new Promise<void>((resolve, reject) => {
+  await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
-      cwd: getSubmoduleRoot(),
+      cwd: scriptInfo.cwd,
       stdio: 'inherit'
     });
 
@@ -231,19 +227,19 @@ async function runServiceKeyAuth(options: { serviceKey: string; browser?: string
       if (code === 0) {
         resolve();
       } else {
-  reject(new Error(`sap-abap-auth-browser exited with code ${code}`));
+        reject(new Error(`sap-abap-auth-browser exited with code ${code}`));
       }
     });
   });
 }
 
-async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
+async function writeJsonFile(filePath, data) {
   const formatted = `${JSON.stringify(data, null, 2)}\n`;
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, formatted, 'utf8');
 }
 
-async function fileExists(filePath: string): Promise<boolean> {
+async function fileExists(filePath) {
   try {
     await fs.access(filePath);
     return true;
@@ -252,37 +248,37 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function ensureFile(filePath: string, description: string): Promise<string> {
+async function ensureFile(filePath, description) {
   const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
   if (!(await fileExists(absolutePath))) {
-  throw new Error(`${description} not found: ${absolutePath}`);
+    throw new Error(`${description} not found: ${absolutePath}`);
   }
   return absolutePath;
 }
 
-async function readEnvFile(filePath: string): Promise<SapEnvConfig> {
+async function readEnvFile(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
     return raw
       .split(/\r?\n/)
       .filter((line) => line.trim() && !line.trim().startsWith('#'))
-      .reduce<SapEnvConfig>((acc, line) => {
+      .reduce((acc, line) => {
         const [key, ...rest] = line.split('=');
         if (!key) {
           return acc;
         }
         acc[key.trim()] = rest.join('=').trim();
         return acc;
-      }, {} as SapEnvConfig);
-  } catch (error: any) {
+      }, {});
+  } catch (error) {
     if (error.code === 'ENOENT') {
       return {};
     }
-  throw new Error(`Failed to read .env (${filePath}): ${error.message}`);
+    throw new Error(`Failed to read .env (${filePath}): ${error.message}`);
   }
 }
 
-function decodeJwtPayload(token: string): Record<string, any> | undefined {
+function decodeJwtPayload(token) {
   const parts = token.split('.');
   if (parts.length < 2) {
     return undefined;
@@ -297,7 +293,7 @@ function decodeJwtPayload(token: string): Record<string, any> | undefined {
   }
 }
 
-function getJwtExpiration(token: string): number | undefined {
+function getJwtExpiration(token) {
   const payload = decodeJwtPayload(token);
   if (!payload || typeof payload.exp !== 'number') {
     return undefined;
@@ -305,13 +301,13 @@ function getJwtExpiration(token: string): number | undefined {
   return payload.exp * 1000;
 }
 
-function formatTimestamp(ts: number): string {
+function formatTimestamp(ts) {
   return new Date(ts).toISOString();
 }
 
-async function confirmPrompt(message: string): Promise<boolean> {
+async function confirmPrompt(message) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise<string>((resolve) => {
+  const answer = await new Promise((resolve) => {
     rl.question(message, resolve);
   });
   rl.close();
@@ -319,23 +315,13 @@ async function confirmPrompt(message: string): Promise<boolean> {
   return normalized === 'y' || normalized === 'yes';
 }
 
-interface JwtUsage {
-  value: string;
-  source: 'env' | 'arg';
-}
-
-function getHeaderValue(headers: Record<string, string>, key: string): string | undefined {
+function getHeaderValue(headers, key) {
   const normalizedKey = key.toLowerCase();
   const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
   return existingKey ? headers[existingKey] : undefined;
 }
 
-function setHeaderValue(
-  headers: Record<string, string>,
-  key: string,
-  value: string | undefined,
-  updated: string[]
-): void {
+function setHeaderValue(headers, key, value, updated) {
   const normalizedKey = key.toLowerCase();
   const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
 
@@ -358,17 +344,8 @@ function setHeaderValue(
   }
 }
 
-function applySapConfigToHeaders(
-  headers: Record<string, string>,
-  sapConfig: SapEnvConfig,
-  overrides: {
-    token?: string;
-    authType?: string;
-    username?: string;
-    password?: string;
-  }
-): { updated: string[]; jwt?: JwtUsage } {
-  const updatedKeys: string[] = [];
+function applySapConfigToHeaders(headers, sapConfig, overrides) {
+  const updatedKeys = [];
 
   setHeaderValue(headers, 'x-sap-url', sapConfig.SAP_URL, updatedKeys);
   setHeaderValue(headers, 'x-sap-client', sapConfig.SAP_CLIENT, updatedKeys);
@@ -384,7 +361,7 @@ function applySapConfigToHeaders(
   setHeaderValue(headers, 'x-sap-auth-type', authType, updatedKeys);
 
   if (authType === 'jwt') {
-    const tokenSource: JwtUsage['source'] = overrides.token ? 'arg' : 'env';
+    const tokenSource = overrides.token ? 'arg' : 'env';
     const token = overrides.token ?? sapConfig.SAP_JWT_TOKEN;
     if (!token) {
       throw new Error('JWT token not found. Provide --sap-token or add SAP_JWT_TOKEN to the .env file.');
@@ -410,17 +387,8 @@ function applySapConfigToHeaders(
   return { updated: updatedKeys };
 }
 
-function applyMcpAuth(
-  headers: Record<string, string>,
-  options: {
-    authType?: string;
-    username?: string;
-    password?: string;
-    token?: string;
-    authHeader?: string;
-  }
-): string[] {
-  const updated: string[] = [];
+function applyMcpAuth(headers, options) {
+  const updated = [];
 
   if (!options.authHeader && !options.authType && !options.username && !options.password && !options.token) {
     return updated;
@@ -431,7 +399,7 @@ function applyMcpAuth(
     return updated;
   }
 
-  let authType = options.authType?.toLowerCase();
+  let authType = options.authType ? options.authType.toLowerCase() : undefined;
   if (!authType) {
     if (options.username && options.password) {
       authType = 'basic';
@@ -469,13 +437,13 @@ function applyMcpAuth(
   return updated;
 }
 
-async function main(): Promise<void> {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   const updateSap = options.updateScope === 'sap' || options.updateScope === 'all';
   const updateMcp = options.updateScope === 'mcp' || options.updateScope === 'all';
 
   const settingsPath = options.settingsPath ?? getDefaultSettingsPath();
-  const defaultEnvPath = getDefaultEnvPath();
+  const defaultEnvPath = await getDefaultEnvPath();
   const envPath = options.envPath ?? defaultEnvPath;
 
   if (options.serviceKey) {
@@ -483,7 +451,11 @@ async function main(): Promise<void> {
       console.warn('⚠️  Ignoring --service-key because the update scope does not include SAP credentials.');
     } else {
       console.log('🔄  Running sap-abap-auth-browser to refresh the JWT...');
-      await runServiceKeyAuth({ serviceKey: options.serviceKey, browser: options.browser });
+      await runServiceKeyAuth({
+        serviceKey: options.serviceKey,
+        browser: options.browser,
+        scriptOverride: options.sapAuthScript
+      });
       console.log('✅  JWT updated using the provided service key.');
       if (options.envPath && path.resolve(process.cwd(), envPath) !== defaultEnvPath) {
         console.warn('⚠️  sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.');
@@ -491,8 +463,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const configPromise = readJsonFile<ClineConfig>(settingsPath);
-  const sapConfigPromise = updateSap ? readEnvFile(envPath) : Promise.resolve({} as SapEnvConfig);
+  const configPromise = readJsonFile(settingsPath);
+  const sapConfigPromise = updateSap ? readEnvFile(envPath) : Promise.resolve({});
   const [config, sapConfig] = await Promise.all([configPromise, sapConfigPromise]);
 
   if (updateSap) {
@@ -515,19 +487,19 @@ async function main(): Promise<void> {
   }
 
   connection.headers = connection.headers ?? {};
-  const updatedHeaders: string[] = [];
-  let jwt: JwtUsage | undefined;
+  const updatedHeaders = [];
+  let jwt;
 
   if (updateSap) {
-    const { updated, jwt: sapJwt } = applySapConfigToHeaders(connection.headers, sapConfig, {
+    const result = applySapConfigToHeaders(connection.headers, sapConfig, {
       token: options.sapToken,
       authType: options.sapAuthType,
       username: options.sapUsername,
       password: options.sapPassword
     });
-    updatedHeaders.push(...updated);
-    if (sapJwt) {
-      jwt = sapJwt;
+    updatedHeaders.push(...result.updated);
+    if (result.jwt) {
+      jwt = result.jwt;
     }
   }
 
@@ -567,7 +539,11 @@ async function main(): Promise<void> {
   console.log(`ℹ️  Updated headers: ${uniqueUpdated.length ? uniqueUpdated.join(', ') : 'none'}`);
 }
 
-main().catch((error) => {
-  console.error(`❌  ${error.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`❌  ${error.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { parseArgs, applySapConfigToHeaders, applyMcpAuth };
