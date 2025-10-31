@@ -1,17 +1,17 @@
 # 🚀 Quick Testing Commands Cheat Sheet
 
-Швидкий довідник команд для тестування MCP Proxy авторизації.
+Quick command reference for testing MCP Proxy authorization flows.
 
 ---
 
-## 📋 Підготовка
+## 📋 Preparation
 
-### Запуск сервісу
+### Start the service
 ```bash
 cds watch --profile development
 ```
 
-### Генерація credentials
+### Generate credentials
 ```bash
 # alice (admin)
 echo -n "alice:" | base64
@@ -21,30 +21,30 @@ echo -n "alice:" | base64
 echo -n "bob:" | base64
 # Ym9iOg==
 
-# unknown (без ролі)
+# unknown (no roles)
 echo -n "unknown:" | base64
 # dW5rbm93bjo=
 ```
 
 ---
 
-## ✅ SSE Тести (копіюй і вставляй)
+## ✅ SSE Tests (copy & paste)
 
-### 1. Alice (має працювати ✅)
+### 1. Alice (should succeed ✅)
 ```bash
 curl -N -H "Accept: text/event-stream" \
      -H "Authorization: Basic YWxpY2U6" \
      http://localhost:4004/mcp/stream/sse
 ```
 
-### 2. Bob (має працювати ✅)
+### 2. Bob (should succeed ✅)
 ```bash
 curl -N -H "Accept: text/event-stream" \
      -H "Authorization: Basic Ym9iOg==" \
      http://localhost:4004/mcp/stream/sse
 ```
 
-### 3. Без авторизації (401 ❌)
+### 3. No authorization (401 ❌)
 ```bash
 curl -v -H "Accept: text/event-stream" \
      http://localhost:4004/mcp/stream/sse
@@ -57,7 +57,7 @@ curl -v -H "Accept: text/event-stream" \
      http://localhost:4004/mcp/stream/sse
 ```
 
-### 5. З timeout (для швидкого тесту)
+### 5. With timeout (quick check)
 ```bash
 timeout 5 curl -N -H "Accept: text/event-stream" \
                -H "Authorization: Basic YWxpY2U6" \
@@ -66,9 +66,9 @@ timeout 5 curl -N -H "Accept: text/event-stream" \
 
 ---
 
-## ✅ Stream-HTTP Тести (копіюй і вставляй)
+## ✅ Stream-HTTP Tests (copy & paste)
 
-### 1. Alice (має працювати ✅)
+### 1. Alice (should succeed ✅)
 ```bash
 echo '{"command":"test","user":"alice"}' | \
 curl -X POST \
@@ -78,7 +78,7 @@ curl -X POST \
      http://localhost:4004/mcp/stream/http
 ```
 
-### 2. Bob (має працювати ✅)
+### 2. Bob (should succeed ✅)
 ```bash
 echo '{"command":"test","user":"bob"}' | \
 curl -X POST \
@@ -88,7 +88,7 @@ curl -X POST \
      http://localhost:4004/mcp/stream/http
 ```
 
-### 3. Без авторизації (401 ❌)
+### 3. No authorization (401 ❌)
 ```bash
 curl -v -X POST \
      -H "Content-Type: application/x-ndjson" \
@@ -105,7 +105,7 @@ curl -v -X POST \
      http://localhost:4004/mcp/stream/http
 ```
 
-### 5. NDJSON з файлу
+### 5. NDJSON from file
 ```bash
 cat <<EOF > /tmp/test.ndjson
 {"command":"tools/list"}
@@ -121,21 +121,21 @@ curl -X POST \
 
 ---
 
-## 🧪 Автоматичні тести
+## 🧪 Automated tests
 
-### Запустити всі тести
+### Run the entire suite
 ```bash
 cd test/smoke
 ./run-all.sh
 ```
 
-### Тільки тести авторизації
+### Authorization-only tests
 ```bash
 cd test/smoke
 ./test-auth-interactive.sh
 ```
 
-### Окремі тести
+### Individual scripts
 ```bash
 cd test/smoke
 ./test-health.sh       # Health check
@@ -145,9 +145,9 @@ cd test/smoke
 
 ---
 
-## 🔍 Debug команди
+## 🔍 Debug commands
 
-### SSE з повним виводом
+### SSE with verbose output
 ```bash
 curl -N -vvv \
      -H "Accept: text/event-stream" \
@@ -155,7 +155,7 @@ curl -N -vvv \
      http://localhost:4004/mcp/stream/sse 2>&1 | tee sse-debug.log
 ```
 
-### Stream-HTTP з timing
+### Stream-HTTP with timing information
 ```bash
 echo '{"test":"data"}' | \
 curl -w "\nTime: %{time_total}s\nCode: %{http_code}\n" \
@@ -166,7 +166,7 @@ curl -w "\nTime: %{time_total}s\nCode: %{http_code}\n" \
      http://localhost:4004/mcp/stream/http
 ```
 
-### Перевірка headers
+### Inspect headers
 ```bash
 curl -I -H "Authorization: Basic YWxpY2U6" \
      http://localhost:4004/mcp/Health
@@ -174,21 +174,21 @@ curl -I -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-## 📊 Перевірка логів сервера
+## 📊 Inspect server logs
 
-### Фільтрувати логи авторизації
+### Filter authorization logs
 ```bash
-# У терміналі де запущено cds watch
-# Шукати ці рядки:
+# Use the terminal running `cds watch`
+# Look for the following entries:
 ```
 
-Очікувані логи для успішної авторизації:
+Expected logs for successful authorization:
 ```
 [mcp-proxy/authShim] - Basic auth detected { username: 'alice' }
 [mcp-proxy/sse] - SSE connection established { user: 'alice' }
 ```
 
-Очікувані логи для помилок:
+Expected logs when something goes wrong:
 ```
 [mcp-proxy/authShim] - Unauthorized request - missing or invalid Authorization header
 [mcp-proxy/sse] - Forbidden: User lacks MCP_Connector role { user: 'unknown' }
@@ -196,19 +196,19 @@ curl -I -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-## 🎯 One-liner тести
+## 🎯 One-liner tests
 
-### Швидкий health check
+### Quick health check
 ```bash
 curl -s http://localhost:4004/mcp/Health | jq .
 ```
 
-### Швидкий SSE test (5 секунд)
+### Quick SSE test (5 seconds)
 ```bash
 timeout 5 curl -sN -H "Accept: text/event-stream" -H "Authorization: Basic YWxpY2U6" http://localhost:4004/mcp/stream/sse | head -5
 ```
 
-### Перевірити всі статус коди
+### Verify status codes for each user
 ```bash
 for user in "YWxpY2U6" "Ym9iOg==" "dW5rbm93bjo=" ""; do
   code=$(curl -s -o /dev/null -w "%{http_code}" -H "Accept: text/event-stream" -H "Authorization: Basic $user" http://localhost:4004/mcp/stream/sse)
@@ -218,11 +218,11 @@ done
 
 ---
 
-## 📱 Тестування з інших інструментів
+## 📱 Testing with other tools
 
 ### HTTPie
 ```bash
-# Встановити: pip install httpie
+# Install: pip install httpie
 
 # SSE
 http --stream GET localhost:4004/mcp/stream/sse \
@@ -256,23 +256,23 @@ echo '{"test":"data"}' | http POST localhost:4004/mcp/stream/http \
 
 ## 🐛 Troubleshooting one-liners
 
-### Чи сервіс запущений?
+### Is the service running?
 ```bash
 curl -f http://localhost:4004/mcp/Health && echo "✅ Service is running" || echo "❌ Service is down"
 ```
 
-### Чи backend доступний?
+### Is the backend reachable?
 ```bash
 curl -f http://127.0.0.1:7070/health && echo "✅ Backend is running" || echo "⚠️  Backend not available"
 ```
 
-### Декодувати Base64 credential
+### Decode a Base64 credential
 ```bash
 echo "YWxpY2U6" | base64 -d && echo ""
 # alice:
 ```
 
-### Перевірити всі endpoints
+### Check every endpoint
 ```bash
 for endpoint in "/mcp/Health" "/mcp/stream/sse" "/mcp/stream/http"; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:4004$endpoint")
@@ -282,7 +282,7 @@ done
 
 ---
 
-## 🎨 Pretty output з jq
+## 🎨 Pretty output with jq
 
 ### Format JSON responses
 ```bash
@@ -296,9 +296,9 @@ curl -s http://localhost:4004/mcp/Health | jq -r '.status'
 
 ---
 
-## 💡 Корисні alias
+## 💡 Helpful aliases
 
-Додай у `~/.zshrc` або `~/.bashrc`:
+Add to `~/.zshrc` or `~/.bashrc`:
 
 ```bash
 # MCP Proxy shortcuts
@@ -309,32 +309,32 @@ alias mcp-test='cd /home/developer/prj/cloud-llm-hub/test/smoke && ./test-auth-i
 alias mcp-logs='cd /home/developer/prj/cloud-llm-hub && cds watch --profile development 2>&1 | grep -E "(auth|MCP_|Unauthorized|Forbidden)"'
 ```
 
-Після додавання:
+After adding the aliases:
 ```bash
-source ~/.zshrc  # або source ~/.bashrc
+source ~/.zshrc  # or source ~/.bashrc
 ```
 
-Використання:
+Usage:
 ```bash
-mcp-start      # Запустити сервіс
-mcp-health     # Перевірити health
-mcp-sse-alice  # Швидкий SSE тест
-mcp-test       # Запустити всі тести
-mcp-logs       # Дивитись логи авторизації
+mcp-start      # Start the service
+mcp-health     # Check the health endpoint
+mcp-sse-alice  # Quick SSE test
+mcp-test       # Run the auth smoke tests
+mcp-logs       # Watch authorization logs
 ```
 
 ---
 
-## 🎯 Матриця швидких тестів
+## 🎯 Quick test matrix
 
-| Що тестуємо | Команда | Очікуваний результат |
-|-------------|---------|---------------------|
-| Health | `curl localhost:4004/mcp/Health` | 200, JSON з status:UP |
+| Scenario | Command | Expected result |
+|----------|---------|-----------------|
+| Health | `curl localhost:4004/mcp/Health` | 200 with `status: "UP"` |
 | SSE + alice | `timeout 3 curl -N -H "Accept: text/event-stream" -H "Authorization: Basic YWxpY2U6" localhost:4004/mcp/stream/sse` | 200, retry hint, heartbeat |
-| SSE - no auth | `curl -I localhost:4004/mcp/stream/sse` | 401 Unauthorized |
-| HTTP + alice | `echo '{"test":"data"}' \| curl -X POST -H "Authorization: Basic YWxpY2U6" -H "Content-Type: application/x-ndjson" --data-binary @- localhost:4004/mcp/stream/http` | 200 або 502 (якщо backend down) |
-| HTTP - no auth | `curl -I -X POST localhost:4004/mcp/stream/http` | 401 Unauthorized |
+| SSE – no auth | `curl -I localhost:4004/mcp/stream/sse` | 401 Unauthorized |
+| HTTP + alice | ``echo '{"test":"data"}' \| curl -X POST -H "Authorization: Basic YWxpY2U6" -H "Content-Type: application/x-ndjson" --data-binary @- localhost:4004/mcp/stream/http`` | 200 or 502 (if backend is offline) |
+| HTTP – no auth | `curl -I -X POST localhost:4004/mcp/stream/http` | 401 Unauthorized |
 
 ---
 
-**Готово!** Скопіюй потрібні команди та тестуй! 🚀
+**All set!** Copy the commands you need and start testing. 🚀

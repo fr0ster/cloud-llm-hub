@@ -1,53 +1,53 @@
-# Посібник з тестування MCP Proxy
+# MCP Proxy Testing Guide
 
-Детальні інструкції по тестуванню авторизації для SSE та Stream-HTTP endpoints.
+Comprehensive instructions for validating authentication on the SSE and Stream-HTTP endpoints.
 
 ---
 
-## 🚀 Підготовка до тестування
+## 🚀 Test Preparation
 
-### 1. Запуск сервісу
+### 1. Start the service
 
 ```bash
-# У терміналі 1: запустити CAP сервіс
+# Terminal 1: start the CAP service
 cd /home/developer/prj/cloud-llm-hub
 cds watch --profile development
 ```
 
-Очікуваний вивід:
+Expected output:
 ```
 [cds] - server listening on { url: 'http://localhost:4004' }
 [cds] - launched at 10/29/2025, 11:30:00 AM
 ```
 
-### 2. Підготовка credentials
+### 2. Prepare credentials
 
-**alice (admin користувач):**
+**alice (admin user):**
 ```bash
-# Згенерувати Base64 для alice (порожній пароль)
+# Generate Base64 for alice (empty password)
 echo -n "alice:" | base64
-# Результат: YWxpY2U6
+# Expected: YWxpY2U6
 ```
 
-**bob (звичайний користувач):**
+**bob (standard user):**
 ```bash
-# Згенерувати Base64 для bob (порожній пароль)
+# Generate Base64 for bob (empty password)
 echo -n "bob:" | base64
-# Результат: Ym9iOg==
+# Expected: Ym9iOg==
 ```
 
-**Невалідний користувач:**
+**Unknown user:**
 ```bash
-# Згенерувати Base64 для unknown
+# Generate Base64 for unknown
 echo -n "unknown:" | base64
-# Результат: dW5rbm93bjo=
+# Expected: dW5rbm93bjo=
 ```
 
 ---
 
-## 🔐 Тестування авторизації SSE endpoint
+## 🔐 Testing the SSE endpoint
 
-### ✅ Тест 1: Успішна авторизація (alice)
+### ✅ Test 1: Successful authorization (alice)
 
 ```bash
 curl -N -v \
@@ -56,18 +56,18 @@ curl -N -v \
   http://localhost:4004/mcp/stream/sse
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `200 OK`
-- Headers містять:
+**Expected result:**
+- HTTP status `200 OK`
+- Headers include:
   ```
   Content-Type: text/event-stream
   Cache-Control: no-cache
   Connection: keep-alive
   ```
-- Перший рядок: `retry: 15000`
-- Heartbeat кожні 15 секунд: `: ping`
+- First line: `retry: 15000`
+- Heartbeat every 15 seconds: `: ping`
 
-**Приклад виводу:**
+**Sample output:**
 ```
 < HTTP/1.1 200 OK
 < Content-Type: text/event-stream
@@ -82,7 +82,7 @@ retry: 15000
 ...
 ```
 
-### ✅ Тест 2: Успішна авторизація (bob)
+### ✅ Test 2: Successful authorization (bob)
 
 ```bash
 curl -N -v \
@@ -91,9 +91,9 @@ curl -N -v \
   http://localhost:4004/mcp/stream/sse
 ```
 
-**Очікуваний результат:** Те саме що і для alice (обидва мають роль MCP_Connector)
+**Expected result:** Same as alice (both users carry the `MCP_Connector` role).
 
-### ❌ Тест 3: Відсутня авторизація
+### ❌ Test 3: Missing authorization header
 
 ```bash
 curl -v \
@@ -101,11 +101,11 @@ curl -v \
   http://localhost:4004/mcp/stream/sse
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `401 Unauthorized`
+**Expected result:**
+- HTTP status `401 Unauthorized`
 - Body: `Unauthorized: Missing or invalid Authorization header`
 
-**Приклад виводу:**
+**Sample output:**
 ```
 < HTTP/1.1 401 Unauthorized
 < Content-Type: text/plain; charset=utf-8
@@ -113,7 +113,7 @@ curl -v \
 Unauthorized: Missing or invalid Authorization header
 ```
 
-### ❌ Тест 4: Невалідний користувач
+### ❌ Test 4: User without the role
 
 ```bash
 curl -v \
@@ -122,10 +122,10 @@ curl -v \
   http://localhost:4004/mcp/stream/sse
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `403 Forbidden` (користувач розпізнається, але не має ролі MCP_Connector)
+**Expected result:**
+- HTTP status `403 Forbidden` (recognized user, missing `MCP_Connector`).
 
-### ❌ Тест 5: Невалідний формат токену
+### ❌ Test 5: Invalid Bearer token
 
 ```bash
 curl -v \
@@ -134,13 +134,13 @@ curl -v \
   http://localhost:4004/mcp/stream/sse
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `401 Unauthorized`
-- Body містить помилку: `Missing XSUAA binding in production mode`
+**Expected result:**
+- HTTP status `401 Unauthorized`
+- Body includes the error `Missing XSUAA binding in production mode`
 
-### 🔍 Тест 6: Перевірка логів сервера
+### 🔍 Test 6: Inspect server logs
 
-Після кожного запиту перевіряйте логи в терміналі де запущено `cds watch`:
+After each request, review the terminal running `cds watch`:
 
 ```
 [mcp-proxy/authShim] - Basic auth detected { username: 'alice' }
@@ -148,7 +148,7 @@ curl -v \
 [mcp-proxy/sse] - Connecting to upstream SSE { targetUrl: 'http://127.0.0.1:7070' }
 ```
 
-Для невалідних запитів:
+For invalid requests:
 ```
 [mcp-proxy/authShim] - Unauthorized request - missing or invalid Authorization header
 [mcp-proxy/sse] - Forbidden: User lacks MCP_Connector role { user: 'unknown' }
@@ -156,9 +156,9 @@ curl -v \
 
 ---
 
-## 🔐 Тестування авторизації Stream-HTTP endpoint
+## 🔐 Testing the Stream-HTTP endpoint
 
-### ✅ Тест 1: Успішна авторизація (alice)
+### ✅ Test 1: Successful authorization (alice)
 
 ```bash
 echo '{"command":"test","timestamp":"'$(date -Iseconds)'"}' | \
@@ -169,21 +169,21 @@ curl -v -X POST \
   http://localhost:4004/mcp/stream/http
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `200 OK`
-- Headers містять: `Content-Type: application/x-ndjson`
-- Відповідь від upstream (якщо backend запущений)
+**Expected result:**
+- HTTP status `200 OK`
+- Headers include `Content-Type: application/x-ndjson`
+- Upstream response when the backend is running
 
-**Альтернативний тест з файлом:**
+**File-based alternative:**
 
 ```bash
-# Створити тестовий файл
+# Create a test file
 cat > /tmp/test-stream.ndjson <<EOF
 {"command":"tools/list"}
 {"command":"tools/call","params":{"name":"test"}}
 EOF
 
-# Надіслати
+# Send the request
 curl -v -X POST \
   -H "Content-Type: application/x-ndjson" \
   -H "Authorization: Basic YWxpY2U6" \
@@ -191,7 +191,7 @@ curl -v -X POST \
   http://localhost:4004/mcp/stream/http
 ```
 
-### ✅ Тест 2: Успішна авторизація (bob)
+### ✅ Test 2: Successful authorization (bob)
 
 ```bash
 echo '{"command":"test"}' | \
@@ -202,9 +202,9 @@ curl -v -X POST \
   http://localhost:4004/mcp/stream/http
 ```
 
-**Очікуваний результат:** 200 OK (bob має роль MCP_Connector)
+**Expected result:** `200 OK` (bob has the `MCP_Connector` role)
 
-### ❌ Тест 3: Відсутня авторизація
+### ❌ Test 3: Missing authorization header
 
 ```bash
 curl -v -X POST \
@@ -213,10 +213,10 @@ curl -v -X POST \
   http://localhost:4004/mcp/stream/http
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `401 Unauthorized`
+**Expected result:**
+- HTTP status `401 Unauthorized`
 
-### ❌ Тест 4: Невалідний користувач
+### ❌ Test 4: User without the role
 
 ```bash
 curl -v -X POST \
@@ -226,10 +226,10 @@ curl -v -X POST \
   http://localhost:4004/mcp/stream/http
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `403 Forbidden`
+**Expected result:**
+- HTTP status `403 Forbidden`
 
-### ❌ Тест 5: Невалідний метод (GET замість POST)
+### ❌ Test 5: Wrong HTTP method (GET instead of POST)
 
 ```bash
 curl -v \
@@ -237,38 +237,38 @@ curl -v \
   http://localhost:4004/mcp/stream/http
 ```
 
-**Очікуваний результат:**
-- HTTP Status: `404 Not Found` (endpoint доступний тільки для POST)
+**Expected result:**
+- HTTP status `404 Not Found` (endpoint only accepts POST)
 
 ---
 
-## 🧪 Автоматизовані тести
+## 🧪 Automated tests
 
-### Запуск усіх smoke тестів
+### Run the full smoke suite
 
 ```bash
 cd test/smoke
 ./run-all.sh
 ```
 
-### Запуск окремих тестів
+### Run individual scripts
 
 ```bash
 # Health check
 ./test-health.sh
 
-# SSE тести (включають тести авторизації)
+# SSE scenarios (covers auth cases)
 ./test-sse.sh
 
-# Stream-HTTP тести (включають тести авторизації)
+# Stream-HTTP scenarios (covers auth cases)
 ./test-stream-http.sh
 ```
 
 ---
 
-## 🔍 Перевірка з детальним виводом
+## 🔍 Deep-dive diagnostics
 
-### SSE з повним debug виводом
+### SSE with full debug output
 
 ```bash
 curl -N -vvv \
@@ -277,12 +277,12 @@ curl -N -vvv \
   http://localhost:4004/mcp/stream/sse 2>&1 | tee /tmp/sse-test.log
 ```
 
-Після виконання перегляньте лог:
+Review the log afterwards:
 ```bash
 cat /tmp/sse-test.log | grep -E "(HTTP|Content-Type|Authorization|retry|ping)"
 ```
 
-### Stream-HTTP з timing інформацією
+### Stream-HTTP with timing information
 
 ```bash
 echo '{"test":"data"}' | \
@@ -296,9 +296,9 @@ curl -w "\n\nTime stats:\n-----------\nTotal: %{time_total}s\nConnect: %{time_co
 
 ---
 
-## 🐍 Python скрипт для тестування
+## 🐍 Python helpers
 
-Створіть файл `test_auth.py`:
+Create `test_auth.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -307,7 +307,7 @@ import base64
 from sseclient import SSEClient  # pip install sseclient-py
 
 def test_sse_auth(username, password=""):
-    """Тестування SSE з авторизацією"""
+  """Exercise SSE authorization"""
     creds = base64.b64encode(f"{username}:{password}".encode()).decode()
     headers = {
         "Accept": "text/event-stream",
@@ -328,8 +328,8 @@ def test_sse_auth(username, password=""):
         print(f"✅ Status: {response.status_code}")
         print(f"Headers: {dict(response.headers)}")
         
-        if response.status_code == 200:
-            # Читаємо перші кілька подій
+    if response.status_code == 200:
+      # Read the first few events
             client = SSEClient(response)
             count = 0
             for event in client.events():
@@ -340,11 +340,11 @@ def test_sse_auth(username, password=""):
         else:
             print(f"❌ Body: {response.text}")
             
-    except Exception as e:
-        print(f"❌ Error: {e}")
+  except Exception as exc:
+    print(f"❌ Error: {exc}")
 
 def test_stream_http_auth(username, password=""):
-    """Тестування Stream-HTTP з авторизацією"""
+  """Exercise Stream-HTTP authorization"""
     creds = base64.b64encode(f"{username}:{password}".encode()).decode()
     headers = {
         "Content-Type": "application/x-ndjson",
@@ -370,29 +370,29 @@ def test_stream_http_auth(username, password=""):
         else:
             print(f"❌ Body: {response.text}")
             
-    except Exception as e:
-        print(f"❌ Error: {e}")
+  except Exception as exc:
+    print(f"❌ Error: {exc}")
 
 if __name__ == "__main__":
     print("=" * 60)
     print("MCP Proxy Authorization Tests")
     print("=" * 60)
     
-    # Тести SSE
-    test_sse_auth("alice")      # Має працювати (admin)
-    test_sse_auth("bob")        # Має працювати (connector)
-    test_sse_auth("unknown")    # Має бути 403
-    
-    # Тести Stream-HTTP
-    test_stream_http_auth("alice")      # Має працювати
-    test_stream_http_auth("bob")        # Має працювати
-    test_stream_http_auth("unknown")    # Має бути 403
+  # SSE tests
+  test_sse_auth("alice")      # Expected: success (admin)
+  test_sse_auth("bob")        # Expected: success (connector)
+  test_sse_auth("unknown")    # Expected: 403
+
+  # Stream-HTTP tests
+  test_stream_http_auth("alice")      # Expected: success
+  test_stream_http_auth("bob")        # Expected: success
+  test_stream_http_auth("unknown")    # Expected: 403
     
     print("\n" + "=" * 60)
     print("Tests completed!")
 ```
 
-Запуск:
+Run:
 ```bash
 pip install requests sseclient-py
 python3 test_auth.py
@@ -400,9 +400,9 @@ python3 test_auth.py
 
 ---
 
-## 🌐 JavaScript/Node.js тестування
+## 🌐 JavaScript/Node.js helpers
 
-Створіть файл `test-auth.js`:
+Create `test-auth.js`:
 
 ```javascript
 #!/usr/bin/env node
@@ -434,7 +434,7 @@ function testSSE(username, password = '') {
     es.close();
   };
   
-  // Закрити через 10 секунд
+  // Close after 10 seconds
   setTimeout(() => {
     console.log('🛑 Closing connection');
     es.close();
@@ -470,7 +470,7 @@ async function testStreamHTTP(username, password = '') {
   }
 }
 
-// Запустити тести
+// Run the tests
 console.log('='.repeat(60));
 console.log('MCP Proxy Authorization Tests');
 console.log('='.repeat(60));
@@ -486,7 +486,7 @@ setTimeout(() => {
 }, 12000);
 ```
 
-Запуск:
+Run:
 ```bash
 npm install eventsource
 node test-auth.js
@@ -494,62 +494,62 @@ node test-auth.js
 
 ---
 
-## 📊 Матриця очікуваних результатів
+## 📊 Expected results matrix
 
-| Тест | Користувач | Endpoint | Метод | Очікуваний статус | Причина |
-|------|-----------|----------|-------|-------------------|---------|
-| 1 | alice | /mcp/stream/sse | GET | 200 | Має роль MCP_Connector |
-| 2 | bob | /mcp/stream/sse | GET | 200 | Має роль MCP_Connector |
-| 3 | unknown | /mcp/stream/sse | GET | 403 | Немає ролі |
-| 4 | (без auth) | /mcp/stream/sse | GET | 401 | Немає Authorization header |
-| 5 | alice | /mcp/stream/http | POST | 200 | Має роль MCP_Connector |
-| 6 | bob | /mcp/stream/http | POST | 200 | Має роль MCP_Connector |
-| 7 | unknown | /mcp/stream/http | POST | 403 | Немає ролі |
-| 8 | (без auth) | /mcp/stream/http | POST | 401 | Немає Authorization header |
-| 9 | alice | /mcp/stream/http | GET | 404 | Неправильний HTTP метод |
+| Test | User | Endpoint | Method | Expected status | Reason |
+|------|------|----------|--------|-----------------|--------|
+| 1 | alice | /mcp/stream/sse | GET | 200 | Holds `MCP_Connector` |
+| 2 | bob | /mcp/stream/sse | GET | 200 | Holds `MCP_Connector` |
+| 3 | unknown | /mcp/stream/sse | GET | 403 | Missing role |
+| 4 | (no auth) | /mcp/stream/sse | GET | 401 | Missing Authorization header |
+| 5 | alice | /mcp/stream/http | POST | 200 | Holds `MCP_Connector` |
+| 6 | bob | /mcp/stream/http | POST | 200 | Holds `MCP_Connector` |
+| 7 | unknown | /mcp/stream/http | POST | 403 | Missing role |
+| 8 | (no auth) | /mcp/stream/http | POST | 401 | Missing Authorization header |
+| 9 | alice | /mcp/stream/http | GET | 404 | Wrong HTTP method |
 
 ---
 
 ## 🔥 Troubleshooting
 
-### Проблема: Завжди отримую 500 error
+### Issue: Always seeing HTTP 500
 
-**Причина:** Backend `mcp-abap-adt` не запущений
+**Root cause:** The `mcp-abap-adt` backend is not running.
 
-**Рішення:**
+**Fix:**
 ```bash
-# Перевірити чи backend запущений
+# Check whether the backend is running
 curl http://127.0.0.1:7070/health
 
-# Якщо ні - запустити
+# Start it if needed
 cd external/mcp-abap-adt
 npm install
 npm start
 ```
 
-### Проблема: Отримую 401 навіть з валідним Basic auth
+### Issue: 401 even with valid Basic auth
 
-**Перевірити:**
-1. Base64 encoding правильний:
+**Verify:**
+1. Base64 encoding is correct:
    ```bash
    echo "YWxpY2U6" | base64 -d
-   # Має вивести: alice:
+  # Expected: alice:
    ```
 
-2. Сервіс запущений у dev режимі:
+2. Service runs in dev mode:
    ```bash
    cds watch --profile development
    ```
 
-3. Перевірити логи сервера на наявність помилок
+3. Server logs do not report errors
 
-### Проблема: SSE connection обривається
+### Issue: SSE connection drops
 
-**Причина:** Timeout або проблема з upstream
+**Root cause:** Timeout or upstream instability.
 
-**Рішення:**
+**Fix:**
 ```bash
-# Перевірити heartbeat працює
+# Confirm heartbeat events arrive
 curl -N -H "Accept: text/event-stream" \
      -H "Authorization: Basic YWxpY2U6" \
      http://localhost:4004/mcp/stream/sse | \
@@ -558,19 +558,19 @@ curl -N -H "Accept: text/event-stream" \
 
 ---
 
-## 📝 Логування для аналізу
+## 📝 Logging tips
 
-### Увімкнути детальне логування
+### Enable verbose logging
 
 ```bash
-# Запустити з debug режимом
+# Start cds with debug enabled
 DEBUG=* cds watch --profile development
 ```
 
-### Перевірити авторизаційні логи
+### Inspect authorization events
 
 ```bash
-# У логах шукати ці повідомлення
+# Search collected logs for these messages
 grep "authShim" logs.txt
 grep "MCP_Connector" logs.txt
 grep "Unauthorized" logs.txt
@@ -579,20 +579,20 @@ grep "Forbidden" logs.txt
 
 ---
 
-## ✅ Чеклист для повної перевірки
+## ✅ Validation checklist
 
-- [ ] Health endpoint працює: `curl http://localhost:4004/mcp/Health`
-- [ ] SSE з alice повертає 200 та heartbeat
-- [ ] SSE з bob повертає 200
-- [ ] SSE без auth повертає 401
-- [ ] SSE з unknown повертає 403
-- [ ] Stream-HTTP з alice повертає 200
-- [ ] Stream-HTTP з bob повертає 200
-- [ ] Stream-HTTP без auth повертає 401
-- [ ] Stream-HTTP з unknown повертає 403
-- [ ] Логи показують правильну авторизацію
-- [ ] Smoke тести проходять: `cd test/smoke && ./run-all.sh`
+- [ ] Health endpoint responds: `curl http://localhost:4004/mcp/Health`
+- [ ] SSE with alice returns 200 and heartbeat
+- [ ] SSE with bob returns 200
+- [ ] SSE without auth returns 401
+- [ ] SSE with unknown returns 403
+- [ ] Stream-HTTP with alice returns 200
+- [ ] Stream-HTTP with bob returns 200
+- [ ] Stream-HTTP without auth returns 401
+- [ ] Stream-HTTP with unknown returns 403
+- [ ] Logs confirm authorization decisions
+- [ ] Smoke tests pass: `cd test/smoke && ./run-all.sh`
 
 ---
 
-**Готово!** Тепер у вас є повний набір інструментів для тестування авторизації MCP Proxy. 🎉
+**Done!** You now have a complete toolkit for testing MCP Proxy authorization. 🎉

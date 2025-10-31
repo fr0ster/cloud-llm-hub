@@ -1,25 +1,25 @@
-# 🚀 Quick Start: MCP Proxy за 5 хвилин
+# 🚀 Quick Start: MCP Proxy in 5 Minutes
 
-Швидкий запуск MCP Proxy та підключення через Cline.
+Spin up the MCP Proxy locally and connect it to Cline.
 
 ---
 
-## ✅ Крок 1: Запуск сервісу (1 хв)
+## ✅ Step 1: Start the service (1 minute)
 
-### Відкрий термінал і запусти:
+### Run the CAP server:
 
 ```bash
 cd /home/developer/prj/cloud-llm-hub
 cds watch --profile development
 ```
 
-### ✓ Перевір що сервіс запущений:
+### ✓ Verify the service is running:
 
 ```bash
 curl http://localhost:4004/mcp/Health
 ```
 
-**Очікуваний результат:**
+**Expected response:**
 ```json
 {
   "status": "UP",
@@ -29,11 +29,11 @@ curl http://localhost:4004/mcp/Health
 
 ---
 
-## ✅ Крок 2: Налаштувати Cline MCP конфігурацію (2 хв)
+## ✅ Step 2: Configure Cline (2 minutes)
 
-### Варіант A: SSE підключення (рекомендовано)
+### Option A: SSE (recommended)
 
-Створи або відкрий файл конфігурації Cline (зазвичай `~/.config/cline/mcp-settings.json` або в налаштуваннях Cline):
+Create or update the Cline configuration file (for example `~/.config/cline/mcp-settings.json` or through the Cline settings UI):
 
 ```json
 {
@@ -50,7 +50,7 @@ curl http://localhost:4004/mcp/Health
 }
 ```
 
-### Варіант B: Stream-HTTP підключення
+### Option B: Stream-HTTP
 
 ```json
 {
@@ -68,49 +68,40 @@ curl http://localhost:4004/mcp/Health
 }
 ```
 
-### Де знаходиться конфігурація Cline?
+### Where to find the Cline configuration
 
-**VS Code:**
-- `Ctrl+Shift+P` → "Cline: Edit MCP Settings"
-- Або `~/.vscode/extensions/saoudrizwan.claude-dev-*/mcp-settings.json`
-
-**Cursor:**
-- Settings → Extensions → Cline → MCP Settings
-
-**Standalone:**
-- `~/.config/cline/mcp-settings.json`
+- **VS Code:** `Ctrl+Shift+P` → “Cline: Edit MCP Settings” or edit `~/.vscode/extensions/saoudrizwan.claude-dev-*/mcp-settings.json`
+- **Cursor:** Settings → Extensions → Cline → MCP Settings
+- **Standalone:** `~/.config/cline/mcp-settings.json`
 
 ---
 
-## ✅ Крок 3: Перезапустити Cline (30 сек)
+## ✅ Step 3: Reload Cline (30 seconds)
 
-1. У VS Code/Cursor:
-   - `Ctrl+Shift+P` → "Reload Window"
-   - Або перезапустити Cline extension
-
-2. Відкрити Cline panel і перевірити підключення
+1. In VS Code/Cursor: `Ctrl+Shift+P` → “Reload Window”, or restart the Cline extension.
+2. Open the Cline panel and ensure the connection appears.
 
 ---
 
-## ✅ Крок 4: Перевірка підключення (1 хв)
+## ✅ Step 4: Sanity check (1 minute)
 
-### У Cline чаті спробуй команду:
+### In the Cline chat run:
 
 ```
 @mcp list tools
 ```
 
-або
+or
 
 ```
 Show me available MCP tools
 ```
 
-### ✓ Очікуваний результат:
+### ✓ Expected result
 
-Cline має показати список доступних MCP функцій/tools з `mcp-abap-adt` backend.
+Cline lists the available MCP tools exposed by the `mcp-abap-adt` backend.
 
-**Приклад виводу:**
+**Sample output:**
 ```
 Available MCP Tools:
 - tool1: Description of tool 1
@@ -122,51 +113,49 @@ Available MCP Tools:
 
 ## 🔧 Troubleshooting
 
-### ❌ Cline не бачить MCP сервер
+### ❌ Cline cannot see the MCP server
 
-**Причина:** Невірний формат конфігурації або Authorization header
+**Cause:** malformed configuration or missing Authorization header
 
-**Рішення:**
-1. Перевір що `Authorization: Basic YWxpY2U6` (це alice користувач)
-2. Переконайся що endpoint правильний: `http://localhost:4004/mcp/stream/sse`
-3. Перезапусти Cline / Reload window
+**Fix:**
+1. Ensure `Authorization: Basic YWxpY2U6` (alice user)
+2. Endpoint must be `http://localhost:4004/mcp/stream/sse`
+3. Reload the Cline window
 
-### ❌ Connection refused або timeout
+### ❌ Connection refused or timeout
 
-**Причина:** Сервіс не запущений
+**Cause:** CAP service is not running
 
-**Рішення:**
+**Fix:**
 ```bash
-# Перевір чи запущений
+# Check if the service responds
 curl http://localhost:4004/mcp/Health
 
-# Якщо ні - запусти
+# If not, start it
 cd /home/developer/prj/cloud-llm-hub
 cds watch --profile development
 ```
 
 ### ❌ 401 Unauthorized
 
-**Причина:** Невірний Authorization header
+**Cause:** incorrect Authorization header
 
-**Рішення:**
-Згенеруй правильний Base64:
+**Fix:** generate the correct Base64 value:
 ```bash
 echo -n "alice:" | base64
-# Результат: YWxpY2U6
+# Expected: YWxpY2U6
 ```
 
-Використай у Cline config:
+Use it in the Cline config:
 ```json
 "Authorization": "Basic YWxpY2U6"
 ```
 
 ### ❌ 403 Forbidden
 
-**Причина:** Користувач не має ролі `MCP_Connector`
+**Cause:** user lacks the `MCP_Connector` role
 
-**Рішення:**
-Використай `alice` або `bob` (обидва мають роль):
+**Fix:** use `alice` or `bob` (both include the role):
 ```bash
 # alice
 echo -n "alice:" | base64
@@ -177,37 +166,37 @@ echo -n "bob:" | base64
 # Ym9iOg==
 ```
 
-### ❌ MCP backend не працює
+### ❌ MCP backend unavailable
 
-**Причина:** `mcp-abap-adt` backend не запущений
+**Cause:** `mcp-abap-adt` backend is down
 
-**Рішення:**
+**Fix:**
 ```bash
-# Підняти backend (якщо встановлений)
+# Start the backend (if installed)
 cd external/mcp-abap-adt
 npm install
 npm start
 
-# Перевірити
+# Verify
 curl http://127.0.0.1:7070/health
 ```
 
-**Примітка:** Якщо backend не встановлений, proxy буде повертати помилку upstream. Це нормально для тестування авторизації.
+**Note:** If the backend is missing, the proxy will return upstream errors. That is fine for auth-only testing.
 
 ---
 
-## 🧪 Швидка перевірка авторизації
+## 🧪 Quick authorization test
 
-### Без Cline - через curl:
+### Using curl (without Cline):
 
 ```bash
-# SSE (має показати retry та heartbeat)
+# SSE (should show retry and heartbeat)
 timeout 5 curl -N \
   -H "Accept: text/event-stream" \
   -H "Authorization: Basic YWxpY2U6" \
   http://localhost:4004/mcp/stream/sse
 
-# Stream-HTTP (має прийняти запит)
+# Stream-HTTP (should accept the request)
 echo '{"command":"test"}' | \
 curl -X POST \
   -H "Content-Type: application/x-ndjson" \
@@ -218,75 +207,75 @@ curl -X POST \
 
 ---
 
-## 📊 Перевірочний чеклист
+## 📊 Checklist
 
-- [ ] Сервіс запущений: `curl http://localhost:4004/mcp/Health` повертає 200
-- [ ] Cline конфігурація створена з правильним endpoint та Authorization
-- [ ] Cline перезапущений (Reload window)
-- [ ] Cline показує доступні MCP tools
-- [ ] (Опційно) Backend `mcp-abap-adt` запущений
-
----
-
-## 📝 Готові конфігурації
-
-Я вже створив готові приклади в `docs/examples/`:
-
-### Для development (локально):
-- `docs/examples/cline-sse-dev.json` - SSE підключення
-- `docs/examples/cline-stream-dev.json` - Stream-HTTP підключення
-
-### Для production (BTP):
-- `docs/examples/cline-sse-prod.json` - SSE з JWT токеном
-
-**Копіюй потрібний файл у Cline конфігурацію!**
+- [ ] Service is running: `curl http://localhost:4004/mcp/Health` returns 200
+- [ ] Cline configuration uses the correct endpoint and Authorization header
+- [ ] Cline has been reloaded
+- [ ] Cline shows the MCP tool list
+- [ ] (Optional) `mcp-abap-adt` backend is online
 
 ---
 
-## 🎯 Що далі?
+## 📝 Ready-to-use configs
 
-### Якщо все працює:
+Preconfigured templates live in `docs/examples/`:
 
-1. **Протестуй MCP команди** через Cline
-2. **Перевір логи** сервера (термінал де запущено `cds watch`)
-3. **Додай інших користувачів** (bob) для тестування різних ролей
+### Development (local)
+- `docs/examples/cline-sse-dev.json` — SSE connection
+- `docs/examples/cline-stream-dev.json` — Stream-HTTP connection
 
-### Якщо потрібен production режим:
+### Production (BTP)
+- `docs/examples/cline-sse-prod.json` — SSE with JWT token
 
-1. Deploy на BTP: `cf push`
+Copy the file you need into your Cline configuration.
+
+---
+
+## 🎯 Next steps
+
+### If everything works
+
+1. Exercise MCP tools via Cline.
+2. Tail the CAP logs (terminal running `cds watch`).
+3. Try additional users (e.g., `bob`) to validate role-based behaviour.
+
+### When preparing production mode
+
+1. Deploy to BTP: `cf push`
 2. Bind XSUAA: `cf bind-service cloud-llm-hub mcp-xsuaa`
-3. Отримати JWT token через OAuth2
-4. Використати prod конфігурацію з Bearer token
+3. Obtain a JWT via OAuth2
+4. Switch to the production config with the Bearer token
 
 ---
 
-## 💡 Корисні команди
+## 💡 Useful commands
 
 ```bash
-# Запустити сервіс
+# Start the service
 cd /home/developer/prj/cloud-llm-hub && cds watch --profile development
 
-# Перевірити health
+# Health check
 curl http://localhost:4004/mcp/Health | jq .
 
-# Швидкий SSE тест
+# Quick SSE test
 timeout 3 curl -N -H "Accept: text/event-stream" -H "Authorization: Basic YWxpY2U6" http://localhost:4004/mcp/stream/sse
 
-# Автоматичні тести
+# Automated smoke tests
 cd test/smoke && ./test-auth-interactive.sh
 ```
 
 ---
 
-## 📚 Детальна документація
+## 📚 More documentation
 
-- **Повний testing guide**: `docs/TESTING_GUIDE.md`
-- **Cheat sheet з командами**: `docs/TESTING_CHEAT_SHEET.md`
-- **Usage guide**: `docs/MCP_PROXY_USAGE.md`
-- **Implementation report**: `docs/IMPLEMENTATION_REPORT.md`
+- **Detailed testing guide:** `docs/TESTING_GUIDE.md`
+- **Command cheat sheet:** `docs/TESTING_CHEAT_SHEET.md`
+- **Usage guide:** `docs/MCP_PROXY_USAGE.md`
+- **Implementation report:** `docs/IMPLEMENTATION_REPORT.md`
 
 ---
 
-**Готово!** За 5 хвилин ти маєш працюючий MCP Proxy підключений до Cline! 🎉
+**That’s it!** Within minutes you should have an MCP Proxy connected to Cline. 🎉
 
-Якщо щось не працює - дивись секцію Troubleshooting вище або запускай автоматичні тести: `cd test/smoke && ./test-auth-interactive.sh`
+If anything breaks, revisit the troubleshooting section or run the automated smoke test: `cd test/smoke && ./test-auth-interactive.sh`

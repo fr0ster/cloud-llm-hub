@@ -1,30 +1,30 @@
-# Технічне завдання (ТЗ): Проксі для MCP поверх SSE та Stream-HTTP з авторизацією BTP (XSUAA/CAP)
+# Technical Specification: MCP Proxy over SSE and Stream-HTTP with BTP Authorization (XSUAA/CAP)
 
-**Версія:** 1.4  
-**Дата:** 2025-10-29  
-**Власник:** Oleksii Kyslytsia (проект *Programming*)
-
----
-
-## 1. Мета
-
-Реалізувати безпечний **CAP-проксі** для MCP (Model Command Protocol), який працює через **SSE (Server-Sent Events)** і **Stream-HTTP** протоколи, з автентифікацією та авторизацією через **SAP BTP XSUAA**, створену за допомогою команди `cds add xsuaa`.  
-Реальна реалізація MCP знаходиться у підмодулі **`mcp-abap-adt`** (який не має власної авторизації). CAP-проксі виступає як шлюз з авторизацією, перевіркою ролей і стабільним проксуванням потоків.
+**Version:** 1.4  
+**Date:** 2025-10-29  
+**Owner:** Oleksii Kyslytsia (project *Programming*)
 
 ---
 
-## 2. Цілі
+## 1. Purpose
 
-1. Захистити всі входи MCP через XSUAA.  
-2. Забезпечити доступ до стрімів лише для користувачів із відповідними ролями.  
-3. Підтримати два протоколи: **SSE** (Server-Sent Events) і **Stream-HTTP** (NDJSON).  
-4. Зробити універсальний middleware авторизації для SSE (оскільки CDS не обробляє SSE автоматично).  
-5. Реалізувати Dev/Prod профілі: Basic/mock у dev, XSUAA у продакшн.  
-6. Підготувати CAP-додаток до деплою на BTP.
+Implement a secure **CAP proxy** for MCP (Model Command Protocol) that operates through **SSE (Server-Sent Events)** and **Stream-HTTP** protocols with authentication and authorization handled by **SAP BTP XSUAA**, provisioned via `cds add xsuaa`.  
+The actual MCP implementation is located in the **`mcp-abap-adt`** submodule (which has no built-in authorization). The CAP proxy acts as the gateway with authorization, role checks, and reliable stream forwarding.
 
 ---
 
-## 3. Архітектура
+## 2. Goals
+
+1. Protect all MCP entry points through XSUAA.  
+2. Allow stream access only for users with the required roles.  
+3. Support two protocols: **SSE** (Server-Sent Events) and **Stream-HTTP** (NDJSON).  
+4. Provide universal authorization middleware for SSE because CDS does not authenticate SSE routes by default.  
+5. Implement Dev/Prod profiles: Basic/mock in dev, XSUAA in production.  
+6. Prepare the CAP application for deployment to BTP.
+
+---
+
+## 3. Architecture
 
 ```mermaid
 flowchart LR
@@ -36,39 +36,39 @@ flowchart LR
 
 ---
 
-## 4. Інтеграція XSUAA
+## 4. XSUAA Integration
 
 ```bash
 cds add xsuaa
 ```
 
-CAP автоматично:
-- створює файл `xs-security.json`;
-- додає в `package.json`:
+CAP automatically:
+- creates the `xs-security.json` file;
+- adds to `package.json`:
   ```json
   { "cds": { "requires": { "auth": "xsuaa" } } }
   ```
-- додає залежності:
+- adds dependencies:
   ```json
   { "@sap/xssec": "^3", "@sap/xsenv": "^3" }
   ```
-- підключає middleware `cds.auth()` для JWT токенів.
+- enables the `cds.auth()` middleware for JWT tokens.
 
 ---
 
-## 5. Основні компоненти
+## 5. Key Components
 
-| Компонент | Опис |
-|------------|------|
-| **CAP mcp-proxy** | Проксі, який приймає SSE та Stream-HTTP запити, перевіряє авторизацію та пересилає дані у `mcp-abap-adt`. |
-| **XSUAA (SAP BTP)** | Сервіс авторизації для перевірки JWT токенів. |
-| **authShim** | Додатковий middleware, який обробляє Basic (для dev) та Bearer (для prod) авторизацію і встановлює `req.user` у форматі CAP. |
-| **mcp-abap-adt** | Реальна реалізація MCP API, підключена як git submodule. |
-| **Cline/CLI** | Клієнт, який ініціює SSE або stream-http запити. |
+| Component | Description |
+|-----------|-------------|
+| **CAP mcp-proxy** | Proxy that accepts SSE and Stream-HTTP requests, verifies authorization, and forwards the data to `mcp-abap-adt`. |
+| **XSUAA (SAP BTP)** | Authorization service that validates JWT tokens. |
+| **authShim** | Auxiliary middleware that handles Basic auth (dev) and Bearer tokens (prod) and sets `req.user` in CAP format. |
+| **mcp-abap-adt** | Real MCP API implementation included as a git submodule. |
+| **Cline/CLI** | Client that initiates SSE or Stream-HTTP requests. |
 
 ---
 
-## 6. Конфігурація CAP (package.json)
+## 6. CAP Configuration (package.json)
 
 ```json
 {
@@ -106,7 +106,7 @@ CAP автоматично:
 
 ---
 
-## 7. Модель безпеки (xs-security.json)
+## 7. Security Model (xs-security.json)
 
 ```json
 {
@@ -134,7 +134,7 @@ CAP автоматично:
 
 ---
 
-## 8. Локальна привʼязка сервісу (default-env.json)
+## 8. Local Service Binding (default-env.json)
 
 ```json
 {
@@ -157,7 +157,7 @@ CAP автоматично:
 
 ---
 
-## 9. AuthShim (універсальний middleware для SSE/Stream)
+## 9. AuthShim (Universal Middleware for SSE/Stream)
 
 ```js
 // auth-shim.js
@@ -201,7 +201,7 @@ async function authShim(req, res, next) {
       return next()
     }
 
-    // Prod: Bearer (end-user або service)
+  // Prod: Bearer (end-user or service)
     const token = extractBearer(req)
     if (!token) return res.status(401).send('Unauthorized: no token')
     if (!xsuaa) return res.status(500).send('XSUAA binding missing')
@@ -228,7 +228,7 @@ module.exports = { authShim }
 ## 10. SSE endpoint (GET /mcp/stream/sse)
 
 ```js
-// server.js (фрагмент)
+// server.js (excerpt)
 const cds = require('@sap/cds')
 const { authShim } = require('./auth-shim')
 
@@ -244,7 +244,7 @@ cds.on('bootstrap', (app) => {
     res.write('retry: 15000\\n\\n')
     const hb = setInterval(() => res.write(': ping\\n\\n'), 15000)
 
-    // TODO: Проксі до MCP-сервісу (mcp-abap-adt)
+  // TODO: Proxy the stream to the MCP service (mcp-abap-adt)
     // const target   = cds.env.requires?.mcpTarget?.credentials?.url || 'http://127.0.0.1:7070'
     // const upstream = await fetch(target + '/sse', { headers: { Accept: 'text/event-stream' } })
     // upstream.body.on('data', chunk => res.write(chunk))
@@ -254,22 +254,22 @@ cds.on('bootstrap', (app) => {
 })
 ```
 
-**Вимоги для SSE:**
-- Вимкнути компрісію/буферизацію на маршруті `/mcp/stream/sse`.
-- Heartbeat кожні 10–30 сек (`: ping`), `retry: 15000` для клієнта.
-- Тайм-аути читання/запису — не менше 60 сек.
+**SSE Requirements:**
+- Disable compression/buffering on `/mcp/stream/sse`.
+- Heartbeat every 10–30 seconds (`: ping`) with `retry: 15000` for the client.
+- Read/write timeouts must be at least 60 seconds.
 
 ---
 
 ## 11. Stream-HTTP endpoint (POST /mcp/stream/http)
 
 ```js
-// server.js (фрагмент)
+// server.js (excerpt)
 cds.on('bootstrap', (app) => {
   app.post('/mcp/stream/http', authShim, async (req, res) => {
     if (!req.user?.is('MCP_Connector')) return res.sendStatus(403)
 
-    // TODO: Проксі POST-стріму в mcp-abap-adt
+  // TODO: Proxy POST stream to mcp-abap-adt
     // const target   = cds.env.requires?.mcpTarget?.credentials?.url || 'http://127.0.0.1:7070'
     // const upstream = await fetch(target + '/stream', { method: 'POST', body: req })
     // res.setHeader('Content-Type', upstream.headers.get('Content-Type') || 'application/x-ndjson')
@@ -279,17 +279,17 @@ cds.on('bootstrap', (app) => {
 })
 ```
 
-**Вимоги для Stream-HTTP:**
-- Формат відповіді — NDJSON (`application/x-ndjson`) або `text/plain` line-delimited JSON.
-- Контроль backpressure через `res.write()` і коректні флаші.
-- Обмеження на розмір події (наприклад, 1 МБ).
+**Stream-HTTP Requirements:**
+- Response format must be NDJSON (`application/x-ndjson`) or `text/plain` line-delimited JSON.
+- Manage backpressure via `res.write()` and proper flushing.
+- Enforce an event size limit (for example, 1 MB).
 
 ---
 
-## 12. Режими запуску (Dev / Prod)
+## 12. Run Profiles (Dev / Prod)
 
-| Режим | Авторизація | Приклад заголовка |
-|--------|--------------|------------------|
+| Mode | Authorization | Example Header |
+|------|---------------|----------------|
 | **Dev** | Basic (mock) | `Authorization: Basic YWxpY2U6` |
 | **Prod** | JWT (XSUAA) | `Authorization: Bearer <JWT>` |
 
@@ -301,12 +301,12 @@ cds watch --profile dev
 ```
 
 **Prod:**  
-- Прив’язка `xsuaa` на CF/BTP.  
-- Клієнти використовують валідний `Bearer` (service token або on-behalf-of).
+- Bind `xsuaa` on CF/BTP.  
+- Clients present a valid `Bearer` token (service token or on-behalf-of).
 
 ---
 
-## 13. Приклади конфігурацій Cline
+## 13. Cline Configuration Examples
 
 **SSE (`cline.json`):**
 ```json
@@ -334,43 +334,43 @@ cds watch --profile dev
 
 ---
 
-## 14. Критерії приймання
+## 14. Acceptance Criteria
 
-1. Авторизований користувач (MCP_Connector) отримує події через SSE.  
-2. Без ролі — `403 Forbidden`.  
-3. Dev режим — Basic `alice:` працює.  
-4. Потоки стабільні, heartbeat кожні 15 с.  
-5. Навантаження 500 evt/s — без витоків пам’яті.  
-6. JWT токени XSUAA валідуються.  
-7. Документація для деплою на BTP готова.  
-
----
-
-## 15. План тестування
-
-### 15.1 Функціональні тести
-- [ ] Відкрити SSE-потік у dev (Basic alice).  
-- [ ] Відкрити SSE-потік у prod (JWT).  
-- [ ] Виконати POST на `/mcp/stream/http` із NDJSON.  
-- [ ] Перевірити реакцію на відсутність токена (очікувано 401).  
-- [ ] Перевірити реакцію без ролі (очікувано 403).  
-
-### 15.2 Навантажувальні тести
-- [ ] 500 подій/сек протягом 5 хвилин — без помилок та збоїв.  
-- [ ] Перевірити утилізацію CPU/RAM.  
-
-### 15.3 Безпека
-- [ ] Маскування чутливих заголовків у логах.  
-- [ ] Rate limit на IP (опційно).  
-- [ ] Перевірка XSS/інʼєкцій у payload-подіях.  
+1. Authorized user (MCP_Connector) receives events through SSE.  
+2. Missing role results in `403 Forbidden`.  
+3. Dev mode works with Basic `alice:` credentials.  
+4. Streams remain stable with heartbeats every 15 seconds.  
+5. Sustained load of 500 events/second shows no memory leaks.  
+6. XSUAA JWT tokens are validated.  
+7. Deployment documentation for BTP is ready.  
 
 ---
 
-## 16. Подальші кроки
+## 15. Test Plan
 
-1. Імплементувати SSE і Stream-HTTP endpoint-и.  
-2. Підключити XSUAA через `cds add xsuaa`.  
-3. Підключити `mcp-abap-adt` як submodule.  
-4. Написати тести з Cline/curl.  
-5. Зробити деплой на SAP BTP (Cloud Foundry).  
-6. Додати Observability (структуровані логи + метрики).
+### 15.1 Functional Tests
+- [ ] Open an SSE stream in dev (Basic alice).  
+- [ ] Open an SSE stream in prod (JWT).  
+- [ ] POST to `/mcp/stream/http` with NDJSON.  
+- [ ] Verify response without a token (expect 401).  
+- [ ] Verify response without the role (expect 403).  
+
+### 15.2 Load Tests
+- [ ] 500 events/second for 5 minutes without errors or instability.  
+- [ ] Observe CPU/RAM utilization.  
+
+### 15.3 Security
+- [ ] Mask sensitive headers in logs.  
+- [ ] Rate limit per IP (optional).  
+- [ ] Check payload events for XSS/injection.  
+
+---
+
+## 16. Next Steps
+
+1. Implement the SSE and Stream-HTTP endpoints.  
+2. Integrate XSUAA via `cds add xsuaa`.  
+3. Connect `mcp-abap-adt` as a submodule.  
+4. Write tests with Cline/curl.  
+5. Deploy to SAP BTP (Cloud Foundry).  
+6. Add observability (structured logs and metrics).
