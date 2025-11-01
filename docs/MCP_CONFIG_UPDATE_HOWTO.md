@@ -82,6 +82,33 @@ node scripts/update-cline-from-yaml.js --template direct-jwt > ./config/direct-j
 
 Pre-baked templates also live under [`docs/templates/mcp-config/`](./templates/mcp-config/).
 
+### Template overrides
+
+When printing templates you can override the MCP metadata directly from the CLI instead of editing the YAML afterwards:
+
+```bash
+node scripts/update-cline-from-yaml.js \
+  --template direct-jwt \
+  --connection direct-jwt-local \
+  --service-key-file sapAbap=./keys/sk.json \
+  --mcp-endpoint http://localhost:3000/mcp/stream/http \
+  --mcp-type streamableHttp \
+  --mcp-description "Local MCP proxy with JWT passthrough" \
+  --mcp-auth-type basic \
+  --mcp-username alice \
+  --mcp-password ""
+```
+
+Available overrides:
+
+- `--mcp-endpoint <url>` — inject a specific MCP endpoint.
+- `--mcp-type <transport>` — set the transport (`streamableHttp`, `sse`, etc.).
+- `--mcp-description <text>` — customise the connection description.
+- `--mcp-auth-type <basic|bearer|jwt|header|none>` — choose the MCP auth block.
+- `--mcp-auth-header <value>` — supply a raw `Authorization` header value when `header` is selected.
+- `--mcp-username` / `--mcp-password` — inline credentials for Basic auth (empty passwords are quoted as `''`).
+- `--mcp-token` — provide a static bearer token.
+
 Example blueprint:
 
 ```yaml
@@ -160,6 +187,7 @@ Highlights:
 - `patch` applies shallow overrides (e.g. `endpoint`, `type`) on every run.
 - `sap.mode` accepts `destination` or `direct`, automatically removing conflicting headers.
 - `mcp.auth` supports `bearer`, `jwt`, `basic`, `header`, and `none`.
+- Basic-auth passwords may intentionally be empty; declare the value as an empty string (`""`) in the template or leave it to the CLI override above to emit `''`.
 - `headers` adds or removes custom headers; use `null` to delete.
 - Use `jsonPath` on any value spec when you need a nested field from the resolved service key JSON (omit it to inject the full document).
 - The script validates that destination-specific and direct SAP parameters are not mixed. If both are present, it stops with an explicit error so templates stay consistent.
