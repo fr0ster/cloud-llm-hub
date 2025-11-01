@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file. The format 
 - Standalone `scripts/update-cline-connection.js` utility with documentation for copying and running it outside the repository.
 - Lightweight `scripts/update-cline-connection-standalone.js` CLI plus expanded `docs/MCP_CONFIG_UPDATE_HOWTO.md` coverage for out-of-repo updates.
 - Declarative YAML orchestrator `scripts/update-cline-from-yaml.js` (with `js-yaml` runtime dependency) for multi-connection automation driven by service-key aware playbooks, now including built-in template scaffolding and SAP mode validation.
+- Diagnostic endpoint `GET /mcp/destination/probe` to validate Destination Service connectivity from the deployed CAP app.
 - `scripts/update-cline-from-yaml.js` templates now accept CLI overrides for MCP endpoint, transport type, description, and authentication (header, bearer, basic) so direct-JWT playbooks can be generated without manual edits.
 - Multi-Target Application descriptor (`mta.yaml`) with default modules and service bindings for SAP BTP Cloud Foundry deployments.
 - Automated MTA build hook that compiles and bundles the `mcp-abap-adt` submodule, plus a production dependency on `dotenv` to satisfy the embedded server at runtime.
