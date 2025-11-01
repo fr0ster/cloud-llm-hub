@@ -36,3 +36,5 @@ mta_archives/
 @cds-models
 sk.json
 .env
+*.yaml
+*.json
