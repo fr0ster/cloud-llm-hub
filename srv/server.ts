@@ -14,6 +14,9 @@ process.env.TLS_REJECT_UNAUTHORIZED = '0';
 import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
 import { getMCPServer } from './mcp-manager';
+import { resolveDestinationSapConfig } from './connections/destinationResolver';
+import { createBtpOnPremConnection } from './connections';
+import { createAbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/connectionFactory';
 import { Readable } from 'stream';
 
 /**
@@ -186,6 +189,133 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   }
 }
 
+interface DestinationProbeSummary {
+  status: number | undefined;
+  statusText: string | undefined;
+  contentType: string | undefined;
+}
+
+async function probeDestinationConnection(destinationName: string): Promise<{
+  summary: DestinationProbeSummary;
+  metadata: {
+    proxyType: string;
+    authentication: string | undefined;
+    sapClient: string | undefined;
+    tokenExpiresAt?: number;
+    connectivityMode: 'internet' | 'onprem';
+    cloudConnectorLocationId?: string;
+  };
+}> {
+  const resolution = await resolveDestinationSapConfig(destinationName);
+  const proxyType = (resolution.proxyType ?? 'Internet').toLowerCase();
+  const connectivityMode = proxyType === 'onpremise' ? 'onprem' : 'internet';
+  const metadata = {
+    proxyType: resolution.proxyType ?? 'Internet',
+    authentication: resolution.authenticationType,
+    sapClient: resolution.sapConfig.client,
+    tokenExpiresAt: resolution.tokenExpiresAt,
+    connectivityMode,
+    cloudConnectorLocationId: resolution.cloudConnectorLocationId
+  } as const;
+
+  let status: number | undefined;
+  let statusText: string | undefined;
+  let contentType: string | undefined;
+
+  if (connectivityMode === 'onprem') {
+    if (resolution.sapConfig.authType !== 'basic') {
+      throw new Error(`Destination "${destinationName}" uses proxy type OnPremise but is not configured for basic authentication.`);
+    }
+
+    const connection = await createBtpOnPremConnection(resolution.sapConfig, {
+      locationId: resolution.cloudConnectorLocationId,
+      principalToken: undefined
+    });
+
+    try {
+      const baseUrl = await connection.getBaseUrl();
+      const response = await connection.makeAdtRequest({
+        url: baseUrl,
+        method: 'GET',
+        timeout: 15000
+      });
+      status = response.status;
+      statusText = response.statusText;
+      contentType = response.headers['content-type'];
+    } finally {
+      connection.reset();
+    }
+  } else {
+    const connection = createAbapConnection(resolution.sapConfig);
+    try {
+      const baseUrl = await connection.getBaseUrl();
+      const response = await connection.makeAdtRequest({
+        url: baseUrl,
+        method: 'GET',
+        timeout: 15000
+      });
+      status = response.status;
+      statusText = response.statusText;
+      contentType = response.headers['content-type'];
+    } finally {
+      connection.reset();
+    }
+  }
+
+  return {
+    summary: {
+      status,
+      statusText,
+      contentType
+    },
+    metadata
+  };
+}
+
+async function handleDestinationProbe(req: Request, res: Response): Promise<void> {
+  const log = cds.log('mcp-proxy/destination-probe');
+  const user = (req as any).user;
+
+  if (!user || !user.is('MCP_Connector')) {
+    log.warn('Access denied for destination probe', { user: user?.id });
+    res.status(403).send('Forbidden: MCP_Connector role required');
+    return;
+  }
+
+  const rawName = (typeof req.query.destination === 'string' ? req.query.destination : undefined)
+    ?? (typeof req.query.name === 'string' ? req.query.name : undefined);
+  const destinationName = rawName?.trim();
+
+  if (!destinationName) {
+    res.status(400).json({ error: 'Query parameter "destination" (or "name") is required.' });
+    return;
+  }
+
+  try {
+    log.info('Probing destination', { destination: destinationName, user: user.id });
+    const { summary, metadata } = await probeDestinationConnection(destinationName);
+
+    res.status(200).json({
+      destination: destinationName,
+      connectivity: metadata.connectivityMode,
+      proxyType: metadata.proxyType,
+      authentication: metadata.authentication,
+      sapClient: metadata.sapClient ?? null,
+      cloudConnectorLocationId: metadata.cloudConnectorLocationId ?? null,
+      tokenExpiresAt: metadata.tokenExpiresAt ?? null,
+      probe: summary,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error('Destination probe failed', { destination: destinationName, error: message });
+    res.status(502).json({
+      destination: destinationName,
+      error: message
+    });
+  }
+}
+
 /**
  * Bootstrap: Register custom streaming endpoints
  */
@@ -195,9 +325,11 @@ cds.on('bootstrap', (app: Application) => {
 
   app.get('/mcp/stream/sse', authShim, handleSSE);
   app.post('/mcp/stream/http', authShim, handleStreamHTTP);
+  app.get('/mcp/destination/probe', authShim, handleDestinationProbe);
 
   log.info('Streaming endpoints registered', {
     sse: 'GET /mcp/stream/sse',
-    streamHttp: 'POST /mcp/stream/http'
+    streamHttp: 'POST /mcp/stream/http',
+    destinationProbe: 'GET /mcp/destination/probe'
   });
 });

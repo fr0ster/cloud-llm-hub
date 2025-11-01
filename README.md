@@ -28,6 +28,10 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - Dropping the header (or restarting the proxy) forces a clean re-initialization, which is useful after rotating SAP credentials or clearing stale state.
 - Detailed lifecycle notes and integration examples are documented in [`docs/MCP_PROXY_USAGE.md`](docs/MCP_PROXY_USAGE.md#streamable-http-session-lifecycle).
 
+## Destination Diagnostics
+
+- `GET /mcp/destination/probe?destination=<name>` resolves a Destination service entry, establishes connectivity (including Connectivity proxy when required), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints.
+
 ## Authentication & Connectivity
 
 - XSUAA scopes and role collections live in [`xs-security.json`](xs-security.json). The proxy maps scopes to CAP roles via a custom auth shim.
