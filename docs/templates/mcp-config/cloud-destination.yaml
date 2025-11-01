@@ -1,0 +1,18 @@
+# Template: Cloud deployment with ABAP Destination service
+settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+mcpConnection:
+  endpoint: https://<your-approuter-host>/mcp/stream/sse
+  definition:
+    type: sse
+    description: Cloud MCP → ABAP via Destination service
+  auth:
+    type: bearer
+    token:
+      source:
+        type: service | file
+        name: mcpXsuaa # Service name if you read it via cf service-key; remove jsonPath
+        jsonPath: access_token # Point to the token property; remove for local file
+abapConnection:
+  mode: destination
+  destination:
+    name: SAP_CLOUD_DEST

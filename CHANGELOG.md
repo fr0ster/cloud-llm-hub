@@ -6,7 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 ### Added
 - Streamable HTTP session lifecycle documentation in `docs/MCP_PROXY_USAGE.md`, clarifying how `Mcp-Session-Id` is negotiated and reused.
 - Standalone `scripts/update-cline-connection.js` utility with documentation for copying and running it outside the repository.
-- Lightweight `scripts/update-cline-connection-standalone.js` CLI and `docs/MCP_CONFIG_UPDATE_HOWTO.md` walkthrough for updating Cline MCP configs without repository context.
+- Lightweight `scripts/update-cline-connection-standalone.js` CLI plus expanded `docs/MCP_CONFIG_UPDATE_HOWTO.md` coverage for out-of-repo updates.
+- Declarative YAML orchestrator `scripts/update-cline-from-yaml.js` (with `js-yaml` runtime dependency) for multi-connection automation driven by service-key aware playbooks, now including built-in template scaffolding and SAP mode validation.
 - Multi-Target Application descriptor (`mta.yaml`) with default modules and service bindings for SAP BTP Cloud Foundry deployments.
 - Automated MTA build hook that compiles and bundles the `mcp-abap-adt` submodule, plus a production dependency on `dotenv` to satisfy the embedded server at runtime.
 
@@ -16,6 +17,13 @@ All notable changes to this project will be documented in this file. The format 
 - Extended `docs/MCP_PROXY_USAGE.md` with standalone CLI usage instructions and BTP deployment steps.
 - Added `@sap/cds-dk` dev dependency to support `cds build` during MTA packaging.
 - `docs/ASSISTANT_GUIDELINES.md` snapshot describing project essentials for new assistant sessions.
+- `docs/MCP_CONFIG_UPDATE_HOWTO.md` rewritten to showcase the `cloud.*` YAML schema and Cloud Foundry service-key lookup.
+- Introduced `docs/MCP_HEADER_MATRIX.md` describing required headers and value sources for each template scenario.
+- Updated `docs/templates/mcp-config/` scaffolds (direct-jwt, cloud-*) to reflect MCP basic auth and clarify optional service-key entries.
+- Simplified cloud destination templates by treating the BTP Destination name as a constant and removing the unused `destination-file` alias.
+
+### Removed
+- Legacy destination templates under `docs/templates/mcp-config/` in favour of the new `cloud-internet` / `cloud-destination` variants.
 
 ## [0.2.0] - 2025-10-29
 ### Added

@@ -425,8 +425,11 @@ function applyMcpAuth(headers, options) {
   switch (authType) {
     case 'basic': {
       const { username, password } = options;
-      if (!username || !password) {
-        throw new Error('MCP basic auth requires both --mcp-username and --mcp-password.');
+      if (!username) {
+        throw new Error('MCP basic auth requires --mcp-username.');
+      }
+      if (password === undefined || password === null) {
+        throw new Error('MCP basic auth requires --mcp-password (use an empty string if needed).');
       }
       const encoded = Buffer.from(`${username}:${password}`).toString('base64');
       setHeaderValue(headers, 'authorization', `Basic ${encoded}`, updated);

@@ -1,0 +1,32 @@
+# Template: Direct SAP connection using basic authentication
+settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+mcpConnection:
+  endpoint: http://localhost:4004/mcp/stream/sse
+  definition:
+    type: sse
+    description: Direct SAP via basic auth
+  auth:
+    type: basic
+    username:
+      source:
+        type: const
+        value: mcp-user@example.com
+    password:
+      source:
+        type: const
+        value: change-me
+abapConnection:
+  mode: direct
+  direct:
+    url: https://my.sap.system.example.com
+    client: 200
+  auth:
+    type: basic
+    username:
+      source:
+        type: const
+        value: sap-user@example.com
+    password:
+      source:
+        type: const
+        value: change-me-too
