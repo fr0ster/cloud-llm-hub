@@ -13,91 +13,29 @@ process.env.TLS_REJECT_UNAUTHORIZED = '0';
 
 import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
+// @ts-ignore - @sap/xsenv doesn't have types
+import { loadEnv } from '@sap/xsenv';
 import { getMCPServer } from './mcp-manager';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { createBtpOnPremConnection } from './connections';
 import { createAbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/connectionFactory';
 import { Readable } from 'stream';
 
-/**
- * AuthShim - Universal middleware for Basic (dev) and Bearer (prod) authorization
- */
-async function authShim(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const log = cds.log('mcp-proxy/authShim');
-  const hdr = req.headers.authorization || '';
-
-  try {
-    // Basic auth for development
-    if (hdr.startsWith('Basic ')) {
-      const decoded = Buffer.from(hdr.slice(6), 'base64').toString('utf8');
-      const [user] = decoded.split(':');
-      const username = user || 'anonymous';
-      
-      log.debug('Basic auth detected', { username });
-      
-      let roles = ['MCP_Connector'];
-      if (username === 'alice') {
-        roles = ['MCP_Connector', 'MCP_Admin'];
-      }
-      
-      (req as any).user = new cds.User({ id: username, roles, attr: {} });
-      return next();
-    }
-
-    // Bearer JWT for production
-    if (hdr.startsWith('Bearer ')) {
-      const token = hdr.slice(7);
-      
-      let xsuaa;
-      try {
-        const xsenv = require('@sap/xsenv');
-        xsuaa = xsenv.getServices({ uaa: { tag: 'xsuaa' } }).uaa;
-      } catch (err) {
-        log.warn('No XSUAA binding found');
-        throw new Error('Missing XSUAA binding in production mode');
-      }
-
-      const xssec = require('@sap/xssec');
-      const sc: any = await new Promise((resolve, reject) => {
-        xssec.createSecurityContext(token, xsuaa, (err: Error, ctx: any) => {
-          if (err) reject(err);
-          else resolve(ctx);
-        });
-      });
-
-      const scopes = new Set(sc.getScopes() || []);
-      const xsappname = xsuaa.xsappname;
-      const roles: string[] = [];
-
-      if (scopes.has(`${xsappname}.MCP_Connect`)) roles.push('MCP_Connector');
-      if (scopes.has(`${xsappname}.MCP_Read`)) roles.push('MCP_Connector');
-      if (scopes.has(`${xsappname}.MCP_Admin`)) roles.push('MCP_Admin');
-
-      (req as any).user = new cds.User({ id: sc.getLogonName(), roles, attr: {} });
-      return next();
-    }
-
-    log.warn('Unauthorized - no valid auth header');
-    res.status(401).send('Unauthorized: Missing or invalid Authorization header');
-  } catch (err: any) {
-    log.error('Authorization failed', err);
-    res.status(401).send(`Unauthorized: ${err.message}`);
-  }
-}
 
 /**
  * SSE endpoint handler - proxies to embedded MCP server
  */
 async function handleSSE(req: Request, res: Response): Promise<any> {
   const log = cds.log('mcp-proxy/sse');
-  const user = (req as any).user;
+  // const user = (req as any).user;
 
-  if (!user || !user.is('MCP_Connector')) {
-    log.warn('Access denied - missing MCP_Connector role', { user: user?.id });
-    return res.status(403).send('Forbidden: MCP_Connector role required');
-  }
+  // Trust BTP authentication - if user exists, they're authorized
+  // if (!user) {
+  //   log.warn('Access denied - no authenticated user', { user: user?.id });
+  //   return res.status(401).send('Unauthorized: No authenticated user');
+  // }
 
-  log.info('SSE connection opened', { user: user.id });
+  // log.info('SSE connection opened', { user: user.id });
 
   try {
     // Get embedded MCP server instance (created per-request with SAP config from headers)
@@ -123,7 +61,7 @@ async function handleSSE(req: Request, res: Response): Promise<any> {
     // For SSE, we need to handle the session initialization
     const sessionId = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     
-    log.info('SSE session established', { user: user.id, sessionId });
+    // log.info('SSE session established', { user: user.id, sessionId });
 
     // Send endpoint event to establish connection
     res.write(`event: endpoint\n`);
@@ -133,7 +71,7 @@ async function handleSSE(req: Request, res: Response): Promise<any> {
     req.on('close', () => {
       clearInterval(heartbeat);
       res.end();
-      log.info('SSE client disconnected', { user: user.id, sessionId });
+      // log.info('SSE client disconnected', { user: user.id, sessionId });
     });
 
     // Keep connection alive
@@ -157,45 +95,81 @@ async function handleSSE(req: Request, res: Response): Promise<any> {
  */
 async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   const log = cds.log('mcp-proxy/stream-http');
+  log.info('🚀 handleStreamHTTP called', { 
+    path: req.path,
+    method: req.method,
+    hasAuthHeader: !!req.headers.authorization,
+    hasDestination: !!req.headers['x-sap-destination'],
+    destination: req.headers['x-sap-destination']
+  });
+  
   const user = (req as any).user;
-
-  if (!user || !user.is('MCP_Connector')) {
-    log.warn('Access denied', { user: user?.id });
-    return res.status(403).send('Forbidden: MCP_Connector role required');
-  }
-
-  log.info('Stream-HTTP connection opened', { user: user.id });
+  log.debug('User context', { 
+    hasUser: !!user,
+    userId: user?.id,
+    isAnonymous: user?._is_anonymous,
+    roles: user?.roles
+  });
 
   try {
+    log.info('📥 Getting MCP server instance...');
     // Get embedded MCP server instance (created per-request with SAP config from headers)
     const mcpServer = await getMCPServer(req);
+    log.info('✅ MCP server obtained', { 
+      hasServer: !!mcpServer?.server,
+      hasWithTransport: !!mcpServer?.withTransport
+    });
     
     if (!mcpServer || !mcpServer.withTransport) {
-      log.error('MCP transport factory not available');
+      log.error('❌ MCP transport factory not available', {
+        hasMcpServer: !!mcpServer,
+        hasWithTransport: !!mcpServer?.withTransport
+      });
       return res.status(503).send('Service Unavailable: MCP transport not ready');
     }
 
+    log.info('🔄 Calling transport.handleRequest...');
     await mcpServer.withTransport(async transport => {
+      log.debug('📡 Transport ready, handling request');
       await transport.handleRequest(req, res);
+      log.debug('✅ Transport request handled');
     });
     
-    log.info('Stream-HTTP request handled', { user: user.id });
+    log.info('✅ Stream-HTTP request completed successfully');
 
   } catch (err: any) {
-    log.error('Stream-HTTP handler error', err);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    const errorDetails = {
+      error: errorMessage,
+      name: err?.name,
+      code: err?.code,
+      stack: errorStack
+    };
+    
+    log.error('Stream-HTTP handler error', errorDetails);
+    
     if (!res.headersSent) {
-      return res.status(500).send(`Internal Server Error: ${err.message}`);
+      // Return 502 Bad Gateway for destination/connection errors
+      // This helps Cline understand the request failed at the gateway level
+      const statusCode = err?.statusCode || (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED' ? 502 : 500);
+      return res.status(statusCode).json({
+        error: 'Bad Gateway',
+        message: errorMessage,
+        code: err?.code || err?.name,
+        destination: (req.headers['x-sap-destination'] as string) || undefined
+      });
     }
   }
 }
 
-interface DestinationProbeSummary {
+export interface DestinationProbeSummary {
   status: number | undefined;
   statusText: string | undefined;
   contentType: string | undefined;
 }
 
-async function probeDestinationConnection(destinationName: string): Promise<{
+export async function probeDestinationConnection(destinationName: string): Promise<{
   summary: DestinationProbeSummary;
   metadata: {
     proxyType: string;
@@ -272,64 +246,335 @@ async function probeDestinationConnection(destinationName: string): Promise<{
   };
 }
 
-async function handleDestinationProbe(req: Request, res: Response): Promise<void> {
-  const log = cds.log('mcp-proxy/destination-probe');
-  const user = (req as any).user;
+// NOTE: Destination probe is now a CAP function in mcp-proxy.ts (ProbeDestination)
+// This allows CAP to handle authentication correctly via @requires: 'MCP_Connector'
 
-  if (!user || !user.is('MCP_Connector')) {
-    log.warn('Access denied for destination probe', { user: user?.id });
-    res.status(403).send('Forbidden: MCP_Connector role required');
-    return;
-  }
 
-  const rawName = (typeof req.query.destination === 'string' ? req.query.destination : undefined)
-    ?? (typeof req.query.name === 'string' ? req.query.name : undefined);
-  const destinationName = rawName?.trim();
 
-  if (!destinationName) {
-    res.status(400).json({ error: 'Query parameter "destination" (or "name") is required.' });
-    return;
-  }
-
+/**
+ * Get OAuth token using client_credentials flow
+ */
+async function getOAuthToken(clientId: string, clientSecret: string, tokenUrl: string): Promise<string> {
+  const fetch = (await import('node-fetch')).default;
+  const log = cds.log('oauth-token');
+  
   try {
-    log.info('Probing destination', { destination: destinationName, user: user.id });
-    const { summary, metadata } = await probeDestinationConnection(destinationName);
-
-    res.status(200).json({
-      destination: destinationName,
-      connectivity: metadata.connectivityMode,
-      proxyType: metadata.proxyType,
-      authentication: metadata.authentication,
-      sapClient: metadata.sapClient ?? null,
-      cloudConnectorLocationId: metadata.cloudConnectorLocationId ?? null,
-      tokenExpiresAt: metadata.tokenExpiresAt ?? null,
-      probe: summary,
-      timestamp: new Date().toISOString()
+    log.debug('Requesting OAuth token', { clientId: clientId.substring(0, 20) + '...', tokenUrl });
+    
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`
+      },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials'
+      }).toString()
     });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      log.error('OAuth token request failed', { status: response.status, error: errorText });
+      throw new Error(`OAuth token request failed: ${response.status} ${errorText}`);
+    }
+    
+    const data = await response.json() as { access_token: string };
+    log.debug('OAuth token obtained successfully');
+    return data.access_token;
   } catch (error: any) {
-    const message = error instanceof Error ? error.message : String(error);
-    log.error('Destination probe failed', { destination: destinationName, error: message });
-    res.status(502).json({
-      destination: destinationName,
-      error: message
-    });
+    log.error('Failed to get OAuth token', { error: error.message });
+    throw error;
   }
 }
 
 /**
- * Bootstrap: Register custom streaming endpoints
+ * Register middleware for /mcp routes
+ * All authentication/authorization is handled via CAP AuthService.CheckAuth
  */
 cds.on('bootstrap', (app: Application) => {
   const log = cds.log('mcp-proxy/bootstrap');
-  log.info('Registering custom streaming endpoints');
+  log.info('Registering /mcp endpoints - authentication via CAP AuthService');
 
-  app.get('/mcp/stream/sse', authShim, handleSSE);
-  app.post('/mcp/stream/http', authShim, handleStreamHTTP);
-  app.get('/mcp/destination/probe', authShim, handleDestinationProbe);
+  /**
+   * Convert Basic auth to Bearer token in production mode
+   */
+  async function convertBasicToBearer(req: Request): Promise<void> {
+    const convertLog = cds.log('auth-convert');
+    const authHeader = req.headers.authorization;
+    
+    convertLog.info('🔄 convertBasicToBearer called', { 
+      hasAuthHeader: !!authHeader,
+      authType: authHeader?.substring(0, 10) || 'none'
+    });
+    
+    if (!authHeader || !authHeader.startsWith('Basic ')) {
+      convertLog.info('⏭️ Not Basic auth, skipping conversion');
+      return; // Not Basic auth, skip
+    }
+    
+    const isDevelopment = cds.env.profiles?.includes('development') || 
+                         process.env.CDS_ENV === 'development' ||
+                         cds.env.requires?.auth?.['[development]']?.kind === 'mocked';
+    
+    if (isDevelopment) {
+      convertLog.info('⏭️ Development mode, keeping Basic auth');
+      return; // Keep Basic auth in development
+    }
+    
+    // Production mode - convert Basic to Bearer
+    convertLog.info('🔄 Converting Basic auth to Bearer token in production');
+    
+    try {
+      // Get XSUAA credentials from VCAP_SERVICES
+      const vcapServices = process.env.VCAP_SERVICES 
+        ? JSON.parse(process.env.VCAP_SERVICES)
+        : (loadEnv()?.VCAP_SERVICES || {});
+      
+      const xsuaa = vcapServices?.xsuaa?.[0]?.credentials;
+      if (!xsuaa) {
+        convertLog.warn('⚠️ XSUAA credentials not found, cannot convert Basic to Bearer');
+        return;
+      }
+      
+      // Build token URL
+      const tokenUrl = `${xsuaa.url}/oauth/token`;
+      convertLog.info('📡 Requesting OAuth token', { tokenUrl });
+      
+      // Get token using client_credentials flow
+      const token = await getOAuthToken(xsuaa.clientid, xsuaa.clientsecret, tokenUrl);
+      
+      // Replace Basic auth with Bearer token
+      req.headers.authorization = `Bearer ${token}`;
+      convertLog.info('✅ Successfully converted Basic auth to Bearer token', { 
+        tokenLength: token.length 
+      });
+    } catch (error: any) {
+      convertLog.error('❌ Failed to convert Basic auth to Bearer', { 
+        error: error.message,
+        stack: error.stack?.substring(0, 300)
+      });
+      // Don't throw - let auth check fail later
+    }
+  }
 
-  log.info('Streaming endpoints registered', {
+  /**
+   * Check authentication via CAP AuthService.CheckAuth
+   * Express routes don't go through CAP middleware, so we need to call CheckAuth
+   * via HTTP to the CAP service endpoint (which will go through CAP middleware)
+   */
+  async function requireAuth(req: Request, res: Response): Promise<boolean> {
+    const debugLog = cds.log('auth-check');
+    try {
+      debugLog.info('🔍 Checking auth via CAP CheckAuth (HTTP call)', { 
+        hasAuthHeader: !!req.headers.authorization,
+        hasUser: !!(req as any).user,
+        userId: (req as any).user?.id
+      });
+      
+      // Build URL to call CheckAuth via CAP service
+      // For internal requests, always use localhost to avoid routing issues and timeouts
+      // On Cloud Foundry: use PORT environment variable (usually 8080)
+      // On localhost: use CAP configured port (usually 4004 for development)
+      const isCloud = !!process.env.VCAP_APPLICATION;
+      const port = isCloud 
+        ? (process.env.PORT || '8080')  // On cloud, PORT is always set by Cloud Foundry
+        : (cds.env.requires?.server?.port || cds.env.server?.port || 4004);  // On local, use CAP port
+      const protocol = 'http'; // Always use http for internal requests
+      const baseUrl = `http://localhost:${port}`;
+      const url = `${baseUrl}/odata/v4/auth/CheckAuth()`;
+      
+      debugLog.info('📡 Calling CheckAuth via HTTP (internal)', { 
+        url,
+        baseUrl,
+        port,
+        isCloud,
+        portSource: isCloud ? 'process.env.PORT' : 'cds.env.server.port'
+      });
+      
+      // Make HTTP request to CAP service endpoint
+      // This will go through CAP middleware and authentication
+      const fetch = (await import('node-fetch')).default;
+      
+      // Copy headers, but exclude ones that shouldn't be forwarded
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.headers)) {
+        const lowerKey = key.toLowerCase();
+        if (!['host', 'content-length', 'connection'].includes(lowerKey) && value !== undefined) {
+          headers[key] = Array.isArray(value) ? value.join(', ') : value;
+        }
+      }
+      
+      // Set a reasonable timeout to avoid hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers,
+          signal: controller.signal as any
+        });
+        
+        clearTimeout(timeoutId);
+        
+        debugLog.info('📥 CheckAuth response received', { 
+          status: response.status, 
+          statusText: response.statusText
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'Unknown error');
+          debugLog.error('❌ CheckAuth failed', {
+            status: response.status,
+            statusText: response.statusText,
+            errorText: errorText.substring(0, 200)
+          });
+          
+          if (!res.headersSent) {
+            res.status(response.status).json({ 
+              error: response.status === 401 ? 'Unauthorized' : 'Authentication failed',
+              message: errorText || response.statusText
+            });
+          }
+          return false;
+        }
+        
+        const result = await response.json() as { authenticated?: boolean; id?: string; roles?: string[] };
+        debugLog.info('✅ CheckAuth succeeded', {
+          authenticated: result?.authenticated,
+          userId: result?.id,
+          roles: result?.roles
+        });
+        
+        // Set req.user from CheckAuth result for subsequent handlers
+        if (result && !(req as any).user) {
+          (req as any).user = {
+            id: result.id,
+            roles: result.roles || [],
+            _is_anonymous: false
+          };
+        }
+        
+        return true;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (e: any) {
+      debugLog.error('❌ requireAuth error', {
+        error: e.message,
+        statusCode: e?.statusCode,
+        code: e?.code,
+        name: e?.name,
+        stack: e?.stack?.substring(0, 500)
+      });
+      
+      // Handle timeout
+      if (e.name === 'AbortError' || e.code === 'ETIMEDOUT') {
+        if (!res.headersSent) {
+          res.status(504).json({ 
+            error: 'Gateway Timeout', 
+            message: 'Authentication check timed out' 
+          });
+        }
+        return false;
+      }
+      
+      const status = e?.statusCode || (e?.code === 401 ? 401 : 500);
+      if (!res.headersSent) {
+        res.status(status).json({ 
+          error: status === 401 ? 'Unauthorized' : 'Internal Server Error', 
+          message: e?.message || 'Authorization failed' 
+        });
+      }
+      return false;
+    }
+  }
+
+  const ensureAuth = (handler: (req: Request, res: Response) => Promise<any>) => {
+    return async (req: Request, res: Response, next: NextFunction) => {
+      const authLog = cds.log('mcp-proxy/auth-middleware');
+      authLog.info('🔐 ensureAuth middleware called', { 
+        path: req.path, 
+        method: req.method,
+        hasAuthHeader: !!req.headers.authorization 
+      });
+      
+      try {
+        // Convert Basic auth to Bearer token in production if needed
+        authLog.info('🔄 Calling convertBasicToBearer...');
+        await convertBasicToBearer(req);
+        authLog.info('✅ convertBasicToBearer completed', { 
+          hasAuthHeader: !!req.headers.authorization,
+          authType: req.headers.authorization?.substring(0, 10) || 'none'
+        });
+        
+        // Check authentication via CAP AuthService.CheckAuth
+        authLog.info('🔄 Calling requireAuth...');
+        const ok = await requireAuth(req, res);
+        if (!ok) {
+          authLog.warn('❌ requireAuth failed', { path: req.path });
+          return;
+        }
+        
+        authLog.info('✅ requireAuth succeeded, calling handler', { path: req.path });
+        
+        try {
+          await handler(req, res);
+          authLog.info('✅ Handler completed', { path: req.path });
+        } catch (err: any) {
+          authLog.error('❌ Handler error', { 
+            path: req.path, 
+            error: err.message,
+            stack: err.stack?.substring(0, 300)
+          });
+          next(err);
+        }
+      } catch (err: any) {
+        authLog.error('❌ ensureAuth middleware error', {
+          path: req.path,
+          error: err.message,
+          stack: err.stack?.substring(0, 300)
+        });
+        next(err);
+      }
+    };
+  };
+  
+  // Error handler for /mcp routes
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    // Only handle errors for /mcp routes
+    if (req.path?.startsWith('/mcp')) {
+      const errorLog = cds.log('mcp-proxy/error-handler');
+      errorLog.error('Error in /mcp route', { error: err.message, path: req.path, name: err.name });
+    }
+    
+    // For non-/mcp routes, pass to next error handler
+    next(err);
+  });
+
+  // Register endpoints - auth is already handled by middleware above
+  // NOTE: /mcp/destination/probe is now a CAP function: GET /mcp/ProbeDestination?destination=NAME
+  
+  // SSE endpoint: GET (standard) or POST (some clients may use POST)
+  app.get('/mcp/stream/sse', ensureAuth(handleSSE));
+  app.post('/mcp/stream/sse', ensureAuth((req, res) => {
+    // If POST to SSE endpoint, redirect to StreamableHTTP (correct endpoint)
+    const log = cds.log('mcp-proxy/bootstrap');
+    log.warn('POST request to SSE endpoint, redirecting to StreamableHTTP', {
+      path: req.path,
+      originalPath: req.url
+    });
+    // Rewrite to correct endpoint
+    req.url = '/mcp/stream/http';
+    return handleStreamHTTP(req, res);
+  }));
+  
+  // StreamableHTTP endpoint: POST only (bidirectional NDJSON streaming)
+  app.post('/mcp/stream/http', ensureAuth(handleStreamHTTP));
+
+  log.info('Custom Express endpoints registered', {
     sse: 'GET /mcp/stream/sse',
     streamHttp: 'POST /mcp/stream/http',
-    destinationProbe: 'GET /mcp/destination/probe'
+    destinationProbe: 'GET /mcp/ProbeDestination?destination=NAME (CAP function)'
   });
 });

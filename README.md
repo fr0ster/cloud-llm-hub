@@ -30,7 +30,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Destination Diagnostics
 
-- `GET /mcp/destination/probe?destination=<name>` resolves a Destination service entry, establishes connectivity (including Connectivity proxy when required), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints.
+- `GET /mcp/ProbeDestination?destination=<name>` (CAP function) resolves a Destination service entry, establishes connectivity (including Connectivity proxy when required), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints.
 
 ## Authentication & Connectivity
 

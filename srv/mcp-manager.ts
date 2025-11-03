@@ -80,7 +80,13 @@ async function extractSapContext(req: Request): Promise<SapContext> {
   const sapClientHeader = (req.headers['x-sap-client'] as string | undefined)?.trim();
 
   if (destinationName) {
-    const resolved = await resolveDestinationSapConfig(destinationName);
+    // Extract JWT from Authorization header if available (for principal propagation)
+    const authHeader = req.headers.authorization;
+    const jwtToken = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') 
+      ? authHeader.substring(7) 
+      : undefined;
+    
+    const resolved = await resolveDestinationSapConfig(destinationName, jwtToken);
     const sapConfig: SapConfig = { ...resolved.sapConfig };
 
     if (sapClientHeader) {
@@ -331,7 +337,24 @@ export async function getMCPServer(req: Request): Promise<{
       }
     };
   } catch (err: any) {
-    log.error('Failed to create MCP server instance', err);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    const errorDetails = {
+      error: errorMessage,
+      name: err?.name,
+      code: err?.code,
+      stack: errorStack,
+      destination: (req.headers[DESTINATION_HEADER] as string) || undefined
+    };
+    
+    log.error('Failed to create MCP server instance', errorDetails);
+    
+    // Ensure error has proper properties for downstream handling
+    if (err instanceof Error) {
+      (err as any).statusCode = (err as any).statusCode || 502;
+      (err as any).code = (err as any).code || err?.name || 'MCP_SERVER_CREATION_FAILED';
+    }
+    
     throw err;
   }
 }

@@ -20,6 +20,10 @@ modules:
     parameters:
       instances: 1
       buildpack: nodejs_buildpack
+      # Uncomment for hybrid debugging (development/test only!)
+      # env:
+      #   NODE_OPTIONS: "--inspect=0.0.0.0:9229"
+      #   DEBUG: "*"
     build-parameters:
       builder: npm-ci
     provides:
