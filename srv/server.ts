@@ -359,106 +359,72 @@ cds.on('bootstrap', (app: Application) => {
 
   /**
    * Check authentication via CAP AuthService.CheckAuth
-   * Express routes don't go through CAP middleware, so we need to call CheckAuth
-   * via HTTP to the CAP service endpoint (which will go through CAP middleware)
+   * Uses in-process call via cds.connect.to() for proper user propagation
+   * This is faster, network-free, and correctly propagates user/tenant/locale
    */
   async function requireAuth(req: Request, res: Response): Promise<boolean> {
     const debugLog = cds.log('auth-check');
     try {
-      debugLog.info('🔍 Checking auth via CAP CheckAuth (HTTP call)', { 
+      debugLog.info('🔍 Checking auth via CAP CheckAuth (in-process)', { 
         hasAuthHeader: !!req.headers.authorization,
         hasUser: !!(req as any).user,
         userId: (req as any).user?.id
       });
       
-      // Build URL to call CheckAuth via CAP service
-      // For internal requests, always use localhost to avoid routing issues and timeouts
-      // On Cloud Foundry: use PORT environment variable (usually 8080)
-      // On localhost: use CAP configured port (usually 4004 for development)
-      const isCloud = !!process.env.VCAP_APPLICATION;
-      const port = isCloud 
-        ? (process.env.PORT || '8080')  // On cloud, PORT is always set by Cloud Foundry
-        : (cds.env.requires?.server?.port || cds.env.server?.port || 4004);  // On local, use CAP port
-      const protocol = 'http'; // Always use http for internal requests
-      const baseUrl = `http://localhost:${port}`;
-      const url = `${baseUrl}/odata/v4/auth/CheckAuth()`;
-      
-      debugLog.info('📡 Calling CheckAuth via HTTP (internal)', { 
-        url,
-        baseUrl,
-        port,
-        isCloud,
-        portSource: isCloud ? 'process.env.PORT' : 'cds.env.server.port'
-      });
-      
-      // Make HTTP request to CAP service endpoint
-      // This will go through CAP middleware and authentication
-      const fetch = (await import('node-fetch')).default;
-      
-      // Copy headers, but exclude ones that shouldn't be forwarded
-      const headers: Record<string, string> = {};
-      for (const [key, value] of Object.entries(req.headers)) {
-        const lowerKey = key.toLowerCase();
-        if (!['host', 'content-length', 'connection'].includes(lowerKey) && value !== undefined) {
-          headers[key] = Array.isArray(value) ? value.join(', ') : value;
-        }
+      // Get AuthService (internal CAP service, same process)
+      // cds.connect.to() works for both internal and external services
+      const srv = await cds.connect.to('AuthService');
+      if (!srv) {
+        debugLog.error('❌ AuthService not found');
+        throw new Error('AuthService not available');
       }
       
-      // Set a reasonable timeout to avoid hanging
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      debugLog.info('📡 Calling CheckAuth via in-process (srv.run)', { 
+        hasAuthHeader: !!req.headers.authorization
+      });
       
+      // Call CheckAuth function using modern CAP API (srv.run with req)
+      // This automatically picks up the request context (user/tenant/locale)
+      // CAP will authenticate based on req.headers.authorization and set req.user
+      let result;
       try {
-        const response = await fetch(url, {
-          method: 'GET',
-          headers,
-          signal: controller.signal as any
-        });
-        
-        clearTimeout(timeoutId);
-        
-        debugLog.info('📥 CheckAuth response received', { 
-          status: response.status, 
-          statusText: response.statusText
-        });
-        
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => 'Unknown error');
-          debugLog.error('❌ CheckAuth failed', {
-            status: response.status,
-            statusText: response.statusText,
-            errorText: errorText.substring(0, 200)
+        // Call CheckAuth function through service with request context
+        // The request object is passed to propagate user/tenant/locale
+        result = await srv.run('CheckAuth', req);
+      } catch (authError: any) {
+        // Handle CAP rejections (401, 403, etc.)
+        if (authError.code === 401 || authError.statusCode === 401) {
+          debugLog.warn('❌ CheckAuth: Unauthorized', {
+            code: authError.code || authError.statusCode,
+            message: authError.message
           });
-          
           if (!res.headersSent) {
-            res.status(response.status).json({ 
-              error: response.status === 401 ? 'Unauthorized' : 'Authentication failed',
-              message: errorText || response.statusText
+            res.status(401).json({ 
+              error: 'Unauthorized', 
+              message: authError.message || 'Authentication failed' 
             });
           }
           return false;
         }
-        
-        const result = await response.json() as { authenticated?: boolean; id?: string; roles?: string[] };
-        debugLog.info('✅ CheckAuth succeeded', {
-          authenticated: result?.authenticated,
-          userId: result?.id,
-          roles: result?.roles
-        });
-        
-        // Set req.user from CheckAuth result for subsequent handlers
-        if (result && !(req as any).user) {
-          (req as any).user = {
-            id: result.id,
-            roles: result.roles || [],
-            _is_anonymous: false
-          };
-        }
-        
-        return true;
-      } finally {
-        clearTimeout(timeoutId);
+        throw authError;
       }
+      
+      debugLog.info('✅ CheckAuth succeeded', {
+        authenticated: result?.authenticated,
+        userId: result?.id,
+        roles: result?.roles
+      });
+      
+      // Set req.user from CheckAuth result for subsequent handlers
+      if (result && !(req as any).user) {
+        (req as any).user = {
+          id: result.id,
+          roles: result.roles || [],
+          _is_anonymous: false
+        };
+      }
+      
+      return true;
     } catch (e: any) {
       debugLog.error('❌ requireAuth error', {
         error: e.message,
@@ -467,17 +433,6 @@ cds.on('bootstrap', (app: Application) => {
         name: e?.name,
         stack: e?.stack?.substring(0, 500)
       });
-      
-      // Handle timeout
-      if (e.name === 'AbortError' || e.code === 'ETIMEDOUT') {
-        if (!res.headersSent) {
-          res.status(504).json({ 
-            error: 'Gateway Timeout', 
-            message: 'Authentication check timed out' 
-          });
-        }
-        return false;
-      }
       
       const status = e?.statusCode || (e?.code === 401 ? 401 : 500);
       if (!res.headersSent) {
