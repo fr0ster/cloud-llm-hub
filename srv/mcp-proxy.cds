@@ -1,7 +1,7 @@
-@requires: 'MCP_Connector'
 @path: 'mcp'
 service McpProxyService {
   function Health() returns HealthStatus;
+  function ProbeDestination(destination: String) returns DestinationProbeResult;
   action InvokeTool(request: ProxyInvocation) returns ProxyResult;
 }
 
@@ -21,4 +21,22 @@ type ProxyResult {
 type HealthStatus {
   status     : String;
   timestamp  : DateTime;
+}
+
+type DestinationProbeResult {
+  destination              : String;
+  connectivity             : String;
+  proxyType                : String;
+  authentication           : String;
+  sapClient                : String;
+  cloudConnectorLocationId : String;
+  tokenExpiresAt           : Integer;
+  probe                    : DestinationProbe;
+  timestamp                : DateTime;
+}
+
+type DestinationProbe {
+  status      : Integer;
+  statusText  : String;
+  contentType : String;
 }

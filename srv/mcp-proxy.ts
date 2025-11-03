@@ -1,5 +1,5 @@
 import cds, { Request, Service } from '@sap/cds';
-import type { Application, Request as ExpressRequest, Response, NextFunction } from 'express';
+import { probeDestinationConnection } from './server';
 
 interface ProxyInvocation {
   toolId: string;
@@ -10,295 +10,92 @@ interface ProxyInvocation {
 const DEFAULT_MODE: 'sse' | 'stream-http' = 'stream-http';
 
 /**
- * AuthShim - Universal middleware for Basic (dev) and Bearer (prod) authorization
- * Maps XSUAA scopes to CAP roles
+ * NOTE: This file contains CAP service handlers for OData endpoints.
+ * Custom Express routes (non-CAP endpoints) with embedded MCP server
+ * are implemented in server.ts
  */
-async function authShim(req: ExpressRequest, res: Response, next: NextFunction): Promise<void> {
-  const log = cds.log('mcp-proxy/authShim');
-  const hdr = req.headers.authorization || '';
-
-  try {
-    // Basic auth for development
-    if (hdr.startsWith('Basic ')) {
-      const decoded = Buffer.from(hdr.slice(6), 'base64').toString('utf8');
-      const [user] = decoded.split(':');
-      const username = user || 'anonymous';
-      
-      log.debug('Basic auth detected', { username });
-      
-      // Map mock users to roles (matching package.json dev profile)
-      let roles: string[] = ['MCP_Connector'];
-      if (username === 'alice') {
-        roles = ['MCP_Connector', 'MCP_Admin'];
-      }
-      
-      (req as any).user = new cds.User({ 
-        id: username, 
-        roles,
-        attr: {} 
-      });
-      return next();
-    }
-
-    // Bearer JWT for production (XSUAA)
-    if (hdr.startsWith('Bearer ')) {
-      const token = hdr.slice(7);
-      
-      // Try to get XSUAA binding
-      let xsuaa: any;
-      try {
-        const xsenv = require('@sap/xsenv');
-        xsuaa = xsenv.getServices({ uaa: { tag: 'xsuaa' } }).uaa;
-      } catch (err) {
-        log.warn('No XSUAA binding found, falling back to dev mode');
-        throw new Error('Missing XSUAA binding in production mode');
-      }
-
-      // Validate JWT token
-      const xssec = require('@sap/xssec');
-      const securityContext: any = await new Promise((resolve, reject) => {
-        xssec.createSecurityContext(token, xsuaa, (err: Error, sc: any) => {
-          if (err) reject(err);
-          else resolve(sc);
-        });
-      });
-
-      // Extract scopes and map to CAP roles
-      const scopes = new Set(securityContext.getScopes() || []);
-      const xsappname = xsuaa.xsappname;
-      const roles: string[] = [];
-
-      if (scopes.has(`${xsappname}.MCP_Connect`)) roles.push('MCP_Connector');
-      if (scopes.has(`${xsappname}.MCP_Read`)) roles.push('MCP_Connector');
-      if (scopes.has(`${xsappname}.MCP_Admin`)) roles.push('MCP_Admin');
-
-      log.debug('Bearer auth validated', { 
-        user: securityContext.getLogonName(), 
-        roles,
-        scopeCount: scopes.size 
-      });
-
-      (req as any).user = new cds.User({ 
-        id: securityContext.getLogonName(), 
-        roles,
-        attr: {}
-      });
-      
-      return next();
-    }
-
-    // No valid authorization header
-    log.warn('Unauthorized request - missing or invalid Authorization header');
-    res.status(401).send('Unauthorized: Missing or invalid Authorization header');
-  } catch (err: any) {
-    log.error('Authorization failed', err);
-    res.status(401).send(`Unauthorized: ${err.message}`);
-  }
-}
-
-/**
- * SSE endpoint: GET /mcp/stream/sse
- * Server-Sent Events stream with heartbeat and reconnection hints
- */
-async function handleSSE(req: ExpressRequest, res: Response): Promise<Response | void> {
-  const log = cds.log('mcp-proxy/sse');
-  const user = (req as any).user;
-
-  // Check authorization
-  if (!user || !user.is('MCP_Connector')) {
-    log.warn('Forbidden: User lacks MCP_Connector role', { user: user?.id });
-    res.sendStatus(403);
-    return;
-  }
-
-  log.info('SSE connection established', { user: user.id });
-
-  // Set SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
-  
-  // Send reconnection hint
-  res.write('retry: 15000\n\n');
-  
-  // Heartbeat every 15 seconds
-  const heartbeatInterval = setInterval(() => {
-    res.write(': ping\n\n');
-  }, 15000);
-
-  // Get target URL from config
-  const targetUrl = (cds.env.requires as any)?.mcpTarget?.credentials?.url || 'http://127.0.0.1:7070';
-  
-  try {
-    log.debug('Connecting to upstream SSE', { targetUrl });
-    
-    // Forward to upstream MCP service
-    const upstreamUrl = `${targetUrl}/sse`;
-    const response = await fetch(upstreamUrl, {
-      headers: {
-        'Accept': 'text/event-stream'
-      },
-      signal: AbortSignal.timeout(120000) // 2 minute timeout
-    });
-
-    if (!response.ok) {
-      throw new Error(`Upstream returned ${response.status}: ${response.statusText}`);
-    }
-
-    if (!response.body) {
-      throw new Error('Upstream response has no body');
-    }
-
-    // Pipe upstream events to client
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        log.info('Upstream closed SSE connection', { user: user.id });
-        break;
-      }
-      
-      const chunk = decoder.decode(value, { stream: true });
-      res.write(chunk);
-    }
-  } catch (err: any) {
-    log.error('SSE stream error', { error: err.message, user: user.id });
-    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
-  } finally {
-    clearInterval(heartbeatInterval);
-    res.end();
-    log.info('SSE connection closed', { user: user.id });
-  }
-
-  // Handle client disconnect
-  req.on('close', () => {
-    clearInterval(heartbeatInterval);
-    log.info('Client disconnected from SSE', { user: user.id });
-  });
-}
-
-/**
- * Stream-HTTP endpoint: POST /mcp/stream/http
- * NDJSON streaming for bidirectional communication
- */
-async function handleStreamHTTP(req: ExpressRequest, res: Response): Promise<Response | void> {
-  const log = cds.log('mcp-proxy/stream-http');
-  const user = (req as any).user;
-
-  // Check authorization
-  if (!user || !user.is('MCP_Connector')) {
-    log.warn('Forbidden: User lacks MCP_Connector role', { user: user?.id });
-    res.sendStatus(403);
-    return;
-  }
-
-  log.info('Stream-HTTP connection established', { user: user.id });
-
-  // Get target URL from config
-  const targetUrl = (cds.env.requires as any)?.mcpTarget?.credentials?.url || 'http://127.0.0.1:7070';
-  
-  try {
-    log.debug('Forwarding to upstream stream', { targetUrl });
-    
-    // Forward POST to upstream
-    const upstreamUrl = `${targetUrl}/stream`;
-    const response = await fetch(upstreamUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': req.headers['content-type'] || 'application/x-ndjson',
-      },
-      // @ts-ignore - Express Request is stream-compatible
-      body: req as any,
-      signal: AbortSignal.timeout(120000), // 2 minute timeout
-      // @ts-ignore - Node.js fetch supports duplex
-      duplex: 'half'
-    });
-
-    if (!response.ok) {
-      throw new Error(`Upstream returned ${response.status}: ${response.statusText}`);
-    }
-
-    if (!response.body) {
-      throw new Error('Upstream response has no body');
-    }
-
-    // Set response headers
-    const contentType = response.headers.get('Content-Type') || 'application/x-ndjson';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
-
-    // Pipe upstream response to client
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        log.info('Upstream closed stream-http connection', { user: user.id });
-        break;
-      }
-      
-      const chunk = decoder.decode(value, { stream: true });
-      res.write(chunk);
-    }
-  } catch (err: any) {
-    log.error('Stream-HTTP error', { error: err.message, user: user.id });
-    res.status(500).json({ error: err.message });
-  } finally {
-    res.end();
-    log.info('Stream-HTTP connection closed', { user: user.id });
-  }
-
-  // Handle client disconnect
-  req.on('close', () => {
-    log.info('Client disconnected from stream-http', { user: user.id });
-  });
-}
-
-/**
- * Bootstrap custom Express routes for streaming endpoints.
- * This runs BEFORE service handlers are registered.
- */
-cds.on('bootstrap', (app: Application) => {
-  const log = cds.log('mcp-proxy/bootstrap');
-  log.info('Registering custom streaming endpoints');
-
-  // Note: We use authShim instead of cds.auth() because:
-  // 1. cds.auth() doesn't work well with streaming responses
-  // 2. We need to support both Basic (dev) and Bearer (prod) in one middleware
-  // 3. Custom role mapping from XSUAA scopes to CAP roles
-  
-  // SSE endpoint with authShim
-  app.get('/mcp/stream/sse', authShim, handleSSE);
-  
-  // Stream-HTTP endpoint with authShim
-  app.post('/mcp/stream/http', authShim, handleStreamHTTP);
-
-  log.info('Streaming endpoints registered', {
-    sse: 'GET /mcp/stream/sse',
-    streamHttp: 'POST /mcp/stream/http'
-  });
-});
 
 /**
  * CAP service handler for McpProxyService.
- * CAP enforces the `@requires: 'proxyAccess'` annotation defined in the CDS model.
+ * CAP enforces the `@requires: 'MCP_Connector'` annotation defined in the CDS model.
  */
 export default async function registerMcpProxyHandlers(srv: Service): Promise<void> {
   const log = cds.log('mcp-proxy');
+  log.info('🔥🔥🔥 REGISTERING McpProxyService handlers', { 
+    serviceName: srv.name,
+    hasService: !!srv
+  });
 
   // Health check endpoint
-  srv.on('Health', async () => {
+  srv.on('Health', async (req: Request) => {
     const now = new Date().toISOString();
-    log.debug('Health check responded', { now });
+    log.info('🔥 Health check handler CALLED', { 
+      now, 
+      hasUser: !!req.user, 
+      userId: (req.user as any)?.id,
+      userRoles: (req.user as any)?.roles
+    });
 
     return {
       status: 'UP',
       timestamp: now,
     };
+  });
+
+  // Probe destination endpoint (CAP function)
+  srv.on('ProbeDestination', async (req: Request) => {
+    // CAP functions receive parameters via req.data
+    const destination = (req.data as any)?.destination 
+      || (req.query as any)?.destination 
+      || (req.query as any)?.name;
+    
+    if (!destination || typeof destination !== 'string') {
+      const error = new Error('Query parameter "destination" (or "name") is required.');
+      (error as any).statusCode = 400;
+      throw error;
+    }
+
+    const destinationName = destination.trim();
+    const user = req.user;
+    
+    log.info('Probing destination via CAP service', { 
+      destination: destinationName, 
+      user: user?.id 
+    });
+
+    try {
+      log.debug('Starting destination resolution', { destination: destinationName });
+      const { summary, metadata } = await probeDestinationConnection(destinationName);
+      log.debug('Destination probe successful', { 
+        destination: destinationName, 
+        status: summary.status 
+      });
+
+      return {
+        destination: destinationName,
+        connectivity: metadata.connectivityMode,
+        proxyType: metadata.proxyType,
+        authentication: metadata.authentication || '',
+        sapClient: metadata.sapClient || '',
+        cloudConnectorLocationId: metadata.cloudConnectorLocationId || '',
+        tokenExpiresAt: metadata.tokenExpiresAt || 0,
+        probe: {
+          status: summary.status ?? 0,
+          statusText: summary.statusText || '',
+          contentType: summary.contentType || ''
+        },
+        timestamp: new Date().toISOString()
+      };
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error('Destination probe failed', { 
+        destination: destinationName, 
+        error: message,
+        errorName: error?.name,
+        errorCode: error?.code
+      });
+      throw error;
+    }
   });
 
   // Legacy action for backward compatibility

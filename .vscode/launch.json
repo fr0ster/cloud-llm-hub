@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "cds serve",
+      "name": "cds serve (development)",
       "request": "launch",
       "type": "node",
       "cwd": "${workspaceFolder}",
@@ -10,7 +10,88 @@
       "args": [
         "serve",
         "--with-mocks",
-        "--in-memory?"
+        "--in-memory?",
+        "--profile",
+        "development"
+      ],
+      "env": {
+        "CDS_ENV": "development"
+      },
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "cds serve (with debug, development)",
+      "request": "launch",
+      "type": "node",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "cds",
+      "args": [
+        "serve",
+        "--with-mocks",
+        "--in-memory?",
+        "--profile",
+        "development"
+      ],
+      "env": {
+        "CDS_ENV": "development",
+        "NODE_OPTIONS": "--inspect=9229"
+      },
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "cds watch (Hybrid - Local + Cloud Services)",
+      "request": "launch",
+      "type": "node",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "cds",
+      "args": [
+        "watch",
+        "--profile",
+        "production"
+      ],
+      "env": {
+        "CDS_ENV": "production",
+        "NODE_OPTIONS": "--inspect=9229"
+      },
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Attach to Cloud Foundry (Remote)",
+      "type": "node",
+      "request": "attach",
+      "address": "localhost",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/vcap/app",
+      "restart": false,
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/gen/**/*.js",
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Attach to Cloud Foundry (via SSH tunnel)",
+      "type": "node",
+      "request": "attach",
+      "address": "127.0.0.1",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/home/vcap/app",
+      "restart": false,
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/gen/**/*.js",
+        "${workspaceFolder}/dist/**/*.js"
       ],
       "skipFiles": [
         "<node_internals>/**"
