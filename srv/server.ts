@@ -95,13 +95,17 @@ async function handleSSE(req: Request, res: Response): Promise<any> {
  */
 async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   const log = cds.log('mcp-proxy/stream-http');
-  log.info('🚀 handleStreamHTTP called', { 
-    path: req.path,
-    method: req.method,
-    hasAuthHeader: !!req.headers.authorization,
-    hasDestination: !!req.headers['x-sap-destination'],
-    destination: req.headers['x-sap-destination']
-  });
+  
+  // Detect execution environment for diagnostics (must be at the start)
+  const isDebugMode = process.env.NODE_OPTIONS?.includes('--inspect') || 
+                      process.env.NODE_OPTIONS?.includes('--inspect-brk');
+  const isBTP = !!process.env.VCAP_APPLICATION;
+  const environment = isBTP ? (isDebugMode ? 'hybrid-debug' : 'btp') : (isDebugMode ? 'local-debug' : 'local');
+  
+  // Minimal logging - only environment for comparison (no verbose details)
+  if (isDebugMode || isBTP) {
+    log.info('🔍 Environment', { environment });
+  }
   
   const user = (req as any).user;
   log.debug('User context', { 
@@ -112,14 +116,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   });
 
   try {
-    log.info('📥 Getting MCP server instance...');
     // Get embedded MCP server instance (created per-request with SAP config from headers)
     const mcpServer = await getMCPServer(req);
-    log.info('✅ MCP server obtained', { 
-      hasServer: !!mcpServer?.server,
-      hasWithTransport: !!mcpServer?.withTransport,
-      serverType: mcpServer?.server?.constructor?.name
-    });
     
     if (!mcpServer || !mcpServer.withTransport) {
       log.error('❌ MCP transport factory not available', {
@@ -129,22 +127,94 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       return res.status(503).send('Service Unavailable: MCP transport not ready');
     }
 
-    log.info('🔄 Calling transport.handleRequest...', {
-      hasSessionId: !!req.headers['mcp-session-id'],
-      method: req.method,
-      path: req.path
+    
+    // Parse timeout from header (in milliseconds)
+    // Supports: X-MCP-Timeout, X-Request-Timeout headers
+    let requestTimeoutMs: number | undefined;
+    const timeoutHeader = req.headers['x-mcp-timeout'] || req.headers['x-request-timeout'];
+    if (timeoutHeader) {
+      const parsedTimeout = parseInt(String(timeoutHeader), 10);
+      if (!isNaN(parsedTimeout) && parsedTimeout > 0) {
+        // Validate timeout range: 1 second to 5 minutes
+        requestTimeoutMs = Math.max(1000, Math.min(300000, parsedTimeout));
+        log.debug('Using timeout from header', { 
+          header: timeoutHeader, 
+          parsed: parsedTimeout,
+          final: requestTimeoutMs 
+        });
+      } else {
+        log.warn('Invalid timeout header value', { header: timeoutHeader });
+      }
+    }
+    
+    // Set up response completion tracking BEFORE calling transport.handleRequest
+    // This ensures we don't miss events if response closes during request handling
+    type CompletionReason = 'finish' | 'close' | 'timeout' | 'already-ended';
+    let responseCompleteResolve: ((reason: CompletionReason) => void) | null = null;
+    let responseResolved = false;
+    let responseTimeout: NodeJS.Timeout | null = null;
+    
+    // Determine timeout: use header value if provided, otherwise use defaults
+    // Default: 60s in debug mode (matches Cline minimum), 5s in production
+    const timeoutMs = requestTimeoutMs ?? (isDebugMode ? 60000 : 5000);
+    
+    const responseComplete = new Promise<CompletionReason>((resolve) => {
+      responseCompleteResolve = resolve;
+      
+      // Check if response is already finished/closed BEFORE we start
+      if (res.writableEnded || res.destroyed) {
+        responseResolved = true;
+        resolve('already-ended');
+        return;
+      }
+      
+      const onFinish = () => {
+        if (!responseResolved) {
+          responseResolved = true;
+          // Minimal logging - only log completion method for comparison
+          if (isDebugMode || isBTP) {
+            log.info('✅ Response finished event', { environment });
+          }
+          if (responseTimeout) clearTimeout(responseTimeout);
+          resolve('finish');
+        }
+      };
+      
+      const onClose = () => {
+        if (!responseResolved) {
+          responseResolved = true;
+          // Minimal logging - only log completion method for comparison
+          if (isDebugMode || isBTP) {
+            log.info('✅ Response closed event', { environment });
+          }
+          if (responseTimeout) clearTimeout(responseTimeout);
+          resolve('close');
+        }
+      };
+      
+      // Subscribe to events BEFORE calling transport.handleRequest
+      res.once('finish', onFinish);
+      res.once('close', onClose);
+      
+      // Set up timeout
+      responseTimeout = setTimeout(() => {
+        if (!responseResolved) {
+          responseResolved = true;
+          log.warn('⚠️ Response stream timeout (assuming complete)', { 
+            timeoutMs,
+            fromHeader: !!requestTimeoutMs,
+            isDebugMode,
+            writableEnded: res.writableEnded,
+            destroyed: res.destroyed,
+            headersSent: res.headersSent
+          });
+          resolve('timeout');
+        }
+      }, timeoutMs);
     });
     
-    // Check if we're in debug mode (inspector is active)
-    const isDebugMode = process.env.NODE_OPTIONS?.includes('--inspect') || 
-                        process.env.NODE_OPTIONS?.includes('--inspect-brk');
-    
+    // Now call transport.handleRequest with event listeners already in place
     await mcpServer.withTransport(async transport => {
-      log.info('📡 Transport ready, handling request', { 
-        isDebugMode,
-        transportType: transport?.constructor?.name,
-        hasTransport: !!transport
-      });
       
       if (!transport) {
         log.error('❌ Transport is null or undefined');
@@ -152,8 +222,47 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       }
       
       try {
-        await transport.handleRequest(req, res);
-        log.debug('✅ Transport handleRequest returned');
+        // Check response state again right before calling handleRequest
+        if (res.writableEnded || res.destroyed) {
+          log.warn('⚠️ Response already ended before handleRequest', {
+            writableEnded: res.writableEnded,
+            destroyed: res.destroyed
+          });
+          // If already closed, resolve immediately
+          if (responseCompleteResolve && !responseResolved) {
+            responseResolved = true;
+            if (responseTimeout) clearTimeout(responseTimeout);
+            responseCompleteResolve('already-ended');
+          }
+          return;
+        }
+        
+        const handleRequestResult = await transport.handleRequest(req, res);
+        
+        // Minimal logging - only critical info for comparison
+        if (isDebugMode || isBTP) {
+          log.info('✅ handleRequest returned', {
+            environment,
+            headersSent: res.headersSent,
+            writableEnded: res.writableEnded,
+            statusCode: res.statusCode
+          });
+        }
+        
+        // Check if response closed immediately after handleRequest
+        if (res.writableEnded || res.destroyed) {
+          // Response already closed, event listeners should fire
+          // But in debug mode, events might not fire, so ensure completion
+          if (isDebugMode) {
+            setImmediate(() => {
+              if (!responseResolved && responseCompleteResolve) {
+                responseResolved = true;
+                if (responseTimeout) clearTimeout(responseTimeout);
+                responseCompleteResolve('close'); // Assume close if already ended
+              }
+            });
+          }
+        }
       } catch (handleError: any) {
         log.error('❌ Error in transport.handleRequest', {
           error: handleError instanceof Error ? handleError.message : String(handleError),
@@ -163,41 +272,19 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       }
     });
     
-    // In debug mode, don't wait for response events as debugger may block event loop
-    // Transport.handleRequest should handle the response completion
-    if (!isDebugMode) {
-      // Wait for the response to be fully sent (only in non-debug mode)
-      const responseComplete = new Promise<void>((resolve) => {
-        let resolved = false;
-        
-        const onFinish = () => {
-          if (!resolved) {
-            resolved = true;
-            log.debug('✅ Response stream finished');
-            resolve();
-          }
-        };
-        
-        res.once('finish', onFinish);
-        res.once('close', onFinish);
-        
-        // Short timeout in production to prevent hanging
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            log.debug('✅ Response stream timeout (assuming complete)');
-            resolve();
-          }
-        }, 5000); // 5 seconds timeout
-        
-        res.once('finish', () => clearTimeout(timeout));
-        res.once('close', () => clearTimeout(timeout));
-      });
-      
-      await responseComplete;
-    }
+    // Wait for response to complete
+    const completionReason = await responseComplete;
     
-    log.info('✅ Stream-HTTP request completed successfully');
+    // Minimal logging - only completion method for comparison
+    if (isDebugMode || isBTP) {
+      log.info('✅ Request completed', {
+        environment,
+        completionReason,
+        headersSent: res.headersSent,
+        statusCode: res.statusCode,
+        writableEnded: res.writableEnded
+      });
+    }
 
   } catch (err: any) {
     const errorMessage = err instanceof Error ? err.message : String(err);
