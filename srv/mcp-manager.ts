@@ -398,6 +398,22 @@ async function handleWithTransport<T>(
       entry.transport = undefined;
     }
 
+    // Verify server is ready
+    if (!entry.server || !entry.server.server) {
+      log.error('MCP server instance is not ready', { 
+        cacheKey,
+        hasServer: !!entry.server,
+        hasServerServer: !!entry.server?.server
+      });
+      throw new Error('MCP server instance is not initialized');
+    }
+
+    log.info('Creating new MCP transport', { 
+      cacheKey, 
+      isInitializationRequest,
+      hasSessionId: !!requestSessionIdHeader
+    });
+
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: false,
@@ -406,11 +422,41 @@ async function handleWithTransport<T>(
       enableDnsRebindingProtection: false
     });
 
-    await entry.server.server.connect(transport);
+    try {
+      log.debug('Connecting transport to MCP server', { cacheKey });
+      await entry.server.server.connect(transport);
+      log.info('Transport connected to MCP server successfully', { cacheKey });
+      
+      // In hybrid debug mode, add a small delay to ensure transport is fully ready
+      // The debugger can sometimes cause timing issues with async initialization
+      const isDebugMode = process.env.NODE_OPTIONS?.includes('--inspect') || 
+                          process.env.NODE_OPTIONS?.includes('--inspect-brk');
+      if (isDebugMode) {
+        log.debug('Waiting for transport to be fully ready (debug mode)', { cacheKey });
+        // Small delay to allow any internal async initialization to complete
+        await new Promise(resolve => setImmediate(resolve));
+        log.debug('Transport ready check complete', { cacheKey });
+      }
+    } catch (connectError: any) {
+      log.error('Failed to connect transport to MCP server', {
+        cacheKey,
+        error: connectError instanceof Error ? connectError.message : String(connectError),
+        stack: connectError instanceof Error ? connectError.stack : undefined
+      });
+      throw new Error(`MCP transport connection failed: ${connectError instanceof Error ? connectError.message : String(connectError)}`);
+    }
+
     entry.transport = transport;
+    log.debug('Transport cached and ready', { cacheKey });
+  } else {
+    log.debug('Reusing existing MCP transport', { 
+      cacheKey,
+      hasSessionId: !!requestSessionIdHeader
+    });
   }
 
   if (!entry.transport) {
+    log.error('MCP transport is not available after initialization', { cacheKey });
     throw new Error('MCP transport failed to initialize');
   }
 

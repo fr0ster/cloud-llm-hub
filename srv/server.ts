@@ -117,7 +117,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     const mcpServer = await getMCPServer(req);
     log.info('✅ MCP server obtained', { 
       hasServer: !!mcpServer?.server,
-      hasWithTransport: !!mcpServer?.withTransport
+      hasWithTransport: !!mcpServer?.withTransport,
+      serverType: mcpServer?.server?.constructor?.name
     });
     
     if (!mcpServer || !mcpServer.withTransport) {
@@ -128,12 +129,73 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       return res.status(503).send('Service Unavailable: MCP transport not ready');
     }
 
-    log.info('🔄 Calling transport.handleRequest...');
-    await mcpServer.withTransport(async transport => {
-      log.debug('📡 Transport ready, handling request');
-      await transport.handleRequest(req, res);
-      log.debug('✅ Transport request handled');
+    log.info('🔄 Calling transport.handleRequest...', {
+      hasSessionId: !!req.headers['mcp-session-id'],
+      method: req.method,
+      path: req.path
     });
+    
+    // Check if we're in debug mode (inspector is active)
+    const isDebugMode = process.env.NODE_OPTIONS?.includes('--inspect') || 
+                        process.env.NODE_OPTIONS?.includes('--inspect-brk');
+    
+    await mcpServer.withTransport(async transport => {
+      log.info('📡 Transport ready, handling request', { 
+        isDebugMode,
+        transportType: transport?.constructor?.name,
+        hasTransport: !!transport
+      });
+      
+      if (!transport) {
+        log.error('❌ Transport is null or undefined');
+        throw new Error('MCP transport is not available');
+      }
+      
+      try {
+        await transport.handleRequest(req, res);
+        log.debug('✅ Transport handleRequest returned');
+      } catch (handleError: any) {
+        log.error('❌ Error in transport.handleRequest', {
+          error: handleError instanceof Error ? handleError.message : String(handleError),
+          stack: handleError instanceof Error ? handleError.stack : undefined
+        });
+        throw handleError;
+      }
+    });
+    
+    // In debug mode, don't wait for response events as debugger may block event loop
+    // Transport.handleRequest should handle the response completion
+    if (!isDebugMode) {
+      // Wait for the response to be fully sent (only in non-debug mode)
+      const responseComplete = new Promise<void>((resolve) => {
+        let resolved = false;
+        
+        const onFinish = () => {
+          if (!resolved) {
+            resolved = true;
+            log.debug('✅ Response stream finished');
+            resolve();
+          }
+        };
+        
+        res.once('finish', onFinish);
+        res.once('close', onFinish);
+        
+        // Short timeout in production to prevent hanging
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            log.debug('✅ Response stream timeout (assuming complete)');
+            resolve();
+          }
+        }, 5000); // 5 seconds timeout
+        
+        res.once('finish', () => clearTimeout(timeout));
+        res.once('close', () => clearTimeout(timeout));
+      });
+      
+      await responseComplete;
+    }
     
     log.info('✅ Stream-HTTP request completed successfully');
 
