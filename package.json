@@ -3,18 +3,19 @@
   "version": "1.0.0",
   "description": "A simple CAP project.",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.2",
     "@fr0ster/mcp-abap-adt": "file:submodules/mcp-abap-adt",
+    "@modelcontextprotocol/sdk": "^1.17.2",
+    "@sap-cloud-sdk/connectivity": "^4",
+    "@sap-cloud-sdk/http-client": "^4.1.2",
     "@sap/cds": "^9",
     "@sap/xsenv": "^4",
     "@sap/xssec": "^4",
-    "@sap-cloud-sdk/connectivity": "^4",
-    "express": "^4",
     "axios": "^1.7.7",
-    "js-yaml": "^4.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4",
     "https-proxy-agent": "^7.0.2",
-    "node-fetch": "^3.3.2",
-    "dotenv": "^16.4.5"
+    "js-yaml": "^4.1.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "@cap-js/cds-typer": ">=0.1",

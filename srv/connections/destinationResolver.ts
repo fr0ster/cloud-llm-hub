@@ -73,11 +73,17 @@ function getCaseInsensitive(destination: Destination, key: string): string | und
 
 /**
  * Build SapConfig from SAP Cloud SDK Destination
- * Converts destination configuration to the format expected by mcp-abap-adt
+ * 
+ * For CloudSdkAbapConnection: returns minimal SapConfig (URL, authType, client)
+ * because executeHttpRequest handles all authentication automatically via destination.
+ * 
+ * For on-premise connectivity: returns full SapConfig with username/password
+ * because Cloud Connector needs explicit credentials.
  */
 async function buildSapConfigFromDestination(
   destinationName: string,
-  destination: Destination
+  destination: Destination,
+  jwtToken?: string
 ): Promise<DestinationResolution> {
   const rawUrl = destination.url || getCaseInsensitive(destination, 'URL');
   if (!rawUrl) {
@@ -93,89 +99,47 @@ async function buildSapConfigFromDestination(
     throw new Error(`Destination "${destinationName}" is missing Authentication property.`);
   }
 
-  let sapConfig: SapConfig;
-  let tokenExpiresAt: number | undefined;
-
+  // Determine authType based on destination authentication
+  let authType: SapConfig['authType'];
   switch (authentication) {
-    case 'BasicAuthentication': {
-      const username = getCaseInsensitive(destination, 'User') || getCaseInsensitive(destination, 'username');
-      const password = getCaseInsensitive(destination, 'Password') || getCaseInsensitive(destination, 'password');
-
-      if (!username || !password) {
-        throw new Error(`Destination "${destinationName}" must provide User and Password for BasicAuthentication.`);
-      }
-
-      sapConfig = {
-        url: rawUrl,
-        authType: 'basic',
-        username,
-        password
-      };
+    case 'BasicAuthentication':
+      authType = 'basic';
       break;
-    }
-    case 'OAuth2ClientCredentials': {
-      // For OAuth2ClientCredentials, SAP Cloud SDK automatically handles token retrieval
-      // We need to extract the token from destination headers or get it manually
-      // Note: SAP Cloud SDK handles OAuth tokens internally, but we need JWT token for ADT
-      const tokenServiceUrl =
-        getCaseInsensitive(destination, 'tokenServiceURL') ||
-        getCaseInsensitive(destination, 'tokenServiceUrl');
-      const tokenServiceUser = getCaseInsensitive(destination, 'tokenServiceUser');
-      const tokenServicePassword = getCaseInsensitive(destination, 'tokenServicePassword');
-
-      if (!tokenServiceUrl || !tokenServiceUser || !tokenServicePassword) {
-        throw new Error(
-          `Destination "${destinationName}" must provide tokenServiceURL, tokenServiceUser and tokenServicePassword for OAuth2ClientCredentials.`
-        );
-      }
-
-      // Get OAuth token manually (SAP Cloud SDK handles this internally for HTTP requests,
-      // but we need the token explicitly for ADT connection)
-      try {
-        const response = await fetch(tokenServiceUrl, {
-          method: 'POST',
-            headers: {
-              Authorization: `Basic ${Buffer.from(`${tokenServiceUser}:${tokenServicePassword}`).toString('base64')}`,
-              'Content-Type': 'application/x-www-form-urlencoded'
-          },
-          body: 'grant_type=client_credentials'
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => 'Unknown error');
-          throw new Error(`Token service returned ${response.status}: ${errorText}`);
-        }
-
-        const data = await response.json();
-        const accessToken = data?.access_token;
-
-        if (!accessToken) {
-          throw new Error(`Token service for destination "${destinationName}" did not return access_token.`);
-        }
-
-        const expiresIn = Number(data?.expires_in ?? 0);
-        tokenExpiresAt = expiresIn > 0
-          ? Date.now() + Math.max(expiresIn - 60, 30) * 1000
-          : undefined;
-
-        sapConfig = {
-          url: rawUrl,
-          authType: 'jwt',
-          jwtToken: accessToken
-        };
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to exchange client credentials for destination "${destinationName}": ${message}`);
-      }
+    case 'OAuth2ClientCredentials':
+    case 'OAuth2SAMLBearerAssertion':
+      authType = 'jwt';
       break;
-    }
     default:
       throw new Error(`Destination "${destinationName}" uses unsupported authentication type "${authentication}".`);
   }
 
+  // Build minimal SapConfig - CloudSdkAbapConnection uses executeHttpRequest
+  // which handles all authentication automatically via destination.
+  // Only URL, authType, and client are needed.
+  const sapConfig: SapConfig = {
+    url: rawUrl,
+    authType
+  };
+
   if (sapClient) {
     sapConfig.client = sapClient;
   }
+
+  // For on-premise connectivity (Cloud Connector), we need username/password
+  // This is handled separately in BtpOnPremDestinationConnection
+  // For CloudSdkAbapConnection, executeHttpRequest gets credentials from destination automatically
+
+  // For Principal Propagation, JWT token is passed to executeHttpRequest via destination options
+  // We store it in SapConfig only for backward compatibility and logging
+  if (authentication === 'OAuth2SAMLBearerAssertion' && jwtToken) {
+    sapConfig.jwtToken = jwtToken;
+  }
+
+  // Token expiration is handled by SAP Cloud SDK internally for OAuth2ClientCredentials
+  // For Principal Propagation, use conservative expiration
+  const tokenExpiresAt = authentication === 'OAuth2SAMLBearerAssertion' && jwtToken
+    ? Date.now() + 45 * 60 * 1000 // 45 minutes
+    : undefined;
 
   return {
     destinationName,
@@ -192,7 +156,7 @@ async function buildSapConfigFromDestination(
  * This replaces the low-level implementation with SAP's recommended approach
  * 
  * @param destinationName - Name of the destination to resolve
- * @param jwtToken - Optional JWT token for user context (may be needed for some destinations)
+ * @param jwtToken - Optional JWT token for Principal Propagation (only for OAuth2SAMLBearerAssertion)
  */
 export async function resolveDestinationSapConfig(
   destinationName: string,
@@ -204,34 +168,44 @@ export async function resolveDestinationSapConfig(
   try {
     log.debug('Resolving destination via SAP Cloud SDK', { destinationName, hasJwt: !!jwtToken });
     
-    // SAP Cloud SDK automatically:
-    // - Reads credentials from VCAP_SERVICES
-    // - Gets token for destination service (if needed)
-    // - Retrieves destination from instance or subaccount level
-    // - Handles authentication (Basic/OAuth)
-    // - Handles proxy configuration for on-premise
-    // 
-    // Note: If jwtToken is provided, it may be used for principal propagation
-    const destinationOptions: any = { destinationName };
-    if (jwtToken) {
-      destinationOptions.jwt = jwtToken;
-    }
-    
-    const destination = await getDestination(destinationOptions);
+    // First, get destination without JWT to check authentication type
+    // Destination credentials are stored in destination itself, not in user JWT
+    const destination = await getDestination({ destinationName });
 
     if (!destination) {
       log.error('Destination not found', { destinationName });
       throw new Error(`Destination "${destinationName}" not found.`);
     }
 
+    const authentication = destination.authentication || getCaseInsensitive(destination, 'Authentication');
+    
     log.debug('Destination retrieved successfully', { 
       destinationName,
       url: destination.url,
       proxyType: destination.proxyType,
-      authentication: destination.authentication
+      authentication
     });
 
-    return buildSapConfigFromDestination(destinationName, destination);
+    // Only pass JWT token if destination requires Principal Propagation
+    // For BasicAuthentication and OAuth2ClientCredentials, destination has its own credentials
+    if (authentication === 'OAuth2SAMLBearerAssertion' && jwtToken) {
+      log.debug('Using Principal Propagation (OAuth2SAMLBearerAssertion) with user JWT', {
+        destinationName,
+        jwtTokenLength: jwtToken.length
+      });
+    } else if (authentication === 'OAuth2SAMLBearerAssertion' && !jwtToken) {
+      log.warn('Destination requires Principal Propagation but no JWT token provided', {
+        destinationName,
+        authentication
+      });
+    } else if (jwtToken && authentication !== 'OAuth2SAMLBearerAssertion') {
+      log.debug('Ignoring user JWT token - destination uses its own credentials', {
+        destinationName,
+        authentication
+      });
+    }
+
+    return buildSapConfigFromDestination(destinationName, destination, jwtToken);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error ? error.stack : undefined;
