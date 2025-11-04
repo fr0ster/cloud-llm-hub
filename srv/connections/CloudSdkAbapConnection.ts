@@ -1,3 +1,6 @@
+// Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
+import '../env-setup';
+
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import type { AxiosResponse } from 'axios';
 import type { AbapConnection, AbapRequestOptions } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';

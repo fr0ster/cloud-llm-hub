@@ -4,6 +4,9 @@
  * Creates per-request instances with SAP config from headers
  */
 
+// Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
+import './env-setup';
+
 import cds from '@sap/cds';
 // @ts-ignore - ESM import path with .js extension
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -23,9 +26,9 @@ import {
 } from './connections/destinationResolver';
 import { CloudSdkAbapConnection } from './connections/CloudSdkAbapConnection';
 
-// Import MCP server class
-// @ts-ignore - no types in mcp-abap-adt
-import { mcp_abap_adt_server } from '@fr0ster/mcp-abap-adt';
+// MCP server class will be imported dynamically to avoid executing top-level code
+// The submodule's index.ts has top-level code that loads .env file, which we want to skip
+// We'll use dynamic import when we actually need to create a server instance
 
 // Cache of MCP server instances by SAP URL or destination
 interface CachedInstance {
@@ -284,9 +287,10 @@ export async function getMCPServer(req: Request): Promise<{
     // If destination is not used, mcp-abap-adt will create connection using its standard classes
     // (OnPremAbapConnection or CloudAbapConnection) based on sapConfig
     
-  // IMPORTANT: clear env vars before instantiating the submodule server
-  // The submodule may still read cached configuration from its .env file,
-  // so we always pass the explicit sapConfig via options instead
+  // IMPORTANT: Clear env vars before instantiating the submodule server
+  // cloud-llm-hub always passes SAP configuration via headers -> extractSapContext -> serverOptions.sapConfig
+  // We must prevent the submodule from reading any .env files or cached env vars
+  // The submodule should ONLY use the explicit sapConfig passed in serverOptions
     const oldEnv = {
       SAP_URL: process.env.SAP_URL,
       SAP_CLIENT: process.env.SAP_CLIENT,
@@ -297,6 +301,7 @@ export async function getMCPServer(req: Request): Promise<{
     };
     
     // Clear env vars to prevent submodule from using them
+    // All configuration comes from HTTP headers, not from .env files
     delete process.env.SAP_URL;
     delete process.env.SAP_CLIENT;
     delete process.env.SAP_AUTH_TYPE;
@@ -321,6 +326,9 @@ export async function getMCPServer(req: Request): Promise<{
       serverOptions.sapConfig = sapConfig;
     }
 
+    // Dynamic import to avoid executing top-level code in submodule's index.ts
+    // By this point, MCP_SKIP_ENV_LOAD is already set, so .env loading will be skipped
+    const { mcp_abap_adt_server } = await import('@fr0ster/mcp-abap-adt');
     const mcpServerInstance = new mcp_abap_adt_server(serverOptions);
     
     // Restore env vars (for other code that might need them)

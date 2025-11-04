@@ -4,12 +4,14 @@
  * 
  * CRITICAL: Environment variables must be set BEFORE imports
  * The mcp-abap-adt submodule has auto-start code that runs on import
+ * 
+ * NOTE: cloud-llm-hub always gets SAP configuration from HTTP headers (X-SAP-Destination
+ * or X-SAP-URL, X-SAP-JWT-TOKEN, etc.), not from .env files. The .env file is only needed
+ * when running mcp-abap-adt standalone (not through cloud-llm-hub).
  */
 
-// Set BEFORE any imports that might load the submodule
-process.env.MCP_SKIP_AUTO_START = 'true';
-process.env.MCP_SKIP_ENV_LOAD = 'true';
-process.env.TLS_REJECT_UNAUTHORIZED = '0';
+// Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before any submodule imports
+import './env-setup';
 
 import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
