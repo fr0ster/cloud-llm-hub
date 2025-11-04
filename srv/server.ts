@@ -155,8 +155,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     let responseTimeout: NodeJS.Timeout | null = null;
     
     // Determine timeout: use header value if provided, otherwise use defaults
-    // Default: 60s in debug mode (matches Cline minimum), 5s in production
-    const timeoutMs = requestTimeoutMs ?? (isDebugMode ? 60000 : 5000);
+    // Default: 10s in debug mode (sufficient for MCP operations), 5s in production
+    const timeoutMs = requestTimeoutMs ?? (isDebugMode ? 10000 : 5000);
     
     const responseComplete = new Promise<CompletionReason>((resolve) => {
       responseCompleteResolve = resolve;
@@ -262,6 +262,33 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
               }
             });
           }
+        } else {
+          // Response not closed yet - set up a fallback check
+          // If handleRequest returned but stream is still open, check after a short delay
+          // This handles cases where transport completed but didn't close the stream
+          setTimeout(() => {
+            if (!responseResolved && responseCompleteResolve) {
+              // If stream is still open after handleRequest returned, assume completion
+              // Transport has finished its work, so we can safely resolve
+              if (res.writableEnded || res.destroyed) {
+                // Stream closed during the delay, events should have fired
+                // But if they didn't, resolve anyway
+                if (!responseResolved) {
+                  responseResolved = true;
+                  if (responseTimeout) clearTimeout(responseTimeout);
+                  responseCompleteResolve('close');
+                }
+              } else if (res.headersSent) {
+                // Headers sent but stream still open - transport completed but didn't close
+                // This is safe to resolve as transport.handleRequest already returned
+                if (!responseResolved) {
+                  responseResolved = true;
+                  if (responseTimeout) clearTimeout(responseTimeout);
+                  responseCompleteResolve('finish'); // Assume finish since headers were sent
+                }
+              }
+            }
+          }, 1000); // Check after 1 second - if transport returned, it should be done
         }
       } catch (handleError: any) {
         log.error('❌ Error in transport.handleRequest', {
