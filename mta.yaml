@@ -33,6 +33,7 @@ modules:
     requires:
       - name: cloud-llm-hub-auth
       - name: cloud-llm-hub-destination
+      - name: cloud-llm-hub-connectivity
   - name: cloud-llm-hub
     type: approuter.nodejs
     path: app/router
@@ -74,3 +75,10 @@ resources:
     parameters:
       service: destination
       service-plan: lite
+  - name: cloud-llm-hub-connectivity
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: connectivity
+      service-plan: lite
+      config:
+        connectorId: AA45023094B911E8B0C6F0E30A06C478

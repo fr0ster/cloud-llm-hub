@@ -9,14 +9,11 @@ import cds from '@sap/cds';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
-import type { BaseAbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/BaseAbapConnection';
 import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
+import type { AbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';
 import {
-  BtpOnPremDestinationConnection,
   shouldUseConnectivity,
   extractConnectivityContext,
-  createBtpOnPremConnection,
-  refreshBtpOnPremConnection,
   clearConnectivityCaches
 } from './connections';
 import {
@@ -24,12 +21,11 @@ import {
   type DestinationResolution,
   clearDestinationServiceCache
 } from './connections/destinationResolver';
+import { CloudSdkAbapConnection } from './connections/CloudSdkAbapConnection';
 
 // Import MCP server class
 // @ts-ignore - no types in mcp-abap-adt
 import { mcp_abap_adt_server } from '@fr0ster/mcp-abap-adt';
-
-type AbapConnection = BaseAbapConnection;
 
 // Cache of MCP server instances by SAP URL or destination
 interface CachedInstance {
@@ -80,7 +76,9 @@ async function extractSapContext(req: Request): Promise<SapContext> {
   const sapClientHeader = (req.headers['x-sap-client'] as string | undefined)?.trim();
 
   if (destinationName) {
-    // Extract JWT from Authorization header if available (for principal propagation)
+    // Extract JWT from Authorization header if available
+    // Note: JWT is only used for Principal Propagation destinations (OAuth2SAMLBearerAssertion)
+    // For BasicAuthentication and OAuth2ClientCredentials, destination has its own credentials
     const authHeader = req.headers.authorization;
     const jwtToken = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') 
       ? authHeader.substring(7) 
@@ -247,9 +245,8 @@ export async function getMCPServer(req: Request): Promise<{
         cached.connection?.reset();
         instanceCache.delete(cacheKey);
       } else {
-        if (useConnectivity && cached.connection instanceof BtpOnPremDestinationConnection) {
-          await refreshBtpOnPremConnection(cached.connection as BtpOnPremDestinationConnection, connectivityContext);
-        }
+        // If connection is from mcp-abap-adt, it manages its own lifecycle
+        // No need to refresh for standard connections
         log.debug('Using cached MCP instance', { cacheKey });
         return {
           server: cached.server,
@@ -267,13 +264,25 @@ export async function getMCPServer(req: Request): Promise<{
       useConnectivity
     });
 
-    let connection: BtpOnPremDestinationConnection | undefined;
-    if (useConnectivity) {
-      if (sapConfig.authType !== 'basic') {
-        throw new Error('On-premise connectivity requires basic authentication (username/password).');
-      }
-      connection = await createBtpOnPremConnection(sapConfig, connectivityContext);
+    let connection: AbapConnection | undefined;
+    
+    // Use Cloud SDK connection if destination name is available
+    // executeHttpRequest automatically handles both internet and on-premise destinations
+    // including Cloud Connector proxy configuration
+    if (destination?.destinationName) {
+      log.debug('Using Cloud SDK AbapConnection for destination', {
+        destinationName: destination.destinationName,
+        proxyType: destination.proxyType,
+        useConnectivity
+      });
+      // CloudSdkAbapConnection uses executeHttpRequest which automatically handles:
+      // - Internet destinations
+      // - On-premise destinations via Cloud Connector (if ProxyType=OnPremise in destination)
+      // - All authentication types (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
+      connection = new CloudSdkAbapConnection(sapConfig, destination.destinationName);
     }
+    // If destination is not used, mcp-abap-adt will create connection using its standard classes
+    // (OnPremAbapConnection or CloudAbapConnection) based on sapConfig
     
   // IMPORTANT: clear env vars before instantiating the submodule server
   // The submodule may still read cached configuration from its .env file,

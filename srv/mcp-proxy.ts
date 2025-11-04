@@ -1,5 +1,6 @@
 import cds, { Request, Service } from '@sap/cds';
-import { probeDestinationConnection } from './server';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import { getDestination } from '@sap-cloud-sdk/connectivity';
 
 interface ProxyInvocation {
   toolId: string;
@@ -43,8 +44,9 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
   });
 
   // Probe destination endpoint (CAP function)
+  // Uses executeHttpRequest from SAP Cloud SDK - direct destination handling
   srv.on('ProbeDestination', async (req: Request) => {
-    // CAP functions receive parameters via req.data
+    // CAP functions receive parameters via req.data or req.query
     const destination = (req.data as any)?.destination 
       || (req.query as any)?.destination 
       || (req.query as any)?.name;
@@ -58,31 +60,125 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
     const destinationName = destination.trim();
     const user = req.user;
     
-    log.info('Probing destination via CAP service', { 
+    log.info('Probing destination via executeHttpRequest', { 
       destination: destinationName, 
       user: user?.id 
     });
 
     try {
-      log.debug('Starting destination resolution', { destination: destinationName });
-      const { summary, metadata } = await probeDestinationConnection(destinationName);
-      log.debug('Destination probe successful', { 
+      // Get destination metadata first (for proxyType, authentication, etc.)
+      const destinationConfig = await getDestination({ destinationName });
+      if (!destinationConfig) {
+        throw new Error(`Destination "${destinationName}" not found.`);
+      }
+
+      const proxyType = destinationConfig.proxyType ? String(destinationConfig.proxyType) : 'Internet';
+      const connectivityMode = proxyType.toLowerCase() === 'onpremise' ? 'onprem' : 'internet';
+      const authentication = destinationConfig.authentication || 'Unknown';
+      
+      // Get sap-client from destination if available
+      const sapClient = (destinationConfig.originalProperties as any)?.['sap-client'] 
+        || (destinationConfig.originalProperties as any)?.['SAP-Client']
+        || '';
+      const cloudConnectorLocationId = (destinationConfig.originalProperties as any)?.['CloudConnectorLocationId'] || '';
+
+      let status: number | undefined;
+      let statusText: string | undefined;
+      let contentType: string | undefined;
+
+      // Use executeHttpRequest directly - it handles everything automatically:
+      // - Destination resolution (URL, credentials)
+      // - Authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
+      // - Proxy configuration (including Cloud Connector for on-premise)
+      // - Token refresh
+      try {
+        log.debug('Calling executeHttpRequest with destination', {
+          destinationName,
+          proxyType,
+          authentication
+        });
+
+        // Use a simple endpoint to test connectivity
+        // For ABAP systems, we can use root path or a simple OData endpoint
+        const response = await executeHttpRequest(
+          { destinationName },
+          {
+            method: 'GET',
+            url: '/',
+            headers: sapClient ? { 'X-SAP-Client': sapClient } : {}
+          }
+        );
+
+        // executeHttpRequest returns response with status, statusText, headers, data
+        status = response.status || 200;
+        statusText = response.statusText || 'OK';
+        
+        const headers = response.headers || {};
+        contentType = headers['content-type'] || headers['Content-Type'] || '';
+        
+        log.debug('Destination probe successful', {
+          destinationName,
+          status,
+          contentType
+        });
+      } catch (error: any) {
+        // executeHttpRequest throws errors with response object for HTTP errors
+        // Extract status from error response
+        if (error.response) {
+          // HTTP error response (4xx, 5xx) - this is actually OK for probe
+          status = error.response.status;
+          statusText = error.response.statusText || error.message || 'Error';
+          const errorHeaders = error.response.headers || {};
+          contentType = errorHeaders['content-type'] || errorHeaders['Content-Type'] || '';
+          
+          log.debug('Destination probe returned status (expected for probe)', {
+            destinationName,
+            status,
+            statusText
+          });
+        } else if (error.statusCode || error.code) {
+          // Other error with status code
+          status = error.statusCode || (error.code === 'ENOTFOUND' ? 404 : 500);
+          statusText = error.message || 'Error';
+          contentType = '';
+          
+          log.warn('Destination probe failed with status code', {
+            destinationName,
+            status,
+            statusText,
+            errorName: error.name,
+            errorCode: error.code
+          });
+        } else {
+          // Unexpected error - re-throw
+          log.error('Destination probe failed with unexpected error', {
+            destinationName,
+            error: error.message,
+            errorName: error.name,
+            errorCode: error.code,
+            stack: error.stack?.substring(0, 500)
+          });
+          throw error;
+        }
+      }
+
+      log.debug('Destination probe completed', { 
         destination: destinationName, 
-        status: summary.status 
+        status 
       });
 
       return {
         destination: destinationName,
-        connectivity: metadata.connectivityMode,
-        proxyType: metadata.proxyType,
-        authentication: metadata.authentication || '',
-        sapClient: metadata.sapClient || '',
-        cloudConnectorLocationId: metadata.cloudConnectorLocationId || '',
-        tokenExpiresAt: metadata.tokenExpiresAt || 0,
+        connectivity: connectivityMode,
+        proxyType: proxyType,
+        authentication: authentication || '',
+        sapClient: sapClient || '',
+        cloudConnectorLocationId: cloudConnectorLocationId || '',
+        tokenExpiresAt: 0, // Cloud SDK manages token lifecycle internally
         probe: {
-          status: summary.status ?? 0,
-          statusText: summary.statusText || '',
-          contentType: summary.contentType || ''
+          status: status ?? 0,
+          statusText: statusText || '',
+          contentType: contentType || ''
         },
         timestamp: new Date().toISOString()
       };

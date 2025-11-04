@@ -17,8 +17,6 @@ import type { Application, Request, Response, NextFunction } from 'express';
 import { loadEnv } from '@sap/xsenv';
 import { getMCPServer } from './mcp-manager';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
-import { createBtpOnPremConnection } from './connections';
-import { createAbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/connectionFactory';
 import { Readable } from 'stream';
 
 
@@ -163,91 +161,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   }
 }
 
-export interface DestinationProbeSummary {
-  status: number | undefined;
-  statusText: string | undefined;
-  contentType: string | undefined;
-}
-
-export async function probeDestinationConnection(destinationName: string): Promise<{
-  summary: DestinationProbeSummary;
-  metadata: {
-    proxyType: string;
-    authentication: string | undefined;
-    sapClient: string | undefined;
-    tokenExpiresAt?: number;
-    connectivityMode: 'internet' | 'onprem';
-    cloudConnectorLocationId?: string;
-  };
-}> {
-  const resolution = await resolveDestinationSapConfig(destinationName);
-  const proxyType = (resolution.proxyType ?? 'Internet').toLowerCase();
-  const connectivityMode = proxyType === 'onpremise' ? 'onprem' : 'internet';
-  const metadata = {
-    proxyType: resolution.proxyType ?? 'Internet',
-    authentication: resolution.authenticationType,
-    sapClient: resolution.sapConfig.client,
-    tokenExpiresAt: resolution.tokenExpiresAt,
-    connectivityMode,
-    cloudConnectorLocationId: resolution.cloudConnectorLocationId
-  } as const;
-
-  let status: number | undefined;
-  let statusText: string | undefined;
-  let contentType: string | undefined;
-
-  if (connectivityMode === 'onprem') {
-    if (resolution.sapConfig.authType !== 'basic') {
-      throw new Error(`Destination "${destinationName}" uses proxy type OnPremise but is not configured for basic authentication.`);
-    }
-
-    const connection = await createBtpOnPremConnection(resolution.sapConfig, {
-      locationId: resolution.cloudConnectorLocationId,
-      principalToken: undefined
-    });
-
-    try {
-      const baseUrl = await connection.getBaseUrl();
-      const response = await connection.makeAdtRequest({
-        url: baseUrl,
-        method: 'GET',
-        timeout: 15000
-      });
-      status = response.status;
-      statusText = response.statusText;
-      contentType = response.headers['content-type'];
-    } finally {
-      connection.reset();
-    }
-  } else {
-    const connection = createAbapConnection(resolution.sapConfig);
-    try {
-      const baseUrl = await connection.getBaseUrl();
-      const response = await connection.makeAdtRequest({
-        url: baseUrl,
-        method: 'GET',
-        timeout: 15000
-      });
-      status = response.status;
-      statusText = response.statusText;
-      contentType = response.headers['content-type'];
-    } finally {
-      connection.reset();
-    }
-  }
-
-  return {
-    summary: {
-      status,
-      statusText,
-      contentType
-    },
-    metadata
-  };
-}
-
-// NOTE: Destination probe is now a CAP function in mcp-proxy.ts (ProbeDestination)
-// This allows CAP to handle authentication correctly via @requires: 'MCP_Connector'
+// NOTE: Destination probe is implemented as CAP function ProbeDestination in mcp-proxy.ts
+// It uses executeHttpRequest from SAP Cloud SDK for automatic destination handling
 
 
 
