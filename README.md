@@ -30,12 +30,18 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Destination Diagnostics
 
-- `GET /mcp/ProbeDestination?destination=<name>` (CAP function) resolves a Destination service entry, establishes connectivity (including Connectivity proxy when required), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints.
+- `GET /mcp/ProbeDestination?destination=<name>` (CAP function) resolves a Destination service entry using SAP Cloud SDK's `executeHttpRequest`, establishes connectivity (including Connectivity proxy when required for on-premise destinations), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, authentication type, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints. The implementation leverages SAP Cloud SDK for automatic destination resolution, authentication handling, and proxy configuration.
 
 ## Authentication & Connectivity
 
 - XSUAA scopes and role collections live in [`xs-security.json`](xs-security.json). The proxy maps scopes to CAP roles via a custom auth shim.
-- On-premise connectivity is handled via the Connectivity service; headers such as `X-SAP-Connectivity-Mode` are processed in `srv/connections.ts`.
+- Authentication is handled in-process using CAP service invocations (`srv.run()`) to eliminate network overhead and ensure proper user/tenant/locale context propagation.
+- **Destination Handling**: All destination interactions (internet and on-premise) use SAP Cloud SDK's `executeHttpRequest` from `@sap-cloud-sdk/http-client`, which automatically handles:
+  - Destination resolution and URL construction
+  - Authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
+  - Token lifecycle management and refresh
+  - Proxy configuration (including Cloud Connector for on-premise destinations)
+- **On-Premise Connectivity**: The Connectivity service is configured in `mta.yaml` with a specified `ConnectorID` for Cloud Connector integration. When a destination with `ProxyType=OnPremise` is used, `executeHttpRequest` automatically routes requests through the Connectivity proxy.
 - The `scripts/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. For non-repository usage there is `scripts/update-cline-connection-standalone.js`, and for declarative playbooks see `scripts/update-cline-from-yaml.js`. All workflows are documented in [`docs/MCP_CONFIG_UPDATE_HOWTO.md`](docs/MCP_CONFIG_UPDATE_HOWTO.md), including CLI overrides such as `--mcp-endpoint`, `--mcp-type`, `--mcp-username`, and `--mcp-password ""` for generating ready-to-apply templates without manual edits.
 
 ## Tooling & Tests
@@ -58,6 +64,9 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 - Use `cds build --production` or run the MTA build (`mbt build`) before pushing to SAP BTP.
 - The build hooks in `mta.yaml` first compile `submodules/mcp-abap-adt` and copy its `dist` payload into `gen/srv`, so the MTAR already contains the ABAP MCP server without any manual steps.
-- The generated `mta.yaml` packages both the CAP service and approuter; adjust resource plans there and deploy with `cf deploy mta_archives/cloud-llm-hub.mtar`.
-- Ensure XSUAA and (optionally) Connectivity instances are bound in Cloud Foundry.
-- For local XSUAA testing, copy `default-env.json.template` to `default-env.json` and fill in service credentials.
+- The `mta.yaml` descriptor packages both the CAP service and approuter, and automatically provisions:
+  - XSUAA service (`cloud-llm-hub-auth`) for authentication
+  - Destination service (`cloud-llm-hub-destination`) for destination management
+  - Connectivity service (`cloud-llm-hub-connectivity`) with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise connectivity via Cloud Connector
+- Deploy with `cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar`. All services are automatically bound to the application.
+- For local XSUAA testing, copy `default-env.json.template` to `default-env.json` and fill in service credentials, or use `npm run update:env` to fetch credentials from the deployed application.

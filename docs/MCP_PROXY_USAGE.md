@@ -63,7 +63,12 @@ When the proxy runs on SAP BTP and needs to reach an on-premise ABAP system via 
 
 1. **Preferred: let the Destination service drive the configuration.**
   - Add the header `X-SAP-Destination: <destination-name>`.
-  - The proxy resolves the destination via the Destination service, builds the `SapConfig`, automatically enables Connectivity for `ProxyType=OnPremise`, propagates `CloudConnectorLocationId`, and reuses the issued access token until it expires.
+  - The proxy uses SAP Cloud SDK's `executeHttpRequest` to resolve the destination, which automatically:
+    - Retrieves destination configuration from the Destination service
+    - Handles authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
+    - Routes requests through the Connectivity proxy when `ProxyType=OnPremise`
+    - Manages token lifecycle and refresh automatically
+    - Propagates `CloudConnectorLocationId` for multi-tunnel scenarios
   - Optionally include `X-SAP-Client` to override the `sap-client` maintained in the destination.
 
 2. **Manual headers (fallback when destinations are unavailable).**
@@ -74,8 +79,9 @@ When the proxy runs on SAP BTP and needs to reach an on-premise ABAP system via 
 ### Prerequisites
 
 - Destination (`tag: destination`) and Connectivity (`tag: connectivity`) service instances must be bound to the application.
-- The destination stores ABAP system credentials using **Basic** or **OAuth2 Client Credentials**. For OAuth, the proxy requests the JWT used for `X-SAP-JWT-TOKEN` automatically.
-- No SAP credentials need to be provided in headers when a destination is used—the proxy fetches everything from the service binding.
+- The Connectivity service is configured in `mta.yaml` with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for Cloud Connector integration.
+- The destination stores ABAP system credentials using **Basic** or **OAuth2 Client Credentials**. For OAuth, SAP Cloud SDK's `executeHttpRequest` handles token acquisition and refresh automatically.
+- No SAP credentials need to be provided in headers when a destination is used—SAP Cloud SDK fetches everything from the service binding and manages authentication transparently.
 
 ### Request examples
 
@@ -115,16 +121,23 @@ The project now ships with an `mta.yaml` descriptor and build hooks that streaml
 2. **Create the MTAR** (requires the SAP `mbt` tool or the Cloud MTA Build Tool):
 
   ```bash
-  mbt build --mtar cloud-llm-hub.mtar
+  mbt build
   ```
 
 3. **Deploy to Cloud Foundry**
 
   ```bash
-  cf deploy mta_archives/cloud-llm-hub.mtar
+  cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar
   ```
 
-The descriptor provisions two application modules (CAP service + approuter) and binds XSUAA and Destination instances out of the box. The `before-all` hook compiles `submodules/mcp-abap-adt`, then copies its built assets into `gen/srv/submodules`, ensuring the packaged MTAR contains the MCP backend automatically. Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
+The descriptor provisions two application modules (CAP service + approuter) and automatically creates and binds:
+- **XSUAA service** (`cloud-llm-hub-auth`) for authentication and authorization
+- **Destination service** (`cloud-llm-hub-destination`) for destination management
+- **Connectivity service** (`cloud-llm-hub-connectivity`) with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise connectivity via Cloud Connector
+
+The `before-all` hook compiles `submodules/mcp-abap-adt`, then copies its built assets into `gen/srv/submodules`, ensuring the packaged MTAR contains the MCP backend automatically. All destination interactions use SAP Cloud SDK's `executeHttpRequest` for automatic authentication, proxy handling, and token management.
+
+Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
 
 ### SSE Endpoint: `GET /mcp/stream/sse`
 
@@ -324,6 +337,47 @@ Expected response:
   "timestamp": "2025-10-29T12:00:00.000Z"
 }
 ```
+
+### Probe Destination
+
+The `ProbeDestination` CAP function validates destination connectivity and configuration using SAP Cloud SDK's `executeHttpRequest`:
+
+```bash
+# Development mode
+curl -H "Authorization: Basic YWxpY2U6" \
+  "http://localhost:4004/mcp/ProbeDestination?destination=ABAP_DEV"
+
+# Production mode
+curl -H "Authorization: Bearer <your-jwt-token>" \
+  "https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/ProbeDestination?destination=ABAP_DEV"
+```
+
+Expected response:
+```json
+{
+  "destination": "ABAP_DEV",
+  "connectivity": "internet",
+  "proxyType": "Internet",
+  "authentication": "BasicAuthentication",
+  "sapClient": "100",
+  "cloudConnectorLocationId": "",
+  "tokenExpiresAt": 0,
+  "probe": {
+    "status": 200,
+    "statusText": "OK",
+    "contentType": "application/atomsvc+xml"
+  },
+  "timestamp": "2025-11-04T09:30:00.000Z"
+}
+```
+
+The function automatically:
+- Resolves destination configuration via SAP Cloud SDK
+- Determines connectivity mode (internet vs. on-premise)
+- Performs an ADT discovery request to validate connectivity
+- Returns HTTP status and metadata about the destination
+
+For on-premise destinations, the function automatically routes through the Connectivity proxy using the configured `ConnectorID`.
 
 ### Test SSE Stream
 

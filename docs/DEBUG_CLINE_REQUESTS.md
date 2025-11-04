@@ -1,16 +1,16 @@
-# Де ловити звернення від Cline під час гібридної відладки
+# Where to Catch Cline Requests During Hybrid Debugging
 
-Cline робить **POST** запити до `/mcp/stream/http` (StreamableHTTP endpoint).
+Cline makes **POST** requests to `/mcp/stream/http` (StreamableHTTP endpoint).
 
-## 🔍 Breakpoints для відлагодження
+## 🔍 Breakpoints for Debugging
 
-### 1. **Вхідний запит від Cline** (найперший breakpoint)
-**Файл:** `srv/server.ts`  
-**Рядок:** `400` (middleware для `/mcp` routes)
+### 1. **Incoming Request from Cline** (first breakpoint)
+**File:** `srv/server.ts`  
+**Line:** `400` (middleware for `/mcp` routes)
 
 ```typescript
 app.use((req: Request, res: Response, next: NextFunction) => {
-  // 🔴 BREAKPOINT ТУТ - перша точка де бачимо запит від Cline
+  // 🔴 BREAKPOINT HERE - first point where we see the request from Cline
   if (!req.path?.startsWith('/mcp')) {
     return next();
   }
@@ -18,179 +18,179 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 ```
 
-**Що дивитися:**
-- `req.path` - має бути `/mcp/stream/http`
-- `req.method` - має бути `POST`
-- `req.headers.authorization` - чи є auth header
-- `req.headers['x-sap-destination']` - яка destination використовується
+**What to check:**
+- `req.path` - should be `/mcp/stream/http`
+- `req.method` - should be `POST`
+- `req.headers.authorization` - whether auth header exists
+- `req.headers['x-sap-destination']` - which destination is being used
 
 ---
 
-### 2. **Обробка авторизації**
-**Файл:** `srv/server.ts`  
-**Рядок:** `426` (виклик `authShim`)
+### 2. **Authorization Processing**
+**File:** `srv/server.ts`  
+**Line:** `426` (call to `authShim`)
 
 ```typescript
 return authShim(req, res, next);
 ```
 
-Або всередині `authShim`:
-**Рядок:** `25` (початок функції `authShim`)
+Or inside `authShim`:
+**Line:** `25` (beginning of `authShim` function)
 
 ```typescript
 async function authShim(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // 🔴 BREAKPOINT ТУТ - перевірка авторизації
+  // 🔴 BREAKPOINT HERE - authorization check
   const log = cds.log('mcp-proxy/authShim');
   const hdr = req.headers.authorization || '';
   // ...
 }
 ```
 
-**Що дивитися:**
-- Який тип auth (Basic чи Bearer)
-- Чи встановлено `req.user` після authShim
-- Які ролі має користувач (`req.user.roles`)
+**What to check:**
+- Which auth type (Basic or Bearer)
+- Whether `req.user` is set after authShim
+- Which roles the user has (`req.user.roles`)
 
 ---
 
-### 3. **Обробка StreamableHTTP запиту** (основний handler)
-**Файл:** `srv/server.ts`  
-**Рядок:** `164` (початок функції `handleStreamHTTP`)
+### 3. **StreamableHTTP Request Processing** (main handler)
+**File:** `srv/server.ts`  
+**Line:** `164` (beginning of `handleStreamHTTP` function)
 
 ```typescript
 async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
-  // 🔴 BREAKPOINT ТУТ - обробка StreamableHTTP запиту від Cline
+  // 🔴 BREAKPOINT HERE - processing StreamableHTTP request from Cline
   const log = cds.log('mcp-proxy/stream-http');
   const user = (req as any).user;
   // ...
 }
 ```
 
-**Що дивитися:**
-- Чи є `req.user` (не має бути `undefined`)
-- Чи є роль `MCP_Connector` у користувача
+**What to check:**
+- Whether `req.user` exists (should not be `undefined`)
+- Whether user has `MCP_Connector` role
 - Headers: `x-sap-destination`, `x-sap-client`, etc.
 
 ---
 
-### 4. **Отримання MCP сервера**
-**Файл:** `srv/mcp-manager.ts`  
-**Рядок:** `214` (виклик `extractSapContext`)
+### 4. **Getting MCP Server**
+**File:** `srv/mcp-manager.ts`  
+**Line:** `214` (call to `extractSapContext`)
 
 ```typescript
 const sapContext = await extractSapContext(req);
-// 🔴 BREAKPOINT ТУТ - після отримання SAP контексту
+// 🔴 BREAKPOINT HERE - after getting SAP context
 const { sapConfig, destination, cacheExpiresAt } = sapContext;
 ```
 
-Або:
-**Рядок:** `77` (початок `extractSapContext`)
+Or:
+**Line:** `77` (beginning of `extractSapContext`)
 
 ```typescript
 async function extractSapContext(req: Request): Promise<SapContext> {
-  // 🔴 BREAKPOINT ТУТ - витягування SAP контексту з запиту
+  // 🔴 BREAKPOINT HERE - extracting SAP context from request
   const log = cds.log('mcp-manager/extractSapContext');
   // ...
 }
 ```
 
-**Що дивитися:**
-- `sapConfig.url` - URL ABAP системи
-- `sapConfig.authType` - тип авторизації (basic/jwt)
-- `destination` - конфігурація destination
-- `destinationName` - назва destination
+**What to check:**
+- `sapConfig.url` - ABAP system URL
+- `sapConfig.authType` - authentication type (basic/jwt)
+- `destination` - destination configuration
+- `destinationName` - destination name
 
 ---
 
-### 5. **Створення/отримання кешованого MCP сервера**
-**Файл:** `srv/mcp-manager.ts`  
-**Рядок:** `231` (перевірка кешу)
+### 5. **Creating/Getting Cached MCP Server**
+**File:** `srv/mcp-manager.ts`  
+**Line:** `231` (cache check)
 
 ```typescript
 const cached = instanceCache.get(cacheKey);
 if (cached) {
-  // 🔴 BREAKPOINT ТУТ - якщо MCP сервер вже в кеші
+  // 🔴 BREAKPOINT HERE - if MCP server is already in cache
   // ...
 }
 ```
 
-Або:
-**Рядок:** `250` (створення нового MCP сервера)
+Or:
+**Line:** `250` (creating new MCP server)
 
 ```typescript
 // Create new MCP server instance
-// 🔴 BREAKPOINT ТУТ - створення нового MCP сервера
+// 🔴 BREAKPOINT HERE - creating new MCP server
 const mcpServer = createMCPServer(sapConfig);
 // ...
 ```
+**Note:** If a destination name is provided, `CloudSdkAbapConnection` is used, which leverages SAP Cloud SDK's `executeHttpRequest` for automatic destination handling.
 
 ---
 
-## 🚀 Як запустити гібридну відладку
+## 🚀 How to Start Hybrid Debugging
 
-1. **Запустити конфігурацію:**
-   - VS Code: `F5` або Run → "cds watch (Hybrid - Local + Cloud Services)"
-   - Або вручну: `cds watch --profile production`
+1. **Start configuration:**
+   - VS Code: `F5` or Run → "cds watch (Hybrid - Local + Cloud Services)"
+   - Or manually: `cds watch --profile production`
 
-2. **Поставити breakpoints** у файлах вище
+2. **Set breakpoints** in the files above
 
-3. **Зробити запит від Cline:**
-   - Cline автоматично зробить POST до `/mcp/stream/http`
-   - Debugger зупиниться на першому breakpoint
+3. **Make request from Cline:**
+   - Cline will automatically make POST to `/mcp/stream/http`
+   - Debugger will stop at the first breakpoint
 
 ---
 
-## 📋 Типовий потік виконання для запиту від Cline
+## 📋 Typical Execution Flow for Cline Request
 
 ```
-1. cds.on('bootstrap') middleware (рядок 400)
+1. cds.on('bootstrap') middleware (line 400)
    ↓
-2. authShim() - обробка авторизації (рядок 25 або 426)
+2. authShim() - authorization processing (line 25 or 426)
    ↓
-3. app.post('/mcp/stream/http', handleStreamHTTP) - router (рядок 477)
+3. app.post('/mcp/stream/http', handleStreamHTTP) - router (line 477)
    ↓
-4. handleStreamHTTP() - основний handler (рядок 164)
+4. handleStreamHTTP() - main handler (line 164)
    ↓
-5. getMCPServer(req) - отримання MCP сервера (рядок 207)
+5. getMCPServer(req) - getting MCP server (line 207)
    ↓
-6. extractSapContext(req) - витягування SAP конфігурації (рядок 77)
+6. extractSapContext(req) - extracting SAP configuration (line 77)
    ↓
-7. Створення/отримання MCP сервера з кешу (рядок 231 або 250)
+7. Creating/getting MCP server from cache (line 231 or 250)
    ↓
-8. Обробка запиту через MCP transport
+8. Processing request through MCP transport
 ```
 
 ---
 
 ## 🔧 Debug Console Commands
 
-Під час зупинки на breakpoint можна використовувати:
+While stopped at a breakpoint, you can use:
 
 ```javascript
-// Перевірити request
+// Check request
 req.path
 req.method
 req.headers
 
-// Перевірити авторизацію
+// Check authorization
 req.user
 req.user?.id
 req.user?.roles
 
-// Перевірити destination
+// Check destination
 req.headers['x-sap-destination']
 
-// Перевірити SAP config (в extractSapContext або після)
+// Check SAP config (in extractSapContext or after)
 sapConfig
 destination
 ```
 
 ---
 
-## ⚠️ Важливо
+## ⚠️ Important
 
-1. **Cline робить POST `/mcp/stream/http`** (не GET, не SSE)
-2. **Auth header:** Cline може не надсилати auth header (потрібно перевірити)
-3. **Destination:** Перевірити чи є header `x-sap-destination`
-4. **Помилки:** Якщо 502 - дивитися логи або breakpoint у error handler (рядок 431)
-
+1. **Cline makes POST `/mcp/stream/http`** (not GET, not SSE)
+2. **Auth header:** Cline may not send auth header (needs to be checked)
+3. **Destination:** Check if header `x-sap-destination` exists
+4. **Errors:** If 502 - check logs or breakpoint in error handler (line 431)

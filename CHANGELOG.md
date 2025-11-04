@@ -8,10 +8,13 @@ All notable changes to this project will be documented in this file. The format 
 - Standalone `scripts/update-cline-connection.js` utility with documentation for copying and running it outside the repository.
 - Lightweight `scripts/update-cline-connection-standalone.js` CLI plus expanded `docs/MCP_CONFIG_UPDATE_HOWTO.md` coverage for out-of-repo updates.
 - Declarative YAML orchestrator `scripts/update-cline-from-yaml.js` (with `js-yaml` runtime dependency) for multi-connection automation driven by service-key aware playbooks, now including built-in template scaffolding and SAP mode validation.
-- Diagnostic endpoint `GET /mcp/destination/probe` to validate Destination Service connectivity from the deployed CAP app.
+- Diagnostic endpoint `GET /mcp/ProbeDestination?destination=<name>` (CAP function) to validate Destination Service connectivity from the deployed CAP app.
 - `scripts/update-cline-from-yaml.js` templates now accept CLI overrides for MCP endpoint, transport type, description, and authentication (header, bearer, basic) so direct-JWT playbooks can be generated without manual edits.
 - Multi-Target Application descriptor (`mta.yaml`) with default modules and service bindings for SAP BTP Cloud Foundry deployments.
 - Automated MTA build hook that compiles and bundles the `mcp-abap-adt` submodule, plus a production dependency on `dotenv` to satisfy the embedded server at runtime.
+- **SAP Cloud SDK Integration**: Refactored destination handling to use `executeHttpRequest` from `@sap-cloud-sdk/http-client` for all destination types (internet and on-premise), eliminating custom HTTP client implementations.
+- **CloudSdkAbapConnection**: New `AbapConnection` implementation that leverages SAP Cloud SDK's `executeHttpRequest` for automatic destination resolution, authentication handling (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion), proxy configuration, and token refresh.
+- **Connectivity Service**: Added `cloud-llm-hub-connectivity` service instance in `mta.yaml` with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise ABAP system connectivity via Cloud Connector.
 
 ### Changed
 - Reworked `srv/mcp-manager.ts` to reuse the same MCP transport across session-bound requests while resetting cleanly when a new initialization arrives.
@@ -25,6 +28,10 @@ All notable changes to this project will be documented in this file. The format 
 - Simplified cloud destination templates by treating the BTP Destination name as a constant and removing the unused `destination-file` alias.
 - YAML resolver now supports explicitly empty string passwords (e.g., MCP Basic auth with an empty secret) while keeping validation in place for missing values.
 - `scripts/update-cline-connection.js` honours empty MCP passwords when supplied, matching the updated template workflow.
+- **ProbeDestination Implementation**: Refactored `ProbeDestination` CAP function in `srv/mcp-proxy.ts` to use `executeHttpRequest` from SAP Cloud SDK directly, removing custom destination connection logic. The function now automatically handles destination resolution, authentication, and proxy configuration for both internet and on-premise destinations.
+- **Destination Resolution**: Updated `srv/connections/destinationResolver.ts` to use SAP Cloud SDK's `getDestination` and leverage `executeHttpRequest` for all destination types. Manual token fetching for OAuth2ClientCredentials was removed as `executeHttpRequest` handles token lifecycle automatically.
+- **MCP Server Connection**: Updated `getMCPServer` in `srv/mcp-manager.ts` to always use `CloudSdkAbapConnection` when a destination name is provided, regardless of connectivity mode (internet or on-premise). Removed legacy `BtpOnPremDestinationConnection` usage in favor of unified `executeHttpRequest` approach.
+- **Authentication Middleware**: Changed `requireAuth` in `srv/server.ts` from internal HTTP calls to in-process CAP service invocations using `cds.connect.to('AuthService')` and `srv.run('CheckAuth', req)` to eliminate network overhead and ensure proper user/tenant/locale context propagation.
 
 ### Removed
 - Legacy destination templates under `docs/templates/mcp-config/` in favour of the new `cloud-internet` / `cloud-destination` variants.
