@@ -37,6 +37,16 @@
   },
   "private": true,
   "cds": {
+    "watch": {
+      "ignore": [
+        ".git/**",
+        "node_modules/**",
+        "dist/**",
+        "gen/**",
+        ".DS_Store",
+        "*.log"
+      ]
+    },
     "requires": {
       "auth": {
         "kind": "xsuaa",
