@@ -1,103 +1,108 @@
-# Точні шляхи до CAP ендпойнтів
+# CAP Endpoint Paths
 
 ## AuthService (@path: 'auth')
 
 ### CheckAuth
-- **Метод**: GET
+- **Method**: GET
 - **URL**: `/odata/v4/auth/CheckAuth()`
-- **Параметри**: немає
-- **Авторизація**: Не потрібна (але можлива для отримання інформації про користувача)
-- **Приклад**: 
+- **Parameters**: none
+- **Authorization**: Not required (but possible to get user information)
+- **Example**: 
   ```bash
   GET http://localhost:4004/odata/v4/auth/CheckAuth()
   ```
 
 ### CheckRoles
-- **Метод**: GET
+- **Method**: GET
 - **URL**: `/odata/v4/auth/CheckRoles?required=["MCP_Connector"]`
-- **Параметри**: 
-  - `required` (array of String) - масив назв ролей, які потрібно перевірити
-- **Формат параметра**: JSON масив, URL encoded
-- **Авторизація**: Потрібна (перевіряє ролі авторизованого користувача)
-- **Приклади**: 
+- **Parameters**: 
+  - `required` (array of String) - array of role names to check
+- **Parameter Format**: JSON array, URL encoded
+- **Authorization**: Required (checks roles of the authenticated user)
+- **Examples**: 
   ```bash
-  # Одна роль
+  # Single role
   GET http://localhost:4004/odata/v4/auth/CheckRoles?required=["MCP_Connector"]
   
-  # Декілька ролей
+  # Multiple roles
   GET http://localhost:4004/odata/v4/auth/CheckRoles?required=["MCP_Connector","MCP_Admin"]
   ```
 
 ## McpProxyService (@path: 'mcp')
 
-⚠️ **ВАЖЛИВО**: Усі ендпойнти McpProxyService вимагають авторизації з scope `MCP_Connector` (`@requires: 'MCP_Connector'`)
+⚠️ **IMPORTANT**: All McpProxyService endpoints require authorization with scope `MCP_Connector` (`@requires: 'MCP_Connector'`)
 
 ### Health
-- **Метод**: GET
+- **Method**: GET
 - **URL**: `/odata/v4/mcp/Health()`
-- **Параметри**: немає
-- **Авторизація**: ✅ Обов'язкова - потрібен scope `MCP_Connector`
-- **Приклад**: 
+- **Parameters**: none
+- **Authorization**: ✅ Required - scope `MCP_Connector` needed
+- **Example**: 
   ```bash
   GET http://localhost:4004/odata/v4/mcp/Health()
-  Authorization: Basic YWxpY2U6  # для development (alice)
-  # або
-  Authorization: Bearer <JWT_TOKEN>  # для production
+  Authorization: Basic YWxpY2U6  # for development (alice)
+  # or
+  Authorization: Bearer <JWT_TOKEN>  # for production
   ```
 
 ### ProbeDestination
-- **Метод**: GET
+- **Method**: GET
 - **URL**: `/odata/v4/mcp/ProbeDestination?destination=NAME`
-- **Або через позиційний параметр**: `/odata/v4/mcp/ProbeDestination(destination='NAME')`
-- **Параметри**: 
-  - `destination` (String, обов'язковий) - назва destination
-- **Авторизація**: ✅ Обов'язкова - потрібен scope `MCP_Connector`
-- **Приклади**: 
+- **Or via positional parameter**: `/odata/v4/mcp/ProbeDestination(destination='NAME')`
+- **Parameters**: 
+  - `destination` (String, required) - destination name
+- **Authorization**: ✅ Required - scope `MCP_Connector` needed
+- **Implementation**: Uses SAP Cloud SDK's `executeHttpRequest` for automatic destination resolution, authentication, and proxy configuration.
+- **Examples**: 
   ```bash
-  # Через query параметр (рекомендовано)
+  # Via query parameter (recommended)
   GET http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=S4HANA
   
-  # Через позиційний параметр
+  # Via positional parameter
   GET http://localhost:4004/odata/v4/mcp/ProbeDestination(destination='S4HANA')
+  
+  # Production with Bearer token
+  GET https://<your-app>.cfapps.<region>.hana.ondemand.com/odata/v4/mcp/ProbeDestination?destination=S4HANA
+  Authorization: Bearer <JWT_TOKEN>
   ```
 
 ### InvokeTool (Deprecated)
-- **Метод**: POST
+- **Method**: POST
 - **URL**: `/odata/v4/mcp/InvokeTool`
-- **Статус**: ⚠️ Deprecated - використовуйте `/mcp/stream/sse` або `/mcp/stream/http`
+- **Status**: ⚠️ Deprecated - use `/mcp/stream/sse` or `/mcp/stream/http` instead
 
-## Важливі правила для OData V4
+## Important Rules for OData V4
 
-### 1. Функції з дужками `()`
-CAP функції **завжди** викликаються з `()` в кінці:
-- ✅ Правильно: `/odata/v4/mcp/Health()`
-- ✅ Правильно: `/odata/v4/auth/CheckAuth()`
-- ❌ Неправильно: `/odata/v4/mcp/Health`
-- ❌ Неправильно: `/odata/v4/auth/CheckAuth`
+### 1. Functions with parentheses `()`
+CAP functions **always** require `()` at the end:
+- ✅ Correct: `/odata/v4/mcp/Health()`
+- ✅ Correct: `/odata/v4/auth/CheckAuth()`
+- ❌ Incorrect: `/odata/v4/mcp/Health`
+- ❌ Incorrect: `/odata/v4/auth/CheckAuth`
 
-### 2. Параметри функцій
-Можна використовувати два способи:
+### 2. Function Parameters
+Two methods are available:
 
-**A) Query параметри (рекомендовано для масивів і складних типів)**
+**A) Query parameters (recommended for arrays and complex types)**
 ```
 GET /odata/v4/mcp/ProbeDestination?destination=S4HANA
 GET /odata/v4/auth/CheckRoles?required=["MCP_Connector"]
 ```
 
-**B) Позиційні параметри в URL**
+**B) Positional parameters in URL**
 ```
 GET /odata/v4/mcp/ProbeDestination(destination='S4HANA')
 GET /odata/v4/auth/CheckRoles(required=['MCP_Connector'])
 ```
 
-### 3. Масиви в query параметрах
-Масиви передаються як JSON, URL encoded:
-- ✅ Правильно: `?required=["MCP_Connector"]` (JSON масив)
+### 3. Arrays in Query Parameters
+Arrays are passed as JSON, URL encoded:
+- ✅ Correct: `?required=["MCP_Connector"]` (JSON array)
 - ✅ URL encoded: `?required=%5B%22MCP_Connector%22%5D`
-- ❌ Неправильно: `?required=MCP_Connector`
-- ❌ Неправильно: `?required[]=MCP_Connector`
+- ❌ Incorrect: `?required=MCP_Connector`
+- ❌ Incorrect: `?required[]=MCP_Connector`
 
-### 4. Авторизація
+### 4. Authorization
 
 #### Development (Basic Auth)
 ```bash
@@ -113,11 +118,11 @@ Authorization: Basic Ym9iOg==
 Authorization: Bearer <JWT_TOKEN>
 ```
 
-JWT токен повинен містити scope `MCP_Connector` (або `MCP_Admin`).
+The JWT token must contain scope `MCP_Connector` (or `MCP_Admin`).
 
-## Приклади для Postman
+## Examples for Postman
 
-### Health Check (працює тільки з авторизацією!)
+### Health Check (only works with authorization!)
 
 ```
 GET http://localhost:4004/odata/v4/mcp/Health()
@@ -125,7 +130,7 @@ GET http://localhost:4004/odata/v4/mcp/Health()
 Headers:
   Authorization: Basic YWxpY2U6  # alice: (empty password)
 
-Або в production:
+Or in production:
   Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
@@ -138,26 +143,53 @@ Headers:
   Authorization: Basic YWxpY2U6  # alice
 ```
 
+### ProbeDestination
+
+```
+GET http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=ABAP_DEV
+
+Headers:
+  Authorization: Basic YWxpY2U6  # alice
+```
+
+**Expected Response:**
+```json
+{
+  "destination": "ABAP_DEV",
+  "connectivity": "internet",
+  "proxyType": "Internet",
+  "authentication": "BasicAuthentication",
+  "sapClient": "100",
+  "cloudConnectorLocationId": "",
+  "tokenExpiresAt": 0,
+  "probe": {
+    "status": 200,
+    "statusText": "OK",
+    "contentType": "application/atomsvc+xml"
+  },
+  "timestamp": "2025-11-04T09:30:00.000Z"
+}
+```
+
 ## Troubleshooting
 
-### Помилка: "Service has no handler"
-- Перевірте, чи файл handler відповідає імені сервісу:
+### Error: "Service has no handler"
+- Check if the handler file matches the service name:
   - `AuthService` → `srv/auth.ts`
   - `McpProxyService` → `srv/mcp-proxy.ts`
 
-### Помилка: "Forbidden" або "Unauthorized"
-- Перевірте, чи Authorization header встановлений
-- Перевірте, чи токен містить потрібний scope (`MCP_Connector`)
-- Для development перевірте, чи користувач є в `package.json` → `cds.requires.auth[development].users`
+### Error: "Forbidden" or "Unauthorized"
+- Check if Authorization header is set
+- Check if the token contains the required scope (`MCP_Connector`)
+- For development, check if the user exists in `package.json` → `cds.requires.auth[development].users`
 
-### Помилка: "Malformed parameters"
-- Перевірте формат масивів: має бути JSON масив `["role"]`, а не рядок `"role"`
-- URL encode масиви: `["MCP_Connector"]` → `%5B%22MCP_Connector%22%5D`
+### Error: "Malformed parameters"
+- Check array format: must be JSON array `["role"]`, not string `"role"`
+- URL encode arrays: `["MCP_Connector"]` → `%5B%22MCP_Connector%22%5D`
 
-## Відмінності між сервісами
+## Service Differences
 
-| Сервіс | Шлях | Авторизація | Призначення |
-|--------|------|-------------|-------------|
-| `AuthService` | `/odata/v4/auth/*` | Необов'язкова | Перевірка автентифікації та ролей |
-| `McpProxyService` | `/odata/v4/mcp/*` | **Обов'язкова** | MCP proxy функціональність |
-
+| Service | Path | Authorization | Purpose |
+|---------|------|---------------|---------|
+| `AuthService` | `/odata/v4/auth/*` | Optional | Authentication and role checking |
+| `McpProxyService` | `/odata/v4/mcp/*` | **Required** | MCP proxy functionality |
