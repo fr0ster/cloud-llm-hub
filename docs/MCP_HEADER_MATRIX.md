@@ -1,6 +1,6 @@
 # MCP Header Matrix
 
-This note documents which HTTP headers the Cline MCP settings expect in each supported scenario and where the automation can source their values. It is intended to accompany the YAML playbooks produced by `scripts/update-cline-from-yaml.js`.
+This note documents which HTTP headers the Cline MCP settings expect in each supported scenario and where the automation can source their values. It is intended to accompany the YAML playbooks produced by `tools/update-cline-connection.js` (YAML mode).
 
 ## Service-Key Aliases in Templates
 

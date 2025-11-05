@@ -61,7 +61,7 @@ async function run() {
   const args = process.argv.slice(2);
   const argIndex = args.findIndex((a) => a === '--config' || a === '-c');
   if (argIndex === -1 || !args[argIndex + 1]) {
-    console.error('Usage: node scripts/test-cap-from-yaml.js --config <file.yaml>');
+    console.error('Usage: node test/test-cap-from-yaml.js --config <file.yaml>');
     process.exit(1);
   }
 

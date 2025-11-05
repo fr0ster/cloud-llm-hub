@@ -1365,7 +1365,7 @@ function parseYamlArgs(argv) {
 function printYamlHelp() {
   console.log(`Update Cline MCP settings using a declarative YAML plan
 
-Usage: node scripts/update-cline-from-yaml.js --config <file> [options]
+Usage: node tools/update-cline-connection.js --config <file> [options]
 
 Options:
   --config, -c <file>    YAML descriptor with connection instructions (required)
