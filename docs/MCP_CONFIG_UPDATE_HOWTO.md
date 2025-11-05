@@ -1,13 +1,17 @@
 # MCP Config Update How-To
 
-This guide explains how to refresh Cline's MCP connection settings using the automation scripts that ship with **cloud-llm-hub**. Two variants are available:
+This guide explains how to refresh Cline's MCP connection settings using the unified automation script that ships with **cloud-llm-hub**.
 
-- `scripts/update-cline-connection.js` — works both inside the repository (with automatic defaults) and standalone (with explicit parameters). It understands the project layout, reuses `.env` defaults when available, and can trigger the ABAP token helper.
-- `scripts/update-cline-from-yaml.js` — a declarative orchestrator that reads a YAML plan, fetches service keys (from files or Cloud Foundry), runs helper commands, and updates multiple connections in one shot.
+**`scripts/update-cline-connection.js`** is a unified script that supports two modes:
 
-Both CLIs update the JSON document in-place and only touch the headers for the requested MCP connection. Use `--dry-run` to review the resulting payload without saving anything.
+1. **CLI mode** (default) — works both inside the repository (with automatic defaults) and standalone (with explicit parameters). It understands the project layout, reuses `.env` defaults when available, and can trigger the ABAP token helper.
+2. **YAML mode** (with `--config` or `--template`) — a declarative orchestrator that reads a YAML plan, fetches service keys (from files or Cloud Foundry), runs helper commands, and updates multiple connections in one shot.
 
-## 1. Main Script (`update-cline-connection.js`)
+The script updates the JSON document in-place and only touches the headers for the requested MCP connection. Use `--dry-run` to review the resulting payload without saving anything.
+
+**Standalone usage:** Copy `scripts/update-cline-connection.js` to any location. For YAML mode, also copy `scripts/update-cline-from-yaml.js` (it's required as a dependency).
+
+## 1. CLI Mode (Default)
 
 ### Inside Repository (with defaults)
 
@@ -63,19 +67,22 @@ Key capabilities:
 
 > **Note:** When `--destination-name` is supplied the script will drop the direct `X-SAP-URL` / `X-SAP-JWT-TOKEN` headers and rely on the Destination service at runtime. This keeps the stored settings free from short-lived tokens.
 
-## 2. YAML-Driven Script (`update-cline-from-yaml.js`)
+## 2. YAML Mode (with `--config`)
 
-Use the YAML orchestrator when you need to codify several MCP connections, including how to resolve service keys and credentials.
+Use YAML mode when you need to codify several MCP connections, including how to resolve service keys and credentials. The same script handles both modes automatically.
 
-**Standalone usage:** Copy both `scripts/update-cline-from-yaml.js` and `scripts/update-cline-connection.js` to the same directory. The YAML script requires the connection script for header manipulation functions.
+**Standalone usage:** Copy both `scripts/update-cline-connection.js` and `scripts/update-cline-from-yaml.js` to the same directory (YAML mode requires the YAML script as a dependency).
 
 ```bash
-npm run update:cline:yaml -- --config ./config/mcp-update.yaml
-npm run update:cline:yaml -- --config ./config/mcp-update.yaml --connection sap-dev,sap-qa
-node scripts/update-cline-from-yaml.js --config ./config/mcp-update.yaml --dry-run
+# Via npm (uses main script with --config)
+npm run update:cline:yaml -- ./config/mcp-update.yaml
+npm run update:cline:yaml -- ./config/mcp-update.yaml --connection sap-dev,sap-qa
+
+# Direct usage
+node scripts/update-cline-connection.js --config ./config/mcp-update.yaml --dry-run
 
 # generate a starter template
-node scripts/update-cline-from-yaml.js --template direct-jwt > ./config/direct-jwt.yaml
+node scripts/update-cline-connection.js --template direct-jwt > ./config/direct-jwt.yaml
 ```
 
 Pre-baked templates also live under [`docs/templates/mcp-config/`](./templates/mcp-config/).
@@ -85,7 +92,7 @@ Pre-baked templates also live under [`docs/templates/mcp-config/`](./templates/m
 When printing templates you can override the MCP metadata directly from the CLI instead of editing the YAML afterwards:
 
 ```bash
-node scripts/update-cline-from-yaml.js \
+node scripts/update-cline-connection.js \
   --template direct-jwt \
   --connection direct-jwt-local \
   --service-key-file sapAbap=./keys/sk.json \
@@ -263,5 +270,5 @@ The script injects the SAP basic credentials and the MCP basic credentials witho
 - [`docs/MCP_PROXY_USAGE.md`](./MCP_PROXY_USAGE.md) — End-to-end usage guide covering SSE and Stream-HTTP transports.
 - [`docs/examples/`](./examples/) — Sample Cline configuration payloads for different connection types.
 - [`docs/templates/mcp-config/`](./templates/mcp-config/) — Ready-to-fill YAML skeletons for common scenarios.
-- [`scripts/update-cline-connection.js`](../scripts/update-cline-connection.js) — Source code for the main CLI (works both in repository and standalone mode).
-- [`scripts/update-cline-from-yaml.js`](../scripts/update-cline-from-yaml.js) — Source code for the declarative YAML orchestrator.
+- [`scripts/update-cline-connection.js`](../scripts/update-cline-connection.js) — Source code for the unified CLI (supports both CLI and YAML modes, works standalone).
+- [`scripts/update-cline-from-yaml.js`](../scripts/update-cline-from-yaml.js) — YAML mode implementation (required dependency for YAML mode).

@@ -2265,3 +2265,6 @@ if (require.main === module) {
     process.exit(1);
   });
 }
+
+// Export main for use by other scripts
+module.exports = { main };

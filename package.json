@@ -30,7 +30,7 @@
     "start": "cds-serve",
     "test": "node scripts/test-cap-from-yaml.js --config test/integration.yaml",
     "update:cline": "node scripts/update-cline-connection.js",
-    "update:cline:yaml": "node scripts/update-cline-from-yaml.js",
+    "update:cline:yaml": "node scripts/update-cline-connection.js --config",
     "copy:mcp-submodule": "node scripts/copy-mcp-submodule.js",
     "update:env": "node scripts/update-default-env.js"
     
