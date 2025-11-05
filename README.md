@@ -46,7 +46,10 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Tooling & Tests
 
-- Smoke tests live under `test/smoke/` (health, SSE, Stream-HTTP, SSE auth).
+- **Integration tests**: YAML-driven test runner via `npm test` (requires `test/integration.yaml` config).
+  - Copy `test/integration.yaml.template` to `test/integration.yaml` and fill in your values.
+  - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
+- Legacy smoke tests under `test/smoke/` (manual scripts for health, SSE, Stream-HTTP).
 - Run `npm exec -- tsc --noEmit` to type-check the project.
 - The `docs/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.
 

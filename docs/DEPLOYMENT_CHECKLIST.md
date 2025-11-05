@@ -195,12 +195,14 @@ cf restage cloud-llm-hub-srv
 
 ## Testing Checklist
 
-- [ ] Health endpoint responds: `/mcp/Health`
+- [ ] Health endpoint responds: `/odata/v4/mcp/Health()`
 - [ ] SSE endpoint accessible: `/mcp/stream/sse`
 - [ ] Stream-HTTP endpoint accessible: `/mcp/stream/http`
-- [ ] Destination probe works: `/mcp/destination/probe?destination=XXX`
+- [ ] Destination probe works: `/odata/v4/mcp/ProbeDestination?destination=XXX`
 - [ ] Authentication required for all endpoints
 - [ ] XSUAA token validation works
 - [ ] Destination resolution works
 - [ ] On-premise connectivity works (if applicable)
+
+**Tip:** Run integration tests via `npm test` (requires `test/integration.yaml` config).
 
