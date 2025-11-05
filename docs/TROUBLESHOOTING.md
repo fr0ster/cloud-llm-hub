@@ -1,5 +1,8 @@
 # Troubleshooting Guide
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 Quick reference for common issues and solutions when using Cloud LLM Hub.
 
 ## 🔍 Quick Diagnostics

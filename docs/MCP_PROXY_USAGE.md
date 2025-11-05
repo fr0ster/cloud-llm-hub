@@ -1,5 +1,8 @@
 # MCP Proxy - Streaming Endpoints
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 CAP-based secure proxy for MCP (Model Command Protocol) with SSE and Stream-HTTP support.
 
 ## 🚀 Quick Start

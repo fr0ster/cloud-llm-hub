@@ -1,5 +1,8 @@
 # MCP Config Update How-To
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 This guide explains how to refresh Cline's MCP connection settings using the unified automation script that ships with **cloud-llm-hub**.
 
 **`tools/update-cline-connection.js`** is a unified script that supports two modes:

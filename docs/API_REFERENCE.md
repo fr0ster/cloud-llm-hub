@@ -1,5 +1,8 @@
 # API Reference
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 Complete API specification for Cloud LLM Hub endpoints.
 
 ## Base URL

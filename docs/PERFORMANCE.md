@@ -1,5 +1,8 @@
 # Performance Guide
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 Performance characteristics, optimization recommendations, and tuning guidelines for Cloud LLM Hub.
 
 ## 📊 Performance Characteristics

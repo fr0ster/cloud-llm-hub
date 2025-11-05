@@ -1,5 +1,8 @@
 # 🚀 Getting Started with Cloud LLM Hub
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 **Welcome!** This guide will get you up and running with Cloud LLM Hub in **under 5 minutes**. Whether you're integrating with Cline, Claude Desktop, n8n, or building custom automations, we've got you covered.
 
 ## Why Cloud LLM Hub?
