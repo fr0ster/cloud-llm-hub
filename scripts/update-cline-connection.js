@@ -503,12 +503,16 @@ async function main() {
   const updateSap = options.updateScope === 'sap' || options.updateScope === 'all';
   const updateMcp = options.updateScope === 'mcp' || options.updateScope === 'all';
 
+  // Standalone mode: if --settings is explicitly provided, skip automatic .env discovery
+  const isStandalone = !!options.settingsPath;
   const settingsPath = options.settingsPath ?? getDefaultSettingsPath();
-  const defaultEnvPath = await getDefaultEnvPath();
+  const defaultEnvPath = isStandalone ? null : await getDefaultEnvPath();
   const envPath = options.envPath ?? defaultEnvPath;
 
   if (options.serviceKey) {
-    if (!updateSap) {
+    if (isStandalone) {
+      console.warn('⚠️  --service-key is not supported in standalone mode (requires repository structure). Use --sap-token instead.');
+    } else if (!updateSap) {
       console.warn('⚠️  Ignoring --service-key because the update scope does not include SAP credentials.');
     } else {
       console.log('🔄  Running sap-abap-auth-browser to refresh the JWT...');
@@ -518,7 +522,7 @@ async function main() {
         scriptOverride: options.sapAuthScript
       });
       console.log('✅  JWT updated using the provided service key.');
-      if (options.envPath && path.resolve(process.cwd(), envPath) !== defaultEnvPath) {
+      if (options.envPath && defaultEnvPath && path.resolve(process.cwd(), envPath) !== defaultEnvPath) {
         console.warn('⚠️  sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.');
       }
     }
@@ -529,9 +533,16 @@ async function main() {
   const [config, sapConfig] = await Promise.all([configPromise, sapConfigPromise]);
 
   if (updateSap && !options.destinationName) {
-    const envFilePresent = await fileExists(envPath);
-    if (!envFilePresent && !options.sapToken) {
-      console.warn(`⚠️  .env file not found (${envPath}). Provide --sap-token or refresh the file via the authorization utility.`);
+    if (isStandalone) {
+      // In standalone mode, require explicit SAP credentials
+      if (!options.sapToken && !options.sapUsername) {
+        throw new Error('Standalone mode requires explicit SAP credentials. Provide --sap-token (or --sap-username/--sap-password for basic auth).');
+      }
+    } else {
+      const envFilePresent = envPath && await fileExists(envPath);
+      if (!envFilePresent && !options.sapToken) {
+        console.warn(`⚠️  .env file not found (${envPath}). Provide --sap-token or refresh the file via the authorization utility.`);
+      }
     }
   }
 

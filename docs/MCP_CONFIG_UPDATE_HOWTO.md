@@ -1,14 +1,15 @@
 # MCP Config Update How-To
 
-This guide explains how to refresh Cline's MCP connection settings using the automation scripts that ship with **cloud-llm-hub**. Three variants are available:
+This guide explains how to refresh Cline's MCP connection settings using the automation scripts that ship with **cloud-llm-hub**. Two variants are available:
 
-- `scripts/update-cline-connection.js` — intended to be executed inside this repository. It understands the project layout, reuses `.env` defaults, and can trigger the ABAP token helper.
-- `scripts/update-cline-connection-standalone.js` — a portable CLI that accepts explicit parameters and can be copied into any workspace together with your `cline_mcp_settings.json` file.
+- `scripts/update-cline-connection.js` — works both inside the repository (with automatic defaults) and standalone (with explicit parameters). It understands the project layout, reuses `.env` defaults when available, and can trigger the ABAP token helper.
 - `scripts/update-cline-from-yaml.js` — a declarative orchestrator that reads a YAML plan, fetches service keys (from files or Cloud Foundry), runs helper commands, and updates multiple connections in one shot.
 
 Both CLIs update the JSON document in-place and only touch the headers for the requested MCP connection. Use `--dry-run` to review the resulting payload without saving anything.
 
-## 1. Repository Script (`update-cline-connection.js`)
+## 1. Main Script (`update-cline-connection.js`)
+
+### Inside Repository (with defaults)
 
 ```bash
 # refresh the "sap-dev" connection using repository defaults
@@ -18,10 +19,32 @@ node scripts/update-cline-connection.js --connection sap-dev
 npm run update:cline -- --connection sap-dev
 ```
 
+### Standalone Mode (for consumers without the full project)
+
+The script can work standalone when you provide `--settings` explicitly. You can copy just `scripts/update-cline-connection.js` to any location and use it without the full cloud-llm-hub repository:
+
+```bash
+# Copy the script to your workspace
+cp scripts/update-cline-connection.js ~/my-workspace/
+
+# Run it with explicit parameters (no repository needed)
+node ~/my-workspace/update-cline-connection.js \
+  --settings /path/to/cline_mcp_settings.json \
+  --connection sap-dev \
+  --sap-url https://my.s4hana.example.com \
+  --sap-auth-type jwt \
+  --sap-token "<ABAP JWT>"
+```
+
+**Note:** In standalone mode (when `--settings` is provided), the script:
+- Requires explicit SAP credentials (`--sap-token` or `--sap-username/--sap-password`)
+- Does not search for `.env` files
+- Does not support `--service-key` (requires repository structure)
+
 Key capabilities:
 
-- Reads the Cline settings file from the default location (`~/.config/Code/User/.../cline_mcp_settings.json`) unless you override `--settings <path>`.
-- Loads SAP credentials from `submodules/mcp-abap-adt/.env` (or `./.env` fallback) and can refresh the JWT using `--service-key <xsuaa-key.json>`.
+- **Inside repository**: Reads the Cline settings file from the default location (`~/.config/Code/User/.../cline_mcp_settings.json`) unless you override `--settings <path>`. Loads SAP credentials from `submodules/mcp-abap-adt/.env` (or `./.env` fallback) and can refresh the JWT using `--service-key <xsuaa-key.json>`.
+- **Standalone mode**: When `--settings` is provided, requires explicit SAP credentials (`--sap-token` or `--sap-username/--sap-password`). The `--service-key` option is not available in standalone mode.
 - Supports MCP-side authentication overrides via `--mcp-*` switches (basic, bearer, or direct header injection).
 - Adds destination headers when you call `--destination-name <DEST>` to route traffic through SAP BTP Destination service. Combine with `--connectivity-mode onprem` and `--connectivity-location-id <ID>` if the destination uses Cloud Connector.
 
@@ -40,36 +63,11 @@ Key capabilities:
 
 > **Note:** When `--destination-name` is supplied the script will drop the direct `X-SAP-URL` / `X-SAP-JWT-TOKEN` headers and rely on the Destination service at runtime. This keeps the stored settings free from short-lived tokens.
 
-## 2. Portable Script (`update-cline-connection-standalone.js`)
-
-Use this variant when you need to refresh an MCP profile from outside the repository (for example on a jump host or inside CI).
-
-```bash
-# copy the script somewhere convenient
-cp scripts/update-cline-connection-standalone.js ~/tmp/mcp-update/
-
-# run it with explicit parameters
-node update-cline-connection-standalone.js \
-  --settings /path/to/cline_mcp_settings.json \
-  --connection sap-dev \
-  --sap-url https://my.s4hana.example.com \
-  --sap-auth-type jwt \
-  --sap-token "<ABAP JWT>"
-```
-
-Standalone-only characteristics:
-
-- Requires `--settings` and does **not** assume any project-relative paths.
-- Accepts SAP credentials directly by CLI flags. Supply either `--sap-token` (JWT) or `--sap-username/--sap-password` (basic).
-- Uses the same MCP authentication switches as the repository script.
-- Supports destination headers via `--destination-name`, `--connectivity-mode`, and `--connectivity-location-id`.
-- When executed from the repository you can call `npm run update:cline:standalone -- <args>` instead of invoking `node` manually.
-
-When combining the standalone script with destinations you typically obtain the destination name and (optionally) the Cloud Connector location ID from your SAP BTP cockpit. Tokens are resolved later by the CAP service, so no additional credentials are required in the settings file.
-
-## 3. YAML Playbooks (`update-cline-from-yaml.js`)
+## 2. YAML-Driven Script (`update-cline-from-yaml.js`)
 
 Use the YAML orchestrator when you need to codify several MCP connections, including how to resolve service keys and credentials.
+
+**Standalone usage:** Copy both `scripts/update-cline-from-yaml.js` and `scripts/update-cline-connection.js` to the same directory. The YAML script requires the connection script for header manipulation functions.
 
 ```bash
 npm run update:cline:yaml -- --config ./config/mcp-update.yaml
@@ -231,10 +229,14 @@ node scripts/update-cline-connection.js \
 - Adds `X-SAP-Destination`, `X-SAP-Connectivity-Mode: onprem`, and `X-SAP-Connectivity-Location-Id: CC-PRD`.
 - Leaves MCP auth untouched.
 
-### Fully Offline Update with the Standalone Script
+### Fully Offline Update (Standalone Mode)
 
 ```bash
-node scripts/update-cline-connection-standalone.js \
+# Copy the script first (if not in repository)
+cp scripts/update-cline-connection.js ~/my-workspace/
+
+# Run in standalone mode with explicit parameters
+node ~/my-workspace/update-cline-connection.js \
   --settings ~/.cline/settings/cline_mcp_settings.json \
   --connection sap-dev \
   --sap-url https://my.s4hana.example.com \
@@ -247,7 +249,7 @@ node scripts/update-cline-connection-standalone.js \
   --mcp-password "<another-secret>"
 ```
 
-The script injects the SAP basic credentials and the MCP basic credentials without reading any repository metadata.
+The script injects the SAP basic credentials and the MCP basic credentials without reading any repository metadata. When `--settings` is provided, it runs in standalone mode and requires all credentials to be passed explicitly.
 
 ## 5. Troubleshooting
 
@@ -261,6 +263,5 @@ The script injects the SAP basic credentials and the MCP basic credentials witho
 - [`docs/MCP_PROXY_USAGE.md`](./MCP_PROXY_USAGE.md) — End-to-end usage guide covering SSE and Stream-HTTP transports.
 - [`docs/examples/`](./examples/) — Sample Cline configuration payloads for different connection types.
 - [`docs/templates/mcp-config/`](./templates/mcp-config/) — Ready-to-fill YAML skeletons for common scenarios.
-- [`scripts/update-cline-connection.js`](../scripts/update-cline-connection.js) — Source code for the repository-aware CLI.
-- [`scripts/update-cline-connection-standalone.js`](../scripts/update-cline-connection-standalone.js) — Source code for the portable CLI.
+- [`scripts/update-cline-connection.js`](../scripts/update-cline-connection.js) — Source code for the main CLI (works both in repository and standalone mode).
 - [`scripts/update-cline-from-yaml.js`](../scripts/update-cline-from-yaml.js) — Source code for the declarative YAML orchestrator.
