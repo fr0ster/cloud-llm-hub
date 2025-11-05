@@ -4,52 +4,46 @@ High-level architecture and design decisions for Cloud LLM Hub.
 
 ## 🏗️ System Architecture
 
+```mermaid
+graph TB
+    Client[MCP Clients<br/>Cline/Claude/n8n/CI-CD] -->|HTTP/SSE/Stream-HTTP| Hub[Cloud LLM Hub<br/>CAP Service]
+    
+    Hub -->|CAP Auth| XSUAA[XSUAA<br/>Authentication]
+    Hub -->|Cloud SDK| Dest[Destination Service]
+    Hub -->|Optional| Conn[Connectivity Service]
+    
+    Hub -->|Embeds| MCP[MCP ABAP Server<br/>submodule]
+    
+    Dest -->|Internet| SAP1[SAP Cloud System]
+    Dest -->|via Connector| CC[Cloud Connector]
+    CC -->|On-Premise| SAP2[SAP On-Premise System]
+    
+    style Hub fill:#4CAF50,color:#fff
+    style XSUAA fill:#FF9800,color:#fff
+    style MCP fill:#2196F3,color:#fff
+    style Dest fill:#9C27B0,color:#fff
+    style Conn fill:#F44336,color:#fff
 ```
-┌─────────────────┐
-│   MCP Clients   │
-│  (Cline, etc.)  │
-└────────┬────────┘
-         │ HTTP/SSE
-         │
-┌────────▼──────────────────────────────────┐
-│      Cloud LLM Hub (CAP Service)          │
-│  ┌────────────────────────────────────┐  │
-│  │  Authentication (XSUAA)            │  │
-│  └────────────────────────────────────┘  │
-│  ┌────────────────────────────────────┐  │
-│  │  MCP Proxy (srv/mcp-proxy.ts)      │  │
-│  │  - SSE Endpoint                    │  │
-│  │  - Stream-HTTP Endpoint            │  │
-│  └────────────────────────────────────┘  │
-│  ┌────────────────────────────────────┐  │
-│  │  MCP Manager (srv/mcp-manager.ts)  │  │
-│  │  - Server Lifecycle                │  │
-│  │  - Session Management               │  │
-│  │  - Caching                         │  │
-│  └────────────────────────────────────┘  │
-│  ┌────────────────────────────────────┐  │
-│  │  Connections (srv/connections/)     │  │
-│  │  - Destination Resolver             │  │
-│  │  - Cloud SDK Integration             │  │
-│  │  - Connectivity Proxy               │  │
-│  └────────────────────────────────────┘  │
-└────────┬──────────────────────────────────┘
-         │
-         │ SAP Cloud SDK
-         │
-┌────────▼──────────────────────────────────┐
-│      SAP BTP Services                     │
-│  - XSUAA (Authentication)                  │
-│  - Destination Service                    │
-│  - Connectivity Service                    │
-└────────┬──────────────────────────────────┘
-         │
-         │ HTTP/HTTPS
-         │
-┌────────▼──────────────────────────────────┐
-│      SAP ABAP System                     │
-│  (via Cloud Connector for on-premise)     │
-└───────────────────────────────────────────┘
+
+### Component Architecture
+
+```mermaid
+graph LR
+    subgraph "Cloud LLM Hub"
+        Proxy[MCP Proxy<br/>srv/mcp-proxy.ts]
+        Manager[MCP Manager<br/>srv/mcp-manager.ts]
+        Connections[Connections<br/>srv/connections/]
+    end
+    
+    Proxy -->|Manages| Manager
+    Manager -->|Uses| Connections
+    Connections -->|SAP Cloud SDK| SDK[executeHttpRequest]
+    
+    Manager -->|Creates/Caches| MCP[MCP Server<br/>submodule]
+    
+    style Proxy fill:#4CAF50,color:#fff
+    style Manager fill:#2196F3,color:#fff
+    style Connections fill:#9C27B0,color:#fff
 ```
 
 ## 📁 Project Structure
@@ -87,8 +81,27 @@ cloud-llm-hub/
 
 ### 1. MCP Request (SSE)
 
-```
-Client → CAP Service (Auth) → Express Route → MCP Manager → MCP Server → SAP
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as Hub (CAP)
+    participant A as XSUAA
+    participant M as MCP Manager
+    participant S as SAP System
+    
+    C->>H: GET /mcp/stream/sse
+    H->>A: Validate token
+    A-->>H: Token valid
+    H->>M: Get/Create MCP server
+    M->>S: Establish connection
+    S-->>M: Connection established
+    M-->>H: MCP server ready
+    H-->>C: SSE stream started
+    loop Stream Events
+        S->>M: ABAP data
+        M->>H: MCP response
+        H->>C: SSE event
+    end
 ```
 
 **Detailed flow:**
@@ -101,22 +114,47 @@ Client → CAP Service (Auth) → Express Route → MCP Manager → MCP Server �
 
 ### 2. MCP Request (Stream-HTTP)
 
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as Hub (CAP)
+    participant A as XSUAA
+    participant M as MCP Manager
+    participant D as Destination Service
+    participant S as SAP System
+    
+    C->>H: POST /mcp/stream/http<br/>(no Mcp-Session-Id)
+    H->>A: Validate token
+    A-->>H: Token valid
+    H->>M: Get/Create MCP server
+    M->>D: Resolve destination
+    D-->>M: Destination config
+    M->>S: Establish connection
+    S-->>M: Connection established
+    M-->>H: Session ID generated
+    H-->>C: Response + Mcp-Session-Id
+    
+    C->>H: POST /mcp/stream/http<br/>(with Mcp-Session-Id)
+    H->>M: Get existing server (session)
+    M->>S: Forward MCP request
+    S-->>M: ABAP response
+    M->>H: MCP response
+    H->>C: NDJSON stream
 ```
-Client → CAP Service (Auth) → Express Route → MCP Manager → MCP Server → SAP
-```
-
-**Detailed flow:**
-1. Client sends POST request to `/mcp/stream/http`
-2. CAP authentication middleware validates XSUAA token
-3. Express route handler (`server.ts`) processes request
-4. MCP Manager creates/retrieves MCP server instance (with session)
-5. MCP request is forwarded to MCP server
-6. NDJSON stream response sent back to client
 
 ### 3. Health Check (CAP OData)
 
-```
-Client → CAP Service (Auth) → CAP Handler → Response
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as Hub (CAP)
+    participant A as XSUAA
+    
+    C->>H: GET /odata/v4/mcp/Health()
+    H->>A: Validate token
+    A-->>H: Token valid
+    H->>H: Check service status
+    H-->>C: {"status":"UP","timestamp":"..."}
 ```
 
 **Flow:**
@@ -194,14 +232,35 @@ Client → CAP Service (Auth) → CAP Handler → Response
 
 ### Development Mode
 
-```
-Request → Mock Auth → User (alice/bob) → Roles → Handler
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as Hub
+    participant M as Mock Auth
+    
+    C->>H: Request + Basic Auth
+    H->>M: Validate Basic Auth
+    M->>M: Check user (alice/bob)
+    M-->>H: User + Roles
+    H->>H: Check permissions
+    H-->>C: Response
 ```
 
 ### Production Mode
 
-```
-Request → XSUAA Token → Validate → Extract User/Roles → Handler
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as Hub
+    participant X as XSUAA
+    
+    C->>H: Request + Bearer Token
+    H->>X: Validate JWT token
+    X->>X: Verify signature
+    X->>X: Extract scopes/roles
+    X-->>H: User + Roles + Scopes
+    H->>H: Check permissions
+    H-->>C: Response
 ```
 
 **XSUAA Scopes:**

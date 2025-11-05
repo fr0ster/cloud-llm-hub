@@ -76,7 +76,9 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **[🔌 Integration Examples](docs/INTEGRATIONS.md)** - Cline, n8n, CI/CD, Python, Node.js
 - **[👥 Consumer Guide](docs/CONSUMER_GUIDE.md)** - End-user focused guide
 - **[🔧 Configuration Guide](docs/MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
-- **[📡 API Reference](docs/MCP_PROXY_USAGE.md)** - Endpoint documentation
+- **[📡 API Reference](docs/API_REFERENCE.md)** - Complete API specification
+- **[📖 Proxy Usage Guide](docs/MCP_PROXY_USAGE.md)** - Detailed usage examples
+- **[🐛 Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 
 ### For Developers (Contributing)
 - **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
