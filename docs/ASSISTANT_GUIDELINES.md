@@ -17,7 +17,7 @@
 	- `npm install` followed by `cds watch --profile development` for local work.
 	- `npx cds build --production` to generate `gen/` artifacts.
 	- `npx mbt build --mtar cloud-llm-hub.mtar` then `cf deploy ... --abort-on-error --delete-services` for SAP BTP deployment.
-- **Build Hooks:** `mta.yaml` runs `npm ci` inside the submodule, builds it, installs root dependencies, executes `cds build`, and copies the compiled submodule payload into `gen/srv/submodules/mcp-abap-adt` via `scripts/copy-mcp-submodule.js`.
+- **Build Hooks:** `mta.yaml` runs `npm ci` inside the submodule, builds it, installs root dependencies, executes `cds build`, and copies the compiled submodule payload into `gen/srv/submodules/mcp-abap-adt` via `tools/copy-mcp-submodule.js`.
 - **Runtime Notes:** Production dependencies include `dotenv`; the srv module imports from `@fr0ster/mcp-abap-adt/dist/...` to load the packaged code at runtime.
 - **Testing:** Smoke scripts live in `test/smoke/`; health endpoint is `/mcp/Health`.
 
