@@ -18,7 +18,22 @@ test/
 
 ## 📋 Types of Tests
 
-### 1. Integration Tests
+### 1. Unit Tests
+
+**Purpose:** Test individual functions and components in isolation
+
+**Location:** `test/unit/`
+
+**Framework:** Jest (recommended) or Mocha
+
+**Run:**
+```bash
+npm run test:unit
+```
+
+**Coverage:** Target > 80% for critical components
+
+### 2. Integration Tests
 
 **Purpose:** Test full request/response flow
 
@@ -31,7 +46,7 @@ test/
 npm test
 ```
 
-### 2. Smoke Tests
+### 3. Smoke Tests
 
 **Purpose:** Quick manual verification
 
@@ -43,7 +58,7 @@ cd test/smoke
 ./run-all.sh
 ```
 
-### 3. Type Checking
+### 4. Type Checking
 
 **Purpose:** Verify TypeScript compilation
 
@@ -95,6 +110,130 @@ npm exec -- tsc --noEmit
 ```
 
 ## ✍️ Writing Tests
+
+### Unit Test Structure
+
+**Setup (Jest):**
+
+1. **Install Jest:**
+```bash
+npm install --save-dev jest @types/jest ts-jest
+```
+
+2. **Create `jest.config.js`:**
+```javascript
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/srv', '<rootDir>/test/unit'],
+  testMatch: ['**/__tests__/**/*.ts', '**/?(*.)+(spec|test).ts'],
+  collectCoverageFrom: [
+    'srv/**/*.ts',
+    '!srv/**/*.d.ts',
+    '!srv/**/*.test.ts'
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 70,
+      functions: 70,
+      lines: 70,
+      statements: 70
+    }
+  }
+};
+```
+
+3. **Add to `package.json`:**
+```json
+{
+  "scripts": {
+    "test:unit": "jest",
+    "test:unit:watch": "jest --watch",
+    "test:unit:coverage": "jest --coverage"
+  }
+}
+```
+
+**Example Unit Test:**
+
+```typescript
+// test/unit/mcp-manager.test.ts
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { getMCPServer } from '../../srv/mcp-manager';
+
+describe('MCP Manager', () => {
+  beforeEach(() => {
+    // Clear cache before each test
+    jest.clearAllMocks();
+  });
+
+  it('should create new MCP server for new URL', async () => {
+    const sapUrl = 'https://sap.example.com';
+    const config = {
+      url: sapUrl,
+      client: '200',
+      auth: { type: 'jwt', token: 'test-token' }
+    };
+
+    const result = await getMCPServer({} as any);
+    expect(result.server).toBeDefined();
+    expect(result.server.url).toBe(sapUrl);
+  });
+
+  it('should return cached server for same URL', async () => {
+    const sapUrl = 'https://sap.example.com';
+    
+    // First call
+    const result1 = await getMCPServer({} as any);
+    
+    // Second call (should use cache)
+    const result2 = await getMCPServer({} as any);
+    
+    expect(result1.server).toBe(result2.server);
+  });
+
+  it('should handle connection errors gracefully', async () => {
+    // Mock connection failure
+    jest.spyOn(require('../../srv/connections/CloudSdkAbapConnection'), 'default')
+      .mockRejectedValue(new Error('Connection failed'));
+
+    await expect(getMCPServer({} as any)).rejects.toThrow('Connection failed');
+  });
+});
+```
+
+**Mocking Strategies:**
+
+**Mock SAP Cloud SDK:**
+```typescript
+jest.mock('@sap-cloud-sdk/http-client', () => ({
+  executeHttpRequest: jest.fn().mockResolvedValue({
+    data: { status: 'ok' },
+    status: 200
+  })
+}));
+```
+
+**Mock CAP Services:**
+```typescript
+jest.mock('@sap/cds', () => ({
+  log: jest.fn(() => ({
+    info: jest.fn(),
+    error: jest.fn(),
+    warn: jest.fn()
+  }))
+}));
+```
+
+**Mock External Dependencies:**
+```typescript
+jest.mock('@fr0ster/mcp-abap-adt', () => ({
+  MCPServer: jest.fn().mockImplementation(() => ({
+    initialize: jest.fn().mockResolvedValue({}),
+    listTools: jest.fn().mockResolvedValue([])
+  }))
+}));
+```
 
 ### Integration Test Structure
 
@@ -180,11 +319,30 @@ fi
 
 ### Current Coverage
 
+**Integration Tests:**
 - ✅ Health endpoint
 - ✅ SSE streaming
 - ✅ Stream-HTTP
 - ✅ Destination probe
 - ✅ Authentication
+
+**Unit Tests:**
+- ⚠️ Not yet implemented (Phase 4 task)
+
+### Target Coverage
+
+**Critical Components (Priority 1):**
+- `srv/mcp-manager.ts` - MCP server lifecycle and caching
+- `srv/connections/destinationResolver.ts` - Destination resolution
+- `srv/connections/CloudSdkAbapConnection.ts` - SAP connection handling
+
+**Important Components (Priority 2):**
+- `srv/mcp-proxy.ts` - Endpoint handlers
+- `tools/update-cline-connection.js` - Configuration management
+
+**Nice to Have (Priority 3):**
+- Utility functions
+- Helper modules
 
 ### Missing Coverage
 
@@ -342,6 +500,21 @@ kill -9 <PID>
 
 ## 📊 Test Reports
 
+### Unit Test Output
+
+```
+PASS  test/unit/mcp-manager.test.ts
+  MCP Manager
+    ✓ should create new MCP server for new URL (45ms)
+    ✓ should return cached server for same URL (12ms)
+    ✓ should handle connection errors gracefully (8ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       3 passed, 3 total
+Snapshots:   0 total
+Time:        2.345 s
+```
+
 ### Integration Test Output
 
 ```
@@ -357,6 +530,17 @@ kill -9 <PID>
 ✅ Health: OK
 ❌ SSE: Failed - Connection timeout
    Error: Request timeout after 15000ms
+```
+
+### Coverage Report
+
+```
+File              | % Stmts | % Branch | % Funcs | % Lines |
+------------------|---------|----------|---------|---------|
+ mcp-manager.ts   |   85.2  |   78.5   |   82.1  |   85.2  |
+ destinationResolver.ts | 92.3 | 88.9 | 90.0 | 92.3 |
+------------------|---------|----------|---------|---------|
+All files         |   88.7  |   83.7   |   86.0  |   88.7  |
 ```
 
 ## 🔄 Continuous Integration

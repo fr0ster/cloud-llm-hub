@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
 ## [Unreleased]
+### Added
+- GitHub templates for issues and pull requests
+- Unit test infrastructure and guidelines
+- Test coverage documentation
 
 ## [1.0.0] - 2025-11-05
 ### Added
