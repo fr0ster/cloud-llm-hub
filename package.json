@@ -29,11 +29,13 @@
   "scripts": {
     "start": "cds-serve",
     "test": "node test/test-cap-from-yaml.js --config test/integration.yaml",
+    "test:unit": "jest",
+    "test:unit:watch": "jest --watch",
+    "test:unit:coverage": "jest --coverage",
     "update:cline": "node tools/update-cline-connection.js",
     "update:cline:yaml": "node tools/update-cline-connection.js",
     "copy:mcp-submodule": "node tools/copy-mcp-submodule.js",
     "update:env": "node tools/update-default-env.js"
-    
   },
   "private": true,
   "cds": {
