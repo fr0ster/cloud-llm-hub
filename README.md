@@ -92,6 +92,8 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 ### For Operators (Production)
 - **[🔧 Operations Guide](docs/OPERATIONS.md)** - Production runbook
 - **[📊 Monitoring Guide](docs/MONITORING.md)** - Monitoring setup and metrics
+- **[⚡ Performance Guide](docs/PERFORMANCE.md)** - Performance optimization and tuning
+- **[🔄 Migration Guide](docs/MIGRATION_GUIDE.md)** - Version upgrade instructions
 - [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md) - Deployment procedures
 - [Implementation Report](docs/IMPLEMENTATION_REPORT.md)
 - [Architecture Decision Records](docs/adrs)
