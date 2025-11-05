@@ -37,7 +37,12 @@
     "copy:mcp-submodule": "node tools/copy-mcp-submodule.js",
     "update:env": "node tools/update-default-env.js"
   },
+  "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
   "cds": {
     "watch": {
       "ignore": [
