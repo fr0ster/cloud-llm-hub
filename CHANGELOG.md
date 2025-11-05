@@ -3,7 +3,48 @@
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
 ## [Unreleased]
+
+## [1.0.0] - 2025-11-05
 ### Added
+- **Comprehensive Consumer Onboarding Documentation:**
+  - `docs/GETTING_STARTED.md` - Complete onboarding guide with use cases
+  - `docs/QUICK_SETUP.md` - 60-second setup guide
+  - `docs/INTEGRATIONS.md` - Ready-to-use examples for Cline, n8n, CI/CD, Python, Node.js, Bash
+  - `docs/CONSUMER_GUIDE.md` - End-user focused guide
+  - `docs/FEATURES.md` - Feature comparison and benefits
+  - GitHub Actions workflow example for SAP code analysis
+  - GitLab CI example
+  - CI/CD script examples
+  - n8n workflow JSON template
+- **Contributor Documentation:**
+  - `CONTRIBUTING.md` - Main contributing guide with workflow overview
+  - `docs/contributors/` - Complete contributor documentation
+    - `SETUP.md` - Development environment setup guide
+    - `WORKFLOW.md` - Detailed Git workflow (fork → branch → PR)
+    - `CODE_STYLE.md` - Coding standards and conventions
+    - `ARCHITECTURE.md` - System architecture overview
+    - `TESTING.md` - Testing guide and best practices
+    - `README.md` - Contributors documentation index
+- **Security:**
+  - `SECURITY.md` - Security policy and best practices
+  - Vulnerability reporting procedures
+  - Security best practices for administrators and developers
+- **Project Structure:**
+  - Reorganized scripts into `tools/` (utilities) and `test/` (testing scripts)
+  - Consolidated update scripts into unified `tools/update-cline-connection.js`
+  - YAML-driven integration test runner (`test/test-cap-from-yaml.js`)
+
+### Changed
+- **README.md:** Enhanced with consumer-focused sections and links to contributor documentation
+- **Documentation Structure:** Improved organization with clear separation between consumer and contributor docs
+- **Scripts:** Unified `update-cline-connection.js` now supports both CLI and YAML modes
+- **Testing:** Primary test command changed to YAML-driven integration tests (`npm test`)
+
+### Removed
+- `README.new.md` - Removed duplicate README file
+- Legacy test scripts replaced by YAML-driven test runner
+
+### Added (Previous)
 - Streamable HTTP session lifecycle documentation in `docs/MCP_PROXY_USAGE.md`, clarifying how `Mcp-Session-Id` is negotiated and reused.
 - Standalone `scripts/update-cline-connection.js` utility with documentation for copying and running it outside the repository.
 - Lightweight `scripts/update-cline-connection-standalone.js` CLI plus expanded `docs/MCP_CONFIG_UPDATE_HOWTO.md` coverage for out-of-repo updates.
@@ -51,7 +92,6 @@ All notable changes to this project will be documented in this file. The format 
 
   - `docs/MCP_PROXY_USAGE.md` - Full usage guide with curl/JavaScript examples
   - `docs/examples/` - Cline configuration examples for SSE and Stream-HTTP
-  - `README.new.md` - Updated project README with streaming endpoints documentation
 - **Smoke Tests**: Bash scripts for health, SSE, and Stream-HTTP endpoint testing (`test/smoke/`).
 - **Templates**: `default-env.json.template` for local XSUAA testing.
 
