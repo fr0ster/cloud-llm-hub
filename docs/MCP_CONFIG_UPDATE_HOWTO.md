@@ -79,10 +79,10 @@ npm run update:cline:yaml -- --config ./config/mcp-update.yaml
 npm run update:cline:yaml -- --config ./config/mcp-update.yaml --connection sap-dev,sap-qa
 
 # Direct usage
-node scripts/update-cline-connection.js --config ./config/mcp-update.yaml --dry-run
+node tools/update-cline-connection.js --config ./config/mcp-update.yaml --dry-run
 
 # generate a starter template
-node scripts/update-cline-connection.js --template direct-jwt > ./config/direct-jwt.yaml
+node tools/update-cline-connection.js --template direct-jwt > ./config/direct-jwt.yaml
 ```
 
 Pre-baked templates also live under [`docs/templates/mcp-config/`](./templates/mcp-config/).
@@ -92,7 +92,7 @@ Pre-baked templates also live under [`docs/templates/mcp-config/`](./templates/m
 When printing templates you can override the MCP metadata directly from the CLI instead of editing the YAML afterwards:
 
 ```bash
-node scripts/update-cline-connection.js \
+node tools/update-cline-connection.js \
   --template direct-jwt \
   --connection direct-jwt-local \
   --service-key-file sapAbap=./keys/sk.json \
@@ -212,7 +212,7 @@ The CLI output (JSON) is what the YAML playbook consumes when you declare a `typ
 ### Refresh SAP JWT from Service Key and Update the MCP Token
 
 ```bash
-node scripts/update-cline-connection.js \
+node tools/update-cline-connection.js \
   --connection sap-dev \
   --service-key submodules/mcp-abap-adt/service-key.json \
   --mcp-token "<mcp-proxy-jwt>"
@@ -225,7 +225,7 @@ node scripts/update-cline-connection.js \
 ### Switch to Destination-Based Routing (On-Premise)
 
 ```bash
-node scripts/update-cline-connection.js \
+node tools/update-cline-connection.js \
   --connection sap-qa \
   --destination-name SAP_QA_ONPREM \
   --connectivity-mode onprem \
