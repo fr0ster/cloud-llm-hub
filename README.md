@@ -88,9 +88,13 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
   - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
   - [Architecture](docs/contributors/ARCHITECTURE.md) - System overview
   - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
+
+### For Operators (Production)
+- **[🔧 Operations Guide](docs/OPERATIONS.md)** - Production runbook
+- **[📊 Monitoring Guide](docs/MONITORING.md)** - Monitoring setup and metrics
+- [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md) - Deployment procedures
 - [Implementation Report](docs/IMPLEMENTATION_REPORT.md)
 - [Architecture Decision Records](docs/adrs)
-- [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md)
 
 ### Templates & Examples
 - [MCP Config Templates](docs/templates/mcp-config) - Ready-to-use YAML configurations
