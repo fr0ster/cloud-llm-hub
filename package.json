@@ -18,6 +18,7 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
     "@cap-js/cds-typer": ">=0.1",
     "@cap-js/cds-types": "^0.15.0",
     "@cap-js/sqlite": "^2",
