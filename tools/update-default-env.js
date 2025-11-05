@@ -3,7 +3,7 @@
  * Update default-env.json with VCAP_SERVICES from BTP
  * 
  * Usage:
- *   node scripts/update-default-env.js [app-name]
+ *   node tools/update-default-env.js [app-name]
  * 
  * Default app-name: cloud-llm-hub-srv
  */

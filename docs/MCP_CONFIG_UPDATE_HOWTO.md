@@ -25,7 +25,7 @@ npm run update:cline -- --connection sap-dev
 
 ### Standalone Mode (for consumers without the full project)
 
-The script can work standalone when you provide `--settings` explicitly. You can copy just `scripts/update-cline-connection.js` to any location and use it without the full cloud-llm-hub repository:
+The script can work standalone when you provide `--settings` explicitly. You can copy just `tools/update-cline-connection.js` to any location and use it without the full cloud-llm-hub repository:
 
 ```bash
 # Copy the script to your workspace

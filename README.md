@@ -8,7 +8,7 @@ File or Folder | Purpose
 `db/` | CAP data models (currently unused, reserved for future persistence)
 `srv/` | MCP proxy implementation (`mcp-proxy.ts`, `mcp-manager.ts`, connectivity helpers)
 `docs/` | End-user and operator documentation (usage guides, ADRs, testing cheatsheets)
-`scripts/` | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)
+`tools/` | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)
 `submodules/` | External MCP providers (notably `mcp-abap-adt`)
 
 ## Quick Start
@@ -42,7 +42,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
   - Token lifecycle management and refresh
   - Proxy configuration (including Cloud Connector for on-premise destinations)
 - **On-Premise Connectivity**: The Connectivity service is configured in `mta.yaml` with a specified `ConnectorID` for Cloud Connector integration. When a destination with `ProxyType=OnPremise` is used, `executeHttpRequest` automatically routes requests through the Connectivity proxy.
-- The `scripts/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. It works both inside the repository (with automatic defaults) and standalone (with explicit `--settings`). For declarative multi-connection playbooks see `scripts/update-cline-from-yaml.js`. All workflows are documented in [`docs/MCP_CONFIG_UPDATE_HOWTO.md`](docs/MCP_CONFIG_UPDATE_HOWTO.md), including CLI overrides such as `--mcp-endpoint`, `--mcp-type`, `--mcp-username`, and `--mcp-password ""` for generating ready-to-apply templates without manual edits.
+- The `tools/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. It works both inside the repository (with automatic defaults) and standalone (with explicit `--settings`), and supports both CLI and YAML modes. All workflows are documented in [`docs/MCP_CONFIG_UPDATE_HOWTO.md`](docs/MCP_CONFIG_UPDATE_HOWTO.md), including CLI overrides such as `--mcp-endpoint`, `--mcp-type`, `--mcp-username`, and `--mcp-password ""` for generating ready-to-apply templates without manual edits.
 
 ## Tooling & Tests
 
