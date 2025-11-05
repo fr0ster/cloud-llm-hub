@@ -82,6 +82,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ### For Developers (Contributing)
 - **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
+- **[👥 Contributors](CONTRIBUTORS.md)** - List of contributors
 - **[🔧 Contributor Documentation](docs/contributors/)** - Complete contributor guides
   - [Setup Guide](docs/contributors/SETUP.md) - Development environment
   - [Git Workflow](docs/contributors/WORKFLOW.md) - Fork → Branch → PR
