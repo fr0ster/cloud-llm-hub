@@ -1,32 +1,19 @@
 # Deployment Checklist
 
-## Pre-Deployment Verification
+## Pre-Deployment Checklist
 
-### ✅ Build Artifacts
-- [x] `mta.yaml` exists and configured
-- [x] `xs-security.json` exists with required scopes
-- [x] `app/router/xs-app.json` configured
-- [x] Build scripts (`copy-mcp-submodule.js`) ready
+### Artifacts & Config
+- [ ] `mta.yaml` present and correctly configured
+- [ ] `xs-security.json` present with required scopes/roles
+- [ ] `app/router/xs-app.json` routes configured
+- [ ] Build script `scripts/copy-mcp-submodule.js` available
 
-### ✅ Service Bindings Required
-
-The application requires the following Cloud Foundry service bindings with specific tags:
-
-1. **XSUAA** (`tag: xsuaa`)
-   - Service name: `cloud-llm-hub-auth`
-   - Configured in `mta.yaml` resources section
-   - Used for: User authentication and authorization
-
-2. **Destination** (`tag: destination`)
-   - Service name: `cloud-llm-hub-destination`
-   - Configured in `mta.yaml` resources section
-   - **CRITICAL**: Must have `tag: "destination"` in service binding
-   - Used for: SAP destination resolution for ABAP connections
-
-3. **Connectivity** (optional, `tag: connectivity`)
-   - Required only for on-premise destinations
-   - **CRITICAL**: Must have `tag: "connectivity"` in service binding
-   - Used for: On-premise connectivity via Cloud Connector
+### Required Services & Tags (CF/BTP)
+- [ ] XSUAA service instance `cloud-llm-hub-auth` defined in `mta.yaml`
+- [ ] Destination service instance `cloud-llm-hub-destination` defined in `mta.yaml`
+- [ ] Destination binding has tag `destination`
+- [ ] Connectivity service (only if on‑prem) instance defined in `mta.yaml`
+- [ ] Connectivity binding has tag `connectivity` (only if on‑prem)
 
 ### ⚠️ Important Notes
 
@@ -57,62 +44,55 @@ cf env cloud-llm-hub-srv | grep -A 5 destination
 cf env cloud-llm-hub-srv | grep -A 5 connectivity
 ```
 
-## Build Process
+## Build Checklist
 
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+- [ ] Install dependencies
+  ```bash
+  npm install
+  ```
+- [ ] Build submodule `submodules/mcp-abap-adt`
+  ```bash
+  npm ci --prefix submodules/mcp-abap-adt
+  npm run build --prefix submodules/mcp-abap-adt
+  ```
+- [ ] Build CAP project
+  ```bash
+  npx cds build --production
+  ```
+- [ ] Copy submodule build into deployment folder
+  ```bash
+  node scripts/copy-mcp-submodule.js
+  ```
+- [ ] Build MTA archive
+  ```bash
+  mbt build
+  ```
 
-2. **Build submodule:**
-   ```bash
-   npm ci --prefix submodules/mcp-abap-adt
-   npm run build --prefix submodules/mcp-abap-adt
-   ```
+## Deployment Checklist
 
-3. **Build CAP project:**
-   ```bash
-   npx cds build --production
-   ```
-
-4. **Copy submodule:**
-   ```bash
-   node scripts/copy-mcp-submodule.js
-   ```
-
-5. **Build MTA:**
-   ```bash
-   mbt build
-   ```
-
-## Deployment Steps
-
-1. **Deploy MTA:**
-   ```bash
-   cf deploy mta_archives/cloud-llm-hub.mtar
-   ```
-
-2. **Verify services:**
-   ```bash
-   cf services
-   cf service cloud-llm-hub-auth
-   cf service cloud-llm-hub-destination
-   ```
-
-3. **Check application status:**
-   ```bash
-   cf apps
-   cf logs cloud-llm-hub-srv --recent
-   ```
-
-4. **Test health endpoint:**
-   ```bash
-   curl https://cloud-llm-hub-srv.cfapps.<region>.hana.ondemand.com/mcp/Health
-   ```
+- [ ] Deploy MTA
+  ```bash
+  cf deploy mta_archives/cloud-llm-hub.mtar
+  ```
+- [ ] Verify services exist and bound
+  ```bash
+  cf services
+  cf service cloud-llm-hub-auth
+  cf service cloud-llm-hub-destination
+  ```
+- [ ] Check application status and recent logs
+  ```bash
+  cf apps
+  cf logs cloud-llm-hub-srv --recent
+  ```
+- [ ] Health endpoint responds OK
+  ```bash
+  curl https://cloud-llm-hub-srv.cfapps.<region>.hana.ondemand.com/mcp/Health
+  ```
 
 ## Post-Deployment Verification
 
-### Test Destination Probe Endpoint
+### Destination Probe Endpoint
 
 ```bash
 # Get XSUAA token first
@@ -196,6 +176,22 @@ cf restage cloud-llm-hub-srv
 ```
 
 **Warning:** Never enable debugging in production!
+
+## Local/Hybrid Checklist (default-env.json)
+
+- [ ] Update `default-env.json` with fresh `VCAP_SERVICES` after each deploy or service change
+  ```bash
+  # View current env and copy the VCAP_SERVICES block
+  cf env cloud-llm-hub-srv
+  # Paste the updated VCAP_SERVICES JSON into default-env.json
+  # {
+  #   "VCAP_SERVICES": { ... }
+  # }
+  ```
+- [ ] Ensure root app does not depend on submodule `.env` (only `default-env.json`)
+- [ ] For stream-HTTP tests, set timeout via headers when needed:
+  - `X-MCP-Timeout: <ms>`
+  - `X-Request-Timeout: <ms>`
 
 ## Testing Checklist
 
