@@ -284,7 +284,7 @@ while (true) {
 
 ### Refreshing Cline tokens
 
-Use `scripts/update-cline-connection.js` to keep `cline_mcp_settings.json` synchronized with the credentials you currently use.
+Use `tools/update-cline-connection.js` to keep `cline_mcp_settings.json` synchronized with the credentials you currently use.
 
 #### Inside this repository
 
@@ -300,7 +300,7 @@ npm run update:cline -- \
 
 #### Standalone usage (copy just the script)
 
-1. Download `scripts/update-cline-connection.js` into any project (for example via `curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/master/scripts/update-cline-connection.js`).
+1. Download `tools/update-cline-connection.js` into any project (for example via `curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/update-cline-connection.js`).
 2. Run it with plain Node.js and point it to your Cline profile:
 
 ```bash

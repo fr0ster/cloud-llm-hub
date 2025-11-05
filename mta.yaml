@@ -12,7 +12,7 @@ build-parameters:
         - npm run build --prefix submodules/mcp-abap-adt
         - npm ci
         - npx cds build --production
-        - node scripts/copy-mcp-submodule.js
+        - node tools/copy-mcp-submodule.js
 modules:
   - name: cloud-llm-hub-srv
     type: nodejs

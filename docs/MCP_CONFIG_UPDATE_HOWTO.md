@@ -2,14 +2,14 @@
 
 This guide explains how to refresh Cline's MCP connection settings using the unified automation script that ships with **cloud-llm-hub**.
 
-**`scripts/update-cline-connection.js`** is a unified script that supports two modes:
+**`tools/update-cline-connection.js`** is a unified script that supports two modes:
 
 1. **CLI mode** (default) — works both inside the repository (with automatic defaults) and standalone (with explicit parameters). It understands the project layout, reuses `.env` defaults when available, and can trigger the ABAP token helper.
 2. **YAML mode** (with `--config` or `--template`) — a declarative orchestrator that reads a YAML plan, fetches service keys (from files or Cloud Foundry), runs helper commands, and updates multiple connections in one shot.
 
 The script updates the JSON document in-place and only touches the headers for the requested MCP connection. Use `--dry-run` to review the resulting payload without saving anything.
 
-**Standalone usage:** Copy `scripts/update-cline-connection.js` to any location. For YAML mode, also copy `scripts/update-cline-from-yaml.js` (it's required as a dependency).
+**Standalone usage:** Copy `tools/update-cline-connection.js` to any location (single file contains both CLI and YAML modes).
 
 ## 1. CLI Mode (Default)
 
@@ -17,7 +17,7 @@ The script updates the JSON document in-place and only touches the headers for t
 
 ```bash
 # refresh the "sap-dev" connection using repository defaults
-node scripts/update-cline-connection.js --connection sap-dev
+node tools/update-cline-connection.js --connection sap-dev
 
 # same command via npm alias
 npm run update:cline -- --connection sap-dev
@@ -29,7 +29,7 @@ The script can work standalone when you provide `--settings` explicitly. You can
 
 ```bash
 # Copy the script to your workspace
-cp scripts/update-cline-connection.js ~/my-workspace/
+cp tools/update-cline-connection.js ~/my-workspace/
 
 # Run it with explicit parameters (no repository needed)
 node ~/my-workspace/update-cline-connection.js \
@@ -71,7 +71,7 @@ Key capabilities:
 
 Use YAML mode when you need to codify several MCP connections, including how to resolve service keys and credentials. The same script handles both modes automatically.
 
-**Standalone usage:** Copy `scripts/update-cline-connection.js` to use anywhere (single file contains both CLI and YAML modes).
+**Standalone usage:** Copy `tools/update-cline-connection.js` to use anywhere (single file contains both CLI and YAML modes).
 
 ```bash
 # Via npm (pass --config as argument)
@@ -240,7 +240,7 @@ node scripts/update-cline-connection.js \
 
 ```bash
 # Copy the script first (if not in repository)
-cp scripts/update-cline-connection.js ~/my-workspace/
+cp tools/update-cline-connection.js ~/my-workspace/
 
 # Run in standalone mode with explicit parameters
 node ~/my-workspace/update-cline-connection.js \
@@ -270,5 +270,4 @@ The script injects the SAP basic credentials and the MCP basic credentials witho
 - [`docs/MCP_PROXY_USAGE.md`](./MCP_PROXY_USAGE.md) — End-to-end usage guide covering SSE and Stream-HTTP transports.
 - [`docs/examples/`](./examples/) — Sample Cline configuration payloads for different connection types.
 - [`docs/templates/mcp-config/`](./templates/mcp-config/) — Ready-to-fill YAML skeletons for common scenarios.
-- [`scripts/update-cline-connection.js`](../scripts/update-cline-connection.js) — Source code for the unified CLI (supports both CLI and YAML modes, works standalone).
-- [`scripts/update-cline-from-yaml.js`](../scripts/update-cline-from-yaml.js) — YAML mode implementation (required dependency for YAML mode).
+- [`tools/update-cline-connection.js`](../tools/update-cline-connection.js) — Source code for the unified CLI (supports both CLI and YAML modes, works standalone).

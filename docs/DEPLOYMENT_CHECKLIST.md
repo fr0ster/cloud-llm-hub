@@ -6,7 +6,7 @@
 - [ ] `mta.yaml` present and correctly configured
 - [ ] `xs-security.json` present with required scopes/roles
 - [ ] `app/router/xs-app.json` routes configured
-- [ ] Build script `scripts/copy-mcp-submodule.js` available
+- [ ] Build script `tools/copy-mcp-submodule.js` available
 
 ### Required Services & Tags (CF/BTP)
 - [ ] XSUAA service instance `cloud-llm-hub-auth` defined in `mta.yaml`
@@ -61,7 +61,7 @@ cf env cloud-llm-hub-srv | grep -A 5 connectivity
   ```
 - [ ] Copy submodule build into deployment folder
   ```bash
-  node scripts/copy-mcp-submodule.js
+  node tools/copy-mcp-submodule.js
   ```
 - [ ] Build MTA archive
   ```bash
