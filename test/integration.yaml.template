@@ -1,0 +1,51 @@
+# Integration test configuration template
+# Copy this file to integration.yaml and fill in your values
+# 
+# Usage:
+#   cp test/integration.yaml.template test/integration.yaml
+#   # Edit test/integration.yaml with your values
+#   npm run test:yaml
+
+baseUrl: http://localhost:4004
+# For BTP: baseUrl: https://your-app.cfapps.eu10.hana.ondemand.com
+
+# Authorization header used for all requests
+auth:
+  # For local dev (mocked): "Basic YWxpY2U6"  # alice
+  # For BTP: "Bearer <your-jwt-token>"
+  header: "Basic YWxpY2U6"
+
+# SAP context for streaming endpoints (required for /mcp/stream/*)
+sap:
+  # Choose one: direct or destination mode
+  mode: direct
+  
+  # Direct mode: specify SAP URL and credentials directly
+  direct:
+    url: "https://my.sap.system.example.com"
+    client: 200
+    auth:
+      type: jwt  # jwt | basic
+      # For JWT:
+      token: "<paste-your-sap-jwt-token>"
+      # For Basic:
+      # username: "SAP_USER"
+      # password: "SAP_PASSWORD"
+    # language: EN
+
+  # Destination mode: use BTP Destination service
+  # destination:
+  #   name: "S4HANA"
+  #   connectivity:
+  #     mode: internet    # internet | onprem
+  #     # locationId: "<cloud-connector-location-id>"  # only for onprem
+
+# Optional request timeouts (milliseconds)
+timeoutMs: 15000
+streamTimeoutMs: 60000
+
+# Optional custom headers
+# headers:
+#   X-Request-Timeout: "10000"
+#   X-MCP-Timeout: "60000"
+
