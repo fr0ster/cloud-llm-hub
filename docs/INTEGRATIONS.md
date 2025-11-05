@@ -1,5 +1,8 @@
 # 🔌 Integration Examples
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 Real-world integration examples for popular tools and platforms. Copy, paste, and customize for your needs.
 
 ## Table of Contents

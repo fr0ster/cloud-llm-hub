@@ -102,6 +102,11 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - [MCP Config Templates](docs/templates/mcp-config) - Ready-to-use YAML configurations
 - [Example Configurations](docs/examples) - Cline settings examples
 
+### Internationalization
+- **[🇺🇦 Українська](docs/uk/)** - Ukrainian translations (partial)
+  - [Швидкий старт](docs/uk/QUICK_SETUP.md)
+  - [Вирішення проблем](docs/uk/TROUBLESHOOTING.md)
+
 ## Deployment Notes
 
 - Use `cds build --production` or run the MTA build (`mbt build`) before pushing to SAP BTP.

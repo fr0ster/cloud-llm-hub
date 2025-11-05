@@ -1,5 +1,8 @@
 # 👥 Consumer Guide
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 **Welcome!** This guide is for **users** of Cloud LLM Hub who want to connect their tools to SAP systems. You don't need to know how Cloud LLM Hub works internally—just how to use it effectively.
 
 ## 🎯 What is Cloud LLM Hub?

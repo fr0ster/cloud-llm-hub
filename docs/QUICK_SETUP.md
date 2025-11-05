@@ -1,5 +1,8 @@
 # ⚡ Quick Setup Guide
 
+**Version:** 1.0.0  
+**Last Updated:** 2025-11-05
+
 **Get started in 60 seconds!** This is the fastest way to connect your tools to SAP via Cloud LLM Hub.
 
 ## 🎯 One-Command Setup
