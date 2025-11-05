@@ -74,9 +74,9 @@ Use YAML mode when you need to codify several MCP connections, including how to 
 **Standalone usage:** Copy both `scripts/update-cline-connection.js` and `scripts/update-cline-from-yaml.js` to the same directory (YAML mode requires the YAML script as a dependency).
 
 ```bash
-# Via npm (uses main script with --config)
-npm run update:cline:yaml -- ./config/mcp-update.yaml
-npm run update:cline:yaml -- ./config/mcp-update.yaml --connection sap-dev,sap-qa
+# Via npm (pass --config as argument)
+npm run update:cline:yaml -- --config ./config/mcp-update.yaml
+npm run update:cline:yaml -- --config ./config/mcp-update.yaml --connection sap-dev,sap-qa
 
 # Direct usage
 node scripts/update-cline-connection.js --config ./config/mcp-update.yaml --dry-run
