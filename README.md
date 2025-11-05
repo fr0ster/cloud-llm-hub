@@ -79,9 +79,15 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **[📡 API Reference](docs/MCP_PROXY_USAGE.md)** - Endpoint documentation
 
 ### For Developers (Contributing)
+- **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
+- **[🔧 Contributor Documentation](docs/contributors/)** - Complete contributor guides
+  - [Setup Guide](docs/contributors/SETUP.md) - Development environment
+  - [Git Workflow](docs/contributors/WORKFLOW.md) - Fork → Branch → PR
+  - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
+  - [Architecture](docs/contributors/ARCHITECTURE.md) - System overview
+  - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
 - [Implementation Report](docs/IMPLEMENTATION_REPORT.md)
 - [Architecture Decision Records](docs/adrs)
-- [Testing Guide](docs/TESTING_CHEAT_SHEET.md)
 - [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md)
 
 ### Templates & Examples
