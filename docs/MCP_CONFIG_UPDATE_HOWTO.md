@@ -71,7 +71,7 @@ Key capabilities:
 
 Use YAML mode when you need to codify several MCP connections, including how to resolve service keys and credentials. The same script handles both modes automatically.
 
-**Standalone usage:** Copy both `scripts/update-cline-connection.js` and `scripts/update-cline-from-yaml.js` to the same directory (YAML mode requires the YAML script as a dependency).
+**Standalone usage:** Copy `scripts/update-cline-connection.js` to use anywhere (single file contains both CLI and YAML modes).
 
 ```bash
 # Via npm (pass --config as argument)
