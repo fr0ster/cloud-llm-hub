@@ -1,6 +1,13 @@
-# Cloud LLM Hub
+# Cloud LLM Hub 🚀
 
-CAP-based proxy and tooling to bridge SAP ABAP backends with Model Context Protocol (MCP) clients such as Cline and Claude Desktop.
+**Enterprise-ready MCP proxy** connecting SAP ABAP systems to AI assistants (Cline, Claude Desktop) and automation tools (n8n, CI/CD, custom apps).
+
+**✨ Key Features:**
+- ⚡ **One-command setup** - Get started in 60 seconds
+- 🔒 **Enterprise security** - XSUAA authentication, on-premise support
+- 🔌 **Multiple transports** - SSE and Stream-HTTP
+- 🛠️ **Automation tools** - YAML-driven configuration, CI/CD ready
+- 🌐 **Cloud & on-premise** - Seamless SAP Cloud Connector integration
 
 File or Folder | Purpose
 ---------|----------
@@ -11,8 +18,15 @@ File or Folder | Purpose
 `tools/` | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)
 `submodules/` | External MCP providers (notably `mcp-abap-adt`)
 
-## Quick Start
+## 🎯 Quick Start for Consumers
 
+**New to Cloud LLM Hub?** Start here:
+
+1. **[⚡ Quick Setup Guide](docs/QUICK_SETUP.md)** - Get running in 60 seconds
+2. **[🚀 Getting Started](docs/GETTING_STARTED.md)** - Complete onboarding guide
+3. **[🔌 Integration Examples](docs/INTEGRATIONS.md)** - Ready-to-use code for Cline, n8n, CI/CD, and more
+
+**For Developers:**
 ```bash
 npm install
 cds watch --profile development
@@ -53,15 +67,26 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - Run `npm exec -- tsc --noEmit` to type-check the project.
 - The `docs/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.
 
-## Documentation Map
+## 📚 Documentation
 
-- [MCP Proxy Usage](docs/MCP_PROXY_USAGE.md)
-- [MCP Config Update How-To](docs/MCP_CONFIG_UPDATE_HOWTO.md)
-- [MCP Config Templates](docs/templates/mcp-config)
+### For Consumers (Using Cloud LLM Hub)
+- **[⚡ Quick Setup](docs/QUICK_SETUP.md)** - 60-second setup guide
+- **[🚀 Getting Started](docs/GETTING_STARTED.md)** - Complete onboarding
+- **[✨ Features & Benefits](docs/FEATURES.md)** - Why choose Cloud LLM Hub?
+- **[🔌 Integration Examples](docs/INTEGRATIONS.md)** - Cline, n8n, CI/CD, Python, Node.js
+- **[👥 Consumer Guide](docs/CONSUMER_GUIDE.md)** - End-user focused guide
+- **[🔧 Configuration Guide](docs/MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
+- **[📡 API Reference](docs/MCP_PROXY_USAGE.md)** - Endpoint documentation
+
+### For Developers (Contributing)
 - [Implementation Report](docs/IMPLEMENTATION_REPORT.md)
 - [Architecture Decision Records](docs/adrs)
-- [Roadmap](docs/roadmap.md)
-- [Changelog](CHANGELOG.md)
+- [Testing Guide](docs/TESTING_CHEAT_SHEET.md)
+- [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md)
+
+### Templates & Examples
+- [MCP Config Templates](docs/templates/mcp-config) - Ready-to-use YAML configurations
+- [Example Configurations](docs/examples) - Cline settings examples
 
 ## Deployment Notes
 
