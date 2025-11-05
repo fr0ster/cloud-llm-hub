@@ -1,33 +1,5 @@
 # CAP Endpoint Paths
 
-## AuthService (@path: 'auth')
-
-### CheckAuth
-- **Method**: GET
-- **URL**: `/odata/v4/auth/CheckAuth()`
-- **Parameters**: none
-- **Authorization**: Not required (but possible to get user information)
-- **Example**: 
-  ```bash
-  GET http://localhost:4004/odata/v4/auth/CheckAuth()
-  ```
-
-### CheckRoles
-- **Method**: GET
-- **URL**: `/odata/v4/auth/CheckRoles?required=["MCP_Connector"]`
-- **Parameters**: 
-  - `required` (array of String) - array of role names to check
-- **Parameter Format**: JSON array, URL encoded
-- **Authorization**: Required (checks roles of the authenticated user)
-- **Examples**: 
-  ```bash
-  # Single role
-  GET http://localhost:4004/odata/v4/auth/CheckRoles?required=["MCP_Connector"]
-  
-  # Multiple roles
-  GET http://localhost:4004/odata/v4/auth/CheckRoles?required=["MCP_Connector","MCP_Admin"]
-  ```
-
 ## McpProxyService (@path: 'mcp')
 
 ⚠️ **IMPORTANT**: All McpProxyService endpoints require authorization with scope `MCP_Connector` (`@requires: 'MCP_Connector'`)
@@ -70,6 +42,41 @@
 - **Method**: POST
 - **URL**: `/odata/v4/mcp/InvokeTool`
 - **Status**: ⚠️ Deprecated - use `/mcp/stream/sse` or `/mcp/stream/http` instead
+
+## Express Endpoints (Non-CAP)
+
+These endpoints are registered directly in Express and bypass CAP's OData layer.
+
+### Stream SSE
+- **Method**: GET, POST
+- **URL**: `/mcp/stream/sse`
+- **Authorization**: ✅ Required - scope `MCP_Connector` needed
+- **Content-Type**: `text/event-stream`
+- **Purpose**: Server-Sent Events transport for MCP protocol
+- **Example**: 
+  ```bash
+  GET http://localhost:4004/mcp/stream/sse
+  Authorization: Basic YWxpY2U6  # for development
+  ```
+
+### Stream HTTP (StreamableHTTP)
+- **Method**: POST
+- **URL**: `/mcp/stream/http`
+- **Authorization**: ✅ Required - scope `MCP_Connector` needed
+- **Content-Type**: `application/json` (NDJSON streaming)
+- **Purpose**: Bidirectional NDJSON streaming transport for MCP protocol
+- **Headers** (optional):
+  - `X-MCP-Timeout`: Request timeout in milliseconds (default: 10000ms in debug, 5000ms in production)
+  - `X-Request-Timeout`: Alternative header for timeout
+- **Example**: 
+  ```bash
+  POST http://localhost:4004/mcp/stream/http
+  Authorization: Basic YWxpY2U6
+  Content-Type: application/json
+  X-MCP-Timeout: 60000
+  
+  {"jsonrpc":"2.0","id":"1","method":"ping"}
+  ```
 
 ## Important Rules for OData V4
 
@@ -134,15 +141,6 @@ Or in production:
   Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-### CheckRoles
-
-```
-GET http://localhost:4004/odata/v4/auth/CheckRoles?required=["MCP_Connector"]
-
-Headers:
-  Authorization: Basic YWxpY2U6  # alice
-```
-
 ### ProbeDestination
 
 ```
@@ -171,11 +169,65 @@ Headers:
 }
 ```
 
+### Stream HTTP (MCP protocol)
+
+```
+POST http://localhost:4004/mcp/stream/http
+
+Headers:
+  Authorization: Basic YWxpY2U6
+  Content-Type: application/json
+  X-MCP-Timeout: 60000
+
+Body:
+  {"jsonrpc":"2.0","id":"1","method":"ping"}
+```
+
+## Testing Endpoints
+
+### Using the YAML Test Runner
+
+- Copy the template and fill values:
+  ```bash
+  cp test/integration.yaml.template test/integration.yaml
+  # Edit test/integration.yaml
+  ```
+
+- Run tests:
+  ```bash
+  npm test
+  ```
+
+- YAML fields: `baseUrl`, `auth.header`, `sap.mode` (direct/destination), `sap.direct.*` or `sap.destination.*`, optional `timeoutMs`, `streamTimeoutMs`, `headers`.
+
+#### Manual Testing with curl
+
+```bash
+# Health check (CAP function)
+curl -H "Authorization: Basic YWxpY2U6" \
+  http://localhost:4004/odata/v4/mcp/Health()
+
+# Destination probe (CAP function)
+curl -H "Authorization: Basic YWxpY2U6" \
+  "http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=S4HANA"
+
+# Stream SSE (Express endpoint)
+curl -H "Authorization: Basic YWxpY2U6" \
+  http://localhost:4004/mcp/stream/sse
+
+# Stream HTTP (Express endpoint)
+curl -X POST \
+  -H "Authorization: Basic YWxpY2U6" \
+  -H "Content-Type: application/json" \
+  -H "X-MCP-Timeout: 60000" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"ping"}' \
+  http://localhost:4004/mcp/stream/http
+```
+
 ## Troubleshooting
 
 ### Error: "Service has no handler"
 - Check if the handler file matches the service name:
-  - `AuthService` → `srv/auth.ts`
   - `McpProxyService` → `srv/mcp-proxy.ts`
 
 ### Error: "Forbidden" or "Unauthorized"
@@ -183,13 +235,27 @@ Headers:
 - Check if the token contains the required scope (`MCP_Connector`)
 - For development, check if the user exists in `package.json` → `cds.requires.auth[development].users`
 
+### Error: "Function not found" or 404
+- CAP functions require `()` at the end: `/odata/v4/mcp/Health()` not `/odata/v4/mcp/Health`
+- Express endpoints don't use `/odata/v4/` prefix: `/mcp/stream/sse` not `/odata/v4/mcp/stream/sse`
+
 ### Error: "Malformed parameters"
 - Check array format: must be JSON array `["role"]`, not string `"role"`
 - URL encode arrays: `["MCP_Connector"]` → `%5B%22MCP_Connector%22%5D`
 
-## Service Differences
+## Endpoint Summary
 
-| Service | Path | Authorization | Purpose |
-|---------|------|---------------|---------|
-| `AuthService` | `/odata/v4/auth/*` | Optional | Authentication and role checking |
-| `McpProxyService` | `/odata/v4/mcp/*` | **Required** | MCP proxy functionality |
+| Endpoint Type | Path Prefix | Authorization | Purpose |
+|---------------|-------------|---------------|---------|
+| **CAP Functions** | `/odata/v4/mcp/*` | **Required** | OData V4 service functions (Health, ProbeDestination) |
+| **Express Routes** | `/mcp/*` | **Required** | Direct Express endpoints (stream/sse, stream/http) |
+
+### CAP Functions
+- Use OData V4 syntax: `/odata/v4/mcp/Health()`
+- Functions require `()` at the end
+- Parameters can be query params or positional: `?destination=NAME` or `(destination='NAME')`
+
+### Express Endpoints
+- Direct Express routes: `/mcp/stream/sse`, `/mcp/stream/http`
+- No OData prefix required
+- Used for streaming protocols (SSE, NDJSON)

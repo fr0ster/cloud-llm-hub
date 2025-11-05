@@ -36,5 +36,8 @@ mta_archives/
 @cds-models
 sk.json
 .env
-*.yaml
 *.json
+# YAML files (except templates)
+*.yaml
+!**/*.yaml.template
+!**/*.template.yaml
