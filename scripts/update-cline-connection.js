@@ -6,6 +6,7 @@ const os = require('os');
 const readline = require('readline');
 const { spawn } = require('child_process');
 
+
 function parseArgs(argv) {
   const options = {
     connectionName: '',
@@ -619,10 +620,28 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch((error) => {
-    console.error(`❌  ${error.message}`);
-    process.exit(1);
-  });
+  // Check if YAML mode is requested (--config or --template)
+  const args = process.argv.slice(2);
+  const hasYamlMode = args.includes('--config') || args.includes('-c') || args.includes('--template');
+
+  if (hasYamlMode) {
+    // Delegate to YAML handler
+    (async () => {
+      try {
+        const yamlModule = require('./update-cline-from-yaml');
+        await yamlModule.main();
+      } catch (err) {
+        console.error(`❌ YAML mode error: ${err.message}`);
+        process.exit(1);
+      }
+    })();
+  } else {
+    // Use CLI mode
+    main().catch((error) => {
+      console.error(`❌  ${error.message}`);
+      process.exit(1);
+    });
+  }
 }
 
 module.exports = { parseArgs, applySapConfigToHeaders, applyMcpAuth, applyDestinationHeaders };
