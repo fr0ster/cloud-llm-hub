@@ -1,3 +1,6 @@
 [submodule "submodules/mcp-abap-adt"]
 	path = submodules/mcp-abap-adt
 	url = git@github.com:fr0ster/mcp-abap-adt.git
+[submodule "submodules/llm-agent"]
+	path = submodules/llm-agent
+	url = git@github.com:fr0ster/llm-agent.git

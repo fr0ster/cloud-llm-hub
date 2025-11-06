@@ -22,6 +22,12 @@
       ],
       "@fr0ster/mcp-abap-adt/*": [
         "./submodules/mcp-abap-adt/dist/*"
+      ],
+      "@cloud-llm-hub/llm-agent": [
+        "./submodules/llm-agent/dist/index"
+      ],
+      "@cloud-llm-hub/llm-agent/*": [
+        "./submodules/llm-agent/dist/*"
       ]
     }
   },
