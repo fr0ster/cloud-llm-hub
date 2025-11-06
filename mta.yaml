@@ -24,6 +24,15 @@ modules:
       # env:
       #   NODE_OPTIONS: "--inspect=0.0.0.0:9229"
       #   DEBUG: "*"
+      # 
+      # NOTE: LLM provider API keys should NOT be set here in mta.yaml for security reasons.
+      # Instead, set them after deployment using:
+      #   npm run deploy:set-env
+      # Or manually via CF CLI:
+      #   cf set-env cloud-llm-hub-srv OPENAI_API_KEY "sk-proj-your-key-here"
+      #   cf restage cloud-llm-hub-srv
+      #
+      # For local development, create .env file with your API keys.
     build-parameters:
       builder: npm-ci
     provides:

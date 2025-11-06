@@ -167,6 +167,69 @@ Or use the test script:
 
 ## Environment Variables
 
+### LLM Provider API Keys
+
+**Important:** API keys should NOT be stored in `mta.yaml` for security reasons.
+
+**After deployment, set LLM provider API keys:**
+
+**Option 1: Using npm script with .env file (recommended - simplest):**
+```bash
+# 1. Copy .env from agent (this is the agent's .env file)
+cp submodules/llm-agent/.env .env
+
+# 2. Edit .env and ensure LLM_PROVIDER is set (e.g., LLM_PROVIDER=openai)
+
+# 3. Run script - it reads from .env automatically
+npm run deploy:set-env
+```
+
+**Note:** The `.env` file in project root is the same as the agent's `.env` file. Copy it from agent: `cp submodules/llm-agent/.env .env`
+
+**Option 2: Using npm script with exported variables:**
+```bash
+export OPENAI_API_KEY="sk-proj-your-key-here"
+export OPENAI_MODEL="gpt-4o-mini"
+npm run deploy:set-env
+```
+
+**Option 3: Direct CF CLI (if you prefer manual control):**
+```bash
+# Export variables
+export OPENAI_API_KEY="sk-proj-your-key-here"
+export OPENAI_MODEL="gpt-4o-mini"
+
+# Set in CF
+cf set-env cloud-llm-hub-srv OPENAI_API_KEY "$OPENAI_API_KEY"
+cf set-env cloud-llm-hub-srv OPENAI_MODEL "$OPENAI_MODEL"
+cf set-env cloud-llm-hub-srv OPENAI_ORG "$OPENAI_ORG"  # optional
+cf set-env cloud-llm-hub-srv OPENAI_PROJECT "$OPENAI_PROJECT"  # optional
+cf restage cloud-llm-hub-srv
+
+# For Anthropic
+export ANTHROPIC_API_KEY="sk-ant-your-key-here"
+cf set-env cloud-llm-hub-srv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+cf set-env cloud-llm-hub-srv LLM_PROVIDER "anthropic"
+cf restage cloud-llm-hub-srv
+
+# For DeepSeek
+export DEEPSEEK_API_KEY="sk-your-key-here"
+cf set-env cloud-llm-hub-srv DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
+cf set-env cloud-llm-hub-srv LLM_PROVIDER "deepseek"
+cf restage cloud-llm-hub-srv
+```
+
+**Why use the script?**
+- ✅ Reads from `.env` file automatically (no need to export)
+- ✅ Sets all variables at once
+- ✅ Validates CF CLI and app existence
+- ✅ Automatically restages the app
+
+**Verify environment variables:**
+```bash
+cf env cloud-llm-hub-srv
+```
+
 ### For Hybrid Debugging (Development Only!)
 
 ```bash
