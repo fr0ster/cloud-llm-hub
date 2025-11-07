@@ -13,19 +13,16 @@
 
 import cds, { type Request } from '@sap/cds';
 import {
-  OpenAIAgent,
-  AnthropicAgent,
-  DeepSeekAgent,
-  PromptBasedAgent,
-  OpenAIProvider,
-  AnthropicProvider,
-  DeepSeekProvider,
+  SapCoreAIAgent,
+  SapCoreAIProvider,
   MCPClientWrapper,
   type BaseAgent,
+  type SapCoreAIConfig,
 } from '@cloud-llm-hub/llm-agent';
 import type { MCPClientConfig } from '@cloud-llm-hub/llm-agent';
-import { SapCoreAIProvider } from './llm-providers/SapCoreAIProvider';
-import { SapCoreAIAgent } from './llm-providers/SapCoreAIAgent';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- xsenv has no type definitions
+const xsenv = require('@sap/xsenv');
 
 interface AgentInstance {
   agent: BaseAgent;
@@ -123,150 +120,118 @@ function getCacheKey(req: Request): string {
 }
 
 /**
- * Create LLM provider based on request configuration
- * Priority: SAP Core AI (if destination) > Headers > Environment variables > Error
- * 
- * IMPORTANT: LLM provider must be explicitly specified via:
- * - HTTP header: X-LLM-Provider (openai, anthropic, deepseek)
- * - Environment variable: LLM_PROVIDER (openai, anthropic, deepseek)
- * 
- * API keys can be provided via:
- * - HTTP headers: X-OpenAI-API-Key, X-Anthropic-API-Key, X-DeepSeek-API-Key
- * - Environment variables: OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY
+ * Get SAP AI Core service binding from VCAP_SERVICES
+ * Returns service credentials if bound, null otherwise
  */
-async function createLLMProvider(req: Request) {
+function getAICoreServiceBinding(): any | null {
+  try {
+    xsenv.loadEnv();
+    const services = xsenv.getServices({ 'ai-core': { tag: 'ai-core' } });
+    return services['ai-core'] || null;
+  } catch (error) {
+    // Service not bound or not found
+    return null;
+  }
+}
+
+/**
+ * Create LLM provider based on request configuration
+ * 
+ * IMPORTANT: All LLM providers are accessed through SAP AI Core.
+ * - OpenAI models → SAP AI Core → OpenAI
+ * - Anthropic models → SAP AI Core → Anthropic
+ * - DeepSeek models → SAP AI Core → DeepSeek
+ * 
+ * Architecture:
+ * - mta.yaml binds the app to SAP AI Core service (cloud-llm-hub-ai-core resource)
+ * - Service binding provides access to AI Core via VCAP_SERVICES
+ * - If destination is provided, it's used (allows pointing to different AI Core instances)
+ * - If no destination, service binding is used directly
+ * - All model/provider configuration is done in SAP AI Core Launchpad
+ * 
+ * Configuration:
+ * - X-SAP-Core-AI-Destination: SAP destination name for AI Core service (optional)
+ *   If not provided, service binding from mta.yaml is used
+ * - X-SAP-Core-AI-Model: Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet', 'deepseek-chat')
+ *   Model must be configured in SAP AI Core Launchpad
+ * - X-SAP-Core-AI-Temperature: Temperature (optional, default: 0.7)
+ * - X-SAP-Core-AI-Max-Tokens: Max tokens (optional, default: 2000)
+ */
+async function createLLMProvider(req: Request): Promise<SapCoreAIProvider> {
   const log = cds.log('agent-manager');
   
-  // Check for SAP Core AI destination (highest priority)
-  const sapCoreAIDestination = req.headers['x-sap-core-ai-destination'] as string | undefined;
-  if (sapCoreAIDestination) {
-    log.info('Using SAP Core AI provider', { destination: sapCoreAIDestination });
-    return new SapCoreAIProvider({
-      destinationName: sapCoreAIDestination,
-      apiKey: '', // Not used for SAP Core AI
-      model: (req.headers['x-sap-core-ai-model'] as string) || process.env.SAP_CORE_AI_MODEL || 'gpt-4o-mini',
-      temperature: parseFloat((req.headers['x-sap-core-ai-temperature'] as string) || '0.7'),
-      maxTokens: parseInt((req.headers['x-sap-core-ai-max-tokens'] as string) || '2000'),
-    });
-  }
+  // Check if destination is provided (optional - can use service binding instead)
+  const sapCoreAIDestination = 
+    (req.headers['x-sap-core-ai-destination'] as string) || 
+    process.env.SAP_CORE_AI_DESTINATION;
   
-  // Determine provider from header or environment variable (must be explicitly set)
-  const provider = (req.headers['x-llm-provider'] as string) || process.env.LLM_PROVIDER;
+  // Check if service binding is available
+  const aiCoreService = getAICoreServiceBinding();
   
-  if (!provider) {
+  // If no destination and no service binding, throw error
+  if (!sapCoreAIDestination && !aiCoreService) {
     throw new Error(
-      'LLM provider must be explicitly specified. Provide either:\n' +
-      '  - X-SAP-Core-AI-Destination header for SAP Core AI, or\n' +
-      '  - X-LLM-Provider header (openai, anthropic, deepseek), or\n' +
-      '  - LLM_PROVIDER environment variable (openai, anthropic, deepseek)\n\n' +
-      'Example: Set LLM_PROVIDER=openai in .env file or pass X-LLM-Provider: openai header'
+      'SAP AI Core access is required. All LLM providers are accessed through SAP AI Core.\n' +
+      'Provide either:\n' +
+      '  - X-SAP-Core-AI-Destination header (destination name), or\n' +
+      '  - SAP_CORE_AI_DESTINATION environment variable, or\n' +
+      '  - Ensure SAP AI Core service is bound via mta.yaml (cloud-llm-hub-ai-core resource)\n\n' +
+      'If using destination: configure it in Destination service (BTP Cockpit).\n' +
+      'If using service binding: mta.yaml automatically binds the service.\n' +
+      'All model/provider configuration is done in SAP AI Core Launchpad.'
     );
   }
   
-  const providerLower = provider.toLowerCase();
+  // Use destination if provided, otherwise use service binding name
+  // executeHttpRequest will automatically use service binding if destination doesn't exist
+  const destinationName = sapCoreAIDestination || 'cloud-llm-hub-ai-core';
   
-  // Check for Anthropic
-  if (providerLower === 'anthropic') {
-    const anthropicApiKey = (req.headers['x-anthropic-api-key'] as string) || process.env.ANTHROPIC_API_KEY;
-    if (!anthropicApiKey) {
-      throw new Error(
-        'ANTHROPIC_API_KEY is required when using Anthropic provider.\n' +
-        'Provide either X-Anthropic-API-Key header or ANTHROPIC_API_KEY environment variable.'
-      );
-    }
-    log.info('Using Anthropic provider');
-    return new AnthropicProvider({
-      apiKey: anthropicApiKey,
-      model: (req.headers['x-anthropic-model'] as string) || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
-    });
+  if (sapCoreAIDestination) {
+    log.info('Using SAP Core AI provider via destination', { destination: sapCoreAIDestination });
+  } else if (aiCoreService) {
+    log.info('Using SAP Core AI provider via service binding', { serviceName: aiCoreService.name });
   }
   
-  // Check for DeepSeek
-  if (providerLower === 'deepseek') {
-    const deepseekApiKey = (req.headers['x-deepseek-api-key'] as string) || process.env.DEEPSEEK_API_KEY;
-    if (!deepseekApiKey) {
-      throw new Error(
-        'DEEPSEEK_API_KEY is required when using DeepSeek provider.\n' +
-        'Provide either X-DeepSeek-API-Key header or DEEPSEEK_API_KEY environment variable.'
+  // Create SAP Core AI provider with HTTP client using SAP Cloud SDK
+  return new SapCoreAIProvider({
+    destinationName: destinationName,
+    apiKey: '', // Not used for SAP AI Core
+    model: (req.headers['x-sap-core-ai-model'] as string) || process.env.SAP_CORE_AI_MODEL || 'gpt-4o-mini',
+    temperature: parseFloat((req.headers['x-sap-core-ai-temperature'] as string) || process.env.SAP_CORE_AI_TEMPERATURE || '0.7'),
+    maxTokens: parseInt((req.headers['x-sap-core-ai-max-tokens'] as string) || process.env.SAP_CORE_AI_MAX_TOKENS || '2000'),
+    httpClient: async (config) => {
+      // Use SAP Cloud SDK executeHttpRequest
+      // If destination exists, it will be used
+      // If not, executeHttpRequest will try to use service binding with matching name
+      return await executeHttpRequest(
+        { destinationName: config.destinationName },
+        {
+          method: config.method as any,
+          url: config.url,
+          headers: config.headers,
+          data: config.data,
+        }
       );
-    }
-    log.info('Using DeepSeek provider');
-    return new DeepSeekProvider({
-      apiKey: deepseekApiKey,
-      model: (req.headers['x-deepseek-model'] as string) || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-    });
-  }
-  
-  // Check for OpenAI
-  if (providerLower === 'openai') {
-    const openaiApiKey = (req.headers['x-openai-api-key'] as string) || process.env.OPENAI_API_KEY;
-    if (!openaiApiKey) {
-      throw new Error(
-        'OPENAI_API_KEY is required when using OpenAI provider.\n' +
-        'Provide either X-OpenAI-API-Key header or OPENAI_API_KEY environment variable.'
-      );
-    }
-    log.info('Using OpenAI provider');
-    return new OpenAIProvider({
-      apiKey: openaiApiKey,
-      model: (req.headers['x-openai-model'] as string) || process.env.OPENAI_MODEL || 'gpt-4o-mini',
-      organization: (req.headers['x-openai-org'] as string) || process.env.OPENAI_ORG,
-      project: (req.headers['x-openai-project'] as string) || process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ,
-    });
-  }
-  
-  // Unknown provider
-  throw new Error(
-    `Unknown LLM provider: "${provider}". Supported providers: openai, anthropic, deepseek\n` +
-    `Set LLM_PROVIDER environment variable or X-LLM-Provider header to one of: openai, anthropic, deepseek`
-  );
+    },
+    log: log,
+  });
 }
 
 /**
  * Create agent instance based on LLM provider type
+ * 
+ * All agents use SAP Core AI provider, which routes to different LLM providers
+ * based on the model name (e.g., 'gpt-4o-mini' → OpenAI, 'claude-3-5-sonnet' → Anthropic)
  */
 async function createAgentForProvider(
-  llmProvider: any,
+  llmProvider: SapCoreAIProvider,
   mcpClient: MCPClientWrapper
 ): Promise<BaseAgent> {
   const log = cds.log('agent-manager');
   
-  // Determine agent type based on provider
-  if (llmProvider instanceof SapCoreAIProvider) {
-    log.debug('Creating SapCoreAIAgent');
-    return new SapCoreAIAgent({
-      llmProvider,
-      mcpClient,
-    });
-  }
-  
-  if (llmProvider instanceof OpenAIProvider) {
-    log.debug('Creating OpenAIAgent');
-    return new OpenAIAgent({
-      llmProvider,
-      mcpClient,
-    });
-  }
-  
-  if (llmProvider instanceof AnthropicProvider) {
-    log.debug('Creating AnthropicAgent');
-    return new AnthropicAgent({
-      llmProvider,
-      mcpClient,
-    });
-  }
-  
-  if (llmProvider instanceof DeepSeekProvider) {
-    log.debug('Creating DeepSeekAgent');
-    return new DeepSeekAgent({
-      llmProvider,
-      mcpClient,
-    });
-  }
-  
-  // Fallback to prompt-based agent
-  log.debug('Creating PromptBasedAgent (fallback)');
-  return new PromptBasedAgent({
+  // All agents use SAP Core AI provider
+  log.debug('Creating SapCoreAIAgent');
+  return new SapCoreAIAgent({
     llmProvider,
     mcpClient,
   });

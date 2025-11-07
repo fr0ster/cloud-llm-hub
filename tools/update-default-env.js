@@ -73,6 +73,30 @@ function main() {
       console.log(`    Binding GUID: ${dest.binding_guid}`);
     }
     
+    if (vcapServices.connectivity && vcapServices.connectivity.length > 0) {
+      const conn = vcapServices.connectivity[0];
+      console.log(`  • Connectivity (${conn.name})`);
+      console.log(`    Binding GUID: ${conn.binding_guid}`);
+    }
+    
+    if (vcapServices['ai-core'] && vcapServices['ai-core'].length > 0) {
+      const aiCore = vcapServices['ai-core'][0];
+      console.log(`  • SAP AI Core (${aiCore.name})`);
+      console.log(`    Binding GUID: ${aiCore.binding_guid}`);
+      if (aiCore.credentials && aiCore.credentials.url) {
+        console.log(`    URL: ${aiCore.credentials.url}`);
+      }
+    }
+    
+    if (vcapServices['aicore'] && vcapServices['aicore'].length > 0) {
+      const aiCore = vcapServices['aicore'][0];
+      console.log(`  • SAP AI Core (${aiCore.name})`);
+      console.log(`    Binding GUID: ${aiCore.binding_guid}`);
+      if (aiCore.credentials && aiCore.credentials.serviceurls && aiCore.credentials.serviceurls.AI_API_URL) {
+        console.log(`    AI API URL: ${aiCore.credentials.serviceurls.AI_API_URL}`);
+      }
+    }
+    
     // Verify XSUAA credentials
     if (vcapServices.xsuaa && vcapServices.xsuaa.length > 0) {
       const xsuaa = vcapServices.xsuaa[0];
