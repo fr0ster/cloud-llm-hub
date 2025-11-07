@@ -10,9 +10,12 @@ build-parameters:
       commands:
         - npm ci --prefix submodules/mcp-abap-adt
         - npm run build --prefix submodules/mcp-abap-adt
+        - npm ci --prefix submodules/llm-agent
+        - npm run build --prefix submodules/llm-agent
         - npm ci
         - npx cds build --production
         - node tools/copy-mcp-submodule.js
+        - node tools/copy-llm-agent-submodule.js
 modules:
   - name: cloud-llm-hub-srv
     type: nodejs
@@ -25,14 +28,18 @@ modules:
       #   NODE_OPTIONS: "--inspect=0.0.0.0:9229"
       #   DEBUG: "*"
       # 
-      # NOTE: LLM provider API keys should NOT be set here in mta.yaml for security reasons.
-      # Instead, set them after deployment using:
-      #   npm run deploy:set-env
-      # Or manually via CF CLI:
-      #   cf set-env cloud-llm-hub-srv OPENAI_API_KEY "sk-proj-your-key-here"
-      #   cf restage cloud-llm-hub-srv
+      # NOTE: All LLM providers are accessed through SAP AI Core (cloud-llm-hub-ai-core resource).
+      # The service binding is configured in mta.yaml - this binds the app to SAP AI Core.
+      # 
+      # Configuration:
+      # - SAP_CORE_AI_DESTINATION: Name of the destination pointing to SAP AI Core service
+      #   This destination must be configured in Destination service (BTP Cockpit)
+      #   The destination URL points to your SAP AI Core instance
+      # - All model/provider configuration is done in SAP AI Core Launchpad
+      #   (configure which models/providers are available, routing, etc.)
+      # - Set SAP_CORE_AI_DESTINATION environment variable (or use X-SAP-Core-AI-Destination header)
       #
-      # For local development, create .env file with your API keys.
+      # For local development, create .env file with SAP_CORE_AI_DESTINATION pointing to your AI Core destination.
     build-parameters:
       builder: npm-ci
     provides:
@@ -43,6 +50,7 @@ modules:
       - name: cloud-llm-hub-auth
       - name: cloud-llm-hub-destination
       - name: cloud-llm-hub-connectivity
+      - name: cloud-llm-hub-ai-core
   - name: cloud-llm-hub
     type: approuter.nodejs
     path: app/router
@@ -91,3 +99,16 @@ resources:
       service-plan: lite
       config:
         connectorId: AA45023094B911E8B0C6F0E30A06C478
+  - name: cloud-llm-hub-ai-core
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: aicore
+      service-plan: extended
+      # SAP AI Core provides access to LLM providers (OpenAI, Anthropic, DeepSeek, etc.)
+      # All LLM providers are accessed through SAP AI Core, not directly
+      # 
+      # If AI Core service already exists in your subaccount, uncomment and set service-name:
+      # service-name: your-existing-ai-core-service-name
+      # This will bind to existing service instead of creating a new one
+      #
+      # The destination for AI Core should be configured in Destination service

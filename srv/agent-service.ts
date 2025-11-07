@@ -106,12 +106,9 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
   srv.on('Health', async (req: Request) => {
     const mcpEndpoint = process.env.MCP_ENDPOINT || 'http://localhost:4004/mcp/stream/http';
     
-    // Determine LLM provider from request or environment
-    const provider = (req.headers['x-llm-provider'] as string) || process.env.LLM_PROVIDER || 'NOT_CONFIGURED';
-    const llmProviderName = provider === 'openai' ? 'OpenAI' :
-                           provider === 'anthropic' ? 'Anthropic' :
-                           provider === 'deepseek' ? 'DeepSeek' :
-                           provider === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED' : provider;
+    // Determine SAP Core AI destination and model
+    const destination = (req.headers['x-sap-core-ai-destination'] as string) || process.env.SAP_CORE_AI_DESTINATION || 'NOT_CONFIGURED';
+    const model = (req.headers['x-sap-core-ai-model'] as string) || process.env.SAP_CORE_AI_MODEL || 'NOT_CONFIGURED';
     
     let agentReady = false;
     let mcpConnected = false;
@@ -135,7 +132,9 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
       status: agentReady && mcpConnected ? 'READY' : 'NOT_READY',
       agentReady,
       mcpConnected,
-      llmProvider: llmProviderName,
+      llmProvider: 'SAP Core AI',
+      destination,
+      model,
       timestamp: new Date().toISOString(),
     };
   });
