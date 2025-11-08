@@ -41,8 +41,14 @@ const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 function buildMCPConfig(req: Request): MCPClientConfig {
   const log = cds.log('agent-manager');
   
-  // MCP endpoint - always use the local MCP proxy
-  const mcpEndpoint = process.env.MCP_ENDPOINT || 'http://localhost:4004/mcp/stream/http';
+  // MCP endpoint - use environment variable or construct from request
+  let mcpEndpoint = process.env.MCP_ENDPOINT;
+  if (!mcpEndpoint) {
+    // On BTP, construct URL from request
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers.host || req.headers['x-forwarded-host'] || 'localhost:4004';
+    mcpEndpoint = `${protocol}://${host}/mcp/stream/http`;
+  }
   
   // Extract authentication from request
   const authHeader = req.headers.authorization as string || 'Basic YWxpY2U6';
@@ -125,9 +131,35 @@ function getCacheKey(req: Request): string {
  */
 function getAICoreServiceBinding(): any | null {
   try {
-    xsenv.loadEnv();
-    const services = xsenv.getServices({ 'ai-core': { tag: 'ai-core' } });
-    return services['ai-core'] || null;
+    // Always use VCAP_SERVICES directly - it's the most reliable method
+    // xsenv.getServices() might return a different structure
+    const vcapServices = process.env.VCAP_SERVICES 
+      ? JSON.parse(process.env.VCAP_SERVICES)
+      : {};
+    
+    // Try different possible service names
+    if (vcapServices['aicore'] && vcapServices['aicore'].length > 0) {
+      // Return the full service object from VCAP_SERVICES (includes credentials)
+      return vcapServices['aicore'][0];
+    }
+    
+    // Also try 'ai-core' (with hyphen)
+    if (vcapServices['ai-core'] && vcapServices['ai-core'].length > 0) {
+      return vcapServices['ai-core'][0];
+    }
+    
+    // Fallback to xsenv if VCAP_SERVICES doesn't work
+    try {
+      xsenv.loadEnv();
+      const services = xsenv.getServices({ 'aicore': {} });
+      if (services['aicore']) {
+        return services['aicore'];
+      }
+    } catch (e) {
+      // xsenv failed, return null
+    }
+    
+    return null;
   } catch (error) {
     // Service not bound or not found
     return null;
@@ -182,36 +214,145 @@ async function createLLMProvider(req: Request): Promise<SapCoreAIProvider> {
     );
   }
   
-  // Use destination if provided, otherwise use service binding name
-  // executeHttpRequest will automatically use service binding if destination doesn't exist
-  const destinationName = sapCoreAIDestination || 'cloud-llm-hub-ai-core';
+  // If service binding is available, use it directly (no destination needed)
+  // If destination is provided, use it (allows pointing to different AI Core instances)
+  let destinationName: string | undefined;
+  let serviceUrl: string | undefined;
+  let serviceCredentials: any = undefined;
   
   if (sapCoreAIDestination) {
+    // Use destination if explicitly provided
+    destinationName = sapCoreAIDestination;
     log.info('Using SAP Core AI provider via destination', { destination: sapCoreAIDestination });
   } else if (aiCoreService) {
-    log.info('Using SAP Core AI provider via service binding', { serviceName: aiCoreService.name });
+    // Use service binding directly - get URL from service credentials
+    // Since getAICoreServiceBinding() now reads directly from VCAP_SERVICES,
+    // aiCoreService should have the full structure with credentials
+    serviceCredentials = aiCoreService.credentials;
+    serviceUrl = serviceCredentials?.serviceurls?.AI_API_URL || 
+                 serviceCredentials?.url ||
+                 'https://api.ai.prod.eu-central-1.aws.ml.hana.ondemand.com';
+    
+    // Log detailed structure for debugging
+    log.info('Using SAP Core AI provider via service binding', { 
+      serviceName: aiCoreService.name,
+      serviceUrl: serviceUrl,
+      hasCredentials: !!serviceCredentials,
+      credentialsKeys: serviceCredentials ? Object.keys(serviceCredentials) : [],
+      aiCoreServiceKeys: Object.keys(aiCoreService || {}),
+      hasCredentialsProp: !!aiCoreService.credentials,
+    });
+    
+    // If credentials is still empty/undefined, this is an error
+    if (!serviceCredentials || (typeof serviceCredentials === 'object' && Object.keys(serviceCredentials).length === 0)) {
+      log.error('Service credentials not found in aiCoreService! This should not happen if VCAP_SERVICES is correct.', {
+        serviceCredentialsType: typeof serviceCredentials,
+        serviceCredentialsIsNull: serviceCredentials === null,
+        serviceCredentialsIsUndefined: serviceCredentials === undefined,
+        aiCoreServiceStructure: JSON.stringify(aiCoreService, null, 2).substring(0, 500),
+      });
+    }
   }
   
-  // Create SAP Core AI provider with HTTP client using SAP Cloud SDK
+  // Create SAP Core AI provider with HTTP client
+  // Capture serviceUrl and serviceCredentials in closure for httpClient
+  const capturedServiceUrl = serviceUrl;
+  const capturedServiceCredentials = serviceCredentials;
+  const capturedDestinationName = destinationName;
+  
   return new SapCoreAIProvider({
-    destinationName: destinationName,
+    destinationName: capturedDestinationName || 'cloud-llm-hub-ai-core', // Fallback name (not used if serviceUrl is set)
     apiKey: '', // Not used for SAP AI Core
     model: (req.headers['x-sap-core-ai-model'] as string) || process.env.SAP_CORE_AI_MODEL || 'gpt-4o-mini',
     temperature: parseFloat((req.headers['x-sap-core-ai-temperature'] as string) || process.env.SAP_CORE_AI_TEMPERATURE || '0.7'),
     maxTokens: parseInt((req.headers['x-sap-core-ai-max-tokens'] as string) || process.env.SAP_CORE_AI_MAX_TOKENS || '2000'),
     httpClient: async (config) => {
-      // Use SAP Cloud SDK executeHttpRequest
-      // If destination exists, it will be used
-      // If not, executeHttpRequest will try to use service binding with matching name
-      return await executeHttpRequest(
-        { destinationName: config.destinationName },
-        {
-          method: config.method as any,
-          url: config.url,
-          headers: config.headers,
-          data: config.data,
+      log.info('httpClient called', {
+        hasServiceUrl: !!capturedServiceUrl,
+        hasServiceCredentials: !!capturedServiceCredentials,
+        serviceUrl: capturedServiceUrl,
+        destinationName: capturedDestinationName,
+      });
+      
+      if (capturedServiceUrl && capturedServiceCredentials) {
+        log.info('Using service binding directly (no destination)');
+        // Use service binding directly - make HTTP request to service URL
+        const axios = await import('axios');
+        const fullUrl = `${capturedServiceUrl}${config.url}`;
+        
+        // Get OAuth2 token from service binding credentials
+        // SAP AI Core uses OAuth2ClientCredentials flow
+        let accessToken: string | undefined;
+        if (capturedServiceCredentials.clientid && capturedServiceCredentials.clientsecret) {
+          try {
+            const tokenUrl = capturedServiceCredentials.url || 
+                            capturedServiceCredentials.tokenurl ||
+                            'https://acme-subaccount.authentication.eu10.hana.ondemand.com/oauth/token';
+            
+            const tokenResponse = await axios.default.post(
+              tokenUrl,
+              new URLSearchParams({
+                grant_type: 'client_credentials',
+                client_id: capturedServiceCredentials.clientid,
+                client_secret: capturedServiceCredentials.clientsecret,
+              }),
+              {
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                },
+              }
+            );
+            
+            accessToken = tokenResponse.data.access_token;
+            log.debug('Obtained OAuth2 token from service binding');
+          } catch (tokenError: any) {
+            log.warn('Failed to get OAuth2 token from service binding', { 
+              error: tokenError.message 
+            });
+            // Fallback to Basic auth if OAuth2 fails
+          }
         }
-      );
+        
+        // Use OAuth2 token if available, otherwise try Basic auth
+        const authHeader = accessToken
+          ? `Bearer ${accessToken}`
+          : (capturedServiceCredentials.clientid && capturedServiceCredentials.clientsecret
+              ? `Basic ${Buffer.from(`${capturedServiceCredentials.clientid}:${capturedServiceCredentials.clientsecret}`).toString('base64')}`
+              : undefined);
+        
+        log.debug('Making request to SAP AI Core', {
+          url: fullUrl,
+          method: config.method,
+          hasAuth: !!authHeader,
+        });
+        
+        const response = await axios.default.request({
+          method: config.method as any,
+          url: fullUrl,
+          headers: {
+            ...config.headers,
+            ...(authHeader ? { 'Authorization': authHeader } : {}),
+          },
+          data: config.data,
+        });
+        
+        return { data: response.data };
+      } else {
+        log.info('Using destination via SAP Cloud SDK (fallback)');
+        // Use destination via SAP Cloud SDK
+        return await executeHttpRequest(
+          { destinationName: config.destinationName },
+          {
+            method: config.method as any,
+            url: config.url,
+            headers: config.headers,
+            data: config.data,
+          },
+          {
+            fetchCsrfToken: false, // SAP AI Core doesn't support CSRF tokens
+          }
+        );
+      }
     },
     log: log,
   });
