@@ -40,7 +40,11 @@
     "update:cline:yaml": "node tools/update-cline-connection.js",
     "copy:mcp-submodule": "node tools/copy-mcp-submodule.js",
     "update:env": "node tools/update-default-env.js",
-    "deploy:set-env": "node tools/set-btp-env.js"
+    "deploy:set-env": "node tools/set-btp-env.js",
+    "deploy": "node tools/deploy-mta.js",
+    "deploy:prepare": "node tools/prepare-mta-deploy.js",
+    "deploy:build": "mbt build",
+    "deploy:deploy": "mbt deploy -p mta-deploy.yaml"
   },
   "license": "MIT",
   "private": true,

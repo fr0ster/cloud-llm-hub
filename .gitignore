@@ -41,3 +41,6 @@ sk.json
 *.yaml
 !**/*.yaml.template
 !**/*.template.yaml
+!mta.yaml
+# MTA deployment parameters (contains sensitive values)
+mta-deploy.yaml
