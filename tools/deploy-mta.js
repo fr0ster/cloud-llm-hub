@@ -35,7 +35,7 @@ function main() {
     console.error(`❌ Error: ${PARAMS_FILE} not found!\n`);
     console.log(`📝 Please create ${PARAMS_FILE} from template:`);
     console.log(`   cp ${TEMPLATE_FILE} ${PARAMS_FILE}`);
-    console.log(`   # Then edit ${PARAMS_FILE} with your values\n`);
+    console.log(`   # Then edit ${PARAMS_FILE} with your actual values\n`);
     process.exit(1);
   }
 
