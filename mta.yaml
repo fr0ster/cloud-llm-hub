@@ -4,6 +4,11 @@ version: 1.0.0
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
+  # LLM Agent deployment parameters (provided via .mtaext)
+  LLM_AGENT_MODEL:
+  LLM_AGENT_TEMPERATURE:
+  LLM_AGENT_MAX_TOKENS:
+  LLM_AGENT_MCP_DESTINATION:
 build-parameters:
   before-all:
     - builder: custom
@@ -43,18 +48,18 @@ modules:
         # - 'claude-3-5-sonnet', 'claude-3-opus' → Anthropic
         # - 'deepseek-chat' → DeepSeek
         # Model must be configured in SAP AI Core Launchpad
-        LLM_AGENT_MODEL: ~{LLM_AGENT_MODEL}
+        LLM_AGENT_MODEL: <LLM_AGENT_MODEL>
 
         # LLM Parameters
-        LLM_AGENT_TEMPERATURE: ~{LLM_AGENT_TEMPERATURE}
-        LLM_AGENT_MAX_TOKENS: ~{LLM_AGENT_MAX_TOKENS}
+        LLM_AGENT_TEMPERATURE: <LLM_AGENT_TEMPERATURE>
+        LLM_AGENT_MAX_TOKENS: <LLM_AGENT_MAX_TOKENS>
 
         # MCP Configuration
         # MCP destination for ABAP connection
         # This destination must be configured in Destination service (BTP Cockpit)
         # The destination should point to your ABAP system (same as MCP proxy uses)
         # MCP proxy will resolve this destination and create MCP server with SAP config
-        LLM_AGENT_MCP_DESTINATION: ~{LLM_AGENT_MCP_DESTINATION}
+        LLM_AGENT_MCP_DESTINATION: <LLM_AGENT_MCP_DESTINATION>
 
         # MCP Proxy endpoint (optional)
         # If not set, will be auto-detected from request (for BTP) or use localhost (for local dev)
