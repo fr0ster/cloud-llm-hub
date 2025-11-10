@@ -43,8 +43,8 @@
     "deploy:set-env": "node tools/set-btp-env.js",
     "deploy": "node tools/deploy-mta.js",
     "deploy:prepare": "node tools/prepare-mta-deploy.js",
-    "deploy:build": "mbt build",
-    "deploy:deploy": "mbt deploy -p mta-deploy.yaml"
+    "deploy:build": "cds build && mbt build -t gen --mtar mta.tar -e .mtaext",
+    "deploy:deploy": "cf deploy gen/mta.tar --abort-on-error"
   },
   "license": "MIT",
   "private": true,

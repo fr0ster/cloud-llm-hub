@@ -40,9 +40,9 @@ sk.json
 # YAML files (except templates)
 *.yaml
 !**/*.yaml.template
-!**/*.template.yaml
 !mta.yaml
-# MTA deployment parameters (contains sensitive values - NOT committed to Git)
-mta-deploy.yaml
-# Template file with examples (committed to Git)
-!mta-deploy.yaml.template
+
+# MTA extension file (contains sensitive values - NOT committed to Git)
+.mtaext
+# Template file (committed to Git)
+!.mtaext.template
