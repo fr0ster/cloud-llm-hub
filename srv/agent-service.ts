@@ -4,9 +4,11 @@
  * Provides OData endpoints to interact with the LLM agent.
  * 
  * Architecture:
- * - This service uses agent-manager.ts which handles all MCP configuration
+ * - Configuration comes from environment variables (set via mta.yaml or CF CLI)
+ * - This service uses agent-manager.ts which loads configuration and creates agent instances
  * - Agent itself doesn't know about SAP destinations - it only works with MCP client
- * - cloud-llm-hub (this layer) determines which MCP to use and how to configure it
+ * - MCP client connects to MCP proxy, which resolves destination and creates MCP server
+ * - All authentication is handled through destinations (configured in BTP Cockpit)
  */
 
 import cds, { type Service, type Request } from '@sap/cds';
@@ -23,7 +25,7 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
   /**
    * Chat endpoint - send message to agent
    * 
-   * Agent manager handles MCP configuration from request headers.
+   * Agent manager loads configuration from environment variables and creates agent instance.
    * Agent doesn't know about SAP - it just works with MCP client.
    */
   srv.on('Chat', async (req: Request) => {
@@ -38,7 +40,6 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
     log.info('Chat request received', { 
       messageLength: message.length,
       user: (req.user as any)?.id,
-      destination: req.headers['x-sap-destination'],
     });
 
     try {
@@ -102,18 +103,19 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
 
   /**
    * Health check
+   * Uses configuration from environment variables (set via mta.yaml)
    */
   srv.on('Health', async (req: Request) => {
-    const mcpEndpoint = process.env.MCP_ENDPOINT || 'http://localhost:4004/mcp/stream/http';
-    
-    // Determine SAP Core AI destination and model
-    const destination = (req.headers['x-sap-core-ai-destination'] as string) || process.env.SAP_CORE_AI_DESTINATION || 'NOT_CONFIGURED';
-    const model = (req.headers['x-sap-core-ai-model'] as string) || process.env.SAP_CORE_AI_MODEL || 'NOT_CONFIGURED';
+    const { getAgentConfig } = await import('./agent-config');
     
     let agentReady = false;
     let mcpConnected = false;
+    let config: any = null;
     
     try {
+      // Load configuration to show in health check
+      config = getAgentConfig();
+      
       const agent = await getAgent(req);
       agentReady = !!agent;
       
@@ -133,8 +135,9 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
       agentReady,
       mcpConnected,
       llmProvider: 'SAP Core AI',
-      destination,
-      model,
+      llmDestination: config?.llm?.aiCoreService?.name || 'NOT_CONFIGURED',
+      model: config?.llm?.model || 'NOT_CONFIGURED',
+      mcpDestination: config?.mcp?.destination || 'NOT_CONFIGURED',
       timestamp: new Date().toISOString(),
     };
   });
