@@ -35,6 +35,9 @@ type AgentHealthStatus {
   agentReady: Boolean;
   mcpConnected: Boolean;
   llmProvider: String;
+  llmDestination: String;
+  model: String;
+  mcpDestination: String;
   timestamp: DateTime;
 }
 

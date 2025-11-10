@@ -27,19 +27,42 @@ modules:
       # env:
       #   NODE_OPTIONS: "--inspect=0.0.0.0:9229"
       #   DEBUG: "*"
-      # 
-      # NOTE: All LLM providers are accessed through SAP AI Core (cloud-llm-hub-ai-core resource).
-      # The service binding is configured in mta.yaml - this binds the app to SAP AI Core.
-      # 
-      # Configuration:
-      # - SAP_CORE_AI_DESTINATION: Name of the destination pointing to SAP AI Core service
-      #   This destination must be configured in Destination service (BTP Cockpit)
-      #   The destination URL points to your SAP AI Core instance
-      # - All model/provider configuration is done in SAP AI Core Launchpad
-      #   (configure which models/providers are available, routing, etc.)
-      # - Set SAP_CORE_AI_DESTINATION environment variable (or use X-SAP-Core-AI-Destination header)
-      #
-      # For local development, create .env file with SAP_CORE_AI_DESTINATION pointing to your AI Core destination.
+      env:
+        # LLM Agent Configuration
+        # These environment variables are set during deployment and used by Agent Service (OData)
+
+        # NOTE: SAP AI Core access is via service binding (cloud-llm-hub-ai-core resource)
+        # Service binding is configured in mta.yaml and provides credentials via VCAP_SERVICES
+        # No destination is needed for SAP AI Core - service binding is used directly
+
+        # LLM Model configuration
+        # Model name determines which underlying provider SAP AI Core routes to:
+        # - 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo' → OpenAI
+        # - 'claude-3-5-sonnet', 'claude-3-opus' → Anthropic
+        # - 'deepseek-chat' → DeepSeek
+        # Model must be configured in SAP AI Core Launchpad
+        LLM_AGENT_MODEL: "gpt-4o-mini"
+
+        # LLM Parameters
+        LLM_AGENT_TEMPERATURE: "0.7"
+        LLM_AGENT_MAX_TOKENS: "2000"
+
+        # MCP Configuration
+        # MCP destination for ABAP connection
+        # This destination must be configured in Destination service (BTP Cockpit)
+        # The destination should point to your ABAP system (same as MCP proxy uses)
+        # MCP proxy will resolve this destination and create MCP server with SAP config
+        LLM_AGENT_MCP_DESTINATION: "SAP_ABAP_DEST"
+
+        # MCP Proxy endpoint (optional)
+        # If not set, will be auto-detected from request (for BTP) or use localhost (for local dev)
+        # LLM_AGENT_MCP_ENDPOINT: "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http"
+
+        # Legacy compatibility (optional, can be removed if using LLM_AGENT_* variables)
+        # SAP_CORE_AI_MODEL: "gpt-4o-mini"
+        # SAP_CORE_AI_TEMPERATURE: "0.7"
+        # SAP_CORE_AI_MAX_TOKENS: "2000"
+        # MCP_ENDPOINT: "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http"
     build-parameters:
       builder: npm-ci
     provides:
@@ -106,7 +129,7 @@ resources:
       service-plan: extended
       # SAP AI Core provides access to LLM providers (OpenAI, Anthropic, DeepSeek, etc.)
       # All LLM providers are accessed through SAP AI Core, not directly
-      # 
+      #
       # If AI Core service already exists in your subaccount, uncomment and set service-name:
       # service-name: your-existing-ai-core-service-name
       # This will bind to existing service instead of creating a new one
