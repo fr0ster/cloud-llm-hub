@@ -8,12 +8,8 @@
     // "tab",
     // "tsv"
   ],
-<<<<<<< HEAD
   // Spell Checker: Enable English and Ukrainian languages
   "cSpell.language": "en,uk",
-=======
-  "cSpell.language": "en",
->>>>>>> main
   "cSpell.words": [
     "adtcore",
     "aicore",
@@ -30,14 +26,11 @@
     "checkruns",
     "chkl",
     "chkrun",
+    "clnt",
     "CLAS",
-<<<<<<< HEAD
     "connectivityproxy",
     "connsvc",
-=======
-    "clnt",
     "CORRNR",
->>>>>>> main
     "creds",
     "customise",
     "ddic",
@@ -63,11 +56,8 @@
     "ondemand",
     "onprem",
     "onpremise",
-<<<<<<< HEAD
     "PAYG",
-=======
     "preaudit",
->>>>>>> main
     "proxytype",
     "PURBOOK",
     "RMSNPSRC",
@@ -76,24 +66,21 @@
     "SALV",
     "SAPAPO",
     "SAPMV",
-<<<<<<< HEAD
+    "SESSIONID",
     "serviceurls",
+    "sessiontype",
     "streamable",
     "tenantid",
     "tenantmode",
-    "tokenurl",
-=======
-    "SESSIONID",
-    "sessiontype",
-    "streamable",
     "testclasses",
->>>>>>> main
+    "tokenurl",
     "uaadomain",
     "usagereferences",
     "verificationkey",
     "xsapp",
-<<<<<<< HEAD
     "ZTEST",
+    "ztst",
+    "TABL",
     "автоматично",
     "валідний",
     "Відновити",
@@ -119,9 +106,11 @@
     "тестування",
     "тестуванням",
     "Чеклист"
-=======
-    "ztst",
-    "TABL"
->>>>>>> main
+  ],
+  // Git: Auto-detect repositories and always show submodules in Source Control
+  "git.autoRepositoryDetection": true,
+  "git.scanRepositories": [
+    "submodules/llm-agent",
+    "submodules/mcp-abap-adt"
   ]
 }
