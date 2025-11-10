@@ -1,0 +1,16 @@
+# MTA Deployment Parameters Template
+#
+# Copy this file to mta-deploy.yaml and fill in your values
+# mta-deploy.yaml is in .gitignore and will not be committed to Git
+#
+# Usage:
+#   cp mta-deploy.yaml.template mta-deploy.yaml
+#   # Edit mta-deploy.yaml with your values
+#   mbt deploy -p mta-deploy.yaml
+
+LLM_AGENT_MODEL: "gpt-4o-mini"
+LLM_AGENT_TEMPERATURE: "0.7"
+LLM_AGENT_MAX_TOKENS: "2000"
+LLM_AGENT_MCP_DESTINATION: "SAP_ABAP_DEST"
+# LLM_AGENT_MCP_ENDPOINT: "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http"
+
