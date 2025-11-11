@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+description: Error handling guidelines
+---
+
+# Error Handling
+
+- Error messages: English only
+- Log messages: English only
+- User-facing errors: Can be translated based on user's language preference
+- Technical errors: Always in English for debugging
+- Use try/catch with proper error types
+- Never ignore errors silently

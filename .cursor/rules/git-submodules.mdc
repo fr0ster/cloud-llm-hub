@@ -1,0 +1,16 @@
+---
+alwaysApply: true
+description: Guidelines for working with Git submodules
+---
+
+# Git Submodules
+
+This project uses Git submodules:
+- `submodules/mcp-abap-adt/` - MCP server for ABAP ADT (has its own `.cursor/rules/`)
+- `submodules/llm-agent/` - LLM agent orchestrator (has its own `.cursor/rules/`)
+
+**Important:**
+- Submodules have their own `.cursor/rules/` directories
+- When working in submodules, follow their specific rules
+- Changes to submodules should be committed in the submodule repository first
+- Main project references submodules via git submodule pointers
