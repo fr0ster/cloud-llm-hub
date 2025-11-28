@@ -78,8 +78,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
 
     // Connect transport to MCP server (like mcp-abap-adt)
     // In mcp-abap-adt: await this.mcpServer.connect(transport);
-    // Our mcpServer.server is the same as mcp-abap-adt's this.mcpServer
-    await mcpServer.server.connect(transport);
+    // Our mcpServer.server is mcp_abap_adt_server, mcpServer.server.server is McpServer
+    await mcpServer.server.server.connect(transport);
 
     log.debug('Transport connected', {
       hasServer: !!mcpServer.server
