@@ -12,8 +12,7 @@ import cds from '@sap/cds';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
-import type { AbapConnection } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';
+import type { SapConfig, AbapConnection } from '@mcp-abap-adt/connection';
 import {
   shouldUseConnectivity,
   extractConnectivityContext,

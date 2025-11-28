@@ -3,8 +3,7 @@ import '../env-setup';
 
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import type { AxiosResponse } from 'axios';
-import type { AbapConnection, AbapRequestOptions } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
+import type { AbapConnection, AbapRequestOptions, SapConfig } from '@mcp-abap-adt/connection';
 import { logger } from '@fr0ster/mcp-abap-adt/dist/lib/logger';
 
 /**
@@ -16,6 +15,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private csrfToken: string | null = null;
   private cookies: string | null = null;
   private cachedBaseUrl: string | null = null;
+  private sessionId: string = 'cloud-sdk-session';
+  private sessionType: 'stateless' | 'stateful' = 'stateless';
+  private sessionState: any = null;
 
   constructor(
     private readonly config: SapConfig,
@@ -26,10 +28,32 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return this.config;
   }
 
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  setSessionType(type: 'stateless' | 'stateful'): void {
+    this.sessionType = type;
+  }
+
+  async connect(): Promise<void> {
+    // Cloud SDK handles connection automatically via destination
+    // This is a no-op for Cloud SDK implementation
+  }
+
+  getSessionState(): any {
+    return this.sessionState;
+  }
+
+  setSessionState(state: any): void {
+    this.sessionState = state;
+  }
+
   reset(): void {
     this.csrfToken = null;
     this.cookies = null;
     this.cachedBaseUrl = null;
+    this.sessionState = null;
   }
 
   async getBaseUrl(): Promise<string> {

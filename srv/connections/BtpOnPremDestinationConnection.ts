@@ -1,13 +1,27 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import type { AbapRequestOptions } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';
+import type { AbapRequestOptions, SapConfig, ILogger } from '@mcp-abap-adt/connection';
 import {
   OnPremAbapConnection as OnPremAbapConnectionImpl
-} from '@fr0ster/mcp-abap-adt/dist/lib/connection/OnPremAbapConnection';
+} from '@mcp-abap-adt/connection';
 import type {
   OnPremAbapConnection as OnPremAbapConnectionType
-} from '@fr0ster/mcp-abap-adt/dist/lib/connection/OnPremAbapConnection';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
+} from '@mcp-abap-adt/connection';
+import { logger } from '@fr0ster/mcp-abap-adt/dist/lib/logger';
+
+// Logger adapter for OnPremAbapConnection
+const loggerAdapter: ILogger = {
+  info: (message: string, meta?: any) => logger.info(message, meta),
+  error: (message: string, meta?: any) => logger.error(message, meta),
+  warn: (message: string, meta?: any) => logger.warn(message, meta),
+  debug: (message: string, meta?: any) => logger.debug(message, meta),
+  csrfToken: (action: 'fetch' | 'retry' | 'success' | 'error', message: string, meta?: any) => {
+    logger.csrfToken(action, message, meta);
+  },
+  tlsConfig: (rejectUnauthorized: boolean) => {
+    logger.tlsConfig(rejectUnauthorized);
+  }
+};
 
 export interface ConnectivityProxyConfig {
   host: string;
@@ -31,7 +45,9 @@ export class BtpOnPremDestinationConnection
   private readonly additionalRequestHeaders: Record<string, string>;
 
   constructor(options: BtpOnPremConnectionOptions) {
-    super(options.sapConfig);
+    // OnPremAbapConnection constructor now requires: config, loggerAdapter?, sessionStorage?, sessionId?
+    // For BTP on-premise, we use logger adapter and default session storage
+    super(options.sapConfig, loggerAdapter, undefined, 'btp-onprem-session');
 
     if (options.sapConfig.authType !== 'basic') {
       throw new Error('BTP on-premise destinations require basic authentication credentials.');
