@@ -1,6 +1,6 @@
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import type { Destination } from '@sap-cloud-sdk/connectivity';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
+import type { SapConfig } from '@mcp-abap-adt/connection';
 
 // Helper to extract JWT from request headers if available
 function extractJwtFromRequest(req?: any): string | undefined {

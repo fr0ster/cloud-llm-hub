@@ -4,6 +4,8 @@
   "description": "A simple CAP project.",
   "dependencies": {
     "@fr0ster/mcp-abap-adt": "file:submodules/mcp-abap-adt",
+    "@mcp-abap-adt/adt-clients": "^0.1.25",
+    "@mcp-abap-adt/connection": "^0.1.11",
     "@modelcontextprotocol/sdk": "^1.17.2",
     "@sap-cloud-sdk/connectivity": "^4",
     "@sap-cloud-sdk/http-client": "^4.1.2",
