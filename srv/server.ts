@@ -17,78 +17,12 @@ import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
 // @ts-ignore - @sap/xsenv doesn't have types
 import { loadEnv } from '@sap/xsenv';
+// @ts-ignore - ESM import path with .js extension
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { getMCPServer } from './mcp-manager';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { Readable } from 'stream';
 
-
-/**
- * SSE endpoint handler - proxies to embedded MCP server
- */
-async function handleSSE(req: Request, res: Response): Promise<any> {
-  const log = cds.log('mcp-proxy/sse');
-  // const user = (req as any).user;
-
-  // Trust BTP authentication - if user exists, they're authorized
-  // if (!user) {
-  //   log.warn('Access denied - no authenticated user', { user: user?.id });
-  //   return res.status(401).send('Unauthorized: No authenticated user');
-  // }
-
-  // log.info('SSE connection opened', { user: user.id });
-
-  try {
-    // Get embedded MCP server instance (created per-request with SAP config from headers)
-    const mcpServer = await getMCPServer(req);
-    
-    if (!mcpServer || !mcpServer.server) {
-      log.error('MCP server not initialized');
-      return res.status(503).send('Service Unavailable: MCP server not ready');
-    }
-
-    // Send SSE headers
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.write('retry: 15000\n\n');
-
-    const heartbeat = setInterval(() => {
-      res.write(': ping\n\n');
-    }, 15000);
-
-    // Handle MCP protocol through embedded server
-    // For SSE, we need to handle the session initialization
-    const sessionId = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    
-    // log.info('SSE session established', { user: user.id, sessionId });
-
-    // Send endpoint event to establish connection
-    res.write(`event: endpoint\n`);
-    res.write(`data: /message\n\n`);
-
-    // Handle client disconnect
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      res.end();
-      // log.info('SSE client disconnected', { user: user.id, sessionId });
-    });
-
-    // Keep connection alive
-    res.on('error', (err: any) => {
-      log.error('SSE stream error', err);
-      clearInterval(heartbeat);
-      res.end();
-    });
-
-  } catch (err: any) {
-    log.error('SSE handler error', err);
-    if (!res.headersSent) {
-      return res.status(500).send(`Internal Server Error: ${err.message}`);
-    }
-    res.end();
-  }
-}
 
 /**
  * Stream-HTTP endpoint handler - proxies to embedded MCP server
@@ -154,6 +88,15 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     let responseResolved = false;
     let responseTimeout: NodeJS.Timeout | null = null;
     
+    // Helper to safely call responseCompleteResolve
+    const resolveResponse = (reason: CompletionReason) => {
+      if (responseCompleteResolve && !responseResolved) {
+        responseResolved = true;
+        if (responseTimeout) clearTimeout(responseTimeout);
+        responseCompleteResolve(reason);
+      }
+    };
+    
     // Determine timeout: use header value if provided, otherwise use defaults
     // Default: 10s in debug mode (sufficient for MCP operations), 5s in production
     const timeoutMs = requestTimeoutMs ?? (isDebugMode ? 10000 : 5000);
@@ -213,91 +156,77 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       }, timeoutMs);
     });
     
-    // Now call transport.handleRequest with event listeners already in place
-    await mcpServer.withTransport(async transport => {
-      
-      if (!transport) {
-        log.error('❌ Transport is null or undefined');
-        throw new Error('MCP transport is not available');
-      }
-      
+    // Read request body (like mcp-abap-adt does)
+    let body: any = null;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    if (chunks.length > 0) {
+      const bodyString = Buffer.concat(chunks).toString('utf-8');
       try {
-        // Check response state again right before calling handleRequest
-        if (res.writableEnded || res.destroyed) {
-          log.warn('⚠️ Response already ended before handleRequest', {
-            writableEnded: res.writableEnded,
-            destroyed: res.destroyed
-          });
-          // If already closed, resolve immediately
-          if (responseCompleteResolve && !responseResolved) {
-            responseResolved = true;
-            if (responseTimeout) clearTimeout(responseTimeout);
-            responseCompleteResolve('already-ended');
-          }
-          return;
-        }
-        
-        const handleRequestResult = await transport.handleRequest(req, res);
-        
-        // Minimal logging - only critical info for comparison
-        if (isDebugMode || isBTP) {
-          log.info('✅ handleRequest returned', {
-            environment,
-            headersSent: res.headersSent,
-            writableEnded: res.writableEnded,
-            statusCode: res.statusCode
-          });
-        }
-        
-        // Check if response closed immediately after handleRequest
-        if (res.writableEnded || res.destroyed) {
-          // Response already closed, event listeners should fire
-          // But in debug mode, events might not fire, so ensure completion
-          if (isDebugMode) {
-            setImmediate(() => {
-              if (!responseResolved && responseCompleteResolve) {
-                responseResolved = true;
-                if (responseTimeout) clearTimeout(responseTimeout);
-                responseCompleteResolve('close'); // Assume close if already ended
-              }
-            });
-          }
-        } else {
-          // Response not closed yet - set up a fallback check
-          // If handleRequest returned but stream is still open, check after a short delay
-          // This handles cases where transport completed but didn't close the stream
-          setTimeout(() => {
-            if (!responseResolved && responseCompleteResolve) {
-              // If stream is still open after handleRequest returned, assume completion
-              // Transport has finished its work, so we can safely resolve
-              if (res.writableEnded || res.destroyed) {
-                // Stream closed during the delay, events should have fired
-                // But if they didn't, resolve anyway
-                if (!responseResolved) {
-                  responseResolved = true;
-                  if (responseTimeout) clearTimeout(responseTimeout);
-                  responseCompleteResolve('close');
-                }
-              } else if (res.headersSent) {
-                // Headers sent but stream still open - transport completed but didn't close
-                // This is safe to resolve as transport.handleRequest already returned
-                if (!responseResolved) {
-                  responseResolved = true;
-                  if (responseTimeout) clearTimeout(responseTimeout);
-                  responseCompleteResolve('finish'); // Assume finish since headers were sent
-                }
-              }
-            }
-          }, 1000); // Check after 1 second - if transport returned, it should be done
-        }
-      } catch (handleError: any) {
-        log.error('❌ Error in transport.handleRequest', {
-          error: handleError instanceof Error ? handleError.message : String(handleError),
-          stack: handleError instanceof Error ? handleError.stack : undefined
-        });
-        throw handleError;
+        body = JSON.parse(bodyString);
+      } catch (parseError) {
+        // If body is not JSON, pass as string or null
+        body = bodyString || null;
       }
+    }
+    
+    // Create new transport for each request (like mcp-abap-adt does)
+    // This is simpler and matches the reference implementation
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // Stateless mode (like mcp-abap-adt)
+      enableJsonResponse: true, // Use JSON response format, not SSE
+      allowedOrigins: undefined,
+      allowedHosts: undefined,
+      enableDnsRebindingProtection: false
     });
+    
+    // Close transport when response closes (like mcp-abap-adt)
+    res.on('close', () => {
+      transport.close();
+    });
+    
+    try {
+      // Check response state before connecting
+      if (res.writableEnded || res.destroyed) {
+        log.warn('⚠️ Response already ended before connecting transport', {
+          writableEnded: res.writableEnded,
+          destroyed: res.destroyed
+        });
+        resolveResponse('already-ended');
+        return;
+      }
+      
+      // Connect transport to MCP server (like mcp-abap-adt)
+      await mcpServer.server.server.connect(transport);
+      
+      log.debug('Transport connected to MCP server', {
+        hasServer: !!mcpServer.server,
+        hasServerServer: !!mcpServer.server?.server
+      });
+      
+      // Handle HTTP request through transport (like mcp-abap-adt)
+      // Pass body as third parameter (like mcp-abap-adt does)
+      await transport.handleRequest(req, res, body);
+      
+      log.debug('Request completed', {
+        headersSent: res.headersSent,
+        writableEnded: res.writableEnded,
+        statusCode: res.statusCode
+      });
+    } catch (error: any) {
+      log.error('Failed to handle HTTP request', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      if (!res.headersSent) {
+        res.writeHead(500).end('Internal Server Error');
+      } else {
+        res.end();
+      }
+      throw error;
+    }
     
     // Wait for response to complete
     const completionReason = await responseComplete;
@@ -387,6 +316,29 @@ async function getOAuthToken(clientId: string, clientSecret: string, tokenUrl: s
 cds.on('bootstrap', (app: Application) => {
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Registering /mcp endpoints - authentication via CAP AuthService');
+
+  /**
+   * Fix Content-Type and Accept headers for Cline compatibility
+   * StreamableHTTPServerTransport requires:
+   * - Content-Type: application/json (not application/x-ndjson)
+   * - Accept: application/json, text/event-stream (required by transport even with enableJsonResponse: true)
+   * Note: enableJsonResponse: true means we use JSON format, not SSE, but transport still requires both in Accept
+   */
+  app.use('/mcp/stream/http', (req: Request, res: Response, next: NextFunction) => {
+    // Fix Content-Type: convert application/x-ndjson to application/json
+    if (req.headers['content-type'] === 'application/x-ndjson') {
+      req.headers['content-type'] = 'application/json';
+    }
+    
+    // Ensure Accept header includes both required types (transport requirement)
+    // Even with enableJsonResponse: true, transport requires both types in Accept header
+    const accept = req.headers.accept || '';
+    if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+      req.headers.accept = 'application/json, text/event-stream';
+    }
+    
+    next();
+  });
 
   /**
    * Convert Basic auth to Bearer token in production mode
@@ -603,25 +555,60 @@ cds.on('bootstrap', (app: Application) => {
   // Register endpoints - auth is already handled by middleware above
   // NOTE: /mcp/destination/probe is now a CAP function: GET /mcp/ProbeDestination?destination=NAME
   
-  // SSE endpoint: GET (standard) or POST (some clients may use POST)
-  app.get('/mcp/stream/sse', ensureAuth(handleSSE));
-  app.post('/mcp/stream/sse', ensureAuth((req, res) => {
-    // If POST to SSE endpoint, redirect to StreamableHTTP (correct endpoint)
-    const log = cds.log('mcp-proxy/bootstrap');
-    log.warn('POST request to SSE endpoint, redirecting to StreamableHTTP', {
+  // Log all requests to /mcp/stream/* for debugging
+  app.use('/mcp/stream/*', (req: Request, res: Response, next: NextFunction) => {
+    const debugLog = cds.log('mcp-proxy/request-logger');
+    debugLog.info('📥 Request received', {
+      method: req.method,
       path: req.path,
-      originalPath: req.url
+      url: req.url,
+      originalUrl: req.originalUrl,
+      headers: {
+        'content-type': req.headers['content-type'],
+        'accept': req.headers.accept,
+        'mcp-session-id': req.headers['mcp-session-id'],
+        'authorization': req.headers.authorization ? 'present' : 'missing'
+      }
     });
-    // Rewrite to correct endpoint
-    req.url = '/mcp/stream/http';
-    return handleStreamHTTP(req, res);
-  }));
+    next();
+  });
   
   // StreamableHTTP endpoint: POST only (bidirectional NDJSON streaming)
+  // This is the only transport we support - SSE is not needed
   app.post('/mcp/stream/http', ensureAuth(handleStreamHTTP));
+  
+  // Handle GET requests to /mcp/stream/http (should be POST)
+  app.get('/mcp/stream/http', ensureAuth(async (req: Request, res: Response) => {
+    const log = cds.log('mcp-proxy/bootstrap');
+    log.warn('GET request to StreamableHTTP endpoint (should be POST)', {
+      path: req.path,
+      url: req.url
+    });
+    res.status(405).json({
+      error: 'Method Not Allowed',
+      message: 'StreamableHTTP endpoint requires POST method, not GET',
+      supportedMethod: 'POST',
+      endpoint: '/mcp/stream/http'
+    });
+  }));
+  
+  // Handle any requests to /mcp/stream/sse (not supported)
+  app.all('/mcp/stream/sse', ensureAuth(async (req: Request, res: Response) => {
+    const log = cds.log('mcp-proxy/bootstrap');
+    log.warn('SSE endpoint requested (not supported)', {
+      method: req.method,
+      path: req.path,
+      url: req.url
+    });
+    res.status(404).json({
+      error: 'SSE endpoint not available',
+      message: 'This server only supports StreamableHTTP transport. Use POST /mcp/stream/http instead.',
+      supportedEndpoint: '/mcp/stream/http',
+      method: 'POST'
+    });
+  }));
 
   log.info('Custom Express endpoints registered', {
-    sse: 'GET /mcp/stream/sse',
     streamHttp: 'POST /mcp/stream/http',
     destinationProbe: 'GET /mcp/ProbeDestination?destination=NAME (CAP function)'
   });

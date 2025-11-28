@@ -414,8 +414,8 @@ async function handleWithTransport<T>(
     });
 
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableJsonResponse: false,
+      sessionIdGenerator: undefined, // Stateless mode (like mcp-abap-adt)
+      enableJsonResponse: true, // Use JSON response format, not SSE
       allowedOrigins: undefined,
       allowedHosts: undefined,
       enableDnsRebindingProtection: false
