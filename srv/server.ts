@@ -30,132 +30,22 @@ import { Readable } from 'stream';
 async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   const log = cds.log('mcp-proxy/stream-http');
   
-  // Detect execution environment for diagnostics (must be at the start)
-  const isDebugMode = process.env.NODE_OPTIONS?.includes('--inspect') || 
-                      process.env.NODE_OPTIONS?.includes('--inspect-brk');
-  const isBTP = !!process.env.VCAP_APPLICATION;
-  const environment = isBTP ? (isDebugMode ? 'hybrid-debug' : 'btp') : (isDebugMode ? 'local-debug' : 'local');
-  
-  // Minimal logging - only environment for comparison (no verbose details)
-  if (isDebugMode || isBTP) {
-    log.info('🔍 Environment', { environment });
+  // Only handle POST requests (like mcp-abap-adt)
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'text/plain' });
+    res.end('Method not allowed');
+    return;
   }
-  
-  const user = (req as any).user;
-  log.debug('User context', { 
-    hasUser: !!user,
-    userId: user?.id,
-    isAnonymous: user?._is_anonymous,
-    roles: user?.roles
-  });
 
   try {
     // Get embedded MCP server instance (created per-request with SAP config from headers)
     const mcpServer = await getMCPServer(req);
     
-    if (!mcpServer || !mcpServer.withTransport) {
-      log.error('❌ MCP transport factory not available', {
-        hasMcpServer: !!mcpServer,
-        hasWithTransport: !!mcpServer?.withTransport
-      });
-      return res.status(503).send('Service Unavailable: MCP transport not ready');
+    if (!mcpServer || !mcpServer.server) {
+      log.error('MCP server not initialized');
+      return res.status(503).send('Service Unavailable: MCP server not ready');
     }
 
-    
-    // Parse timeout from header (in milliseconds)
-    // Supports: X-MCP-Timeout, X-Request-Timeout headers
-    let requestTimeoutMs: number | undefined;
-    const timeoutHeader = req.headers['x-mcp-timeout'] || req.headers['x-request-timeout'];
-    if (timeoutHeader) {
-      const parsedTimeout = parseInt(String(timeoutHeader), 10);
-      if (!isNaN(parsedTimeout) && parsedTimeout > 0) {
-        // Validate timeout range: 1 second to 5 minutes
-        requestTimeoutMs = Math.max(1000, Math.min(300000, parsedTimeout));
-        log.debug('Using timeout from header', { 
-          header: timeoutHeader, 
-          parsed: parsedTimeout,
-          final: requestTimeoutMs 
-        });
-      } else {
-        log.warn('Invalid timeout header value', { header: timeoutHeader });
-      }
-    }
-    
-    // Set up response completion tracking BEFORE calling transport.handleRequest
-    // This ensures we don't miss events if response closes during request handling
-    type CompletionReason = 'finish' | 'close' | 'timeout' | 'already-ended';
-    let responseCompleteResolve: ((reason: CompletionReason) => void) | null = null;
-    let responseResolved = false;
-    let responseTimeout: NodeJS.Timeout | null = null;
-    
-    // Helper to safely call responseCompleteResolve
-    const resolveResponse = (reason: CompletionReason) => {
-      if (responseCompleteResolve && !responseResolved) {
-        responseResolved = true;
-        if (responseTimeout) clearTimeout(responseTimeout);
-        responseCompleteResolve(reason);
-      }
-    };
-    
-    // Determine timeout: use header value if provided, otherwise use defaults
-    // Default: 10s in debug mode (sufficient for MCP operations), 5s in production
-    const timeoutMs = requestTimeoutMs ?? (isDebugMode ? 10000 : 5000);
-    
-    const responseComplete = new Promise<CompletionReason>((resolve) => {
-      responseCompleteResolve = resolve;
-      
-      // Check if response is already finished/closed BEFORE we start
-      if (res.writableEnded || res.destroyed) {
-        responseResolved = true;
-        resolve('already-ended');
-        return;
-      }
-      
-      const onFinish = () => {
-        if (!responseResolved) {
-          responseResolved = true;
-          // Minimal logging - only log completion method for comparison
-          if (isDebugMode || isBTP) {
-            log.info('✅ Response finished event', { environment });
-          }
-          if (responseTimeout) clearTimeout(responseTimeout);
-          resolve('finish');
-        }
-      };
-      
-      const onClose = () => {
-        if (!responseResolved) {
-          responseResolved = true;
-          // Minimal logging - only log completion method for comparison
-          if (isDebugMode || isBTP) {
-            log.info('✅ Response closed event', { environment });
-          }
-          if (responseTimeout) clearTimeout(responseTimeout);
-          resolve('close');
-        }
-      };
-      
-      // Subscribe to events BEFORE calling transport.handleRequest
-      res.once('finish', onFinish);
-      res.once('close', onClose);
-      
-      // Set up timeout
-      responseTimeout = setTimeout(() => {
-        if (!responseResolved) {
-          responseResolved = true;
-          log.warn('⚠️ Response stream timeout (assuming complete)', { 
-            timeoutMs,
-            fromHeader: !!requestTimeoutMs,
-            isDebugMode,
-            writableEnded: res.writableEnded,
-            destroyed: res.destroyed,
-            headersSent: res.headersSent
-          });
-          resolve('timeout');
-        }
-      }, timeoutMs);
-    });
-    
     // Read request body (like mcp-abap-adt does)
     let body: any = null;
     const chunks: Buffer[] = [];
@@ -171,9 +61,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
         body = bodyString || null;
       }
     }
-    
-    // Create new transport for each request (like mcp-abap-adt does)
-    // This is simpler and matches the reference implementation
+
+    // Create new StreamableHTTP transport for each request (like mcp-abap-adt)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // Stateless mode (like mcp-abap-adt)
       enableJsonResponse: true, // Use JSON response format, not SSE
@@ -181,89 +70,36 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       allowedHosts: undefined,
       enableDnsRebindingProtection: false
     });
-    
+
     // Close transport when response closes (like mcp-abap-adt)
     res.on('close', () => {
       transport.close();
     });
-    
-    try {
-      // Check response state before connecting
-      if (res.writableEnded || res.destroyed) {
-        log.warn('⚠️ Response already ended before connecting transport', {
-          writableEnded: res.writableEnded,
-          destroyed: res.destroyed
-        });
-        resolveResponse('already-ended');
-        return;
-      }
-      
-      // Connect transport to MCP server (like mcp-abap-adt)
-      await mcpServer.server.server.connect(transport);
-      
-      log.debug('Transport connected to MCP server', {
-        hasServer: !!mcpServer.server,
-        hasServerServer: !!mcpServer.server?.server
-      });
-      
-      // Handle HTTP request through transport (like mcp-abap-adt)
-      // Pass body as third parameter (like mcp-abap-adt does)
-      await transport.handleRequest(req, res, body);
-      
-      log.debug('Request completed', {
-        headersSent: res.headersSent,
-        writableEnded: res.writableEnded,
-        statusCode: res.statusCode
-      });
-    } catch (error: any) {
-      log.error('Failed to handle HTTP request', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
-      });
-      if (!res.headersSent) {
-        res.writeHead(500).end('Internal Server Error');
-      } else {
-        res.end();
-      }
-      throw error;
-    }
-    
-    // Wait for response to complete
-    const completionReason = await responseComplete;
-    
-    // Minimal logging - only completion method for comparison
-    if (isDebugMode || isBTP) {
-      log.info('✅ Request completed', {
-        environment,
-        completionReason,
-        headersSent: res.headersSent,
-        statusCode: res.statusCode,
-        writableEnded: res.writableEnded
-      });
-    }
 
-  } catch (err: any) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    const errorStack = err instanceof Error ? err.stack : undefined;
-    const errorDetails = {
-      error: errorMessage,
-      name: err?.name,
-      code: err?.code,
-      stack: errorStack
-    };
-    
-    log.error('Stream-HTTP handler error', errorDetails);
-    
+    // Connect transport to MCP server (like mcp-abap-adt)
+    // In mcp-abap-adt: await this.mcpServer.connect(transport);
+    // Our mcpServer.server is the same as mcp-abap-adt's this.mcpServer
+    await mcpServer.server.connect(transport);
+
+    log.debug('Transport connected', {
+      hasServer: !!mcpServer.server
+    });
+
+    // Handle HTTP request through transport (like mcp-abap-adt)
+    // Pass body as third parameter (like mcp-abap-adt does)
+    await transport.handleRequest(req, res, body);
+
+    log.debug('Request completed');
+
+  } catch (error: any) {
+    log.error('Failed to handle HTTP request', {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     if (!res.headersSent) {
-      // Return 502 Bad Gateway for destination/connection errors
-      // This helps Cline understand the request failed at the gateway level
-      const statusCode = err?.statusCode || (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED' ? 502 : 500);
-      return res.status(statusCode).json({
-        error: 'Bad Gateway',
-        message: errorMessage,
-        code: err?.code || err?.name,
-        destination: (req.headers['x-sap-destination'] as string) || undefined
-      });
+      res.writeHead(500).end('Internal Server Error');
+    } else {
+      res.end();
     }
   }
 }
