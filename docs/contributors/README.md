@@ -15,6 +15,11 @@ Welcome, contributors! This directory contains comprehensive guides for contribu
 - **[CODE_STYLE.md](CODE_STYLE.md)** - Coding standards and conventions
 - **[TESTING.md](TESTING.md)** - Testing guide and best practices
 
+### Integration & Architecture
+
+- **[MCP_ABAP_ADT_INTEGRATION.md](MCP_ABAP_ADT_INTEGRATION.md)** - mcp-abap-adt v1.1.19 integration roadmap
+- **[CONNECTION_ARCHITECTURE.md](CONNECTION_ARCHITECTURE.md)** - Direct vs BTP Destination connection architecture
+
 ### Quick Links
 
 - **Main Contributing Guide:** [../../CONTRIBUTING.md](../../CONTRIBUTING.md)
@@ -32,13 +37,15 @@ Welcome, contributors! This directory contains comprehensive guides for contribu
 
 ```
 docs/
-├── contributors/          # This directory
-│   ├── SETUP.md          # Development setup
-│   ├── WORKFLOW.md       # Git workflow
-│   ├── CODE_STYLE.md     # Coding standards
-│   ├── ARCHITECTURE.md   # Architecture overview
-│   └── TESTING.md        # Testing guide
-└── [other docs]          # User documentation
+├── contributors/                    # This directory
+│   ├── SETUP.md                    # Development setup
+│   ├── WORKFLOW.md                 # Git workflow
+│   ├── CODE_STYLE.md               # Coding standards
+│   ├── ARCHITECTURE.md             # Architecture overview
+│   ├── TESTING.md                  # Testing guide
+│   ├── MCP_ABAP_ADT_INTEGRATION.md # mcp-abap-adt integration roadmap
+│   └── CONNECTION_ARCHITECTURE.md  # Connection types architecture
+└── [other docs]                    # User documentation
 ```
 
 ## 🎯 Contribution Types

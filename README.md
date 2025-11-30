@@ -83,12 +83,14 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 ### For Developers (Contributing)
 - **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
 - **[👥 Contributors](CONTRIBUTORS.md)** - List of contributors
-- **[🔧 Contributor Documentation](docs/contributors/)** - Complete contributor guides
+- **[� Contributor Documentation](docs/contributors/)** - Complete contributor guides
   - [Setup Guide](docs/contributors/SETUP.md) - Development environment
   - [Git Workflow](docs/contributors/WORKFLOW.md) - Fork → Branch → PR
   - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
   - [Architecture](docs/contributors/ARCHITECTURE.md) - System overview
   - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
+  - [🗺️ mcp-abap-adt Integration](docs/contributors/MCP_ABAP_ADT_INTEGRATION.md) - v1.1.19 integration roadmap
+  - [🏗️ Connection Architecture](docs/contributors/CONNECTION_ARCHITECTURE.md) - Direct vs BTP Destination connections
 
 ### For Operators (Production)
 - **[🔧 Operations Guide](docs/OPERATIONS.md)** - Production runbook
