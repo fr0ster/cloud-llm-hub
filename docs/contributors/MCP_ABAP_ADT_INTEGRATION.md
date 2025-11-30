@@ -1,0 +1,669 @@
+# 🗺️ mcp-abap-adt v1.1.19 Integration Roadmap
+
+**Date:** December 1, 2025  
+**mcp-abap-adt Version:** 1.1.19  
+**cloud-llm-hub Version:** 1.0.0  
+
+## 📋 Table of Contents
+
+1. [Current State Analysis](#current-state-analysis)
+2. [Critical Changes in v1.1.19](#critical-changes-in-v1119)
+3. [Identified Code Duplication](#identified-code-duplication)
+4. [Integration Plan](#integration-plan)
+5. [Priorities and Phases](#priorities-and-phases)
+
+---
+
+## 🔍 Current State Analysis
+
+### Connection Architecture
+
+#### 🏗️ Layered Approach
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     MCP Protocol Layer                       │
+│              (stdio, HTTP, SSE transports)                   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│                 MCP Server (mcp-abap-adt)                    │
+│        Tools, Handlers, Request Processing                   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+         ┌─────────────┴─────────────┐
+         │                           │
+┌────────▼────────┐        ┌─────────▼──────────┐
+│ Basic/JWT Auth  │        │  BTP Destinations  │
+│   (mcp-abap)    │        │  (cloud-llm-hub)   │
+└────────┬────────┘        └─────────┬──────────┘
+         │                           │
+┌────────▼─────────────────┐  ┌──────▼──────────────────────┐
+│@mcp-abap-adt/connection  │  │CloudSdkAbapConnection       │
+│ - axios HTTP client      │  │ - SAP Cloud SDK             │
+│ - Direct ABAP URL        │  │ - Destination Service       │
+│ - Basic auth headers     │  │ - Cloud Connector support   │
+│ - JWT token in header    │  │ - Multiple auth types       │
+└──────────────────────────┘  └─────────────────────────────┘
+```
+
+#### 🔑 Two Connection Types - NOT Duplication!
+
+**Type 1: Direct Connection** (`@mcp-abap-adt/connection`)
+```typescript
+// Use case: Local development, stdio mode, direct connections
+{
+  url: "https://my-abap-system.com:443",
+  authType: "basic" | "jwt",
+  username: "USER",
+  password: "PASS",
+  // OR
+  jwtToken: "eyJhbGci..."
+}
+
+// Transport: axios
+// Support: Basic auth, JWT auth
+// Proxy: No (only HTTP_PROXY env var)
+```
+
+**Type 2: BTP Destination** (`CloudSdkAbapConnection`)
+```typescript
+// Use case: BTP Cloud, Production, Enterprise
+{
+  destinationName: "MY_ABAP_SYSTEM",
+  // Destination contains:
+  // - URL (Internet or On-Premise via Cloud Connector)
+  // - Authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
+  // - Proxy configuration
+  // - SSL certificates
+}
+
+// Transport: SAP Cloud SDK executeHttpRequest
+// Support: BasicAuthentication, OAuth2ClientCredentials, 
+//          OAuth2SAMLBearerAssertion, Principal Propagation
+// Proxy: Cloud Connector for On-Premise
+// Token management: Automatic via BTP
+```
+
+#### 🎯 When to Use What?
+
+| Scenario | Connection Type | Why? |
+|----------|----------------|-------|
+| Local development | Direct (Basic/JWT) | Simplicity, speed |
+| stdio mode (Cline, Cursor) | Direct (Basic/JWT) | .env file config |
+| BTP Cloud Production | BTP Destination | Security, management |
+| On-Premise ABAP via Cloud Connector | BTP Destination | Only through Destination |
+| Principal Propagation | BTP Destination | User context forwarding |
+| Multi-tenant SaaS | BTP Destination | Isolation, configuration |
+
+---
+
+### Cloud-llm-hub (Cloud Integrator)
+- **Role:** Integrate MCP protocol with SAP BTP Cloud
+- **Responsibilities:**
+  - **🆕 EXTENSION:** Authentication via SAP BTP Destinations (CloudSdkAbapConnection)
+  - **🆕 EXTENSION:** Cloud Connector support for On-Premise systems
+  - **🆕 EXTENSION:** Destination Service integration with BTP
+  - MCP request proxying to ABAP systems
+  - JWT token refresh and session management
+  - CAP-based REST API for MCP
+
+### mcp-abap-adt (Base Library)
+- **Role:** Core MCP server functionality for ABAP ADT
+- **Responsibilities:**
+  - MCP protocol (stdio, HTTP, SSE)
+  - ABAP ADT clients and handlers
+  - **Base connections:** Basic Auth and JWT (without BTP Destinations)
+  - Caching and sessions
+  - Utilities and logging
+  
+### 🔑 Key Difference in Connection Architecture:
+
+**@mcp-abap-adt/connection** (base library):
+```typescript
+// Supports ONLY:
+- Basic Authentication (username/password)
+- JWT Authentication (direct token)
+- Direct HTTP connections to ABAP
+```
+
+**CloudSdkAbapConnection** (extension in cloud-llm-hub):
+```typescript
+// Adds BTP support:
+- SAP BTP Destination Service
+- Cloud Connector for On-Premise
+- Automatic token refresh via BTP
+- Proxy configuration via BTP
+- Multiple auth types: BasicAuthentication, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion
+```
+
+**This is NOT duplication - it's EXTENSION of functionality!**
+
+---
+
+## 🆕 Critical Changes in v1.1.19
+
+### 1. **Handler Refactoring** ✅
+- Migration to `CrudClient` and `SharedBuilder` from `@mcp-abap-adt/adt-clients`
+- Eliminates manual URL construction
+- Improved code consistency
+
+**Impact on cloud-llm-hub:** Minimal - handlers are used through public API
+
+### 2. **URL Handling Simplification** ⚠️
+- Removed aggressive URL cleaning
+- URLs from `.env` and service keys expected to be clean
+- Basic trimming only
+
+**Impact on cloud-llm-hub:** 
+- **CRITICAL:** Need to verify `CloudSdkAbapConnection` URL handling
+- Check for duplicated URL cleaning logic
+
+### 3. **Lazy AuthBroker Initialization** 🚀
+- AuthBroker created on-demand per destination
+- Map-based caching: `authBrokers: Map<string, AuthBroker>`
+- Default AuthBroker for requests without destination
+- Reduced memory usage and startup time
+
+**Impact on cloud-llm-hub:**
+- **POSITIVE:** Similar approach can be applied in `mcp-manager.ts`
+- **TODO:** Refactor `instanceCache` to use lazy pattern
+
+### 4. **Transport-Specific auth-broker Handling** ⚠️
+- AuthBroker ignored for `stdio` and `sse` transports
+- Only for `http`/`streamable-http`
+
+**Impact on cloud-llm-hub:** 
+- **OK:** cloud-llm-hub uses only HTTP transport
+- Should add code-level protection
+
+### 5. **ES Module Compatibility** ✅
+- Fixed `require()` → `import` in `getPlatformStores()`
+- Fixed "UnixFileSessionStore is not a constructor"
+
+**Impact on cloud-llm-hub:** Minimal - used through package
+
+### 6. **Optional Session Storage** ⚠️
+- Session storage disabled by default (stateless mode)
+- Enable via `MCP_ENABLE_SESSION_STORAGE=true`
+- Custom directory: `MCP_SESSION_DIR=/path/to/sessions`
+
+**Impact on cloud-llm-hub:**
+- **TODO:** Determine if stateful sessions needed for cloud-llm-hub
+- **TODO:** Add env var for session storage control
+
+---
+
+## 🔄 Identified Code Duplication
+
+### 1. **URL Handling** 🔴 CRITICAL
+**Duplication:**
+```typescript
+// mcp-abap-adt/src/index.ts (aggressive cleaning removed)
+url = url.trim();
+
+// cloud-llm-hub/srv/connections/CloudSdkAbapConnection.ts
+// No special URL cleaning, but has URL validation
+```
+
+**Recommendation:**
+- ✅ **Remove** all custom URL cleaning from cloud-llm-hub
+- ✅ **Rely** on validation in mcp-abap-adt
+- ✅ **Verify** URLs from Destinations are clean
+
+### 2. **CSRF Token Management** 🟡 MEDIUM
+**Duplication:**
+```typescript
+// mcp-abap-adt: @mcp-abap-adt/connection has CSRF handling for Basic/JWT
+// cloud-llm-hub/srv/connections/CloudSdkAbapConnection.ts has own fetchCsrfToken()
+// ☝️ Uses SAP Cloud SDK executeHttpRequest instead of axios
+```
+
+**Analysis:**
+- **NOT duplication!** Different transport mechanisms:
+  - `@mcp-abap-adt/connection`: axios + Basic/JWT auth
+  - `CloudSdkAbapConnection`: Cloud SDK + Destination Service
+- CSRF logic similar, but implementation different due to different HTTP clients
+
+**Recommendation:**
+- ✅ **Keep separate implementations** - different transport stacks
+- ✅ **Synchronize** retry logic and timeout parameters
+- ✅ **Extract** shared constants (retry count, delay) to shared config
+- 📝 **Document** in code why two separate implementations
+
+### 3. **Connection Management** 🔴 CRITICAL
+**Current State:**
+```typescript
+// mcp-abap-adt/src/lib/utils.ts
+const connectionCache = new Map<string, ConnectionCacheEntry>();
+export const sessionContext = new AsyncLocalStorage<...>();
+// ☝️ For Basic/JWT connections via axios
+
+// cloud-llm-hub/srv/mcp-manager.ts
+const instanceCache = new Map<string, CachedInstance>();
+// ☝️ For MCP server instances + Destination-based connections
+```
+
+**Analysis:**
+- **Partial duplication:** Both cache connections, but for different scenarios
+  - `mcp-abap-adt`: caches `AbapConnection` (Basic/JWT)
+  - `cloud-llm-hub`: caches `CachedInstance` (MCP server + Destination)
+- `CloudSdkAbapConnection` implements `AbapConnection` interface
+- But uses Cloud SDK instead of axios
+
+**Recommendation:**
+- 🚀 **REFACTOR partially:**
+  - ✅ Use `sessionContext` from mcp-abap-adt for SAP config passing
+  - ✅ Keep `instanceCache` for MCP server instances (hub-specific)
+  - ✅ Integrate `CloudSdkAbapConnection` into mcp-abap-adt connection cache
+- ✅ **Create hybrid approach:**
+  ```typescript
+  // Use sessionContext for config
+  // But keep instanceCache for server lifecycle
+  ```
+- 📝 **Document** difference between connection types
+
+### 4. **Logger** 🟢 RESOLVED
+**Current State:**
+```typescript
+// mcp-abap-adt has own logger
+// cloud-llm-hub uses cds.log()
+```
+
+**Recommendation:**
+- ✅ **Keep as is** - different logging backends
+- 📝 **Add** adapter for integration (if needed)
+
+### 5. **SAP Config Extraction** 🟡 MEDIUM
+**Duplication:**
+```typescript
+// mcp-abap-adt/src/index.ts: getConfig(), applyAuthHeaders()
+// cloud-llm-hub/srv/mcp-manager.ts: extractSapContext()
+// cloud-llm-hub/srv/server.ts: own extraction logic
+```
+
+**Recommendation:**
+- 🚀 **REFACTOR:** Create shared utility in mcp-abap-adt
+- ✅ **Export** `extractSapConfigFromHeaders(headers: IncomingHttpHeaders): SapConfig`
+- ✅ **Use** in cloud-llm-hub instead of duplication
+
+### 6. **AuthBroker Pattern** 🟢 CAN IMPROVE
+**Current State:**
+```typescript
+// mcp-abap-adt/src/index.ts: lazy AuthBroker with Map
+private authBrokers = new Map<string, AuthBroker>();
+private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | undefined>
+
+// cloud-llm-hub: creates new instances each time
+```
+
+**Recommendation:**
+- 🚀 **IMPLEMENT:** Lazy pattern in cloud-llm-hub
+- ✅ **Cache** AuthBroker instances per destination
+- ✅ **Reduce** memory footprint
+
+---
+
+## 📋 Integration Plan
+
+### Phase 1: Critical Fixes (1-2 days) 🔴
+
+- [ ] **1.1. Update Dependencies**
+  - [ ] Update `@mcp-abap-adt/adt-clients` from `^0.1.27` to `^0.1.32` in `package.json`
+  - [ ] Add `@mcp-abap-adt/auth-broker` `^0.1.2` to `package.json`
+  - [ ] Add `@mcp-abap-adt/header-validator` `^0.1.2` to `package.json`
+  - [ ] Update `@modelcontextprotocol/sdk` from `^1.17.2` to `^1.23.0` in `package.json`
+  - [ ] Run `npm install`
+  - [ ] Verify `npm run build` succeeds
+  - [ ] Run test suite to ensure compatibility
+
+- [ ] **1.2. Remove URL Cleaning Duplication**
+  - [ ] Audit URL cleaning in `srv/connections/CloudSdkAbapConnection.ts`
+  - [ ] Audit URL cleaning in `srv/mcp-manager.ts`
+  - [ ] Audit URL cleaning in `srv/server.ts`
+  - [ ] Remove aggressive URL cleaning logic
+  - [ ] Keep only basic `trim()` operation
+  - [ ] Test with various Destination configurations
+  - [ ] Test with direct URL connections
+
+- [ ] **1.3. Fix Session Storage Handling**
+  - [ ] Add `MCP_ENABLE_SESSION_STORAGE` env var to `srv/env-setup.ts`
+  - [ ] Add `MCP_SESSION_DIR` env var to `srv/env-setup.ts`
+  - [ ] Define default session storage behavior for cloud-llm-hub
+  - [ ] Update environment variable documentation
+  - [ ] Test with session storage enabled
+  - [ ] Test with session storage disabled (stateless mode)
+
+---
+
+### Phase 2: Connection Management Refactoring (3-5 days) 🟡
+
+- [ ] **2.1. Use sessionContext from mcp-abap-adt**
+  - [ ] Import `sessionContext` from `@fr0ster/mcp-abap-adt/dist/lib/utils`
+  - [ ] Use `sessionContext` for SAP config in request scope
+  - [ ] Keep `instanceCache` for MCP server instance lifecycle
+  - [ ] Add ability to pass `CloudSdkAbapConnection` to mcp-abap-adt
+  - [ ] Create connection type selection logic:
+    - [ ] Destination → `CloudSdkAbapConnection`
+    - [ ] Direct URL + Basic/JWT → `@mcp-abap-adt/connection`
+  - [ ] Update tests for hybrid approach
+  - [ ] Validate no regression in existing functionality
+
+- [ ] **2.2. Implement Lazy AuthBroker Pattern**
+  - [ ] Create `authBrokers: Map<string, AuthBroker>` in `mcp-manager.ts`
+  - [ ] Implement `getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | undefined>`
+  - [ ] Replace direct AuthBroker instantiation with lazy pattern
+  - [ ] Add TTL (Time-To-Live) for cached AuthBroker instances
+  - [ ] Implement cleanup mechanism for old instances
+  - [ ] Test with single destination
+  - [ ] Test with multiple destinations
+  - [ ] Profile memory usage improvements
+
+- [ ] **2.3. Export SAP Config Extraction from mcp-abap-adt**
+  - [ ] Create `src/lib/sapConfigExtractor.ts` in mcp-abap-adt submodule
+  - [ ] Implement `extractSapConfigFromHeaders(headers: IncomingHttpHeaders): SapConfig | undefined`
+  - [ ] Export function in mcp-abap-adt `lib/index.ts`
+  - [ ] Update cloud-llm-hub `srv/mcp-manager.ts` to use new utility
+  - [ ] Update cloud-llm-hub `srv/server.ts` to use new utility
+  - [ ] Remove duplicated extraction logic from cloud-llm-hub
+  - [ ] Add unit tests for extraction utility
+  - [ ] Validate header parsing consistency
+
+- [ ] **2.4. Create Connection Factory Pattern**
+  - [ ] Create `srv/connections/connectionFactory.ts`
+  - [ ] Define `ConnectionOptions` interface
+  - [ ] Implement `createConnection(options: ConnectionOptions): Promise<AbapConnection>`
+  - [ ] Add connection type selection logic (Destination vs Direct)
+  - [ ] Add unit tests for factory with Destination config
+  - [ ] Add unit tests for factory with Direct config
+  - [ ] Add unit tests for factory error cases
+  - [ ] Migrate `srv/mcp-manager.ts` to use factory
+  - [ ] Migrate `srv/server.ts` to use factory
+  - [ ] Add JSDoc documentation for connection types
+  - [ ] Validate all connection scenarios work
+
+---
+
+### Phase 3: Improvements and Optimization (5-7 days) 🟢
+
+- [ ] **3.1. Synchronize Error Handling**
+  - [ ] Audit error handling patterns in `srv/connections/CloudSdkAbapConnection.ts`
+  - [ ] Audit error handling patterns in `srv/mcp-manager.ts`
+  - [ ] Audit error handling patterns in `srv/server.ts`
+  - [ ] Align with `safeStringifyError` from mcp-abap-adt
+  - [ ] Add structured logging for all error paths
+  - [ ] Improve error messages with context for debugging
+  - [ ] Test error scenarios with meaningful output
+
+- [ ] **3.2. Synchronize CSRF Token Logic**
+  - [ ] Create `srv/connections/csrfConfig.ts` with shared constants
+  - [ ] Define `CSRF_CONFIG` with retry count, delay, timeout, endpoints
+  - [ ] Update `CloudSdkAbapConnection.fetchCsrfToken()` to use shared config
+  - [ ] Synchronize error messages between implementations
+  - [ ] Synchronize logging format for CSRF operations
+  - [ ] Add code comments explaining axios vs Cloud SDK differences
+  - [ ] (Optional) Propose PR to mcp-abap-adt to export CSRF_CONFIG
+  - [ ] Test CSRF token fetching with retries
+  - [ ] Test CSRF token timeout scenarios
+
+- [ ] **3.3. Improve Documentation**
+  - [ ] Create `docs/INTEGRATION_ARCHITECTURE.md` - overall integration architecture
+  - [ ] Create `docs/MCP_ABAP_ADT_USAGE.md` - how mcp-abap-adt library is used
+  - [ ] Create `docs/CODE_SHARING_POLICY.md` - duplication policy and rationale
+  - [ ] Create `docs/MIGRATION_FROM_1.1.17_TO_1.1.19.md` - migration guide
+  - [ ] Update existing docs with references to new documents
+  - [ ] Add code examples for common integration patterns
+  - [ ] Review documentation for completeness and clarity
+
+- [ ] **3.4. Add Integration Tests**
+  - [ ] Create tests for `extractSapContext()` with SAP-Client header
+  - [ ] Create tests for `extractSapContext()` with SAP-System header
+  - [ ] Create tests for `extractSapContext()` with JWT token
+  - [ ] Create tests for lazy AuthBroker pattern instantiation
+  - [ ] Create tests for lazy AuthBroker pattern caching
+  - [ ] Create tests for session management with storage enabled
+  - [ ] Create tests for session management with storage disabled
+  - [ ] Create tests for connection caching with Destinations
+  - [ ] Create tests for connection caching with Direct connections
+  - [ ] Add E2E test for typical BTP Destination scenario
+  - [ ] Add E2E test for typical Direct connection scenario
+
+---
+
+### Phase 4: Cleanup and Finalization (2-3 days) ✨
+
+- [ ] **4.1. Code Cleanup**
+  - [ ] Remove all deprecated imports from `srv/` files
+  - [ ] Remove unused code identified during refactoring
+  - [ ] Update comments to reflect new architecture
+  - [ ] Update JSDoc for all public APIs
+  - [ ] Run `npm run lint` and fix all warnings
+  - [ ] Run `npm run format` for code style consistency
+
+- [ ] **4.2. Performance Review**
+  - [ ] Profile memory usage with connection caching
+  - [ ] Profile memory usage with lazy AuthBroker pattern
+  - [ ] Verify connection pooling works as expected
+  - [ ] Optimize caching TTL based on usage patterns
+  - [ ] Benchmark MCP request handling time
+  - [ ] Benchmark connection creation time
+  - [ ] Document performance characteristics
+
+- [ ] **4.3. Security Audit**
+  - [ ] Verify JWT token handling doesn't leak in logs
+  - [ ] Verify password handling doesn't leak in logs
+  - [ ] Verify session storage security (file permissions)
+  - [ ] Audit all logging statements for sensitive data
+  - [ ] Verify CSRF protection is enabled for all mutations
+  - [ ] Review Destination Service authentication flow
+  - [ ] Document security considerations
+
+- [ ] **4.4. Release Preparation**
+  - [ ] Update `CHANGELOG.md` with all changes from v1.1.17 to v1.1.19
+  - [ ] Update version in `package.json` (e.g., to v1.1.0)
+  - [ ] Update version in `mta.yaml`
+  - [ ] Create Git tag for release (e.g., `v1.1.0`)
+  - [ ] Prepare release notes highlighting key changes
+  - [ ] Update `README.md` with new features and breaking changes
+  - [ ] Review all documentation for accuracy
+
+---
+
+## 🎯 Priorities and Phases
+
+### High Priority (Must Have) 🔴
+1. ✅ Update dependencies (@mcp-abap-adt/adt-clients 0.1.32)
+2. ✅ Remove URL cleaning duplication
+3. ✅ Fix session storage handling
+4. ✅ Use sessionContext from mcp-abap-adt
+
+**Deadline:** 1 week
+
+### Medium Priority (Should Have) 🟡
+5. ⚡ Implement lazy AuthBroker pattern
+6. ⚡ Export SAP config extraction
+7. ⚡ Synchronize error handling
+8. ⚡ Optimize CSRF management
+
+**Deadline:** 2 weeks
+
+### Low Priority (Nice to Have) 🟢
+9. 📚 Improve documentation
+10. 🧪 Add integration tests
+11. 🧹 Code cleanup
+12. ⚡ Performance review
+
+**Deadline:** 1 month
+
+---
+
+## 📊 Success Metrics
+
+### Quantitative Metrics
+- [ ] 0 duplications in URL handling
+- [ ] 0 duplications in SAP config extraction
+- [ ] < 5 MB additional memory usage from caching
+- [ ] < 100ms overhead for connection creation with cache
+- [ ] 100% test coverage for critical paths
+
+### Qualitative Metrics
+- [ ] Code is easy to read and maintain
+- [ ] Clear separation of concerns between projects
+- [ ] Documentation is up-to-date and complete
+- [ ] New developers can quickly understand architecture
+
+---
+
+## 🚨 Risks and Mitigation
+
+### Risk 1: Breaking Changes in mcp-abap-adt
+**Probability:** Medium  
+**Impact:** High  
+**Mitigation:**
+- Versioning through package.json
+- Extensive testing before merge
+- Rollback plan
+
+### Risk 2: Performance Degradation
+**Probability:** Low  
+**Impact:** Medium  
+**Mitigation:**
+- Benchmarking before/after
+- Monitoring in production
+- Tuning caching parameters
+
+### Risk 3: Debugging Complexity
+**Probability:** Medium  
+**Impact:** Medium  
+**Mitigation:**
+- Structured logging
+- Clear error messages
+- Documentation
+
+---
+
+## 📝 Conclusions
+
+### ❌ What is NOT Duplication (This is Extension!)
+
+1. **CloudSdkAbapConnection** - extends AbapConnection for BTP
+   - Base library: `@mcp-abap-adt/connection` (axios + Basic/JWT)
+   - Extension: `CloudSdkAbapConnection` (Cloud SDK + Destinations)
+   - **Different transport stacks** → different implementations
+   - **Different use cases** → both needed
+
+2. **CSRF Token Management** - similar logic, different implementations
+   - Different HTTP clients (axios vs Cloud SDK)
+   - Different authentication flows
+   - **Synchronize:** parameters, error handling, logging
+
+3. **Destination Resolution** - unique to BTP
+   - `destinationResolver.ts` - specific to cloud-llm-hub
+   - Integration with SAP BTP Destination Service
+   - Cloud Connector support
+
+### ✅ What We Duplicate and Need to Refactor
+
+1. **URL Handling** - aggressive cleaning in both projects
+   - **Remove** duplicate logic
+   - **Rely** on base validation
+
+2. **SAP Config Extraction** - different implementations in different files
+   - **Use** `sessionContext` for config passing
+   - **Centralize** extraction logic
+   - **Create** factory pattern for connection type selection
+
+### 🚀 What to Refactor
+
+1. **URL Handling** - remove aggressive cleaning (both projects)
+2. **SAP Config Extraction** - use `sessionContext` for config passing
+3. **AuthBroker Pattern** - lazy initialization (cloud-llm-hub)
+4. **Connection Factory Pattern** - selection between CloudSdkAbapConnection and base
+
+### 👍 What to Keep As Is
+
+**This is not duplication - it's core cloud-llm-hub functionality:**
+
+1. **CloudSdkAbapConnection** - extension for BTP Destinations
+   - Implements `AbapConnection` interface
+   - Adds Destination Service support
+   - Adds Cloud Connector support
+   - Uses SAP Cloud SDK instead of axios
+   - **Value:** BTP ecosystem integration
+
+2. **Destination resolution** - BTP-specific functionality
+   - `destinationResolver.ts` - resolve destinations via Destination Service
+   - Support different auth types (Basic, OAuth2, SAML)
+   - Token management via BTP
+   - **Value:** BTP Cloud integration
+
+3. **CAP integration** - cloud-llm-hub specific
+   - `server.ts` - CAP bootstrap and MCP endpoints
+   - `mcp-proxy.cds` - CDS service definitions
+   - Express middleware for streaming
+   - **Value:** Enterprise-ready REST API
+
+4. **Connectivity Proxy support** - On-Premise integration
+   - `connectivityProxy.ts` - Cloud Connector support
+   - Proxy configuration for On-Premise ABAP
+   - **Value:** Hybrid cloud scenarios
+
+**Architectural Principle:**
+```
+mcp-abap-adt: Base functionality (protocol + ADT + Basic/JWT)
+     ↓
+cloud-llm-hub: Extension for BTP Cloud (Destinations + CAP + Proxy)
+```
+
+---
+
+## 🔄 Next Steps
+
+### For cloud-llm-hub:
+
+1. **Review** this roadmap with team
+2. **Create** GitHub issues for each phase
+3. **Start** with Phase 1 (critical fixes)
+4. **Weekly** sync-up meetings for tracking progress
+5. **Continuous** testing and validation
+
+### For mcp-abap-adt (proposals for upstream):
+
+If there's a need to extend the base library:
+
+1. **Export CSRF_CONFIG** for reuse
+   ```typescript
+   // src/lib/csrfConfig.ts
+   export const CSRF_CONFIG = {
+     RETRY_COUNT: 3,
+     RETRY_DELAY: 1000,
+     // ...
+   };
+   ```
+
+2. **Make AbapConnection more extensible**
+   - Allow passing custom HTTP client
+   - Support for custom transport implementations
+   - Plugin architecture for different auth methods
+
+3. **Export SAP config extraction utilities**
+   ```typescript
+   // src/lib/configExtractor.ts
+   export function extractSapConfigFromHeaders(
+     headers: IncomingHttpHeaders
+   ): SapConfig | undefined
+   ```
+
+4. **Documentation**
+   - Add examples of extending AbapConnection
+   - Document how to create custom transport
+   - Best practices for BTP integration
+
+**But this is NOT critical** - current architecture allows cloud-llm-hub to extend functionality without changes in the base library.
+
+---
+
+**Author:** AI Assistant  
+**Created:** December 1, 2025  
+**Version:** 2.0  
+**Status:** ✅ Updated with connection architecture understanding
