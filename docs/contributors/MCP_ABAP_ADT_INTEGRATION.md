@@ -369,17 +369,17 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [ ] Add unit tests for extraction utility
   - [ ] Validate header parsing consistency
 
-- [ ] **2.4. Create Connection Factory Pattern**
-  - [ ] Create `srv/connections/connectionFactory.ts`
-  - [ ] Define `ConnectionOptions` interface
-  - [ ] Implement `createConnection(options: ConnectionOptions): Promise<AbapConnection>`
-  - [ ] Add connection type selection logic (Destination vs Direct)
-  - [ ] Add unit tests for factory with Destination config
-  - [ ] Add unit tests for factory with Direct config
-  - [ ] Add unit tests for factory error cases
+- [x] **2.4. Create Connection Factory Pattern**
+  - [x] Create `srv/connections/connectionFactory.ts`
+  - [x] Define `ConnectionOptions` interface
+  - [x] Implement `createConnection(options: ConnectionOptions): AbapConnection` (sync, not async)
+  - [x] Add connection type selection logic (Destination vs Direct)
+  - [ ] Add unit tests for factory with Destination config (⏳ Deferred - no test framework)
+  - [ ] Add unit tests for factory with Direct config (⏳ Deferred - no test framework)
+  - [ ] Add unit tests for factory error cases (⏳ Deferred - no test framework)
   - [ ] Migrate `srv/mcp-manager.ts` to use factory
   - [ ] Migrate `srv/server.ts` to use factory
-  - [ ] Add JSDoc documentation for connection types
+  - [x] Add JSDoc documentation for connection types
   - [ ] Validate all connection scenarios work
 
 ---
