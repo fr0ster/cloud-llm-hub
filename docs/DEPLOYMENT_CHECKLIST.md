@@ -167,6 +167,31 @@ Or use the test script:
 
 ## Environment Variables
 
+### Session Storage Configuration (Optional)
+
+```bash
+# Enable persistent session storage (default: false - stateless mode)
+cf set-env cloud-llm-hub-srv MCP_ENABLE_SESSION_STORAGE true
+
+# Custom session storage directory (default: ./sessions)
+cf set-env cloud-llm-hub-srv MCP_SESSION_DIR /tmp/mcp-sessions
+
+# Apply changes
+cf restage cloud-llm-hub-srv
+```
+
+**Default behavior:**
+- **Stateless mode** (`MCP_ENABLE_SESSION_STORAGE=false`)
+  - Sessions are NOT persisted to disk
+  - Session state maintained in memory during request lifecycle
+  - Each request gets fresh authentication via BTP Destination Service
+  - ✅ **Recommended for cloud deployments**
+
+- **Stateful mode** (`MCP_ENABLE_SESSION_STORAGE=true`)
+  - Sessions persisted to disk in `MCP_SESSION_DIR`
+  - Session files: `<session-id>.json`
+  - ⚠️ **Not recommended for multi-instance deployments** (no shared storage)
+
 ### For Hybrid Debugging (Development Only!)
 
 ```bash
