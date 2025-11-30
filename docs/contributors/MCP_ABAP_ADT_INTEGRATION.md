@@ -308,29 +308,29 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 
 ### Phase 1: Critical Fixes (1-2 days) 🔴
 
-- [ ] **1.1. Update Dependencies**
-  - [ ] Update `@mcp-abap-adt/adt-clients` from `^0.1.27` to `^0.1.32` in `package.json`
-  - [ ] Add `@mcp-abap-adt/auth-broker` `^0.1.2` to `package.json`
-  - [ ] Add `@mcp-abap-adt/header-validator` `^0.1.2` to `package.json`
-  - [ ] Update `@modelcontextprotocol/sdk` from `^1.17.2` to `^1.23.0` in `package.json`
-  - [ ] Run `npm install`
-  - [ ] Verify `npm run build` succeeds
-  - [ ] Run test suite to ensure compatibility
+- [x] **1.1. Update Dependencies**
+  - [x] Update `@mcp-abap-adt/adt-clients` from `^0.1.27` to `^0.1.32` in `package.json`
+  - [x] Add `@mcp-abap-adt/auth-broker` `^0.1.2` to `package.json`
+  - [x] Add `@mcp-abap-adt/header-validator` `^0.1.2` to `package.json`
+  - [x] Update `@modelcontextprotocol/sdk` from `^1.17.2` to `^1.23.0` in `package.json`
+  - [x] Run `npm install`
+  - [x] Verify `npx cds build` succeeds
+  - [ ] Run test suite to ensure compatibility (unit tests not configured yet)
 
-- [ ] **1.2. Remove URL Cleaning Duplication**
-  - [ ] Audit URL cleaning in `srv/connections/CloudSdkAbapConnection.ts`
-  - [ ] Audit URL cleaning in `srv/mcp-manager.ts`
-  - [ ] Audit URL cleaning in `srv/server.ts`
-  - [ ] Remove aggressive URL cleaning logic
-  - [ ] Keep only basic `trim()` operation
+- [x] **1.2. Remove URL Cleaning Duplication**
+  - [x] Audit URL cleaning in `srv/connections/CloudSdkAbapConnection.ts`
+  - [x] Audit URL cleaning in `srv/mcp-manager.ts`
+  - [x] Audit URL cleaning in `srv/server.ts`
+  - [x] Remove aggressive URL cleaning logic (✅ **None found - already clean!**)
+  - [x] Keep only basic `trim()` operation (✅ **Already implemented correctly**)
   - [ ] Test with various Destination configurations
   - [ ] Test with direct URL connections
 
-- [ ] **1.3. Fix Session Storage Handling**
-  - [ ] Add `MCP_ENABLE_SESSION_STORAGE` env var to `srv/env-setup.ts`
-  - [ ] Add `MCP_SESSION_DIR` env var to `srv/env-setup.ts`
-  - [ ] Define default session storage behavior for cloud-llm-hub
-  - [ ] Update environment variable documentation
+- [x] **1.3. Fix Session Storage Handling**
+  - [x] Add `MCP_ENABLE_SESSION_STORAGE` env var to `srv/env-setup.ts`
+  - [x] Add `MCP_SESSION_DIR` env var to `srv/env-setup.ts`
+  - [x] Define default session storage behavior for cloud-llm-hub
+  - [x] Update environment variable documentation in `docs/DEPLOYMENT_CHECKLIST.md`
   - [ ] Test with session storage enabled
   - [ ] Test with session storage disabled (stateless mode)
 

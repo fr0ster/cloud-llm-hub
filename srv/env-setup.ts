@@ -15,3 +15,26 @@ process.env.MCP_SKIP_AUTO_START = 'true';
 process.env.MCP_SKIP_ENV_LOAD = 'true';
 process.env.TLS_REJECT_UNAUTHORIZED = '0';
 
+/**
+ * Session Storage Configuration
+ * 
+ * MCP_ENABLE_SESSION_STORAGE: Enable persistent session storage (default: false)
+ *   - When false (default): Stateless mode - sessions are not persisted to disk
+ *   - When true: Stateful mode - sessions are stored in MCP_SESSION_DIR
+ * 
+ * MCP_SESSION_DIR: Directory for session storage files (default: ./sessions)
+ *   - Only used when MCP_ENABLE_SESSION_STORAGE=true
+ *   - Sessions are stored as JSON files: <session-id>.json
+ * 
+ * Default behavior for cloud-llm-hub:
+ *   - Stateless mode (no session persistence)
+ *   - Session state is maintained in memory during request lifecycle
+ *   - Each request gets fresh authentication via BTP Destination Service
+ */
+if (!process.env.MCP_ENABLE_SESSION_STORAGE) {
+  process.env.MCP_ENABLE_SESSION_STORAGE = 'false';
+}
+
+if (!process.env.MCP_SESSION_DIR) {
+  process.env.MCP_SESSION_DIR = './sessions';
+}
