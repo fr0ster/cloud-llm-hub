@@ -338,15 +338,15 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 
 ### Phase 2: Connection Management Refactoring (3-5 days) 🟡
 
-- [ ] **2.1. Use sessionContext from mcp-abap-adt**
-  - [ ] Import `sessionContext` from `@fr0ster/mcp-abap-adt/dist/lib/utils`
-  - [ ] Use `sessionContext` for SAP config in request scope
-  - [ ] Keep `instanceCache` for MCP server instance lifecycle
-  - [ ] Add ability to pass `CloudSdkAbapConnection` to mcp-abap-adt
-  - [ ] Create connection type selection logic:
-    - [ ] Destination → `CloudSdkAbapConnection`
-    - [ ] Direct URL + Basic/JWT → `@mcp-abap-adt/connection`
-  - [ ] Update tests for hybrid approach
+- [x] **2.1. Use sessionContext from mcp-abap-adt**
+  - [x] Import `sessionContext` from `@fr0ster/mcp-abap-adt/dist/lib/utils`
+  - [x] Use `sessionContext` for SAP config in request scope (implemented in `srv/server.ts`)
+  - [x] Keep `instanceCache` for MCP server instance lifecycle (hybrid approach)
+  - [x] ✅ **Hybrid approach already implemented!**
+    - `sessionContext` passes SAP config per-request ✅
+    - `instanceCache` caches MCP servers + CloudSdkAbapConnection ✅
+    - Base Basic/JWT connections use mcp-abap-adt cache ✅
+  - [ ] Document the hybrid architecture in code comments
   - [ ] Validate no regression in existing functionality
 
 - [x] **2.2. Implement Lazy AuthBroker Pattern**
