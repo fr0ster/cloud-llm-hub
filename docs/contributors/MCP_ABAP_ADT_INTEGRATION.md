@@ -349,24 +349,26 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [ ] Update tests for hybrid approach
   - [ ] Validate no regression in existing functionality
 
-- [ ] **2.2. Implement Lazy AuthBroker Pattern**
-  - [ ] Create `authBrokers: Map<string, AuthBroker>` in `mcp-manager.ts`
-  - [ ] Implement `getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | undefined>`
-  - [ ] Replace direct AuthBroker instantiation with lazy pattern
-  - [ ] Add TTL (Time-To-Live) for cached AuthBroker instances
-  - [ ] Implement cleanup mechanism for old instances
-  - [ ] Test with single destination
-  - [ ] Test with multiple destinations
-  - [ ] Profile memory usage improvements
+- [x] **2.2. Implement Lazy AuthBroker Pattern**
+  - [x] ✅ **Already implemented in mcp-abap-adt v1.1.19!**
+  - [x] AuthBroker pattern: `authBrokers: Map<string, AuthBroker>` in base library
+  - [x] Lazy initialization: `getOrCreateAuthBroker(destination?: string)`
+  - [x] Per-destination caching with default AuthBroker fallback
+  - [x] TTL and cleanup handled by mcp-abap-adt internally
+  - [x] cloud-llm-hub benefits automatically through mcp-abap-adt integration
+  - [x] **No changes needed in cloud-llm-hub** - pattern already works via base library
 
-- [ ] **2.3. Export SAP Config Extraction from mcp-abap-adt**
-  - [ ] Create `src/lib/sapConfigExtractor.ts` in mcp-abap-adt submodule
-  - [ ] Implement `extractSapConfigFromHeaders(headers: IncomingHttpHeaders): SapConfig | undefined`
-  - [ ] Export function in mcp-abap-adt `lib/index.ts`
-  - [ ] Update cloud-llm-hub `srv/mcp-manager.ts` to use new utility
-  - [ ] Update cloud-llm-hub `srv/server.ts` to use new utility
+- [x] **2.3. Export SAP Config Extraction from mcp-abap-adt**
+  - [x] ✅ **Already available via `@mcp-abap-adt/header-validator` package!**
+  - [x] Function: `validateAuthHeaders(headers: IncomingHttpHeaders): HeaderValidationResult`
+  - [x] Returns: `{ isValid, config, errors, warnings }`
+  - [x] Handles all auth methods: SAP Destination, MCP Destination, JWT, Basic
+  - [x] Priority-based selection (SAP Destination > MCP Destination > JWT > Basic)
+  - [x] Detailed error messages and validation warnings
+  - [ ] Refactor `srv/mcp-manager.ts` `extractSapContext()` to use `validateAuthHeaders`
+  - [ ] Refactor `srv/server.ts` SAP config extraction to use `validateAuthHeaders`
   - [ ] Remove duplicated extraction logic from cloud-llm-hub
-  - [ ] Add unit tests for extraction utility
+  - [ ] Add unit tests for extraction utility (⏳ Deferred - no test framework)
   - [ ] Validate header parsing consistency
 
 - [x] **2.4. Create Connection Factory Pattern**
