@@ -4,8 +4,8 @@
   "description": "A simple CAP project.",
   "dependencies": {
     "@fr0ster/mcp-abap-adt": "file:submodules/mcp-abap-adt",
-    "@mcp-abap-adt/adt-clients": "^0.1.25",
-    "@mcp-abap-adt/connection": "^0.1.11",
+    "@mcp-abap-adt/adt-clients": "^0.1.27",
+    "@mcp-abap-adt/connection": "^0.1.12",
     "@modelcontextprotocol/sdk": "^1.17.2",
     "@sap-cloud-sdk/connectivity": "^4",
     "@sap-cloud-sdk/http-client": "^4.1.2",
@@ -32,6 +32,7 @@
   },
   "scripts": {
     "start": "cds-serve",
+    "start:log": "bash tools/start-debug.sh",
     "test": "node test/test-cap-from-yaml.js --config test/integration.yaml",
     "test:unit": "jest",
     "test:unit:watch": "jest --watch",

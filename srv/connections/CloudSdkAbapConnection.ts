@@ -87,12 +87,6 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return headers;
   }
 
-  private normalizeRequestUrl(url: string): string {
-    if (!url.includes('/sap/bc/adt/') && !url.endsWith('/sap/bc/adt')) {
-      return url.endsWith('/') ? `${url}sap/bc/adt` : `${url}/sap/bc/adt`;
-    }
-    return url;
-  }
 
   private async ensureFreshCsrfToken(requestUrl: string): Promise<void> {
     try {
@@ -111,15 +105,15 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   private async fetchCsrfToken(url: string, retryCount = 3, retryDelay = 1000): Promise<string> {
-    let csrfUrl = url;
-    if (!url.includes('/sap/bc/adt/')) {
-      csrfUrl = url.endsWith('/') ? `${url}sap/bc/adt/discovery` : `${url}/sap/bc/adt/discovery`;
-    } else if (!url.includes('/sap/bc/adt/discovery')) {
-      const base = url.split('/sap/bc/adt')[0];
-      csrfUrl = `${base}/sap/bc/adt/discovery`;
-    }
+    // Get base URL and build CSRF token endpoint
+    // Connection has base URL, we just need to add /sap/bc/adt/discovery endpoint
+    const baseUrl = await this.getBaseUrl();
+    const csrfUrl = `${baseUrl}/sap/bc/adt/discovery`;
 
-    logger.csrfToken('fetch', `Fetching CSRF token from: ${csrfUrl}`);
+    logger.csrfToken('fetch', `Fetching CSRF token from: ${csrfUrl}`, {
+      baseUrl,
+      originalRequestUrl: url
+    });
 
     for (let attempt = 0; attempt <= retryCount; attempt++) {
       try {
@@ -209,10 +203,24 @@ export class CloudSdkAbapConnection implements AbapConnection {
   async makeAdtRequest(options: AbapRequestOptions): Promise<AxiosResponse> {
     const { url, method, timeout, data, params } = options;
     const normalizedMethod = method.toUpperCase();
-    const requestUrl = this.normalizeRequestUrl(url);
+    
+    // Get base URL and build full URL from endpoint
+    // Connection has base URL, url parameter is endpoint (e.g., /sap/bc/adt/oo/classes/...)
+    const baseUrl = await this.getBaseUrl();
+    let requestUrl: string;
+    
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      // Already absolute URL, use as is
+      requestUrl = url;
+    } else {
+      // Relative endpoint, combine with base URL
+      const endpoint = url.startsWith('/') ? url : `/${url}`;
+      requestUrl = `${baseUrl}${endpoint}`;
+    }
 
     if (normalizedMethod === 'POST' || normalizedMethod === 'PUT') {
-      await this.ensureFreshCsrfToken(requestUrl);
+      // Pass endpoint (not full URL) for CSRF token fetch
+      await this.ensureFreshCsrfToken(url);
     }
 
     const requestHeaders: Record<string, string> = {

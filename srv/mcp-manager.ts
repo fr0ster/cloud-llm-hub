@@ -12,7 +12,8 @@ import cds from '@sap/cds';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
-import type { SapConfig, AbapConnection } from '@mcp-abap-adt/connection';
+import type { SapConfig, AbapConnection, ILogger, ISessionStorage } from '@mcp-abap-adt/connection';
+import { createAbapConnection } from '@mcp-abap-adt/connection';
 import {
   shouldUseConnectivity,
   extractConnectivityContext,
@@ -139,19 +140,71 @@ async function extractSapContext(req: Request): Promise<SapContext> {
     sapConfig.password = sapPassword;
   } else {
     if (!sapJwtToken) {
+      log.error('JWT auth requires X-SAP-JWT-TOKEN header', {
+        authType,
+        hasXJwtTokenHeader: !!req.headers['x-sap-jwt-token'],
+        allHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('jwt') || h.toLowerCase().includes('sap'))
+      });
       throw new Error('JWT auth requires X-SAP-JWT-TOKEN header');
     }
     sapConfig.jwtToken = sapJwtToken;
+    
+    log.debug('JWT token extracted from headers', {
+      tokenLength: sapJwtToken.length,
+      tokenPreview: `${sapJwtToken.substring(0, 20)}...${sapJwtToken.substring(sapJwtToken.length - 20)}`
+    });
+    
+    // Add refresh token if provided (for token refresh)
+    // Connection will handle refresh token automatically
+    const sapRefreshToken = (req.headers['x-sap-refresh-token'] as string | undefined)?.trim();
+    const sapUaaUrl = (req.headers['x-sap-uaa-url'] as string | undefined)?.trim();
+    const sapUaaClientId = (req.headers['x-sap-uaa-client-id'] as string | undefined)?.trim();
+    const sapUaaClientSecret = (req.headers['x-sap-uaa-client-secret'] as string | undefined)?.trim();
+    
+    if (sapRefreshToken) {
+      sapConfig.refreshToken = sapRefreshToken;
+      log.debug('Refresh token extracted from headers', {
+        refreshTokenLength: sapRefreshToken.length
+      });
+    }
+    
+    // Add UAA credentials from headers OR fallback to process.env
+    // This allows client to skip UAA headers if server has them configured
+    sapConfig.uaaUrl = sapUaaUrl || process.env.SAP_UAA_URL;
+    sapConfig.uaaClientId = sapUaaClientId || process.env.SAP_UAA_CLIENT_ID;
+    sapConfig.uaaClientSecret = sapUaaClientSecret || process.env.SAP_UAA_CLIENT_SECRET;
+    
+    // Log where UAA credentials came from
+    log.info('🔑 UAA credentials after extraction', {
+      uaaUrlSource: sapUaaUrl ? 'header' : (process.env.SAP_UAA_URL ? 'env' : 'missing'),
+      uaaClientIdSource: sapUaaClientId ? 'header' : (process.env.SAP_UAA_CLIENT_ID ? 'env' : 'missing'),
+      uaaClientSecretSource: sapUaaClientSecret ? 'header' : (process.env.SAP_UAA_CLIENT_SECRET ? 'env' : 'missing'),
+      hasUaaUrl: !!sapConfig.uaaUrl,
+      hasUaaClientId: !!sapConfig.uaaClientId,
+      hasUaaClientSecret: !!sapConfig.uaaClientSecret,
+      uaaUrlLength: sapConfig.uaaUrl?.length || 0,
+      uaaClientIdLength: sapConfig.uaaClientId?.length || 0,
+      uaaClientSecretLength: sapConfig.uaaClientSecret?.length || 0
+    });
   }
 
-  const { preview, length } = summarizeJwt(sapConfig.jwtToken);
-  log.info('SAP config extracted from headers', {
-    url: sapConfig.url,
-    authType: sapConfig.authType,
-    client: sapConfig.client || 'none',
-    tokenPreview: preview,
-    tokenLength: length
-  });
+    const { preview, length } = summarizeJwt(sapConfig.jwtToken);
+    log.info('SAP config extracted from headers', {
+      url: sapConfig.url,
+      authType: sapConfig.authType,
+      client: sapConfig.client || 'none',
+      clientFromHeader: sapClientHeader || 'not provided',
+      clientSet: !!sapConfig.client,
+      tokenPreview: preview,
+      tokenLength: length,
+      hasJwtToken: !!sapConfig.jwtToken,
+      jwtTokenLength: sapConfig.jwtToken?.length || 0,
+      hasRefreshToken: !!sapConfig.refreshToken,
+      hasUaaUrl: !!sapConfig.uaaUrl,
+      hasUaaClientId: !!sapConfig.uaaClientId,
+      hasUaaClientSecret: !!sapConfig.uaaClientSecret,
+      canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret)
+    });
 
   return {
     sapConfig,
@@ -163,7 +216,10 @@ async function extractSapContext(req: Request): Promise<SapContext> {
  * Get cache key for MCP instance
  */
 function getCacheKey(sapConfig: SapConfig, destinationName?: string): string {
-  const clientSegment = sapConfig.client ? `:client=${sapConfig.client}` : '';
+  // Normalize client: use empty string instead of undefined to ensure consistent cache keys
+  // This prevents different cache keys when client header is sometimes present and sometimes not
+  const normalizedClient = sapConfig.client || '';
+  const clientSegment = normalizedClient ? `:client=${normalizedClient}` : '';
   const userSegment = sapConfig.authType === 'basic' && sapConfig.username ? `:user=${sapConfig.username}` : '';
   if (destinationName) {
     return `destination:${destinationName}:${sapConfig.authType}${clientSegment}${userSegment}`;
@@ -268,9 +324,11 @@ export async function getMCPServer(req: Request): Promise<{
 
     let connection: AbapConnection | undefined;
     
-    // Use Cloud SDK connection if destination name is available
-    // executeHttpRequest automatically handles both internet and on-premise destinations
-    // including Cloud Connector proxy configuration
+    // IMPORTANT: CloudSdkAbapConnection is ONLY for destination-based connections
+    // For all other authentication methods (JWT direct, Basic auth direct),
+    // mcp-abap-adt will create connection from @mcp-abap-adt/connection package:
+    // - CloudAbapConnection for JWT auth (internet)
+    // - OnPremAbapConnection for on-premise (if connectivity proxy is used)
     if (destination?.destinationName) {
       log.debug('Using Cloud SDK AbapConnection for destination', {
         destinationName: destination.destinationName,
@@ -282,9 +340,19 @@ export async function getMCPServer(req: Request): Promise<{
       // - On-premise destinations via Cloud Connector (if ProxyType=OnPremise in destination)
       // - All authentication types (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
       connection = new CloudSdkAbapConnection(sapConfig, destination.destinationName);
+    } else {
+      // For basic/jwt (not destination), don't create connection here
+      // Let mcp-abap-adt create connection via getManagedConnection() from session context
+      // This ensures connection is created with the same config that's in session context
+      log.debug('For basic/jwt auth, connection will be created by mcp-abap-adt from session context', {
+        authType: sapConfig.authType,
+        hasJwtToken: !!sapConfig.jwtToken,
+        hasUsername: !!sapConfig.username,
+        source: sapContext.source
+      });
+      // Don't create connection here - mcp-abap-adt will create it via getManagedConnection()
+      // when session context is set in handleStreamHTTP
     }
-    // If destination is not used, mcp-abap-adt will create connection using its standard classes
-    // (OnPremAbapConnection or CloudAbapConnection) based on sapConfig
     
   // IMPORTANT: Clear env vars before instantiating the submodule server
   // cloud-llm-hub always passes SAP configuration via headers -> extractSapContext -> serverOptions.sapConfig
@@ -320,9 +388,65 @@ export async function getMCPServer(req: Request): Promise<{
     };
 
     if (connection) {
+      // For destination-based connections, pass connection directly
+      log.info('Using pre-created connection (destination-based)', {
+        connectionType: connection.constructor.name,
+        destinationName: destination?.destinationName,
+        authType: sapConfig.authType
+      });
       serverOptions.connection = connection;
     } else {
-      serverOptions.sapConfig = sapConfig;
+      // For HTTP transport (non-destination), DO NOT pass sapConfig to constructor!
+      // This is critical: if we pass sapConfig, mcp-abap-adt will create a global overrideConnection
+      // that IGNORES session context from AsyncLocalStorage.
+      // Instead, we rely on sessionContext.run() in server.ts to provide session-specific config
+      // for each HTTP request. This allows getManagedConnection() to use the correct session context
+      // with per-request JWT tokens and refresh tokens.
+      
+      // ВАЖЛИВО: Логуємо UAA credentials які будуть передані в sessionContext
+      log.info('🔐 UAA credentials for sessionContext', {
+        hasRefreshToken: !!sapConfig.refreshToken,
+        refreshTokenLength: sapConfig.refreshToken?.length || 0,
+        hasUaaUrl: !!sapConfig.uaaUrl,
+        uaaUrl: sapConfig.uaaUrl || 'MISSING',
+        hasUaaClientId: !!sapConfig.uaaClientId,
+        uaaClientIdLength: sapConfig.uaaClientId?.length || 0,
+        hasUaaClientSecret: !!sapConfig.uaaClientSecret,
+        uaaClientSecretLength: sapConfig.uaaClientSecret?.length || 0,
+        canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret)
+      });
+      
+      log.info('Using session context for connection (NO sapConfig override)', {
+        url: sapConfig.url,
+        authType: sapConfig.authType,
+        hasJwtToken: !!sapConfig.jwtToken,
+        jwtTokenLength: sapConfig.jwtToken?.length || 0,
+        jwtTokenPreview: sapConfig.jwtToken ? `${sapConfig.jwtToken.substring(0, 20)}...${sapConfig.jwtToken.substring(sapConfig.jwtToken.length - 20)}` : 'none',
+        hasClient: !!sapConfig.client,
+        client: sapConfig.client || 'NOT SET - requests may fail if SAP system requires client',
+        clientWarning: !sapConfig.client ? '⚠️ Client not set - CDS views and other objects may not be found' : undefined,
+        hasRefreshToken: !!sapConfig.refreshToken,
+        hasUaaUrl: !!sapConfig.uaaUrl,
+        hasUaaClientId: !!sapConfig.uaaClientId,
+        hasUaaClientSecret: !!sapConfig.uaaClientSecret,
+        canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret),
+        cacheKey: getCacheKey(sapConfig),
+        source: sapContext.source,
+        note: '⚠️ sapConfig NOT passed to constructor - will use session context from AsyncLocalStorage'
+      });
+      
+      // Verify JWT token is present for JWT auth
+      if (sapConfig.authType === 'jwt' && !sapConfig.jwtToken) {
+        log.error('CRITICAL: JWT auth type but no JWT token in sapConfig!', {
+          authType: sapConfig.authType,
+          hasJwtToken: !!sapConfig.jwtToken,
+          sapConfigKeys: Object.keys(sapConfig)
+        });
+        throw new Error('JWT authentication requires JWT token in sapConfig');
+      }
+      
+      // DO NOT set serverOptions.sapConfig here!
+      // Connection will be created from session context in each HTTP request
     }
 
     // Dynamic import to avoid executing top-level code in submodule's index.ts
