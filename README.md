@@ -3,20 +3,21 @@
 **Enterprise-ready MCP proxy** connecting SAP ABAP systems to AI assistants (Cline, Claude Desktop) and automation tools (n8n, CI/CD, custom apps).
 
 **✨ Key Features:**
+
 - ⚡ **One-command setup** - Get started in 60 seconds
 - 🔒 **Enterprise security** - XSUAA authentication, on-premise support
 - 🔌 **Multiple transports** - SSE and Stream-HTTP
 - 🛠️ **Automation tools** - YAML-driven configuration, CI/CD ready
 - 🌐 **Cloud & on-premise** - Seamless SAP Cloud Connector integration
 
-File or Folder | Purpose
----------|----------
-`app/` | SAP BTP approuter scaffolding and local default-env configuration
-`db/` | CAP data models (currently unused, reserved for future persistence)
-`srv/` | MCP proxy implementation (`mcp-proxy.ts`, `mcp-manager.ts`, connectivity helpers)
-`docs/` | End-user and operator documentation (usage guides, ADRs, testing cheatsheets)
-`tools/` | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)
-`submodules/` | External MCP providers (notably `mcp-abap-adt`)
+| File or Folder | Purpose                                                                           |
+| -------------- | --------------------------------------------------------------------------------- |
+| `app/`         | SAP BTP approuter scaffolding and local default-env configuration                 |
+| `db/`          | CAP data models (currently unused, reserved for future persistence)               |
+| `srv/`         | MCP proxy implementation (`mcp-proxy.ts`, `mcp-manager.ts`, connectivity helpers) |
+| `docs/`        | End-user and operator documentation (usage guides, ADRs, testing cheatsheets)     |
+| `tools/`       | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)        |
+| `submodules/`  | External MCP providers (notably `mcp-abap-adt`)                                   |
 
 ## 🎯 Quick Start for Consumers
 
@@ -27,6 +28,7 @@ File or Folder | Purpose
 3. **[🔌 Integration Examples](docs/architecture/INTEGRATIONS.md)** - Ready-to-use code for Cline, n8n, CI/CD, and more
 
 **For Developers:**
+
 ```bash
 npm install
 cds watch --profile development
@@ -72,20 +74,26 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 Full documentation is organized by purpose in the **[docs/](docs/)** directory:
 
 ### 🎯 For New Users
+
 Start here to get up and running quickly:
+
 - **[⚡ Quick Setup](docs/usage/QUICK_SETUP.md)** - Get running in 60 seconds
 - **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** - Complete onboarding guide
 - **[🐛 Troubleshooting](docs/usage/TROUBLESHOOTING.md)** - Common issues and solutions
 
 ### 📖 Usage Guides
+
 Learn how to use Cloud LLM Hub effectively:
+
 - **[👥 Consumer Guide](docs/usage/CONSUMER_GUIDE.md)** - End-user focused guide
 - **[📖 Proxy Usage](docs/usage/MCP_PROXY_USAGE.md)** - Detailed usage examples
 - **[🔧 Configuration](docs/usage/MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
 - **[🤖 Assistant Guidelines](docs/usage/ASSISTANT_GUIDELINES.md)** - AI assistant integration best practices
 
 ### 🏗️ Architecture
+
 Understand how the system works:
+
 - **[📡 API Reference](docs/architecture/API_REFERENCE.md)** - Complete API specification
 - **[🔌 CAP Endpoints](docs/architecture/CAP_ENDPOINTS.md)** - Service endpoints documentation
 - **[✨ Features](docs/architecture/FEATURES.md)** - Why choose Cloud LLM Hub?
@@ -95,7 +103,9 @@ Understand how the system works:
 - **[📋 Implementation Status](docs/architecture/IMPLEMENTATION_STATUS.md)** - Feature implementation tracking
 
 ### 🛠️ Development
+
 For contributors and developers:
+
 - **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
 - **[👥 Contributors](CONTRIBUTORS.md)** - List of contributors
 - **[🛠️ Contributor Docs](docs/contributors/)** - Development guides
@@ -111,21 +121,26 @@ For contributors and developers:
 - **[🔑 JWT Token Refresh](docs/development/JWT_TOKEN_REFRESH_GUIDE.md)** - Token management
 
 ### 🚀 Deployment
+
 Deploy and operate in production:
+
 - **[✅ Deployment Checklist](docs/deployment/DEPLOYMENT_CHECKLIST.md)** - Deployment procedures
 - **[🔄 Migration Guide](docs/deployment/MIGRATION_GUIDE.md)** - Version upgrade instructions
 - **[📊 Monitoring](docs/deployment/MONITORING.md)** - Monitoring setup and metrics
 - **[🔧 Operations](docs/deployment/OPERATIONS.md)** - Production runbook
 
 ### 📁 Additional Resources
+
 - **[📝 Architecture Decision Records](docs/adrs/)** - Design decisions
 - **[📋 Templates](docs/templates/mcp-config/)** - Ready-to-use configurations
 - **[💡 Examples](docs/examples/)** - Integration examples
 
 ### 🌍 Internationalization
+
 - **[🇺🇦 Українська](docs/uk/)** - Ukrainian translations (partial)
   - [Швидкий старт](docs/uk/QUICK_SETUP.md)
   - [Вирішення проблем](docs/uk/TROUBLESHOOTING.md)
+
 ## Deployment Notes
 
 - Use `cds build --production` or run the MTA build (`mbt build`) before pushing to SAP BTP.

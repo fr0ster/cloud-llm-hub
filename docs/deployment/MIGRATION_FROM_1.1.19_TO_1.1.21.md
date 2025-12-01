@@ -32,7 +32,7 @@ This guide helps you migrate `cloud-llm-hub` from `mcp-abap-adt` v1.1.19 to v1.1
 ### Key Changes
 
 1. **v1.1.20:** Documentation improvements in help messages
-2. **v1.1.21:** 
+2. **v1.1.21:**
    - Fixed `x-mcp-destination` validation
    - Added `--auth-broker-path` command-line option
    - Automatic directory creation
@@ -48,16 +48,19 @@ This guide helps you migrate `cloud-llm-hub` from `mcp-abap-adt` v1.1.19 to v1.1
 **Change:** Updated help messages with detailed instructions for saving service keys
 
 **Details:**
+
 - Added platform-specific instructions for Linux, macOS, and Windows
 - Replaced example JSON structure with instructions to copy service key from SAP BTP
 - Fixed backslash escaping in Windows PowerShell commands
 - Updated both launcher help and server help
 
 **Impact on cloud-llm-hub:**
+
 - ✅ **No code changes needed** - documentation only
 - ✅ **No breaking changes**
 
 **Action Required:**
+
 - [ ] Review updated documentation (optional)
 
 ---
@@ -69,12 +72,14 @@ This guide helps you migrate `cloud-llm-hub` from `mcp-abap-adt` v1.1.19 to v1.1
 **Change:** Fixed issue where `x-mcp-destination` header was incorrectly requiring `x-sap-url`
 
 **Before (v1.1.19):**
+
 ```typescript
 // x-mcp-destination required x-sap-url header
 // URL was not automatically derived from service key
 ```
 
 **After (v1.1.21):**
+
 ```typescript
 // x-mcp-destination now works identically to x-sap-destination
 // URL is automatically derived from service key
@@ -82,11 +87,13 @@ This guide helps you migrate `cloud-llm-hub` from `mcp-abap-adt` v1.1.19 to v1.1
 ```
 
 **Impact on cloud-llm-hub:**
+
 - ✅ **Positive:** `x-mcp-destination` now works correctly
 - ✅ **No breaking changes** - existing `x-sap-destination` usage unchanged
 - ⚠️ **Note:** If cloud-llm-hub uses `x-mcp-destination`, behavior may change (improvement)
 
 **Action Required:**
+
 - [ ] Verify `x-mcp-destination` usage in cloud-llm-hub (if any)
 - [ ] Test `x-mcp-destination` header with service keys
 - [ ] Remove `x-sap-url` header if using `x-mcp-destination` (optional, but recommended)
@@ -96,17 +103,20 @@ This guide helps you migrate `cloud-llm-hub` from `mcp-abap-adt` v1.1.19 to v1.1
 **Change:** Added `--auth-broker-path` command-line option for custom service key paths
 
 **Usage:**
+
 ```bash
 mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 # Creates: ~/prj/tmp/service-keys/ and ~/prj/tmp/sessions/
 ```
 
 **Impact on cloud-llm-hub:**
+
 - ✅ **No immediate impact** - cloud-llm-hub doesn't use command-line launcher
 - ℹ️ **Future:** Could be useful for custom deployments
 - ✅ **No breaking changes**
 
 **Action Required:**
+
 - [ ] Document new option (if relevant for cloud-llm-hub users)
 - [ ] No code changes needed
 
@@ -115,22 +125,26 @@ mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 **Change:** Service keys and sessions directories are now created automatically
 
 **Before (v1.1.19):**
+
 ```typescript
 // Directories had to be created manually
 // Errors occurred if directories didn't exist
 ```
 
 **After (v1.1.21):**
+
 ```typescript
 // Directories created automatically at server startup
 // Works for both default and custom paths
 ```
 
 **Impact on cloud-llm-hub:**
+
 - ✅ **Positive:** Fewer errors during initialization
 - ✅ **No breaking changes**
 
 **Action Required:**
+
 - [ ] Test directory creation (should work automatically)
 - [ ] No code changes needed
 
@@ -139,15 +153,18 @@ mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 **Change:** Added platform-aware logging for better debugging
 
 **New Logging:**
+
 - Platform information when processing authentication headers
 - All header keys that start with `x-sap` or `x-mcp`
 - Search paths when creating AuthBroker instances
 
 **Impact on cloud-llm-hub:**
+
 - ✅ **Positive:** Better debugging capabilities
 - ✅ **No breaking changes**
 
 **Action Required:**
+
 - [ ] Review logs for new diagnostic information
 - [ ] No code changes needed
 
@@ -156,15 +173,18 @@ mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 **Change:** Improved validation order and case handling
 
 **Details:**
+
 - `x-mcp-destination` checked immediately after `x-sap-destination`
 - Case-insensitive header checking for better compatibility
 - Both headers check in both lowercase and original case
 
 **Impact on cloud-llm-hub:**
+
 - ✅ **Positive:** Better header compatibility
 - ✅ **No breaking changes**
 
 **Action Required:**
+
 - [ ] Test with various header case combinations
 - [ ] No code changes needed
 
@@ -173,14 +193,17 @@ mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 **Change:** Updated package dependencies
 
 **Updated:**
+
 - `@mcp-abap-adt/auth-broker`: `^0.1.2` → `^0.1.3`
 - `@mcp-abap-adt/header-validator`: `^0.1.2` → `^0.1.3`
 
 **Impact on cloud-llm-hub:**
+
 - ⚠️ **Must update:** `package.json` dependencies
 - ✅ **No breaking changes expected** - patch version updates
 
 **Action Required:**
+
 - [x] Update `package.json` dependencies
 - [ ] Run `npm install`
 - [ ] Verify no dependency conflicts
@@ -196,6 +219,7 @@ mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 ### Code Changes Required
 
 **Minimal:**
+
 1. Update `package.json` dependencies
 2. Test `x-mcp-destination` if used
 3. Review diagnostic logs
@@ -228,12 +252,14 @@ mcp-abap-adt --auth-broker --auth-broker-path=~/prj/tmp/
 ```
 
 **Commands:**
+
 ```bash
 npm install
 npm run build
 ```
 
 **Action Required:**
+
 - [x] Update `package.json`
 - [ ] Run `npm install`
 - [ ] Verify `npx cds build` succeeds
@@ -241,6 +267,7 @@ npm run build
 ### Step 2: Update Submodule (if using git submodule)
 
 **Commands:**
+
 ```bash
 cd submodules/mcp-abap-adt
 git fetch
@@ -250,12 +277,14 @@ npm install
 ```
 
 **Action Required:**
+
 - [ ] Update submodule to v1.1.21
 - [ ] Verify submodule version
 
 ### Step 3: Test x-mcp-destination (if used)
 
 **Test Scenario:**
+
 ```bash
 # Test with x-mcp-destination header (without x-sap-url)
 curl -X POST http://localhost:3000/mcp/stream/http \
@@ -265,6 +294,7 @@ curl -X POST http://localhost:3000/mcp/stream/http \
 ```
 
 **Action Required:**
+
 - [ ] Test `x-mcp-destination` header
 - [ ] Verify URL is derived from service key automatically
 - [ ] Remove `x-sap-url` if previously required
@@ -272,11 +302,13 @@ curl -X POST http://localhost:3000/mcp/stream/http \
 ### Step 4: Review Diagnostic Logs
 
 **Check for:**
+
 - Platform information in logs
-- Header keys logged (x-sap-*, x-mcp-*)
+- Header keys logged (x-sap-_, x-mcp-_)
 - Search paths for AuthBroker
 
 **Action Required:**
+
 - [ ] Review logs during startup
 - [ ] Verify diagnostic information is helpful
 - [ ] No action needed if logs are correct
@@ -284,6 +316,7 @@ curl -X POST http://localhost:3000/mcp/stream/http \
 ### Step 5: Test All Connection Types
 
 **Test Scenarios:**
+
 - [ ] Direct Basic auth connection
 - [ ] Direct JWT auth connection
 - [ ] BTP Destination (Internet) with `x-sap-destination`
@@ -292,6 +325,7 @@ curl -X POST http://localhost:3000/mcp/stream/http \
 - [ ] Error handling with invalid headers
 
 **Action Required:**
+
 - [ ] Run full test suite
 - [ ] Test all connection types
 - [ ] Verify no regressions
@@ -336,12 +370,14 @@ curl -X POST http://localhost:3000/mcp/stream/http \
 ### If Migration Fails
 
 1. **Revert Dependencies:**
+
    ```bash
    git checkout HEAD~1 package.json package-lock.json
    npm install
    ```
 
 2. **Revert Submodule:**
+
    ```bash
    cd submodules/mcp-abap-adt
    git checkout v1.1.19
@@ -421,4 +457,3 @@ curl -X POST http://localhost:3000/mcp/stream/http \
 **Author:** AI Assistant  
 **Last Updated:** December 2025  
 **Version:** 1.0
-

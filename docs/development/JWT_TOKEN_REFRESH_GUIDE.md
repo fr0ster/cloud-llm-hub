@@ -1,11 +1,12 @@
 # JWT Token Refresh Guide
 
 > **⚠️ DEPRECATED**: This guide describes the old token refresh implementation that has been removed.
-> 
+>
 > **Current Status**: `cloud-llm-hub` does **NOT** implement token refresh functionality.
+>
 > - For **BTP Destinations**: Token management is automatic via BTP infrastructure
 > - For **Direct JWT**: Clients must refresh tokens themselves and send new JWT token in each request
-> 
+>
 > See `docs/contributors/CONNECTION_ARCHITECTURE.md` for current token management approach.
 
 ## Historical Context
@@ -21,6 +22,7 @@ This document describes the previous implementation where token refresh was atte
 **Архітектурна проблема в mcp-manager.ts**: Створювався глобальний `overrideConnection` при запуску сервера, який **БЛОКУВАВ** використання session-specific configuration з HTTP headers.
 
 Механізм роботи:
+
 1. При створенні `new mcp_abap_adt_server(serverOptions)` з `serverOptions.sapConfig`
 2. В конструкторі викликався `setSapConfigOverride(options?.sapConfig)`
 3. Це створювало **глобальний** `overrideConnection` з початковим (можливо неповним) config
@@ -58,12 +60,14 @@ This document describes the previous implementation where token refresh was atte
 
 ```javascript
 if (!config.refreshToken) {
-    throw new Error("Refresh token is not available. Please re-authenticate.");
+  throw new Error('Refresh token is not available. Please re-authenticate.');
 }
 
 if (!config.uaaUrl || !config.uaaClientId || !config.uaaClientSecret) {
-    throw new Error("UAA credentials are not available for token refresh. " +
-        "Please provide UAA_URL, UAA_CLIENT_ID, and UAA_CLIENT_SECRET in configuration or re-authenticate.");
+  throw new Error(
+    'UAA credentials are not available for token refresh. ' +
+      'Please provide UAA_URL, UAA_CLIENT_ID, and UAA_CLIENT_SECRET in configuration or re-authenticate.'
+  );
 }
 ```
 
@@ -86,6 +90,7 @@ if (sapRefreshToken) {
 ### 1. Архітектурний фікс (mcp-manager.ts)
 
 **ДО виправлення**:
+
 ```typescript
 } else {
   // BUG: Passing sapConfig creates global overrideConnection
@@ -94,6 +99,7 @@ if (sapRefreshToken) {
 ```
 
 **ПІСЛЯ виправлення**:
+
 ```typescript
 } else {
   // FIXED: DO NOT pass sapConfig to constructor for HTTP transport!
@@ -104,21 +110,23 @@ if (sapRefreshToken) {
 ```
 
 **Що це фіксить**:
+
 - ✅ `overrideConnection` більше **НЕ створюється** для HTTP transport
-- ✅ `getManagedConnection()` тепер використовує session context з AsyncLocalStorage  
+- ✅ `getManagedConnection()` тепер використовує session context з AsyncLocalStorage
 - ✅ Кожен HTTP запит має власний session-specific `sapConfig` з headers
 - ✅ Refresh token працює, бо connection створюється з правильним config
 
 ### 2. Різниця: Standalone vs Cloud LLM Hub
 
 #### Standalone mcp-abap-adt
+
 ```bash
 # Credentials в .env файлі
 SAP_URL=https://...
 SAP_JWT_TOKEN=...
 SAP_REFRESH_TOKEN=...
 SAP_UAA_URL=...          # З service key
-SAP_UAA_CLIENT_ID=...    # З service key  
+SAP_UAA_CLIENT_ID=...    # З service key
 SAP_UAA_CLIENT_SECRET=... # З service key
 ```
 
@@ -127,6 +135,7 @@ SAP_UAA_CLIENT_SECRET=... # З service key
 #### Cloud LLM Hub (через proxy) - РЕКОМЕНДОВАНИЙ СПОСІБ
 
 **Server-side (.env в cloud-llm-hub):**
+
 ```env
 # UAA credentials зберігаються ОДИН РАЗ на сервері
 SAP_UAA_URL=https://tenant.authentication.eu10.hana.ondemand.com
@@ -135,6 +144,7 @@ SAP_UAA_CLIENT_SECRET=...
 ```
 
 **Client-side (Cline config):**
+
 ```json
 {
   "mcpServers": {
@@ -154,6 +164,7 @@ SAP_UAA_CLIENT_SECRET=...
 ```
 
 **Переваги:**
+
 - ✅ UAA credentials зберігаються **один раз** на сервері
 - ✅ Клієнт передає **тільки** access token + refresh token
 - ✅ Безпечніше - client credentials не передаються через мережу
@@ -174,6 +185,7 @@ SAP_UAA_CLIENT_SECRET=...
 ```
 
 **Fallback logic:**
+
 - Headers мають пріоритет над `.env`
 - Якщо header пустий, використовується `.env`
 - Якщо обидва відсутні, refresh не працює
@@ -191,6 +203,7 @@ sap-abap-auth auth -k path/to/service-key.json
 ```
 
 Ця команда:
+
 1. Читає service key (містить UAA credentials)
 2. Відкриває браузер для OAuth2 автентифікації
 3. Отримує access token + refresh token
@@ -214,21 +227,22 @@ SAP_UAA_CLIENT_SECRET=...  # З service key
 
 Всі SAP-специфічні headers мають префікс `x-sap-` (маленькі літери):
 
-| Header | Обов'язковий | Джерело | Змінна .env | Опис |
-|--------|--------------|---------|-------------|------|
-| `x-sap-url` | ✅ Так | Client | `SAP_URL` | URL ABAP системи |
-| `x-sap-auth-type` | ✅ Так | Client | `SAP_AUTH_TYPE` | Тип автентифікації: `jwt` або `basic` |
-| `x-sap-jwt-token` | ✅ Для JWT | Client | `SAP_JWT_TOKEN` | Access token (JWT) |
-| `x-sap-refresh-token` | ⚠️ Рекомендовано | Client | `SAP_REFRESH_TOKEN` | Refresh token для авто-оновлення |
-| `x-sap-uaa-url` | 🔄 Fallback .env | Client/.env | `SAP_UAA_URL` | UAA endpoint (для refresh) |
-| `x-sap-uaa-client-id` | 🔄 Fallback .env | Client/.env | `SAP_UAA_CLIENT_ID` | OAuth2 client ID (для refresh) |
-| `x-sap-uaa-client-secret` | 🔄 Fallback .env | Client/.env | `SAP_UAA_CLIENT_SECRET` | OAuth2 client secret (для refresh) |
-| `x-sap-client` | ❌ Опційно | Client | `SAP_CLIENT` | SAP client (наприклад, `100`) |
-| `x-sap-username` | ✅ Для Basic | Client | `SAP_USERNAME` | Username для Basic auth |
-| `x-sap-password` | ✅ Для Basic | Client | `SAP_PASSWORD` | Password для Basic auth |
-| `x-sap-destination` | 🔀 Альтернатива | Client | - | BTP Destination name (замість URL) |
+| Header                    | Обов'язковий     | Джерело     | Змінна .env             | Опис                                  |
+| ------------------------- | ---------------- | ----------- | ----------------------- | ------------------------------------- |
+| `x-sap-url`               | ✅ Так           | Client      | `SAP_URL`               | URL ABAP системи                      |
+| `x-sap-auth-type`         | ✅ Так           | Client      | `SAP_AUTH_TYPE`         | Тип автентифікації: `jwt` або `basic` |
+| `x-sap-jwt-token`         | ✅ Для JWT       | Client      | `SAP_JWT_TOKEN`         | Access token (JWT)                    |
+| `x-sap-refresh-token`     | ⚠️ Рекомендовано | Client      | `SAP_REFRESH_TOKEN`     | Refresh token для авто-оновлення      |
+| `x-sap-uaa-url`           | 🔄 Fallback .env | Client/.env | `SAP_UAA_URL`           | UAA endpoint (для refresh)            |
+| `x-sap-uaa-client-id`     | 🔄 Fallback .env | Client/.env | `SAP_UAA_CLIENT_ID`     | OAuth2 client ID (для refresh)        |
+| `x-sap-uaa-client-secret` | 🔄 Fallback .env | Client/.env | `SAP_UAA_CLIENT_SECRET` | OAuth2 client secret (для refresh)    |
+| `x-sap-client`            | ❌ Опційно       | Client      | `SAP_CLIENT`            | SAP client (наприклад, `100`)         |
+| `x-sap-username`          | ✅ Для Basic     | Client      | `SAP_USERNAME`          | Username для Basic auth               |
+| `x-sap-password`          | ✅ Для Basic     | Client      | `SAP_PASSWORD`          | Password для Basic auth               |
+| `x-sap-destination`       | 🔀 Альтернатива  | Client      | -                       | BTP Destination name (замість URL)    |
 
 **Легенда:**
+
 - ✅ **Обов'язковий** - header МАЄ бути присутнім
 - ⚠️ **Рекомендовано** - не обов'язковий, але потрібен для певної функції
 - 🔄 **Fallback .env** - можна не передавати, буде взято з server .env
@@ -260,6 +274,7 @@ UAA credentials зберігаються в `.env` на сервері, кліє
 ```
 
 **Server .env містить:**
+
 ```env
 SAP_UAA_URL=https://tenant.authentication.eu10.hana.ondemand.com
 SAP_UAA_CLIENT_ID=sb-...
@@ -429,6 +444,7 @@ SAP config extracted from headers {
 ### Якщо `canRefresh: false`
 
 Перевірте що клієнт передає **всі** headers:
+
 - `X-SAP-Refresh-Token`
 - `X-SAP-UAA-URL`
 - `X-SAP-UAA-Client-ID`
@@ -468,7 +484,10 @@ sap-abap-auth auth -k service-key.json
   "mcpServers": {
     "sap-abap-dev": {
       "command": "node",
-      "args": ["-e", "console.log(JSON.stringify({\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}))"],
+      "args": [
+        "-e",
+        "console.log(JSON.stringify({\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}))"
+      ],
       "transport": {
         "type": "streamable-http",
         "url": "https://your-hub.cfapps.eu10.hana.ondemand.com/mcp/stream/http",
@@ -496,6 +515,7 @@ sap-abap-auth auth -k service-key.json
 ⚠️ **ВАЖЛИВО**: UAA Client Secret передається в headers!
 
 Це означає:
+
 1. **Обов'язково** використовуйте HTTPS для всіх запитів
 2. Зберігайте `cline_mcp_settings.json` в безпечному місці
 3. Не commitьте цей файл в Git
@@ -521,6 +541,7 @@ sap-abap-auth auth -k service-key.json
 ```
 
 В цьому випадку:
+
 - ✅ UAA credentials зберігаються **в Destination Service** (не в headers)
 - ✅ Token refresh відбувається **автоматично через SAP Cloud SDK**
 - ✅ Headers містять **тільки destination name** (безпечно)
@@ -528,6 +549,7 @@ sap-abap-auth auth -k service-key.json
 - ✅ **Централізоване управління** credentials в BTP Cockpit
 
 **Для Direct JWT Auth (headers):**
+
 - ⚠️ UAA credentials в кожному запиті
 - ⚠️ Менша безпека (credentials у багатьох місцях)
 - ⚠️ Потрібно manually оновлювати credentials при ротації
@@ -541,10 +563,12 @@ sap-abap-auth auth -k service-key.json
 **Використання**: локальна розробка, тестування
 
 **Плюси**:
+
 - Простота налаштування
 - Не потрібен Destination Service
 
 **Мінуси**:
+
 - UAA credentials в headers (менш безпечно)
 - Потрібно manually передавати всі параметри
 
@@ -555,11 +579,13 @@ sap-abap-auth auth -k service-key.json
 **Використання**: production, enterprise
 
 **Плюси**:
+
 - UAA credentials в Destination Service (безпечно)
 - Автоматичний token refresh через SAP Cloud SDK
 - Підтримка Cloud Connector (on-premise)
 
 **Мінуси**:
+
 - Потрібен BTP Destination Service
 - Складніше налаштування
 
@@ -568,12 +594,14 @@ sap-abap-auth auth -k service-key.json
 ## Висновок
 
 Після виправлення, JWT token refresh працює автоматично якщо передані **всі чотири параметри**:
+
 1. ✅ `X-SAP-Refresh-Token`
 2. ✅ `X-SAP-UAA-URL`
 3. ✅ `X-SAP-UAA-Client-ID`
 4. ✅ `X-SAP-UAA-Client-Secret`
 
 Коли JWT access token expіred:
+
 - `JwtAbapConnection` автоматично викличе `refreshToken()`
 - Отримає новий access token з UAA
 - Оновить `sapConfig.jwtToken`

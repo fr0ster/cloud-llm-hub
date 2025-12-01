@@ -65,19 +65,21 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 When the proxy runs on SAP BTP and needs to reach an on-premise ABAP system via Cloud Connector, there are two supported options for supplying connection details:
 
 1. **Preferred: let the Destination service drive the configuration.**
-  - Add the header `X-SAP-Destination: <destination-name>`.
-  - The proxy uses SAP Cloud SDK's `executeHttpRequest` to resolve the destination, which automatically:
-    - Retrieves destination configuration from the Destination service
-    - Handles authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
-    - Routes requests through the Connectivity proxy when `ProxyType=OnPremise`
-    - Manages token lifecycle and refresh automatically
-    - Propagates `CloudConnectorLocationId` for multi-tunnel scenarios
-  - Optionally include `X-SAP-Client` to override the `sap-client` maintained in the destination.
+
+- Add the header `X-SAP-Destination: <destination-name>`.
+- The proxy uses SAP Cloud SDK's `executeHttpRequest` to resolve the destination, which automatically:
+  - Retrieves destination configuration from the Destination service
+  - Handles authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
+  - Routes requests through the Connectivity proxy when `ProxyType=OnPremise`
+  - Manages token lifecycle and refresh automatically
+  - Propagates `CloudConnectorLocationId` for multi-tunnel scenarios
+- Optionally include `X-SAP-Client` to override the `sap-client` maintained in the destination.
 
 2. **Manual headers (fallback when destinations are unavailable).**
-  - `X-SAP-Connectivity-Mode: onprem` — enables the Connectivity integration.
-  - `X-SAP-Connectivity-Location-ID` (optional) — Cloud Connector location ID when multiple tunnels exist.
-  - `X-SAP-Connectivity-Auth` (optional) — bearer token for principal propagation (`SAP-Connectivity-Authentication`).
+
+- `X-SAP-Connectivity-Mode: onprem` — enables the Connectivity integration.
+- `X-SAP-Connectivity-Location-ID` (optional) — Cloud Connector location ID when multiple tunnels exist.
+- `X-SAP-Connectivity-Auth` (optional) — bearer token for principal propagation (`SAP-Connectivity-Authentication`).
 
 ### Prerequisites
 
@@ -117,23 +119,24 @@ The project now ships with an `mta.yaml` descriptor and build hooks that streaml
 
 1. **Build the CAP artifacts**
 
-  ```bash
-  npx cds build --production
-  ```
+```bash
+npx cds build --production
+```
 
 2. **Create the MTAR** (requires the SAP `mbt` tool or the Cloud MTA Build Tool):
 
-  ```bash
-  mbt build
-  ```
+```bash
+mbt build
+```
 
 3. **Deploy to Cloud Foundry**
 
-  ```bash
-  cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar
-  ```
+```bash
+cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar
+```
 
 The descriptor provisions two application modules (CAP service + approuter) and automatically creates and binds:
+
 - **XSUAA service** (`cloud-llm-hub-auth`) for authentication and authorization
 - **Destination service** (`cloud-llm-hub-destination`) for destination management
 - **Connectivity service** (`cloud-llm-hub-connectivity`) with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise connectivity via Cloud Connector
@@ -147,6 +150,7 @@ Adjust service plans or quotas inside `mta.yaml` before deploying to production 
 Server-Sent Events stream with automatic heartbeat and reconnection hints.
 
 **Features:**
+
 - Content-Type: `text/event-stream`
 - Heartbeat every 15 seconds (`: ping`)
 - Reconnection hint: `retry: 15000`
@@ -172,8 +176,8 @@ curl -N -H "Accept: text/event-stream" \
 ```javascript
 const eventSource = new EventSource('http://localhost:4004/mcp/stream/sse', {
   headers: {
-    'Authorization': 'Basic YWxpY2U6'
-  }
+    Authorization: 'Basic YWxpY2U6',
+  },
 });
 
 eventSource.onmessage = (event) => {
@@ -190,6 +194,7 @@ eventSource.onerror = (error) => {
 Bidirectional streaming with NDJSON (Newline-Delimited JSON) format.
 
 **Features:**
+
 - Content-Type: `application/x-ndjson`
 - Bidirectional streaming
 - Backpressure control
@@ -216,10 +221,10 @@ EOF
 const response = await fetch('http://localhost:4004/mcp/stream/http', {
   method: 'POST',
   headers: {
-    'Authorization': 'Basic YWxpY2U6',
-    'Content-Type': 'application/x-ndjson'
+    Authorization: 'Basic YWxpY2U6',
+    'Content-Type': 'application/x-ndjson',
   },
-  body: JSON.stringify({ command: 'tools/list' }) + '\n'
+  body: JSON.stringify({ command: 'tools/list' }) + '\n',
 });
 
 const reader = response.body.getReader();
@@ -228,7 +233,7 @@ const decoder = new TextDecoder();
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
-  
+
   const chunk = decoder.decode(value);
   console.log('Received:', chunk);
 }
@@ -334,6 +339,7 @@ curl http://localhost:4004/mcp/Health
 ```
 
 Expected response:
+
 ```json
 {
   "status": "UP",
@@ -356,6 +362,7 @@ curl -H "Authorization: Bearer <your-jwt-token>" \
 ```
 
 Expected response:
+
 ```json
 {
   "destination": "ABAP_DEV",
@@ -375,6 +382,7 @@ Expected response:
 ```
 
 The function automatically:
+
 - Resolves destination configuration via SAP Cloud SDK
 - Determines connectivity mode (internet vs. on-premise)
 - Performs an ADT discovery request to validate connectivity
@@ -455,6 +463,7 @@ npm start
 ```
 
 Expected upstream endpoints:
+
 - SSE: `http://127.0.0.1:7070/sse`
 - Stream: `http://127.0.0.1:7070/stream`
 
@@ -462,22 +471,23 @@ Expected upstream endpoints:
 
 ### Roles and Scopes
 
-| Scope | Description | Role |
-|-------|-------------|------|
-| `MCP_Connect` | Connect to MCP streams | MCP_Connector |
-| `MCP_Read` | Read stream data | MCP_Connector |
-| `MCP_Admin` | Administrative operations | MCP_Admin |
+| Scope         | Description               | Role          |
+| ------------- | ------------------------- | ------------- |
+| `MCP_Connect` | Connect to MCP streams    | MCP_Connector |
+| `MCP_Read`    | Read stream data          | MCP_Connector |
+| `MCP_Admin`   | Administrative operations | MCP_Admin     |
 
 ### Development Users
 
-| User | Roles | Access |
-|------|-------|--------|
+| User  | Roles                    | Access      |
+| ----- | ------------------------ | ----------- |
 | alice | MCP_Connector, MCP_Admin | Full access |
-| bob | MCP_Connector | Read-only |
+| bob   | MCP_Connector            | Read-only   |
 
 ### Rate Limiting
 
 Consider adding rate limiting in production:
+
 - 1000 events/sec per user
 - 1 MB max event size
 - Connection limit per IP

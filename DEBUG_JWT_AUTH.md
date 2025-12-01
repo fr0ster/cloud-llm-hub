@@ -17,11 +17,13 @@ cds serve 2>&1 | grep -E "jwt|token|mcp-manager|mcp-proxy"
 ### Step 1: Token Extraction from Headers (server.ts)
 
 **Look for:**
+
 ```
 [mcp-proxy/stream-http] Extracted tokens from headers
 ```
 
 **Must contain:**
+
 - `hasJwtToken: true` ✅
 - `jwtTokenLength: <number>` (should be > 0)
 - `hasRefreshToken: true/false`
@@ -33,15 +35,19 @@ cds serve 2>&1 | grep -E "jwt|token|mcp-manager|mcp-proxy"
 ### Step 2: Session Config Creation (server.ts)
 
 **Look for one of:**
+
 ```
 [mcp-proxy/stream-http] sessionSapConfig from destination with refresh support
 ```
+
 OR
+
 ```
 [mcp-proxy/stream-http] JWT config with refresh support
 ```
 
 **Must contain:**
+
 - `hasJwtToken: true` ✅
 - `jwtTokenLength: <number>` (should match Step 1)
 - `authType: "jwt"` ✅
@@ -54,11 +60,13 @@ OR
 ### Step 3: Config Extraction in mcp-manager (mcp-manager.ts)
 
 **Look for:**
+
 ```
 [mcp-manager] SAP config extracted from headers
 ```
 
 **Must contain:**
+
 - `authType: "jwt"` ✅
 - `hasJwtToken: true` ✅
 - `jwtTokenLength: <number>` (should match Step 1)
@@ -71,11 +79,13 @@ OR
 ### Step 4: Passing Config to Connection (mcp-manager.ts)
 
 **Look for:**
+
 ```
 [mcp-manager] Passing sapConfig to mcp-abap-adt for connection creation
 ```
 
 **Must contain:**
+
 - `hasJwtToken: true` ✅
 - `jwtTokenLength: <number>` (should match Step 1)
 - `jwtTokenPreview: "..."` (first/last 20 chars)
@@ -88,6 +98,7 @@ OR
 ### Step 5: CRITICAL Error Check
 
 **Look for:**
+
 ```
 [mcp-manager] CRITICAL: JWT auth type but no JWT token in sapConfig!
 ```
@@ -180,6 +191,7 @@ cds serve 2>&1 | grep "Passing sapConfig\|Creating new MCP server"
 **Symptom:** `hasJwtToken: false` in `sessionSapConfig from destination`
 
 **Possible causes:**
+
 - Destination doesn't support JWT (uses Basic auth instead)
 - `resolveDestinationSapConfig()` not passing JWT token
 - Header `X-SAP-JWT-TOKEN` not extracted correctly
@@ -191,6 +203,7 @@ cds serve 2>&1 | grep "Passing sapConfig\|Creating new MCP server"
 **Symptom:** `hasJwtToken: false` in `SAP config extracted from headers`
 
 **Possible causes:**
+
 - `extractSapContext()` not reading `X-SAP-JWT-TOKEN` header
 - Header name mismatch (case sensitivity)
 
@@ -201,6 +214,7 @@ cds serve 2>&1 | grep "Passing sapConfig\|Creating new MCP server"
 **Symptom:** `CRITICAL: JWT auth type but no JWT token in sapConfig!`
 
 **Possible causes:**
+
 - `sapConfig` object modified between extraction and connection creation
 - Token property not copied correctly
 
@@ -234,4 +248,3 @@ When debugging JWT authentication:
 - [ ] authType is "jwt" (not "basic")?
 
 If all checked ✅, JWT token is correctly passed through the entire chain.
-

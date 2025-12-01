@@ -44,6 +44,7 @@ node ~/my-workspace/update-cline-connection.js \
 ```
 
 **Note:** In standalone mode (when `--settings` is provided), the script:
+
 - Requires explicit SAP credentials (`--sap-token` or `--sap-username/--sap-password`)
 - Does not search for `.env` files
 - Does not support `--service-key` (requires repository structure)
@@ -57,16 +58,16 @@ Key capabilities:
 
 ### Frequently Used Options
 
-| Option | Purpose |
-| --- | --- |
-| `--connection <name>` | Connection key in `cline_mcp_settings.json` (required). |
-| `--env <path>` | Explicit `.env` file with SAP credentials. |
-| `--service-key <path>` | Generates a fresh SAP JWT via `sap-abap-auth-browser`. |
-| `--sap-token <token>` | Inline SAP JWT instead of reading `.env`. |
-| `--destination-name <name>` | Enables destination routing (removes direct URL headers). |
+| Option                       | Purpose                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------- |
+| `--connection <name>`        | Connection key in `cline_mcp_settings.json` (required).                         |
+| `--env <path>`               | Explicit `.env` file with SAP credentials.                                      |
+| `--service-key <path>`       | Generates a fresh SAP JWT via `sap-abap-auth-browser`.                          |
+| `--sap-token <token>`        | Inline SAP JWT instead of reading `.env`.                                       |
+| `--destination-name <name>`  | Enables destination routing (removes direct URL headers).                       |
 | `--connectivity-mode onprem` | Instructs the proxy to use the Connectivity service for an on-prem destination. |
-| `--mcp-token <jwt>` | Sets MCP-side bearer auth (`Authorization: Bearer ...`). |
-| `--dry-run` | Preview changes without saving. |
+| `--mcp-token <jwt>`          | Sets MCP-side bearer auth (`Authorization: Bearer ...`).                        |
+| `--dry-run`                  | Preview changes without saving.                                                 |
 
 > **Note:** When `--destination-name` is supplied the script will drop the direct `X-SAP-URL` / `X-SAP-JWT-TOKEN` headers and rely on the Destination service at runtime. This keeps the stored settings free from short-lived tokens.
 
@@ -183,7 +184,6 @@ cloud:
               type: serviceKey
               name: sap-abap
             jsonPath: credentials.jwt
-
 ```
 
 Highlights:

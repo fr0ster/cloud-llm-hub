@@ -7,17 +7,17 @@ High-level architecture and design decisions for Cloud LLM Hub.
 ```mermaid
 graph TB
     Client[MCP Clients<br/>Cline/Claude/n8n/CI-CD] -->|HTTP/SSE/Stream-HTTP| Hub[Cloud LLM Hub<br/>CAP Service]
-    
+
     Hub -->|CAP Auth| XSUAA[XSUAA<br/>Authentication]
     Hub -->|Cloud SDK| Dest[Destination Service]
     Hub -->|Optional| Conn[Connectivity Service]
-    
+
     Hub -->|Embeds| MCP[MCP ABAP Server<br/>submodule]
-    
+
     Dest -->|Internet| SAP1[SAP Cloud System]
     Dest -->|via Connector| CC[Cloud Connector]
     CC -->|On-Premise| SAP2[SAP On-Premise System]
-    
+
     style Hub fill:#4CAF50,color:#fff
     style XSUAA fill:#FF9800,color:#fff
     style MCP fill:#2196F3,color:#fff
@@ -34,13 +34,13 @@ graph LR
         Manager[MCP Manager<br/>srv/mcp-manager.ts]
         Connections[Connections<br/>srv/connections/]
     end
-    
+
     Proxy -->|Manages| Manager
     Manager -->|Uses| Connections
     Connections -->|SAP Cloud SDK| SDK[executeHttpRequest]
-    
+
     Manager -->|Creates/Caches| MCP[MCP Server<br/>submodule]
-    
+
     style Proxy fill:#4CAF50,color:#fff
     style Manager fill:#2196F3,color:#fff
     style Connections fill:#9C27B0,color:#fff
@@ -88,7 +88,7 @@ sequenceDiagram
     participant A as XSUAA
     participant M as MCP Manager
     participant S as SAP System
-    
+
     C->>H: GET /mcp/stream/sse
     H->>A: Validate token
     A-->>H: Token valid
@@ -105,6 +105,7 @@ sequenceDiagram
 ```
 
 **Detailed flow:**
+
 1. Client sends GET request to `/mcp/stream/sse`
 2. CAP authentication middleware validates XSUAA token
 3. Express route handler (`server.ts`) processes request
@@ -122,7 +123,7 @@ sequenceDiagram
     participant M as MCP Manager
     participant D as Destination Service
     participant S as SAP System
-    
+
     C->>H: POST /mcp/stream/http<br/>(no Mcp-Session-Id)
     H->>A: Validate token
     A-->>H: Token valid
@@ -133,7 +134,7 @@ sequenceDiagram
     S-->>M: Connection established
     M-->>H: Session ID generated
     H-->>C: Response + Mcp-Session-Id
-    
+
     C->>H: POST /mcp/stream/http<br/>(with Mcp-Session-Id)
     H->>M: Get existing server (session)
     M->>S: Forward MCP request
@@ -149,7 +150,7 @@ sequenceDiagram
     participant C as Client
     participant H as Hub (CAP)
     participant A as XSUAA
-    
+
     C->>H: GET /odata/v4/mcp/Health()
     H->>A: Validate token
     A-->>H: Token valid
@@ -158,6 +159,7 @@ sequenceDiagram
 ```
 
 **Flow:**
+
 1. Client sends GET request to `/odata/v4/mcp/Health()`
 2. CAP authentication middleware validates token
 3. CAP handler in `mcp-proxy.ts` processes request
@@ -168,28 +170,33 @@ sequenceDiagram
 ### MCP Proxy (`srv/mcp-proxy.ts`)
 
 **Responsibilities:**
+
 - CAP OData endpoint handlers
 - Health check endpoint
 - Destination probe endpoint
 - Authentication enforcement
 
 **Key Functions:**
+
 - `Health()` - Health check
 - `ProbeDestination()` - Test destination connectivity
 
 ### MCP Manager (`srv/mcp-manager.ts`)
 
 **Responsibilities:**
+
 - MCP server lifecycle management
 - Server instance caching (30 min TTL)
 - Session management for Stream-HTTP
 - Connection pooling
 
 **Key Functions:**
+
 - `getMCPServer()` - Get or create MCP server
 - `cleanup()` - Clean expired servers
 
 **Caching Strategy:**
+
 - Cache key: SAP system URL
 - TTL: 30 minutes
 - Cleanup: On-demand and periodic
@@ -197,21 +204,25 @@ sequenceDiagram
 ### Connection Handlers (`srv/connections/`)
 
 **Destination Resolver** (`destinationResolver.ts`):
+
 - Resolves SAP BTP Destination service entries
 - Handles authentication types (Basic, OAuth2, SAML)
 - Returns connection configuration
 
 **Cloud SDK Connection** (`CloudSdkAbapConnection.ts`):
+
 - Uses SAP Cloud SDK's `executeHttpRequest`
 - Handles internet destinations
 - Automatic token refresh
 
 **On-Premise Connection** (`BtpOnPremDestinationConnection.ts`):
+
 - Handles on-premise destinations
 - Cloud Connector integration
 - Location ID management
 
 **Connectivity Proxy** (`connectivityProxy.ts`):
+
 - Manages Cloud Connector proxy
 - Handles proxy configuration
 - Connection pooling for on-premise
@@ -219,12 +230,14 @@ sequenceDiagram
 ### Server Setup (`srv/server.ts`)
 
 **Responsibilities:**
+
 - CAP server initialization
 - Express routes for streaming endpoints
 - Middleware configuration
 - Error handling
 
 **Express Routes:**
+
 - `GET /mcp/stream/sse` - Server-Sent Events
 - `POST /mcp/stream/http` - Streamable HTTP
 
@@ -237,7 +250,7 @@ sequenceDiagram
     participant C as Client
     participant H as Hub
     participant M as Mock Auth
-    
+
     C->>H: Request + Basic Auth
     H->>M: Validate Basic Auth
     M->>M: Check user (alice/bob)
@@ -253,7 +266,7 @@ sequenceDiagram
     participant C as Client
     participant H as Hub
     participant X as XSUAA
-    
+
     C->>H: Request + Bearer Token
     H->>X: Validate JWT token
     X->>X: Verify signature
@@ -264,11 +277,13 @@ sequenceDiagram
 ```
 
 **XSUAA Scopes:**
+
 - `MCP_Connect` - Connect to streaming endpoints
 - `MCP_Read` - Read MCP data
 - `MCP_Admin` - Administrative operations
 
 **Role Collections:**
+
 - `MCP_Connector` - Basic access (Connect + Read)
 - `MCP_Admin` - Full access
 
@@ -277,11 +292,13 @@ sequenceDiagram
 ### 1. Direct Mode
 
 **Configuration:**
+
 - Direct SAP URL
 - JWT token or Basic auth
 - No Destination service needed
 
 **Use Cases:**
+
 - Development
 - Testing
 - Simple integrations
@@ -289,11 +306,13 @@ sequenceDiagram
 ### 2. Destination Mode (Internet)
 
 **Configuration:**
+
 - Destination name in BTP
 - Automatic authentication
 - Cloud SDK handles tokens
 
 **Use Cases:**
+
 - Production
 - Cloud SAP systems
 - Enterprise deployments
@@ -301,11 +320,13 @@ sequenceDiagram
 ### 3. Destination Mode (On-Premise)
 
 **Configuration:**
+
 - Destination with `ProxyType=OnPremise`
 - Cloud Connector location ID
 - Automatic proxy routing
 
 **Use Cases:**
+
 - On-premise SAP systems
 - Enterprise networks
 - Secure connections
@@ -426,4 +447,3 @@ cloud-llm-hub/
 ---
 
 **Questions?** Check ADRs or ask in discussions!
-

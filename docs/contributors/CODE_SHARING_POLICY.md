@@ -35,6 +35,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Rule:** If functionality can be extended rather than duplicated, extend it.
 
 **Example:**
+
 - ✅ `CloudSdkAbapConnection` extends `AbapConnection` interface
 - ❌ Don't reimplement MCP protocol handlers
 
@@ -43,6 +44,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Rule:** If transport mechanism differs (axios vs Cloud SDK), separate implementations are acceptable.
 
 **Example:**
+
 - ✅ CSRF token fetching: axios (base) vs Cloud SDK (extension)
 - ✅ Connection creation: different HTTP clients
 
@@ -51,6 +53,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Rule:** If logic is identical, extract to shared config/utilities.
 
 **Example:**
+
 - ✅ CSRF retry parameters → `csrfConfig.ts`
 - ✅ Error message formats → synchronized constants
 
@@ -59,6 +62,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Rule:** BTP-specific functionality belongs in cloud-llm-hub, not base library.
 
 **Example:**
+
 - ✅ Destination Service resolution
 - ✅ Cloud Connector integration
 - ✅ CAP service definitions
@@ -72,6 +76,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** ✅ Extension, NOT duplication
 
 **Reasoning:**
+
 - Base: `@mcp-abap-adt/connection` uses axios + Basic/JWT
 - Extension: `CloudSdkAbapConnection` uses Cloud SDK + Destinations
 - Different transport stacks → different implementations
@@ -84,6 +89,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** ✅ Similar logic, different implementations
 
 **Reasoning:**
+
 - Base: axios-based CSRF fetching
 - Extension: Cloud SDK-based CSRF fetching
 - Logic similar, but HTTP clients differ
@@ -96,6 +102,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** ✅ BTP-specific, unique to cloud-llm-hub
 
 **Reasoning:**
+
 - Requires BTP Destination Service
 - Cloud Connector support
 - Not applicable to standalone mcp-abap-adt
@@ -107,6 +114,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** ✅ cloud-llm-hub specific
 
 **Reasoning:**
+
 - CAP service definitions
 - Express middleware
 - BTP deployment structure
@@ -122,12 +130,14 @@ This document defines the policy for code sharing and duplication between `cloud
 **Location:** `srv/connections/csrfConfig.ts`
 
 **Shared Constants:**
+
 - `RETRY_COUNT`: 3
 - `RETRY_DELAY`: 1000ms
 - `ENDPOINT`: '/sap/bc/adt/discovery'
 - `REQUIRED_HEADERS`: Headers for CSRF fetch
 
 **Usage:**
+
 - `CloudSdkAbapConnection.fetchCsrfToken()` uses shared config
 - Base library has hardcoded values (synchronized manually)
 
@@ -138,9 +148,11 @@ This document defines the policy for code sharing and duplication between `cloud
 **Location:** `@mcp-abap-adt/header-validator`
 
 **Shared Function:**
+
 - `validateAuthHeaders(headers): HeaderValidationResult`
 
 **Usage:**
+
 - `srv/mcp-manager.ts::extractSapContext()` uses for direct connections
 - Centralized validation logic
 - Consistent error messages
@@ -152,9 +164,11 @@ This document defines the policy for code sharing and duplication between `cloud
 **Location:** `@fr0ster/mcp-abap-adt/dist/lib/utils.js`
 
 **Shared Component:**
+
 - `sessionContext`: AsyncLocalStorage instance
 
 **Usage:**
+
 - `srv/server.ts` uses same instance for per-request context
 - `getManagedConnection()` reads from same context
 
@@ -165,9 +179,11 @@ This document defines the policy for code sharing and duplication between `cloud
 **Location:** `@mcp-abap-adt/connection`
 
 **Shared Interface:**
+
 - `AbapConnection` interface
 
 **Usage:**
+
 - `CloudSdkAbapConnection` implements interface
 - Base connections also implement interface
 - Factory pattern uses interface for type safety
@@ -183,6 +199,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** ✅ Minimal duplication (basic trimming only)
 
 **Current State:**
+
 - Base: `url.trim()` (v1.1.19 removed aggressive cleaning)
 - Extension: Basic validation, no special cleaning
 
@@ -193,6 +210,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** 🟡 Partial duplication (different backends)
 
 **Current State:**
+
 - Base: Uses `safeStringifyError` from mcp-abap-adt
 - Extension: Uses `cds.log()` with custom error formatting
 
@@ -205,6 +223,7 @@ This document defines the policy for code sharing and duplication between `cloud
 **Status:** ✅ Different backends (not duplication)
 
 **Current State:**
+
 - Base: Custom logger implementation
 - Extension: `cds.log()` adapter
 
@@ -217,6 +236,7 @@ This document defines the policy for code sharing and duplication between `cloud
 ### 1. Shared Constants
 
 **Pattern:**
+
 ```typescript
 // cloud-llm-hub/srv/connections/csrfConfig.ts
 export const CSRF_CONFIG = {
@@ -227,6 +247,7 @@ export const CSRF_CONFIG = {
 ```
 
 **Usage:**
+
 - Extension uses shared config
 - Base library has hardcoded values (synchronized manually)
 - Future: Export from base library
@@ -234,6 +255,7 @@ export const CSRF_CONFIG = {
 ### 2. Package Imports
 
 **Pattern:**
+
 ```typescript
 // Use shared packages from mcp-abap-adt
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
@@ -241,12 +263,14 @@ import { createAbapConnection } from '@mcp-abap-adt/connection';
 ```
 
 **Usage:**
+
 - Direct imports for shared utilities
 - No duplication of logic
 
 ### 3. Runtime Access
 
 **Pattern:**
+
 ```typescript
 // Access shared instances at runtime
 const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
@@ -254,12 +278,14 @@ const sessionContext = mcpUtils.sessionContext;
 ```
 
 **Usage:**
+
 - Access singletons (sessionContext, connection cache)
 - Same instance used by base library
 
 ### 4. Interface Compliance
 
 **Pattern:**
+
 ```typescript
 // Implement shared interfaces
 export class CloudSdkAbapConnection implements AbapConnection {
@@ -268,6 +294,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
 ```
 
 **Usage:**
+
 - Type safety via shared interfaces
 - Polymorphism for different implementations
 
@@ -277,29 +304,29 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
 ### When to Share Code
 
-| Scenario | Decision | Example |
-|----------|----------|---------|
-| Identical logic, same transport | ✅ Share | Header validation |
-| Identical logic, different transport | 🟡 Share constants | CSRF retry parameters |
-| Similar logic, different use case | ❌ Don't share | Connection creation |
-| BTP-specific functionality | ❌ Don't share | Destination resolution |
+| Scenario                             | Decision           | Example                |
+| ------------------------------------ | ------------------ | ---------------------- |
+| Identical logic, same transport      | ✅ Share           | Header validation      |
+| Identical logic, different transport | 🟡 Share constants | CSRF retry parameters  |
+| Similar logic, different use case    | ❌ Don't share     | Connection creation    |
+| BTP-specific functionality           | ❌ Don't share     | Destination resolution |
 
 ### When to Duplicate Code
 
-| Scenario | Decision | Example |
-|----------|----------|---------|
-| Different transport stacks | ✅ Duplicate | CSRF fetching (axios vs Cloud SDK) |
-| Different authentication flows | ✅ Duplicate | Connection creation |
-| BTP-specific requirements | ✅ Duplicate | Destination Service integration |
-| Identical logic, no shared package | 🟡 Extract to shared config | CSRF parameters |
+| Scenario                           | Decision                    | Example                            |
+| ---------------------------------- | --------------------------- | ---------------------------------- |
+| Different transport stacks         | ✅ Duplicate                | CSRF fetching (axios vs Cloud SDK) |
+| Different authentication flows     | ✅ Duplicate                | Connection creation                |
+| BTP-specific requirements          | ✅ Duplicate                | Destination Service integration    |
+| Identical logic, no shared package | 🟡 Extract to shared config | CSRF parameters                    |
 
 ### When to Extend Code
 
-| Scenario | Decision | Example |
-|----------|----------|---------|
-| Interface compliance | ✅ Extend | CloudSdkAbapConnection |
-| Additional features | ✅ Extend | BTP Destination support |
-| Protocol compatibility | ✅ Extend | MCP server integration |
+| Scenario               | Decision  | Example                 |
+| ---------------------- | --------- | ----------------------- |
+| Interface compliance   | ✅ Extend | CloudSdkAbapConnection  |
+| Additional features    | ✅ Extend | BTP Destination support |
+| Protocol compatibility | ✅ Extend | MCP server integration  |
 
 ---
 
@@ -330,6 +357,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
 ### Example 1: CSRF Config (Shared Constants)
 
 **Before:**
+
 ```typescript
 // CloudSdkAbapConnection.ts
 private async fetchCsrfToken(url: string, retryCount = 3, retryDelay = 1000) {
@@ -338,6 +366,7 @@ private async fetchCsrfToken(url: string, retryCount = 3, retryDelay = 1000) {
 ```
 
 **After:**
+
 ```typescript
 // csrfConfig.ts
 export const CSRF_CONFIG = {
@@ -357,6 +386,7 @@ private async fetchCsrfToken(url: string) {
 ### Example 2: Header Validation (Shared Package)
 
 **Before:**
+
 ```typescript
 // mcp-manager.ts
 function extractSapContext(req) {
@@ -369,6 +399,7 @@ function extractSapContext(req) {
 ```
 
 **After:**
+
 ```typescript
 // mcp-manager.ts
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
@@ -385,6 +416,7 @@ function extractSapContext(req) {
 ### Example 3: Connection Extension (Interface Compliance)
 
 **Before:**
+
 ```typescript
 // Custom connection class
 class MyConnection {
@@ -393,6 +425,7 @@ class MyConnection {
 ```
 
 **After:**
+
 ```typescript
 // CloudSdkAbapConnection.ts
 import type { AbapConnection } from '@mcp-abap-adt/connection';
@@ -436,4 +469,3 @@ export class CloudSdkAbapConnection implements AbapConnection {
 **Author:** AI Assistant  
 **Last Updated:** December 2025  
 **Version:** 1.0
-

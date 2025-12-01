@@ -5,6 +5,7 @@ Cline makes **POST** requests to `/mcp/stream/http` (StreamableHTTP endpoint).
 ## 🔍 Breakpoints for Debugging
 
 ### 1. **Incoming Request from Cline** (first breakpoint)
+
 **File:** `srv/server.ts`  
 **Line:** `400` (middleware for `/mcp` routes)
 
@@ -19,6 +20,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 ```
 
 **What to check:**
+
 - `req.path` - should be `/mcp/stream/http`
 - `req.method` - should be `POST`
 - `req.headers.authorization` - whether auth header exists
@@ -27,6 +29,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 ---
 
 ### 2. **Authorization Processing**
+
 **File:** `srv/server.ts`  
 **Line:** `426` (call to `authShim`)
 
@@ -47,6 +50,7 @@ async function authShim(req: Request, res: Response, next: NextFunction): Promis
 ```
 
 **What to check:**
+
 - Which auth type (Basic or Bearer)
 - Whether `req.user` is set after authShim
 - Which roles the user has (`req.user.roles`)
@@ -54,6 +58,7 @@ async function authShim(req: Request, res: Response, next: NextFunction): Promis
 ---
 
 ### 3. **StreamableHTTP Request Processing** (main handler)
+
 **File:** `srv/server.ts`  
 **Line:** `164` (beginning of `handleStreamHTTP` function)
 
@@ -67,6 +72,7 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
 ```
 
 **What to check:**
+
 - Whether `req.user` exists (should not be `undefined`)
 - Whether user has `MCP_Connector` role
 - Headers: `x-sap-destination`, `x-sap-client`, etc.
@@ -74,6 +80,7 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
 ---
 
 ### 4. **Getting MCP Server**
+
 **File:** `srv/mcp-manager.ts`  
 **Line:** `214` (call to `extractSapContext`)
 
@@ -95,6 +102,7 @@ async function extractSapContext(req: Request): Promise<SapContext> {
 ```
 
 **What to check:**
+
 - `sapConfig.url` - ABAP system URL
 - `sapConfig.authType` - authentication type (basic/jwt)
 - `destination` - destination configuration
@@ -103,6 +111,7 @@ async function extractSapContext(req: Request): Promise<SapContext> {
 ---
 
 ### 5. **Creating/Getting Cached MCP Server**
+
 **File:** `srv/mcp-manager.ts`  
 **Line:** `231` (cache check)
 
@@ -123,6 +132,7 @@ Or:
 const mcpServer = createMCPServer(sapConfig);
 // ...
 ```
+
 **Note:** If a destination name is provided, `CloudSdkAbapConnection` is used, which leverages SAP Cloud SDK's `executeHttpRequest` for automatic destination handling.
 
 ---
@@ -169,21 +179,21 @@ While stopped at a breakpoint, you can use:
 
 ```javascript
 // Check request
-req.path
-req.method
-req.headers
+req.path;
+req.method;
+req.headers;
 
 // Check authorization
-req.user
-req.user?.id
-req.user?.roles
+req.user;
+req.user?.id;
+req.user?.roles;
 
 // Check destination
-req.headers['x-sap-destination']
+req.headers['x-sap-destination'];
 
 // Check SAP config (in extractSapContext or after)
-sapConfig
-destination
+sapConfig;
+destination;
 ```
 
 ---

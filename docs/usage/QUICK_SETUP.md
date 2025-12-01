@@ -20,6 +20,7 @@ curl -sSL https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/upd
 ```
 
 **What it does:**
+
 1. Downloads the setup tool
 2. Generates Cline configuration
 3. Updates your Cline settings automatically
@@ -70,12 +71,14 @@ npm run deploy
 ### ✅ Quick Configuration
 
 1. **Get Service Keys:**
+
    ```bash
    cf service-key cloud-llm-hub-auth mcp > keys/mcp-xsuaa.json
    cf service-key sap-abap-backend abap > keys/sap-abap.json
    ```
 
 2. **Generate Configuration:**
+
    ```bash
    node tools/update-cline-connection.js \
      --template cloud-destination \
@@ -162,6 +165,7 @@ node tools/update-cline-connection.js --template cloud-destination \
 ### Claude Desktop
 
 1. Download config template:
+
    ```bash
    curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/docs/templates/mcp-config/cloud-destination.yaml
    ```
@@ -173,6 +177,7 @@ node tools/update-cline-connection.js --template cloud-destination \
 ### n8n / Zapier / Make.com
 
 Use HTTP Request nodes with:
+
 - **URL:** Your MCP endpoint
 - **Headers:** Authorization + X-SAP-Destination
 - **Body:** MCP JSON-RPC format
@@ -228,4 +233,3 @@ curl -X POST https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http \
 ---
 
 **Need help?** Check the documentation or open an issue!
-

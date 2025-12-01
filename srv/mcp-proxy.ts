@@ -22,19 +22,19 @@ const DEFAULT_MODE: 'sse' | 'stream-http' = 'stream-http';
  */
 export default async function registerMcpProxyHandlers(srv: Service): Promise<void> {
   const log = cds.log('mcp-proxy');
-  log.info('🔥🔥🔥 REGISTERING McpProxyService handlers', { 
+  log.info('🔥🔥🔥 REGISTERING McpProxyService handlers', {
     serviceName: srv.name,
-    hasService: !!srv
+    hasService: !!srv,
   });
 
   // Health check endpoint
   srv.on('Health', async (req: Request) => {
     const now = new Date().toISOString();
-    log.info('🔥 Health check handler CALLED', { 
-      now, 
-      hasUser: !!req.user, 
+    log.info('🔥 Health check handler CALLED', {
+      now,
+      hasUser: !!req.user,
       userId: (req.user as any)?.id,
-      userRoles: (req.user as any)?.roles
+      userRoles: (req.user as any)?.roles,
     });
 
     return {
@@ -47,10 +47,9 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
   // Uses executeHttpRequest from SAP Cloud SDK - direct destination handling
   srv.on('ProbeDestination', async (req: Request) => {
     // CAP functions receive parameters via req.data or req.query
-    const destination = (req.data as any)?.destination 
-      || (req.query as any)?.destination 
-      || (req.query as any)?.name;
-    
+    const destination =
+      (req.data as any)?.destination || (req.query as any)?.destination || (req.query as any)?.name;
+
     if (!destination || typeof destination !== 'string') {
       const error = new Error('Query parameter "destination" (or "name") is required.');
       (error as any).statusCode = 400;
@@ -59,10 +58,10 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
 
     const destinationName = destination.trim();
     const user = req.user;
-    
-    log.info('Probing destination via executeHttpRequest', { 
-      destination: destinationName, 
-      user: user?.id 
+
+    log.info('Probing destination via executeHttpRequest', {
+      destination: destinationName,
+      user: user?.id,
     });
 
     try {
@@ -72,15 +71,19 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
         throw new Error(`Destination "${destinationName}" not found.`);
       }
 
-      const proxyType = destinationConfig.proxyType ? String(destinationConfig.proxyType) : 'Internet';
+      const proxyType = destinationConfig.proxyType
+        ? String(destinationConfig.proxyType)
+        : 'Internet';
       const connectivityMode = proxyType.toLowerCase() === 'onpremise' ? 'onprem' : 'internet';
       const authentication = destinationConfig.authentication || 'Unknown';
-      
+
       // Get sap-client from destination if available
-      const sapClient = (destinationConfig.originalProperties as any)?.['sap-client'] 
-        || (destinationConfig.originalProperties as any)?.['SAP-Client']
-        || '';
-      const cloudConnectorLocationId = (destinationConfig.originalProperties as any)?.['CloudConnectorLocationId'] || '';
+      const sapClient =
+        (destinationConfig.originalProperties as any)?.['sap-client'] ||
+        (destinationConfig.originalProperties as any)?.['SAP-Client'] ||
+        '';
+      const cloudConnectorLocationId =
+        (destinationConfig.originalProperties as any)?.['CloudConnectorLocationId'] || '';
 
       let status: number | undefined;
       let statusText: string | undefined;
@@ -95,7 +98,7 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
         log.debug('Calling executeHttpRequest with destination', {
           destinationName,
           proxyType,
-          authentication
+          authentication,
         });
 
         // Use a simple endpoint to test connectivity
@@ -105,21 +108,21 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
           {
             method: 'GET',
             url: '/',
-            headers: sapClient ? { 'X-SAP-Client': sapClient } : {}
+            headers: sapClient ? { 'X-SAP-Client': sapClient } : {},
           }
         );
 
         // executeHttpRequest returns response with status, statusText, headers, data
         status = response.status || 200;
         statusText = response.statusText || 'OK';
-        
+
         const headers = response.headers || {};
         contentType = headers['content-type'] || headers['Content-Type'] || '';
-        
+
         log.debug('Destination probe successful', {
           destinationName,
           status,
-          contentType
+          contentType,
         });
       } catch (error: any) {
         // executeHttpRequest throws errors with response object for HTTP errors
@@ -130,24 +133,24 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
           statusText = error.response.statusText || error.message || 'Error';
           const errorHeaders = error.response.headers || {};
           contentType = errorHeaders['content-type'] || errorHeaders['Content-Type'] || '';
-          
+
           log.debug('Destination probe returned status (expected for probe)', {
             destinationName,
             status,
-            statusText
+            statusText,
           });
         } else if (error.statusCode || error.code) {
           // Other error with status code
           status = error.statusCode || (error.code === 'ENOTFOUND' ? 404 : 500);
           statusText = error.message || 'Error';
           contentType = '';
-          
+
           log.warn('Destination probe failed with status code', {
             destinationName,
             status,
             statusText,
             errorName: error.name,
-            errorCode: error.code
+            errorCode: error.code,
           });
         } else {
           // Unexpected error - re-throw
@@ -156,15 +159,15 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
             error: error.message,
             errorName: error.name,
             errorCode: error.code,
-            stack: error.stack?.substring(0, 500)
+            stack: error.stack?.substring(0, 500),
           });
           throw error;
         }
       }
 
-      log.debug('Destination probe completed', { 
-        destination: destinationName, 
-        status 
+      log.debug('Destination probe completed', {
+        destination: destinationName,
+        status,
       });
 
       return {
@@ -178,15 +181,15 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
         probe: {
           status: status ?? 0,
           statusText: statusText || '',
-          contentType: contentType || ''
+          contentType: contentType || '',
         },
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     } catch (error: any) {
       // Use synchronized error handling from errorUtils
       const { logErrorSafely } = await import('./lib/errorUtils');
       logErrorSafely(log, 'Destination probe', error, {
-        destination: destinationName
+        destination: destinationName,
       });
       throw error;
     }

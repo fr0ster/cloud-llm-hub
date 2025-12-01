@@ -1,7 +1,7 @@
 /**
  * Connection Factory Pattern
  * Centralized selection between CloudSdkAbapConnection and base connection
- * 
+ *
  * This factory chooses the right connection type based on:
  * - Destination name → CloudSdkAbapConnection (BTP Destination Service)
  * - Direct URL + Basic/JWT → createAbapConnection from @mcp-abap-adt/connection
@@ -18,27 +18,27 @@ export interface ConnectionOptions {
    * Required for both connection types
    */
   sapConfig: SapConfig;
-  
+
   /**
    * BTP Destination name (optional)
    * When provided, CloudSdkAbapConnection will be used
    * When omitted, createAbapConnection will be used (Direct Basic/JWT)
    */
   destinationName?: string;
-  
+
   /**
    * Logger instance (optional)
    * Used by base connection (createAbapConnection)
    * CloudSdkAbapConnection uses its own logger
    */
   logger?: ILogger;
-  
+
   /**
    * Session storage (optional)
    * Used by base connection for stateful sessions
    */
   sessionStorage?: ISessionStorage;
-  
+
   /**
    * Session ID (optional)
    * Used by base connection for session management
@@ -48,21 +48,21 @@ export interface ConnectionOptions {
 
 /**
  * Factory for creating the correct connection type
- * 
+ *
  * Decision logic:
  * 1. If destinationName provided → CloudSdkAbapConnection (BTP Destination Service)
  * 2. Otherwise → createAbapConnection (Direct Basic/JWT via axios)
- * 
+ *
  * @param options - Connection configuration options
  * @returns AbapConnection instance (either CloudSdkAbapConnection or base connection)
- * 
+ *
  * @example
  * // BTP Destination connection
  * const connection = createConnection({
  *   sapConfig: { url: '', authType: 'jwt' }, // URL not used, comes from Destination
  *   destinationName: 'MY_ABAP_SYSTEM'
  * });
- * 
+ *
  * @example
  * // Direct Basic auth connection
  * const connection = createConnection({
@@ -73,7 +73,7 @@ export interface ConnectionOptions {
  *     password: 'PASS'
  *   }
  * });
- * 
+ *
  * @example
  * // Direct JWT connection with session
  * const connection = createConnection({
@@ -88,7 +88,7 @@ export interface ConnectionOptions {
  */
 export function createConnection(options: ConnectionOptions): AbapConnection {
   const { sapConfig, destinationName, logger, sessionStorage, sessionId } = options;
-  
+
   // Priority 1: Destination-based connection (BTP Cloud)
   if (destinationName) {
     // Use CloudSdkAbapConnection for BTP Destination Service
@@ -99,32 +99,34 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
     // - Token management via BTP (automatic, not refresh token - handled by BTP infrastructure)
     return new CloudSdkAbapConnection(sapConfig, destinationName);
   }
-  
+
   // Priority 2: Direct connection (Basic/JWT via axios)
   // This handles:
   // - Direct HTTP connections to ABAP systems
   // - Basic authentication (username/password)
   // - JWT authentication (direct token)
-  
+
   // Use provided logger or default loggerAdapter from mcp-abap-adt
   const effectiveLogger = logger || loggerAdapter;
-  
+
   return createAbapConnection(sapConfig, effectiveLogger, sessionStorage, sessionId);
 }
 
 /**
  * Type guard to check if connection is CloudSdkAbapConnection
- * 
+ *
  * @param connection - Connection instance to check
  * @returns true if connection is CloudSdkAbapConnection
  */
-export function isCloudSdkConnection(connection: AbapConnection): connection is CloudSdkAbapConnection {
+export function isCloudSdkConnection(
+  connection: AbapConnection
+): connection is CloudSdkAbapConnection {
   return connection instanceof CloudSdkAbapConnection;
 }
 
 /**
  * Get connection type name for logging/debugging
- * 
+ *
  * @param connection - Connection instance
  * @returns Human-readable connection type name
  */

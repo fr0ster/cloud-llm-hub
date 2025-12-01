@@ -56,6 +56,7 @@ node update-cline-connection.js \
 ```
 
 **Features:**
+
 - Automatic token refresh via service keys
 - Multiple connection support
 - YAML-driven configuration
@@ -82,18 +83,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-      
+
       - name: Download MCP Tool
         run: |
           curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/update-cline-connection.js
           chmod +x update-cline-connection.js
-      
+
       - name: Configure MCP Connection
         run: |
           node update-cline-connection.js \
@@ -102,7 +103,7 @@ jobs:
             --sap-token ${{ secrets.SAP_JWT_TOKEN }} \
             --mcp-token ${{ secrets.MCP_XSUAA_TOKEN }} \
             --destination-name SAP_CI_DEST
-      
+
       - name: Run Impact Analysis
         run: |
           node scripts/analyze-pr-changes.js \
@@ -110,7 +111,7 @@ jobs:
             --connection sap-ci
         env:
           MCP_ENDPOINT: ${{ secrets.MCP_ENDPOINT }}
-      
+
       - name: Comment PR
         uses: actions/github-script@v7
         if: always()
@@ -144,7 +145,7 @@ stages:
   - deploy
 
 variables:
-  NODE_VERSION: "20"
+  NODE_VERSION: '20'
 
 sap-analysis:
   stage: analyze
@@ -170,6 +171,7 @@ sap-analysis:
 ### GitLab Variables
 
 Set in Settings → CI/CD → Variables:
+
 - `SAP_JWT_TOKEN` (masked)
 - `MCP_XSUAA_TOKEN` (masked)
 
@@ -182,11 +184,11 @@ Set in Settings → CI/CD → Variables:
 ```groovy
 pipeline {
     agent any
-    
+
     environment {
         MCP_TOOL = 'https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/update-cline-connection.js'
     }
-    
+
     stages {
         stage('Setup') {
             steps {
@@ -196,7 +198,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Configure MCP') {
             steps {
                 withCredentials([
@@ -213,14 +215,14 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Analyze') {
             steps {
                 sh 'node scripts/analyze-changes.js'
             }
         }
     }
-    
+
     post {
         always {
             archiveArtifacts artifacts: 'analysis-report.md', allowEmptyArchive: true
@@ -261,7 +263,7 @@ pipeline {
 
 2. **Example Workflow:**
    ```
-   Webhook → Set Variables → HTTP Request (MCP) → 
+   Webhook → Set Variables → HTTP Request (MCP) →
    Parse Response → Filter → Send Email
    ```
 
@@ -436,7 +438,7 @@ class MCPClient:
             "X-SAP-Destination": sap_destination,
             "Content-Type": "application/json"
         }
-    
+
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Call an MCP tool"""
         payload = {
@@ -448,7 +450,7 @@ class MCPClient:
                 "arguments": arguments
             }
         }
-        
+
         response = requests.post(
             self.endpoint,
             headers=self.headers,
@@ -457,7 +459,7 @@ class MCPClient:
         )
         response.raise_for_status()
         return response.json()
-    
+
     def get_object_list(self, object_type: str, package: str = None) -> Dict[str, Any]:
         """Get list of ABAP objects"""
         args = {"objectType": object_type}
@@ -472,7 +474,7 @@ if __name__ == "__main__":
         mcp_token=os.getenv("MCP_XSUAA_TOKEN"),
         sap_destination=os.getenv("SAP_DESTINATION", "SAP_DEV_DEST")
     )
-    
+
     # Get all classes in package
     result = client.get_object_list("CLAS", package="Z_MY_PACKAGE")
     print(json.dumps(result, indent=2))
@@ -502,9 +504,9 @@ class MCPClient {
   constructor(endpoint, mcpToken, sapDestination) {
     this.endpoint = new URL(endpoint);
     this.headers = {
-      'Authorization': `Bearer ${mcpToken}`,
+      Authorization: `Bearer ${mcpToken}`,
       'X-SAP-Destination': sapDestination,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     };
   }
 
@@ -515,8 +517,8 @@ class MCPClient {
       method: 'tools/call',
       params: {
         name: toolName,
-        arguments: arguments_
-      }
+        arguments: arguments_,
+      },
     });
 
     return new Promise((resolve, reject) => {
@@ -528,12 +530,14 @@ class MCPClient {
           method: 'POST',
           headers: {
             ...this.headers,
-            'Content-Length': Buffer.byteLength(payload)
-          }
+            'Content-Length': Buffer.byteLength(payload),
+          },
         },
         (res) => {
           let data = '';
-          res.on('data', (chunk) => { data += chunk; });
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
           res.on('end', () => {
             try {
               resolve(JSON.parse(data));
@@ -680,4 +684,3 @@ export SAP_DESTINATION="SAP_DEV_DEST"
 ---
 
 Need help? Open an issue or check the documentation!
-

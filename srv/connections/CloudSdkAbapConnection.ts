@@ -88,10 +88,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return headers;
   }
 
-
   /**
    * Ensure CSRF token is fresh before making mutation requests
-   * 
+   *
    * NOTE: This implementation uses SAP Cloud SDK executeHttpRequest instead of axios.
    * The retry logic and parameters are synchronized with @mcp-abap-adt/connection
    * via CSRF_CONFIG, but the HTTP client differs due to BTP Destination Service integration.
@@ -104,7 +103,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
       logger.error(errorMsg, {
         type: 'CSRF_FETCH_ERROR',
-        cause: error instanceof Error ? error.message : String(error)
+        cause: error instanceof Error ? error.message : String(error),
       });
 
       throw new Error(errorMsg);
@@ -113,14 +112,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
   /**
    * Fetch CSRF token from SAP ADT discovery endpoint
-   * 
+   *
    * Implementation differences from @mcp-abap-adt/connection:
    * - Uses SAP Cloud SDK executeHttpRequest instead of axios
    * - Leverages BTP Destination Service for authentication
    * - Automatic proxy handling via Cloud Connector (if configured)
-   * 
+   *
    * Retry logic and parameters are synchronized via CSRF_CONFIG.
-   * 
+   *
    * @param url - Original request URL (used for logging context)
    * @returns CSRF token string
    */
@@ -134,7 +133,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       baseUrl,
       originalRequestUrl: url,
       retryCount: CSRF_CONFIG.RETRY_COUNT,
-      retryDelay: CSRF_CONFIG.RETRY_DELAY
+      retryDelay: CSRF_CONFIG.RETRY_DELAY,
     });
 
     const retryCount = CSRF_CONFIG.RETRY_COUNT;
@@ -144,7 +143,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       try {
         if (attempt > 0) {
           logger.csrfToken('retry', `Retry attempt ${attempt}/${retryCount} for CSRF token`, {
-            delay: retryDelay
+            delay: retryDelay,
           });
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
         }
@@ -161,8 +160,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
             url: csrfUrl,
             headers: {
               ...(await this.getAuthHeaders()),
-              ...CSRF_CONFIG.REQUIRED_HEADERS
-            }
+              ...CSRF_CONFIG.REQUIRED_HEADERS,
+            },
           }
         );
 
@@ -173,7 +172,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
             headers: Object.keys(response.headers || {}),
             status: response.status,
             attempt: attempt + 1,
-            maxAttempts: retryCount + 1
+            maxAttempts: retryCount + 1,
           });
 
           if (attempt < retryCount) {
@@ -187,13 +186,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
         if (setCookie) {
           this.cookies = Array.isArray(setCookie) ? setCookie.join('; ') : setCookie;
           logger.csrfToken('success', 'Cookies extracted from response', {
-            cookieLength: this.cookies?.length ?? 0
+            cookieLength: this.cookies?.length ?? 0,
           });
         }
 
         logger.csrfToken('success', 'CSRF token successfully obtained', {
           attempt: attempt + 1,
-          tokenLength: token.length
+          tokenLength: token.length,
         });
         return token;
       } catch (error: any) {
@@ -202,7 +201,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           url: csrfUrl,
           status: error?.response?.status || error?.statusCode,
           attempt: attempt + 1,
-          maxAttempts: retryCount + 1
+          maxAttempts: retryCount + 1,
         });
 
         if (attempt < retryCount) {
@@ -210,9 +209,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
         }
 
         // Use synchronized error message format
-        throw new Error(
-          CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, errorMessage)
-        );
+        throw new Error(CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, errorMessage));
       }
     }
 
@@ -231,21 +228,21 @@ export class CloudSdkAbapConnection implements AbapConnection {
       headers: cloudSdkResponse.headers || {},
       config: {
         url: requestUrl,
-        method: 'GET'
+        method: 'GET',
       } as any,
-      request: {}
+      request: {},
     } as AxiosResponse;
   }
 
   async makeAdtRequest(options: AbapRequestOptions): Promise<AxiosResponse> {
     const { url, method, timeout, data, params } = options;
     const normalizedMethod = method.toUpperCase();
-    
+
     // Get base URL and build full URL from endpoint
     // Connection has base URL, url parameter is endpoint (e.g., /sap/bc/adt/oo/classes/...)
     const baseUrl = await this.getBaseUrl();
     let requestUrl: string;
-    
+
     if (url.startsWith('http://') || url.startsWith('https://')) {
       // Already absolute URL, use as is
       requestUrl = url;
@@ -261,7 +258,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
     }
 
     const requestHeaders: Record<string, string> = {
-      ...(await this.getAuthHeaders())
+      ...(await this.getAuthHeaders()),
     };
 
     if ((normalizedMethod === 'POST' || normalizedMethod === 'PUT') && this.csrfToken) {
@@ -293,7 +290,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       type: 'REQUEST_INFO',
       url: requestUrl,
       method: normalizedMethod,
-      destinationName: this.destinationName
+      destinationName: this.destinationName,
     });
 
     try {
@@ -310,7 +307,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           url: requestUrl,
           headers: requestHeaders,
           params,
-          data: data !== undefined ? data : undefined
+          data: data !== undefined ? data : undefined,
         }
       );
 
@@ -322,7 +319,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       logErrorSafely(logger, 'ADT request', error, {
         url: requestUrl,
         method: normalizedMethod,
-        destinationName: this.destinationName
+        destinationName: this.destinationName,
       });
 
       // If CSRF token validation failed, try to refresh and retry once
@@ -330,10 +327,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
         (error?.response?.status === 403 || error?.statusCode === 403) &&
         (normalizedMethod === 'POST' || normalizedMethod === 'PUT')
       ) {
-        logger.info(
-          'CSRF token validation failed, fetching new token and retrying request',
-          { url: requestUrl }
-        );
+        logger.info('CSRF token validation failed, fetching new token and retrying request', {
+          url: requestUrl,
+        });
         this.csrfToken = await this.fetchCsrfToken(requestUrl);
 
         // Retry the request
@@ -348,7 +344,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
               url: requestUrl,
               headers: retryHeaders,
               params,
-              data: data !== undefined ? data : undefined
+              data: data !== undefined ? data : undefined,
             }
           );
 
@@ -357,7 +353,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           logErrorSafely(logger, 'ADT request retry', retryError, {
             url: requestUrl,
             method: normalizedMethod,
-            destinationName: this.destinationName
+            destinationName: this.destinationName,
           });
           throw retryError;
         }
@@ -367,4 +363,3 @@ export class CloudSdkAbapConnection implements AbapConnection {
     }
   }
 }
-

@@ -5,11 +5,12 @@
 ⚠️ **IMPORTANT**: All McpProxyService endpoints require authorization with scope `MCP_Connector` (`@requires: 'MCP_Connector'`)
 
 ### Health
+
 - **Method**: GET
 - **URL**: `/odata/v4/mcp/Health()`
 - **Parameters**: none
 - **Authorization**: ✅ Required - scope `MCP_Connector` needed
-- **Example**: 
+- **Example**:
   ```bash
   GET http://localhost:4004/odata/v4/mcp/Health()
   Authorization: Basic YWxpY2U6  # for development (alice)
@@ -18,27 +19,30 @@
   ```
 
 ### ProbeDestination
+
 - **Method**: GET
 - **URL**: `/odata/v4/mcp/ProbeDestination?destination=NAME`
 - **Or via positional parameter**: `/odata/v4/mcp/ProbeDestination(destination='NAME')`
-- **Parameters**: 
+- **Parameters**:
   - `destination` (String, required) - destination name
 - **Authorization**: ✅ Required - scope `MCP_Connector` needed
 - **Implementation**: Uses SAP Cloud SDK's `executeHttpRequest` for automatic destination resolution, authentication, and proxy configuration.
-- **Examples**: 
+- **Examples**:
+
   ```bash
   # Via query parameter (recommended)
   GET http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=S4HANA
-  
+
   # Via positional parameter
   GET http://localhost:4004/odata/v4/mcp/ProbeDestination(destination='S4HANA')
-  
+
   # Production with Bearer token
   GET https://<your-app>.cfapps.<region>.hana.ondemand.com/odata/v4/mcp/ProbeDestination?destination=S4HANA
   Authorization: Bearer <JWT_TOKEN>
   ```
 
 ### InvokeTool (Deprecated)
+
 - **Method**: POST
 - **URL**: `/odata/v4/mcp/InvokeTool`
 - **Status**: ⚠️ Deprecated - use `/mcp/stream/sse` or `/mcp/stream/http` instead
@@ -48,18 +52,20 @@
 These endpoints are registered directly in Express and bypass CAP's OData layer.
 
 ### Stream SSE
+
 - **Method**: GET, POST
 - **URL**: `/mcp/stream/sse`
 - **Authorization**: ✅ Required - scope `MCP_Connector` needed
 - **Content-Type**: `text/event-stream`
 - **Purpose**: Server-Sent Events transport for MCP protocol
-- **Example**: 
+- **Example**:
   ```bash
   GET http://localhost:4004/mcp/stream/sse
   Authorization: Basic YWxpY2U6  # for development
   ```
 
 ### Stream HTTP (StreamableHTTP)
+
 - **Method**: POST
 - **URL**: `/mcp/stream/http`
 - **Authorization**: ✅ Required - scope `MCP_Connector` needed
@@ -68,42 +74,50 @@ These endpoints are registered directly in Express and bypass CAP's OData layer.
 - **Headers** (optional):
   - `X-MCP-Timeout`: Request timeout in milliseconds (default: 10000ms in debug, 5000ms in production)
   - `X-Request-Timeout`: Alternative header for timeout
-- **Example**: 
+- **Example**:
+
   ```bash
   POST http://localhost:4004/mcp/stream/http
   Authorization: Basic YWxpY2U6
   Content-Type: application/json
   X-MCP-Timeout: 60000
-  
+
   {"jsonrpc":"2.0","id":"1","method":"ping"}
   ```
 
 ## Important Rules for OData V4
 
 ### 1. Functions with parentheses `()`
+
 CAP functions **always** require `()` at the end:
+
 - ✅ Correct: `/odata/v4/mcp/Health()`
 - ✅ Correct: `/odata/v4/auth/CheckAuth()`
 - ❌ Incorrect: `/odata/v4/mcp/Health`
 - ❌ Incorrect: `/odata/v4/auth/CheckAuth`
 
 ### 2. Function Parameters
+
 Two methods are available:
 
 **A) Query parameters (recommended for arrays and complex types)**
+
 ```
 GET /odata/v4/mcp/ProbeDestination?destination=S4HANA
 GET /odata/v4/auth/CheckRoles?required=["MCP_Connector"]
 ```
 
 **B) Positional parameters in URL**
+
 ```
 GET /odata/v4/mcp/ProbeDestination(destination='S4HANA')
 GET /odata/v4/auth/CheckRoles(required=['MCP_Connector'])
 ```
 
 ### 3. Arrays in Query Parameters
+
 Arrays are passed as JSON, URL encoded:
+
 - ✅ Correct: `?required=["MCP_Connector"]` (JSON array)
 - ✅ URL encoded: `?required=%5B%22MCP_Connector%22%5D`
 - ❌ Incorrect: `?required=MCP_Connector`
@@ -112,6 +126,7 @@ Arrays are passed as JSON, URL encoded:
 ### 4. Authorization
 
 #### Development (Basic Auth)
+
 ```bash
 # alice (MCP_Connector + MCP_Admin)
 Authorization: Basic YWxpY2U6
@@ -121,6 +136,7 @@ Authorization: Basic Ym9iOg==
 ```
 
 #### Production (Bearer JWT)
+
 ```bash
 Authorization: Bearer <JWT_TOKEN>
 ```
@@ -151,6 +167,7 @@ Headers:
 ```
 
 **Expected Response:**
+
 ```json
 {
   "destination": "ABAP_DEV",
@@ -188,12 +205,14 @@ Body:
 ### Using the YAML Test Runner
 
 - Copy the template and fill values:
+
   ```bash
   cp test/integration.yaml.template test/integration.yaml
   # Edit test/integration.yaml
   ```
 
 - Run tests:
+
   ```bash
   npm test
   ```
@@ -227,35 +246,41 @@ curl -X POST \
 ## Troubleshooting
 
 ### Error: "Service has no handler"
+
 - Check if the handler file matches the service name:
   - `McpProxyService` → `srv/mcp-proxy.ts`
 
 ### Error: "Forbidden" or "Unauthorized"
+
 - Check if Authorization header is set
 - Check if the token contains the required scope (`MCP_Connector`)
 - For development, check if the user exists in `package.json` → `cds.requires.auth[development].users`
 
 ### Error: "Function not found" or 404
+
 - CAP functions require `()` at the end: `/odata/v4/mcp/Health()` not `/odata/v4/mcp/Health`
 - Express endpoints don't use `/odata/v4/` prefix: `/mcp/stream/sse` not `/odata/v4/mcp/stream/sse`
 
 ### Error: "Malformed parameters"
+
 - Check array format: must be JSON array `["role"]`, not string `"role"`
 - URL encode arrays: `["MCP_Connector"]` → `%5B%22MCP_Connector%22%5D`
 
 ## Endpoint Summary
 
-| Endpoint Type | Path Prefix | Authorization | Purpose |
-|---------------|-------------|---------------|---------|
-| **CAP Functions** | `/odata/v4/mcp/*` | **Required** | OData V4 service functions (Health, ProbeDestination) |
-| **Express Routes** | `/mcp/*` | **Required** | Direct Express endpoints (stream/sse, stream/http) |
+| Endpoint Type      | Path Prefix       | Authorization | Purpose                                               |
+| ------------------ | ----------------- | ------------- | ----------------------------------------------------- |
+| **CAP Functions**  | `/odata/v4/mcp/*` | **Required**  | OData V4 service functions (Health, ProbeDestination) |
+| **Express Routes** | `/mcp/*`          | **Required**  | Direct Express endpoints (stream/sse, stream/http)    |
 
 ### CAP Functions
+
 - Use OData V4 syntax: `/odata/v4/mcp/Health()`
 - Functions require `()` at the end
 - Parameters can be query params or positional: `?destination=NAME` or `(destination='NAME')`
 
 ### Express Endpoints
+
 - Direct Express routes: `/mcp/stream/sse`, `/mcp/stream/http`
 - No OData prefix required
 - Used for streaming protocols (SSE, NDJSON)

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Example: CI/CD script for SAP code analysis
- * 
+ *
  * Usage:
  *   node ci-cd-example.js --pr-number 123 --connection sap-ci
  */
@@ -34,7 +34,7 @@ if (!connection) {
 const endpoint = new URL(connection.url);
 const headers = {
   ...connection.headers,
-  'Content-Type': 'application/json'
+  'Content-Type': 'application/json',
 };
 
 // MCP client
@@ -51,8 +51,8 @@ class MCPClient {
       method: 'tools/call',
       params: {
         name: toolName,
-        arguments: arguments_
-      }
+        arguments: arguments_,
+      },
     });
 
     return new Promise((resolve, reject) => {
@@ -64,12 +64,14 @@ class MCPClient {
           method: 'POST',
           headers: {
             ...this.headers,
-            'Content-Length': Buffer.byteLength(payload)
-          }
+            'Content-Length': Buffer.byteLength(payload),
+          },
         },
         (res) => {
           let data = '';
-          res.on('data', (chunk) => { data += chunk; });
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
           res.on('end', () => {
             try {
               const result = JSON.parse(data);
@@ -114,14 +116,14 @@ async function analyzeChanges() {
 
       // Get object details
       const details = await client.callTool('GetObjectDetails', {
-        objectName: obj
+        objectName: obj,
       });
       report.push(`  - Type: ${details.objectType}\n`);
       report.push(`  - Package: ${details.package}\n`);
 
       // Get dependencies
       const deps = await client.callTool('GetDependencies', {
-        objectName: obj
+        objectName: obj,
       });
       if (deps && deps.length > 0) {
         report.push(`  - Dependencies: ${deps.length} objects\n`);
@@ -129,7 +131,7 @@ async function analyzeChanges() {
 
       // Get where used
       const whereUsed = await client.callTool('GetWhereUsed', {
-        objectName: obj
+        objectName: obj,
       });
       if (whereUsed && whereUsed.length > 0) {
         report.push(`  - Used in: ${whereUsed.length} places\n`);
@@ -140,7 +142,6 @@ async function analyzeChanges() {
     report.push('\n## Summary\n');
     report.push(`- Analyzed ${changedObjects.length} objects\n`);
     report.push('- ✅ No critical impacts detected\n');
-
   } catch (error) {
     report.push(`\n❌ **Error:** ${error.message}\n`);
     process.exit(1);
@@ -157,4 +158,3 @@ analyzeChanges().catch((error) => {
   console.error(`❌ Analysis failed: ${error.message}`);
   process.exit(1);
 });
-

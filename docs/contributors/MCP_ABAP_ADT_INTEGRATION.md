@@ -2,7 +2,7 @@
 
 **Date:** December 1, 2025  
 **mcp-abap-adt Version:** 1.1.22  
-**cloud-llm-hub Version:** 1.0.0  
+**cloud-llm-hub Version:** 1.0.0
 
 ## 📋 Table of Contents
 
@@ -50,6 +50,7 @@
 #### 🔑 Two Connection Types - NOT Duplication!
 
 **Type 1: Direct Connection** (`@mcp-abap-adt/connection`)
+
 ```typescript
 // Use case: Local development, stdio mode, direct connections
 {
@@ -67,6 +68,7 @@
 ```
 
 **Type 2: BTP Destination** (`CloudSdkAbapConnection`)
+
 ```typescript
 // Use case: BTP Cloud, Production, Enterprise
 {
@@ -79,7 +81,7 @@
 }
 
 // Transport: SAP Cloud SDK executeHttpRequest
-// Support: BasicAuthentication, OAuth2ClientCredentials, 
+// Support: BasicAuthentication, OAuth2ClientCredentials,
 //          OAuth2SAMLBearerAssertion, Principal Propagation
 // Proxy: Cloud Connector for On-Premise
 // Token management: Automatic via BTP
@@ -87,18 +89,19 @@
 
 #### 🎯 When to Use What?
 
-| Scenario | Connection Type | Why? |
-|----------|----------------|-------|
-| Local development | Direct (Basic/JWT) | Simplicity, speed |
-| stdio mode (Cline, Cursor) | Direct (Basic/JWT) | .env file config |
-| BTP Cloud Production | BTP Destination | Security, management |
-| On-Premise ABAP via Cloud Connector | BTP Destination | Only through Destination |
-| Principal Propagation | BTP Destination | User context forwarding |
-| Multi-tenant SaaS | BTP Destination | Isolation, configuration |
+| Scenario                            | Connection Type    | Why?                     |
+| ----------------------------------- | ------------------ | ------------------------ |
+| Local development                   | Direct (Basic/JWT) | Simplicity, speed        |
+| stdio mode (Cline, Cursor)          | Direct (Basic/JWT) | .env file config         |
+| BTP Cloud Production                | BTP Destination    | Security, management     |
+| On-Premise ABAP via Cloud Connector | BTP Destination    | Only through Destination |
+| Principal Propagation               | BTP Destination    | User context forwarding  |
+| Multi-tenant SaaS                   | BTP Destination    | Isolation, configuration |
 
 ---
 
 ### Cloud-llm-hub (Cloud Integrator)
+
 - **Role:** Integrate MCP protocol with SAP BTP Cloud
 - **Responsibilities:**
   - **🆕 EXTENSION:** Authentication via SAP BTP Destinations (CloudSdkAbapConnection)
@@ -109,6 +112,7 @@
   - CAP-based REST API for MCP
 
 ### mcp-abap-adt (Base Library)
+
 - **Role:** Core MCP server functionality for ABAP ADT
 - **Responsibilities:**
   - MCP protocol (stdio, HTTP, SSE)
@@ -116,10 +120,11 @@
   - **Base connections:** Basic Auth and JWT (without BTP Destinations)
   - Caching and sessions
   - Utilities and logging
-  
+
 ### 🔑 Key Difference in Connection Architecture:
 
 **@mcp-abap-adt/connection** (base library):
+
 ```typescript
 // Supports ONLY:
 - Basic Authentication (username/password)
@@ -128,6 +133,7 @@
 ```
 
 **CloudSdkAbapConnection** (extension in cloud-llm-hub):
+
 ```typescript
 // Adds BTP support:
 - SAP BTP Destination Service
@@ -144,6 +150,7 @@
 ## 🆕 Critical Changes in v1.1.19
 
 ### 1. **Handler Refactoring** ✅
+
 - Migration to `CrudClient` and `SharedBuilder` from `@mcp-abap-adt/adt-clients`
 - Eliminates manual URL construction
 - Improved code consistency
@@ -151,44 +158,53 @@
 **Impact on cloud-llm-hub:** Minimal - handlers are used through public API
 
 ### 2. **URL Handling Simplification** ⚠️
+
 - Removed aggressive URL cleaning
 - URLs from `.env` and service keys expected to be clean
 - Basic trimming only
 
-**Impact on cloud-llm-hub:** 
+**Impact on cloud-llm-hub:**
+
 - **CRITICAL:** Need to verify `CloudSdkAbapConnection` URL handling
 - Check for duplicated URL cleaning logic
 
 ### 3. **Lazy AuthBroker Initialization** 🚀
+
 - AuthBroker created on-demand per destination
 - Map-based caching: `authBrokers: Map<string, AuthBroker>`
 - Default AuthBroker for requests without destination
 - Reduced memory usage and startup time
 
 **Impact on cloud-llm-hub:**
+
 - **POSITIVE:** Similar approach can be applied in `mcp-manager.ts`
 - **TODO:** Refactor `instanceCache` to use lazy pattern
 
 ### 4. **Transport-Specific auth-broker Handling** ⚠️
+
 - AuthBroker ignored for `stdio` and `sse` transports
 - Only for `http`/`streamable-http`
 
-**Impact on cloud-llm-hub:** 
+**Impact on cloud-llm-hub:**
+
 - **OK:** cloud-llm-hub uses only HTTP transport
 - Should add code-level protection
 
 ### 5. **ES Module Compatibility** ✅
+
 - Fixed `require()` → `import` in `getPlatformStores()`
 - Fixed "UnixFileSessionStore is not a constructor"
 
 **Impact on cloud-llm-hub:** Minimal - used through package
 
 ### 6. **Optional Session Storage** ⚠️
+
 - Session storage disabled by default (stateless mode)
 - Enable via `MCP_ENABLE_SESSION_STORAGE=true`
 - Custom directory: `MCP_SESSION_DIR=/path/to/sessions`
 
 **Impact on cloud-llm-hub:**
+
 - **TODO:** Determine if stateful sessions needed for cloud-llm-hub
 - **TODO:** Add env var for session storage control
 
@@ -197,7 +213,9 @@
 ## 🔄 Identified Code Duplication
 
 ### 1. **URL Handling** 🔴 CRITICAL
+
 **Duplication:**
+
 ```typescript
 // mcp-abap-adt/src/index.ts (aggressive cleaning removed)
 url = url.trim();
@@ -207,12 +225,15 @@ url = url.trim();
 ```
 
 **Recommendation:**
+
 - ✅ **Remove** all custom URL cleaning from cloud-llm-hub
 - ✅ **Rely** on validation in mcp-abap-adt
 - ✅ **Verify** URLs from Destinations are clean
 
 ### 2. **CSRF Token Management** 🟡 MEDIUM
+
 **Duplication:**
+
 ```typescript
 // mcp-abap-adt: @mcp-abap-adt/connection has CSRF handling for Basic/JWT
 // cloud-llm-hub/srv/connections/CloudSdkAbapConnection.ts has own fetchCsrfToken()
@@ -220,19 +241,23 @@ url = url.trim();
 ```
 
 **Analysis:**
+
 - **NOT duplication!** Different transport mechanisms:
   - `@mcp-abap-adt/connection`: axios + Basic/JWT auth
   - `CloudSdkAbapConnection`: Cloud SDK + Destination Service
 - CSRF logic similar, but implementation different due to different HTTP clients
 
 **Recommendation:**
+
 - ✅ **Keep separate implementations** - different transport stacks
 - ✅ **Synchronize** retry logic and timeout parameters
 - ✅ **Extract** shared constants (retry count, delay) to shared config
 - 📝 **Document** in code why two separate implementations
 
 ### 3. **Connection Management** 🔴 CRITICAL
+
 **Current State:**
+
 ```typescript
 // mcp-abap-adt/src/lib/utils.ts
 const connectionCache = new Map<string, ConnectionCacheEntry>();
@@ -245,6 +270,7 @@ const instanceCache = new Map<string, CachedInstance>();
 ```
 
 **Analysis:**
+
 - **Partial duplication:** Both cache connections, but for different scenarios
   - `mcp-abap-adt`: caches `AbapConnection` (Basic/JWT)
   - `cloud-llm-hub`: caches `CachedInstance` (MCP server + Destination)
@@ -252,6 +278,7 @@ const instanceCache = new Map<string, CachedInstance>();
 - But uses Cloud SDK instead of axios
 
 **Recommendation:**
+
 - 🚀 **REFACTOR partially:**
   - ✅ Use `sessionContext` from mcp-abap-adt for SAP config passing
   - ✅ Keep `instanceCache` for MCP server instances (hub-specific)
@@ -264,18 +291,23 @@ const instanceCache = new Map<string, CachedInstance>();
 - 📝 **Document** difference between connection types
 
 ### 4. **Logger** 🟢 RESOLVED
+
 **Current State:**
+
 ```typescript
 // mcp-abap-adt has own logger
 // cloud-llm-hub uses cds.log()
 ```
 
 **Recommendation:**
+
 - ✅ **Keep as is** - different logging backends
 - 📝 **Add** adapter for integration (if needed)
 
 ### 5. **SAP Config Extraction** 🟡 MEDIUM
+
 **Duplication:**
+
 ```typescript
 // mcp-abap-adt/src/index.ts: getConfig(), applyAuthHeaders()
 // cloud-llm-hub/srv/mcp-manager.ts: extractSapContext()
@@ -283,12 +315,15 @@ const instanceCache = new Map<string, CachedInstance>();
 ```
 
 **Recommendation:**
+
 - 🚀 **REFACTOR:** Create shared utility in mcp-abap-adt
 - ✅ **Export** `extractSapConfigFromHeaders(headers: IncomingHttpHeaders): SapConfig`
 - ✅ **Use** in cloud-llm-hub instead of duplication
 
 ### 6. **AuthBroker Pattern** 🟢 CAN IMPROVE
+
 **Current State:**
+
 ```typescript
 // mcp-abap-adt/src/index.ts: lazy AuthBroker with Map
 private authBrokers = new Map<string, AuthBroker>();
@@ -298,6 +333,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 ```
 
 **Recommendation:**
+
 - 🚀 **IMPLEMENT:** Lazy pattern in cloud-llm-hub
 - ✅ **Cache** AuthBroker instances per destination
 - ✅ **Reduce** memory footprint
@@ -504,13 +540,17 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
     - [x] ✅ Added JSDoc for `createBtpOnPremConnection()`, `refreshBtpOnPremConnection()`
     - [x] ✅ Added JSDoc for `clearConnectivityCaches()`
     - [x] ✅ All errorUtils functions already have JSDoc
-  - [ ] Run `npm run lint` and fix all warnings
-    - [ ] ⏳ No lint script configured (TypeScript compilation used instead)
-    - [x] ✅ TypeScript compilation: ✅ (no errors)
-    - [x] ✅ Linter validation: ✅ (no errors)
-  - [ ] Run `npm run format` for code style consistency
-    - [ ] ⏳ No format script configured
-    - [x] ✅ Code style is consistent (TypeScript strict mode)
+  - [x] Run `npm run lint` and fix all warnings
+    - [x] ✅ ESLint configured with TypeScript support
+    - [x] ✅ Prettier integrated with ESLint
+    - [x] ✅ Lint script added to package.json
+    - [x] ✅ Code formatted with Prettier
+    - [x] ✅ Auto-fixable issues resolved
+  - [x] Run `npm run format` for code style consistency
+    - [x] ✅ Prettier configured (.prettierrc.json)
+    - [x] ✅ Format script added to package.json
+    - [x] ✅ All source files formatted
+    - [x] ✅ Code style is consistent
 
 - [ ] **4.2. Performance Review**
   - [ ] Profile memory usage with connection caching
@@ -544,6 +584,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 ## 🎯 Priorities and Phases
 
 ### High Priority (Must Have) 🔴
+
 1. ✅ Update dependencies (@mcp-abap-adt/adt-clients 0.1.32)
 2. ✅ Remove URL cleaning duplication
 3. ✅ Fix session storage handling
@@ -552,6 +593,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 **Deadline:** 1 week
 
 ### Medium Priority (Should Have) 🟡
+
 5. ⚡ Implement lazy AuthBroker pattern
 6. ⚡ Export SAP config extraction
 7. ⚡ Synchronize error handling
@@ -560,6 +602,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 **Deadline:** 2 weeks
 
 ### Low Priority (Nice to Have) 🟢
+
 9. 📚 Improve documentation
 10. 🧪 Add integration tests
 11. 🧹 Code cleanup
@@ -572,6 +615,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 ## 📊 Success Metrics
 
 ### Quantitative Metrics
+
 - [ ] 0 duplications in URL handling
 - [ ] 0 duplications in SAP config extraction
 - [ ] < 5 MB additional memory usage from caching
@@ -579,6 +623,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 - [ ] 100% test coverage for critical paths
 
 ### Qualitative Metrics
+
 - [ ] Code is easy to read and maintain
 - [ ] Clear separation of concerns between projects
 - [ ] Documentation is up-to-date and complete
@@ -589,25 +634,31 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 ## 🚨 Risks and Mitigation
 
 ### Risk 1: Breaking Changes in mcp-abap-adt
+
 **Probability:** Medium  
 **Impact:** High  
 **Mitigation:**
+
 - Versioning through package.json
 - Extensive testing before merge
 - Rollback plan
 
 ### Risk 2: Performance Degradation
+
 **Probability:** Low  
 **Impact:** Medium  
 **Mitigation:**
+
 - Benchmarking before/after
 - Monitoring in production
 - Tuning caching parameters
 
 ### Risk 3: Debugging Complexity
+
 **Probability:** Medium  
 **Impact:** Medium  
 **Mitigation:**
+
 - Structured logging
 - Clear error messages
 - Documentation
@@ -682,6 +733,7 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
    - **Value:** Hybrid cloud scenarios
 
 **Architectural Principle:**
+
 ```
 mcp-abap-adt: Base functionality (protocol + ADT + Basic/JWT)
      ↓
@@ -705,6 +757,7 @@ cloud-llm-hub: Extension for BTP Cloud (Destinations + CAP + Proxy)
 If there's a need to extend the base library:
 
 1. **Export CSRF_CONFIG** for reuse
+
    ```typescript
    // src/lib/csrfConfig.ts
    export const CSRF_CONFIG = {
@@ -720,11 +773,10 @@ If there's a need to extend the base library:
    - Plugin architecture for different auth methods
 
 3. **Export SAP config extraction utilities**
+
    ```typescript
    // src/lib/configExtractor.ts
-   export function extractSapConfigFromHeaders(
-     headers: IncomingHttpHeaders
-   ): SapConfig | undefined
+   export function extractSapConfigFromHeaders(headers: IncomingHttpHeaders): SapConfig | undefined;
    ```
 
 4. **Documentation**

@@ -17,13 +17,18 @@ function buildHeaders(config) {
   }
 
   const sap = config?.sap || {};
-  const mode = (sap.mode || (sap.destination ? 'destination' : (sap.direct ? 'direct' : undefined))) || undefined;
+  const mode =
+    sap.mode || (sap.destination ? 'destination' : sap.direct ? 'direct' : undefined) || undefined;
   if (mode === 'destination') {
     const name = sap.destination?.name || sap.destinationName;
     if (name) headers['X-SAP-Destination'] = name;
-    const connectivityMode = sap.destination?.connectivity?.mode || sap.connectivity?.mode || sap.connectivityMode;
+    const connectivityMode =
+      sap.destination?.connectivity?.mode || sap.connectivity?.mode || sap.connectivityMode;
     if (connectivityMode) headers['X-SAP-Connectivity-Mode'] = connectivityMode;
-    const locationId = sap.destination?.connectivity?.locationId || sap.connectivity?.locationId || sap.connectivityLocationId;
+    const locationId =
+      sap.destination?.connectivity?.locationId ||
+      sap.connectivity?.locationId ||
+      sap.connectivityLocationId;
     if (locationId) headers['X-SAP-Connectivity-Location-Id'] = locationId;
   } else if (mode === 'direct') {
     const direct = sap.direct || sap;
@@ -110,7 +115,10 @@ async function run() {
 
   // Health (CAP function)
   try {
-    const res = await fetchWithTimeout(`${baseUrl}/odata/v4/mcp/Health()`, { method: 'GET', headers });
+    const res = await fetchWithTimeout(`${baseUrl}/odata/v4/mcp/Health()`, {
+      method: 'GET',
+      headers,
+    });
     const text = await res.text();
     logResult('Health()', res.ok, res.status, text);
   } catch (e) {
@@ -133,7 +141,11 @@ async function run() {
       reqHeaders['X-MCP-Timeout'] = String(cfg.streamTimeoutMs);
     }
     const body = JSON.stringify({ jsonrpc: '2.0', id: 'ping', method: 'ping' });
-    const res = await fetchWithTimeout(`${baseUrl}/mcp/stream/http`, { method: 'POST', headers: reqHeaders, body });
+    const res = await fetchWithTimeout(`${baseUrl}/mcp/stream/http`, {
+      method: 'POST',
+      headers: reqHeaders,
+      body,
+    });
     const ok = [200, 202, 204, 400, 401, 403, 502].includes(res.status);
     const text = await res.text();
     logResult('Stream HTTP', ok, res.status, text);
@@ -159,5 +171,3 @@ run().catch((e) => {
   console.error('❌ Test runner error:', e.message || e);
   process.exit(1);
 });
-
-

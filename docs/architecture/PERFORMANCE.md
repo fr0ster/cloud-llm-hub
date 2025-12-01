@@ -10,6 +10,7 @@ Performance characteristics, optimization recommendations, and tuning guidelines
 ### Baseline Metrics
 
 **Test Environment:**
+
 - **Instance:** 1GB RAM, 1 vCPU
 - **Node.js:** 20.x
 - **Network:** Local network (< 1ms latency)
@@ -17,20 +18,22 @@ Performance characteristics, optimization recommendations, and tuning guidelines
 
 **Measured Performance:**
 
-| Metric | P50 | P95 | P99 | Notes |
-|--------|-----|-----|-----|-------|
-| Health Check | 5ms | 10ms | 15ms | CAP endpoint |
-| Destination Probe | 150ms | 300ms | 500ms | Includes SAP connection |
-| SSE Stream Init | 200ms | 400ms | 600ms | First connection |
-| Stream-HTTP Init | 200ms | 400ms | 600ms | First request |
-| MCP Tool Call | 100-500ms | 1-2s | 3-5s | Depends on SAP response |
+| Metric            | P50       | P95   | P99   | Notes                   |
+| ----------------- | --------- | ----- | ----- | ----------------------- |
+| Health Check      | 5ms       | 10ms  | 15ms  | CAP endpoint            |
+| Destination Probe | 150ms     | 300ms | 500ms | Includes SAP connection |
+| SSE Stream Init   | 200ms     | 400ms | 600ms | First connection        |
+| Stream-HTTP Init  | 200ms     | 400ms | 600ms | First request           |
+| MCP Tool Call     | 100-500ms | 1-2s  | 3-5s  | Depends on SAP response |
 
 **Throughput:**
+
 - **Concurrent Connections:** 50-100 per instance
 - **Requests per Second:** 100-200 (depending on payload)
 - **MCP Tool Calls:** 20-50 per second
 
 **Resource Usage:**
+
 - **Memory:** 200-400MB baseline, +50MB per active connection
 - **CPU:** 5-15% idle, 30-60% under load
 
@@ -43,11 +46,13 @@ Performance characteristics, optimization recommendations, and tuning guidelines
 #### Development
 
 **Recommended:**
+
 - **Memory:** 512MB
 - **Instances:** 1
 - **CPU:** 1 vCPU
 
 **Rationale:**
+
 - Low traffic
 - Development/testing only
 - Cost optimization
@@ -55,11 +60,13 @@ Performance characteristics, optimization recommendations, and tuning guidelines
 #### Production (Small)
 
 **Recommended:**
+
 - **Memory:** 1GB
 - **Instances:** 2-3
 - **CPU:** 1 vCPU per instance
 
 **Rationale:**
+
 - High availability
 - Load distribution
 - Moderate traffic (100-500 requests/min)
@@ -67,16 +74,19 @@ Performance characteristics, optimization recommendations, and tuning guidelines
 #### Production (Large)
 
 **Recommended:**
+
 - **Memory:** 2GB
 - **Instances:** 3-5
 - **CPU:** 2 vCPU per instance
 
 **Rationale:**
+
 - High traffic (1000+ requests/min)
 - Multiple SAP systems
 - Complex queries
 
 **Scaling:**
+
 ```bash
 # Scale horizontally
 cf scale cloud-llm-hub-srv -i 5
@@ -92,11 +102,13 @@ cf scale cloud-llm-hub-srv -i 5
 #### MCP Server Cache
 
 **Current Implementation:**
+
 - Cache TTL: 30 minutes
 - Cache key: SAP system URL
 - Cache size: Limited by available memory
 
 **Optimization:**
+
 ```typescript
 // Adjust cache TTL based on usage
 const CACHE_TTL = process.env.CACHE_TTL || 1800000; // 30 min default
@@ -109,6 +121,7 @@ const DYNAMIC_CACHE_TTL = 900000; // 15 min
 ```
 
 **Recommendations:**
+
 - **Increase TTL** if SAP credentials are stable
 - **Decrease TTL** if credentials rotate frequently
 - **Monitor cache hit rate** (target: > 80%)
@@ -116,6 +129,7 @@ const DYNAMIC_CACHE_TTL = 900000; // 15 min
 #### Response Caching (Future)
 
 **Consider implementing:**
+
 - Cache frequently accessed MCP tool results
 - Cache destination configurations
 - Cache health check results
@@ -129,11 +143,13 @@ const DYNAMIC_CACHE_TTL = 900000; // 15 min
 **Current:** One connection per MCP server instance
 
 **Optimization:**
+
 - Reuse connections when possible
 - Implement connection pool for multiple SAP systems
 - Monitor connection count
 
 **Configuration:**
+
 ```typescript
 // Connection pool settings
 const MAX_CONNECTIONS = 10;
@@ -143,13 +159,14 @@ const IDLE_TIMEOUT = 300000; // 5 minutes
 #### HTTP Client Settings
 
 **Optimize node-fetch/axios:**
+
 ```typescript
 // Connection reuse
 const httpsAgent = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 1000,
   maxSockets: 50,
-  maxFreeSockets: 10
+  maxFreeSockets: 10,
 });
 ```
 
@@ -160,6 +177,7 @@ const httpsAgent = new https.Agent({
 #### Batch Operations
 
 **Use batch MCP tools when available:**
+
 ```typescript
 // Instead of multiple calls
 for (const obj of objects) {
@@ -173,21 +191,20 @@ await callTool('DetectObjectTypeListArray', { objects });
 #### Parallel Requests
 
 **Execute independent requests in parallel:**
+
 ```typescript
 // Sequential (slow)
 const result1 = await callTool1();
 const result2 = await callTool2();
 
 // Parallel (fast)
-const [result1, result2] = await Promise.all([
-  callTool1(),
-  callTool2()
-]);
+const [result1, result2] = await Promise.all([callTool1(), callTool2()]);
 ```
 
 #### Request Timeouts
 
 **Set appropriate timeouts:**
+
 ```typescript
 // Short timeout for quick operations
 const quickTimeout = 5000; // 5 seconds
@@ -203,6 +220,7 @@ const complexTimeout = 30000; // 30 seconds
 #### Memory Management
 
 **Monitor memory usage:**
+
 ```bash
 # Check memory usage
 cf app cloud-llm-hub-srv | grep memory
@@ -212,6 +230,7 @@ cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 ```
 
 **Optimization:**
+
 - Limit cache size
 - Clear expired cache entries
 - Monitor for memory leaks
@@ -220,6 +239,7 @@ cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 #### Garbage Collection
 
 **Node.js GC Tuning:**
+
 ```bash
 # Enable GC logging
 NODE_OPTIONS="--expose-gc --max-old-space-size=1024" cds watch
@@ -235,17 +255,19 @@ global.gc();
 #### Connection Keep-Alive
 
 **Enable HTTP keep-alive:**
+
 ```typescript
 // Reuse connections
 const agent = new https.Agent({
   keepAlive: true,
-  keepAliveMsecs: 1000
+  keepAliveMsecs: 1000,
 });
 ```
 
 #### Compression
 
 **Future consideration:**
+
 - Enable gzip compression for responses
 - Compress large MCP responses
 - Reduce bandwidth usage
@@ -257,6 +279,7 @@ const agent = new https.Agent({
 ### Environment Variables
 
 **Tuning Parameters:**
+
 ```bash
 # Cache TTL (milliseconds)
 CACHE_TTL=1800000
@@ -277,16 +300,12 @@ STREAM_TIMEOUT=120000
 ### Application Settings
 
 **CAP Configuration:**
+
 ```json
 {
   "cds": {
     "watch": {
-      "ignore": [
-        ".git/**",
-        "node_modules/**",
-        "dist/**",
-        "gen/**"
-      ]
+      "ignore": [".git/**", "node_modules/**", "dist/**", "gen/**"]
     }
   }
 }
@@ -331,6 +350,7 @@ kill $PID 2>/dev/null
 ### Load Testing
 
 **Using Apache Bench:**
+
 ```bash
 # Health check load test
 ab -n 1000 -c 10 \
@@ -339,6 +359,7 @@ ab -n 1000 -c 10 \
 ```
 
 **Using k6:**
+
 ```javascript
 import http from 'k6/http';
 import { check } from 'k6';
@@ -346,9 +367,9 @@ import { check } from 'k6';
 export default function () {
   const url = 'https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/Health()';
   const headers = {
-    'Authorization': 'Bearer YOUR_TOKEN'
+    Authorization: 'Bearer YOUR_TOKEN',
   };
-  
+
   const res = http.get(url, { headers });
   check(res, {
     'status is 200': (r) => r.status === 200,
@@ -386,12 +407,14 @@ export default function () {
 ### Monitoring Tools
 
 **Cloud Foundry Metrics:**
+
 ```bash
 # Get app stats
 cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 ```
 
 **Application Logs:**
+
 ```bash
 # Monitor response times
 cf logs cloud-llm-hub-srv --recent | grep "response-time"
@@ -401,6 +424,7 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 ```
 
 **Custom Metrics (Future):**
+
 - Prometheus metrics endpoint
 - Grafana dashboards
 - APM tools (New Relic, Datadog)
@@ -414,11 +438,13 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 #### 1. SAP System Latency
 
 **Symptoms:**
+
 - High P95/P99 response times
 - Timeout errors
 - Slow MCP tool calls
 
 **Solutions:**
+
 - Optimize SAP queries
 - Use batch operations
 - Increase timeout values
@@ -427,11 +453,13 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 #### 2. Memory Pressure
 
 **Symptoms:**
+
 - High memory usage (> 80%)
 - OOM errors
 - Slow garbage collection
 
 **Solutions:**
+
 - Increase instance memory
 - Reduce cache TTL
 - Limit concurrent connections
@@ -440,11 +468,13 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 #### 3. Connection Pool Exhaustion
 
 **Symptoms:**
+
 - Connection timeout errors
 - Slow response times
 - High connection count
 
 **Solutions:**
+
 - Increase connection pool size
 - Reuse connections
 - Close idle connections
@@ -453,11 +483,13 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 #### 4. Network Latency
 
 **Symptoms:**
+
 - Slow response times
 - High latency to SAP
 - Connection timeouts
 
 **Solutions:**
+
 - Use Cloud Connector for on-premise
 - Optimize network routing
 - Consider regional deployment
@@ -472,23 +504,27 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 **Environment:** SAP BTP Cloud Foundry, 1GB RAM, 1 vCPU
 
 **Health Check:**
+
 - P50: 5ms
 - P95: 10ms
 - P99: 15ms
 - Throughput: 1000 req/s
 
 **Destination Probe:**
+
 - P50: 150ms
 - P95: 300ms
 - P99: 500ms
 - Includes SAP connection
 
 **SSE Stream:**
+
 - Init time: 200-400ms
 - Event latency: < 50ms
 - Throughput: 50-100 concurrent streams
 
 **Stream-HTTP:**
+
 - Init time: 200-400ms
 - Request latency: 100-500ms
 - Throughput: 20-50 req/s
@@ -499,21 +535,21 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 
 ### Application-Level
 
-| Parameter | Default | Recommended | Notes |
-|-----------|---------|-------------|-------|
-| Cache TTL | 30 min | 30-60 min | Adjust based on credential stability |
-| Session Timeout | 2 min | 2-5 min | Adjust based on usage patterns |
-| Max Connections | 100 | 50-200 | Adjust based on instance size |
-| Request Timeout | 15s | 10-30s | Adjust based on SAP response time |
-| Stream Timeout | 2 min | 2-5 min | Adjust based on query complexity |
+| Parameter       | Default | Recommended | Notes                                |
+| --------------- | ------- | ----------- | ------------------------------------ |
+| Cache TTL       | 30 min  | 30-60 min   | Adjust based on credential stability |
+| Session Timeout | 2 min   | 2-5 min     | Adjust based on usage patterns       |
+| Max Connections | 100     | 50-200      | Adjust based on instance size        |
+| Request Timeout | 15s     | 10-30s      | Adjust based on SAP response time    |
+| Stream Timeout  | 2 min   | 2-5 min     | Adjust based on query complexity     |
 
 ### Infrastructure-Level
 
-| Parameter | Default | Recommended | Notes |
-|-----------|---------|-------------|-------|
-| Memory | 512MB | 1-2GB | Production: 1GB minimum |
-| Instances | 1 | 2-3 | Production: 2+ for HA |
-| CPU | 1 vCPU | 1-2 vCPU | Production: 2 vCPU for high load |
+| Parameter | Default | Recommended | Notes                            |
+| --------- | ------- | ----------- | -------------------------------- |
+| Memory    | 512MB   | 1-2GB       | Production: 1GB minimum          |
+| Instances | 1       | 2-3         | Production: 2+ for HA            |
+| CPU       | 1 vCPU  | 1-2 vCPU    | Production: 2 vCPU for high load |
 
 ---
 
@@ -527,4 +563,3 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 
 **Last Updated:** 2025-11-05  
 **Version:** 1.0
-

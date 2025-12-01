@@ -1,6 +1,7 @@
 # ADR 005: TypeScript-First CAP Implementation
 
 ## Status
+
 Proposed
 
 ## Context

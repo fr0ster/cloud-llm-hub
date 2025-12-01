@@ -49,6 +49,7 @@ docs/
 ## Migration Plan
 
 ### Phase 1: Architecture Documents
+
 - [ ] Move `API_REFERENCE.md` → `architecture/`
 - [ ] Move `CAP_ENDPOINTS.md` → `architecture/`
 - [ ] Move `FEATURES.md` → `architecture/`
@@ -58,18 +59,21 @@ docs/
 - [ ] Move `PERFORMANCE.md` → `architecture/`
 
 ### Phase 2: Development Documents
+
 - [ ] Move `DEBUGGING.md` → `development/`
 - [ ] Move `DEBUG_CLINE_REQUESTS.md` → `development/`
 - [ ] Move `TESTING_CHEAT_SHEET.md` → `development/`
 - [ ] Move `JWT_TOKEN_REFRESH_GUIDE.md` → `development/`
 
 ### Phase 3: Deployment Documents
+
 - [ ] Move `DEPLOYMENT_CHECKLIST.md` → `deployment/`
 - [ ] Move `MIGRATION_GUIDE.md` → `deployment/`
 - [ ] Move `MONITORING.md` → `deployment/`
 - [ ] Move `OPERATIONS.md` → `deployment/`
 
 ### Phase 4: Usage Documents
+
 - [ ] Move `GETTING_STARTED.md` → `usage/`
 - [ ] Move `QUICK_SETUP.md` → `usage/`
 - [ ] Move `CONSUMER_GUIDE.md` → `usage/`
@@ -79,6 +83,7 @@ docs/
 - [ ] Move `TROUBLESHOOTING.md` → `usage/`
 
 ### Phase 5: Update References
+
 - [ ] Update `README.md` with new structure
 - [ ] Create index files for each category
 - [ ] Update cross-references in all documents
