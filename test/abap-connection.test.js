@@ -94,14 +94,17 @@ log('ℹ', colors.cyan, 'Configuration', {
 });
 
 // Validate configuration
+// Skip tests gracefully if .env is missing (e.g., in CI/CD without secrets)
 if (!config.sapUrl) {
-  log('✗', colors.red, 'SAP_URL not set in .env file');
-  process.exit(1);
+  log('⚠', colors.yellow, 'SAP_URL not set in .env file - skipping integration tests');
+  log('ℹ', colors.cyan, 'To run integration tests, create .env file with SAP credentials');
+  process.exit(0);
 }
 
 if (!config.jwtToken) {
-  log('✗', colors.red, 'SAP_JWT_TOKEN not set in .env file');
-  process.exit(1);
+  log('⚠', colors.yellow, 'SAP_JWT_TOKEN not set in .env file - skipping integration tests');
+  log('ℹ', colors.cyan, 'To run integration tests, create .env file with SAP credentials');
+  process.exit(0);
 }
 
 if (!config.refreshToken || !config.uaaUrl || !config.uaaClientId || !config.uaaClientSecret) {
