@@ -1,13 +1,23 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import type { AbapRequestOptions } from '@fr0ster/mcp-abap-adt/dist/lib/connection/AbapConnection';
-import {
-  OnPremAbapConnection as OnPremAbapConnectionImpl
-} from '@fr0ster/mcp-abap-adt/dist/lib/connection/OnPremAbapConnection';
-import type {
-  OnPremAbapConnection as OnPremAbapConnectionType
-} from '@fr0ster/mcp-abap-adt/dist/lib/connection/OnPremAbapConnection';
-import type { SapConfig } from '@fr0ster/mcp-abap-adt/dist/lib/sapConfig';
+import type { AbapRequestOptions, SapConfig, ILogger } from '@mcp-abap-adt/connection';
+import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
+import type { OnPremAbapConnection as OnPremAbapConnectionType } from '@mcp-abap-adt/connection';
+import { logger } from '@fr0ster/mcp-abap-adt/dist/lib/logger';
+
+// Logger adapter for OnPremAbapConnection
+const loggerAdapter: ILogger = {
+  info: (message: string, meta?: any) => logger.info(message, meta),
+  error: (message: string, meta?: any) => logger.error(message, meta),
+  warn: (message: string, meta?: any) => logger.warn(message, meta),
+  debug: (message: string, meta?: any) => logger.debug(message, meta),
+  csrfToken: (action: 'fetch' | 'retry' | 'success' | 'error', message: string, meta?: any) => {
+    logger.csrfToken(action, message, meta);
+  },
+  tlsConfig: (rejectUnauthorized: boolean) => {
+    logger.tlsConfig(rejectUnauthorized);
+  },
+};
 
 export interface ConnectivityProxyConfig {
   host: string;
@@ -26,12 +36,15 @@ export interface BtpOnPremConnectionOptions {
 
 export class BtpOnPremDestinationConnection
   extends OnPremAbapConnectionImpl
-  implements OnPremAbapConnectionType {
+  implements OnPremAbapConnectionType
+{
   private proxySettings: ConnectivityProxyConfig;
   private readonly additionalRequestHeaders: Record<string, string>;
 
   constructor(options: BtpOnPremConnectionOptions) {
-    super(options.sapConfig);
+    // OnPremAbapConnection constructor now requires: config, loggerAdapter?, sessionStorage?, sessionId?
+    // For BTP on-premise, we use logger adapter and default session storage
+    super(options.sapConfig, loggerAdapter, undefined, 'btp-onprem-session');
 
     if (options.sapConfig.authType !== 'basic') {
       throw new Error('BTP on-premise destinations require basic authentication credentials.');
@@ -41,7 +54,7 @@ export class BtpOnPremDestinationConnection
 
     this.proxySettings = {
       ...restProxy,
-      protocol
+      protocol,
     };
 
     this.additionalRequestHeaders = { ...options.additionalRequestHeaders };
@@ -50,7 +63,7 @@ export class BtpOnPremDestinationConnection
   updateProxyAuthorization(headerValue: string): void {
     this.proxySettings = {
       ...this.proxySettings,
-      authorizationHeader: headerValue
+      authorizationHeader: headerValue,
     };
     this.resetProxyClient();
   }
@@ -58,7 +71,7 @@ export class BtpOnPremDestinationConnection
   updatePrincipalPropagation(token: string | undefined): void {
     this.proxySettings = {
       ...this.proxySettings,
-      principalPropagationToken: token
+      principalPropagationToken: token,
     };
     this.resetProxyClient();
   }
@@ -107,7 +120,7 @@ export class BtpOnPremDestinationConnection
 
       internalState.axiosInstance = axios.create({
         httpsAgent: agent,
-        proxy: false
+        proxy: false,
       });
     }
   }
@@ -120,10 +133,11 @@ export class BtpOnPremDestinationConnection
   private buildProxyAgent(): HttpsProxyAgent<string> {
     const rejectUnauthorized =
       process.env.NODE_TLS_REJECT_UNAUTHORIZED === '1' ||
-      (process.env.TLS_REJECT_UNAUTHORIZED === '1' && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0');
+      (process.env.TLS_REJECT_UNAUTHORIZED === '1' &&
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0');
 
     const headers: Record<string, string> = {
-      'Proxy-Authorization': this.proxySettings.authorizationHeader
+      'Proxy-Authorization': this.proxySettings.authorizationHeader,
     };
 
     if (this.proxySettings.locationId) {
@@ -135,7 +149,7 @@ export class BtpOnPremDestinationConnection
 
     return new HttpsProxyAgent(proxyUrl, {
       headers,
-      rejectUnauthorized
+      rejectUnauthorized,
     });
   }
 

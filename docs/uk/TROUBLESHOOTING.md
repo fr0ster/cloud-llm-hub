@@ -45,10 +45,12 @@ cf env cloud-llm-hub-srv
 ### Проблема: 401 Unauthorized
 
 **Симптоми:**
+
 - Запити повертають `401 Unauthorized`
 - Повідомлення про помилку "Authentication required"
 
 **Можливі причини:**
+
 1. Відсутній заголовок `Authorization`
 2. Невалідний або застарілий JWT токен
 3. Неправильні облікові дані Basic auth
@@ -57,6 +59,7 @@ cf env cloud-llm-hub-srv
 **Рішення:**
 
 **1. Перевірте заголовок Authorization:**
+
 ```bash
 # Перевірте, що заголовок присутній
 curl -v -H "Authorization: Basic YWxpY2U6" \
@@ -64,6 +67,7 @@ curl -v -H "Authorization: Basic YWxpY2U6" \
 ```
 
 **2. Оновіть токен XSUAA:**
+
 ```bash
 # Отримайте новий токен
 curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oauth/token" \
@@ -74,6 +78,7 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 ```
 
 **3. Перевірте прив'язку сервісу:**
+
 ```bash
 # Перевірте сервіс XSUAA
 cf services | grep xsuaa
@@ -84,6 +89,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **4. Перевірте режим розробки:**
+
 ```bash
 # Переконайтеся що активний профіль розробки
 cds watch --profile development
@@ -97,10 +103,12 @@ echo -n "alice:" | base64  # Має бути YWxpY2U6
 ### Проблема: 403 Forbidden
 
 **Симптоми:**
+
 - Запити повертають `403 Forbidden`
 - Повідомлення про помилку "Insufficient permissions"
 
 **Можливі причини:**
+
 1. Користувач не має необхідних scopes
 2. Role collection не призначена
 3. Неправильна конфігурація XSUAA
@@ -108,6 +116,7 @@ echo -n "alice:" | base64  # Має бути YWxpY2U6
 **Рішення:**
 
 **1. Перевірте ролі користувача:**
+
 ```bash
 # Користувачі розробки
 # alice: MCP_Connector, MCP_Admin
@@ -119,11 +128,13 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 ```
 
 **2. Перевірте XSUAA Scopes:**
+
 - Перевірте `xs-security.json` на наявність необхідних scopes
 - Переконайтеся що role collections налаштовані
 - Перевірте що користувач має роль `MCP_Connector`
 
 **3. Перевірте ролі в продакшені:**
+
 ```bash
 # В BTP Cockpit
 # Перейдіть до Security → Role Collections
@@ -137,11 +148,13 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 ### Проблема: Connection Timeout
 
 **Симптоми:**
+
 - Запити тайм-аутують після 30-60 секунд
 - Помилки "ETIMEDOUT" в логах
 - Немає відповіді від SAP системи
 
 **Можливі причини:**
+
 1. SAP система недоступна
 2. Проблеми з мережею
 3. Блокування файрволом
@@ -150,6 +163,7 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 **Рішення:**
 
 **1. Перевірте підключення до SAP:**
+
 ```bash
 # Тест прямого підключення
 curl -v https://your-sap-system.com/sap/bc/adt/discovery
@@ -159,6 +173,7 @@ curl -v https://your-sap-system.com/sap/bc/adt/discovery
 ```
 
 **2. Перевірте конфігурацію Destination:**
+
 ```bash
 # Перевірте destination
 curl -H "Authorization: Basic YWxpY2U6" \
@@ -166,11 +181,13 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ```
 
 **3. Перевірте мережу/файрвол:**
+
 - Перевірте що SAP система доступна з Cloud Foundry
 - Перевірте правила файрволу для Cloud Connector
 - Перевірте Location ID Cloud Connector
 
 **4. Перевірте Cloud Connector:**
+
 ```bash
 # Перевірте що Cloud Connector запущений
 # Перевірте адмін-панель Cloud Connector
@@ -183,10 +200,12 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ### Проблема: 502 Bad Gateway
 
 **Симптоми:**
+
 - Запити повертають `502 Bad Gateway`
 - Помилки "MCP server connection failed"
 
 **Можливі причини:**
+
 1. MCP сервер не ініціалізований
 2. Підключення до SAP не вдалося
 3. Невалідні облікові дані SAP
@@ -195,6 +214,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 **Рішення:**
 
 **1. Перевірте статус MCP сервера:**
+
 ```bash
 # Перевірте що MCP сервер запущений (якщо standalone)
 curl http://127.0.0.1:7070/health
@@ -204,6 +224,7 @@ cds watch --profile development --debug
 ```
 
 **2. Перевірте облікові дані SAP:**
+
 ```bash
 # Тест підключення до SAP напряму
 curl -u username:password \
@@ -211,11 +232,13 @@ curl -u username:password \
 ```
 
 **3. Перевірте конфігурацію Destination:**
+
 - Перевірте що ім'я destination правильне
 - Перевірте облікові дані destination в BTP Cockpit
 - Перевірте що тип аутентифікації відповідає
 
 **4. Скиньте сесію MCP:**
+
 ```bash
 # Пропустіть заголовок Mcp-Session-Id щоб примусити ре-ініціалізацію
 curl -X POST \
@@ -233,12 +256,14 @@ curl -X POST \
 ### Проблема: Destination Not Found
 
 **Симптоми:**
+
 - `404 Not Found` для destination
 - Помилка "Destination not found"
 
 **Рішення:**
 
 **1. Перевірте що Destination існує:**
+
 ```bash
 # Перевірте в BTP Cockpit
 # Connectivity → Destinations
@@ -246,6 +271,7 @@ curl -X POST \
 ```
 
 **2. Перевірте прив'язку сервісу:**
+
 ```bash
 # Перевірте що Destination сервіс прив'язаний
 cf services | grep destination
@@ -256,6 +282,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **3. Перевірте ім'я Destination:**
+
 ```bash
 # Використайте точне ім'я destination (чутливе до регістру)
 curl -H "Authorization: Basic YWxpY2U6" \
@@ -268,6 +295,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ### Проблема: Cloud Connector Issues
 
 **Симптоми:**
+
 - On-premise destinations не працюють
 - Тайм-аути підключення
 - Помилки "Tunnel not found"
@@ -275,11 +303,13 @@ curl -H "Authorization: Basic YWxpY2U6" \
 **Рішення:**
 
 **1. Перевірте конфігурацію Cloud Connector:**
+
 - Перевірте що `ConnectorID` в `mta.yaml` відповідає Cloud Connector
 - Перевірте що Location ID в destination відповідає Cloud Connector
 - Перевірте адмін-панель Cloud Connector для статусу тунелю
 
 **2. Перевірте Connectivity Service:**
+
 ```bash
 # Перевірте що Connectivity сервіс прив'язаний
 cf services | grep connectivity
@@ -290,6 +320,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **3. Перевірте Location ID:**
+
 ```bash
 # Перевірте конфігурацію destination
 # Переконайтеся що CloudConnectorLocationId відповідає Cloud Connector
@@ -303,6 +334,7 @@ cf restage cloud-llm-hub-srv
 ### Проблема: SSE Stream Disconnects
 
 **Симптоми:**
+
 - SSE підключення несподівано закривається
 - Heartbeat не отримується
 - Помилки тайм-ауту підключення
@@ -310,6 +342,7 @@ cf restage cloud-llm-hub-srv
 **Рішення:**
 
 **1. Перевірте стабільність мережі:**
+
 ```bash
 # Тест з детальним curl
 curl -v -N -H "Accept: text/event-stream" \
@@ -318,11 +351,13 @@ curl -v -N -H "Accept: text/event-stream" \
 ```
 
 **2. Перевірте Heartbeat:**
+
 - SSE повинен відправляти `: ping` кожні 15 секунд
 - Якщо відсутній, перевірте логи сервера
 - Перевірте налаштування тайм-ауту
 
 **3. Обробка переподключення:**
+
 ```javascript
 // Клієнт повинен обробляти переподключення
 eventSource.onerror = (error) => {
@@ -338,6 +373,7 @@ eventSource.onerror = (error) => {
 ### Проблема: Stream-HTTP Session Issues
 
 **Симптоми:**
+
 - Помилки "Server already initialized"
 - Сесія не зберігається
 - Запити не вдаються після першого виклику
@@ -345,6 +381,7 @@ eventSource.onerror = (error) => {
 **Рішення:**
 
 **1. Перевірте управління сесією:**
+
 ```bash
 # Перший запит: Пропустіть Mcp-Session-Id
 curl -X POST \
@@ -365,12 +402,14 @@ curl -X POST \
 ```
 
 **2. Скиньте сесію:**
+
 ```bash
 # Пропустіть Mcp-Session-Id щоб примусити ре-ініціалізацію
 # Корисно після ротації облікових даних
 ```
 
 **3. Перевірте закінчення сесії:**
+
 - Сесії закінчуються після 30 хвилин бездіяльності
 - Кеш очищується при перезапуску проксі
 - Примусити ре-ініціалізацію якщо потрібно
@@ -382,6 +421,7 @@ curl -X POST \
 ### Проблема: Port Already in Use
 
 **Симптоми:**
+
 - Помилка `EADDRINUSE`
 - Неможливо запустити сервер на порту 4004
 
@@ -405,6 +445,7 @@ PORT=4005 cds watch
 ### Проблема: TypeScript Compilation Errors
 
 **Симптоми:**
+
 - Помилки типів під час збірки
 - Помилки резолюції імпортів
 
@@ -425,6 +466,7 @@ npm exec -- tsc --noEmit
 ### Проблема: Submodule Issues
 
 **Симптоми:**
+
 - MCP сервер не знайдено
 - Помилки імпорту з submodule
 
@@ -502,4 +544,3 @@ cd ../..
 
 **Переклад:** Українська версія  
 **Оригінал:** [TROUBLESHOOTING.md](../TROUBLESHOOTING.md)
-

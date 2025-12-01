@@ -19,6 +19,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ## Recognition
 
 We appreciate every contribution, whether it's:
+
 - 🐛 Bug reports and fixes
 - ✨ New features and enhancements
 - 📚 Documentation improvements
@@ -31,4 +32,3 @@ Every contribution helps make Cloud LLM Hub better for everyone!
 ---
 
 **Note:** This list is automatically generated from git history. If you've contributed but don't see your name here, please open an issue or submit a PR to update this file.
-
