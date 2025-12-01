@@ -1,12 +1,8 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { AbapRequestOptions, SapConfig, ILogger } from '@mcp-abap-adt/connection';
-import {
-  OnPremAbapConnection as OnPremAbapConnectionImpl
-} from '@mcp-abap-adt/connection';
-import type {
-  OnPremAbapConnection as OnPremAbapConnectionType
-} from '@mcp-abap-adt/connection';
+import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
+import type { OnPremAbapConnection as OnPremAbapConnectionType } from '@mcp-abap-adt/connection';
 import { logger } from '@fr0ster/mcp-abap-adt/dist/lib/logger';
 
 // Logger adapter for OnPremAbapConnection
@@ -20,7 +16,7 @@ const loggerAdapter: ILogger = {
   },
   tlsConfig: (rejectUnauthorized: boolean) => {
     logger.tlsConfig(rejectUnauthorized);
-  }
+  },
 };
 
 export interface ConnectivityProxyConfig {
@@ -40,7 +36,8 @@ export interface BtpOnPremConnectionOptions {
 
 export class BtpOnPremDestinationConnection
   extends OnPremAbapConnectionImpl
-  implements OnPremAbapConnectionType {
+  implements OnPremAbapConnectionType
+{
   private proxySettings: ConnectivityProxyConfig;
   private readonly additionalRequestHeaders: Record<string, string>;
 
@@ -57,7 +54,7 @@ export class BtpOnPremDestinationConnection
 
     this.proxySettings = {
       ...restProxy,
-      protocol
+      protocol,
     };
 
     this.additionalRequestHeaders = { ...options.additionalRequestHeaders };
@@ -66,7 +63,7 @@ export class BtpOnPremDestinationConnection
   updateProxyAuthorization(headerValue: string): void {
     this.proxySettings = {
       ...this.proxySettings,
-      authorizationHeader: headerValue
+      authorizationHeader: headerValue,
     };
     this.resetProxyClient();
   }
@@ -74,7 +71,7 @@ export class BtpOnPremDestinationConnection
   updatePrincipalPropagation(token: string | undefined): void {
     this.proxySettings = {
       ...this.proxySettings,
-      principalPropagationToken: token
+      principalPropagationToken: token,
     };
     this.resetProxyClient();
   }
@@ -123,7 +120,7 @@ export class BtpOnPremDestinationConnection
 
       internalState.axiosInstance = axios.create({
         httpsAgent: agent,
-        proxy: false
+        proxy: false,
       });
     }
   }
@@ -136,10 +133,11 @@ export class BtpOnPremDestinationConnection
   private buildProxyAgent(): HttpsProxyAgent<string> {
     const rejectUnauthorized =
       process.env.NODE_TLS_REJECT_UNAUTHORIZED === '1' ||
-      (process.env.TLS_REJECT_UNAUTHORIZED === '1' && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0');
+      (process.env.TLS_REJECT_UNAUTHORIZED === '1' &&
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0');
 
     const headers: Record<string, string> = {
-      'Proxy-Authorization': this.proxySettings.authorizationHeader
+      'Proxy-Authorization': this.proxySettings.authorizationHeader,
     };
 
     if (this.proxySettings.locationId) {
@@ -151,7 +149,7 @@ export class BtpOnPremDestinationConnection
 
     return new HttpsProxyAgent(proxyUrl, {
       headers,
-      rejectUnauthorized
+      rejectUnauthorized,
     });
   }
 

@@ -28,11 +28,11 @@ Hybrid debugging in SAP CAP means running your application locally (`cds watch` 
 1. **Prepare `default-env.json`**
 
    Copy service credentials from Cloud Foundry to `default-env.json`:
-   
+
    ```bash
    # Get service credentials
    cf env cloud-llm-hub-srv > vcap-services.json
-   
+
    # Or manually copy from cf env output to default-env.json
    ```
 
@@ -44,7 +44,7 @@ Hybrid debugging in SAP CAP means running your application locally (`cds watch` 
 2. **Start local development with debug**
 
    Use the VS Code configuration "cds watch (Hybrid - Local + Cloud Services)" or manually:
-   
+
    ```bash
    NODE_OPTIONS="--inspect=9229" cds watch --profile production
    ```
@@ -56,7 +56,6 @@ Hybrid debugging in SAP CAP means running your application locally (`cds watch` 
    - Connect to real Connectivity service (if configured)
 
 3. **Connect VS Code Debugger**
-
    - Open VS Code
    - Go to Run and Debug (Ctrl+Shift+D)
    - Select "cds watch (Hybrid - Local + Cloud Services)"
@@ -64,7 +63,6 @@ Hybrid debugging in SAP CAP means running your application locally (`cds watch` 
    - Set breakpoints in your TypeScript code
 
 4. **Test with real services**
-
    - Use real XSUAA tokens for authentication
    - Test destination resolution with real destinations
    - Verify on-premise connectivity (if configured)
@@ -163,4 +161,3 @@ cf logs cloud-llm-hub-srv --recent
 # Tail logs
 cf logs cloud-llm-hub-srv
 ```
-

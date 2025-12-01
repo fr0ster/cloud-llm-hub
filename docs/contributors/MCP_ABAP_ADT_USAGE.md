@@ -66,6 +66,7 @@ process.env.MCP_SKIP_ENV_LOAD = 'true';
 **Location:** `srv/mcp-manager.ts`
 
 **Pattern:**
+
 ```typescript
 // Dynamic import to avoid executing top-level code
 const { mcp_abap_adt_server } = await import('@fr0ster/mcp-abap-adt');
@@ -79,6 +80,7 @@ const mcpServerInstance = new mcp_abap_adt_server(serverOptions);
 **Location:** `srv/server.ts`, `srv/mcp-manager.ts`
 
 **Pattern:**
+
 ```typescript
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import { createAbapConnection } from '@mcp-abap-adt/connection';
@@ -92,6 +94,7 @@ import type { AbapConnection, SapConfig } from '@mcp-abap-adt/connection';
 **Location:** `srv/server.ts`
 
 **Pattern:**
+
 ```typescript
 // Use require() to access the same instance that mcp-abap-adt uses internally
 const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
@@ -107,11 +110,13 @@ const mcpSessionContext = mcpUtils.sessionContext;
 ### 1. MCP Server Class
 
 **Import:**
+
 ```typescript
 const { mcp_abap_adt_server } = await import('@fr0ster/mcp-abap-adt');
 ```
 
 **Usage:**
+
 ```typescript
 const serverOptions = {
   connection?: AbapConnection,      // Optional: for destination-based
@@ -124,6 +129,7 @@ const mcpServer = new mcp_abap_adt_server(serverOptions);
 ```
 
 **Key Points:**
+
 - For destination-based: Pass `connection` directly
 - For direct (Basic/JWT): Omit both `connection` and `sapConfig`, use `sessionContext` instead
 - Always set `allowProcessExit: false` and `registerSignalHandlers: false` in cloud-llm-hub
@@ -131,12 +137,14 @@ const mcpServer = new mcp_abap_adt_server(serverOptions);
 ### 2. sessionContext (AsyncLocalStorage)
 
 **Access:**
+
 ```typescript
 const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
 const sessionContext = mcpUtils.sessionContext;
 ```
 
 **Usage:**
+
 ```typescript
 await sessionContext.run(
   {
@@ -146,7 +154,7 @@ await sessionContext.run(
       authType: 'jwt',
       jwtToken: 'eyJhbGci...',
       // ... other config
-    }
+    },
   },
   async () => {
     // Inside this callback, getManagedConnection() will use the sapConfig from context
@@ -156,6 +164,7 @@ await sessionContext.run(
 ```
 
 **Key Points:**
+
 - Each HTTP request should run in its own `sessionContext.run()` call
 - `sapConfig` in context is used by `getManagedConnection()` automatically
 - Context is request-scoped (AsyncLocalStorage)
@@ -163,12 +172,14 @@ await sessionContext.run(
 ### 3. getManagedConnection()
 
 **Access:**
+
 ```typescript
 const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
 const getManagedConnection = mcpUtils.getManagedConnection;
 ```
 
 **Usage:**
+
 ```typescript
 // Inside sessionContext.run() callback
 const connection = getManagedConnection();
@@ -176,6 +187,7 @@ const connection = getManagedConnection();
 ```
 
 **Key Points:**
+
 - Must be called inside `sessionContext.run()` callback
 - Reads `sapConfig` from `sessionContext.getStore()`
 - Returns cached connection if available, creates new one otherwise
@@ -184,11 +196,13 @@ const connection = getManagedConnection();
 ### 4. validateAuthHeaders()
 
 **Import:**
+
 ```typescript
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 ```
 
 **Usage:**
+
 ```typescript
 const validationResult = validateAuthHeaders(req.headers);
 
@@ -201,6 +215,7 @@ const config = validationResult.config;
 ```
 
 **Key Points:**
+
 - Validates headers for direct connections (not destinations)
 - Returns structured result with `isValid`, `config`, `errors`, `warnings`
 - Handles priority: SAP Destination > MCP Destination > JWT > Basic
@@ -208,21 +223,19 @@ const config = validationResult.config;
 ### 5. createAbapConnection()
 
 **Import:**
+
 ```typescript
 import { createAbapConnection } from '@mcp-abap-adt/connection';
 ```
 
 **Usage:**
+
 ```typescript
-const connection = createAbapConnection(
-  sapConfig,
-  logger,
-  sessionStorage,
-  sessionId
-);
+const connection = createAbapConnection(sapConfig, logger, sessionStorage, sessionId);
 ```
 
 **Key Points:**
+
 - Creates base connection (axios-based) for direct Basic/JWT auth
 - Used by connection factory for non-destination connections
 - Returns `AbapConnection` interface implementation
@@ -236,6 +249,7 @@ const connection = createAbapConnection(
 **When:** BTP Destination name provided in `X-SAP-Destination` header
 
 **Flow:**
+
 ```typescript
 // 1. Resolve destination
 const resolved = await resolveDestinationSapConfig(destinationName, jwtToken);
@@ -245,9 +259,9 @@ const connection = new CloudSdkAbapConnection(resolved.sapConfig, destinationNam
 
 // 3. Create MCP server with connection
 const mcpServer = new mcp_abap_adt_server({
-  connection,  // Pass connection directly
+  connection, // Pass connection directly
   allowProcessExit: false,
-  registerSignalHandlers: false
+  registerSignalHandlers: false,
 });
 
 // 4. Use server (no sessionContext needed)
@@ -256,6 +270,7 @@ await transport.handleRequest(req, res, body);
 ```
 
 **Key Points:**
+
 - Connection created before MCP server
 - Connection passed to constructor
 - No `sessionContext` needed (connection is already configured)
@@ -265,6 +280,7 @@ await transport.handleRequest(req, res, body);
 **When:** Direct URL + Basic/JWT auth (no destination)
 
 **Flow:**
+
 ```typescript
 // 1. Extract and validate headers
 const validationResult = validateAuthHeaders(req.headers);
@@ -274,21 +290,19 @@ const sapConfig = buildSapConfigFromValidation(validationResult);
 const mcpServer = new mcp_abap_adt_server({
   // Don't pass connection or sapConfig!
   allowProcessExit: false,
-  registerSignalHandlers: false
+  registerSignalHandlers: false,
 });
 
 // 3. Run in sessionContext
-await sessionContext.run(
-  { sessionId, sapConfig },
-  async () => {
-    // 4. Inside context, getManagedConnection() will use sapConfig
-    await mcpServer.server.connect(transport);
-    await transport.handleRequest(req, res, body);
-  }
-);
+await sessionContext.run({ sessionId, sapConfig }, async () => {
+  // 4. Inside context, getManagedConnection() will use sapConfig
+  await mcpServer.server.connect(transport);
+  await transport.handleRequest(req, res, body);
+});
 ```
 
 **Key Points:**
+
 - Don't pass `connection` or `sapConfig` to constructor
 - Use `sessionContext.run()` to provide per-request config
 - `getManagedConnection()` reads from context automatically
@@ -298,19 +312,21 @@ await sessionContext.run(
 **When:** Need to create connection based on configuration
 
 **Flow:**
+
 ```typescript
 import { createConnection } from './connections/connectionFactory';
 
 const connection = createConnection({
   sapConfig,
-  destinationName,  // Optional: if provided, uses CloudSdkAbapConnection
+  destinationName, // Optional: if provided, uses CloudSdkAbapConnection
   logger,
   sessionStorage,
-  sessionId
+  sessionId,
 });
 ```
 
 **Key Points:**
+
 - Single entry point for connection creation
 - Automatic type selection (Destination vs Direct)
 - Consistent interface
@@ -338,7 +354,7 @@ import './env-setup';  // Too late!
 const { mcp_abap_adt_server } = await import('@fr0ster/mcp-abap-adt');
 
 // ❌ WRONG (if top-level)
-import { mcp_abap_adt_server } from '@fr0ster/mcp-abap-adt';  // Executes top-level code!
+import { mcp_abap_adt_server } from '@fr0ster/mcp-abap-adt'; // Executes top-level code!
 ```
 
 ### 3. Clear Environment Variables Before Server Creation
@@ -364,7 +380,7 @@ await sessionContext.run({ sessionId, sapConfig }, async () => {
 
 // ❌ WRONG
 // Passing sapConfig to constructor creates global override
-const server = new mcp_abap_adt_server({ sapConfig });  // Bad!
+const server = new mcp_abap_adt_server({ sapConfig }); // Bad!
 ```
 
 ### 5. Cache MCP Server Instances
@@ -392,6 +408,7 @@ const server = await createNewServer(...);  // Bad!
 **Problem:** Submodule reads `.env` files or cached env vars
 
 **Solution:**
+
 ```typescript
 // Set flags BEFORE imports
 process.env.MCP_SKIP_ENV_LOAD = 'true';
@@ -406,10 +423,11 @@ delete process.env.SAP_URL;
 **Problem:** Using different `sessionContext` instance than `getManagedConnection()`
 
 **Solution:**
+
 ```typescript
 // Use require() to get the same instance
 const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
-const sessionContext = mcpUtils.sessionContext;  // Same instance!
+const sessionContext = mcpUtils.sessionContext; // Same instance!
 ```
 
 ### Pitfall 3: Passing sapConfig to Constructor for Direct Connections
@@ -417,6 +435,7 @@ const sessionContext = mcpUtils.sessionContext;  // Same instance!
 **Problem:** Creates global override, prevents per-request tokens
 
 **Solution:**
+
 ```typescript
 // Don't pass sapConfig to constructor
 const server = new mcp_abap_adt_server({
@@ -434,6 +453,7 @@ await sessionContext.run({ sapConfig }, async () => {
 **Problem:** Using expired tokens from cache
 
 **Solution:**
+
 ```typescript
 if (cached.expiresAt && cached.expiresAt <= Date.now()) {
   instanceCache.delete(cacheKey);
@@ -446,11 +466,12 @@ if (cached.expiresAt && cached.expiresAt <= Date.now()) {
 **Problem:** Using `CloudSdkAbapConnection` for direct connections
 
 **Solution:**
+
 ```typescript
 // Use connection factory
 const connection = createConnection({
   sapConfig,
-  destinationName  // Only if destination-based
+  destinationName, // Only if destination-based
 });
 ```
 
@@ -468,4 +489,3 @@ const connection = createConnection({
 **Author:** AI Assistant  
 **Last Updated:** December 2025  
 **Version:** 1.0
-

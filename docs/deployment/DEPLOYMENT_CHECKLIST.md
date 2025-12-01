@@ -3,12 +3,14 @@
 ## Pre-Deployment Checklist
 
 ### Artifacts & Config
+
 - [ ] `mta.yaml` present and correctly configured
 - [ ] `xs-security.json` present with required scopes/roles
 - [ ] `app/router/xs-app.json` routes configured
 - [ ] Build script `tools/copy-mcp-submodule.js` available
 
 ### Required Services & Tags (CF/BTP)
+
 - [ ] XSUAA service instance `cloud-llm-hub-auth` defined in `mta.yaml`
 - [ ] Destination service instance `cloud-llm-hub-destination` defined in `mta.yaml`
 - [ ] Destination binding has tag `destination`
@@ -104,6 +106,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 ```
 
 Or use the test script:
+
 ```bash
 ./test/smoke/test-destination-probe.sh \
   https://cloud-llm-hub-srv.cfapps.<region>.hana.ondemand.com \
@@ -138,6 +141,7 @@ Or use the test script:
 **Error:** `Destination service binding with tag "destination" is required`
 
 **Solution:**
+
 1. Verify service exists: `cf services`
 2. Check binding: `cf service cloud-llm-hub-destination`
 3. Verify tags in VCAP_SERVICES: `cf env cloud-llm-hub-srv | grep -A 10 destination`
@@ -148,6 +152,7 @@ Or use the test script:
 **Error:** `Connectivity service binding with tag "connectivity" is required for on-premise destinations`
 
 **Solution:**
+
 1. Create connectivity service (if not exists)
 2. Bind with tag: `connectivity`
 3. Restage application: `cf restage cloud-llm-hub-srv`
@@ -155,12 +160,14 @@ Or use the test script:
 ### Probe Returns 502
 
 **Possible causes:**
+
 - Destination configuration missing in BTP
 - Invalid credentials in destination
 - Network connectivity issues
 - Cloud Connector not configured (for on-premise)
 
 **Debug:**
+
 1. Check application logs: `cf logs cloud-llm-hub-srv --recent`
 2. Verify destination in BTP Cockpit
 3. Test destination connectivity manually
@@ -181,6 +188,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **Default behavior:**
+
 - **Stateless mode** (`MCP_ENABLE_SESSION_STORAGE=false`)
   - Sessions are NOT persisted to disk
   - Session state maintained in memory during request lifecycle
@@ -230,4 +238,3 @@ cf restage cloud-llm-hub-srv
 - [ ] On-premise connectivity works (if applicable)
 
 **Tip:** Run integration tests via `npm test` (requires `test/integration.yaml` config).
-

@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+gen/
+@cds-models/
+
+# Generated files
+*.d.ts.map
+*.js.map
+
+# Submodules
+submodules/
+
+# Logs
+*.log
+
+# Environment files
+.env
+*.env
+
+# Archives
+*.mtar
+mta_archives/
+
+# GitHub
+.github/
+
+# Documentation (optional - can format if needed)
+# docs/
+

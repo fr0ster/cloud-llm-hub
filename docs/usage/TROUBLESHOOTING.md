@@ -45,10 +45,12 @@ cf env cloud-llm-hub-srv
 ### Problem: 401 Unauthorized
 
 **Symptoms:**
+
 - Requests return `401 Unauthorized`
 - "Authentication required" error messages
 
 **Possible Causes:**
+
 1. Missing `Authorization` header
 2. Invalid or expired JWT token
 3. Incorrect Basic auth credentials
@@ -57,6 +59,7 @@ cf env cloud-llm-hub-srv
 **Solutions:**
 
 **1. Check Authorization Header:**
+
 ```bash
 # Verify header is present
 curl -v -H "Authorization: Basic YWxpY2U6" \
@@ -64,6 +67,7 @@ curl -v -H "Authorization: Basic YWxpY2U6" \
 ```
 
 **2. Refresh XSUAA Token:**
+
 ```bash
 # Get new token
 curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oauth/token" \
@@ -74,6 +78,7 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 ```
 
 **3. Verify Service Binding:**
+
 ```bash
 # Check XSUAA service
 cf services | grep xsuaa
@@ -84,6 +89,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **4. Check Development Mode:**
+
 ```bash
 # Ensure development profile is active
 cds watch --profile development
@@ -97,10 +103,12 @@ echo -n "alice:" | base64  # Should be YWxpY2U6
 ### Problem: 403 Forbidden
 
 **Symptoms:**
+
 - Requests return `403 Forbidden`
 - "Insufficient permissions" error messages
 
 **Possible Causes:**
+
 1. User lacks required scopes
 2. Role collection not assigned
 3. Incorrect XSUAA configuration
@@ -108,6 +116,7 @@ echo -n "alice:" | base64  # Should be YWxpY2U6
 **Solutions:**
 
 **1. Check User Roles:**
+
 ```bash
 # Development users
 # alice: MCP_Connector, MCP_Admin
@@ -119,11 +128,13 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 ```
 
 **2. Verify XSUAA Scopes:**
+
 - Check `xs-security.json` for required scopes
 - Ensure role collections are configured
 - Verify user has `MCP_Connector` role
 
 **3. Check Production Roles:**
+
 ```bash
 # In BTP Cockpit
 # Go to Security → Role Collections
@@ -137,11 +148,13 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 ### Problem: Connection Timeout
 
 **Symptoms:**
+
 - Requests timeout after 30-60 seconds
 - "ETIMEDOUT" errors in logs
 - No response from SAP system
 
 **Possible Causes:**
+
 1. SAP system not accessible
 2. Network connectivity issues
 3. Firewall blocking connections
@@ -150,6 +163,7 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 **Solutions:**
 
 **1. Test SAP Connectivity:**
+
 ```bash
 # Test direct connection
 curl -v https://your-sap-system.com/sap/bc/adt/discovery
@@ -159,6 +173,7 @@ curl -v https://your-sap-system.com/sap/bc/adt/discovery
 ```
 
 **2. Verify Destination Configuration:**
+
 ```bash
 # Probe destination
 curl -H "Authorization: Basic YWxpY2U6" \
@@ -166,11 +181,13 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ```
 
 **3. Check Network/Firewall:**
+
 - Verify SAP system is accessible from Cloud Foundry
 - Check firewall rules for Cloud Connector
 - Verify Cloud Connector location ID
 
 **4. Check Cloud Connector:**
+
 ```bash
 # Verify Cloud Connector is running
 # Check Cloud Connector admin UI
@@ -183,10 +200,12 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ### Problem: 502 Bad Gateway
 
 **Symptoms:**
+
 - Requests return `502 Bad Gateway`
 - "MCP server connection failed" errors
 
 **Possible Causes:**
+
 1. MCP server not initialized
 2. SAP connection failed
 3. Invalid SAP credentials
@@ -195,6 +214,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 **Solutions:**
 
 **1. Check MCP Server Status:**
+
 ```bash
 # Verify MCP server is running (if standalone)
 curl http://127.0.0.1:7070/health
@@ -204,6 +224,7 @@ cds watch --profile development --debug
 ```
 
 **2. Verify SAP Credentials:**
+
 ```bash
 # Test SAP connection directly
 curl -u username:password \
@@ -211,11 +232,13 @@ curl -u username:password \
 ```
 
 **3. Check Destination Configuration:**
+
 - Verify destination name is correct
 - Check destination credentials in BTP Cockpit
 - Verify authentication type matches
 
 **4. Reset MCP Session:**
+
 ```bash
 # Omit Mcp-Session-Id header to force re-initialization
 curl -X POST \
@@ -233,12 +256,14 @@ curl -X POST \
 ### Problem: Destination Not Found
 
 **Symptoms:**
+
 - `404 Not Found` for destination
 - "Destination not found" error
 
 **Solutions:**
 
 **1. Verify Destination Exists:**
+
 ```bash
 # Check in BTP Cockpit
 # Connectivity → Destinations
@@ -246,6 +271,7 @@ curl -X POST \
 ```
 
 **2. Check Service Binding:**
+
 ```bash
 # Verify Destination service is bound
 cf services | grep destination
@@ -256,6 +282,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **3. Verify Destination Name:**
+
 ```bash
 # Use exact destination name (case-sensitive)
 curl -H "Authorization: Basic YWxpY2U6" \
@@ -268,6 +295,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ### Problem: Cloud Connector Issues
 
 **Symptoms:**
+
 - On-premise destinations fail
 - Connection timeouts
 - "Tunnel not found" errors
@@ -275,11 +303,13 @@ curl -H "Authorization: Basic YWxpY2U6" \
 **Solutions:**
 
 **1. Verify Cloud Connector Configuration:**
+
 - Check `ConnectorID` in `mta.yaml` matches Cloud Connector
 - Verify location ID in destination matches Cloud Connector
 - Check Cloud Connector admin UI for tunnel status
 
 **2. Check Connectivity Service:**
+
 ```bash
 # Verify Connectivity service is bound
 cf services | grep connectivity
@@ -290,6 +320,7 @@ cf restage cloud-llm-hub-srv
 ```
 
 **3. Verify Location ID:**
+
 ```bash
 # Check destination configuration
 # Ensure CloudConnectorLocationId matches Cloud Connector
@@ -303,6 +334,7 @@ cf restage cloud-llm-hub-srv
 ### Problem: SSE Stream Disconnects
 
 **Symptoms:**
+
 - SSE connection closes unexpectedly
 - No heartbeat received
 - Connection timeout errors
@@ -310,6 +342,7 @@ cf restage cloud-llm-hub-srv
 **Solutions:**
 
 **1. Check Network Stability:**
+
 ```bash
 # Test with verbose curl
 curl -v -N -H "Accept: text/event-stream" \
@@ -318,11 +351,13 @@ curl -v -N -H "Accept: text/event-stream" \
 ```
 
 **2. Verify Heartbeat:**
+
 - SSE should send `: ping` every 15 seconds
 - If missing, check server logs
 - Verify timeout settings
 
 **3. Handle Reconnection:**
+
 ```javascript
 // Client should handle reconnection
 eventSource.onerror = (error) => {
@@ -338,6 +373,7 @@ eventSource.onerror = (error) => {
 ### Problem: Stream-HTTP Session Issues
 
 **Symptoms:**
+
 - "Server already initialized" errors
 - Session not persisting
 - Requests failing after first call
@@ -345,6 +381,7 @@ eventSource.onerror = (error) => {
 **Solutions:**
 
 **1. Check Session Management:**
+
 ```bash
 # First request: Omit Mcp-Session-Id
 curl -X POST \
@@ -365,12 +402,14 @@ curl -X POST \
 ```
 
 **2. Reset Session:**
+
 ```bash
 # Omit Mcp-Session-Id to force re-initialization
 # Useful after credential rotation
 ```
 
 **3. Check Session Expiration:**
+
 - Sessions expire after 30 minutes of inactivity
 - Cache is cleared on proxy restart
 - Force re-initialization if needed
@@ -382,6 +421,7 @@ curl -X POST \
 ### Problem: Port Already in Use
 
 **Symptoms:**
+
 - `EADDRINUSE` error
 - Cannot start server on port 4004
 
@@ -405,6 +445,7 @@ PORT=4005 cds watch
 ### Problem: TypeScript Compilation Errors
 
 **Symptoms:**
+
 - Type errors during build
 - Import resolution failures
 
@@ -425,6 +466,7 @@ npm exec -- tsc --noEmit
 ### Problem: Submodule Issues
 
 **Symptoms:**
+
 - MCP server not found
 - Import errors from submodule
 
@@ -497,4 +539,3 @@ cd ../..
 
 **Last Updated:** 2025-11-05  
 **Version:** 1.0
-

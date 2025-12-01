@@ -5,12 +5,14 @@ System architecture, design decisions, and technical specifications for cloud-ll
 ## Documents
 
 ### Core Architecture
+
 - [**API Reference**](API_REFERENCE.md) - Complete API documentation
 - [**CAP Endpoints**](CAP_ENDPOINTS.md) - SAP Cloud Application Programming Model endpoints
 - [**Features**](FEATURES.md) - System features and capabilities
 - [**Implementation Status**](IMPLEMENTATION_STATUS.md) - Current implementation progress
 
 ### Integration & Performance
+
 - [**Integration Architecture**](INTEGRATION_ARCHITECTURE.md) - Overall integration architecture with mcp-abap-adt
 - [**Integrations**](INTEGRATIONS.md) - External system integrations
 - [**MCP Header Matrix**](MCP_HEADER_MATRIX.md) - MCP protocol header specifications

@@ -10,12 +10,14 @@
 Cloud LLM Hub is a **bridge** between your SAP ABAP systems and modern AI/automation tools. Think of it as a translator that lets tools like Cline, n8n, or your custom scripts talk to SAP.
 
 **What it does:**
+
 - ✅ Connects AI assistants (Cline, Claude Desktop) to SAP
 - ✅ Enables automation workflows (n8n, Zapier, CI/CD)
 - ✅ Provides secure access to SAP ABAP systems
 - ✅ Works with cloud and on-premise SAP systems
 
 **What you get:**
+
 - 🔍 Query ABAP code, objects, and dependencies
 - 📊 Analyze code structure and impacts
 - 🔄 Automate SAP-related tasks
@@ -26,11 +28,13 @@ Cloud LLM Hub is a **bridge** between your SAP ABAP systems and modern AI/automa
 ### Step 1: Get Access
 
 You need:
+
 - **Cloud LLM Hub deployment URL** (or deploy your own)
 - **SAP system access** (URL or Destination name)
 - **Authentication tokens** (XSUAA for MCP, JWT for SAP)
 
 **Quick check:**
+
 ```bash
 # Test if your deployment is accessible
 curl https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/Health\(\)
@@ -39,6 +43,7 @@ curl https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/Health\(\)
 ### Step 2: Configure Your Client
 
 **For Cline (VS Code):**
+
 ```bash
 # One command setup
 curl -sSL https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/update-cline-connection.js | \
@@ -54,11 +59,13 @@ curl -sSL https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/upd
 ### Step 3: Start Using!
 
 **In Cline:**
+
 - Ask: "What classes are in package Z_MY_PACKAGE?"
 - Ask: "Show me the dependencies of class Z_MY_CLASS"
 - Ask: "Analyze the impact of changing this method"
 
 **In n8n/Zapier:**
+
 - Create workflows that query SAP on schedule
 - Trigger actions based on SAP data
 - Sync information between systems
@@ -68,12 +75,14 @@ curl -sSL https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/upd
 ### 1. AI-Assisted Development (Cline)
 
 **What you can do:**
+
 - Ask questions about your ABAP codebase
 - Generate code from natural language descriptions
 - Analyze code impacts before changes
 - Get refactoring suggestions with context
 
 **Example:**
+
 ```
 You: "What classes use Z_MY_INTERFACE?"
 Cline: [Queries SAP via MCP] "Found 5 classes: Z_CLASS1, Z_CLASS2..."
@@ -82,12 +91,14 @@ Cline: [Queries SAP via MCP] "Found 5 classes: Z_CLASS1, Z_CLASS2..."
 ### 2. Automated Code Reviews
 
 **CI/CD Integration:**
+
 - Check code quality before merge
 - Analyze dependencies automatically
 - Generate impact reports
 - Validate coding standards
 
 **Example GitHub Action:**
+
 ```yaml
 - name: Analyze Changes
   run: |
@@ -99,12 +110,14 @@ Cline: [Queries SAP via MCP] "Found 5 classes: Z_CLASS1, Z_CLASS2..."
 ### 3. Workflow Automation
 
 **n8n/Zapier workflows:**
+
 - Daily code quality reports
 - Automated dependency checks
 - Change impact notifications
 - Documentation generation
 
 **Example:**
+
 ```
 Schedule (Daily) → Query SAP → Process Results → Send Email Report
 ```
@@ -112,6 +125,7 @@ Schedule (Daily) → Query SAP → Process Results → Send Email Report
 ### 4. Data Synchronization
 
 **Sync SAP metadata:**
+
 - Object catalogs
 - Dependency graphs
 - Enhancement lists
@@ -122,19 +136,23 @@ Schedule (Daily) → Query SAP → Process Results → Send Email Report
 Cloud LLM Hub provides access to these MCP tools:
 
 ### Code Discovery
+
 - **GetObjectList** - List ABAP objects by type/package
 - **GetObjectDetails** - Get detailed object information
 - **GetObjectSource** - Retrieve source code
 
 ### Dependency Analysis
+
 - **GetDependencies** - Find what an object depends on
 - **GetWhereUsed** - Find where an object is used
 
 ### Enhancement Discovery
+
 - **GetEnhancements** - List all enhancements
 - **GetEnhancementByName** - Get specific enhancement details
 
 ### Batch Operations
+
 - **DetectObjectTypeListArray** - Batch detect object types
 - **DetectObjectTypeListJson** - Batch detect with JSON payload
 
@@ -147,12 +165,14 @@ Cloud LLM Hub provides access to these MCP tools:
 **Best for:** Production, enterprise environments
 
 **Pros:**
+
 - ✅ Centralized configuration
 - ✅ Automatic authentication
 - ✅ Cloud Connector support
 - ✅ No credentials in code
 
 **Setup:**
+
 ```bash
 node tools/update-cline-connection.js \
   --template cloud-destination \
@@ -167,11 +187,13 @@ node tools/update-cline-connection.js \
 **Best for:** Development, testing, local setups
 
 **Pros:**
+
 - ✅ Simple setup
 - ✅ Direct SAP URL
 - ✅ No Destination service needed
 
 **Setup:**
+
 ```bash
 node tools/update-cline-connection.js \
   --template direct-jwt \
@@ -185,6 +207,7 @@ node tools/update-cline-connection.js \
 **Best for:** Local development, quick tests
 
 **Setup:**
+
 ```bash
 node tools/update-cline-connection.js \
   --template direct-basic \
@@ -200,6 +223,7 @@ node tools/update-cline-connection.js \
 ### One-Command Updates
 
 **Update connection settings:**
+
 ```bash
 node tools/update-cline-connection.js \
   --connection sap-dev \
@@ -210,6 +234,7 @@ node tools/update-cline-connection.js \
 ### YAML-Driven Configuration
 
 **Manage multiple connections:**
+
 ```yaml
 # config/connections.yaml
 mcpConnection:
@@ -229,6 +254,7 @@ abapConnection:
 ```
 
 **Apply:**
+
 ```bash
 node tools/update-cline-connection.js \
   --config config/connections.yaml \
@@ -238,6 +264,7 @@ node tools/update-cline-connection.js \
 ### CI/CD Integration
 
 **Automated token refresh:**
+
 ```yaml
 - name: Update MCP Connection
   run: |
@@ -252,6 +279,7 @@ node tools/update-cline-connection.js \
 ### 1. Use Service Keys for Tokens
 
 **Don't:**
+
 ```json
 {
   "headers": {
@@ -261,6 +289,7 @@ node tools/update-cline-connection.js \
 ```
 
 **Do:**
+
 ```json
 {
   "headers": {
@@ -272,6 +301,7 @@ node tools/update-cline-connection.js \
 ### 2. Use Destinations for Production
 
 **Benefits:**
+
 - Centralized configuration
 - Automatic authentication
 - Cloud Connector support
@@ -298,6 +328,7 @@ try {
 ### 5. Use Batch Operations
 
 For multiple objects, use batch tools:
+
 ```javascript
 // Instead of multiple calls
 const objects = ['CLAS1', 'CLAS2', 'CLAS3'];
@@ -311,6 +342,7 @@ const result = await mcpClient.callTool('DetectObjectTypeListArray', { objects }
 **Problem:** Can't connect to MCP endpoint
 
 **Solutions:**
+
 1. Check endpoint URL is correct
 2. Verify authentication token is valid
 3. Check network connectivity
@@ -325,6 +357,7 @@ const result = await mcpClient.callTool('DetectObjectTypeListArray', { objects }
 **Problem:** MCP connects but can't reach SAP
 
 **Solutions:**
+
 1. Verify SAP destination is configured
 2. Check Cloud Connector (for on-premise)
 3. Test SAP connection directly
@@ -338,6 +371,7 @@ const result = await mcpClient.callTool('DetectObjectTypeListArray', { objects }
 **Problem:** Authentication errors
 
 **Solutions:**
+
 1. Refresh XSUAA token
 2. Verify token has required scopes
 3. Check token expiration
@@ -389,4 +423,3 @@ const result = await mcpClient.callTool('DetectObjectTypeListArray', { objects }
 ---
 
 **Happy automating!** 🚀
-

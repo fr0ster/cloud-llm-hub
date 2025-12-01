@@ -12,7 +12,7 @@
 ✅ **Enterprise Ready** - Built on SAP CAP with XSUAA authentication  
 ✅ **On-Premise Support** - Seamless Cloud Connector integration  
 ✅ **Automation Tools** - One-command setup scripts  
-✅ **CI/CD Ready** - YAML-driven configuration and deployment  
+✅ **CI/CD Ready** - YAML-driven configuration and deployment
 
 ## 🎯 Quick Start (3 Steps)
 
@@ -33,6 +33,7 @@ npm run deploy  # or follow docs/DEPLOYMENT_CHECKLIST.md
 Choose your integration method:
 
 #### Option A: Automated Setup (Recommended)
+
 ```bash
 # Download the setup tool
 curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/update-cline-connection.js
@@ -46,11 +47,13 @@ node update-cline-connection.js --template cloud-destination \
 ```
 
 #### Option B: Manual Configuration
+
 Copy the template from `docs/templates/mcp-config/` and fill in your values.
 
 ### Step 3: Connect Your Client
 
 **For Cline (VS Code):**
+
 ```json
 {
   "mcpServers": {
@@ -67,6 +70,7 @@ Copy the template from `docs/templates/mcp-config/` and fill in your values.
 ```
 
 **For Claude Desktop:**
+
 ```json
 {
   "mcpServers": {
@@ -74,8 +78,10 @@ Copy the template from `docs/templates/mcp-config/` and fill in your values.
       "command": "curl",
       "args": [
         "-N",
-        "-H", "Authorization: Bearer YOUR_TOKEN",
-        "-H", "X-SAP-Destination: SAP_ABAP_DESTINATION",
+        "-H",
+        "Authorization: Bearer YOUR_TOKEN",
+        "-H",
+        "X-SAP-Destination: SAP_ABAP_DESTINATION",
         "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/sse"
       ]
     }
@@ -88,9 +94,11 @@ Copy the template from `docs/templates/mcp-config/` and fill in your values.
 ## 🎨 Common Use Cases
 
 ### 1. **Cline Integration** (VS Code)
+
 Perfect for AI-assisted ABAP development.
 
 **Benefits:**
+
 - Ask questions about your ABAP codebase
 - Generate code from natural language
 - Analyze dependencies and impacts
@@ -99,9 +107,11 @@ Perfect for AI-assisted ABAP development.
 **Setup:** See [Cline Integration Guide](#cline-integration)
 
 ### 2. **CI/CD Pipelines**
+
 Automate SAP deployments and code analysis.
 
 **Benefits:**
+
 - Automated code reviews
 - Dependency checks before merge
 - Impact analysis for changes
@@ -110,9 +120,11 @@ Automate SAP deployments and code analysis.
 **Setup:** See [CI/CD Integration](#cicd-integration)
 
 ### 3. **Workflow Automation (n8n, Zapier)**
+
 Connect SAP to your automation stack.
 
 **Benefits:**
+
 - Trigger workflows from SAP events
 - Sync data between systems
 - Automated reporting
@@ -121,9 +133,11 @@ Connect SAP to your automation stack.
 **Setup:** See [n8n Integration](#n8n-integration)
 
 ### 4. **Custom Applications**
+
 Build your own MCP-powered tools.
 
 **Benefits:**
+
 - RESTful API access
 - Streaming support (SSE/HTTP)
 - Standard MCP protocol
@@ -136,10 +150,12 @@ Build your own MCP-powered tools.
 ### Cline Integration
 
 **Prerequisites:**
+
 - VS Code with Cline extension installed
 - SAP BTP deployment (or local dev server)
 
 **Quick Setup:**
+
 ```bash
 # 1. Generate Cline configuration
 node tools/update-cline-connection.js \
@@ -157,6 +173,7 @@ node tools/update-cline-connection.js \
 ```
 
 **Features:**
+
 - ✅ Automatic token refresh
 - ✅ Multiple connection support
 - ✅ YAML-driven configuration
@@ -167,6 +184,7 @@ node tools/update-cline-connection.js \
 ### CI/CD Integration
 
 **GitHub Actions Example:**
+
 ```yaml
 name: SAP Code Analysis
 on: [pull_request]
@@ -176,16 +194,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '20'
-      
+
       - name: Download MCP Tool
         run: |
           curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/update-cline-connection.js
-      
+
       - name: Configure Connection
         run: |
           node update-cline-connection.js \
@@ -196,7 +214,7 @@ jobs:
         env:
           SAP_JWT_TOKEN: ${{ secrets.SAP_JWT_TOKEN }}
           MCP_XSUAA_TOKEN: ${{ secrets.MCP_XSUAA_TOKEN }}
-      
+
       - name: Run Code Analysis
         run: |
           # Your custom analysis script using MCP
@@ -204,6 +222,7 @@ jobs:
 ```
 
 **GitLab CI Example:**
+
 ```yaml
 analyze:
   stage: test
@@ -222,6 +241,7 @@ analyze:
 ```
 
 **Benefits:**
+
 - ✅ Automated code reviews
 - ✅ Pre-merge validation
 - ✅ Impact analysis
@@ -244,6 +264,7 @@ analyze:
      ```
 
 2. **MCP Request Body:**
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -265,11 +286,13 @@ analyze:
    - Use in subsequent nodes
 
 **Workflow Example:**
+
 ```
 Trigger → HTTP Request (MCP) → Process Results → Send Notification
 ```
 
 **Benefits:**
+
 - ✅ Visual workflow builder
 - ✅ No-code integration
 - ✅ Error handling built-in
@@ -285,9 +308,9 @@ const eventSource = new EventSource(
   'https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/sse',
   {
     headers: {
-      'Authorization': 'Bearer YOUR_TOKEN',
-      'X-SAP-Destination': 'SAP_ABAP_DESTINATION'
-    }
+      Authorization: 'Bearer YOUR_TOKEN',
+      'X-SAP-Destination': 'SAP_ABAP_DESTINATION',
+    },
   }
 );
 
@@ -298,27 +321,25 @@ eventSource.onmessage = (event) => {
 ```
 
 **Stream-HTTP Example:**
+
 ```javascript
-const response = await fetch(
-  'https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http',
-  {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer YOUR_TOKEN',
-      'X-SAP-Destination': 'SAP_ABAP_DESTINATION',
-      'Content-Type': 'application/json'
+const response = await fetch('https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http', {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer YOUR_TOKEN',
+    'X-SAP-Destination': 'SAP_ABAP_DESTINATION',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: {
+      name: 'GetObjectList',
+      arguments: { objectType: 'CLAS' },
     },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: {
-        name: 'GetObjectList',
-        arguments: { objectType: 'CLAS' }
-      }
-    })
-  }
-);
+  }),
+});
 
 const reader = response.body.getReader();
 while (true) {
@@ -357,10 +378,10 @@ Cloud LLM Hub provides access to all MCP tools from the underlying ABAP ADT serv
 ## 🎉 You're All Set!
 
 You now have:
+
 - ✅ A working MCP connection to your SAP system
 - ✅ Tools to automate configuration
 - ✅ Examples for common integrations
 - ✅ CI/CD ready setup
 
 **Happy automating!** 🚀
-

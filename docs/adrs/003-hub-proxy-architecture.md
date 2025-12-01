@@ -1,6 +1,7 @@
 # ADR 003: Cloud LLM Hub as MCP Proxy
 
 ## Status
+
 Proposed
 
 ## Context

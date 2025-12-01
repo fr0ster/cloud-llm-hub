@@ -5,6 +5,7 @@
 Test ABAP connectivity through cloud-llm-hub MCP proxy by calling GetTable for T000.
 
 This test validates:
+
 - cloud-llm-hub `/mcp/stream/http` endpoint works
 - JWT authentication with UAA credentials flows correctly
 - GetTable tool successfully reads from ABAP
@@ -13,11 +14,13 @@ This test validates:
 ### Prerequisites
 
 1. **Cloud-llm-hub server running**:
+
    ```bash
    npx cds serve --with-mocks --in-memory
    # or
    npx cds watch
    ```
+
    Server should be listening on `http://localhost:4004`
 
 2. **Valid SAP credentials in `.env` file** (project root):
@@ -53,9 +56,11 @@ The test validates cloud-llm-hub proxy functionality:
 The test reads credentials from `.env` file in project root.
 
 **Required in `.env`:**
+
 - `SAP_URL` - ABAP system URL
 
 **Authentication (JWT):**
+
 - `SAP_JWT_TOKEN` - JWT access token
 - `SAP_REFRESH_TOKEN` - OAuth2 refresh token (for auto-refresh)
 - `SAP_UAA_URL` - UAA server URL
@@ -63,12 +68,14 @@ The test reads credentials from `.env` file in project root.
 - `SAP_UAA_CLIENT_SECRET` - UAA client secret
 
 **Optional:**
+
 - `SAP_CLIENT` - SAP client number (e.g., "100")
 - `TEST_HOST` - cloud-llm-hub host (default: localhost)
 - `TEST_PORT` - cloud-llm-hub port (default: 4004)
 - `AUTH_HEADER` - Basic auth for cloud-llm-hub (default: Basic YWxpOmFsaQ== for dev)
 
 You can override any value using environment variables:
+
 ```bash
 SAP_URL="https://other-system..." node test/abap-connection.test.js
 ```
@@ -130,18 +137,22 @@ cloud-llm-hub ABAP Connection Test - GetTable T000
 ### Troubleshooting
 
 **Error: "401"**
+
 - JWT token expired and auto-refresh failed
 - Run mcp-abap-adt standalone to get fresh tokens
 - Check cloud-llm-hub logs for refresh errors
 
 **Error: "Refresh token has expired"**
+
 - Re-authenticate via mcp-abap-adt standalone (browser OAuth flow)
 - Copy new tokens to .env file
 
 **Error: "Connection refused"**
+
 - Make sure cloud-llm-hub server is running: `npx cds serve`
 - Check port (default 4004): `lsof -i :4004`
 
 **Error: "SAP_URL not set"**
+
 - Make sure .env file exists in project root
 - Check .env file has SAP_URL variable

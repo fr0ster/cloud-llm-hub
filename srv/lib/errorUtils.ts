@@ -1,9 +1,9 @@
 /**
  * Error Handling Utilities
- * 
+ *
  * Synchronized with mcp-abap-adt error handling patterns for consistent
  * error logging and formatting across cloud-llm-hub.
- * 
+ *
  * Based on logErrorSafely from @fr0ster/mcp-abap-adt/src/lib/utils.ts
  */
 
@@ -32,7 +32,7 @@ export interface SafeErrorDetails {
  */
 export function extractErrorDetails(error: any): SafeErrorDetails {
   const details: SafeErrorDetails = {
-    message: 'Unknown error'
+    message: 'Unknown error',
   };
 
   // Handle AxiosError (from axios or Cloud SDK)
@@ -40,7 +40,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
     // Cloud SDK errors have similar structure to AxiosError
     const status = error.response?.status || error.statusCode;
     const statusText = error.response?.statusText || error.statusText || error.message;
-    
+
     details.status = status;
     details.statusText = statusText;
     details.message = error.message || statusText || 'HTTP request failed';
@@ -92,7 +92,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
 /**
  * Safely logs an error without circular reference issues
  * Synchronized with logErrorSafely from mcp-abap-adt
- * 
+ *
  * @param logger - Logger instance (cds.log() or compatible)
  * @param operationName - Name of the operation that failed
  * @param error - Error object to log
@@ -125,11 +125,11 @@ export function logErrorSafely(
   const errorDetails: any = {
     operation: operationName,
     ...details,
-    ...context
+    ...context,
   };
 
   // Remove undefined values
-  Object.keys(errorDetails).forEach(key => {
+  Object.keys(errorDetails).forEach((key) => {
     if (errorDetails[key] === undefined) {
       delete errorDetails[key];
     }
@@ -177,7 +177,10 @@ export function formatErrorMessage(error: any): string {
  * Creates a structured error response for MCP protocol
  * Similar to return_error from mcp-abap-adt
  */
-export function createErrorResponse(error: any, operationName?: string): {
+export function createErrorResponse(
+  error: any,
+  operationName?: string
+): {
   isError: boolean;
   content: Array<{ type: string; text: string }>;
 } {
@@ -185,7 +188,7 @@ export function createErrorResponse(error: any, operationName?: string): {
   const details = extractErrorDetails(error);
 
   let errorText = message;
-  
+
   // Add operation context if provided
   if (operationName) {
     errorText = `${operationName} failed: ${errorText}`;
@@ -201,9 +204,8 @@ export function createErrorResponse(error: any, operationName?: string): {
     content: [
       {
         type: 'text',
-        text: `Error: ${errorText}`
-      }
-    ]
+        text: `Error: ${errorText}`,
+      },
+    ],
   };
 }
-

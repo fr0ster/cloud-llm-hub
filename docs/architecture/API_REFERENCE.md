@@ -38,6 +38,7 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 **Authentication:** Required
 
 **Response:**
+
 ```json
 {
   "status": "UP",
@@ -46,11 +47,13 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 ```
 
 **Status Codes:**
+
 - `200 OK` - Service is healthy
 - `401 Unauthorized` - Missing or invalid authentication
 - `403 Forbidden` - Insufficient permissions
 
 **Example:**
+
 ```bash
 curl -H "Authorization: Basic YWxpY2U6" \
      http://localhost:4004/odata/v4/mcp/Health\(\)
@@ -67,9 +70,11 @@ curl -H "Authorization: Basic YWxpY2U6" \
 **Authentication:** Required
 
 **Query Parameters:**
+
 - `destination` (required) - Destination name configured in BTP Destination service
 
 **Response:**
+
 ```json
 {
   "destination": "SAP_DEV_DEST",
@@ -89,6 +94,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 ```
 
 **Status Codes:**
+
 - `200 OK` - Destination probe successful
 - `400 Bad Request` - Missing or invalid destination parameter
 - `401 Unauthorized` - Missing or invalid authentication
@@ -97,6 +103,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `502 Bad Gateway` - Destination connection failed
 
 **Example:**
+
 ```bash
 curl -H "Authorization: Basic YWxpY2U6" \
      "http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=SAP_DEV_DEST"
@@ -113,6 +120,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 **Authentication:** Required
 
 **Headers:**
+
 - `Authorization` (required) - Basic or Bearer token
 - `Accept: text/event-stream` (required)
 - `X-SAP-Destination` (optional) - Destination name for destination mode
@@ -122,18 +130,21 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `X-SAP-Auth-Token` (optional) - SAP JWT token (for direct mode)
 
 **Response:**
+
 - Content-Type: `text/event-stream`
 - Heartbeat: Every 15 seconds (`: ping`)
 - Reconnection hint: `retry: 15000`
 - Timeout: 2 minutes
 
 **Status Codes:**
+
 - `200 OK` - Stream started successfully
 - `401 Unauthorized` - Missing or invalid authentication
 - `403 Forbidden` - Insufficient permissions
 - `502 Bad Gateway` - MCP server connection failed
 
 **Example:**
+
 ```bash
 curl -N -H "Accept: text/event-stream" \
      -H "Authorization: Basic YWxpY2U6" \
@@ -142,6 +153,7 @@ curl -N -H "Accept: text/event-stream" \
 ```
 
 **Event Format:**
+
 ```
 event: message
 data: {"jsonrpc":"2.0","id":1,"result":{...}}
@@ -163,6 +175,7 @@ data: {"jsonrpc":"2.0","id":2,"result":{...}}
 **Authentication:** Required
 
 **Headers:**
+
 - `Authorization` (required) - Basic or Bearer token
 - `Content-Type: application/x-ndjson` (required)
 - `Mcp-Session-Id` (optional) - Session ID for follow-up requests
@@ -173,22 +186,26 @@ data: {"jsonrpc":"2.0","id":2,"result":{...}}
 - `X-SAP-Auth-Token` (optional) - SAP JWT token (for direct mode)
 
 **Request Body:**
+
 - Content-Type: `application/x-ndjson`
 - Format: Newline-delimited JSON
 - Each line is a complete JSON-RPC 2.0 request
 
 **Response:**
+
 - Content-Type: `application/x-ndjson`
 - Format: Newline-delimited JSON
 - Each line is a complete JSON-RPC 2.0 response
 
 **Status Codes:**
+
 - `200 OK` - Stream started successfully
 - `401 Unauthorized` - Missing or invalid authentication
 - `403 Forbidden` - Insufficient permissions
 - `502 Bad Gateway` - MCP server connection failed
 
 **Example:**
+
 ```bash
 curl -X POST \
      -H "Authorization: Basic YWxpY2U6" \
@@ -202,12 +219,14 @@ EOF
 ```
 
 **Response Format:**
+
 ```
 {"jsonrpc":"2.0","id":1,"result":{"tools":[...]}}
 {"jsonrpc":"2.0","id":2,"result":{"objects":[...]}}
 ```
 
 **Session Management:**
+
 - First request: Omit `Mcp-Session-Id` header
 - Response includes: `Mcp-Session-Id: <session-id>` header
 - Subsequent requests: Include `Mcp-Session-Id: <session-id>` header
@@ -224,12 +243,14 @@ EOF
 **Description:** Use SAP BTP Destination service for connection configuration.
 
 **Benefits:**
+
 - Centralized configuration
 - Automatic authentication handling
 - Cloud Connector support
 - No credentials in requests
 
 **Example:**
+
 ```bash
 curl -H "Authorization: Bearer <token>" \
      -H "X-SAP-Destination: SAP_PROD_DEST" \
@@ -239,6 +260,7 @@ curl -H "Authorization: Bearer <token>" \
 ### Direct Mode
 
 **Headers:**
+
 - `X-SAP-URL: <sap-url>` (required)
 - `X-SAP-Client: <client-number>` (required)
 - `X-SAP-Auth-Type: jwt|basic` (required)
@@ -248,11 +270,13 @@ curl -H "Authorization: Bearer <token>" \
 **Description:** Direct connection to SAP system without Destination service.
 
 **Use Cases:**
+
 - Development
 - Testing
 - Local deployments
 
 **Example:**
+
 ```bash
 curl -H "Authorization: Basic YWxpY2U6" \
      -H "X-SAP-URL: https://sap.example.com" \
@@ -291,16 +315,16 @@ All endpoints return errors in the following format:
 
 ### Common Error Codes
 
-| Code | Status | Description |
-|------|--------|-------------|
-| `UNAUTHORIZED` | 401 | Missing or invalid authentication |
-| `FORBIDDEN` | 403 | Insufficient permissions |
-| `NOT_FOUND` | 404 | Resource not found |
-| `BAD_REQUEST` | 400 | Invalid request parameters |
-| `INTERNAL_ERROR` | 500 | Internal server error |
-| `BAD_GATEWAY` | 502 | MCP server connection failed |
-| `SERVICE_UNAVAILABLE` | 503 | Service temporarily unavailable |
-| `TIMEOUT` | 504 | Request timeout |
+| Code                  | Status | Description                       |
+| --------------------- | ------ | --------------------------------- |
+| `UNAUTHORIZED`        | 401    | Missing or invalid authentication |
+| `FORBIDDEN`           | 403    | Insufficient permissions          |
+| `NOT_FOUND`           | 404    | Resource not found                |
+| `BAD_REQUEST`         | 400    | Invalid request parameters        |
+| `INTERNAL_ERROR`      | 500    | Internal server error             |
+| `BAD_GATEWAY`         | 502    | MCP server connection failed      |
+| `SERVICE_UNAVAILABLE` | 503    | Service temporarily unavailable   |
+| `TIMEOUT`             | 504    | Request timeout                   |
 
 ### Example Error Response
 
@@ -351,6 +375,7 @@ Cloud LLM Hub implements the Model Context Protocol (MCP) specification. All MCP
 ### MCP Tool Examples
 
 **Get Object List:**
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -367,6 +392,7 @@ Cloud LLM Hub implements the Model Context Protocol (MCP) specification. All MCP
 ```
 
 **Get Object Details:**
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -395,4 +421,3 @@ For full list of available tools, see [submodules/mcp-abap-adt/README.md](../sub
 
 **Last Updated:** 2025-11-05  
 **API Version:** 1.0
-

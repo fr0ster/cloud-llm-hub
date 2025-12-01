@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * Test cloud-llm-hub ABAP Connection via MCP GetTable
- * 
+ *
  * This test validates cloud-llm-hub proxy functionality:
  * 1. Calls /mcp/stream/http endpoint with JWT auth
  * 2. Executes GetTable tool for T000 table
  * 3. Verifies auto-refresh works through cloud-llm-hub
- * 
+ *
  * Usage:
  *   node test/abap-connection.test.js
  */
@@ -35,13 +35,13 @@ function log(symbol, color, message, data) {
 function loadEnv() {
   const envPath = path.join(__dirname, '..', '.env');
   const env = {};
-  
+
   if (fs.existsSync(envPath)) {
     const content = fs.readFileSync(envPath, 'utf-8');
-    content.split('\n').forEach(line => {
+    content.split('\n').forEach((line) => {
       line = line.trim();
       if (!line || line.startsWith('#')) return;
-      
+
       const match = line.match(/^([^=]+)=(.*)$/);
       if (match) {
         const key = match[1].trim();
@@ -53,7 +53,7 @@ function loadEnv() {
   } else {
     log('⚠', colors.yellow, `No .env file found at ${envPath}\n`);
   }
-  
+
   return env;
 }
 
@@ -65,10 +65,10 @@ const config = {
   host: process.env.TEST_HOST || 'localhost',
   port: process.env.TEST_PORT || 4004,
   path: '/mcp/stream/http',
-  
+
   // cloud-llm-hub auth (Basic auth for dev: ali:ali)
   authHeader: process.env.AUTH_HEADER || 'Basic YWxpOmFsaQ==',
-  
+
   // SAP connection details (passed in headers to cloud-llm-hub)
   sapUrl: process.env.SAP_URL || dotenv.SAP_URL,
   jwtToken: process.env.SAP_JWT_TOKEN || dotenv.SAP_JWT_TOKEN,
@@ -128,7 +128,7 @@ function mcpRequest(method, params) {
     const headers = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
-      'Authorization': config.authHeader,
+      Authorization: config.authHeader,
       // SAP headers - passed to cloud-llm-hub
       'X-SAP-URL': config.sapUrl,
       'X-SAP-JWT-Token': config.jwtToken,
@@ -152,7 +152,7 @@ function mcpRequest(method, params) {
 
     const req = http.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         if (res.statusCode !== 200) {
           reject(new Error(`HTTP ${res.statusCode}: ${data}`));
@@ -161,7 +161,7 @@ function mcpRequest(method, params) {
 
         try {
           const lines = data.trim().split('\n');
-          const responses = lines.map(line => JSON.parse(line));
+          const responses = lines.map((line) => JSON.parse(line));
           resolve(responses);
         } catch (err) {
           reject(new Error(`Failed to parse response: ${err.message}\nData: ${data}`));
@@ -238,7 +238,7 @@ async function runTest() {
     } catch (err) {
       log('✗', colors.red, 'GetTable failed', { error: err.message });
       failed++;
-      
+
       // Helpful error messages
       if (err.message.includes('401')) {
         console.log('');
@@ -257,9 +257,8 @@ async function runTest() {
       log('✗', colors.red, `${failed} test(s) failed, ${passed} passed`);
     }
     console.log('============================================================\n');
-    
+
     process.exit(failed > 0 ? 1 : 0);
-    
   } catch (error) {
     console.log('');
     log('✗', colors.red, 'Unexpected error', {
@@ -270,7 +269,7 @@ async function runTest() {
     console.log('\n============================================================');
     log('✗', colors.red, 'Tests failed');
     console.log('============================================================\n');
-    
+
     process.exit(1);
   }
 }

@@ -16,11 +16,13 @@ This guide covers monitoring strategies, metrics, dashboards, and alerting for C
 #### Response Time
 
 **Targets:**
+
 - P50 (median): < 500ms
 - P95: < 2s
 - P99: < 5s
 
 **Monitoring:**
+
 ```bash
 # Check response times
 cf logs cloud-llm-hub-srv --recent | grep -E "response-time|duration"
@@ -30,16 +32,19 @@ curl https://your-app.cfapps.eu10.hana.ondemand.com/metrics
 ```
 
 **Alert Thresholds:**
+
 - P95 > 5s: Warning
 - P95 > 10s: Critical
 
 #### Error Rate
 
 **Targets:**
+
 - Error rate: < 1%
 - Critical threshold: > 5%
 
 **Monitoring:**
+
 ```bash
 # Count errors
 cf logs cloud-llm-hub-srv --recent | grep -i error | wc -l
@@ -52,17 +57,20 @@ echo "Error rate: $ERROR_RATE%"
 ```
 
 **Alert Thresholds:**
+
 - Error rate > 1%: Warning
 - Error rate > 5%: Critical
 
 #### Request Rate
 
 **Metrics:**
+
 - Requests per second (RPS)
 - Requests per minute (RPM)
 - Peak load
 
 **Monitoring:**
+
 ```bash
 # Count requests per minute
 cf logs cloud-llm-hub-srv --recent | grep -E "GET|POST" | wc -l
@@ -71,11 +79,13 @@ cf logs cloud-llm-hub-srv --recent | grep -E "GET|POST" | wc -l
 #### Active Connections
 
 **Metrics:**
+
 - Concurrent SSE connections
 - Concurrent Stream-HTTP sessions
 - Total active connections
 
 **Alert Thresholds:**
+
 - > 80% capacity: Warning
 - > 95% capacity: Critical
 
@@ -84,11 +94,13 @@ cf logs cloud-llm-hub-srv --recent | grep -E "GET|POST" | wc -l
 #### XSUAA Authentication
 
 **Metrics:**
+
 - Token refresh success rate
 - Authentication failures
 - Token expiration rate
 
 **Monitoring:**
+
 ```bash
 # Check authentication failures
 cf logs cloud-llm-hub-srv --recent | grep -i "401\|unauthorized" | wc -l
@@ -98,40 +110,47 @@ cf logs cloud-llm-hub-srv --recent | grep -i "token.*refresh"
 ```
 
 **Alert Thresholds:**
+
 - Auth failures > 10/minute: Warning
 - Auth failures > 50/minute: Critical
 
 #### Destination Service
 
 **Metrics:**
+
 - Destination resolution time
 - Destination resolution failures
 - Cache hit rate
 
 **Monitoring:**
+
 ```bash
 # Check destination resolution
 cf logs cloud-llm-hub-srv --recent | grep -i "destination"
 ```
 
 **Alert Thresholds:**
+
 - Resolution time > 500ms: Warning
 - Resolution failures > 5%: Warning
 
 #### SAP Connectivity
 
 **Metrics:**
+
 - SAP connection success rate
 - SAP response time
 - Connection timeouts
 
 **Monitoring:**
+
 ```bash
 # Check SAP connection errors
 cf logs cloud-llm-hub-srv --recent | grep -i "sap.*timeout\|connection.*failed"
 ```
 
 **Alert Thresholds:**
+
 - Connection failures > 5%: Warning
 - Response time > 10s: Warning
 
@@ -140,11 +159,13 @@ cf logs cloud-llm-hub-srv --recent | grep -i "sap.*timeout\|connection.*failed"
 #### Memory Usage
 
 **Targets:**
+
 - Normal: < 70%
 - Warning: > 80%
 - Critical: > 90%
 
 **Monitoring:**
+
 ```bash
 # Check memory usage
 cf app cloud-llm-hub-srv | grep memory
@@ -156,11 +177,13 @@ cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 #### CPU Usage
 
 **Targets:**
+
 - Normal: < 70%
 - Warning: > 80%
 - Critical: > 90%
 
 **Monitoring:**
+
 ```bash
 # Check CPU usage
 cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
@@ -169,11 +192,13 @@ cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 #### Disk Usage
 
 **Targets:**
+
 - Normal: < 70%
 - Warning: > 80%
 - Critical: > 90%
 
 **Monitoring:**
+
 ```bash
 # Check disk usage
 cf ssh cloud-llm-hub-srv -c "df -h"
@@ -184,15 +209,18 @@ cf ssh cloud-llm-hub-srv -c "df -h"
 #### MCP Server Cache
 
 **Metrics:**
+
 - Cache hit rate
 - Cache size
 - Cache evictions
 
 **Targets:**
+
 - Cache hit rate: > 80%
 - Cache size: Monitor growth
 
 **Monitoring:**
+
 ```bash
 # Check cache operations (from application logs)
 cf logs cloud-llm-hub-srv --recent | grep -i "cache"
@@ -207,12 +235,14 @@ cf logs cloud-llm-hub-srv --recent | grep -i "cache"
 #### Critical Alerts (P0)
 
 **Triggers:**
+
 - Health endpoint down > 2 minutes
 - Error rate > 10%
 - All instances down
 - Authentication service unavailable
 
 **Actions:**
+
 - Immediate notification (SMS, PagerDuty)
 - On-call escalation
 - Auto-restart attempt
@@ -220,12 +250,14 @@ cf logs cloud-llm-hub-srv --recent | grep -i "cache"
 #### Warning Alerts (P1)
 
 **Triggers:**
+
 - Response time P95 > 5s
 - Error rate > 5%
 - Memory usage > 80%
 - Cache hit rate < 50%
 
 **Actions:**
+
 - Email notification
 - Dashboard alert
 - Investigation required
@@ -233,11 +265,13 @@ cf logs cloud-llm-hub-srv --recent | grep -i "cache"
 #### Info Alerts
 
 **Triggers:**
+
 - Deployment completed
 - Configuration changes
 - Scheduled maintenance
 
 **Actions:**
+
 - Log entry
 - Dashboard notification
 
@@ -280,6 +314,7 @@ Action: Scale up or investigate memory leak
 #### Overview Dashboard
 
 **Panels:**
+
 1. **Health Status** - Current health check status
 2. **Request Rate** - Requests per second/minute
 3. **Response Time** - P50, P95, P99
@@ -290,6 +325,7 @@ Action: Scale up or investigate memory leak
 #### Service Health Dashboard
 
 **Panels:**
+
 1. **XSUAA Status** - Authentication health
 2. **Destination Service** - Resolution success rate
 3. **SAP Connectivity** - Connection status
@@ -298,6 +334,7 @@ Action: Scale up or investigate memory leak
 #### Performance Dashboard
 
 **Panels:**
+
 1. **Response Time Distribution** - Histogram
 2. **Endpoint Performance** - Per-endpoint metrics
 3. **Cache Performance** - Hit rate, size
@@ -308,6 +345,7 @@ Action: Scale up or investigate memory leak
 #### Cloud Foundry Metrics
 
 **Using CF CLI:**
+
 ```bash
 # Get app metrics
 cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
@@ -319,6 +357,7 @@ cf service cloud-llm-hub-srv
 #### Prometheus (If Integrated)
 
 **Metrics Endpoint:**
+
 ```yaml
 # Example metrics endpoint
 /metrics:
@@ -329,6 +368,7 @@ cf service cloud-llm-hub-srv
 ```
 
 **Prometheus Queries:**
+
 ```promql
 # Request rate
 rate(cloud_llm_hub_requests_total[5m])
@@ -343,6 +383,7 @@ histogram_quantile(0.95, cloud_llm_hub_response_time_seconds_bucket)
 #### Grafana Dashboards
 
 **Recommended Dashboards:**
+
 1. **Cloud LLM Hub Overview** - Key metrics
 2. **Service Health** - Service dependencies
 3. **Performance Analysis** - Detailed performance metrics
@@ -374,16 +415,19 @@ export CDS_LOG_LEVEL=info
 #### Cloud Foundry Logs
 
 **Stream Logs:**
+
 ```bash
 cf logs cloud-llm-hub-srv
 ```
 
 **Recent Logs:**
+
 ```bash
 cf logs cloud-llm-hub-srv --recent
 ```
 
 **Filtered Logs:**
+
 ```bash
 # Errors only
 cf logs cloud-llm-hub-srv --recent | grep -i error
@@ -398,12 +442,14 @@ cf logs cloud-llm-hub-srv --recent | grep "2025-11-05"
 #### Log Aggregation
 
 **External Log Aggregation:**
+
 - **ELK Stack** (Elasticsearch, Logstash, Kibana)
 - **Splunk**
 - **Datadog**
 - **CloudWatch** (AWS)
 
 **Log Shipping:**
+
 ```bash
 # Export logs
 cf logs cloud-llm-hub-srv --recent > logs-$(date +%Y%m%d).log
@@ -419,21 +465,25 @@ cf logs cloud-llm-hub-srv | curl -X POST \
 #### Common Patterns
 
 **Authentication Errors:**
+
 ```bash
 cf logs cloud-llm-hub-srv --recent | grep -E "401|unauthorized|token"
 ```
 
 **Connection Timeouts:**
+
 ```bash
 cf logs cloud-llm-hub-srv --recent | grep -E "timeout|ETIMEDOUT"
 ```
 
 **Destination Errors:**
+
 ```bash
 cf logs cloud-llm-hub-srv --recent | grep -i "destination"
 ```
 
 **MCP Errors:**
+
 ```bash
 cf logs cloud-llm-hub-srv --recent | grep -i "mcp"
 ```
@@ -489,6 +539,7 @@ fi
 **Endpoint:** `GET /odata/v4/mcp/Health()`
 
 **Expected Response:**
+
 ```json
 {
   "status": "UP",
@@ -499,16 +550,19 @@ fi
 #### Service Health
 
 **XSUAA:**
+
 ```bash
 cf service cloud-llm-hub-auth
 ```
 
 **Destination:**
+
 ```bash
 cf service cloud-llm-hub-destination
 ```
 
 **Connectivity:**
+
 ```bash
 cf service cloud-llm-hub-connectivity
 ```
@@ -516,6 +570,7 @@ cf service cloud-llm-hub-connectivity
 #### SAP System Health
 
 **Probe Destination:**
+
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
      "https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/ProbeDestination?destination=SAP_PROD_DEST"
@@ -538,21 +593,21 @@ app.get('/metrics', async (req, res) => {
     requests: {
       total: requestCount,
       errors: errorCount,
-      rate: requestRate
+      rate: requestRate,
     },
     responseTime: {
       p50: responseTimeP50,
       p95: responseTimeP95,
-      p99: responseTimeP99
+      p99: responseTimeP99,
     },
     connections: {
       active: activeConnections,
-      max: maxConnections
+      max: maxConnections,
     },
     cache: {
       hitRate: cacheHitRate,
-      size: cacheSize
-    }
+      size: cacheSize,
+    },
   });
 });
 ```
@@ -562,11 +617,13 @@ app.get('/metrics', async (req, res) => {
 #### Cloud Foundry Metrics
 
 **Get App Stats:**
+
 ```bash
 cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 ```
 
 **Response:**
+
 ```json
 {
   "0": {
@@ -656,4 +713,3 @@ cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 
 **Last Updated:** 2025-11-05  
 **Version:** 1.0
-

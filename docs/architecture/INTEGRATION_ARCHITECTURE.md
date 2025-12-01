@@ -115,12 +115,14 @@
 **Authentication:** Basic (username/password) or JWT (direct token)
 
 **Use Cases:**
+
 - Local development
 - stdio mode (Cline, Cursor)
 - Simple integrations
 - Testing
 
 **Configuration:**
+
 ```typescript
 {
   url: "https://my-abap-system.com:443",
@@ -133,6 +135,7 @@
 ```
 
 **Flow:**
+
 1. Client sends headers: `X-SAP-URL`, `X-SAP-AUTH-TYPE`, credentials
 2. `extractSapContext()` extracts config from headers
 3. `validateAuthHeaders()` validates (from `@mcp-abap-adt/header-validator`)
@@ -147,6 +150,7 @@
 **Authentication:** Via BTP Destination Service
 
 **Use Cases:**
+
 - Production deployments
 - Enterprise scenarios
 - On-premise systems (via Cloud Connector)
@@ -154,6 +158,7 @@
 - Multi-tenant SaaS
 
 **Configuration:**
+
 ```typescript
 {
   destinationName: "MY_ABAP_SYSTEM",
@@ -166,6 +171,7 @@
 ```
 
 **Flow:**
+
 1. Client sends header: `X-SAP-Destination: MY_ABAP_SYSTEM`
 2. `extractSapContext()` resolves destination via `resolveDestinationSapConfig()`
 3. Destination Service provides URL, auth type, credentials
@@ -182,6 +188,7 @@
 **Location:** `srv/mcp-manager.ts::getMCPServer()`
 
 **Process:**
+
 ```typescript
 // 1. Extract SAP config from headers
 const sapContext = await extractSapContext(req);
@@ -198,11 +205,12 @@ const mcpServerInstance = new mcp_abap_adt_server({
   connection, // Pass connection for destination-based
   // OR omit connection for direct (uses sessionContext)
   allowProcessExit: false,
-  registerSignalHandlers: false
+  registerSignalHandlers: false,
 });
 ```
 
 **Key Points:**
+
 - Destination-based: Pass `connection` directly
 - Direct (Basic/JWT): Omit `connection`, rely on `sessionContext`
 
@@ -211,6 +219,7 @@ const mcpServerInstance = new mcp_abap_adt_server({
 **Location:** `srv/server.ts::handleStreamHTTP()`
 
 **Process:**
+
 ```typescript
 // 1. Get sessionContext from mcp-abap-adt
 const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
@@ -230,6 +239,7 @@ await mcpSessionContext.run(
 ```
 
 **Key Points:**
+
 - `sessionContext` is AsyncLocalStorage from mcp-abap-adt
 - Each HTTP request gets its own context
 - `getManagedConnection()` reads from context automatically
@@ -252,6 +262,7 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
 ```
 
 **Key Points:**
+
 - Single entry point for connection creation
 - Automatic type selection based on destination presence
 - Consistent interface (`AbapConnection`)
@@ -261,6 +272,7 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
 **Location:** `srv/mcp-manager.ts::extractSapContext()`
 
 **Process:**
+
 ```typescript
 // Priority 1: BTP Destination
 if (destinationName) {
@@ -275,6 +287,7 @@ if (!validationResult.isValid) {
 ```
 
 **Key Points:**
+
 - Uses `@mcp-abap-adt/header-validator` for direct connections
 - Centralized validation logic
 - Consistent error messages
@@ -378,6 +391,7 @@ MCP Server → ADT Tools → Cloud SDK → ABAP System
 **Decision:** Use both direct connections (via base library) and destination connections (via extension)
 
 **Rationale:**
+
 - Direct connections: Simple, fast, suitable for development
 - Destination connections: Enterprise-grade, secure, production-ready
 - Both needed for different use cases
@@ -387,6 +401,7 @@ MCP Server → ADT Tools → Cloud SDK → ABAP System
 **Decision:** Don't pass `sapConfig` to MCP server constructor for direct connections
 
 **Rationale:**
+
 - Allows per-request JWT tokens (auto-refresh)
 - Supports multiple concurrent requests with different tokens
 - Matches mcp-abap-adt standalone behavior
@@ -396,6 +411,7 @@ MCP Server → ADT Tools → Cloud SDK → ABAP System
 **Decision:** Cache MCP server instances, not just connections
 
 **Rationale:**
+
 - MCP server initialization is expensive
 - Connections are managed by base library (for direct) or Cloud SDK (for destinations)
 - Cache key includes destination/auth type/client for proper isolation
@@ -405,6 +421,7 @@ MCP Server → ADT Tools → Cloud SDK → ABAP System
 **Decision:** Create `csrfConfig.ts` with shared constants
 
 **Rationale:**
+
 - Synchronize retry logic between axios and Cloud SDK implementations
 - Consistent error messages
 - Easy to update parameters in one place
@@ -423,4 +440,3 @@ MCP Server → ADT Tools → Cloud SDK → ABAP System
 **Author:** AI Assistant  
 **Last Updated:** December 2025  
 **Version:** 1.0
-

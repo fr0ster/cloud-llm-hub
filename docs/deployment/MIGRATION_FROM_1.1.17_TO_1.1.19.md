@@ -47,6 +47,7 @@ This guide helps you migrate `cloud-llm-hub` from `mcp-abap-adt` v1.1.17 to v1.1
 **Change:** Removed aggressive URL cleaning
 
 **Before (v1.1.17):**
+
 ```typescript
 // mcp-abap-adt cleaned URLs aggressively
 url = url.replace(/\/+$/, '').replace(/^\/+/, '');
@@ -54,16 +55,19 @@ url = url.replace(/\/+$/, '').replace(/^\/+/, '');
 ```
 
 **After (v1.1.19):**
+
 ```typescript
 // Only basic trimming
 url = url.trim();
 ```
 
 **Impact on cloud-llm-hub:**
+
 - ✅ No changes needed - cloud-llm-hub already uses clean URLs
 - ✅ Verify URLs from Destinations are clean
 
 **Action Required:**
+
 - [ ] Verify Destination URLs are clean (no trailing slashes, etc.)
 - [ ] Test with various URL formats
 
@@ -72,22 +76,26 @@ url = url.trim();
 **Change:** Session storage disabled by default (stateless mode)
 
 **Before (v1.1.17):**
+
 ```typescript
 // Session storage enabled by default
 // Sessions persisted to disk
 ```
 
 **After (v1.1.19):**
+
 ```typescript
 // Session storage disabled by default
 // Enable via MCP_ENABLE_SESSION_STORAGE=true
 ```
 
 **Impact on cloud-llm-hub:**
+
 - ✅ Already configured in `srv/env-setup.ts`
 - ✅ Default: stateless mode (no session persistence)
 
 **Action Required:**
+
 - [x] Verify `MCP_ENABLE_SESSION_STORAGE` is set in `env-setup.ts`
 - [ ] Test with session storage enabled (if needed)
 - [ ] Test with session storage disabled (default)
@@ -97,22 +105,26 @@ url = url.trim();
 **Change:** Lazy initialization per destination
 
 **Before (v1.1.17):**
+
 ```typescript
 // AuthBroker created at startup
 // Single instance for all requests
 ```
 
 **After (v1.1.19):**
+
 ```typescript
 // AuthBroker created on-demand per destination
 // Map-based caching: authBrokers: Map<string, AuthBroker>
 ```
 
 **Impact on cloud-llm-hub:**
+
 - ✅ No changes needed - handled by base library
 - ✅ Benefits automatically (reduced memory usage)
 
 **Action Required:**
+
 - [x] Verify no custom AuthBroker creation in cloud-llm-hub
 - [ ] Monitor memory usage (should be lower)
 
@@ -125,6 +137,7 @@ url = url.trim();
 **Package:** `@mcp-abap-adt/header-validator`
 
 **Usage:**
+
 ```typescript
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 
@@ -135,11 +148,13 @@ if (!validationResult.isValid) {
 ```
 
 **Benefits:**
+
 - Centralized header validation
 - Consistent error messages
 - Priority-based selection (SAP Destination > MCP Destination > JWT > Basic)
 
 **Action Required:**
+
 - [x] Update `srv/mcp-manager.ts` to use `validateAuthHeaders`
 - [ ] Remove duplicated validation logic (if any)
 
@@ -148,14 +163,17 @@ if (!validationResult.isValid) {
 **Package:** `@mcp-abap-adt/auth-broker`
 
 **Usage:**
+
 - Used internally by mcp-abap-adt
 - No direct usage in cloud-llm-hub needed
 
 **Benefits:**
+
 - Automatic token refresh
 - Per-destination caching
 
 **Action Required:**
+
 - [x] Add to `package.json` dependencies
 - [ ] Verify token refresh works correctly
 
@@ -164,15 +182,18 @@ if (!validationResult.isValid) {
 **Package:** `@mcp-abap-adt/adt-clients` v0.1.32
 
 **Changes:**
+
 - Migration to `CrudClient` and `SharedBuilder`
 - Eliminates manual URL construction
 - Improved code consistency
 
 **Impact on cloud-llm-hub:**
+
 - ✅ No changes needed - used through public API
 - ✅ Benefits automatically (better consistency)
 
 **Action Required:**
+
 - [x] Update `package.json` to `^0.1.32`
 - [ ] Test ADT tool handlers
 
@@ -196,12 +217,14 @@ if (!validationResult.isValid) {
 ```
 
 **Commands:**
+
 ```bash
 npm install
 npm run build
 ```
 
 **Action Required:**
+
 - [x] Update `package.json`
 - [x] Run `npm install`
 - [x] Verify `npx cds build` succeeds
@@ -213,6 +236,7 @@ npm run build
 **File:** `srv/mcp-manager.ts`
 
 **Before:**
+
 ```typescript
 // Custom validation logic
 if (!req.headers['x-sap-url']) {
@@ -221,6 +245,7 @@ if (!req.headers['x-sap-url']) {
 ```
 
 **After:**
+
 ```typescript
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 
@@ -232,6 +257,7 @@ const config = validationResult.config;
 ```
 
 **Action Required:**
+
 - [x] Update `extractSapContext()` to use `validateAuthHeaders`
 - [ ] Remove duplicated validation logic
 
@@ -240,6 +266,7 @@ const config = validationResult.config;
 **File:** `srv/env-setup.ts`
 
 **Verify:**
+
 ```typescript
 if (!process.env.MCP_ENABLE_SESSION_STORAGE) {
   process.env.MCP_ENABLE_SESSION_STORAGE = 'false';
@@ -251,6 +278,7 @@ if (!process.env.MCP_SESSION_DIR) {
 ```
 
 **Action Required:**
+
 - [x] Verify `env-setup.ts` has session storage config
 - [ ] Test with session storage enabled/disabled
 
@@ -259,6 +287,7 @@ if (!process.env.MCP_SESSION_DIR) {
 **File:** `srv/connections/csrfConfig.ts`
 
 **Create shared config:**
+
 ```typescript
 export const CSRF_CONFIG = {
   RETRY_COUNT: 3,
@@ -280,24 +309,28 @@ private async fetchCsrfToken(url: string): Promise<string> {
 ```
 
 **Action Required:**
+
 - [x] Create `csrfConfig.ts`
 - [x] Update `CloudSdkAbapConnection` to use shared config
 
 ### Step 3: Update Documentation
 
 **Files:**
+
 - `docs/architecture/INTEGRATION_ARCHITECTURE.md` (new)
 - `docs/contributors/MCP_ABAP_ADT_USAGE.md` (new)
 - `docs/contributors/CODE_SHARING_POLICY.md` (new)
 - `docs/contributors/MCP_ABAP_ADT_INTEGRATION.md` (update)
 
 **Action Required:**
+
 - [x] Create new documentation files
 - [ ] Update existing docs with references
 
 ### Step 4: Testing
 
 **Test Scenarios:**
+
 - [ ] Direct Basic auth connection
 - [ ] Direct JWT auth connection
 - [ ] BTP Destination (Internet)
@@ -309,6 +342,7 @@ private async fetchCsrfToken(url: string): Promise<string> {
 - [ ] Error handling with invalid headers
 
 **Action Required:**
+
 - [ ] Run full test suite
 - [ ] Test all connection types
 - [ ] Verify no regressions
@@ -320,6 +354,7 @@ private async fetchCsrfToken(url: string): Promise<string> {
 ### Environment Variables
 
 **New Variables:**
+
 ```bash
 # Session storage (optional)
 MCP_ENABLE_SESSION_STORAGE=false  # Default: false (stateless)
@@ -327,12 +362,14 @@ MCP_SESSION_DIR=./sessions         # Default: ./sessions
 ```
 
 **Existing Variables (unchanged):**
+
 ```bash
 MCP_SKIP_AUTO_START=true
 MCP_SKIP_ENV_LOAD=true
 ```
 
 **Action Required:**
+
 - [x] Verify `env-setup.ts` sets new variables
 - [ ] Update deployment documentation
 - [ ] Update `.env` template (if used)
@@ -340,14 +377,17 @@ MCP_SKIP_ENV_LOAD=true
 ### Package Dependencies
 
 **Updated:**
+
 - `@mcp-abap-adt/adt-clients`: `^0.1.27` → `^0.1.32`
 - `@modelcontextprotocol/sdk`: `^1.17.2` → `^1.23.0`
 
 **New:**
+
 - `@mcp-abap-adt/auth-broker`: `^0.1.2`
 - `@mcp-abap-adt/header-validator`: `^0.1.2`
 
 **Action Required:**
+
 - [x] Update `package.json`
 - [x] Run `npm install`
 - [ ] Verify no dependency conflicts
@@ -431,12 +471,14 @@ MCP_SKIP_ENV_LOAD=true
 ### If Migration Fails
 
 1. **Revert Dependencies:**
+
    ```bash
    git checkout HEAD~1 package.json
    npm install
    ```
 
 2. **Revert Code Changes:**
+
    ```bash
    git checkout HEAD~1 srv/
    ```
@@ -513,4 +555,3 @@ MCP_SKIP_ENV_LOAD=true
 **Author:** AI Assistant  
 **Last Updated:** December 2025  
 **Version:** 1.0
-
