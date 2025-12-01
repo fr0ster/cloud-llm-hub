@@ -365,9 +365,9 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [x] Handles all auth methods: SAP Destination, MCP Destination, JWT, Basic
   - [x] Priority-based selection (SAP Destination > MCP Destination > JWT > Basic)
   - [x] Detailed error messages and validation warnings
-  - [ ] Refactor `srv/mcp-manager.ts` `extractSapContext()` to use `validateAuthHeaders`
-  - [ ] Refactor `srv/server.ts` SAP config extraction to use `validateAuthHeaders`
-  - [ ] Remove duplicated extraction logic from cloud-llm-hub
+  - [x] Refactor `srv/mcp-manager.ts` `extractSapContext()` to use `validateAuthHeaders`
+  - [x] Remove duplicated extraction logic (`normalizeAuthType` removed)
+  - [ ] Refactor `srv/server.ts` SAP config extraction to use `validateAuthHeaders` (if needed)
   - [ ] Add unit tests for extraction utility (⏳ Deferred - no test framework)
   - [ ] Validate header parsing consistency
 
