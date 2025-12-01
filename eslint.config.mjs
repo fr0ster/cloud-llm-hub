@@ -12,7 +12,8 @@ export default [
       'gen/**',
       '@cds-models/**',
       'submodules/**',
-      'node_modules/**',
+      // prettier-ignore
+      "node_modules/**",
       '**/node_modules/**',
       '**/dist/**',
       '**/gen/**',
