@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Removed
+- **Token Refresh Functionality**: Removed all token refresh logic from cloud-llm-hub
+  - Token refresh is now **client's responsibility** for Direct JWT connections
+  - For BTP Destinations, token management remains automatic via BTP infrastructure
+  - Removed extraction and processing of `refreshToken`, `uaaUrl`, `uaaClientId`, and `uaaClientSecret` from HTTP headers
+  - Removed all refresh token logging and validation code
+  - Updated documentation to clarify that cloud-llm-hub does NOT implement token refresh
+
+### Changed
+- **Documentation**: Updated `docs/contributors/CONNECTION_ARCHITECTURE.md` to clarify token management responsibilities
+  - BTP Destinations: Token management is automatic via BTP (no refresh token needed)
+  - Direct JWT: Clients must refresh tokens themselves and send new JWT token in each request
+  - Removed references to "mcp-abap-adt compatibility" for refresh tokens
+
+### Technical Details
+- **Code Changes**:
+  - `srv/server.ts`: Removed extraction and passing of refreshToken and UAA credentials
+  - `srv/mcp-manager.ts`: Removed refresh token handling and UAA credentials processing
+  - All refresh token related logging and validation removed
+- **Rationale**: 
+  - Separation of concerns: Token refresh logic belongs to authentication layer (BTP or client), not to MCP proxy
+  - Production-ready: In production on BTP, token management is handled by BTP infrastructure
+  - Client control: Clients have full control over token lifecycle and refresh timing
+  - No duplication: Avoids duplicating token refresh logic that already exists in mcp-abap-adt or BTP
+
 ## [1.0.0] - 2025-11-05
 ### Added
 - **Comprehensive Consumer Onboarding Documentation:**

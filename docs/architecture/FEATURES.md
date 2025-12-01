@@ -18,7 +18,6 @@ curl -sSL https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/upd
 
 **Benefits:**
 - ✅ No manual configuration
-- ✅ Automatic token management
 - ✅ Multiple connection support
 - ✅ YAML-driven setup
 
@@ -35,7 +34,7 @@ Built on SAP CAP with enterprise-grade security.
 - ✅ Production-ready security
 - ✅ Integration with SAP BTP security
 - ✅ No credentials in code
-- ✅ Automatic token refresh
+- ✅ Token management via BTP (for destinations) or client (for direct JWT)
 
 ### 3. **Multiple Transport Options**
 Choose the best transport for your use case.
@@ -58,7 +57,7 @@ Works with any SAP system.
 **Cloud Systems:**
 - Direct URL connection
 - JWT authentication
-- Automatic token refresh
+- Token refresh handled by client or BTP
 
 **On-Premise Systems:**
 - SAP Cloud Connector integration

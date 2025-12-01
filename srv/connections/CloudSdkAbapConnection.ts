@@ -317,11 +317,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // Convert Cloud SDK response to AxiosResponse format
       return this.convertToAxiosResponse(response, requestUrl);
     } catch (error: any) {
-      logger.error(`Request failed: ${error?.message}`, {
-        type: 'REQUEST_ERROR',
+      // Use synchronized error handling from errorUtils
+      const { logErrorSafely } = await import('../lib/errorUtils');
+      logErrorSafely(logger, 'ADT request', error, {
         url: requestUrl,
         method: normalizedMethod,
-        status: error?.response?.status || error?.statusCode,
         destinationName: this.destinationName
       });
 
@@ -354,10 +354,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
           return this.convertToAxiosResponse(retryResponse, requestUrl);
         } catch (retryError: any) {
-          logger.error('Retry request also failed', {
-            type: 'REQUEST_RETRY_ERROR',
+          logErrorSafely(logger, 'ADT request retry', retryError, {
             url: requestUrl,
-            error: retryError?.message
+            method: normalizedMethod,
+            destinationName: this.destinationName
           });
           throw retryError;
         }

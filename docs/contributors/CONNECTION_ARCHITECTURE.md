@@ -1,65 +1,65 @@
-# 🏗️ Архітектура з'єднань (Connection Architecture)
+# Connection Architecture
 
-**Дата:** 1 грудня 2025  
-**Версія:** 1.0  
-**Автор:** AI Assistant
-
----
-
-## 📋 Зміст
-
-1. [Огляд](#огляд)
-2. [Два типи з'єднань](#два-типи-зєднань)
-3. [Коли використовувати що](#коли-використовувати-що)
-4. [Технічні деталі](#технічні-деталі)
-5. [Приклади використання](#приклади-використання)
+**Date:** December 1, 2025  
+**Version:** 1.0  
+**Author:** AI Assistant
 
 ---
 
-## 🎯 Огляд
+## 📋 Table of Contents
 
-`cloud-llm-hub` **НЕ дублює** функціональність `@mcp-abap-adt/connection`, а **розширює** її для роботи з SAP BTP Cloud.
+1. [Overview](#overview)
+2. [Two Connection Types](#two-connection-types)
+3. [When to Use What](#when-to-use-what)
+4. [Technical Details](#technical-details)
+5. [Usage Examples](#usage-examples)
 
-### Чому два типи з'єднань?
+---
+
+## 🎯 Overview
+
+`cloud-llm-hub` **does NOT duplicate** functionality of `@mcp-abap-adt/connection`, but **extends** it for SAP BTP Cloud integration.
+
+### Why Two Connection Types?
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              Базова функціональність (mcp-abap-adt)         │
+│         Base Functionality (mcp-abap-adt)                   │
 │                                                              │
 │  ✅ MCP Protocol (stdio, HTTP, SSE)                         │
 │  ✅ ABAP ADT Handlers (Classes, Programs, etc.)             │
 │  ✅ Basic Authentication (username/password)                │
-│  ✅ JWT Authentication (direct token)                       │
+│  ✅ JWT Authentication (direct token)                         │
 │  ✅ Direct ABAP connections (axios-based)                   │
 └─────────────────────────────────────────────────────────────┘
                            │
-                           │ РОЗШИРЮЄТЬСЯ ↓
+                           │ EXTENDED ↓
                            │
 ┌─────────────────────────▼─────────────────────────────────┐
-│         Розширення для BTP Cloud (cloud-llm-hub)          │
+│      Extension for BTP Cloud (cloud-llm-hub)               │
 │                                                            │
 │  🆕 BTP Destination Service integration                   │
 │  🆕 Cloud Connector support (On-Premise)                  │
 │  🆕 Multiple auth types (OAuth2, SAML)                    │
 │  🆕 Principal Propagation                                 │
-│  🆕 Managed token refresh через BTP                       │
 │  🆕 Enterprise-ready REST API (CAP)                       │
+│  🆕 Centralized authentication & authorization            │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔧 Два типи з'єднань
+## 🔧 Two Connection Types
 
 ### Type 1: Direct Connection (`@mcp-abap-adt/connection`)
 
-**Коли використовується:**
-- Локальна розробка
+**When to use:**
+- Local development
 - stdio mode (Cline, Cursor, Claude Desktop)
-- Прямі з'єднання до ABAP без BTP
-- Тестування та debugging
+- Direct connections to ABAP without BTP
+- Testing and debugging
 
-**Як працює:**
+**How it works:**
 ```typescript
 import { createAbapConnection, SapConfig } from '@mcp-abap-adt/connection';
 
@@ -74,58 +74,58 @@ const config: SapConfig = {
 const connection = createAbapConnection(config);
 ```
 
-**Технічні деталі:**
+**Technical details:**
 - **HTTP Client:** axios
-- **Authentication:** Basic (username/password) або JWT (токен в header)
-- **Proxy:** Тільки через `HTTP_PROXY` environment variable
-- **Token management:** Manual (передається в config)
+- **Authentication:** Basic (username/password) or JWT (token in header)
+- **Proxy:** Only via `HTTP_PROXY` environment variable
+- **Token management:** Manual (passed in config)
 - **CSRF handling:** axios-based implementation
 - **Session storage:** FileSessionStorage (optional)
 
-**Переваги:**
-- ✅ Простота налаштування (.env file)
-- ✅ Швидкий старт для розробки
-- ✅ Не потребує BTP infrastructure
+**Advantages:**
+- ✅ Simple configuration (.env file)
+- ✅ Fast startup for development
+- ✅ No BTP infrastructure required
 
-**Недоліки:**
-- ❌ Credentials в .env файлі (security risk)
-- ❌ Немає автоматичного token refresh
-- ❌ Не працює з On-Premise через Cloud Connector
-- ❌ Немає централізованого управління destinations
+**Disadvantages:**
+- ❌ Credentials in .env file (security risk)
+- ❌ No automatic token refresh
+- ❌ Doesn't work with On-Premise via Cloud Connector
+- ❌ No centralized destination management
 
 ---
 
 ### Type 2: BTP Destination (`CloudSdkAbapConnection`)
 
-**Коли використовується:**
-- Production deployment на BTP
-- On-Premise ABAP через Cloud Connector
+**When to use:**
+- Production deployment on BTP
+- On-Premise ABAP via Cloud Connector
 - Multi-tenant SaaS applications
-- Enterprise scenarios з Principal Propagation
+- Enterprise scenarios with Principal Propagation
 
-**Як працює:**
+**How it works:**
 ```typescript
 import { CloudSdkAbapConnection } from './connections/CloudSdkAbapConnection';
 
 const connection = new CloudSdkAbapConnection(
   sapConfig,
-  "MY_ABAP_DESTINATION" // Destination name в BTP
+  "MY_ABAP_DESTINATION" // Destination name in BTP
 );
 ```
 
-**Технічні деталі:**
+**Technical details:**
 - **HTTP Client:** SAP Cloud SDK (`executeHttpRequest`)
-- **Authentication:** через BTP Destination Service
+- **Authentication:** via BTP Destination Service
   - BasicAuthentication
   - OAuth2ClientCredentials
   - OAuth2SAMLBearerAssertion
   - Principal Propagation (user context)
-- **Proxy:** Cloud Connector (автоматично через Destination)
-- **Token management:** Автоматичний через BTP
+- **Proxy:** Cloud Connector (automatically via Destination)
+- **Token management:** Automatic via BTP
 - **CSRF handling:** Cloud SDK-based implementation
-- **Configuration:** Централізована в BTP Cockpit
+- **Configuration:** Centralized in BTP Cockpit
 
-**Destination Configuration (приклад):**
+**Destination Configuration (example):**
 ```json
 {
   "Name": "MY_ABAP_DESTINATION",
@@ -140,32 +140,32 @@ const connection = new CloudSdkAbapConnection(
 }
 ```
 
-**Переваги:**
-- ✅ Централізоване управління destinations (BTP Cockpit)
-- ✅ Автоматичний token refresh
-- ✅ Cloud Connector support для On-Premise
+**Advantages:**
+- ✅ Centralized destination management (BTP Cockpit)
+- ✅ Automatic token management via BTP (handled by BTP infrastructure, not refresh token)
+- ✅ Cloud Connector support for On-Premise
 - ✅ Principal Propagation (user context forwarding)
 - ✅ Multi-tenant isolation
-- ✅ Audit logging через BTP
+- ✅ Audit logging via BTP
 - ✅ No credentials in code
 
-**Недоліки:**
-- ❌ Потребує BTP infrastructure
-- ❌ Складніше налаштування
-- ❌ Не працює в локальному stdio mode
+**Disadvantages:**
+- ❌ Requires BTP infrastructure
+- ❌ More complex setup
+- ❌ Doesn't work in local stdio mode
 
 ---
 
-## 🎯 Коли використовувати що?
+## 🎯 When to Use What?
 
 ### Decision Tree
 
 ```
-                    Де запускається код?
+                    Where is code running?
                           │
         ┌─────────────────┴─────────────────┐
         │                                   │
-   Локально / stdio                    BTP Cloud
+   Local / stdio                    BTP Cloud
         │                                   │
         ▼                                   ▼
  Direct Connection              BTP Destination
@@ -184,24 +184,24 @@ const connection = new CloudSdkAbapConnection(
 
 ### Use Case Matrix
 
-| Use Case | Connection Type | Чому? |
-|----------|----------------|-------|
-| **Локальна розробка** | Direct (Basic/JWT) | .env file, простота |
-| **stdio mode (Cline/Cursor)** | Direct (Basic/JWT) | Не потребує BTP |
+| Use Case | Connection Type | Why? |
+|----------|----------------|------|
+| **Local development** | Direct (Basic/JWT) | .env file, simplicity |
+| **stdio mode (Cline/Cursor)** | Direct (Basic/JWT) | No BTP required |
 | **BTP Cloud Production** | BTP Destination | Security, management |
-| **On-Premise через CC** | BTP Destination | ⚠️ ТІЛЬКИ через Destination! |
+| **On-Premise via CC** | BTP Destination | ⚠️ ONLY via Destination! |
 | **Principal Propagation** | BTP Destination | User context forwarding |
-| **Multi-tenant SaaS** | BTP Destination | Isolation, різні destinations |
-| **Development/Test на BTP** | Обидва | Можна обрати зручніший |
+| **Multi-tenant SaaS** | BTP Destination | Isolation, different destinations |
+| **Development/Test on BTP** | Both | Choose the more convenient |
 | **CI/CD Pipeline** | Direct (JWT) | Service account tokens |
 
 ---
 
-## 🔬 Технічні деталі
+## 🔬 Technical Details
 
 ### Interface Compatibility
 
-Обидва типи імплементують `AbapConnection` interface:
+Both types implement the `AbapConnection` interface:
 
 ```typescript
 interface AbapConnection {
@@ -218,10 +218,10 @@ interface AbapConnection {
 }
 ```
 
-**Це дозволяє:**
-- Прозоро підміняти один тип на інший
-- Використовувати однаковий MCP server code
-- Factory pattern для вибору типу
+**This allows:**
+- Transparent substitution of one type for another
+- Using the same MCP server code
+- Factory pattern for type selection
 
 ### CSRF Token Handling
 
@@ -258,10 +258,10 @@ private async fetchCsrfToken(url: string): Promise<string> {
 }
 ```
 
-**Різниця:**
-- Різні HTTP clients (axios vs Cloud SDK)
-- Cloud SDK автоматично додає authentication з Destination
-- Cloud SDK автоматично обробляє proxy через Cloud Connector
+**Difference:**
+- Different HTTP clients (axios vs Cloud SDK)
+- Cloud SDK automatically adds authentication from Destination
+- Cloud SDK automatically handles proxy via Cloud Connector
 
 ### Authentication Flow
 
@@ -298,14 +298,36 @@ User → BTP → cloud-llm-hub → BTP Destination Service
        │                     UAA (SAML assertion)
        │                      │
        └──────────────────────┴──→ ABAP System
-                                   (з user context)
+                                   (with user context)
 ```
+
+### Token Management
+
+**Important:** `cloud-llm-hub` does **NOT** implement token refresh functionality. Token management is handled differently depending on connection type:
+
+**BTP Destination:**
+- Token management is **automatic via BTP infrastructure**
+- BTP Destination Service handles token acquisition, refresh, and lifecycle
+- No refresh token needed - BTP manages everything
+- Tokens are automatically refreshed by BTP when needed
+
+**Direct JWT Connection:**
+- Token refresh is **client's responsibility**
+- `cloud-llm-hub` does **NOT** accept or process refresh tokens
+- Clients must refresh tokens themselves and send new JWT token in each request
+- No automatic token refresh is performed by cloud-llm-hub
+
+**Why this design?**
+- **Separation of concerns:** Token refresh logic belongs to authentication layer (BTP or client), not to MCP proxy
+- **Production-ready:** In production on BTP, token management is handled by BTP infrastructure
+- **Client control:** Clients have full control over token lifecycle and refresh timing
+- **No duplication:** Avoids duplicating token refresh logic that already exists in mcp-abap-adt or BTP
 
 ---
 
-## 💡 Приклади використання
+## 💡 Usage Examples
 
-### Приклад 1: Локальна розробка (stdio mode)
+### Example 1: Local Development (stdio mode)
 
 **.env file:**
 ```bash
@@ -316,7 +338,7 @@ SAP_PASSWORD=SecretPass123
 SAP_CLIENT=100
 ```
 
-**Запуск:**
+**Run:**
 ```bash
 cd submodules/mcp-abap-adt
 npm run build
@@ -340,9 +362,9 @@ node dist/index.js --transport=stdio
 
 ---
 
-### Приклад 2: BTP Cloud Production
+### Example 2: BTP Cloud Production
 
-**BTP Destination (створена в Cockpit):**
+**BTP Destination (created in Cockpit):**
 ```
 Name: PROD_S4HANA
 Type: HTTP
@@ -356,7 +378,7 @@ Additional Properties:
   sap-client=100
 ```
 
-**HTTP Request до cloud-llm-hub:**
+**HTTP Request to cloud-llm-hub:**
 ```http
 POST /mcp/stream-http
 Host: cloud-llm-hub.cfapps.eu10.hana.ondemand.com
@@ -377,27 +399,27 @@ Authorization: Bearer <user-jwt-token>
 }
 ```
 
-**Що відбувається:**
-1. cloud-llm-hub отримує запит з header `X-SAP-Destination: PROD_S4HANA`
-2. `destinationResolver` resolve destination через BTP Destination Service
-3. Створюється `CloudSdkAbapConnection` з destination name
-4. Cloud SDK автоматично:
-   - Отримує OAuth token з UAA
-   - Налаштовує proxy (якщо потрібно)
-   - Додає authentication headers
-5. Виконується ADT request до ABAP
-6. Response повертається до клієнта
+**What happens:**
+1. cloud-llm-hub receives request with header `X-SAP-Destination: PROD_S4HANA`
+2. `destinationResolver` resolves destination via BTP Destination Service
+3. `CloudSdkAbapConnection` is created with destination name
+4. Cloud SDK automatically:
+   - Gets OAuth token from UAA
+   - Configures proxy (if needed)
+   - Adds authentication headers
+5. ADT request is executed to ABAP
+6. Response is returned to client
 
 ---
 
-### Приклад 3: On-Premise через Cloud Connector
+### Example 3: On-Premise via Cloud Connector
 
 **BTP Destination:**
 ```
 Name: ONPREM_ECC
 Type: HTTP
 URL: http://sapecc.internal:8000
-ProxyType: OnPremise  ← ВАЖЛИВО!
+ProxyType: OnPremise  ← IMPORTANT!
 Authentication: BasicAuthentication
 User: DEVELOPER
 Password: *** (encrypted)
@@ -432,29 +454,29 @@ X-SAP-Destination: ONPREM_ECC
 }
 ```
 
-**Що відбувається:**
-1. CloudSdkAbapConnection бачить `ProxyType: OnPremise`
-2. Cloud SDK автоматично route через Cloud Connector
-3. Cloud Connector forward request до internal network
-4. ECC system отримує запит з internal network
-5. Response через Cloud Connector → BTP → Client
+**What happens:**
+1. CloudSdkAbapConnection sees `ProxyType: OnPremise`
+2. Cloud SDK automatically routes via Cloud Connector
+3. Cloud Connector forwards request to internal network
+4. ECC system receives request from internal network
+5. Response via Cloud Connector → BTP → Client
 
 ---
 
 ## 🎓 Best Practices
 
-### 1. Вибір типу з'єднання
+### 1. Connection Type Selection
 
 ✅ **DO:**
-- Використовуй Direct для локальної розробки
-- Використовуй BTP Destination для production
-- Використовуй BTP Destination для On-Premise
-- Тестуй з обома типами перед production deploy
+- Use Direct for local development
+- Use BTP Destination for production
+- Use BTP Destination for On-Premise
+- Test with both types before production deploy
 
 ❌ **DON'T:**
-- Не зберігай credentials в коді
-- Не використовуй Direct з hard-coded credentials
-- Не намагайся підключитись до On-Premise без Cloud Connector
+- Don't store credentials in code
+- Don't use Direct with hard-coded credentials
+- Don't try to connect to On-Premise without Cloud Connector
 
 ### 2. Configuration Management
 
@@ -492,7 +514,7 @@ try {
 
 **Unit Tests:**
 ```typescript
-// Mock різні типи з'єднань
+// Mock different connection types
 it('should use CloudSdkAbapConnection for destination', async () => {
   const conn = await createConnection({ 
     destinationName: 'TEST_DEST' 
@@ -510,15 +532,18 @@ it('should use direct connection for sapConfig', async () => {
 
 ---
 
-## 📚 Додаткові ресурси
+## 📚 Additional Resources
 
 - [SAP Cloud SDK Documentation](https://sap.github.io/cloud-sdk/)
 - [BTP Destination Service](https://help.sap.com/docs/connectivity/sap-btp-connectivity-cf/destinations)
 - [Cloud Connector](https://help.sap.com/docs/connectivity/sap-btp-connectivity-cf/cloud-connector)
 - [mcp-abap-adt Documentation](../submodules/mcp-abap-adt/README.md)
+- [Integration Architecture](INTEGRATION_ARCHITECTURE.md) - Overall integration architecture
+- [MCP ABAP ADT Usage](MCP_ABAP_ADT_USAGE.md) - Library usage guide
+- [Code Sharing Policy](CODE_SHARING_POLICY.md) - Duplication policy
 
 ---
 
-**Версія:** 1.0  
-**Останнє оновлення:** 1 грудня 2025  
-**Автор:** AI Assistant
+**Version:** 1.0  
+**Last Updated:** December 1, 2025  
+**Author:** AI Assistant

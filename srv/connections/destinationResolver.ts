@@ -207,20 +207,15 @@ export async function resolveDestinationSapConfig(
 
     return buildSapConfigFromDestination(destinationName, destination, jwtToken);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? error.stack : undefined;
-    const errorDetails = error instanceof Error ? {
-      name: error.name,
-      message: error.message,
-      stack: stack
-    } : { error: String(error) };
-    
-    log.error('Failed to resolve destination', {
-      destinationName,
-      ...errorDetails
+    // Use synchronized error handling from errorUtils
+    const { logErrorSafely } = await import('../lib/errorUtils');
+    logErrorSafely(log, 'Destination resolution', error, {
+      destinationName
     });
     
     // Create error with status code for proper HTTP response
+    const { formatErrorMessage } = await import('../lib/errorUtils');
+    const message = formatErrorMessage(error);
     const destinationError = new Error(`Failed to resolve destination "${destinationName}": ${message}`);
     (destinationError as any).statusCode = 502; // Bad Gateway
     (destinationError as any).code = error instanceof Error && (error as any).code 

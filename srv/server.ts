@@ -50,25 +50,16 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     const sapUrl = (req.headers['x-sap-url'] as string | undefined)?.trim();
     const sapAuthTypeRaw = (req.headers['x-sap-auth-type'] as string | undefined)?.trim();
     
-    // Extract JWT token and refresh token from headers
+    // Extract JWT token from headers
     // Authorization header is for MCP access, NOT for SAP
     // x-sap-jwt-token is for SAP authentication
+    // NOTE: cloud-llm-hub does NOT support token refresh. Clients must refresh tokens themselves.
+    // For BTP Destinations: Token management is automatic via BTP (no refresh token needed)
     const sapJwtToken = (req.headers['x-sap-jwt-token'] as string | undefined)?.trim();
-    const sapRefreshToken = (req.headers['x-sap-refresh-token'] as string | undefined)?.trim();
-    const sapUaaUrl = (req.headers['x-sap-uaa-url'] as string | undefined)?.trim();
-    const sapUaaClientId = (req.headers['x-sap-uaa-client-id'] as string | undefined)?.trim();
-    const sapUaaClientSecret = (req.headers['x-sap-uaa-client-secret'] as string | undefined)?.trim();
     
-    log.info('Extracted tokens from headers', {
+    log.info('Extracted JWT token from headers', {
       hasJwtToken: !!sapJwtToken,
-      jwtTokenLength: sapJwtToken?.length || 0,
-      hasRefreshToken: !!sapRefreshToken,
-      refreshTokenLength: sapRefreshToken?.length || 0,
-      hasUaaUrl: !!sapUaaUrl,
-      hasUaaClientId: !!sapUaaClientId,
-      hasUaaClientSecret: !!sapUaaClientSecret,
-      canRefresh: !!(sapRefreshToken && sapUaaUrl && sapUaaClientId && sapUaaClientSecret),
-      refreshTokenOnly: !!sapRefreshToken && !sapUaaUrl // Refresh token alone should work
+      jwtTokenLength: sapJwtToken?.length || 0
     });
     
     const sapUsername = (req.headers['x-sap-username'] as string | undefined)?.trim();
@@ -102,34 +93,18 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
           sessionSapConfig.client = sapClientHeader;
         }
         
-        // Add refresh token and UAA config from headers OR fallback to process.env
-        // These are not in destination, but come from request headers or server config
-        if (sapRefreshToken) {
-          sessionSapConfig.refreshToken = sapRefreshToken;
-        }
-        // UAA credentials: use headers first, fallback to process.env
-        sessionSapConfig.uaaUrl = sapUaaUrl || process.env.SAP_UAA_URL;
-        sessionSapConfig.uaaClientId = sapUaaClientId || process.env.SAP_UAA_CLIENT_ID;
-        sessionSapConfig.uaaClientSecret = sapUaaClientSecret || process.env.SAP_UAA_CLIENT_SECRET;
+        // NOTE: cloud-llm-hub does NOT support token refresh
+        // For BTP Destinations, token management is automatic via BTP
+        // Clients must refresh tokens themselves if needed
         
-        log.info('sessionSapConfig from destination with refresh support', {
+        log.info('sessionSapConfig from destination', {
           destination: destinationName,
           authType: sessionSapConfig.authType,
           hasJwtToken: !!sessionSapConfig.jwtToken,
           jwtTokenLength: sessionSapConfig.jwtToken?.length || 0,
           hasClient: !!sessionSapConfig.client,
           client: sessionSapConfig.client || 'NOT SET - CDS views may not be found',
-          clientWarning: !sessionSapConfig.client ? '⚠️ Client not set - provide X-SAP-CLIENT header' : undefined,
-          hasRefreshToken: !!sessionSapConfig.refreshToken,
-          refreshTokenLength: sessionSapConfig.refreshToken?.length || 0,
-          hasUaaUrl: !!sessionSapConfig.uaaUrl,
-          hasUaaClientId: !!sessionSapConfig.uaaClientId,
-          hasUaaClientSecret: !!sessionSapConfig.uaaClientSecret,
-          canRefresh: !!(sessionSapConfig.refreshToken && sessionSapConfig.uaaUrl && sessionSapConfig.uaaClientId && sessionSapConfig.uaaClientSecret),
-          hasRefreshTokenOnly: !!(sessionSapConfig.refreshToken && !sessionSapConfig.uaaUrl),
-          uaaUrlSource: sapUaaUrl ? 'header' : (process.env.SAP_UAA_URL ? 'env' : 'missing'),
-          uaaClientIdSource: sapUaaClientId ? 'header' : (process.env.SAP_UAA_CLIENT_ID ? 'env' : 'missing'),
-          uaaClientSecretSource: sapUaaClientSecret ? 'header' : (process.env.SAP_UAA_CLIENT_SECRET ? 'env' : 'missing')
+          clientWarning: !sessionSapConfig.client ? '⚠️ Client not set - provide X-SAP-CLIENT header' : undefined
         });
       } catch (err) {
         log.error('Failed to resolve destination for sessionSapConfig', {
@@ -164,35 +139,14 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
             tokenPreview: `${sapJwtToken.substring(0, 20)}...${sapJwtToken.substring(sapJwtToken.length - 20)}`
           });
           
-          // Add refresh token if provided (for token refresh)
-          // Connection will handle refresh token automatically
-          if (sapRefreshToken) {
-            sessionSapConfig.refreshToken = sapRefreshToken;
-            log.debug('Refresh token added to sessionSapConfig', {
-              tokenLength: sapRefreshToken.length
-            });
-          }
+          // NOTE: cloud-llm-hub does NOT support token refresh
+          // Clients must refresh tokens themselves and send new JWT token in each request
+          // For BTP Destinations, token management is automatic via BTP
           
-          // UAA credentials: use headers first, fallback to process.env
-          // This allows client to skip UAA headers if server has them configured
-          sessionSapConfig.uaaUrl = sapUaaUrl || process.env.SAP_UAA_URL;
-          sessionSapConfig.uaaClientId = sapUaaClientId || process.env.SAP_UAA_CLIENT_ID;
-          sessionSapConfig.uaaClientSecret = sapUaaClientSecret || process.env.SAP_UAA_CLIENT_SECRET;
-          
-          log.info('JWT config with refresh support', {
+          log.info('JWT config', {
             hasClient: !!sessionSapConfig.client,
             client: sessionSapConfig.client || 'NOT SET - CDS views may not be found',
-            clientWarning: !sessionSapConfig.client ? '⚠️ Client not set - provide X-SAP-CLIENT header' : undefined,
-            hasRefreshToken: !!sessionSapConfig.refreshToken,
-            refreshTokenLength: sessionSapConfig.refreshToken?.length || 0,
-            hasUaaUrl: !!sessionSapConfig.uaaUrl,
-            hasUaaClientId: !!sessionSapConfig.uaaClientId,
-            hasUaaClientSecret: !!sessionSapConfig.uaaClientSecret,
-            canRefresh: !!(sessionSapConfig.refreshToken && sessionSapConfig.uaaUrl && sessionSapConfig.uaaClientId && sessionSapConfig.uaaClientSecret),
-            hasRefreshTokenOnly: !!(sessionSapConfig.refreshToken && !sessionSapConfig.uaaUrl),
-            uaaUrlSource: sapUaaUrl ? 'header' : (process.env.SAP_UAA_URL ? 'env' : 'missing'),
-            uaaClientIdSource: sapUaaClientId ? 'header' : (process.env.SAP_UAA_CLIENT_ID ? 'env' : 'missing'),
-            uaaClientSecretSource: sapUaaClientSecret ? 'header' : (process.env.SAP_UAA_CLIENT_SECRET ? 'env' : 'missing')
+            clientWarning: !sessionSapConfig.client ? '⚠️ Client not set - provide X-SAP-CLIENT header' : undefined
           });
         } else {
           log.warn('JWT auth type but no token in headers', {
@@ -359,20 +313,13 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       hasSapConfig: !!sessionSapConfig,
       authType: sessionSapConfig?.authType,
       hasJwtToken: !!(sessionSapConfig?.jwtToken),
-      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0,
-      hasRefreshToken: !!(sessionSapConfig?.refreshToken),
-      refreshTokenLength: sessionSapConfig?.refreshToken?.length || 0
+      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0
     });
     
-    // КРИТИЧНО: Логуємо sessionSapConfig ПЕРЕД передачею в sessionContext
+    // CRITICAL: Log sessionSapConfig BEFORE passing to sessionContext
     log.info('🔥 sessionSapConfig BEFORE sessionContext.run', {
-      hasRefreshToken: !!sessionSapConfig?.refreshToken,
-      refreshTokenLength: sessionSapConfig?.refreshToken?.length || 0,
-      hasUaaUrl: !!sessionSapConfig?.uaaUrl,
-      uaaUrl: sessionSapConfig?.uaaUrl || 'MISSING',
-      hasUaaClientId: !!sessionSapConfig?.uaaClientId,
-      hasUaaClientSecret: !!sessionSapConfig?.uaaClientSecret,
-      canRefresh: !!(sessionSapConfig?.refreshToken && sessionSapConfig?.uaaUrl && sessionSapConfig?.uaaClientId && sessionSapConfig?.uaaClientSecret),
+      hasJwtToken: !!sessionSapConfig?.jwtToken,
+      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0,
       allKeys: Object.keys(sessionSapConfig || {})
     });
     
@@ -385,15 +332,10 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
         // Verify context is set correctly
         const context = mcpSessionContext.getStore();
         
-        // КРИТИЧНО: Логуємо що ДІЙСНО потрапило в sessionContext
+        // CRITICAL: Log what ACTUALLY got into sessionContext
         log.info('🔥 sapConfig INSIDE sessionContext.run', {
-          hasRefreshToken: !!context?.sapConfig?.refreshToken,
-          refreshTokenLength: context?.sapConfig?.refreshToken?.length || 0,
-          hasUaaUrl: !!context?.sapConfig?.uaaUrl,
-          uaaUrl: context?.sapConfig?.uaaUrl || 'MISSING',
-          hasUaaClientId: !!context?.sapConfig?.uaaClientId,
-          hasUaaClientSecret: !!context?.sapConfig?.uaaClientSecret,
-          canRefresh: !!(context?.sapConfig?.refreshToken && context?.sapConfig?.uaaUrl && context?.sapConfig?.uaaClientId && context?.sapConfig?.uaaClientSecret),
+          hasJwtToken: !!context?.sapConfig?.jwtToken,
+          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0,
           allKeys: Object.keys(context?.sapConfig || {})
         });
         
@@ -403,41 +345,12 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
           hasSapConfig: !!context?.sapConfig,
           authType: context?.sapConfig?.authType,
           hasJwtToken: !!(context?.sapConfig?.jwtToken),
-          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0,
-          hasRefreshToken: !!(context?.sapConfig?.refreshToken),
-          refreshTokenLength: context?.sapConfig?.refreshToken?.length || 0
+          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0
         });
         
-        // CRITICAL: Call connection.connect() SYNCHRONOUSLY to trigger auto-refresh
-        // This matches mcp-abap-adt standalone behavior where every handler calls connect()
-        // DON'T await - let it run in background, handlers will call it again anyway
-        if (context?.sapConfig?.authType === 'jwt' && context?.sapConfig?.refreshToken) {
-          // Fire and forget - just trigger refresh if needed
-          (async () => {
-            try {
-              const mcpUtilsModule = await import('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
-              const mcpUtilsAny = mcpUtilsModule as any;
-              
-              if (mcpUtilsAny && typeof mcpUtilsAny.getManagedConnection === 'function') {
-                const connection = mcpUtilsAny.getManagedConnection();
-                
-                log.info('🔄 Calling connection.connect() in background to pre-warm refresh', {
-                  hasConnection: !!connection,
-                  connectionType: connection?.constructor?.name || 'unknown'
-                });
-                
-                // Call connect() - will trigger auto-refresh if token expired
-                await connection.connect();
-                
-                log.info('✅ Background connection.connect() completed');
-              }
-            } catch (err: any) {
-              log.warn('⚠️  Background connection.connect() failed (not critical)', {
-                error: err?.message || String(err)
-              });
-            }
-          })();
-        }
+        // NOTE: cloud-llm-hub does NOT support token refresh
+        // For BTP Destinations: Token management is automatic via BTP
+        // Clients must refresh tokens themselves and send new JWT token in each request
         
         // Handle HTTP request through transport (like mcp-abap-adt)
         // Pass body as third parameter (like mcp-abap-adt does)
@@ -486,48 +399,40 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     });
 
   } catch (error: any) {
-    // Enhanced error logging with request context
-    const errorDetails: any = {
-      error_message: error instanceof Error ? error.message : String(error),
-      error_type: error?.constructor?.name || typeof error,
+    // Use synchronized error handling from errorUtils
+    const { logErrorSafely, formatErrorMessage } = await import('./lib/errorUtils');
+    
+    // Build context for error logging
+    const context: Record<string, any> = {
       path: req.path,
       method: req.method
     };
     
     // Add request body context if available
     if (body && typeof body === 'object') {
-      errorDetails.tool_name = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
+      context.tool_name = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
       if (body.params?.arguments) {
         const args = body.params.arguments;
-        errorDetails.object_name = args.class_name || args.className || 
-                                  args.object_name || args.objectName ||
-                                  args.table_name || args.tableName ||
-                                  args.program_name || args.programName ||
-                                  'unknown';
-        errorDetails.is_standard_object = errorDetails.object_name && 
-          (errorDetails.object_name.startsWith('CL_') || 
-           errorDetails.object_name.startsWith('IF_') || 
-           errorDetails.object_name.startsWith('CX_') ||
-           errorDetails.object_name.startsWith('Z') === false);
+        context.object_name = args.class_name || args.className || 
+                             args.object_name || args.objectName ||
+                             args.table_name || args.tableName ||
+                             args.program_name || args.programName ||
+                             'unknown';
+        context.is_standard_object = context.object_name && 
+          (context.object_name.startsWith('CL_') || 
+           context.object_name.startsWith('IF_') || 
+           context.object_name.startsWith('CX_') ||
+           context.object_name.startsWith('Z') === false);
       }
     }
     
-    // Extract HTTP error details if available
-    if (error?.response) {
-      errorDetails.http_status = error.response.status;
-      errorDetails.http_status_text = error.response.statusText;
-      errorDetails.http_url = error.config?.url || error.response.config?.url;
-      errorDetails.http_method = error.config?.method || error.response.config?.method;
-    }
-    
-    log.error('Failed to handle HTTP request', {
-      ...errorDetails,
-      stack: error instanceof Error ? error.stack : undefined
-    });
+    // Log error with synchronized format
+    logErrorSafely(log, 'HTTP request handling', error, context);
     
     if (!res.headersSent) {
       const statusCode = error?.response?.status || error?.statusCode || 500;
-      res.writeHead(statusCode).end(`Internal Server Error: ${errorDetails.error_message}`);
+      const userMessage = formatErrorMessage(error);
+      res.writeHead(statusCode).end(`Internal Server Error: ${userMessage}`);
     } else {
       res.end();
     }
@@ -879,3 +784,4 @@ cds.on('bootstrap', (app: Application) => {
     destinationProbe: 'GET /mcp/ProbeDestination?destination=NAME (CAP function)'
   });
 });
+
