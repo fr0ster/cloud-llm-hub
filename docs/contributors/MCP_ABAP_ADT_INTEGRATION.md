@@ -417,7 +417,12 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [x] Create `docs/contributors/MCP_ABAP_ADT_USAGE.md` - how mcp-abap-adt library is used
   - [x] Create `docs/contributors/CODE_SHARING_POLICY.md` - duplication policy and rationale
   - [x] Create `docs/deployment/MIGRATION_FROM_1.1.17_TO_1.1.19.md` - migration guide
+  - [x] Create `docs/deployment/MIGRATION_FROM_1.1.19_TO_1.1.21.md` - migration guide for v1.1.21
   - [x] Update existing docs with references to new documents
+  - [x] Update `docs/contributors/CONNECTION_ARCHITECTURE.md` - clarify token management (no refresh in cloud-llm-hub)
+  - [x] Update `docs/architecture/FEATURES.md` - remove incorrect token refresh claims
+  - [x] Update `CHANGELOG.md` - document token refresh removal
+  - [x] Mark `docs/development/JWT_TOKEN_REFRESH_GUIDE.md` as DEPRECATED
   - [ ] Add code examples for common integration patterns
   - [ ] Review documentation for completeness and clarity
 
@@ -438,10 +443,20 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 
 ### Phase 4: Cleanup and Finalization (2-3 days) ✨
 
+- [x] **4.0. Remove Token Refresh Functionality**
+  - [x] Remove all token refresh logic from `srv/server.ts` (refreshToken, UAA credentials extraction)
+  - [x] Remove all token refresh logic from `srv/mcp-manager.ts` (refreshToken, UAA credentials processing)
+  - [x] Remove refresh token logging and validation code
+  - [x] Update all code comments to clarify: cloud-llm-hub does NOT support token refresh
+  - [x] Update documentation to reflect token management responsibilities
+  - [x] Update CHANGELOG.md with token refresh removal details
+  - [x] Verify build succeeds after removal
+  - [x] Verify no linter errors
+
 - [ ] **4.1. Code Cleanup**
   - [ ] Remove all deprecated imports from `srv/` files
   - [ ] Remove unused code identified during refactoring
-  - [ ] Update comments to reflect new architecture
+  - [x] Update comments to reflect new architecture (token refresh removal)
   - [ ] Update JSDoc for all public APIs
   - [ ] Run `npm run lint` and fix all warnings
   - [ ] Run `npm run format` for code style consistency
@@ -600,8 +615,9 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 2. **Destination resolution** - BTP-specific functionality
    - `destinationResolver.ts` - resolve destinations via Destination Service
    - Support different auth types (Basic, OAuth2, SAML)
-   - Token management via BTP
+   - Token management via BTP (automatic, handled by BTP infrastructure - NOT refresh token)
    - **Value:** BTP Cloud integration
+   - **Note:** cloud-llm-hub does NOT implement token refresh - it's client responsibility or handled by BTP
 
 3. **CAP integration** - cloud-llm-hub specific
    - `server.ts` - CAP bootstrap and MCP endpoints
