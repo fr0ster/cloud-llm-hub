@@ -397,23 +397,23 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [ ] Improve error messages with context for debugging
   - [ ] Test error scenarios with meaningful output
 
-- [ ] **3.2. Synchronize CSRF Token Logic**
-  - [ ] Create `srv/connections/csrfConfig.ts` with shared constants
-  - [ ] Define `CSRF_CONFIG` with retry count, delay, timeout, endpoints
-  - [ ] Update `CloudSdkAbapConnection.fetchCsrfToken()` to use shared config
-  - [ ] Synchronize error messages between implementations
-  - [ ] Synchronize logging format for CSRF operations
-  - [ ] Add code comments explaining axios vs Cloud SDK differences
+- [x] **3.2. Synchronize CSRF Token Logic**
+  - [x] Create `srv/connections/csrfConfig.ts` with shared constants
+  - [x] Define `CSRF_CONFIG` with retry count, delay, timeout, endpoints
+  - [x] Update `CloudSdkAbapConnection.fetchCsrfToken()` to use shared config
+  - [x] Synchronize error messages between implementations
+  - [x] Synchronize logging format for CSRF operations
+  - [x] Add code comments explaining axios vs Cloud SDK differences
   - [ ] (Optional) Propose PR to mcp-abap-adt to export CSRF_CONFIG
   - [ ] Test CSRF token fetching with retries
   - [ ] Test CSRF token timeout scenarios
 
-- [ ] **3.3. Improve Documentation**
-  - [ ] Create `docs/INTEGRATION_ARCHITECTURE.md` - overall integration architecture
-  - [ ] Create `docs/MCP_ABAP_ADT_USAGE.md` - how mcp-abap-adt library is used
-  - [ ] Create `docs/CODE_SHARING_POLICY.md` - duplication policy and rationale
-  - [ ] Create `docs/MIGRATION_FROM_1.1.17_TO_1.1.19.md` - migration guide
-  - [ ] Update existing docs with references to new documents
+- [x] **3.3. Improve Documentation**
+  - [x] Create `docs/architecture/INTEGRATION_ARCHITECTURE.md` - overall integration architecture
+  - [x] Create `docs/contributors/MCP_ABAP_ADT_USAGE.md` - how mcp-abap-adt library is used
+  - [x] Create `docs/contributors/CODE_SHARING_POLICY.md` - duplication policy and rationale
+  - [x] Create `docs/deployment/MIGRATION_FROM_1.1.17_TO_1.1.19.md` - migration guide
+  - [x] Update existing docs with references to new documents
   - [ ] Add code examples for common integration patterns
   - [ ] Review documentation for completeness and clarity
 
