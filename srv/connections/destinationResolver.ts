@@ -3,6 +3,7 @@ import type { Destination } from '@sap-cloud-sdk/connectivity';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 
 // Helper to extract JWT from request headers if available
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function extractJwtFromRequest(req?: any): string | undefined {
   if (!req) return undefined;
   const authHeader = req.headers?.authorization || req.get?.('authorization');
