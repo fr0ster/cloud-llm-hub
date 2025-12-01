@@ -378,9 +378,15 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [x] Detailed error messages and validation warnings
   - [x] Refactor `srv/mcp-manager.ts` `extractSapContext()` to use `validateAuthHeaders`
   - [x] Remove duplicated extraction logic (`normalizeAuthType` removed)
-  - [ ] Refactor `srv/server.ts` SAP config extraction to use `validateAuthHeaders` (if needed)
+  - [x] Refactor `srv/server.ts` SAP config extraction to use `extractSapContext()` from mcp-manager
+    - [x] Export `extractSapContext` from `mcp-manager.ts`
+    - [x] Replace manual header extraction in `server.ts` with `extractSapContext()` call
+    - [x] Eliminate code duplication (removed ~120 lines of duplicate extraction logic)
+    - [x] Ensure sessionSapConfig matches exactly what getMCPServer uses
   - [ ] Add unit tests for extraction utility (⏳ Deferred - no test framework)
-  - [ ] Validate header parsing consistency
+  - [x] Validate header parsing consistency
+    - [x] Both `getMCPServer()` and `handleStreamHTTP()` now use same `extractSapContext()` function
+    - [x] Consistent config extraction guaranteed by code reuse
 
 - [x] **2.4. Create Connection Factory Pattern**
   - [x] Create `srv/connections/connectionFactory.ts`

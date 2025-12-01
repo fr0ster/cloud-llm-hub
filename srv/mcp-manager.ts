@@ -63,7 +63,20 @@ function summarizeJwt(token?: string): { preview: string; length: number } {
   };
 }
 
-async function extractSapContext(req: Request): Promise<SapContext> {
+/**
+ * Extract SAP configuration from HTTP request headers
+ * 
+ * This function centralizes SAP config extraction logic and uses:
+ * - validateAuthHeaders() from @mcp-abap-adt/header-validator for direct connections
+ * - resolveDestinationSapConfig() for BTP Destination connections
+ * 
+ * This eliminates code duplication and ensures consistent config extraction
+ * across cloud-llm-hub (used by both getMCPServer and handleStreamHTTP).
+ * 
+ * @param req - HTTP request with SAP configuration in headers
+ * @returns SAP context with config, source, and optional destination info
+ */
+export async function extractSapContext(req: Request): Promise<SapContext> {
   const log = cds.log('mcp-manager');
   const destinationName = (req.headers[DESTINATION_HEADER] as string | undefined)?.trim();
   const sapClientHeader = (req.headers['x-sap-client'] as string | undefined)?.trim();

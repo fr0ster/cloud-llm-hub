@@ -19,8 +19,7 @@ import type { Application, Request, Response, NextFunction } from 'express';
 import { loadEnv } from '@sap/xsenv';
 // @ts-ignore - ESM import path with .js extension
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { getMCPServer } from './mcp-manager';
-import { resolveDestinationSapConfig } from './connections/destinationResolver';
+import { getMCPServer, extractSapContext } from './mcp-manager';
 import { Readable } from 'stream';
 import { randomUUID } from 'crypto';
 import type { SapConfig } from '@mcp-abap-adt/connection';
@@ -89,127 +88,39 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   }
 
   try {
-    // Extract SAP config from headers (like mcp-abap-adt does)
-    // This is needed for AsyncLocalStorage context
-    // IMPORTANT: Must match extractSapContext in mcp-manager.ts to ensure same config is used
-    const destinationName = (req.headers['x-sap-destination'] as string | undefined)?.trim();
-    const sapUrl = (req.headers['x-sap-url'] as string | undefined)?.trim();
-    const sapAuthTypeRaw = (req.headers['x-sap-auth-type'] as string | undefined)?.trim();
-    
-    // Extract JWT token from headers
-    // Authorization header is for MCP access, NOT for SAP
-    // x-sap-jwt-token is for SAP authentication
-    // NOTE: cloud-llm-hub does NOT support token refresh. Clients must refresh tokens themselves.
-    // For BTP Destinations: Token management is automatic via BTP (no refresh token needed)
-    const sapJwtToken = (req.headers['x-sap-jwt-token'] as string | undefined)?.trim();
-    
-    log.info('Extracted JWT token from headers', {
-      hasJwtToken: !!sapJwtToken,
-      jwtTokenLength: sapJwtToken?.length || 0
-    });
-    
-    const sapUsername = (req.headers['x-sap-username'] as string | undefined)?.trim();
-    const sapPassword = (req.headers['x-sap-password'] as string | undefined)?.trim();
-    const sapClientHeader = (req.headers['x-sap-client'] as string | undefined)?.trim();
+    /**
+     * PHASE 2.3: Use extractSapContext from mcp-manager.ts
+     * 
+     * This eliminates code duplication by reusing the same extraction logic
+     * that getMCPServer() uses. This ensures sessionSapConfig matches exactly
+     * what getMCPServer creates, preventing inconsistencies.
+     * 
+     * extractSapContext uses:
+     * - validateAuthHeaders() from @mcp-abap-adt/header-validator for direct connections
+     * - resolveDestinationSapConfig() for BTP Destination connections
+     */
+    const sapContext = await extractSapContext(req);
+    const sessionSapConfig = sapContext.sapConfig;
 
     // Generate session ID for this request
     // CRITICAL: Include JWT token hash in sessionId to invalidate cache when token changes
-    // This ensures auto-refresh works: when token refreshes, sessionId changes, cache miss, new connection created
+    // This ensures that when token changes, sessionId changes, cache miss, new connection created
     let sessionId = randomUUID().substring(0, 8); // Short random prefix
-    if (sapJwtToken) {
+    if (sessionSapConfig.jwtToken) {
       // Add hash of JWT token to sessionId - when token changes, sessionId changes, cache invalidates
       const crypto = await import('crypto');
-      const tokenHash = crypto.createHash('sha256').update(sapJwtToken).digest('hex').substring(0, 8);
+      const tokenHash = crypto.createHash('sha256').update(sessionSapConfig.jwtToken).digest('hex').substring(0, 8);
       sessionId = `${sessionId}-${tokenHash}`;
     }
-
-    // Build sapConfig for AsyncLocalStorage context
-    // IMPORTANT: This config must match what getMCPServer uses, so getManagedConnection() can access it
-    // For destination-based requests, we need to get the same config that getMCPServer will use
-    let sessionSapConfig: SapConfig | undefined;
     
-    if (destinationName) {
-      // For destination-based requests, extract the same config that getMCPServer uses
-      // This ensures sessionSapConfig matches what getMCPServer creates
-      try {
-        const { resolveDestinationSapConfig } = await import('./connections/destinationResolver');
-        const resolved = await resolveDestinationSapConfig(destinationName, sapJwtToken);
-        sessionSapConfig = { ...resolved.sapConfig };
-        if (sapClientHeader) {
-          sessionSapConfig.client = sapClientHeader;
-        }
-        
-        // NOTE: cloud-llm-hub does NOT support token refresh
-        // For BTP Destinations, token management is automatic via BTP
-        // Clients must refresh tokens themselves if needed
-        
-        log.info('sessionSapConfig from destination', {
-          destination: destinationName,
-          authType: sessionSapConfig.authType,
-          hasJwtToken: !!sessionSapConfig.jwtToken,
-          jwtTokenLength: sessionSapConfig.jwtToken?.length || 0,
-          hasClient: !!sessionSapConfig.client,
-          client: sessionSapConfig.client || 'NOT SET - CDS views may not be found',
-          clientWarning: !sessionSapConfig.client ? '⚠️ Client not set - provide X-SAP-CLIENT header' : undefined
-        });
-      } catch (err) {
-        log.error('Failed to resolve destination for sessionSapConfig', {
-          destination: destinationName,
-          error: err instanceof Error ? err.message : String(err)
-        });
-        // Fall through to direct header extraction
-      }
-    }
-    
-    // For direct header-based requests (not destination)
-    if (!sessionSapConfig && sapUrl && sapAuthTypeRaw) {
-      const authType = (sapAuthTypeRaw.toLowerCase() === 'xsuaa' ? 'jwt' : sapAuthTypeRaw.toLowerCase()) as SapConfig['authType'];
-      sessionSapConfig = {
-        url: sapUrl,
-        authType
-      };
-      if (sapClientHeader) {
-        sessionSapConfig.client = sapClientHeader;
-      }
-      if (authType === 'basic') {
-        if (sapUsername && sapPassword) {
-          sessionSapConfig.username = sapUsername;
-          sessionSapConfig.password = sapPassword;
-        }
-      } else {
-        // JWT auth - token is REQUIRED
-        if (sapJwtToken) {
-          sessionSapConfig.jwtToken = sapJwtToken;
-          log.debug('JWT token added to sessionSapConfig from headers', {
-            tokenLength: sapJwtToken.length,
-            tokenPreview: `${sapJwtToken.substring(0, 20)}...${sapJwtToken.substring(sapJwtToken.length - 20)}`
-          });
-          
-          // NOTE: cloud-llm-hub does NOT support token refresh
-          // Clients must refresh tokens themselves and send new JWT token in each request
-          // For BTP Destinations, token management is automatic via BTP
-          
-          log.info('JWT config', {
-            hasClient: !!sessionSapConfig.client,
-            client: sessionSapConfig.client || 'NOT SET - CDS views may not be found',
-            clientWarning: !sessionSapConfig.client ? '⚠️ Client not set - provide X-SAP-CLIENT header' : undefined
-          });
-        } else {
-          log.warn('JWT auth type but no token in headers', {
-            authType,
-            hasXJwtToken: !!req.headers['x-sap-jwt-token']
-          });
-        }
-      }
-    }
-    
-    if (!sessionSapConfig) {
-      log.warn('Could not build sessionSapConfig', {
-        hasDestination: !!destinationName,
-        hasUrl: !!sapUrl,
-        hasAuthType: !!sapAuthTypeRaw
-      });
-    }
+    log.info('Extracted SAP config for sessionContext', {
+      source: sapContext.source,
+      destination: sapContext.destination?.destinationName,
+      authType: sessionSapConfig.authType,
+      hasJwtToken: !!sessionSapConfig.jwtToken,
+      jwtTokenLength: sessionSapConfig.jwtToken?.length || 0,
+      hasClient: !!sessionSapConfig.client
+    });
 
     // Get embedded MCP server instance (created per-request with SAP config from headers)
     const mcpServer = await getMCPServer(req);
