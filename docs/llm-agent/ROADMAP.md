@@ -5,7 +5,10 @@
 Develop LLM Agent as a separate module that:
 - Accepts messages from consumers (UI or OData endpoints)
 - Works with LLM through SAP AI Core
-- Integrated with MCP part of cloud-llm-hub (embedded mcp-abap-adt)
+- Acts as an orchestrator between LLM and MCP (embedded mcp-abap-adt)
+- Enables LLM to communicate with MCP tools through the agent
+
+**Important:** `llm-agent` and `mcp-abap-adt` are peer components at the same level. `cloud-llm-hub` integrates both into a unified system. Almost all interactions between system components go through `llm-agent`.
 
 ## 📋 Current Status
 
@@ -48,69 +51,98 @@ Develop LLM Agent as a separate module that:
 
 ## 🏗️ Architecture
 
+**System Overview:**
+`cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level. LLM communicates with MCP through `llm-agent`, making `llm-agent` the central orchestrator for most system interactions.
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Consumer Layer                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │   UI (Future) │  │ OData Endpoint│  │  Other APIs  │     │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
-└─────────┼──────────────────┼──────────────────┼─────────────┘
-          │                  │                  │
-          └──────────────────┼──────────────────┘
-                             │
-          ┌──────────────────▼──────────────────┐
-          │      Agent Service (CAP)             │
-          │  ┌──────────────────────────────┐   │
-          │  │  agent-service.ts             │   │
-          │  │  - Chat()                      │   │
-          │  │  - GetHistory()                │   │
-          │  │  - ClearHistory()              │   │
-          │  │  - Health()                    │   │
-          │  └──────────────┬─────────────────┘   │
-          └─────────────────┼─────────────────────┘
-                            │
-          ┌─────────────────▼─────────────────────┐
-          │      Agent Manager                      │
-          │  ┌──────────────────────────────┐     │
-          │  │  agent-manager.ts             │     │
-          │  │  - getAgent()                 │     │
-          │  │  - Caching & lifecycle        │     │
-          │  └──────────────┬─────────────────┘     │
-          └─────────────────┼───────────────────────┘
-                            │
-          ┌─────────────────┼───────────────────────┐
-          │                 │                       │
-    ┌─────▼─────┐    ┌─────▼─────┐         ┌─────▼─────┐
-    │   LLM     │    │    MCP     │         │   Config  │
-    │  Provider │    │   Client   │         │   Loader  │
-    └─────┬─────┘    └─────┬─────┘         └───────────┘
-          │                 │
-          │                 │
-    ┌─────▼─────────────────▼─────┐
-    │   SAP AI Core               │
-    │   (via service binding)     │
-    └──────────────┬──────────────┘
-                   │
-    ┌──────────────▼──────────────┐
-    │   MCP Proxy                 │
-    │   (embedded mcp-abap-adt)    │
-    └──────────────┬──────────────┘
-                   │
-    ┌──────────────▼──────────────┐
-    │   SAP ABAP System           │
-    │   (via destination)         │
-    └─────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Cloud LLM Hub (Integration Platform)              │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                    Consumer Layer                            │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │  │
+│  │  │   UI (Future) │  │ OData Endpoint│  │  Other APIs  │      │  │
+│  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │  │
+│  └─────────┼──────────────────┼──────────────────┼──────────────┘  │
+│            │                  │                  │                  │
+│            └──────────────────┼──────────────────┘                  │
+│                               │                                     │
+│            ┌──────────────────▼──────────────────┐                 │
+│            │      Agent Service (CAP)             │                 │
+│            │  ┌──────────────────────────────┐   │                 │
+│            │  │  agent-service.ts             │   │                 │
+│            │  │  - Chat()                      │   │                 │
+│            │  │  - GetHistory()                │   │                 │
+│            │  │  - ClearHistory()              │   │                 │
+│            │  │  - Health()                    │   │                 │
+│            │  └──────────────┬─────────────────┘   │                 │
+│            └─────────────────┼─────────────────────┘                 │
+│                              │                                       │
+│            ┌─────────────────▼─────────────────────┐                │
+│            │      Agent Manager                      │                │
+│            │  ┌──────────────────────────────┐     │                │
+│            │  │  agent-manager.ts             │     │                │
+│            │  │  - getAgent()                 │     │                │
+│            │  │  - Caching & lifecycle        │     │                │
+│            │  └──────────────┬─────────────────┘     │                │
+│            └─────────────────┼───────────────────────┘                │
+│                              │                                         │
+│            ┌─────────────────▼───────────────────────┐              │
+│            │         llm-agent                        │              │
+│            │    (Central Orchestrator)               │              │
+│            │  ┌──────────────────────────────┐        │              │
+│            │  │  - Orchestrates LLM ↔ MCP  │        │              │
+│            │  │  - Manages conversation     │        │              │
+│            │  │  - Coordinates tool calls   │        │              │
+│            │  └───────┬────────────┬────────┘        │              │
+│            └───────────┼────────────┼─────────────────┘              │
+│                        │            │                                  │
+│        ┌───────────────┼────────────┼───────────────┐                │
+│        │               │            │               │                │
+│  ┌─────▼─────┐         │    ┌──────▼──────┐        │                │
+│  │   LLM     │         │    │    MCP      │        │                │
+│  │  Provider │         │    │   Client    │        │                │
+│  └─────┬─────┘         │    └──────┬──────┘        │                │
+│        │               │           │                │                │
+│  ┌─────▼───────────────┼───────────▼───────────────┐                │
+│  │   SAP AI Core       │   MCP Proxy               │                │
+│  │ (service binding)   │   (CAP Service)            │                │
+│  └─────┬───────────────┼───────────┬───────────────┘                │
+│        │               │           │                                  │
+│        │               │    ┌──────▼──────┐                          │
+│        │               │    │ mcp-abap-adt │                          │
+│        │               │    │ (embedded)   │                          │
+│        │               │    └──────┬──────┘                          │
+│        │               │           │                                  │
+│  ┌─────▼───────────────┼───────────▼───────────────┐                 │
+│  │      LLM            │   SAP ABAP System          │                 │
+│  │  (via AI Core)     │   (via destination)        │                 │
+│  └────────────────────┴────────────────────────────┘                 │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+**Key Points:**
+- `llm-agent` and `mcp-abap-adt` are peer components (same level)
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- Almost all interactions between system components go through `llm-agent`
+- `llm-agent` is separated as a subsystem because different LLM models work differently with MCP
+- `cloud-llm-hub` integrates all components into a unified system
 
 ## 📝 Detailed Task Description
 
 ### Task: LLM Agent Development for Cloud LLM Hub
 
 **Context:**
-Cloud LLM Hub provides MCP proxy for accessing SAP ABAP systems through MCP protocol. Need to add LLM Agent that will:
-- Accept messages from consumers (OData endpoints)
-- Use LLM through SAP AI Core for message processing
-- Use MCP tools for interaction with ABAP system
+Cloud LLM Hub integrates `mcp-abap-adt` (MCP server for ABAP), `llm-agent` (LLM orchestrator), and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level. The LLM Agent:
+- Accepts messages from consumers (OData endpoints or future UI)
+- Works with LLM through SAP AI Core for message processing
+- Orchestrates communication between LLM and MCP (LLM communicates with MCP through the agent)
+- Enables LLM to use MCP tools for interaction with ABAP system
+
+**Architecture Note:**
+- `llm-agent` is separated as a subsystem because different LLM models work differently with MCP
+- Almost all interactions between system components go through `llm-agent`
+- `llm-agent` acts as the central orchestrator for LLM-MCP communication
 
 **Input:**
 - User message (text)

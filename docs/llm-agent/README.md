@@ -78,6 +78,23 @@ curl -X POST "http://localhost:4004/odata/v4/agent/Chat" \
 bash test/test-agent.sh
 ```
 
+## 🏗️ System Architecture
+
+**Integration Context:**
+`cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level.
+
+**Key Points:**
+- `llm-agent` and `mcp-abap-adt` are peer components (same level)
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- Almost all interactions between system components go through `llm-agent`
+- `llm-agent` acts as the central orchestrator for LLM-MCP communication
+- `llm-agent` is separated as a subsystem because different LLM models work differently with MCP
+
+**Communication Flow:**
+```
+LLM (SAP AI Core) → llm-agent → MCP Proxy → mcp-abap-adt → ABAP System
+```
+
 ## 📁 Project Structure
 
 ```
@@ -89,15 +106,16 @@ cloud-llm-hub/
 │   └── agent-config.ts             # Configuration loading ⭐
 │
 ├── submodules/
-│   └── llm-agent/                  # LLM Agent module
-│       ├── src/
-│       │   ├── agents/
-│       │   │   └── sap-core-ai-agent.ts
-│       │   ├── llm-providers/
-│       │   │   └── sap-core-ai.ts
-│       │   └── mcp/
-│       │       └── client.ts
-│       └── package.json
+│   ├── llm-agent/                  # LLM Agent module (peer to mcp-abap-adt)
+│   │   ├── src/
+│   │   │   ├── agents/
+│   │   │   │   └── sap-core-ai-agent.ts
+│   │   │   ├── llm-providers/
+│   │   │   │   └── sap-core-ai.ts
+│   │   │   └── mcp/
+│   │   │       └── client.ts
+│   │   └── package.json
+│   └── mcp-abap-adt/               # MCP ABAP server (peer to llm-agent)
 │
 └── docs/
     └── llm-agent/
@@ -137,8 +155,9 @@ srv.on('Chat', async (req: Request) => {
 **What it does:**
 - Creates and caches agents
 - Creates LLM provider through SAP AI Core
-- Creates MCP client to connect to MCP Proxy
+- Creates MCP client to connect to MCP Proxy (which embeds mcp-abap-adt)
 - Manages agent lifecycle
+- Orchestrates communication between LLM and MCP
 
 **Key Functions:**
 - `getAgent(req)` - get/create agent
@@ -172,6 +191,9 @@ const agent = await getAgent(req);
 
 ## 🔄 Data Flow Architecture
 
+**System Context:**
+`cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level. LLM communicates with MCP through `llm-agent`.
+
 ```
 1. Consumer (UI/OData) → POST /odata/v4/agent/Chat
    ↓
@@ -181,16 +203,21 @@ const agent = await getAgent(req);
    ↓
 4. Create LLM Provider (SAP AI Core)
    ↓
-5. Create MCP Client (MCP Proxy)
+5. Create MCP Client (connects to MCP Proxy, which embeds mcp-abap-adt)
    ↓
 6. Create Agent (SapCoreAIAgent)
    ↓
 7. agent.process(message)
    ↓
-8. LLM processes message + calls MCP tools
+8. LLM processes message → Agent orchestrates → calls MCP tools through MCP Proxy → mcp-abap-adt → ABAP System
    ↓
 9. Return response
 ```
+
+**Key Points:**
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- `llm-agent` acts as the central orchestrator for LLM-MCP communication
+- Almost all interactions between system components go through `llm-agent`
 
 ## 🧪 Testing
 
