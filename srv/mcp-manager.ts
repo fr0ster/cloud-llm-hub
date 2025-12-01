@@ -1,9 +1,3 @@
-/**
- * MCP Manager - Embedded MCP server instance
- * Runs mcp-abap-adt directly in the CAP process
- * Creates per-request instances with SAP config from headers
- */
-
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import './env-setup';
 
@@ -14,6 +8,7 @@ import { randomUUID } from 'crypto';
 import type { Request } from 'express';
 import type { SapConfig, AbapConnection, ILogger, ISessionStorage } from '@mcp-abap-adt/connection';
 import { createAbapConnection } from '@mcp-abap-adt/connection';
+import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import {
   shouldUseConnectivity,
   extractConnectivityContext,
@@ -68,16 +63,13 @@ function summarizeJwt(token?: string): { preview: string; length: number } {
   };
 }
 
-function normalizeAuthType(rawAuthType: string | undefined): SapConfig['authType'] {
-  const normalized = (rawAuthType ?? 'jwt').toLowerCase();
-  return (normalized === 'xsuaa' ? 'jwt' : normalized) as SapConfig['authType'];
-}
-
 async function extractSapContext(req: Request): Promise<SapContext> {
   const log = cds.log('mcp-manager');
   const destinationName = (req.headers[DESTINATION_HEADER] as string | undefined)?.trim();
   const sapClientHeader = (req.headers['x-sap-client'] as string | undefined)?.trim();
 
+  // Priority 1: BTP Destination (cloud-llm-hub specific)
+  // This is NOT covered by validateAuthHeaders because it requires BTP Destination Service
   if (destinationName) {
     // Extract JWT from Authorization header if available
     // Note: JWT is only used for Principal Propagation destinations (OAuth2SAMLBearerAssertion)
@@ -112,99 +104,87 @@ async function extractSapContext(req: Request): Promise<SapContext> {
     };
   }
 
-  const sapUrl = (req.headers['x-sap-url'] as string | undefined)?.trim();
-  const sapAuthTypeRaw = (req.headers['x-sap-auth-type'] as string | undefined)?.trim();
-  const sapJwtToken = (req.headers['x-sap-jwt-token'] as string | undefined)?.trim();
-  const sapUsername = (req.headers['x-sap-username'] as string | undefined)?.trim();
-  const sapPassword = (req.headers['x-sap-password'] as string | undefined)?.trim();
+  // Priority 2: Direct connection (Basic/JWT) - use validateAuthHeaders
+  // This centralizes header validation logic from mcp-abap-adt
+  const validationResult = validateAuthHeaders(req.headers);
 
-  if (!sapUrl) {
-    throw new Error('Missing X-SAP-URL header');
+  // Log validation warnings
+  if (validationResult.warnings.length > 0) {
+    log.debug('Header validation warnings', {
+      warnings: validationResult.warnings
+    });
   }
 
-  const authType = normalizeAuthType(sapAuthTypeRaw);
+  // Check validation errors
+  if (!validationResult.isValid || !validationResult.config) {
+    const errorMessages = validationResult.errors.join('; ');
+    log.error('Header validation failed', {
+      errors: validationResult.errors,
+      availableHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('sap'))
+    });
+    throw new Error(`Invalid authentication headers: ${errorMessages}`);
+  }
+
+  // Extract config from validation result
+  const config = validationResult.config;
+  
+  // Build SapConfig from validated headers
   const sapConfig: SapConfig = {
-    url: sapUrl,
-    authType
+    url: config.sapUrl || '',
+    authType: (config.authType === 'xsuaa' ? 'jwt' : config.authType) as SapConfig['authType']
   };
 
+  // Add client if provided
   if (sapClientHeader) {
     sapConfig.client = sapClientHeader;
+  } else if (config.sapClient) {
+    sapConfig.client = config.sapClient;
   }
 
-  if (authType === 'basic') {
-    if (!sapUsername || !sapPassword) {
-      throw new Error('Basic auth requires X-SAP-USERNAME and X-SAP-PASSWORD headers');
+  // Add credentials based on auth type
+  if (config.authType === 'basic') {
+    if (!config.username || !config.password) {
+      throw new Error('Basic auth requires username and password');
     }
-    sapConfig.username = sapUsername;
-    sapConfig.password = sapPassword;
-  } else {
-    if (!sapJwtToken) {
-      log.error('JWT auth requires X-SAP-JWT-TOKEN header', {
-        authType,
-        hasXJwtTokenHeader: !!req.headers['x-sap-jwt-token'],
-        allHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('jwt') || h.toLowerCase().includes('sap'))
-      });
-      throw new Error('JWT auth requires X-SAP-JWT-TOKEN header');
+    sapConfig.username = config.username;
+    sapConfig.password = config.password;
+  } else if (config.authType === 'jwt' || config.authType === 'xsuaa') {
+    if (!config.jwtToken) {
+      throw new Error('JWT auth requires JWT token');
     }
-    sapConfig.jwtToken = sapJwtToken;
-    
-    log.debug('JWT token extracted from headers', {
-      tokenLength: sapJwtToken.length,
-      tokenPreview: `${sapJwtToken.substring(0, 20)}...${sapJwtToken.substring(sapJwtToken.length - 20)}`
-    });
-    
-    // Add refresh token if provided (for token refresh)
-    // Connection will handle refresh token automatically
-    const sapRefreshToken = (req.headers['x-sap-refresh-token'] as string | undefined)?.trim();
-    const sapUaaUrl = (req.headers['x-sap-uaa-url'] as string | undefined)?.trim();
-    const sapUaaClientId = (req.headers['x-sap-uaa-client-id'] as string | undefined)?.trim();
-    const sapUaaClientSecret = (req.headers['x-sap-uaa-client-secret'] as string | undefined)?.trim();
-    
-    if (sapRefreshToken) {
-      sapConfig.refreshToken = sapRefreshToken;
-      log.debug('Refresh token extracted from headers', {
-        refreshTokenLength: sapRefreshToken.length
-      });
+    sapConfig.jwtToken = config.jwtToken;
+
+    // Add refresh token and UAA credentials if provided
+    if (config.refreshToken) {
+      sapConfig.refreshToken = config.refreshToken;
     }
     
-    // Add UAA credentials from headers OR fallback to process.env
-    // This allows client to skip UAA headers if server has them configured
-    sapConfig.uaaUrl = sapUaaUrl || process.env.SAP_UAA_URL;
-    sapConfig.uaaClientId = sapUaaClientId || process.env.SAP_UAA_CLIENT_ID;
-    sapConfig.uaaClientSecret = sapUaaClientSecret || process.env.SAP_UAA_CLIENT_SECRET;
+    // Get UAA credentials from validated config or fallback to process.env
+    sapConfig.uaaUrl = config.uaaUrl || process.env.SAP_UAA_URL;
+    sapConfig.uaaClientId = config.uaaClientId || process.env.SAP_UAA_CLIENT_ID;
+    sapConfig.uaaClientSecret = config.uaaClientSecret || process.env.SAP_UAA_CLIENT_SECRET;
     
     // Log where UAA credentials came from
     log.info('🔑 UAA credentials after extraction', {
-      uaaUrlSource: sapUaaUrl ? 'header' : (process.env.SAP_UAA_URL ? 'env' : 'missing'),
-      uaaClientIdSource: sapUaaClientId ? 'header' : (process.env.SAP_UAA_CLIENT_ID ? 'env' : 'missing'),
-      uaaClientSecretSource: sapUaaClientSecret ? 'header' : (process.env.SAP_UAA_CLIENT_SECRET ? 'env' : 'missing'),
+      uaaUrlSource: config.uaaUrl ? 'header' : (process.env.SAP_UAA_URL ? 'env' : 'missing'),
+      uaaClientIdSource: config.uaaClientId ? 'header' : (process.env.SAP_UAA_CLIENT_ID ? 'env' : 'missing'),
+      uaaClientSecretSource: config.uaaClientSecret ? 'header' : (process.env.SAP_UAA_CLIENT_SECRET ? 'env' : 'missing'),
       hasUaaUrl: !!sapConfig.uaaUrl,
       hasUaaClientId: !!sapConfig.uaaClientId,
-      hasUaaClientSecret: !!sapConfig.uaaClientSecret,
-      uaaUrlLength: sapConfig.uaaUrl?.length || 0,
-      uaaClientIdLength: sapConfig.uaaClientId?.length || 0,
-      uaaClientSecretLength: sapConfig.uaaClientSecret?.length || 0
+      hasUaaClientSecret: !!sapConfig.uaaClientSecret
     });
   }
 
-    const { preview, length } = summarizeJwt(sapConfig.jwtToken);
-    log.info('SAP config extracted from headers', {
-      url: sapConfig.url,
-      authType: sapConfig.authType,
-      client: sapConfig.client || 'none',
-      clientFromHeader: sapClientHeader || 'not provided',
-      clientSet: !!sapConfig.client,
-      tokenPreview: preview,
-      tokenLength: length,
-      hasJwtToken: !!sapConfig.jwtToken,
-      jwtTokenLength: sapConfig.jwtToken?.length || 0,
-      hasRefreshToken: !!sapConfig.refreshToken,
-      hasUaaUrl: !!sapConfig.uaaUrl,
-      hasUaaClientId: !!sapConfig.uaaClientId,
-      hasUaaClientSecret: !!sapConfig.uaaClientSecret,
-      canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret)
-    });
+  const { preview, length } = summarizeJwt(sapConfig.jwtToken);
+  log.info('SAP config extracted from headers (via validateAuthHeaders)', {
+    url: sapConfig.url,
+    authType: sapConfig.authType,
+    client: sapConfig.client || 'none',
+    tokenPreview: preview,
+    tokenLength: length,
+    hasRefreshToken: !!sapConfig.refreshToken,
+    canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret)
+  });
 
   return {
     sapConfig,
