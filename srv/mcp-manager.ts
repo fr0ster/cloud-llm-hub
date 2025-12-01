@@ -6,8 +6,7 @@ import cds from '@sap/cds';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
-import type { SapConfig, AbapConnection, ILogger, ISessionStorage } from '@mcp-abap-adt/connection';
-import { createAbapConnection } from '@mcp-abap-adt/connection';
+import type { SapConfig, AbapConnection } from '@mcp-abap-adt/connection';
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import {
   shouldUseConnectivity,
@@ -19,7 +18,7 @@ import {
   type DestinationResolution,
   clearDestinationServiceCache
 } from './connections/destinationResolver';
-import { CloudSdkAbapConnection } from './connections/CloudSdkAbapConnection';
+import { createConnection } from './connections/connectionFactory';
 
 // MCP server class will be imported dynamically to avoid executing top-level code
 // The submodule's index.ts has top-level code that loads .env file, which we want to skip
@@ -353,22 +352,25 @@ export async function getMCPServer(req: Request): Promise<{
 
     let connection: AbapConnection | undefined;
     
-    // IMPORTANT: CloudSdkAbapConnection is ONLY for destination-based connections
-    // For all other authentication methods (JWT direct, Basic auth direct),
-    // mcp-abap-adt will create connection from @mcp-abap-adt/connection package:
-    // - CloudAbapConnection for JWT auth (internet)
-    // - OnPremAbapConnection for on-premise (if connectivity proxy is used)
+    /**
+     * PHASE 2.4: Use Connection Factory Pattern
+     * 
+     * For destination-based connections, use factory to create CloudSdkAbapConnection.
+     * For direct Basic/JWT connections, don't create connection here - let mcp-abap-adt
+     * create it via getManagedConnection() from session context.
+     */
     if (destination?.destinationName) {
-      log.debug('Using Cloud SDK AbapConnection for destination', {
+      log.debug('Using Connection Factory for destination-based connection', {
         destinationName: destination.destinationName,
         proxyType: destination.proxyType,
         useConnectivity
       });
-      // CloudSdkAbapConnection uses executeHttpRequest which automatically handles:
-      // - Internet destinations
-      // - On-premise destinations via Cloud Connector (if ProxyType=OnPremise in destination)
-      // - All authentication types (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
-      connection = new CloudSdkAbapConnection(sapConfig, destination.destinationName);
+      // Use factory to create CloudSdkAbapConnection
+      // Factory handles all connection type selection logic
+      connection = createConnection({
+        sapConfig,
+        destinationName: destination.destinationName
+      });
     } else {
       // For basic/jwt (not destination), don't create connection here
       // Let mcp-abap-adt create connection via getManagedConnection() from session context
