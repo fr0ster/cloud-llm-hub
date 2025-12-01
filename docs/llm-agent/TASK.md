@@ -3,48 +3,83 @@
 ## 📋 Task Description
 
 Develop and integrate LLM Agent into Cloud LLM Hub that will:
-- Accept messages from consumers through OData endpoints
-- Use LLM through SAP AI Core for message processing
-- Use MCP tools for interaction with ABAP system
+- Accept messages from consumers through OData endpoints (or future UI)
+- Work with LLM through SAP AI Core for message processing
+- Orchestrate communication between LLM and MCP (LLM communicates with MCP through the agent)
+- Enable LLM to use MCP tools for interaction with ABAP system
+
+**Architecture Context:**
+- `cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system
+- `llm-agent` and `mcp-abap-adt` are peer components at the same level
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- Almost all interactions between system components go through `llm-agent`
+- `llm-agent` is separated as a subsystem because different LLM models work differently with MCP
 
 ## 🎯 Goal
 
 Create a fully functional LLM Agent that:
-1. ✅ Accepts messages through CAP OData service
+1. ✅ Accepts messages through CAP OData service (or future UI)
 2. ✅ Works with LLM through SAP AI Core (service binding)
-3. ✅ Integrated with MCP part of cloud-llm-hub
-4. ✅ Provides conversation history and management
-5. ✅ Has health check endpoint
+3. ✅ Orchestrates communication between LLM and MCP (as a peer component to mcp-abap-adt)
+4. ✅ Enables LLM to communicate with MCP tools through the agent
+5. ✅ Provides conversation history and management
+6. ✅ Has health check endpoint
+
+**Role in System:**
+- Acts as central orchestrator for LLM-MCP communication
+- Separated as subsystem to support different LLM models that work differently with MCP
 
 ## 🏗️ Architecture
 
+**System Integration:**
+`cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level.
+
 ```
-Consumer (UI/OData) 
-    ↓
-Agent Service (CAP OData)
-    ↓
-Agent Manager (creates/caches agents)
-    ↓
-┌─────────────────┬─────────────────┐
-│  LLM Provider   │   MCP Client    │
-│ (SAP AI Core)   │  (MCP Proxy)    │
-└────────┬────────┴────────┬─────────┘
-         │                 │
-    ┌────▼─────────────────▼────┐
-    │   SAP AI Core Service     │
-    │   (via service binding)   │
-    └────────────┬──────────────┘
-                 │
-    ┌────────────▼──────────────┐
-    │   MCP Proxy               │
-    │   (embedded mcp-abap-adt) │
-    └────────────┬──────────────┘
-                 │
-    ┌────────────▼──────────────┐
-    │   SAP ABAP System         │
-    │   (via destination)       │
-    └───────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│              Cloud LLM Hub (Integration Platform)          │
+│                                                             │
+│  Consumer (UI/OData)                                        │
+│      ↓                                                      │
+│  Agent Service (CAP OData)                                  │
+│      ↓                                                      │
+│  Agent Manager (creates/caches agents)                      │
+│      ↓                                                      │
+│  ┌─────────────────┬─────────────────┐                     │
+│  │  LLM Provider   │   MCP Client    │                     │
+│  │ (SAP AI Core)   │  (MCP Proxy)    │                     │
+│  └────────┬────────┴────────┬─────────┘                     │
+│           │                  │                               │
+│           │                  │                               │
+│     ┌─────▼──────────────────▼─────┐                       │
+│     │   SAP AI Core Service        │                       │
+│     │   (via service binding)      │                       │
+│     └──────────────┬───────────────┘                       │
+│                    │                                         │
+│     ┌──────────────┼───────────────┐                       │
+│     │              │               │                       │
+│     │    ┌─────────▼─────────┐     │                       │
+│     │    │   MCP Proxy       │     │                       │
+│     │    │   (CAP Service)   │     │                       │
+│     │    └─────────┬─────────┘     │                       │
+│     │              │               │                       │
+│     │    ┌─────────▼─────────┐     │                       │
+│     │    │  mcp-abap-adt     │     │                       │
+│     │    │  (embedded)        │     │                       │
+│     │    └─────────┬─────────┘     │                       │
+│     └──────────────┼───────────────┘                       │
+│                    │                                         │
+│     ┌──────────────▼───────────────┐                       │
+│     │   SAP ABAP System            │                       │
+│     │   (via destination)          │                       │
+│     └──────────────────────────────┘                       │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**Key Points:**
+- `llm-agent` and `mcp-abap-adt` are peer components (same level)
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- Almost all interactions between system components go through `llm-agent`
+- `llm-agent` acts as the central orchestrator for LLM-MCP communication
 
 ## 📝 Technical Requirements
 
@@ -147,7 +182,8 @@ Service health check.
 ### 3. MCP Integration
 
 **Requirements:**
-- Connect to MCP Proxy via HTTP transport
+- Connect to MCP Proxy (which embeds `mcp-abap-adt`) via HTTP transport
+- Orchestrate communication between LLM and MCP (LLM communicates with MCP through the agent)
 - Use same destination as MCP Proxy
 - Automatic detection of available tools
 - Fallback to LLM-only mode if MCP unavailable
@@ -157,6 +193,7 @@ Service health check.
 - Endpoint: `http://localhost:4004/mcp/stream/http` (locally)
 - Endpoint: auto-detect from request headers (on BTP)
 - Pass destination via `X-SAP-Destination` header
+- Agent acts as orchestrator: LLM → Agent → MCP Proxy → mcp-abap-adt → ABAP System
 
 ### 4. Configuration
 

@@ -4,14 +4,23 @@
 
 LLM Agent is a module that:
 - Accepts messages from consumers (UI or OData endpoints)
-- Uses LLM through SAP AI Core for message processing
-- Uses MCP tools for interaction with ABAP system
+- Works with LLM through SAP AI Core for message processing
+- Orchestrates communication between LLM and MCP (LLM communicates with MCP through the agent)
+- Enables LLM to use MCP tools for interaction with ABAP system
+
+**Architecture Context:**
+- `cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system
+- `llm-agent` and `mcp-abap-adt` are peer components at the same level
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- Almost all interactions between system components go through `llm-agent`
 
 ## 🎯 Main Goal
 
-Create a fully functional LLM Agent that works as a bridge between:
-- **Consumers** (UI, OData endpoints) 
-- **MCP model** (embedded mcp-abap-adt in cloud-llm-hub)
+Create a fully functional LLM Agent that:
+- Works as a central orchestrator between LLM and MCP
+- Accepts messages from consumers (UI, OData endpoints)
+- Enables LLM to communicate with MCP (embedded mcp-abap-adt in cloud-llm-hub) through the agent
+- Acts as a peer component to `mcp-abap-adt` at the same level in the system architecture
 
 ## 📁 Key Files
 
@@ -88,11 +97,20 @@ bash test/test-agent.sh
 
 ## 🏗️ Architecture
 
+**System Integration:**
+`cloud-llm-hub` integrates `mcp-abap-adt`, `llm-agent`, and future UI into a unified system.
+
 ```
 Consumer → Agent Service → Agent Manager → [LLM Provider + MCP Client]
                                               ↓
-                                    SAP AI Core + MCP Proxy
+                                    SAP AI Core + MCP Proxy → mcp-abap-adt → ABAP System
 ```
+
+**Key Points:**
+- `llm-agent` and `mcp-abap-adt` are peer components (same level)
+- LLM communicates with MCP **through** `llm-agent` (not directly)
+- Almost all interactions between system components go through `llm-agent`
+- `llm-agent` acts as the central orchestrator for LLM-MCP communication
 
 ## 📞 Next Steps
 
