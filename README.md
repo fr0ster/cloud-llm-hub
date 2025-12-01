@@ -22,9 +22,9 @@ File or Folder | Purpose
 
 **New to Cloud LLM Hub?** Start here:
 
-1. **[⚡ Quick Setup Guide](docs/QUICK_SETUP.md)** - Get running in 60 seconds
-2. **[🚀 Getting Started](docs/GETTING_STARTED.md)** - Complete onboarding guide
-3. **[🔌 Integration Examples](docs/INTEGRATIONS.md)** - Ready-to-use code for Cline, n8n, CI/CD, and more
+1. **[⚡ Quick Setup Guide](docs/usage/QUICK_SETUP.md)** - Get running in 60 seconds
+2. **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** - Complete onboarding guide
+3. **[🔌 Integration Examples](docs/architecture/INTEGRATIONS.md)** - Ready-to-use code for Cline, n8n, CI/CD, and more
 
 **For Developers:**
 ```bash
@@ -65,51 +65,67 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
   - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
 - Legacy smoke tests under `test/smoke/` (manual scripts for health, SSE, Stream-HTTP).
 - Run `npm exec -- tsc --noEmit` to type-check the project.
-- The `docs/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.
+- The `docs/development/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.
 
 ## 📚 Documentation
 
-### For Consumers (Using Cloud LLM Hub)
-- **[⚡ Quick Setup](docs/QUICK_SETUP.md)** - 60-second setup guide
-- **[🚀 Getting Started](docs/GETTING_STARTED.md)** - Complete onboarding
-- **[✨ Features & Benefits](docs/FEATURES.md)** - Why choose Cloud LLM Hub?
-- **[🔌 Integration Examples](docs/INTEGRATIONS.md)** - Cline, n8n, CI/CD, Python, Node.js
-- **[👥 Consumer Guide](docs/CONSUMER_GUIDE.md)** - End-user focused guide
-- **[🔧 Configuration Guide](docs/MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
-- **[📡 API Reference](docs/API_REFERENCE.md)** - Complete API specification
-- **[📖 Proxy Usage Guide](docs/MCP_PROXY_USAGE.md)** - Detailed usage examples
-- **[🐛 Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+Full documentation is organized by purpose in the **[docs/](docs/)** directory:
 
-### For Developers (Contributing)
+### 🎯 For New Users
+Start here to get up and running quickly:
+- **[⚡ Quick Setup](docs/usage/QUICK_SETUP.md)** - Get running in 60 seconds
+- **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** - Complete onboarding guide
+- **[🐛 Troubleshooting](docs/usage/TROUBLESHOOTING.md)** - Common issues and solutions
+
+### 📖 Usage Guides
+Learn how to use Cloud LLM Hub effectively:
+- **[👥 Consumer Guide](docs/usage/CONSUMER_GUIDE.md)** - End-user focused guide
+- **[📖 Proxy Usage](docs/usage/MCP_PROXY_USAGE.md)** - Detailed usage examples
+- **[🔧 Configuration](docs/usage/MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
+- **[🤖 Assistant Guidelines](docs/usage/ASSISTANT_GUIDELINES.md)** - AI assistant integration best practices
+
+### 🏗️ Architecture
+Understand how the system works:
+- **[📡 API Reference](docs/architecture/API_REFERENCE.md)** - Complete API specification
+- **[🔌 CAP Endpoints](docs/architecture/CAP_ENDPOINTS.md)** - Service endpoints documentation
+- **[✨ Features](docs/architecture/FEATURES.md)** - Why choose Cloud LLM Hub?
+- **[🔌 Integrations](docs/architecture/INTEGRATIONS.md)** - Integration examples
+- **[📊 MCP Header Matrix](docs/architecture/MCP_HEADER_MATRIX.md)** - Header configuration reference
+- **[⚡ Performance](docs/architecture/PERFORMANCE.md)** - Performance optimization
+- **[📋 Implementation Status](docs/architecture/IMPLEMENTATION_STATUS.md)** - Feature implementation tracking
+
+### 🛠️ Development
+For contributors and developers:
 - **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
 - **[👥 Contributors](CONTRIBUTORS.md)** - List of contributors
-- **[� Contributor Documentation](docs/contributors/)** - Complete contributor guides
+- **[🛠️ Contributor Docs](docs/contributors/)** - Development guides
   - [Setup Guide](docs/contributors/SETUP.md) - Development environment
   - [Git Workflow](docs/contributors/WORKFLOW.md) - Fork → Branch → PR
   - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
   - [Architecture](docs/contributors/ARCHITECTURE.md) - System overview
   - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
   - [🗺️ mcp-abap-adt Integration](docs/contributors/MCP_ABAP_ADT_INTEGRATION.md) - v1.1.19 integration roadmap
-  - [🏗️ Connection Architecture](docs/contributors/CONNECTION_ARCHITECTURE.md) - Direct vs BTP Destination connections
+- **[🐛 Debugging](docs/development/DEBUGGING.md)** - Debugging techniques
+- **[🔍 Debug Cline Requests](docs/development/DEBUG_CLINE_REQUESTS.md)** - Cline integration debugging
+- **[🧪 Testing Cheat Sheet](docs/development/TESTING_CHEAT_SHEET.md)** - Testing workflows
+- **[🔑 JWT Token Refresh](docs/development/JWT_TOKEN_REFRESH_GUIDE.md)** - Token management
 
-### For Operators (Production)
-- **[🔧 Operations Guide](docs/OPERATIONS.md)** - Production runbook
-- **[📊 Monitoring Guide](docs/MONITORING.md)** - Monitoring setup and metrics
-- **[⚡ Performance Guide](docs/PERFORMANCE.md)** - Performance optimization and tuning
-- **[🔄 Migration Guide](docs/MIGRATION_GUIDE.md)** - Version upgrade instructions
-- [Deployment Checklist](docs/DEPLOYMENT_CHECKLIST.md) - Deployment procedures
-- [Implementation Report](docs/IMPLEMENTATION_REPORT.md)
-- [Architecture Decision Records](docs/adrs)
+### 🚀 Deployment
+Deploy and operate in production:
+- **[✅ Deployment Checklist](docs/deployment/DEPLOYMENT_CHECKLIST.md)** - Deployment procedures
+- **[🔄 Migration Guide](docs/deployment/MIGRATION_GUIDE.md)** - Version upgrade instructions
+- **[📊 Monitoring](docs/deployment/MONITORING.md)** - Monitoring setup and metrics
+- **[🔧 Operations](docs/deployment/OPERATIONS.md)** - Production runbook
 
-### Templates & Examples
-- [MCP Config Templates](docs/templates/mcp-config) - Ready-to-use YAML configurations
-- [Example Configurations](docs/examples) - Cline settings examples
+### 📁 Additional Resources
+- **[📝 Architecture Decision Records](docs/adrs/)** - Design decisions
+- **[📋 Templates](docs/templates/mcp-config/)** - Ready-to-use configurations
+- **[💡 Examples](docs/examples/)** - Integration examples
 
-### Internationalization
+### 🌍 Internationalization
 - **[🇺🇦 Українська](docs/uk/)** - Ukrainian translations (partial)
   - [Швидкий старт](docs/uk/QUICK_SETUP.md)
   - [Вирішення проблем](docs/uk/TROUBLESHOOTING.md)
-
 ## Deployment Notes
 
 - Use `cds build --production` or run the MTA build (`mbt build`) before pushing to SAP BTP.

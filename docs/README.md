@@ -1,56 +1,76 @@
 # 📚 Documentation Index
 
-Welcome to Cloud LLM Hub documentation! Choose your path:
+Welcome to Cloud LLM Hub documentation!
 
-## 🚀 New Users Start Here
+## � Documentation Categories
 
-1. **[⚡ Quick Setup](QUICK_SETUP.md)** - Get running in 60 seconds
-2. **[🚀 Getting Started](GETTING_STARTED.md)** - Complete onboarding guide
-3. **[✨ Features & Benefits](FEATURES.md)** - Why choose Cloud LLM Hub?
+### 🏗️ [Architecture](architecture/)
+System architecture, design decisions, and technical specifications
+- API Reference
+- CAP Endpoints
+- Features & Capabilities
+- Integration Details
+- Performance Characteristics
 
-## 🔌 Integration Guides
+### � [Development](development/)
+Developer guides, debugging, and testing resources
+- Debugging Guide
+- Testing Cheat Sheet
+- JWT Token Refresh
+- Debug Tools
 
-- **[🔌 Integration Examples](INTEGRATIONS.md)** - Ready-to-use code for:
-  - Cline (VS Code)
-  - GitHub Actions
-  - GitLab CI
-  - Jenkins
-  - n8n
-  - Zapier
-  - Make.com
-  - Python scripts
-  - Node.js applications
-  - Bash scripts
+### 🚀 [Deployment](deployment/)
+Deployment guides, operations, and production management
+- Deployment Checklist
+- Migration Guide
+- Monitoring & Operations
+- Production Best Practices
 
-## 📖 User Guides
+### 📖 [Usage](usage/)
+User guides and how-to documentation
+- Getting Started
+- Quick Setup (60 seconds!)
+- Consumer Guide
+- MCP Proxy Usage
+- Troubleshooting
 
-- **[👥 Consumer Guide](CONSUMER_GUIDE.md)** - For end users of Cloud LLM Hub
-- **[🔧 Configuration Guide](MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
-- **[📡 API Reference](MCP_PROXY_USAGE.md)** - Endpoint documentation
-- **[📋 Header Matrix](MCP_HEADER_MATRIX.md)** - Header configuration reference
+### 👥 [Contributors](contributors/)
+For project contributors and maintainers
+- Setup Guide
+- Code Style
+- Testing Guide
+- Workflow & Contribution Process
 
-## 🛠️ Developer Resources
+## 🚀 Quick Start Paths
 
-- **[📝 Implementation Report](IMPLEMENTATION_REPORT.md)** - Technical details
-- **[🏗️ Architecture Decisions](adrs/)** - ADR records
-- **[✅ Deployment Checklist](DEPLOYMENT_CHECKLIST.md)** - Deployment guide
-- **[🧪 Testing Guide](TESTING_CHEAT_SHEET.md)** - Testing procedures
-- **[🐛 Debugging Guide](DEBUGGING.md)** - Troubleshooting
+### New Users
+1. **[⚡ Quick Setup](usage/QUICK_SETUP.md)** - Get running in 60 seconds
+2. **[� Getting Started](usage/GETTING_STARTED.md)** - Complete guide
+3. **[✨ Features](architecture/FEATURES.md)** - Why choose Cloud LLM Hub?
 
-## 📁 Templates & Examples
+### Developers
+1. **[🏗️ Architecture](architecture/)** - System design
+2. **[� Development](development/)** - Dev guides
+3. **[👥 Contributors Guide](contributors/)** - Start contributing
 
-- **[📋 MCP Config Templates](templates/mcp-config/)** - YAML configuration templates
-- **[💡 Example Configurations](examples/)** - Cline settings examples
-- **[🔄 CI/CD Examples](examples/)** - GitHub Actions, GitLab CI examples
+### Operators
+1. **[🚀 Deployment](deployment/DEPLOYMENT_CHECKLIST.md)** - Deploy to production
+2. **[📊 Monitoring](deployment/MONITORING.md)** - Monitor your instance
+3. **[� Operations](deployment/OPERATIONS.md)** - Day-to-day operations
 
-## 🎯 Quick Links
+## � Additional Resources
 
-- **Setup:** [QUICK_SETUP.md](QUICK_SETUP.md)
-- **Integrations:** [INTEGRATIONS.md](INTEGRATIONS.md)
-- **Features:** [FEATURES.md](FEATURES.md)
-- **API:** [MCP_PROXY_USAGE.md](MCP_PROXY_USAGE.md)
+- **[Architecture Decision Records](adrs/)** - Design decisions
+- **[Configuration Templates](templates/)** - Ready-to-use configs
+- **[Examples](examples/)** - Integration examples
+- **[Ukrainian Docs](uk/)** - Документація українською
+
+## 🔗 External Links
+
+- [GitHub Repository](https://github.com/fr0ster/cloud-llm-hub)
+- [Issue Tracker](https://github.com/fr0ster/cloud-llm-hub/issues)
 
 ---
 
-**Need help?** Start with [QUICK_SETUP.md](QUICK_SETUP.md) or [GETTING_STARTED.md](GETTING_STARTED.md)!
+**Need help?** Start with [Quick Setup](usage/QUICK_SETUP.md) or [Getting Started](usage/GETTING_STARTED.md)!
 
