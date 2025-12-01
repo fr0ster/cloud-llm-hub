@@ -154,25 +154,9 @@ async function extractSapContext(req: Request): Promise<SapContext> {
     }
     sapConfig.jwtToken = config.jwtToken;
 
-    // Add refresh token and UAA credentials if provided
-    if (config.refreshToken) {
-      sapConfig.refreshToken = config.refreshToken;
-    }
-    
-    // Get UAA credentials from validated config or fallback to process.env
-    sapConfig.uaaUrl = config.uaaUrl || process.env.SAP_UAA_URL;
-    sapConfig.uaaClientId = config.uaaClientId || process.env.SAP_UAA_CLIENT_ID;
-    sapConfig.uaaClientSecret = config.uaaClientSecret || process.env.SAP_UAA_CLIENT_SECRET;
-    
-    // Log where UAA credentials came from
-    log.info('🔑 UAA credentials after extraction', {
-      uaaUrlSource: config.uaaUrl ? 'header' : (process.env.SAP_UAA_URL ? 'env' : 'missing'),
-      uaaClientIdSource: config.uaaClientId ? 'header' : (process.env.SAP_UAA_CLIENT_ID ? 'env' : 'missing'),
-      uaaClientSecretSource: config.uaaClientSecret ? 'header' : (process.env.SAP_UAA_CLIENT_SECRET ? 'env' : 'missing'),
-      hasUaaUrl: !!sapConfig.uaaUrl,
-      hasUaaClientId: !!sapConfig.uaaClientId,
-      hasUaaClientSecret: !!sapConfig.uaaClientSecret
-    });
+    // NOTE: cloud-llm-hub does NOT support token refresh
+    // Clients must refresh tokens themselves and send new JWT token in each request
+    // For BTP Destinations, token management is automatic via BTP
   }
 
   const { preview, length } = summarizeJwt(sapConfig.jwtToken);
@@ -181,9 +165,7 @@ async function extractSapContext(req: Request): Promise<SapContext> {
     authType: sapConfig.authType,
     client: sapConfig.client || 'none',
     tokenPreview: preview,
-    tokenLength: length,
-    hasRefreshToken: !!sapConfig.refreshToken,
-    canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret)
+    tokenLength: length
   });
 
   return {
@@ -381,20 +363,10 @@ export async function getMCPServer(req: Request): Promise<{
       // that IGNORES session context from AsyncLocalStorage.
       // Instead, we rely on sessionContext.run() in server.ts to provide session-specific config
       // for each HTTP request. This allows getManagedConnection() to use the correct session context
-      // with per-request JWT tokens and refresh tokens.
+      // with per-request JWT tokens.
       
-      // ВАЖЛИВО: Логуємо UAA credentials які будуть передані в sessionContext
-      log.info('🔐 UAA credentials for sessionContext', {
-        hasRefreshToken: !!sapConfig.refreshToken,
-        refreshTokenLength: sapConfig.refreshToken?.length || 0,
-        hasUaaUrl: !!sapConfig.uaaUrl,
-        uaaUrl: sapConfig.uaaUrl || 'MISSING',
-        hasUaaClientId: !!sapConfig.uaaClientId,
-        uaaClientIdLength: sapConfig.uaaClientId?.length || 0,
-        hasUaaClientSecret: !!sapConfig.uaaClientSecret,
-        uaaClientSecretLength: sapConfig.uaaClientSecret?.length || 0,
-        canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret)
-      });
+      // NOTE: cloud-llm-hub does NOT support token refresh
+      // Clients must refresh tokens themselves and send new JWT token in each request
       
       log.info('Using session context for connection (NO sapConfig override)', {
         url: sapConfig.url,
@@ -405,11 +377,6 @@ export async function getMCPServer(req: Request): Promise<{
         hasClient: !!sapConfig.client,
         client: sapConfig.client || 'NOT SET - requests may fail if SAP system requires client',
         clientWarning: !sapConfig.client ? '⚠️ Client not set - CDS views and other objects may not be found' : undefined,
-        hasRefreshToken: !!sapConfig.refreshToken,
-        hasUaaUrl: !!sapConfig.uaaUrl,
-        hasUaaClientId: !!sapConfig.uaaClientId,
-        hasUaaClientSecret: !!sapConfig.uaaClientSecret,
-        canRefresh: !!(sapConfig.refreshToken && sapConfig.uaaUrl && sapConfig.uaaClientId && sapConfig.uaaClientSecret),
         cacheKey: getCacheKey(sapConfig),
         source: sapContext.source,
         note: '⚠️ sapConfig NOT passed to constructor - will use session context from AsyncLocalStorage'
@@ -457,17 +424,23 @@ export async function getMCPServer(req: Request): Promise<{
       }
     };
   } catch (err: any) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    const errorStack = err instanceof Error ? err.stack : undefined;
-    const errorDetails = {
-      error: errorMessage,
-      name: err?.name,
-      code: err?.code,
-      stack: errorStack,
+    // Use synchronized error handling from errorUtils
+    const { logErrorSafely } = await import('./lib/errorUtils');
+    
+    // Build context - sapContext might not be available if error occurred before extraction
+    const context: Record<string, any> = {
       destination: (req.headers[DESTINATION_HEADER] as string) || undefined
     };
     
-    log.error('Failed to create MCP server instance', errorDetails);
+    // Try to get cache key if sapContext was extracted
+    try {
+      const sapContext = await extractSapContext(req);
+      context.cacheKey = getCacheKey(sapContext.sapConfig, sapContext.destination?.destinationName);
+    } catch {
+      // Ignore - sapContext extraction might have failed
+    }
+    
+    logErrorSafely(log, 'MCP server instance creation', err, context);
     
     // Ensure error has proper properties for downstream handling
     if (err instanceof Error) {

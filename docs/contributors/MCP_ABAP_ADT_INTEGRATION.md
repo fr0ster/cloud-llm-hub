@@ -105,7 +105,7 @@
   - **🆕 EXTENSION:** Cloud Connector support for On-Premise systems
   - **🆕 EXTENSION:** Destination Service integration with BTP
   - MCP request proxying to ABAP systems
-  - JWT token refresh and session management
+  - Session management (token refresh is client's responsibility)
   - CAP-based REST API for MCP
 
 ### mcp-abap-adt (Base Library)
@@ -132,7 +132,7 @@
 // Adds BTP support:
 - SAP BTP Destination Service
 - Cloud Connector for On-Premise
-- Automatic token refresh via BTP
+- Automatic token management via BTP (handled by BTP infrastructure, not refresh token)
 - Proxy configuration via BTP
 - Multiple auth types: BasicAuthentication, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion
 ```
@@ -388,13 +388,17 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
 
 ### Phase 3: Improvements and Optimization (5-7 days) 🟢
 
-- [ ] **3.1. Synchronize Error Handling**
-  - [ ] Audit error handling patterns in `srv/connections/CloudSdkAbapConnection.ts`
-  - [ ] Audit error handling patterns in `srv/mcp-manager.ts`
-  - [ ] Audit error handling patterns in `srv/server.ts`
-  - [ ] Align with `safeStringifyError` from mcp-abap-adt
-  - [ ] Add structured logging for all error paths
-  - [ ] Improve error messages with context for debugging
+- [x] **3.1. Synchronize Error Handling**
+  - [x] Audit error handling patterns in `srv/connections/CloudSdkAbapConnection.ts`
+  - [x] Audit error handling patterns in `srv/mcp-manager.ts`
+  - [x] Audit error handling patterns in `srv/server.ts`
+  - [x] Create `srv/lib/errorUtils.ts` with `logErrorSafely` and `extractErrorDetails` (synchronized with mcp-abap-adt)
+  - [x] Update `srv/mcp-manager.ts` to use `logErrorSafely`
+  - [x] Update `srv/server.ts` to use `logErrorSafely` and `formatErrorMessage`
+  - [x] Update `srv/connections/CloudSdkAbapConnection.ts` to use `logErrorSafely`
+  - [x] Update `srv/connections/destinationResolver.ts` to use `logErrorSafely`
+  - [x] Update `srv/mcp-proxy.ts` to use `logErrorSafely`
+  - [x] Verify build succeeds with new error handling
   - [ ] Test error scenarios with meaningful output
 
 - [x] **3.2. Synchronize CSRF Token Logic**

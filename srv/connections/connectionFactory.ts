@@ -96,7 +96,7 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
     // - Destination resolution via BTP Destination Service
     // - Multiple authentication types (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
     // - Cloud Connector for On-Premise systems
-    // - Automatic token refresh via BTP
+    // - Token management via BTP (automatic, not refresh token - handled by BTP infrastructure)
     return new CloudSdkAbapConnection(sapConfig, destinationName);
   }
   

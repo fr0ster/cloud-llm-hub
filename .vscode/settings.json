@@ -43,9 +43,12 @@
     "lockhandle",
     "matnr",
     "messageclass",
+    "myapp",
+    "mycc",
     "nametab",
     "objectname",
     "developer",
+    "ondemand",
     "onprem",
     "onpremise",
     "preaudit",
@@ -56,15 +59,16 @@
     "runbooks",
     "SALV",
     "SAPAPO",
+    "sapecc",
     "SAPMV",
     "SESSIONID",
     "sessiontype",
     "streamable",
+    "TABL",
     "testclasses",
     "uaadomain",
     "usagereferences",
     "xsapp",
-    "ztst",
-    "TABL"
+    "ztst"
   ]
 }

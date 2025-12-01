@@ -1,6 +1,18 @@
 # JWT Token Refresh Guide
 
-## Проблема
+> **⚠️ DEPRECATED**: This guide describes the old token refresh implementation that has been removed.
+> 
+> **Current Status**: `cloud-llm-hub` does **NOT** implement token refresh functionality.
+> - For **BTP Destinations**: Token management is automatic via BTP infrastructure
+> - For **Direct JWT**: Clients must refresh tokens themselves and send new JWT token in each request
+> 
+> See `docs/contributors/CONNECTION_ARCHITECTURE.md` for current token management approach.
+
+## Historical Context
+
+This document describes the previous implementation where token refresh was attempted in cloud-llm-hub.
+
+## Проблема (Historical)
 
 При використанні JWT автентифікації з Cloud LLM Hub, токени не оновлювались автоматично при роботі через cloud-llm-hub proxy, хоча працювали у standalone mcp-abap-adt з тими ж credentials.
 

@@ -183,12 +183,10 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
         timestamp: new Date().toISOString()
       };
     } catch (error: any) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.error('Destination probe failed', { 
-        destination: destinationName, 
-        error: message,
-        errorName: error?.name,
-        errorCode: error?.code
+      // Use synchronized error handling from errorUtils
+      const { logErrorSafely } = await import('./lib/errorUtils');
+      logErrorSafely(log, 'Destination probe', error, {
+        destination: destinationName
       });
       throw error;
     }
