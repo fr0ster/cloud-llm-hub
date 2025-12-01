@@ -7,7 +7,6 @@
  * Based on logErrorSafely from @fr0ster/mcp-abap-adt/src/lib/utils.ts
  */
 
-import type { AxiosError } from 'axios';
 import type { ILogger } from '@mcp-abap-adt/connection';
 
 /**
@@ -35,7 +34,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
     message: 'Unknown error',
   };
 
-  // Handle AxiosError (from axios or Cloud SDK)
+  // Handle HTTP errors (from axios or Cloud SDK)
   if (error?.response || (error?.statusCode && error?.config)) {
     // Cloud SDK errors have similar structure to AxiosError
     const status = error.response?.status || error.statusCode;
@@ -53,7 +52,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
       } else {
         try {
           details.responseData = JSON.stringify(error.response.data).substring(0, 500);
-        } catch (e) {
+        } catch (_e) {
           details.responseData = String(error.response.data).substring(0, 500);
         }
       }
@@ -64,7 +63,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
       } else {
         try {
           details.responseData = JSON.stringify(error.data).substring(0, 500);
-        } catch (e) {
+        } catch (_e) {
           details.responseData = String(error.data).substring(0, 500);
         }
       }
@@ -80,7 +79,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
     try {
       details.rawError = JSON.stringify(error).substring(0, 500);
       details.message = String(error).substring(0, 200);
-    } catch (e) {
+    } catch (_e) {
       details.rawError = String(error).substring(0, 500);
       details.message = String(error).substring(0, 200);
     }

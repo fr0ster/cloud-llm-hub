@@ -7,7 +7,23 @@ import tsparser from '@typescript-eslint/parser';
 export default [
   ...cds.recommended,
   {
-    ignores: ['dist/**', 'gen/**', '@cds-models/**', 'submodules/**', 'node_modules/**'],
+    ignores: [
+      'dist/**',
+      'gen/**',
+      '@cds-models/**',
+      'submodules/**',
+      'node_modules/**',
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/gen/**',
+      'package-lock.json',
+      '*.log',
+      '*.mtar',
+      'mta_archives/**',
+      'tools/**',
+      'test/**',
+      'docs/**',
+    ],
   },
   {
     files: ['**/*.ts', '**/*.tsx'],
