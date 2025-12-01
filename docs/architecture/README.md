@@ -11,6 +11,7 @@ System architecture, design decisions, and technical specifications for cloud-ll
 - [**Implementation Status**](IMPLEMENTATION_STATUS.md) - Current implementation progress
 
 ### Integration & Performance
+- [**Integration Architecture**](INTEGRATION_ARCHITECTURE.md) - Overall integration architecture with mcp-abap-adt
 - [**Integrations**](INTEGRATIONS.md) - External system integrations
 - [**MCP Header Matrix**](MCP_HEADER_MATRIX.md) - MCP protocol header specifications
 - [**Performance**](PERFORMANCE.md) - Performance characteristics and optimization
