@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
-## [Unreleased]
+## [1.0.0] - 2025-12-01
 
 ### Added
 
@@ -190,3 +190,5 @@ This release includes a comprehensive documentation overhaul that brings the pro
 - **Enterprise-ready** with production runbooks, monitoring guides, and troubleshooting procedures
 - **International support** with Ukrainian translations of key documents
 - **Testing infrastructure** ready for high code coverage with detailed guidelines
+
+## [Unreleased]
