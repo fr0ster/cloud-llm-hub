@@ -18,6 +18,7 @@ Security vulnerabilities should be reported privately to ensure responsible disc
 ### How to Report
 
 Please report security vulnerabilities via:
+
 - **Email:** [Add your security email here]
 - **GitHub Security Advisory:** Use the "Report a vulnerability" button on the repository's Security tab
 - **Expected response time:** Within 48 hours
@@ -141,6 +142,7 @@ When reporting a vulnerability, please include:
 ## Security Updates
 
 Security updates will be released as:
+
 - **Patch releases** (1.0.x) for security fixes
 - **Minor releases** (1.x.0) for security improvements
 - **Major releases** (x.0.0) for breaking security changes
@@ -148,6 +150,7 @@ Security updates will be released as:
 ## Security Changelog
 
 Security-related changes will be documented in:
+
 - `CHANGELOG.md` - General changelog
 - GitHub Security Advisories - For vulnerabilities
 - Release notes - For security improvements
@@ -163,4 +166,3 @@ Security-related changes will be documented in:
 
 **Last Updated:** 2025-11-05  
 **Version:** 1.0
-

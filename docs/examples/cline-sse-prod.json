@@ -4,7 +4,7 @@
       "type": "sse",
       "endpoint": "https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/sse",
       "headers": {
-        "Authorization": "Bearer ${ACCESS_TOKEN}"
+        "authorization": "Bearer ${ACCESS_TOKEN}"
       },
       "timeoutMs": 0,
       "description": "MCP Proxy SSE endpoint (production mode with JWT)"
