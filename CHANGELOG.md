@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [Unreleased]
+
+## [1.0.2] - 2025-12-01
+
+### Added
+
+- **Version Management Scripts**: Automated version synchronization across all files
+  - `tools/bump-version.js` - Unified version bumping script (like npm version but syncs all files)
+  - `tools/sync-version.js` - Version synchronization utility
+  - Automatic version sync in `package.json`, `mta.yaml`, and `package-lock.json`
+  - npm script `bump:version` for easy version management
+
+### Changed
+
+- **GitHub Actions Release Workflow**: Improved release automation
+  - Fixed Prettier formatting issues in `eslint.config.mjs`
+  - Updated release workflow to use modern GitHub Actions
+  - Automatic changelog extraction for GitHub releases
+
+### Fixed
+
+- **Test Scripts**: Graceful handling of missing `.env` file
+  - Integration tests now skip gracefully when `.env` is missing (useful for CI/CD)
+  - Tests exit with code 0 instead of failing when credentials are not available
+
+## [1.0.1] - 2025-12-01
+
+_No changes - version bump only_
+
 ## [1.0.0] - 2025-12-01
 
 ### Added
@@ -191,4 +220,3 @@ This release includes a comprehensive documentation overhaul that brings the pro
 - **International support** with Ukrainian translations of key documents
 - **Testing infrastructure** ready for high code coverage with detailed guidelines
 
-## [Unreleased]

@@ -22,7 +22,9 @@ if (process.argv[2]) {
 }
 
 if (!version) {
-  console.error('❌ Version not found. Provide version as argument or ensure package.json has version field.');
+  console.error(
+    '❌ Version not found. Provide version as argument or ensure package.json has version field.'
+  );
   process.exit(1);
 }
 
@@ -40,4 +42,3 @@ if (versionRegex.test(mtaContent)) {
   console.error('❌ Could not find version field in mta.yaml');
   process.exit(1);
 }
-

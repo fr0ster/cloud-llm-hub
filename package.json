@@ -1,6 +1,6 @@
 {
   "name": "cloud-llm-hub",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A simple CAP project.",
   "dependencies": {
     "@fr0ster/mcp-abap-adt": "file:submodules/mcp-abap-adt",
@@ -54,6 +54,7 @@
     "copy:mcp-submodule": "node tools/copy-mcp-submodule.js",
     "update:env": "node tools/update-default-env.js",
     "sync:version": "node tools/sync-version.js",
+    "bump:version": "node tools/bump-version.js",
     "version": "node tools/sync-version.js && git add mta.yaml"
   },
   "license": "MIT",
