@@ -586,8 +586,9 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [ ] Create Git tag for release (deferred - no release planned yet)
   - [x] Prepare release notes highlighting key changes
     - [x] ✅ CHANGELOG.md updated with comprehensive release notes in [Unreleased] section
-  - [ ] Update `README.md` with new features and breaking changes
-    - [ ] ⏳ Review if README needs updates (current version is comprehensive)
+  - [x] Update `README.md` with new features and breaking changes
+    - [x] ✅ Added ESLint and Prettier information to Tooling & Tests section
+    - [x] ✅ Updated mcp-abap-adt version reference from v1.1.19 to v1.1.22
   - [x] Review all documentation for accuracy
     - [x] ✅ Integration roadmap updated
     - [x] ✅ Connection architecture documentation updated
