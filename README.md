@@ -62,6 +62,10 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Tooling & Tests
 
+- **Code Quality**: ESLint and Prettier configured for consistent code style.
+  - Run `npm run lint` to check for issues.
+  - Run `npm run lint:fix` to auto-fix issues.
+  - Run `npm run format` to format code with Prettier.
 - **Integration tests**: YAML-driven test runner via `npm test` (requires `test/integration.yaml` config).
   - Copy `test/integration.yaml.template` to `test/integration.yaml` and fill in your values.
   - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
@@ -114,7 +118,7 @@ For contributors and developers:
   - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
   - [Architecture](docs/contributors/ARCHITECTURE.md) - System overview
   - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
-  - [🗺️ mcp-abap-adt Integration](docs/contributors/MCP_ABAP_ADT_INTEGRATION.md) - v1.1.19 integration roadmap
+  - [🗺️ mcp-abap-adt Integration](docs/contributors/MCP_ABAP_ADT_INTEGRATION.md) - v1.1.22 integration roadmap
 - **[🐛 Debugging](docs/development/DEBUGGING.md)** - Debugging techniques
 - **[🔍 Debug Cline Requests](docs/development/DEBUG_CLINE_REQUESTS.md)** - Cline integration debugging
 - **[🧪 Testing Cheat Sheet](docs/development/TESTING_CHEAT_SHEET.md)** - Testing workflows

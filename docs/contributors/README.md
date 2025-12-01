@@ -17,7 +17,7 @@ Welcome, contributors! This directory contains comprehensive guides for contribu
 
 ### Integration & Architecture
 
-- **[MCP_ABAP_ADT_INTEGRATION.md](MCP_ABAP_ADT_INTEGRATION.md)** - mcp-abap-adt v1.1.19 integration roadmap
+- **[MCP_ABAP_ADT_INTEGRATION.md](MCP_ABAP_ADT_INTEGRATION.md)** - mcp-abap-adt v1.1.22 integration roadmap
 - **[MCP_ABAP_ADT_USAGE.md](MCP_ABAP_ADT_USAGE.md)** - How to use mcp-abap-adt library in cloud-llm-hub
 - **[CODE_SHARING_POLICY.md](CODE_SHARING_POLICY.md)** - Code sharing and duplication policy
 - **[CONNECTION_ARCHITECTURE.md](CONNECTION_ARCHITECTURE.md)** - Direct vs BTP Destination connection architecture
