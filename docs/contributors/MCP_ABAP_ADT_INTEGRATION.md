@@ -1,7 +1,7 @@
-# 🗺️ mcp-abap-adt v1.1.21 Integration Roadmap
+# 🗺️ mcp-abap-adt v1.1.22 Integration Roadmap
 
 **Date:** December 1, 2025  
-**mcp-abap-adt Version:** 1.1.21  
+**mcp-abap-adt Version:** 1.1.22  
 **cloud-llm-hub Version:** 1.0.0  
 
 ## 📋 Table of Contents
@@ -434,7 +434,14 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
   - [x] Synchronize error messages between implementations
   - [x] Synchronize logging format for CSRF operations
   - [x] Add code comments explaining axios vs Cloud SDK differences
-  - [ ] (Optional) Propose PR to mcp-abap-adt to export CSRF_CONFIG
+  - [x] (Optional) Propose PR to mcp-abap-adt to export CSRF_CONFIG
+    - [x] ✅ PR proposal created and reviewed
+    - [x] ✅ Changes implemented in mcp-abap-adt v1.1.22
+    - [x] ✅ PR proposal document removed (changes integrated)
+  - [x] Migrate to exported CSRF_CONFIG from @mcp-abap-adt/connection
+    - [x] ✅ Updated `CloudSdkAbapConnection.ts` to import from `@mcp-abap-adt/connection`
+    - [x] ✅ Removed local `srv/connections/csrfConfig.ts` file
+    - [x] ✅ Build verification: ✅
   - [ ] Test CSRF token fetching with retries
   - [ ] Test CSRF token timeout scenarios
 

@@ -5,7 +5,7 @@ import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import type { AxiosResponse } from 'axios';
 import type { AbapConnection, AbapRequestOptions, SapConfig } from '@mcp-abap-adt/connection';
 import { logger } from '@fr0ster/mcp-abap-adt/dist/lib/logger';
-import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from './csrfConfig';
+import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
 
 /**
  * AbapConnection implementation using SAP Cloud SDK executeHttpRequest
