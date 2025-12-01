@@ -30,6 +30,52 @@ import type { SapConfig } from '@mcp-abap-adt/connection';
 
 /**
  * Stream-HTTP endpoint handler - proxies to embedded MCP server
+ * 
+ * ## Hybrid Architecture: sessionContext Integration
+ * 
+ * This handler implements the **sessionContext** part of the hybrid architecture:
+ * 
+ * 1. **Extract SAP config** from HTTP headers (destination or direct)
+ * 2. **Set sessionContext** via `sessionContext.run({ sapConfig })`
+ * 3. **Delegate to MCP server** which uses `getManagedConnection()` to read from sessionContext
+ * 
+ * ### Flow for Direct Basic/JWT connections:
+ * 
+ * ```
+ * Request → Extract headers → Build sessionSapConfig
+ *   ↓
+ * sessionContext.run({ sapConfig: sessionSapConfig })
+ *   ↓
+ * getMCPServer() → Creates MCP server (NO connection passed)
+ *   ↓
+ * MCP handler calls getManagedConnection()
+ *   ↓
+ * getManagedConnection() reads from sessionContext → Creates connection
+ *   ↓
+ * Request processed with per-request authentication
+ * ```
+ * 
+ * ### Flow for Destination-based connections:
+ * 
+ * ```
+ * Request → Extract headers → Resolve destination
+ *   ↓
+ * getMCPServer() → Creates CloudSdkAbapConnection → Passes to MCP server
+ *   ↓
+ * MCP server uses pre-created connection (sessionContext not needed)
+ *   ↓
+ * Request processed with destination-based authentication
+ * ```
+ * 
+ * ### Key Points:
+ * 
+ * - **sessionContext is request-scoped**: Each HTTP request gets its own SAP config
+ * - **No global state**: Config doesn't leak between requests
+ * - **Automatic cleanup**: AsyncLocalStorage cleans up after request completes
+ * - **Compatible with mcp-abap-adt**: Uses standard getManagedConnection() pattern
+ * 
+ * @param req - HTTP request
+ * @param res - HTTP response
  */
 async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   const log = cds.log('mcp-proxy/stream-http');
@@ -323,6 +369,24 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       allKeys: Object.keys(sessionSapConfig || {})
     });
     
+    /**
+     * HYBRID ARCHITECTURE: Set sessionContext for this request
+     * 
+     * This is the critical part of the hybrid architecture:
+     * - sessionContext.run() sets request-scoped SAP config in AsyncLocalStorage
+     * - mcp-abap-adt's getManagedConnection() reads from this context
+     * - This allows per-request authentication without global connection state
+     * 
+     * For Direct Basic/JWT connections:
+     * - getMCPServer() does NOT pass connection to MCP server constructor
+     * - MCP handlers call getManagedConnection() which reads from sessionContext
+     * - Each request gets its own connection with its own JWT token
+     * 
+     * For Destination-based connections:
+     * - getMCPServer() creates CloudSdkAbapConnection and passes it to constructor
+     * - sessionContext is still set (for consistency) but not used
+     * - Connection is pre-created and reused from instanceCache
+     */
     await mcpSessionContext.run(
       {
         sessionId,

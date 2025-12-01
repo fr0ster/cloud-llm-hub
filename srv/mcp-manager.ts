@@ -221,6 +221,45 @@ function cleanCache(): void {
 
 /**
  * Get or create MCP server instance with transport for given SAP config
+ * 
+ * ## Hybrid Architecture: instanceCache + sessionContext
+ * 
+ * This function implements a **hybrid caching approach** that combines:
+ * 
+ * 1. **instanceCache** (cloud-llm-hub): Caches MCP server instances and connections
+ *    - Key: Based on SAP config + destination name
+ *    - Value: CachedInstance (server, connection, transport, expiry)
+ *    - Purpose: Reuse MCP server instances across requests with same config
+ *    - Lifecycle: Managed by cloud-llm-hub, cleaned up on token expiry
+ * 
+ * 2. **sessionContext** (mcp-abap-adt): Passes SAP config per-request via AsyncLocalStorage
+ *    - Set in: `srv/server.ts` via `sessionContext.run()`
+ *    - Used by: `getManagedConnection()` from mcp-abap-adt
+ *    - Purpose: Per-request SAP config (JWT tokens, credentials) without global state
+ *    - Lifecycle: Request-scoped, automatically cleaned up after request
+ * 
+ * ### How It Works:
+ * 
+ * **For Destination-based connections:**
+ * - `instanceCache` caches `CloudSdkAbapConnection` + MCP server
+ * - Connection is created here and passed to MCP server constructor
+ * - `sessionContext` is NOT used (connection is pre-created)
+ * 
+ * **For Direct Basic/JWT connections:**
+ * - `instanceCache` caches MCP server instance (NO connection passed)
+ * - Connection is created by mcp-abap-adt via `getManagedConnection()`
+ * - `getManagedConnection()` reads SAP config from `sessionContext` (set in server.ts)
+ * - This allows per-request JWT tokens without global connection state
+ * 
+ * ### Why This Design?
+ * 
+ * - **Separation of concerns**: MCP server lifecycle (instanceCache) vs per-request config (sessionContext)
+ * - **Flexibility**: Support both destination-based (pre-created) and direct (per-request) connections
+ * - **Performance**: Reuse MCP server instances while allowing per-request authentication
+ * - **No global state pollution**: Per-request config doesn't leak between requests
+ * 
+ * @param req - HTTP request with SAP configuration in headers
+ * @returns MCP server instance and transport handler
  */
 export async function getMCPServer(req: Request): Promise<{
   server: any;
@@ -245,6 +284,21 @@ export async function getMCPServer(req: Request): Promise<{
     // Clean old instances periodically
     cleanCache();
 
+    /**
+     * HYBRID ARCHITECTURE: Check instanceCache
+     * 
+     * instanceCache stores MCP server instances + connections for reuse.
+     * This is the "hub-level" cache that works alongside sessionContext.
+     * 
+     * Cache key includes:
+     * - SAP URL
+     * - Auth type
+     * - Destination name (if applicable)
+     * - Client (if applicable)
+     * 
+     * This allows reusing MCP server instances across requests with same config,
+     * while sessionContext provides per-request authentication details.
+     */
     // Check cache
     const cached = instanceCache.get(cacheKey);
     if (cached) {
@@ -358,16 +412,34 @@ export async function getMCPServer(req: Request): Promise<{
       });
       serverOptions.connection = connection;
     } else {
-      // For HTTP transport (non-destination), DO NOT pass sapConfig to constructor!
-      // This is critical: if we pass sapConfig, mcp-abap-adt will create a global overrideConnection
-      // that IGNORES session context from AsyncLocalStorage.
-      // Instead, we rely on sessionContext.run() in server.ts to provide session-specific config
-      // for each HTTP request. This allows getManagedConnection() to use the correct session context
-      // with per-request JWT tokens.
-      
-      // NOTE: cloud-llm-hub does NOT support token refresh
-      // Clients must refresh tokens themselves and send new JWT token in each request
-      
+      /**
+       * HYBRID ARCHITECTURE: Direct Basic/JWT connections
+       * 
+       * For non-destination connections (Basic/JWT auth), we use a different approach:
+       * 
+       * 1. **DO NOT create connection here** - let mcp-abap-adt create it
+       * 2. **DO NOT pass sapConfig to MCP server constructor** - this would create global overrideConnection
+       * 3. **Rely on sessionContext** - set in server.ts, read by getManagedConnection()
+       * 
+       * Flow:
+       * - server.ts: Extracts SAP config from headers → sets sessionContext.run({ sapConfig })
+       * - mcp-abap-adt: getManagedConnection() reads from sessionContext → creates connection
+       * - This allows per-request JWT tokens without global connection state
+       * 
+       * Why not pass sapConfig to constructor?
+       * - If we pass sapConfig, mcp-abap-adt creates global overrideConnection
+       * - Global overrideConnection IGNORES sessionContext (early return in getManagedConnection)
+       * - This breaks per-request authentication (all requests use same token)
+       * 
+       * Why use sessionContext?
+       * - Request-scoped: Each HTTP request gets its own SAP config
+       * - No global state: Config doesn't leak between requests
+       * - Automatic cleanup: AsyncLocalStorage cleans up after request
+       * - Compatible with mcp-abap-adt: Uses standard getManagedConnection() pattern
+       * 
+       * NOTE: cloud-llm-hub does NOT support token refresh
+       * Clients must refresh tokens themselves and send new JWT token in each request
+       */
       log.info('Using session context for connection (NO sapConfig override)', {
         url: sapConfig.url,
         authType: sapConfig.authType,

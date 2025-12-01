@@ -346,7 +346,12 @@ private async getOrCreateAuthBroker(destination?: string): Promise<AuthBroker | 
     - `sessionContext` passes SAP config per-request ✅
     - `instanceCache` caches MCP servers + CloudSdkAbapConnection ✅
     - Base Basic/JWT connections use mcp-abap-adt cache ✅
-  - [ ] Document the hybrid architecture in code comments
+  - [x] Document the hybrid architecture in code comments
+    - [x] Added comprehensive JSDoc to `getMCPServer()` explaining hybrid approach
+    - [x] Added detailed comments for Direct Basic/JWT connection flow
+    - [x] Added documentation for instanceCache usage
+    - [x] Added documentation for sessionContext integration in `handleStreamHTTP()`
+    - [x] Explained why sapConfig is NOT passed to constructor for non-destination connections
   - [ ] Validate no regression in existing functionality
 
 - [x] **2.2. Implement Lazy AuthBroker Pattern**
