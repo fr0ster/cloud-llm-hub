@@ -114,6 +114,9 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
 
 /**
  * Type guard to check if connection is CloudSdkAbapConnection
+ * 
+ * @param connection - Connection instance to check
+ * @returns true if connection is CloudSdkAbapConnection
  */
 export function isCloudSdkConnection(connection: AbapConnection): connection is CloudSdkAbapConnection {
   return connection instanceof CloudSdkAbapConnection;
@@ -121,6 +124,9 @@ export function isCloudSdkConnection(connection: AbapConnection): connection is 
 
 /**
  * Get connection type name for logging/debugging
+ * 
+ * @param connection - Connection instance
+ * @returns Human-readable connection type name
  */
 export function getConnectionTypeName(connection: AbapConnection): string {
   if (isCloudSdkConnection(connection)) {

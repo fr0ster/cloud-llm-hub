@@ -86,10 +86,22 @@ async function buildConnectivityProxyConfig(locationId?: string, principalToken?
   };
 }
 
+/**
+ * Check if connectivity proxy should be used for on-premise connections
+ * 
+ * @param req - HTTP request with connectivity headers
+ * @returns true if connectivity mode header is set to 'onprem'
+ */
 export function shouldUseConnectivity(req: Request): boolean {
   return (req.headers[CONNECTIVITY_MODE_HEADER] as string | undefined)?.toLowerCase() === 'onprem';
 }
 
+/**
+ * Extract connectivity context from request headers
+ * 
+ * @param req - HTTP request with connectivity headers
+ * @returns Connectivity context with locationId and principalToken
+ */
 export function extractConnectivityContext(req: Request): {
   locationId?: string;
   principalToken?: string;
@@ -99,6 +111,13 @@ export function extractConnectivityContext(req: Request): {
   return { locationId, principalToken };
 }
 
+/**
+ * Create BTP On-Premise destination connection with connectivity proxy
+ * 
+ * @param sapConfig - SAP configuration (URL, auth type, credentials)
+ * @param context - Connectivity context (locationId, principalToken)
+ * @returns BTP On-Premise destination connection instance
+ */
 export async function createBtpOnPremConnection(
   sapConfig: SapConfig,
   context: ReturnType<typeof extractConnectivityContext>
@@ -117,6 +136,12 @@ export async function createBtpOnPremConnection(
   return connection;
 }
 
+/**
+ * Refresh BTP On-Premise connection with updated connectivity context
+ * 
+ * @param connection - Existing BTP On-Premise connection to refresh
+ * @param context - Updated connectivity context (locationId, principalToken)
+ */
 export async function refreshBtpOnPremConnection(
   connection: BtpOnPremDestinationConnection,
   context: ReturnType<typeof extractConnectivityContext>
@@ -126,6 +151,10 @@ export async function refreshBtpOnPremConnection(
   connection.updatePrincipalPropagation(context.principalToken);
 }
 
+/**
+ * Clear connectivity proxy caches
+ * Used when connectivity configuration changes
+ */
 export function clearConnectivityCaches(): void {
   cachedToken = undefined;
 }

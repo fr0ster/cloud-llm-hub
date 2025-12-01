@@ -627,7 +627,17 @@ async function handleWithTransport<T>(
 }
 
 /**
- * Clear all cached MCP instances
+ * Clear all cached MCP instances and connections
+ * 
+ * This function:
+ * - Closes all active MCP transports
+ * - Resets all cached connections
+ * - Clears connectivity and destination service caches
+ * 
+ * Useful for:
+ * - Graceful shutdown (SIGTERM/SIGINT handlers)
+ * - Testing (reset state between tests)
+ * - Memory management (periodic cleanup)
  */
 export function clearCache(): void {
   const log = cds.log('mcp-manager');
