@@ -85,6 +85,7 @@ cds watch --profile development
 ```
 
 The server will start on `http://localhost:4004` with:
+
 - Mock authentication (users: `alice`, `bob`)
 - Hot reload on file changes
 - Development profile enabled
@@ -113,6 +114,7 @@ Development mode uses mocked authentication:
   - Roles: `MCP_Connector`
 
 **Test authentication:**
+
 ```bash
 # Basic auth (Base64 encoded "alice:")
 curl -H "Authorization: Basic YWxpY2U6" \
@@ -149,16 +151,18 @@ cloud-llm-hub/
 ### Integration Tests
 
 1. **Copy test template:**
+
    ```bash
    cp test/integration.yaml.template test/integration.yaml
    ```
 
 2. **Configure test settings:**
    Edit `test/integration.yaml` with your values:
+
    ```yaml
    baseUrl: http://localhost:4004
    auth:
-     header: "Basic YWxpY2U6"  # alice (mocked dev)
+     header: 'Basic YWxpY2U6' # alice (mocked dev)
    ```
 
 3. **Run tests:**
@@ -309,4 +313,3 @@ npm exec -- tsc --noEmit
 ---
 
 **Questions?** Open an issue or check other contributor guides!
-

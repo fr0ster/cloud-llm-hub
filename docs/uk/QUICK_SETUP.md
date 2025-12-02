@@ -20,6 +20,7 @@ curl -sSL https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/tools/upd
 ```
 
 **Що це робить:**
+
 1. Завантажує інструмент налаштування
 2. Генерує конфігурацію для Cline
 3. Автоматично оновлює налаштування Cline
@@ -70,12 +71,14 @@ npm run deploy
 ### ✅ Швидка конфігурація
 
 1. **Отримайте сервісні ключі:**
+
    ```bash
    cf service-key cloud-llm-hub-auth mcp > keys/mcp-xsuaa.json
    cf service-key sap-abap-backend abap > keys/sap-abap.json
    ```
 
 2. **Згенеруйте конфігурацію:**
+
    ```bash
    node tools/update-cline-connection.js \
      --template cloud-destination \
@@ -162,6 +165,7 @@ node tools/update-cline-connection.js --template cloud-destination \
 ### Claude Desktop
 
 1. Завантажте шаблон конфігурації:
+
    ```bash
    curl -O https://raw.githubusercontent.com/fr0ster/cloud-llm-hub/main/docs/templates/mcp-config/cloud-destination.yaml
    ```
@@ -173,6 +177,7 @@ node tools/update-cline-connection.js --template cloud-destination \
 ### n8n / Zapier / Make.com
 
 Використайте HTTP Request nodes з:
+
 - **URL:** Ваш MCP endpoint
 - **Headers:** Authorization + X-SAP-Destination
 - **Body:** Формат MCP JSON-RPC
@@ -233,4 +238,3 @@ curl -X POST https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http \
 
 **Переклад:** Українська версія  
 **Оригінал:** [QUICK_SETUP.md](../QUICK_SETUP.md)
-

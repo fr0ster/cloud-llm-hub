@@ -27,7 +27,7 @@ async function copyItem(item) {
   }
   await fs.promises.cp(sourcePath, targetPath, {
     recursive: true,
-    errorOnExist: false
+    errorOnExist: false,
   });
 }
 
@@ -36,7 +36,9 @@ async function main() {
     throw new Error(`Submodule directory not found: ${sourceDir}`);
   }
   if (!(await pathExists(path.join(sourceDir, 'dist')))) {
-    throw new Error('Submodule dist/ folder is missing. Run "npm run build --prefix submodules/mcp-abap-adt" first.');
+    throw new Error(
+      'Submodule dist/ folder is missing. Run "npm run build --prefix submodules/mcp-abap-adt" first.'
+    );
   }
 
   await fs.promises.rm(targetDir, { recursive: true, force: true });

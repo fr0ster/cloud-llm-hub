@@ -19,12 +19,12 @@ Use **camelCase**:
 // ✅ Good
 const userName = 'alice';
 const connectionTimeout = 5000;
-function getDestination() { }
+function getDestination() {}
 
 // ❌ Bad
 const user_name = 'alice';
 const ConnectionTimeout = 5000;
-function GetDestination() { }
+function GetDestination() {}
 ```
 
 ### Classes and Interfaces
@@ -33,12 +33,12 @@ Use **PascalCase**:
 
 ```typescript
 // ✅ Good
-class MCPManager { }
-interface ConnectionConfig { }
+class MCPManager {}
+interface ConnectionConfig {}
 
 // ❌ Bad
-class mcpManager { }
-interface connectionConfig { }
+class mcpManager {}
+interface connectionConfig {}
 ```
 
 ### Constants
@@ -73,7 +73,7 @@ function connect(url: string, timeout: number): Promise<Connection> {
 }
 
 // ⚠️ Acceptable (if type is obvious)
-const user = 'alice';  // string inferred
+const user = 'alice'; // string inferred
 ```
 
 ### Interfaces vs Types
@@ -109,7 +109,7 @@ async function fetchData(): Promise<Data> {
 
 // ⚠️ Acceptable (if needed for specific reasons)
 function fetchData(): Promise<Data> {
-  return fetch(url).then(res => res.json());
+  return fetch(url).then((res) => res.json());
 }
 ```
 
@@ -133,7 +133,7 @@ try {
 try {
   await connect();
 } catch (error) {
-  console.log(error);  // Don't use console.log
+  console.log(error); // Don't use console.log
 }
 ```
 
@@ -164,8 +164,7 @@ function example() {
 }
 
 // ❌ Bad
-if (condition)
-{
+if (condition) {
   // ...
 }
 ```
@@ -182,9 +181,9 @@ function test() {
 }
 
 // ❌ Bad
-const x = 1
+const x = 1;
 function test() {
-  return 'ok'
+  return 'ok';
 }
 ```
 
@@ -198,7 +197,7 @@ const message = 'Hello, world';
 const template = `Template with ${variable}`;
 
 // ⚠️ Acceptable (for JSON keys)
-const obj = { "key": "value" };
+const obj = { key: 'value' };
 ```
 
 ## 📦 Imports
@@ -206,6 +205,7 @@ const obj = { "key": "value" };
 ### Import Organization
 
 **Order:**
+
 1. External packages (Node.js, npm)
 2. SAP packages (`@sap/*`)
 3. Internal modules
@@ -259,16 +259,13 @@ const serverCache = new Map<string, MCPServer>();
 ```typescript
 /**
  * Creates an MCP server instance for the given SAP system.
- * 
+ *
  * @param sapUrl - SAP system URL
  * @param config - Connection configuration
  * @returns Promise resolving to MCP server instance
  * @throws {ConnectionError} If connection fails
  */
-async function createMCPServer(
-  sapUrl: string,
-  config: ConnectionConfig
-): Promise<MCPServer> {
+async function createMCPServer(sapUrl: string, config: ConnectionConfig): Promise<MCPServer> {
   // ...
 }
 ```
@@ -286,10 +283,10 @@ describe('MCPManager', () => {
     // Arrange
     const manager = new MCPManager();
     const url = 'https://sap.example.com';
-    
+
     // Act
     const server = await manager.getServer(url);
-    
+
     // Assert
     expect(server).toBeDefined();
     expect(server.url).toBe(url);
@@ -303,12 +300,12 @@ describe('MCPManager', () => {
 
 ```typescript
 // ✅ Good
-it('should return cached server for same URL', async () => { });
-it('should throw error when connection fails', async () => { });
+it('should return cached server for same URL', async () => {});
+it('should throw error when connection fails', async () => {});
 
 // ❌ Bad
-it('test1', async () => { });
-it('works', async () => { });
+it('test1', async () => {});
+it('works', async () => {});
 ```
 
 ## 🔒 Security
@@ -426,7 +423,7 @@ let y = 2;
 ```typescript
 // ❌ Bad
 function process(config: Config): void {
-  config.timeout = 5000;  // Mutates input
+  config.timeout = 5000; // Mutates input
 }
 
 // ✅ Good
@@ -459,4 +456,3 @@ Before submitting PR:
 ---
 
 **Questions?** Check existing code for examples or ask in a PR comment!
-

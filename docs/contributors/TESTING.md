@@ -27,6 +27,7 @@ test/
 **Framework:** Jest (recommended) or Mocha
 
 **Run:**
+
 ```bash
 npm run test:unit
 ```
@@ -42,6 +43,7 @@ npm run test:unit
 **Configuration:** `test/integration.yaml`
 
 **Run:**
+
 ```bash
 npm test
 ```
@@ -53,6 +55,7 @@ npm test
 **Location:** `test/smoke/`
 
 **Run:**
+
 ```bash
 cd test/smoke
 ./run-all.sh
@@ -63,6 +66,7 @@ cd test/smoke
 **Purpose:** Verify TypeScript compilation
 
 **Run:**
+
 ```bash
 npm exec -- tsc --noEmit
 ```
@@ -72,15 +76,18 @@ npm exec -- tsc --noEmit
 ### Integration Tests
 
 **Prerequisites:**
+
 - Copy template: `cp test/integration.yaml.template test/integration.yaml`
 - Configure with your values
 
 **Run:**
+
 ```bash
 npm test
 ```
 
 **What it tests:**
+
 - Health endpoint
 - SSE streaming
 - Stream-HTTP
@@ -89,6 +96,7 @@ npm test
 ### Smoke Tests
 
 **Individual tests:**
+
 ```bash
 cd test/smoke
 ./test-health.sh
@@ -98,6 +106,7 @@ cd test/smoke
 ```
 
 **All tests:**
+
 ```bash
 cd test/smoke
 ./run-all.sh
@@ -116,34 +125,33 @@ npm exec -- tsc --noEmit
 **Setup (Jest):**
 
 1. **Install Jest:**
+
 ```bash
 npm install --save-dev jest @types/jest ts-jest
 ```
 
 2. **Create `jest.config.js`:**
+
 ```javascript
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/srv', '<rootDir>/test/unit'],
   testMatch: ['**/__tests__/**/*.ts', '**/?(*.)+(spec|test).ts'],
-  collectCoverageFrom: [
-    'srv/**/*.ts',
-    '!srv/**/*.d.ts',
-    '!srv/**/*.test.ts'
-  ],
+  collectCoverageFrom: ['srv/**/*.ts', '!srv/**/*.d.ts', '!srv/**/*.test.ts'],
   coverageThreshold: {
     global: {
       branches: 70,
       functions: 70,
       lines: 70,
-      statements: 70
-    }
-  }
+      statements: 70,
+    },
+  },
 };
 ```
 
 3. **Add to `package.json`:**
+
 ```json
 {
   "scripts": {
@@ -172,7 +180,7 @@ describe('MCP Manager', () => {
     const config = {
       url: sapUrl,
       client: '200',
-      auth: { type: 'jwt', token: 'test-token' }
+      auth: { type: 'jwt', token: 'test-token' },
     };
 
     const result = await getMCPServer({} as any);
@@ -182,19 +190,20 @@ describe('MCP Manager', () => {
 
   it('should return cached server for same URL', async () => {
     const sapUrl = 'https://sap.example.com';
-    
+
     // First call
     const result1 = await getMCPServer({} as any);
-    
+
     // Second call (should use cache)
     const result2 = await getMCPServer({} as any);
-    
+
     expect(result1.server).toBe(result2.server);
   });
 
   it('should handle connection errors gracefully', async () => {
     // Mock connection failure
-    jest.spyOn(require('../../srv/connections/CloudSdkAbapConnection'), 'default')
+    jest
+      .spyOn(require('../../srv/connections/CloudSdkAbapConnection'), 'default')
       .mockRejectedValue(new Error('Connection failed'));
 
     await expect(getMCPServer({} as any)).rejects.toThrow('Connection failed');
@@ -205,54 +214,59 @@ describe('MCP Manager', () => {
 **Mocking Strategies:**
 
 **Mock SAP Cloud SDK:**
+
 ```typescript
 jest.mock('@sap-cloud-sdk/http-client', () => ({
   executeHttpRequest: jest.fn().mockResolvedValue({
     data: { status: 'ok' },
-    status: 200
-  })
+    status: 200,
+  }),
 }));
 ```
 
 **Mock CAP Services:**
+
 ```typescript
 jest.mock('@sap/cds', () => ({
   log: jest.fn(() => ({
     info: jest.fn(),
     error: jest.fn(),
-    warn: jest.fn()
-  }))
+    warn: jest.fn(),
+  })),
 }));
 ```
 
 **Mock External Dependencies:**
+
 ```typescript
 jest.mock('@fr0ster/mcp-abap-adt', () => ({
   MCPServer: jest.fn().mockImplementation(() => ({
     initialize: jest.fn().mockResolvedValue({}),
-    listTools: jest.fn().mockResolvedValue([])
-  }))
+    listTools: jest.fn().mockResolvedValue([]),
+  })),
 }));
 ```
 
 ### Integration Test Structure
 
 **YAML Configuration:**
+
 ```yaml
 baseUrl: http://localhost:4004
 auth:
-  header: "Basic YWxpY2U6"  # alice (mocked dev)
+  header: 'Basic YWxpY2U6' # alice (mocked dev)
 sap:
   mode: direct
   direct:
-    url: "https://sap.example.com"
+    url: 'https://sap.example.com'
     client: 200
     auth:
       type: jwt
-      token: "your-token"
+      token: 'your-token'
 ```
 
 **Test Runner:**
+
 - Reads YAML configuration
 - Constructs HTTP requests
 - Validates responses
@@ -263,26 +277,25 @@ sap:
 **Adding a new test endpoint:**
 
 1. **Edit `test/test-cap-from-yaml.js`:**
+
 ```javascript
 async function testNewEndpoint(baseUrl, headers) {
-  const response = await fetchWithTimeout(
-    `${baseUrl}/odata/v4/mcp/NewEndpoint()`,
-    {
-      method: 'GET',
-      headers
-    }
-  );
-  
+  const response = await fetchWithTimeout(`${baseUrl}/odata/v4/mcp/NewEndpoint()`, {
+    method: 'GET',
+    headers,
+  });
+
   if (!response.ok) {
     throw new Error(`NewEndpoint failed: ${response.status}`);
   }
-  
+
   const data = await response.json();
   console.log('✅ NewEndpoint:', data);
 }
 ```
 
 2. **Add to test suite:**
+
 ```javascript
 await testNewEndpoint(baseUrl, headers);
 ```
@@ -290,6 +303,7 @@ await testNewEndpoint(baseUrl, headers);
 ### Smoke Test Structure
 
 **Example (`test/smoke/test-health.sh`):**
+
 ```bash
 #!/bin/bash
 set -e
@@ -320,6 +334,7 @@ fi
 ### Current Coverage
 
 **Integration Tests:**
+
 - ✅ Health endpoint
 - ✅ SSE streaming
 - ✅ Stream-HTTP
@@ -327,20 +342,24 @@ fi
 - ✅ Authentication
 
 **Unit Tests:**
+
 - ⚠️ Not yet implemented (Phase 4 task)
 
 ### Target Coverage
 
 **Critical Components (Priority 1):**
+
 - `srv/mcp-manager.ts` - MCP server lifecycle and caching
 - `srv/connections/destinationResolver.ts` - Destination resolution
 - `srv/connections/CloudSdkAbapConnection.ts` - SAP connection handling
 
 **Important Components (Priority 2):**
+
 - `srv/mcp-proxy.ts` - Endpoint handlers
 - `tools/update-cline-connection.js` - Configuration management
 
 **Nice to Have (Priority 3):**
+
 - Utility functions
 - Helper modules
 
@@ -361,10 +380,10 @@ describe('Feature', () => {
   it('should do something', async () => {
     // Arrange - Set up test data
     const config = { url: 'https://example.com' };
-    
+
     // Act - Execute the code
     const result = await functionUnderTest(config);
-    
+
     // Assert - Verify results
     expect(result).toBeDefined();
     expect(result.status).toBe('ok');
@@ -375,19 +394,21 @@ describe('Feature', () => {
 ### 2. Test Naming
 
 **Use descriptive names:**
+
 ```typescript
 // ✅ Good
-it('should return cached server for same URL', async () => { });
-it('should throw error when connection fails', async () => { });
+it('should return cached server for same URL', async () => {});
+it('should throw error when connection fails', async () => {});
 
 // ❌ Bad
-it('test1', async () => { });
-it('works', async () => { });
+it('test1', async () => {});
+it('works', async () => {});
 ```
 
 ### 3. Test Isolation
 
 **Each test should be independent:**
+
 ```typescript
 // ✅ Good
 beforeEach(() => {
@@ -403,16 +424,18 @@ it('should create new server', async () => {
 ### 4. Mock External Dependencies
 
 **Mock SAP calls in unit tests:**
+
 ```typescript
 // ✅ Good
 jest.mock('@sap-cloud-sdk/http-client', () => ({
-  executeHttpRequest: jest.fn().mockResolvedValue({ data: 'ok' })
+  executeHttpRequest: jest.fn().mockResolvedValue({ data: 'ok' }),
 }));
 ```
 
 ### 5. Test Error Cases
 
 **Don't just test happy path:**
+
 ```typescript
 // ✅ Good
 it('should handle connection timeout', async () => {
@@ -430,11 +453,13 @@ it('should handle connection timeout', async () => {
 **File:** `test/integration.yaml`
 
 **Required fields:**
+
 - `baseUrl` - MCP endpoint URL
 - `auth.header` - Authorization header
 - `sap` - SAP connection configuration
 
 **Optional fields:**
+
 - `timeoutMs` - Request timeout
 - `streamTimeoutMs` - Stream timeout
 - `headers` - Custom headers
@@ -442,6 +467,7 @@ it('should handle connection timeout', async () => {
 ### Environment Variables
 
 **For smoke tests:**
+
 ```bash
 export BASE_URL="http://localhost:4004"
 export AUTH="Basic YWxpY2U6"
@@ -463,6 +489,7 @@ DEBUG=1 ./test-smoke.sh
 ### Manual Testing
 
 **Test endpoints manually:**
+
 ```bash
 # Health
 curl -H "Authorization: Basic YWxpY2U6" \
@@ -483,17 +510,20 @@ curl -X POST \
 ### Common Issues
 
 **Port already in use:**
+
 ```bash
 lsof -i :4004
 kill -9 <PID>
 ```
 
 **Authentication failures:**
+
 - Check token validity
 - Verify XSUAA configuration
 - Check user roles
 
 **Connection timeouts:**
+
 - Verify SAP system accessibility
 - Check network connectivity
 - Review Cloud Connector (for on-premise)
@@ -548,6 +578,7 @@ All files         |   88.7  |   83.7   |   86.0  |   88.7  |
 ### GitHub Actions
 
 Tests run automatically on PR:
+
 - Integration tests
 - Type checking
 - Build verification
@@ -568,4 +599,3 @@ npm exec -- tsc --noEmit && npm test
 ---
 
 **Questions?** Check existing tests or ask in discussions!
-

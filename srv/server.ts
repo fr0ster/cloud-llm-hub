@@ -1,10 +1,10 @@
 /**
  * Custom server.ts for CAP bootstrap.
  * This file is automatically loaded by CAP and registers streaming endpoints.
- * 
+ *
  * CRITICAL: Environment variables must be set BEFORE imports
  * The mcp-abap-adt submodule has auto-start code that runs on import
- * 
+ *
  * NOTE: cloud-llm-hub always gets SAP configuration from HTTP headers (X-SAP-Destination
  * or X-SAP-URL, X-SAP-JWT-TOKEN, etc.), not from .env files. The .env file is only needed
  * when running mcp-abap-adt standalone (not through cloud-llm-hub).
@@ -17,324 +17,424 @@ import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
 // @ts-ignore - @sap/xsenv doesn't have types
 import { loadEnv } from '@sap/xsenv';
-import { getMCPServer } from './mcp-manager';
-import { resolveDestinationSapConfig } from './connections/destinationResolver';
+// @ts-ignore - ESM import path with .js extension
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { getMCPServer, extractSapContext } from './mcp-manager';
 import { Readable } from 'stream';
-
+import { randomUUID } from 'crypto';
+import type { SapConfig } from '@mcp-abap-adt/connection';
+// sessionContext and getManagedConnection will be obtained from mcp-abap-adt's utils module via dynamic import
+// This ensures we use the same instance that getManagedConnection() reads from
 
 /**
- * SSE endpoint handler - proxies to embedded MCP server
+ * Stream-HTTP endpoint handler - proxies to embedded MCP server
+ *
+ * ## Hybrid Architecture: sessionContext Integration
+ *
+ * This handler implements the **sessionContext** part of the hybrid architecture:
+ *
+ * 1. **Extract SAP config** from HTTP headers (destination or direct)
+ * 2. **Set sessionContext** via `sessionContext.run({ sapConfig })`
+ * 3. **Delegate to MCP server** which uses `getManagedConnection()` to read from sessionContext
+ *
+ * ### Flow for Direct Basic/JWT connections:
+ *
+ * ```
+ * Request → Extract headers → Build sessionSapConfig
+ *   ↓
+ * sessionContext.run({ sapConfig: sessionSapConfig })
+ *   ↓
+ * getMCPServer() → Creates MCP server (NO connection passed)
+ *   ↓
+ * MCP handler calls getManagedConnection()
+ *   ↓
+ * getManagedConnection() reads from sessionContext → Creates connection
+ *   ↓
+ * Request processed with per-request authentication
+ * ```
+ *
+ * ### Flow for Destination-based connections:
+ *
+ * ```
+ * Request → Extract headers → Resolve destination
+ *   ↓
+ * getMCPServer() → Creates CloudSdkAbapConnection → Passes to MCP server
+ *   ↓
+ * MCP server uses pre-created connection (sessionContext not needed)
+ *   ↓
+ * Request processed with destination-based authentication
+ * ```
+ *
+ * ### Key Points:
+ *
+ * - **sessionContext is request-scoped**: Each HTTP request gets its own SAP config
+ * - **No global state**: Config doesn't leak between requests
+ * - **Automatic cleanup**: AsyncLocalStorage cleans up after request completes
+ * - **Compatible with mcp-abap-adt**: Uses standard getManagedConnection() pattern
+ *
+ * @param req - HTTP request
+ * @param res - HTTP response
  */
-async function handleSSE(req: Request, res: Response): Promise<any> {
-  const log = cds.log('mcp-proxy/sse');
-  // const user = (req as any).user;
+async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
+  const log = cds.log('mcp-proxy/stream-http');
+  let body: any = null; // Declare body at function scope for error handling
 
-  // Trust BTP authentication - if user exists, they're authorized
-  // if (!user) {
-  //   log.warn('Access denied - no authenticated user', { user: user?.id });
-  //   return res.status(401).send('Unauthorized: No authenticated user');
-  // }
-
-  // log.info('SSE connection opened', { user: user.id });
+  // Only handle POST requests (like mcp-abap-adt)
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'text/plain' });
+    res.end('Method not allowed');
+    return;
+  }
 
   try {
+    /**
+     * PHASE 2.3: Use extractSapContext from mcp-manager.ts
+     *
+     * This eliminates code duplication by reusing the same extraction logic
+     * that getMCPServer() uses. This ensures sessionSapConfig matches exactly
+     * what getMCPServer creates, preventing inconsistencies.
+     *
+     * extractSapContext uses:
+     * - validateAuthHeaders() from @mcp-abap-adt/header-validator for direct connections
+     * - resolveDestinationSapConfig() for BTP Destination connections
+     */
+    const sapContext = await extractSapContext(req);
+    const sessionSapConfig = sapContext.sapConfig;
+
+    // Generate session ID for this request
+    // CRITICAL: Include JWT token hash in sessionId to invalidate cache when token changes
+    // This ensures that when token changes, sessionId changes, cache miss, new connection created
+    let sessionId = randomUUID().substring(0, 8); // Short random prefix
+    if (sessionSapConfig.jwtToken) {
+      // Add hash of JWT token to sessionId - when token changes, sessionId changes, cache invalidates
+      const crypto = await import('crypto');
+      const tokenHash = crypto
+        .createHash('sha256')
+        .update(sessionSapConfig.jwtToken)
+        .digest('hex')
+        .substring(0, 8);
+      sessionId = `${sessionId}-${tokenHash}`;
+    }
+
+    log.info('Extracted SAP config for sessionContext', {
+      source: sapContext.source,
+      destination: sapContext.destination?.destinationName,
+      authType: sessionSapConfig.authType,
+      hasJwtToken: !!sessionSapConfig.jwtToken,
+      jwtTokenLength: sessionSapConfig.jwtToken?.length || 0,
+      hasClient: !!sessionSapConfig.client,
+    });
+
     // Get embedded MCP server instance (created per-request with SAP config from headers)
     const mcpServer = await getMCPServer(req);
-    
+
     if (!mcpServer || !mcpServer.server) {
       log.error('MCP server not initialized');
       return res.status(503).send('Service Unavailable: MCP server not ready');
     }
 
-    // Send SSE headers
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.write('retry: 15000\n\n');
-
-    const heartbeat = setInterval(() => {
-      res.write(': ping\n\n');
-    }, 15000);
-
-    // Handle MCP protocol through embedded server
-    // For SSE, we need to handle the session initialization
-    const sessionId = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    
-    // log.info('SSE session established', { user: user.id, sessionId });
-
-    // Send endpoint event to establish connection
-    res.write(`event: endpoint\n`);
-    res.write(`data: /message\n\n`);
-
-    // Handle client disconnect
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      res.end();
-      // log.info('SSE client disconnected', { user: user.id, sessionId });
-    });
-
-    // Keep connection alive
-    res.on('error', (err: any) => {
-      log.error('SSE stream error', err);
-      clearInterval(heartbeat);
-      res.end();
-    });
-
-  } catch (err: any) {
-    log.error('SSE handler error', err);
-    if (!res.headersSent) {
-      return res.status(500).send(`Internal Server Error: ${err.message}`);
+    // Read request body (like mcp-abap-adt does)
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
     }
-    res.end();
-  }
-}
+    if (chunks.length > 0) {
+      const bodyString = Buffer.concat(chunks).toString('utf-8');
+      try {
+        body = JSON.parse(bodyString);
+      } catch (parseError) {
+        // If body is not JSON, pass as string or null
+        body = bodyString || null;
+      }
+    }
 
-/**
- * Stream-HTTP endpoint handler - proxies to embedded MCP server
- */
-async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
-  const log = cds.log('mcp-proxy/stream-http');
-  
-  // Detect execution environment for diagnostics (must be at the start)
-  const isDebugMode = process.env.NODE_OPTIONS?.includes('--inspect') || 
-                      process.env.NODE_OPTIONS?.includes('--inspect-brk');
-  const isBTP = !!process.env.VCAP_APPLICATION;
-  const environment = isBTP ? (isDebugMode ? 'hybrid-debug' : 'btp') : (isDebugMode ? 'local-debug' : 'local');
-  
-  // Minimal logging - only environment for comparison (no verbose details)
-  if (isDebugMode || isBTP) {
-    log.info('🔍 Environment', { environment });
-  }
-  
-  const user = (req as any).user;
-  log.debug('User context', { 
-    hasUser: !!user,
-    userId: user?.id,
-    isAnonymous: user?._is_anonymous,
-    roles: user?.roles
-  });
+    // Log request details for debugging (especially for tools/call requests)
+    if (body && typeof body === 'object') {
+      const method = body.method || body.jsonrpc ? 'JSON-RPC' : 'unknown';
+      const toolName = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
+      const toolArgs = body.params?.arguments || body.arguments || {};
 
-  try {
-    // Get embedded MCP server instance (created per-request with SAP config from headers)
-    const mcpServer = await getMCPServer(req);
-    
-    if (!mcpServer || !mcpServer.withTransport) {
-      log.error('❌ MCP transport factory not available', {
-        hasMcpServer: !!mcpServer,
-        hasWithTransport: !!mcpServer?.withTransport
+      log.info('MCP request details', {
+        method,
+        toolName,
+        toolArgs:
+          Object.keys(toolArgs).length > 0
+            ? {
+                // Log key parameters for common tools
+                class_name: toolArgs.class_name || toolArgs.className,
+                object_name: toolArgs.object_name || toolArgs.objectName,
+                table_name: toolArgs.table_name || toolArgs.tableName,
+                program_name: toolArgs.program_name || toolArgs.programName,
+                // Log all keys for debugging (but not values to avoid sensitive data)
+                allKeys: Object.keys(toolArgs),
+              }
+            : {},
+        requestId: body.id || 'no-id',
       });
-      return res.status(503).send('Service Unavailable: MCP transport not ready');
     }
 
-    
-    // Parse timeout from header (in milliseconds)
-    // Supports: X-MCP-Timeout, X-Request-Timeout headers
-    let requestTimeoutMs: number | undefined;
-    const timeoutHeader = req.headers['x-mcp-timeout'] || req.headers['x-request-timeout'];
-    if (timeoutHeader) {
-      const parsedTimeout = parseInt(String(timeoutHeader), 10);
-      if (!isNaN(parsedTimeout) && parsedTimeout > 0) {
-        // Validate timeout range: 1 second to 5 minutes
-        requestTimeoutMs = Math.max(1000, Math.min(300000, parsedTimeout));
-        log.debug('Using timeout from header', { 
-          header: timeoutHeader, 
-          parsed: parsedTimeout,
-          final: requestTimeoutMs 
+    // Create new StreamableHTTP transport for each request (like mcp-abap-adt)
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // Stateless mode (like mcp-abap-adt)
+      enableJsonResponse: true, // Use JSON response format, not SSE
+      allowedOrigins: undefined,
+      allowedHosts: undefined,
+      enableDnsRebindingProtection: false,
+    });
+
+    // Close transport when response closes (like mcp-abap-adt)
+    res.on('close', () => {
+      transport.close();
+    });
+
+    // Connect transport to MCP server (like mcp-abap-adt)
+    // In mcp-abap-adt: await this.mcpServer.connect(transport);
+    // Our mcpServer.server is mcp_abap_adt_server, need to access private mcpServer property
+    if (!mcpServer.server) {
+      log.error('MCP server instance not available', {
+        hasServer: !!mcpServer.server,
+      });
+      return res.status(503).send('Service Unavailable: MCP server not ready');
+    }
+
+    // Access private mcpServer property via type assertion
+    // mcpServer.server is mcp_abap_adt_server instance
+    // (mcpServer.server as any).mcpServer is the private McpServer instance
+    const mcpServerInstance = (mcpServer.server as any).mcpServer;
+    if (!mcpServerInstance) {
+      log.error('MCP server McpServer instance not available', {
+        hasServer: !!mcpServer.server,
+        hasMcpServer: !!(mcpServer.server as any).mcpServer,
+      });
+      return res.status(503).send('Service Unavailable: MCP server structure invalid');
+    }
+
+    await mcpServerInstance.connect(transport);
+
+    log.debug('Transport connected', {
+      hasServer: !!mcpServer.server,
+      sessionId: sessionId.substring(0, 8),
+    });
+
+    // Run handlers in AsyncLocalStorage context with session info (like mcp-abap-adt)
+    // This allows getManagedConnection() to access sessionId and config
+    // We need to use the same sessionContext instance that mcp-abap-adt uses
+    // getManagedConnection() reads from sessionContext.getStore(), so we must use the same instance
+    let mcpSessionContext: any;
+    try {
+      // Get sessionContext from mcp-abap-adt's utils module
+      // sessionContext is exported from lib/utils.ts but not from main index
+      // Use require to access the same instance that mcp-abap-adt uses internally
+      // This must be done after mcp-abap-adt is loaded (which happens in getMCPServer above)
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
+
+      if (mcpUtils && mcpUtils.sessionContext) {
+        mcpSessionContext = mcpUtils.sessionContext;
+        log.debug('Using mcp-abap-adt sessionContext from utils', {
+          hasSessionContext: !!mcpSessionContext,
+          hasRun: typeof mcpSessionContext?.run === 'function',
         });
       } else {
-        log.warn('Invalid timeout header value', { header: timeoutHeader });
-      }
-    }
-    
-    // Set up response completion tracking BEFORE calling transport.handleRequest
-    // This ensures we don't miss events if response closes during request handling
-    type CompletionReason = 'finish' | 'close' | 'timeout' | 'already-ended';
-    let responseCompleteResolve: ((reason: CompletionReason) => void) | null = null;
-    let responseResolved = false;
-    let responseTimeout: NodeJS.Timeout | null = null;
-    
-    // Determine timeout: use header value if provided, otherwise use defaults
-    // Default: 10s in debug mode (sufficient for MCP operations), 5s in production
-    const timeoutMs = requestTimeoutMs ?? (isDebugMode ? 10000 : 5000);
-    
-    const responseComplete = new Promise<CompletionReason>((resolve) => {
-      responseCompleteResolve = resolve;
-      
-      // Check if response is already finished/closed BEFORE we start
-      if (res.writableEnded || res.destroyed) {
-        responseResolved = true;
-        resolve('already-ended');
-        return;
-      }
-      
-      const onFinish = () => {
-        if (!responseResolved) {
-          responseResolved = true;
-          // Minimal logging - only log completion method for comparison
-          if (isDebugMode || isBTP) {
-            log.info('✅ Response finished event', { environment });
-          }
-          if (responseTimeout) clearTimeout(responseTimeout);
-          resolve('finish');
-        }
-      };
-      
-      const onClose = () => {
-        if (!responseResolved) {
-          responseResolved = true;
-          // Minimal logging - only log completion method for comparison
-          if (isDebugMode || isBTP) {
-            log.info('✅ Response closed event', { environment });
-          }
-          if (responseTimeout) clearTimeout(responseTimeout);
-          resolve('close');
-        }
-      };
-      
-      // Subscribe to events BEFORE calling transport.handleRequest
-      res.once('finish', onFinish);
-      res.once('close', onClose);
-      
-      // Set up timeout
-      responseTimeout = setTimeout(() => {
-        if (!responseResolved) {
-          responseResolved = true;
-          log.warn('⚠️ Response stream timeout (assuming complete)', { 
-            timeoutMs,
-            fromHeader: !!requestTimeoutMs,
-            isDebugMode,
-            writableEnded: res.writableEnded,
-            destroyed: res.destroyed,
-            headersSent: res.headersSent
+        // Fallback: try dynamic import
+        const mcpUtilsModule = await import('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
+        const mcpUtilsAny = mcpUtilsModule as any;
+        if (mcpUtilsAny && mcpUtilsAny.sessionContext) {
+          mcpSessionContext = mcpUtilsAny.sessionContext;
+          log.debug('Using mcp-abap-adt sessionContext from utils (dynamic import)', {
+            hasSessionContext: !!mcpSessionContext,
+            hasRun: typeof mcpSessionContext?.run === 'function',
           });
-          resolve('timeout');
-        }
-      }, timeoutMs);
-    });
-    
-    // Now call transport.handleRequest with event listeners already in place
-    await mcpServer.withTransport(async transport => {
-      
-      if (!transport) {
-        log.error('❌ Transport is null or undefined');
-        throw new Error('MCP transport is not available');
-      }
-      
-      try {
-        // Check response state again right before calling handleRequest
-        if (res.writableEnded || res.destroyed) {
-          log.warn('⚠️ Response already ended before handleRequest', {
-            writableEnded: res.writableEnded,
-            destroyed: res.destroyed
-          });
-          // If already closed, resolve immediately
-          if (responseCompleteResolve && !responseResolved) {
-            responseResolved = true;
-            if (responseTimeout) clearTimeout(responseTimeout);
-            responseCompleteResolve('already-ended');
-          }
-          return;
-        }
-        
-        const handleRequestResult = await transport.handleRequest(req, res);
-        
-        // Minimal logging - only critical info for comparison
-        if (isDebugMode || isBTP) {
-          log.info('✅ handleRequest returned', {
-            environment,
-            headersSent: res.headersSent,
-            writableEnded: res.writableEnded,
-            statusCode: res.statusCode
-          });
-        }
-        
-        // Check if response closed immediately after handleRequest
-        if (res.writableEnded || res.destroyed) {
-          // Response already closed, event listeners should fire
-          // But in debug mode, events might not fire, so ensure completion
-          if (isDebugMode) {
-            setImmediate(() => {
-              if (!responseResolved && responseCompleteResolve) {
-                responseResolved = true;
-                if (responseTimeout) clearTimeout(responseTimeout);
-                responseCompleteResolve('close'); // Assume close if already ended
-              }
-            });
-          }
         } else {
-          // Response not closed yet - set up a fallback check
-          // If handleRequest returned but stream is still open, check after a short delay
-          // This handles cases where transport completed but didn't close the stream
-          setTimeout(() => {
-            if (!responseResolved && responseCompleteResolve) {
-              // If stream is still open after handleRequest returned, assume completion
-              // Transport has finished its work, so we can safely resolve
-              if (res.writableEnded || res.destroyed) {
-                // Stream closed during the delay, events should have fired
-                // But if they didn't, resolve anyway
-                if (!responseResolved) {
-                  responseResolved = true;
-                  if (responseTimeout) clearTimeout(responseTimeout);
-                  responseCompleteResolve('close');
-                }
-              } else if (res.headersSent) {
-                // Headers sent but stream still open - transport completed but didn't close
-                // This is safe to resolve as transport.handleRequest already returned
-                if (!responseResolved) {
-                  responseResolved = true;
-                  if (responseTimeout) clearTimeout(responseTimeout);
-                  responseCompleteResolve('finish'); // Assume finish since headers were sent
-                }
-              }
-            }
-          }, 1000); // Check after 1 second - if transport returned, it should be done
+          throw new Error(
+            `sessionContext not found in mcp-abap-adt utils. Available keys: ${Object.keys(
+              mcpUtils || mcpUtilsAny || {}
+            )
+              .slice(0, 20)
+              .join(', ')}`
+          );
         }
-      } catch (handleError: any) {
-        log.error('❌ Error in transport.handleRequest', {
-          error: handleError instanceof Error ? handleError.message : String(handleError),
-          stack: handleError instanceof Error ? handleError.stack : undefined
-        });
-        throw handleError;
       }
-    });
-    
-    // Wait for response to complete
-    const completionReason = await responseComplete;
-    
-    // Minimal logging - only completion method for comparison
-    if (isDebugMode || isBTP) {
-      log.info('✅ Request completed', {
-        environment,
-        completionReason,
-        headersSent: res.headersSent,
-        statusCode: res.statusCode,
-        writableEnded: res.writableEnded
+
+      if (!mcpSessionContext || typeof mcpSessionContext.run !== 'function') {
+        throw new Error('sessionContext found but does not have run method');
+      }
+    } catch (err) {
+      log.error('Failed to access mcp-abap-adt sessionContext', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack?.substring(0, 500) : undefined,
       });
+      return res.status(500).send('Internal Server Error: sessionContext not available');
     }
 
-  } catch (err: any) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    const errorStack = err instanceof Error ? err.stack : undefined;
-    const errorDetails = {
-      error: errorMessage,
-      name: err?.name,
-      code: err?.code,
-      stack: errorStack
-    };
-    
-    log.error('Stream-HTTP handler error', errorDetails);
-    
-    if (!res.headersSent) {
-      // Return 502 Bad Gateway for destination/connection errors
-      // This helps Cline understand the request failed at the gateway level
-      const statusCode = err?.statusCode || (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED' ? 502 : 500);
-      return res.status(statusCode).json({
-        error: 'Bad Gateway',
-        message: errorMessage,
-        code: err?.code || err?.name,
-        destination: (req.headers['x-sap-destination'] as string) || undefined
+    // Verify sessionSapConfig has JWT token before running
+    if (sessionSapConfig && sessionSapConfig.authType === 'jwt' && !sessionSapConfig.jwtToken) {
+      log.error('JWT auth type but no token in sessionSapConfig', {
+        hasConfig: !!sessionSapConfig,
+        authType: sessionSapConfig.authType,
+        hasJwtToken: !!sessionSapConfig.jwtToken,
       });
+      return res.status(400).send('Bad Request: JWT token required for JWT authentication');
+    }
+
+    log.info('Running in sessionContext', {
+      sessionId: sessionId.substring(0, 8),
+      hasSapConfig: !!sessionSapConfig,
+      authType: sessionSapConfig?.authType,
+      hasJwtToken: !!sessionSapConfig?.jwtToken,
+      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0,
+    });
+
+    // CRITICAL: Log sessionSapConfig BEFORE passing to sessionContext
+    log.info('🔥 sessionSapConfig BEFORE sessionContext.run', {
+      hasJwtToken: !!sessionSapConfig?.jwtToken,
+      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0,
+      allKeys: Object.keys(sessionSapConfig || {}),
+    });
+
+    /**
+     * HYBRID ARCHITECTURE: Set sessionContext for this request
+     *
+     * This is the critical part of the hybrid architecture:
+     * - sessionContext.run() sets request-scoped SAP config in AsyncLocalStorage
+     * - mcp-abap-adt's getManagedConnection() reads from this context
+     * - This allows per-request authentication without global connection state
+     *
+     * For Direct Basic/JWT connections:
+     * - getMCPServer() does NOT pass connection to MCP server constructor
+     * - MCP handlers call getManagedConnection() which reads from sessionContext
+     * - Each request gets its own connection with its own JWT token
+     *
+     * For Destination-based connections:
+     * - getMCPServer() creates CloudSdkAbapConnection and passes it to constructor
+     * - sessionContext is still set (for consistency) but not used
+     * - Connection is pre-created and reused from instanceCache
+     */
+    await mcpSessionContext.run(
+      {
+        sessionId,
+        sapConfig: sessionSapConfig,
+      },
+      async () => {
+        // Verify context is set correctly
+        const context = mcpSessionContext.getStore();
+
+        // CRITICAL: Log what ACTUALLY got into sessionContext
+        log.info('🔥 sapConfig INSIDE sessionContext.run', {
+          hasJwtToken: !!context?.sapConfig?.jwtToken,
+          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0,
+          allKeys: Object.keys(context?.sapConfig || {}),
+        });
+
+        log.info('Inside sessionContext.run - context check', {
+          hasContext: !!context,
+          hasSessionId: !!context?.sessionId,
+          hasSapConfig: !!context?.sapConfig,
+          authType: context?.sapConfig?.authType,
+          hasJwtToken: !!context?.sapConfig?.jwtToken,
+          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0,
+        });
+
+        // NOTE: cloud-llm-hub does NOT support token refresh
+        // For BTP Destinations: Token management is automatic via BTP
+        // Clients must refresh tokens themselves and send new JWT token in each request
+
+        // Handle HTTP request through transport (like mcp-abap-adt)
+        // Pass body as third parameter (like mcp-abap-adt does)
+        try {
+          await transport.handleRequest(req, res, body);
+        } catch (transportError: any) {
+          // Enhanced error logging for transport errors
+          const errorDetails: any = {
+            error_type: transportError?.constructor?.name || 'Unknown',
+            error_message: transportError?.message || String(transportError),
+            toolName: body?.params?.name || body?.method?.replace('tools/', '') || 'unknown',
+            toolArgs: body?.params?.arguments ? Object.keys(body.params.arguments) : [],
+          };
+
+          // Extract HTTP error details if available
+          if (transportError?.response) {
+            errorDetails.http_status = transportError.response.status;
+            errorDetails.http_status_text = transportError.response.statusText;
+            errorDetails.http_url =
+              transportError.config?.url || transportError.response.config?.url;
+            errorDetails.http_method =
+              transportError.config?.method || transportError.response.config?.method;
+          }
+
+          // Extract specific tool arguments for better error context
+          if (body?.params?.arguments) {
+            const args = body.params.arguments;
+            errorDetails.object_name =
+              args.class_name ||
+              args.className ||
+              args.object_name ||
+              args.objectName ||
+              args.table_name ||
+              args.tableName ||
+              args.program_name ||
+              args.programName ||
+              'unknown';
+            errorDetails.is_standard_object =
+              errorDetails.object_name &&
+              (errorDetails.object_name.startsWith('CL_') ||
+                errorDetails.object_name.startsWith('IF_') ||
+                errorDetails.object_name.startsWith('CX_') ||
+                errorDetails.object_name.startsWith('Z') === false);
+          }
+
+          log.error('Transport request failed', errorDetails);
+          throw transportError;
+        }
+      }
+    );
+
+    log.debug('Request completed', {
+      sessionId: sessionId.substring(0, 8),
+    });
+  } catch (error: any) {
+    // Use synchronized error handling from errorUtils
+    const { logErrorSafely, formatErrorMessage } = await import('./lib/errorUtils');
+
+    // Build context for error logging
+    const context: Record<string, any> = {
+      path: req.path,
+      method: req.method,
+    };
+
+    // Add request body context if available
+    if (body && typeof body === 'object') {
+      context.tool_name = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
+      if (body.params?.arguments) {
+        const args = body.params.arguments;
+        context.object_name =
+          args.class_name ||
+          args.className ||
+          args.object_name ||
+          args.objectName ||
+          args.table_name ||
+          args.tableName ||
+          args.program_name ||
+          args.programName ||
+          'unknown';
+        context.is_standard_object =
+          context.object_name &&
+          (context.object_name.startsWith('CL_') ||
+            context.object_name.startsWith('IF_') ||
+            context.object_name.startsWith('CX_') ||
+            context.object_name.startsWith('Z') === false);
+      }
+    }
+
+    // Log error with synchronized format
+    logErrorSafely(log, 'HTTP request handling', error, context);
+
+    if (!res.headersSent) {
+      const statusCode = error?.response?.status || error?.statusCode || 500;
+      const userMessage = formatErrorMessage(error);
+      res.writeHead(statusCode).end(`Internal Server Error: ${userMessage}`);
+    } else {
+      res.end();
     }
   }
 }
@@ -342,36 +442,38 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
 // NOTE: Destination probe is implemented as CAP function ProbeDestination in mcp-proxy.ts
 // It uses executeHttpRequest from SAP Cloud SDK for automatic destination handling
 
-
-
 /**
  * Get OAuth token using client_credentials flow
  */
-async function getOAuthToken(clientId: string, clientSecret: string, tokenUrl: string): Promise<string> {
+async function getOAuthToken(
+  clientId: string,
+  clientSecret: string,
+  tokenUrl: string
+): Promise<string> {
   const fetch = (await import('node-fetch')).default;
   const log = cds.log('oauth-token');
-  
+
   try {
     log.debug('Requesting OAuth token', { clientId: clientId.substring(0, 20) + '...', tokenUrl });
-    
+
     const response = await fetch(tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
       },
       body: new URLSearchParams({
-        grant_type: 'client_credentials'
-      }).toString()
+        grant_type: 'client_credentials',
+      }).toString(),
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       log.error('OAuth token request failed', { status: response.status, error: errorText });
       throw new Error(`OAuth token request failed: ${response.status} ${errorText}`);
     }
-    
-    const data = await response.json() as { access_token: string };
+
+    const data = (await response.json()) as { access_token: string };
     log.debug('OAuth token obtained successfully');
     return data.access_token;
   } catch (error: any) {
@@ -389,62 +491,86 @@ cds.on('bootstrap', (app: Application) => {
   log.info('Registering /mcp endpoints - authentication via CAP AuthService');
 
   /**
+   * Fix Content-Type and Accept headers for Cline compatibility
+   * StreamableHTTPServerTransport requires:
+   * - Content-Type: application/json (not application/x-ndjson)
+   * - Accept: application/json, text/event-stream (required by transport even with enableJsonResponse: true)
+   * Note: enableJsonResponse: true means we use JSON format, not SSE, but transport still requires both in Accept
+   */
+  app.use('/mcp/stream/http', (req: Request, res: Response, next: NextFunction) => {
+    // Fix Content-Type: convert application/x-ndjson to application/json
+    if (req.headers['content-type'] === 'application/x-ndjson') {
+      req.headers['content-type'] = 'application/json';
+    }
+
+    // Ensure Accept header includes both required types (transport requirement)
+    // Even with enableJsonResponse: true, transport requires both types in Accept header
+    const accept = req.headers.accept || '';
+    if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+      req.headers.accept = 'application/json, text/event-stream';
+    }
+
+    next();
+  });
+
+  /**
    * Convert Basic auth to Bearer token in production mode
    */
   async function convertBasicToBearer(req: Request): Promise<void> {
     const convertLog = cds.log('auth-convert');
     const authHeader = req.headers.authorization;
-    
-    convertLog.info('🔄 convertBasicToBearer called', { 
+
+    convertLog.info('🔄 convertBasicToBearer called', {
       hasAuthHeader: !!authHeader,
-      authType: authHeader?.substring(0, 10) || 'none'
+      authType: authHeader?.substring(0, 10) || 'none',
     });
-    
+
     if (!authHeader || !authHeader.startsWith('Basic ')) {
       convertLog.info('⏭️ Not Basic auth, skipping conversion');
       return; // Not Basic auth, skip
     }
-    
-    const isDevelopment = cds.env.profiles?.includes('development') || 
-                         process.env.CDS_ENV === 'development' ||
-                         cds.env.requires?.auth?.['[development]']?.kind === 'mocked';
-    
+
+    const isDevelopment =
+      cds.env.profiles?.includes('development') ||
+      process.env.CDS_ENV === 'development' ||
+      cds.env.requires?.auth?.['[development]']?.kind === 'mocked';
+
     if (isDevelopment) {
       convertLog.info('⏭️ Development mode, keeping Basic auth');
       return; // Keep Basic auth in development
     }
-    
+
     // Production mode - convert Basic to Bearer
     convertLog.info('🔄 Converting Basic auth to Bearer token in production');
-    
+
     try {
       // Get XSUAA credentials from VCAP_SERVICES
-      const vcapServices = process.env.VCAP_SERVICES 
+      const vcapServices = process.env.VCAP_SERVICES
         ? JSON.parse(process.env.VCAP_SERVICES)
-        : (loadEnv()?.VCAP_SERVICES || {});
-      
+        : loadEnv()?.VCAP_SERVICES || {};
+
       const xsuaa = vcapServices?.xsuaa?.[0]?.credentials;
       if (!xsuaa) {
         convertLog.warn('⚠️ XSUAA credentials not found, cannot convert Basic to Bearer');
         return;
       }
-      
+
       // Build token URL
       const tokenUrl = `${xsuaa.url}/oauth/token`;
       convertLog.info('📡 Requesting OAuth token', { tokenUrl });
-      
+
       // Get token using client_credentials flow
       const token = await getOAuthToken(xsuaa.clientid, xsuaa.clientsecret, tokenUrl);
-      
+
       // Replace Basic auth with Bearer token
       req.headers.authorization = `Bearer ${token}`;
-      convertLog.info('✅ Successfully converted Basic auth to Bearer token', { 
-        tokenLength: token.length 
+      convertLog.info('✅ Successfully converted Basic auth to Bearer token', {
+        tokenLength: token.length,
       });
     } catch (error: any) {
-      convertLog.error('❌ Failed to convert Basic auth to Bearer', { 
+      convertLog.error('❌ Failed to convert Basic auth to Bearer', {
         error: error.message,
-        stack: error.stack?.substring(0, 300)
+        stack: error.stack?.substring(0, 300),
       });
       // Don't throw - let auth check fail later
     }
@@ -458,12 +584,12 @@ cds.on('bootstrap', (app: Application) => {
   async function requireAuth(req: Request, res: Response): Promise<boolean> {
     const debugLog = cds.log('auth-check');
     try {
-      debugLog.info('🔍 Checking auth via CAP CheckAuth (in-process)', { 
+      debugLog.info('🔍 Checking auth via CAP CheckAuth (in-process)', {
         hasAuthHeader: !!req.headers.authorization,
         hasUser: !!(req as any).user,
-        userId: (req as any).user?.id
+        userId: (req as any).user?.id,
       });
-      
+
       // Get AuthService (internal CAP service, same process)
       // cds.connect.to() works for both internal and external services
       const srv = await cds.connect.to('AuthService');
@@ -471,11 +597,11 @@ cds.on('bootstrap', (app: Application) => {
         debugLog.error('❌ AuthService not found');
         throw new Error('AuthService not available');
       }
-      
-      debugLog.info('📡 Calling CheckAuth via in-process (srv.run)', { 
-        hasAuthHeader: !!req.headers.authorization
+
+      debugLog.info('📡 Calling CheckAuth via in-process (srv.run)', {
+        hasAuthHeader: !!req.headers.authorization,
       });
-      
+
       // Call CheckAuth function using modern CAP API (srv.run with req)
       // This automatically picks up the request context (user/tenant/locale)
       // CAP will authenticate based on req.headers.authorization and set req.user
@@ -489,34 +615,34 @@ cds.on('bootstrap', (app: Application) => {
         if (authError.code === 401 || authError.statusCode === 401) {
           debugLog.warn('❌ CheckAuth: Unauthorized', {
             code: authError.code || authError.statusCode,
-            message: authError.message
+            message: authError.message,
           });
           if (!res.headersSent) {
-            res.status(401).json({ 
-              error: 'Unauthorized', 
-              message: authError.message || 'Authentication failed' 
+            res.status(401).json({
+              error: 'Unauthorized',
+              message: authError.message || 'Authentication failed',
             });
           }
           return false;
         }
         throw authError;
       }
-      
+
       debugLog.info('✅ CheckAuth succeeded', {
         authenticated: result?.authenticated,
         userId: result?.id,
-        roles: result?.roles
+        roles: result?.roles,
       });
-      
+
       // Set req.user from CheckAuth result for subsequent handlers
       if (result && !(req as any).user) {
         (req as any).user = {
           id: result.id,
           roles: result.roles || [],
-          _is_anonymous: false
+          _is_anonymous: false,
         };
       }
-      
+
       return true;
     } catch (e: any) {
       debugLog.error('❌ requireAuth error', {
@@ -524,14 +650,14 @@ cds.on('bootstrap', (app: Application) => {
         statusCode: e?.statusCode,
         code: e?.code,
         name: e?.name,
-        stack: e?.stack?.substring(0, 500)
+        stack: e?.stack?.substring(0, 500),
       });
-      
+
       const status = e?.statusCode || (e?.code === 401 ? 401 : 500);
       if (!res.headersSent) {
-        res.status(status).json({ 
-          error: status === 401 ? 'Unauthorized' : 'Internal Server Error', 
-          message: e?.message || 'Authorization failed' 
+        res.status(status).json({
+          error: status === 401 ? 'Unauthorized' : 'Internal Server Error',
+          message: e?.message || 'Authorization failed',
         });
       }
       return false;
@@ -541,21 +667,21 @@ cds.on('bootstrap', (app: Application) => {
   const ensureAuth = (handler: (req: Request, res: Response) => Promise<any>) => {
     return async (req: Request, res: Response, next: NextFunction) => {
       const authLog = cds.log('mcp-proxy/auth-middleware');
-      authLog.info('🔐 ensureAuth middleware called', { 
-        path: req.path, 
+      authLog.info('🔐 ensureAuth middleware called', {
+        path: req.path,
         method: req.method,
-        hasAuthHeader: !!req.headers.authorization 
+        hasAuthHeader: !!req.headers.authorization,
       });
-      
+
       try {
         // Convert Basic auth to Bearer token in production if needed
         authLog.info('🔄 Calling convertBasicToBearer...');
         await convertBasicToBearer(req);
-        authLog.info('✅ convertBasicToBearer completed', { 
+        authLog.info('✅ convertBasicToBearer completed', {
           hasAuthHeader: !!req.headers.authorization,
-          authType: req.headers.authorization?.substring(0, 10) || 'none'
+          authType: req.headers.authorization?.substring(0, 10) || 'none',
         });
-        
+
         // Check authentication via CAP AuthService.CheckAuth
         authLog.info('🔄 Calling requireAuth...');
         const ok = await requireAuth(req, res);
@@ -563,17 +689,17 @@ cds.on('bootstrap', (app: Application) => {
           authLog.warn('❌ requireAuth failed', { path: req.path });
           return;
         }
-        
+
         authLog.info('✅ requireAuth succeeded, calling handler', { path: req.path });
-        
+
         try {
           await handler(req, res);
           authLog.info('✅ Handler completed', { path: req.path });
         } catch (err: any) {
-          authLog.error('❌ Handler error', { 
-            path: req.path, 
+          authLog.error('❌ Handler error', {
+            path: req.path,
             error: err.message,
-            stack: err.stack?.substring(0, 300)
+            stack: err.stack?.substring(0, 300),
           });
           next(err);
         }
@@ -581,13 +707,13 @@ cds.on('bootstrap', (app: Application) => {
         authLog.error('❌ ensureAuth middleware error', {
           path: req.path,
           error: err.message,
-          stack: err.stack?.substring(0, 300)
+          stack: err.stack?.substring(0, 300),
         });
         next(err);
       }
     };
   };
-  
+
   // Error handler for /mcp routes
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
     // Only handle errors for /mcp routes
@@ -595,34 +721,76 @@ cds.on('bootstrap', (app: Application) => {
       const errorLog = cds.log('mcp-proxy/error-handler');
       errorLog.error('Error in /mcp route', { error: err.message, path: req.path, name: err.name });
     }
-    
+
     // For non-/mcp routes, pass to next error handler
     next(err);
   });
 
   // Register endpoints - auth is already handled by middleware above
   // NOTE: /mcp/destination/probe is now a CAP function: GET /mcp/ProbeDestination?destination=NAME
-  
-  // SSE endpoint: GET (standard) or POST (some clients may use POST)
-  app.get('/mcp/stream/sse', ensureAuth(handleSSE));
-  app.post('/mcp/stream/sse', ensureAuth((req, res) => {
-    // If POST to SSE endpoint, redirect to StreamableHTTP (correct endpoint)
-    const log = cds.log('mcp-proxy/bootstrap');
-    log.warn('POST request to SSE endpoint, redirecting to StreamableHTTP', {
+
+  // Log all requests to /mcp/stream/* for debugging
+  app.use('/mcp/stream/*', (req: Request, res: Response, next: NextFunction) => {
+    const debugLog = cds.log('mcp-proxy/request-logger');
+    debugLog.info('📥 Request received', {
+      method: req.method,
       path: req.path,
-      originalPath: req.url
+      url: req.url,
+      originalUrl: req.originalUrl,
+      headers: {
+        'content-type': req.headers['content-type'],
+        accept: req.headers.accept,
+        'mcp-session-id': req.headers['mcp-session-id'],
+        authorization: req.headers.authorization ? 'present' : 'missing',
+      },
     });
-    // Rewrite to correct endpoint
-    req.url = '/mcp/stream/http';
-    return handleStreamHTTP(req, res);
-  }));
-  
+    next();
+  });
+
   // StreamableHTTP endpoint: POST only (bidirectional NDJSON streaming)
+  // This is the only transport we support - SSE is not needed
   app.post('/mcp/stream/http', ensureAuth(handleStreamHTTP));
 
+  // Handle GET requests to /mcp/stream/http (should be POST)
+  app.get(
+    '/mcp/stream/http',
+    ensureAuth(async (req: Request, res: Response) => {
+      const log = cds.log('mcp-proxy/bootstrap');
+      log.warn('GET request to StreamableHTTP endpoint (should be POST)', {
+        path: req.path,
+        url: req.url,
+      });
+      res.status(405).json({
+        error: 'Method Not Allowed',
+        message: 'StreamableHTTP endpoint requires POST method, not GET',
+        supportedMethod: 'POST',
+        endpoint: '/mcp/stream/http',
+      });
+    })
+  );
+
+  // Handle any requests to /mcp/stream/sse (not supported)
+  app.all(
+    '/mcp/stream/sse',
+    ensureAuth(async (req: Request, res: Response) => {
+      const log = cds.log('mcp-proxy/bootstrap');
+      log.warn('SSE endpoint requested (not supported)', {
+        method: req.method,
+        path: req.path,
+        url: req.url,
+      });
+      res.status(404).json({
+        error: 'SSE endpoint not available',
+        message:
+          'This server only supports StreamableHTTP transport. Use POST /mcp/stream/http instead.',
+        supportedEndpoint: '/mcp/stream/http',
+        method: 'POST',
+      });
+    })
+  );
+
   log.info('Custom Express endpoints registered', {
-    sse: 'GET /mcp/stream/sse',
     streamHttp: 'POST /mcp/stream/http',
-    destinationProbe: 'GET /mcp/ProbeDestination?destination=NAME (CAP function)'
+    destinationProbe: 'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
   });
 });

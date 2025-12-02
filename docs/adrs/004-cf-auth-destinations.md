@@ -1,6 +1,7 @@
 # ADR 004: Cloud Foundry Authentication and Destinations
 
 ## Status
+
 Proposed
 
 ## Context

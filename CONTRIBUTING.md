@@ -66,6 +66,7 @@ This document provides guidelines and instructions for contributing to the proje
 1. **Fork the repository** on GitHub (if you haven't already)
 
 2. **Create a branch** from `main`:
+
    ```bash
    git checkout -b feature/your-feature-name
    # or
@@ -73,12 +74,14 @@ This document provides guidelines and instructions for contributing to the proje
    ```
 
 3. **Make your changes** and commit them:
+
    ```bash
    git add .
    git commit -m "feat: add new feature"
    ```
 
 4. **Push to your fork:**
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -158,6 +161,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 ```
 
 **Types:**
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation changes
@@ -167,6 +171,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 - `chore`: Build/tooling changes
 
 **Examples:**
+
 ```
 feat(proxy): add SSE heartbeat support
 fix(manager): handle session expiration correctly
@@ -236,4 +241,3 @@ Your contributions make Cloud LLM Hub better for everyone. Thank you for taking 
 ---
 
 **Need more details?** Check the [contributors documentation](docs/contributors/) for comprehensive guides.
-
