@@ -65,4 +65,3 @@ describe('Module Name', () => {
 
 - [Testing Guide](../docs/contributors/TESTING.md) - Complete testing documentation
 - [Code Style Guide](../docs/contributors/CODE_STYLE.md) - Coding standards
-

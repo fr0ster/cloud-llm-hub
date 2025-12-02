@@ -17,6 +17,7 @@ We use a **Fork → Branch → Pull Request** workflow:
 ### 1. Fork the Repository
 
 **On GitHub:**
+
 1. Go to https://github.com/fr0ster/cloud-llm-hub
 2. Click "Fork" button
 3. Choose your account/organization
@@ -82,6 +83,7 @@ git checkout -b docs/update-readme
 ```
 
 **Branch naming conventions:**
+
 - `feature/` - New features
 - `fix/` - Bug fixes
 - `docs/` - Documentation
@@ -90,6 +92,7 @@ git checkout -b docs/update-readme
 - `chore/` - Build/tooling changes
 
 **Examples:**
+
 - `feature/add-sse-heartbeat`
 - `fix/session-timeout-handling`
 - `docs/update-contributing-guide`
@@ -118,6 +121,7 @@ git commit -m "feat(proxy): add SSE heartbeat support"
 ```
 
 **Commit message format:**
+
 ```
 <type>(<scope>): <subject>
 
@@ -127,6 +131,7 @@ git commit -m "feat(proxy): add SSE heartbeat support"
 ```
 
 **Types:**
+
 - `feat` - New feature
 - `fix` - Bug fix
 - `docs` - Documentation
@@ -136,6 +141,7 @@ git commit -m "feat(proxy): add SSE heartbeat support"
 - `chore` - Build/tooling
 
 **Examples:**
+
 ```bash
 git commit -m "feat(proxy): add SSE heartbeat support"
 git commit -m "fix(manager): handle session expiration"
@@ -225,11 +231,13 @@ git push origin --delete feature/your-feature-name
 - Keep names short but clear
 
 **Good:**
+
 - `feature/add-destination-probe`
 - `fix/session-timeout`
 - `docs/contributor-guide`
 
 **Bad:**
+
 - `my-changes`
 - `fix`
 - `feature_add_something`
@@ -355,4 +363,3 @@ A: Push fixes to the same branch. The PR will update.
 ---
 
 **Questions?** Open an issue or check other contributor guides!
-

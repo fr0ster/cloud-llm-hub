@@ -37,12 +37,13 @@ mta_archives/
 sk.json
 .env
 *.json
+
+# Submodules (exclude from this branch, keep folder for other branches)
+submodules/llm-agent/
 # YAML files (except templates)
 *.yaml
 !**/*.yaml.template
-!mta.yaml
-
-# MTA extension file (contains sensitive values - NOT committed to Git)
-.mtaext
-# Template file (committed to Git)
-!.mtaext.template
+!**/*.template.yaml
+mdd.env
+*.env
+.env
