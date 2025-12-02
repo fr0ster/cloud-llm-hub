@@ -394,7 +394,7 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     });
   } catch (error: any) {
     // Use synchronized error handling from errorUtils
-    const { logErrorSafely, formatErrorMessage } = await import('./lib/errorUtils');
+    const { logErrorSafely, formatErrorMessage } = await import('./lib/errorUtils.js');
 
     // Build context for error logging
     const context: Record<string, any> = {

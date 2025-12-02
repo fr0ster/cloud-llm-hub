@@ -315,7 +315,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       return this.convertToAxiosResponse(response, requestUrl);
     } catch (error: any) {
       // Use synchronized error handling from errorUtils
-      const { logErrorSafely } = await import('../lib/errorUtils');
+      const { logErrorSafely } = await import('../lib/errorUtils.js');
       logErrorSafely(logger, 'ADT request', error, {
         url: requestUrl,
         method: normalizedMethod,

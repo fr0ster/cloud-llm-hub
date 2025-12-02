@@ -3,6 +3,7 @@
   "version": "1.0.3",
   "description": "A simple CAP project.",
   "dependencies": {
+    "@cloud-llm-hub/llm-agent": "file:submodules/llm-agent",
     "@fr0ster/mcp-abap-adt": "file:submodules/mcp-abap-adt",
     "@mcp-abap-adt/adt-clients": "^0.1.34",
     "@mcp-abap-adt/auth-broker": "^0.1.4",
@@ -60,7 +61,7 @@
   "license": "MIT",
   "private": true,
   "engines": {
-    "node": ">=18.0.0",
+    "node": "22.16.0",
     "npm": ">=9.0.0"
   },
   "cds": {
@@ -110,5 +111,8 @@
   },
   "imports": {
     "#cds-models/*": "./@cds-models/*/index.js"
+  },
+  "volta": {
+    "node": "22.16.0"
   }
 }

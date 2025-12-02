@@ -187,7 +187,7 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
       };
     } catch (error: any) {
       // Use synchronized error handling from errorUtils
-      const { logErrorSafely } = await import('./lib/errorUtils');
+      const { logErrorSafely } = await import('./lib/errorUtils.js');
       logErrorSafely(log, 'Destination probe', error, {
         destination: destinationName,
       });
