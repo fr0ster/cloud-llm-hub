@@ -394,7 +394,40 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     });
   } catch (error: any) {
     // Use synchronized error handling from errorUtils
-    const { logErrorSafely, formatErrorMessage } = await import('./lib/errorUtils.js');
+    // In development (cds watch), TypeScript files are executed directly, so use .ts extension
+    // In production (compiled), files are .js
+    // Try .ts first (development), fallback to .js (production)
+    let errorUtils: any;
+    let logErrorSafely: any;
+    let formatErrorMessage: any;
+
+    try {
+      try {
+        // @ts-ignore - Dynamic import with .ts extension for development mode
+        errorUtils = await import('./lib/errorUtils.ts');
+      } catch {
+        // @ts-ignore - Dynamic import with .js extension for production mode
+        errorUtils = await import('./lib/errorUtils.js');
+      }
+      logErrorSafely = errorUtils.logErrorSafely;
+      formatErrorMessage = errorUtils.formatErrorMessage;
+    } catch (importError) {
+      // Fallback if errorUtils cannot be imported
+      log.error('Failed to import errorUtils, using fallback error handling', {
+        error: importError instanceof Error ? importError.message : String(importError),
+        originalError: error instanceof Error ? error.message : String(error),
+      });
+      // Fallback implementations
+      logErrorSafely = (logger: any, operation: string, err: any, context?: any) => {
+        logger.error(`${operation} failed`, {
+          error: err instanceof Error ? err.message : String(err),
+          context,
+        });
+      };
+      formatErrorMessage = (err: any) => {
+        return err instanceof Error ? err.message : String(err);
+      };
+    }
 
     // Build context for error logging
     const context: Record<string, any> = {
