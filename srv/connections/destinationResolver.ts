@@ -216,13 +216,13 @@ export async function resolveDestinationSapConfig(
     return buildSapConfigFromDestination(destinationName, destination, jwtToken);
   } catch (error: unknown) {
     // Use synchronized error handling from errorUtils
-    const { logErrorSafely } = await import('../lib/errorUtils');
+    const { logErrorSafely } = await import('../lib/errorUtils.js');
     logErrorSafely(log, 'Destination resolution', error, {
       destinationName,
     });
 
     // Create error with status code for proper HTTP response
-    const { formatErrorMessage } = await import('../lib/errorUtils');
+    const { formatErrorMessage } = await import('../lib/errorUtils.js');
     const message = formatErrorMessage(error);
     const destinationError = new Error(
       `Failed to resolve destination "${destinationName}": ${message}`

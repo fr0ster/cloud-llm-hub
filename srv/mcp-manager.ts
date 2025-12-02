@@ -528,7 +528,7 @@ export async function getMCPServer(req: Request): Promise<{
     };
   } catch (err: any) {
     // Use synchronized error handling from errorUtils
-    const { logErrorSafely } = await import('./lib/errorUtils');
+    const { logErrorSafely } = await import('./lib/errorUtils.js');
 
     // Build context - sapContext might not be available if error occurred before extraction
     const context: Record<string, any> = {
