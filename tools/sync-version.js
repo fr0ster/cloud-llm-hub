@@ -6,8 +6,8 @@
  * If version is not provided, reads from package.json
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const packageJsonPath = path.join(__dirname, '..', 'package.json');
 const mtaYamlPath = path.join(__dirname, '..', 'mta.yaml');
@@ -23,7 +23,7 @@ if (process.argv[2]) {
 
 if (!version) {
   console.error(
-    '❌ Version not found. Provide version as argument or ensure package.json has version field.'
+    '❌ Version not found. Provide version as argument or ensure package.json has version field.',
   );
   process.exit(1);
 }

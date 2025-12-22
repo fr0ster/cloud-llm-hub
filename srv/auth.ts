@@ -1,28 +1,56 @@
-import cds, { Request, Service } from '@sap/cds';
+import cds, { type Request, type Service } from '@sap/cds';
 
-export default async function registerAuthHandlers(srv: Service): Promise<void> {
+/**
+ * CAP User interface extension for type safety
+ */
+interface CdsUser {
+  id?: string;
+  _is_anonymous?: boolean;
+  roles?: string[];
+  // eslint-disable-next-line no-unused-vars
+  is?: (role: string) => boolean;
+}
+
+/**
+ * Request headers interface
+ */
+interface RequestHeaders {
+  authorization?: string;
+  [key: string]: string | string[] | undefined;
+}
+
+/**
+ * Request data for CheckRoles action
+ */
+interface CheckRolesData {
+  required?: string[];
+}
+
+export default async function registerAuthHandlers(
+  srv: Service,
+): Promise<void> {
   const log = cds.log('auth-service');
 
   srv.on('CheckAuth', async (req: Request) => {
+    const user = req.user as CdsUser | undefined;
+    const headers = req.headers as RequestHeaders;
+
     log.info('🔐 CheckAuth handler called', {
-      hasUser: !!req.user,
-      userId: (req.user as any)?.id,
-      isAnonymous: (req.user as any)?._is_anonymous,
-      hasAuthHeader: !!(req.headers as any)?.authorization,
-      authHeaderPrefix: (req.headers as any)?.authorization?.substring(0, 20),
-      url: (req as any).url,
-      path: (req as any).path,
+      hasUser: !!user,
+      userId: user?.id,
+      isAnonymous: user?._is_anonymous,
+      hasAuthHeader: !!headers?.authorization,
+      authHeaderPrefix: headers?.authorization?.substring(0, 20),
     });
 
-    const user = req.user as any;
     if (!user || user._is_anonymous) {
       log.warn('❌ CheckAuth: Unauthorized - no user or anonymous', {
         hasUser: !!user,
         isAnonymous: user?._is_anonymous,
-        hasAuthHeader: !!(req.headers as any)?.authorization,
+        hasAuthHeader: !!headers?.authorization,
       });
       req.reject(401, 'Unauthorized');
-      return; // unreachable
+      return;
     }
 
     log.info('✅ CheckAuth: Authorized', {
@@ -38,23 +66,31 @@ export default async function registerAuthHandlers(srv: Service): Promise<void> 
   });
 
   srv.on('CheckRoles', async (req: Request) => {
-    log.debug('CheckRoles handler called', { hasUser: !!req.user, userId: (req.user as any)?.id });
+    const user = req.user as CdsUser | undefined;
 
-    const user = req.user as any;
+    log.debug('CheckRoles handler called', {
+      hasUser: !!user,
+      userId: user?.id,
+    });
+
     if (!user || user._is_anonymous) {
       log.warn('CheckRoles: Unauthorized - no user or anonymous', {
         hasUser: !!user,
         isAnonymous: user?._is_anonymous,
       });
       req.reject(401, 'Unauthorized');
-      return; // unreachable
+      return;
     }
 
-    const required: string[] = Array.isArray((req.data as any)?.required)
-      ? (req.data as any).required
+    const data = req.data as CheckRolesData;
+    const required: string[] = Array.isArray(data?.required)
+      ? data.required
       : [];
 
-    log.debug('CheckRoles: Checking roles', { required, userRoles: user.roles });
+    log.debug('CheckRoles: Checking roles', {
+      required,
+      userRoles: user.roles,
+    });
 
     const missing = required.filter((r: string) => !user.is?.(r));
     if (missing.length) {
@@ -63,8 +99,11 @@ export default async function registerAuthHandlers(srv: Service): Promise<void> 
         missing,
         userRoles: user.roles,
       });
-      req.reject(403, `Forbidden: missing required roles: ${missing.join(', ')}`);
-      return; // unreachable
+      req.reject(
+        403,
+        `Forbidden: missing required roles: ${missing.join(', ')}`,
+      );
+      return;
     }
 
     log.debug('CheckRoles: Authorized', { userId: user.id, roles: user.roles });

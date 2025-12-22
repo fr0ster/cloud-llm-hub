@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const rootDir = path.resolve(__dirname, '..');
 const sourceDir = path.join(rootDir, 'submodules', 'mcp-abap-adt');
-const targetDir = path.join(rootDir, 'gen', 'srv', 'submodules', 'mcp-abap-adt');
+const targetDir = path.join(
+  rootDir,
+  'gen',
+  'srv',
+  'submodules',
+  'mcp-abap-adt',
+);
 
 const ITEMS_TO_COPY = ['package.json', 'LICENSE', 'README.md', 'dist'];
 
@@ -37,7 +43,7 @@ async function main() {
   }
   if (!(await pathExists(path.join(sourceDir, 'dist')))) {
     throw new Error(
-      'Submodule dist/ folder is missing. Run "npm run build --prefix submodules/mcp-abap-adt" first.'
+      'Submodule dist/ folder is missing. Run "npm run build --prefix submodules/mcp-abap-adt" first.',
     );
   }
 

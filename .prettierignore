@@ -28,6 +28,9 @@ mta_archives/
 # GitHub
 .github/
 
+# ESLint config (uses double quotes for CI compatibility)
+eslint.config.mjs
+
 # Documentation (optional - can format if needed)
 # docs/
 
