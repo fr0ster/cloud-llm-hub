@@ -19,9 +19,8 @@
  *   3. Ensure mta-deploy.yaml is in .gitignore (already configured)
  */
 
-const { execSync } = require('child_process');
-const { existsSync } = require('fs');
-const { resolve } = require('path');
+const { execSync } = require('node:child_process');
+const { existsSync } = require('node:fs');
 
 const PARAMS_FILE = 'mta-deploy.yaml';
 const TEMPLATE_FILE = 'mta-deploy.yaml.template';
@@ -59,4 +58,3 @@ function main() {
 }
 
 main();
-

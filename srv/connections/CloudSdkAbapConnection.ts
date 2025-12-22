@@ -368,12 +368,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // In development (cds watch), TypeScript files are executed directly, so use .ts extension
       // In production (compiled), files are .js
       // Try .ts first (development), fallback to .js (production)
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
       let errorUtils: any;
       try {
-        // @ts-ignore - Dynamic import with .ts extension for development mode
+        // @ts-expect-error - Dynamic import with .ts extension for development mode
         errorUtils = await import('../lib/errorUtils.ts');
       } catch {
-        // @ts-ignore - Dynamic import with .js extension for production mode
         errorUtils = await import('../lib/errorUtils.js');
       }
       const { logErrorSafely } = errorUtils;

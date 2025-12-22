@@ -12,16 +12,22 @@ function ensureVcapServicesLoaded(): void {
   const log = require('@sap/cds').log('destination-resolver');
 
   // Only load if VCAP_SERVICES is not already set and we're in local mode
-  if (!process.env.VCAP_SERVICES && process.env.VCAP_APPLICATION === undefined) {
+  if (
+    !process.env.VCAP_SERVICES &&
+    process.env.VCAP_APPLICATION === undefined
+  ) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const xsenv = require('@sap/xsenv');
       const loaded = xsenv.loadEnv();
       // If loadEnv returns something, it means it loaded default-env.json
-      if (loaded && loaded.VCAP_SERVICES) {
+      if (loaded?.VCAP_SERVICES) {
         process.env.VCAP_SERVICES = JSON.stringify(loaded.VCAP_SERVICES);
         log.debug('VCAP_SERVICES loaded from default-env.json via xsenv', {
-          hasDestination: !!(loaded.VCAP_SERVICES.destination && loaded.VCAP_SERVICES.destination.length > 0),
+          hasDestination: !!(
+            loaded.VCAP_SERVICES.destination &&
+            loaded.VCAP_SERVICES.destination.length > 0
+          ),
           destinationCount: loaded.VCAP_SERVICES.destination?.length || 0,
         });
       } else {
@@ -30,9 +36,12 @@ function ensureVcapServicesLoaded(): void {
     } catch (error) {
       // If @sap/xsenv is not available or loadEnv fails, continue
       // CAP should have already loaded default-env.json
-      log.debug('xsenv.loadEnv() failed (this is OK if CAP already loaded default-env.json)', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      log.debug(
+        'xsenv.loadEnv() failed (this is OK if CAP already loaded default-env.json)',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
 
@@ -40,7 +49,9 @@ function ensureVcapServicesLoaded(): void {
   if (process.env.VCAP_SERVICES) {
     try {
       const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
-      const hasDestination = !!(vcapServices.destination && vcapServices.destination.length > 0);
+      const hasDestination = !!(
+        vcapServices.destination && vcapServices.destination.length > 0
+      );
       if (!hasDestination) {
         log.warn('VCAP_SERVICES loaded but no destination service found', {
           availableServices: Object.keys(vcapServices),
@@ -57,7 +68,8 @@ function ensureVcapServicesLoaded(): void {
       }
     } catch (parseError) {
       log.error('Failed to parse VCAP_SERVICES', {
-        error: parseError instanceof Error ? parseError.message : String(parseError),
+        error:
+          parseError instanceof Error ? parseError.message : String(parseError),
       });
     }
   }
@@ -287,7 +299,7 @@ export async function resolveDestinationSapConfig(
     );
   } catch (error: unknown) {
     // Log detailed error information for debugging
-    const errorDetails: any = {
+    const errorDetails: Record<string, unknown> = {
       destinationName,
       hasVcapServices: !!process.env.VCAP_SERVICES,
       isLocal: !process.env.VCAP_APPLICATION,
@@ -296,20 +308,27 @@ export async function resolveDestinationSapConfig(
     };
 
     // Add error code if available
-    if (error instanceof Error && (error as any).code) {
-      errorDetails.errorCode = (error as any).code;
+    const errWithCode = error as Error & {
+      code?: string;
+      cause?: unknown;
+      rootCause?: unknown;
+    };
+    if (error instanceof Error && errWithCode.code) {
+      errorDetails.errorCode = errWithCode.code;
     }
 
     // Add cause/rootCause if available (SAP Cloud SDK errors often have cause)
-    if (error instanceof Error && (error as any).cause) {
-      errorDetails.cause = (error as any).cause instanceof Error
-        ? (error as any).cause.message
-        : String((error as any).cause);
+    if (error instanceof Error && errWithCode.cause) {
+      errorDetails.cause =
+        errWithCode.cause instanceof Error
+          ? errWithCode.cause.message
+          : String(errWithCode.cause);
     }
-    if (error instanceof Error && (error as any).rootCause) {
-      errorDetails.rootCause = (error as any).rootCause instanceof Error
-        ? (error as any).rootCause.message
-        : String((error as any).rootCause);
+    if (error instanceof Error && errWithCode.rootCause) {
+      errorDetails.rootCause =
+        errWithCode.rootCause instanceof Error
+          ? errWithCode.rootCause.message
+          : String(errWithCode.rootCause);
     }
 
     // Add VCAP_SERVICES destination service info if available
@@ -336,7 +355,11 @@ export async function resolveDestinationSapConfig(
     }
 
     // Add stack trace in development mode
-    if (error instanceof Error && error.stack && process.env.NODE_ENV !== 'production') {
+    if (
+      error instanceof Error &&
+      error.stack &&
+      process.env.NODE_ENV !== 'production'
+    ) {
       errorDetails.stack = error.stack.substring(0, 500);
     }
 
@@ -346,16 +369,18 @@ export async function resolveDestinationSapConfig(
     // In development (cds watch), TypeScript files are executed directly, so use .ts extension
     // In production (compiled), files are .js
     // Try .ts first (development), fallback to .js (production)
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
     let logErrorSafely: any;
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
     let formatErrorMessage: any;
 
     try {
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
       let errorUtils: any;
       try {
-        // @ts-ignore - Dynamic import with .ts extension for development mode
+        // @ts-expect-error - Dynamic import with .ts extension for development mode
         errorUtils = await import('../lib/errorUtils.ts');
       } catch {
-        // @ts-ignore - Dynamic import with .js extension for production mode
         errorUtils = await import('../lib/errorUtils.js');
       }
       logErrorSafely = errorUtils.logErrorSafely;
@@ -363,15 +388,27 @@ export async function resolveDestinationSapConfig(
     } catch (importError) {
       // Fallback if errorUtils cannot be imported
       log.error('Failed to import errorUtils, using fallback error handling', {
-        error: importError instanceof Error ? importError.message : String(importError),
+        error:
+          importError instanceof Error
+            ? importError.message
+            : String(importError),
       });
       // Fallback implementations
-      logErrorSafely = (logger: any, operation: string, err: any, context?: any) => {
+      logErrorSafely = (
+        // biome-ignore lint/suspicious/noExplicitAny: Fallback logger can be any type
+        logger: any,
+        operation: string,
+        // biome-ignore lint/suspicious/noExplicitAny: Fallback error can be any type
+        err: any,
+        // biome-ignore lint/suspicious/noExplicitAny: Fallback context can be any type
+        context?: any,
+      ) => {
         logger.error(`${operation} failed`, {
           error: err instanceof Error ? err.message : String(err),
           context,
         });
       };
+      // biome-ignore lint/suspicious/noExplicitAny: Fallback error can be any type
       formatErrorMessage = (err: any) => {
         return err instanceof Error ? err.message : String(err);
       };

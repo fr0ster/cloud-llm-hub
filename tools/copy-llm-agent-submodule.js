@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const rootDir = path.resolve(__dirname, '..');
 const sourceDir = path.join(rootDir, 'submodules', 'llm-agent');
@@ -27,7 +27,7 @@ async function copyItem(item) {
   }
   await fs.promises.cp(sourcePath, targetPath, {
     recursive: true,
-    errorOnExist: false
+    errorOnExist: false,
   });
 }
 
@@ -36,7 +36,9 @@ async function main() {
     throw new Error(`Submodule directory not found: ${sourceDir}`);
   }
   if (!(await pathExists(path.join(sourceDir, 'dist')))) {
-    throw new Error('Submodule dist/ folder is missing. Run "npm run build --prefix submodules/llm-agent" first.');
+    throw new Error(
+      'Submodule dist/ folder is missing. Run "npm run build --prefix submodules/llm-agent" first.',
+    );
   }
 
   await fs.promises.rm(targetDir, { recursive: true, force: true });
@@ -53,4 +55,3 @@ main().catch((error) => {
   console.error(`❌  ${error.message}`);
   process.exit(1);
 });
-
