@@ -17,67 +17,40 @@ import cds from '@sap/cds';
 import type { Application, Request, Response, NextFunction } from 'express';
 // @ts-ignore - @sap/xsenv doesn't have types
 import { loadEnv } from '@sap/xsenv';
-// @ts-ignore - ESM import path with .js extension
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { getMCPServer, extractSapContext } from './mcp-manager';
-import { Readable } from 'stream';
-import { randomUUID } from 'crypto';
-import type { SapConfig } from '@mcp-abap-adt/connection';
-// sessionContext and getManagedConnection will be obtained from mcp-abap-adt's utils module via dynamic import
-// This ensures we use the same instance that getManagedConnection() reads from
+import { createMCPServerForRequest } from './mcp-manager';
+import { logErrorSafely, formatErrorMessage } from './lib/errorUtils';
 
 /**
  * Stream-HTTP endpoint handler - proxies to embedded MCP server
  *
- * ## Hybrid Architecture: sessionContext Integration
+ * ## Per-Request Architecture
  *
- * This handler implements the **sessionContext** part of the hybrid architecture:
+ * Each POST request creates:
+ * 1. **New connection** - Fresh AbapConnection (CloudSdkAbapConnection or direct)
+ * 2. **New MCP server** - Fresh EmbeddableMcpServer with that connection
+ * 3. **New transport** - StreamableHTTPServerTransport for this request
  *
- * 1. **Extract SAP config** from HTTP headers (destination or direct)
- * 2. **Set sessionContext** via `sessionContext.run({ sapConfig })`
- * 3. **Delegate to MCP server** which uses `getManagedConnection()` to read from sessionContext
+ * This follows the standard MCP pattern where each request is independent.
  *
- * ### Flow for Direct Basic/JWT connections:
+ * ### Connection Types:
  *
- * ```
- * Request → Extract headers → Build sessionSapConfig
- *   ↓
- * sessionContext.run({ sapConfig: sessionSapConfig })
- *   ↓
- * getMCPServer() → Creates MCP server (NO connection passed)
- *   ↓
- * MCP handler calls getManagedConnection()
- *   ↓
- * getManagedConnection() reads from sessionContext → Creates connection
- *   ↓
- * Request processed with per-request authentication
- * ```
+ * **With x-sap-destination header:**
+ * - Uses CloudSdkAbapConnection
+ * - BTP Destination Service manages authentication
+ * - Supports Principal Propagation, OAuth2, Basic auth via BTP
  *
- * ### Flow for Destination-based connections:
- *
- * ```
- * Request → Extract headers → Resolve destination
- *   ↓
- * getMCPServer() → Creates CloudSdkAbapConnection → Passes to MCP server
- *   ↓
- * MCP server uses pre-created connection (sessionContext not needed)
- *   ↓
- * Request processed with destination-based authentication
- * ```
- *
- * ### Key Points:
- *
- * - **sessionContext is request-scoped**: Each HTTP request gets its own SAP config
- * - **No global state**: Config doesn't leak between requests
- * - **Automatic cleanup**: AsyncLocalStorage cleans up after request completes
- * - **Compatible with mcp-abap-adt**: Uses standard getManagedConnection() pattern
+ * **Without x-sap-destination (direct connection):**
+ * - Uses createAbapConnection from @mcp-abap-adt/connection
+ * - Simple JWT or Basic auth directly to SAP
+ * - NO token refresh - client must send valid token each request
  *
  * @param req - HTTP request
  * @param res - HTTP response
  */
 async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   const log = cds.log('mcp-proxy/stream-http');
-  let body: any = null; // Declare body at function scope for error handling
+  let body: any = null;
+  let cleanup: (() => Promise<void>) | null = null;
 
   // Only handle POST requests (like mcp-abap-adt)
   if (req.method !== 'POST') {
@@ -87,346 +60,89 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
   }
 
   try {
-    /**
-     * PHASE 2.3: Use extractSapContext from mcp-manager.ts
-     *
-     * This eliminates code duplication by reusing the same extraction logic
-     * that getMCPServer() uses. This ensures sessionSapConfig matches exactly
-     * what getMCPServer creates, preventing inconsistencies.
-     *
-     * extractSapContext uses:
-     * - validateAuthHeaders() from @mcp-abap-adt/header-validator for direct connections
-     * - resolveDestinationSapConfig() for BTP Destination connections
-     */
-    const sapContext = await extractSapContext(req);
-    const sessionSapConfig = sapContext.sapConfig;
-
-    // Generate session ID for this request
-    // CRITICAL: Include JWT token hash in sessionId to invalidate cache when token changes
-    // This ensures that when token changes, sessionId changes, cache miss, new connection created
-    let sessionId = randomUUID().substring(0, 8); // Short random prefix
-    if (sessionSapConfig.jwtToken) {
-      // Add hash of JWT token to sessionId - when token changes, sessionId changes, cache invalidates
-      const crypto = await import('crypto');
-      const tokenHash = crypto
-        .createHash('sha256')
-        .update(sessionSapConfig.jwtToken)
-        .digest('hex')
-        .substring(0, 8);
-      sessionId = `${sessionId}-${tokenHash}`;
-    }
-
-    log.info('Extracted SAP config for sessionContext', {
-      source: sapContext.source,
-      destination: sapContext.destination?.destinationName,
-      authType: sessionSapConfig.authType,
-      hasJwtToken: !!sessionSapConfig.jwtToken,
-      jwtTokenLength: sessionSapConfig.jwtToken?.length || 0,
-      hasClient: !!sessionSapConfig.client,
-    });
-
-    // Get embedded MCP server instance (created per-request with SAP config from headers)
-    const mcpServer = await getMCPServer(req);
-
-    if (!mcpServer || !mcpServer.server) {
-      log.error('MCP server not initialized');
-      return res.status(503).send('Service Unavailable: MCP server not ready');
-    }
-
-    // Read request body (like mcp-abap-adt does)
+    // Read request body first (like mcp-abap-adt does)
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
       chunks.push(chunk);
     }
     if (chunks.length > 0) {
       const bodyString = Buffer.concat(chunks).toString('utf-8');
+      log.debug('Raw body received', {
+        bodyLength: bodyString.length,
+      });
       try {
         body = JSON.parse(bodyString);
-      } catch (parseError) {
-        // If body is not JSON, pass as string or null
+      } catch {
         body = bodyString || null;
       }
     }
 
-    // Log request details for debugging (especially for tools/call requests)
+    // Log request details for debugging
     if (body && typeof body === 'object') {
-      const method = body.method || body.jsonrpc ? 'JSON-RPC' : 'unknown';
       const toolName = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
-      const toolArgs = body.params?.arguments || body.arguments || {};
-
-      log.info('MCP request details', {
-        method,
+      const toolArgs = body.params?.arguments || {};
+      log.info('MCP request', {
+        method: body.method,
         toolName,
-        toolArgs:
-          Object.keys(toolArgs).length > 0
-            ? {
-                // Log key parameters for common tools
-                class_name: toolArgs.class_name || toolArgs.className,
-                object_name: toolArgs.object_name || toolArgs.objectName,
-                table_name: toolArgs.table_name || toolArgs.tableName,
-                program_name: toolArgs.program_name || toolArgs.programName,
-                // Log all keys for debugging (but not values to avoid sensitive data)
-                allKeys: Object.keys(toolArgs),
-              }
-            : {},
+        toolArgs: Object.keys(toolArgs).length > 0
+          ? {
+              class_name: toolArgs.class_name || toolArgs.className,
+              object_name: toolArgs.object_name || toolArgs.objectName,
+              table_name: toolArgs.table_name || toolArgs.tableName,
+              allKeys: Object.keys(toolArgs),
+            }
+          : {},
         requestId: body.id || 'no-id',
       });
     }
 
-    // Create new StreamableHTTP transport for each request (like mcp-abap-adt)
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // Stateless mode (like mcp-abap-adt)
-      enableJsonResponse: true, // Use JSON response format, not SSE
-      allowedOrigins: undefined,
-      allowedHosts: undefined,
-      enableDnsRebindingProtection: false,
+    // Create NEW MCP server for this request (per-request architecture)
+    const result = await createMCPServerForRequest(req);
+    cleanup = result.cleanup;
+
+    log.debug('MCP server created for request', {
+      connectionType: result.connection.constructor.name,
     });
 
-    // Close transport when response closes (like mcp-abap-adt)
+    // Close transport when response closes
     res.on('close', () => {
-      transport.close();
+      if (cleanup) {
+        cleanup().catch((err) => {
+          log.warn('Cleanup failed on response close', { error: String(err) });
+        });
+      }
     });
 
-    // Connect transport to MCP server (like mcp-abap-adt)
-    // In mcp-abap-adt: await this.mcpServer.connect(transport);
-    // Our mcpServer.server is mcp_abap_adt_server, need to access private mcpServer property
-    if (!mcpServer.server) {
-      log.error('MCP server instance not available', {
-        hasServer: !!mcpServer.server,
-      });
-      return res.status(503).send('Service Unavailable: MCP server not ready');
-    }
-
-    // Access private mcpServer property via type assertion
-    // mcpServer.server is mcp_abap_adt_server instance
-    // (mcpServer.server as any).mcpServer is the private McpServer instance
-    const mcpServerInstance = (mcpServer.server as any).mcpServer;
-    if (!mcpServerInstance) {
-      log.error('MCP server McpServer instance not available', {
-        hasServer: !!mcpServer.server,
-        hasMcpServer: !!(mcpServer.server as any).mcpServer,
-      });
-      return res.status(503).send('Service Unavailable: MCP server structure invalid');
-    }
-
-    await mcpServerInstance.connect(transport);
-
-    log.debug('Transport connected', {
-      hasServer: !!mcpServer.server,
-      sessionId: sessionId.substring(0, 8),
-    });
-
-    // Run handlers in AsyncLocalStorage context with session info (like mcp-abap-adt)
-    // This allows getManagedConnection() to access sessionId and config
-    // We need to use the same sessionContext instance that mcp-abap-adt uses
-    // getManagedConnection() reads from sessionContext.getStore(), so we must use the same instance
-    let mcpSessionContext: any;
+    // Handle HTTP request through transport
     try {
-      // Get sessionContext from mcp-abap-adt's utils module
-      // sessionContext is exported from lib/utils.ts but not from main index
-      // Use require to access the same instance that mcp-abap-adt uses internally
-      // This must be done after mcp-abap-adt is loaded (which happens in getMCPServer above)
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const mcpUtils = require('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
+      await result.transport.handleRequest(req, res, body);
+    } catch (transportError: any) {
+      const errorDetails: any = {
+        error_type: transportError?.constructor?.name || 'Unknown',
+        error_message: transportError?.message || String(transportError),
+        toolName: body?.params?.name || 'unknown',
+      };
 
-      if (mcpUtils && mcpUtils.sessionContext) {
-        mcpSessionContext = mcpUtils.sessionContext;
-        log.debug('Using mcp-abap-adt sessionContext from utils', {
-          hasSessionContext: !!mcpSessionContext,
-          hasRun: typeof mcpSessionContext?.run === 'function',
-        });
-      } else {
-        // Fallback: try dynamic import
-        const mcpUtilsModule = await import('@fr0ster/mcp-abap-adt/dist/lib/utils.js');
-        const mcpUtilsAny = mcpUtilsModule as any;
-        if (mcpUtilsAny && mcpUtilsAny.sessionContext) {
-          mcpSessionContext = mcpUtilsAny.sessionContext;
-          log.debug('Using mcp-abap-adt sessionContext from utils (dynamic import)', {
-            hasSessionContext: !!mcpSessionContext,
-            hasRun: typeof mcpSessionContext?.run === 'function',
-          });
-        } else {
-          throw new Error(
-            `sessionContext not found in mcp-abap-adt utils. Available keys: ${Object.keys(
-              mcpUtils || mcpUtilsAny || {}
-            )
-              .slice(0, 20)
-              .join(', ')}`
-          );
-        }
+      if (transportError?.response) {
+        errorDetails.http_status = transportError.response.status;
+        errorDetails.http_status_text = transportError.response.statusText;
       }
 
-      if (!mcpSessionContext || typeof mcpSessionContext.run !== 'function') {
-        throw new Error('sessionContext found but does not have run method');
-      }
-    } catch (err) {
-      log.error('Failed to access mcp-abap-adt sessionContext', {
-        error: err instanceof Error ? err.message : String(err),
-        stack: err instanceof Error ? err.stack?.substring(0, 500) : undefined,
-      });
-      return res.status(500).send('Internal Server Error: sessionContext not available');
+      log.error('Transport request failed', errorDetails);
+      throw transportError;
     }
 
-    // Verify sessionSapConfig has JWT token before running
-    if (sessionSapConfig && sessionSapConfig.authType === 'jwt' && !sessionSapConfig.jwtToken) {
-      log.error('JWT auth type but no token in sessionSapConfig', {
-        hasConfig: !!sessionSapConfig,
-        authType: sessionSapConfig.authType,
-        hasJwtToken: !!sessionSapConfig.jwtToken,
-      });
-      return res.status(400).send('Bad Request: JWT token required for JWT authentication');
-    }
-
-    log.info('Running in sessionContext', {
-      sessionId: sessionId.substring(0, 8),
-      hasSapConfig: !!sessionSapConfig,
-      authType: sessionSapConfig?.authType,
-      hasJwtToken: !!sessionSapConfig?.jwtToken,
-      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0,
-    });
-
-    // CRITICAL: Log sessionSapConfig BEFORE passing to sessionContext
-    log.info('🔥 sessionSapConfig BEFORE sessionContext.run', {
-      hasJwtToken: !!sessionSapConfig?.jwtToken,
-      jwtTokenLength: sessionSapConfig?.jwtToken?.length || 0,
-      allKeys: Object.keys(sessionSapConfig || {}),
-    });
-
-    /**
-     * HYBRID ARCHITECTURE: Set sessionContext for this request
-     *
-     * This is the critical part of the hybrid architecture:
-     * - sessionContext.run() sets request-scoped SAP config in AsyncLocalStorage
-     * - mcp-abap-adt's getManagedConnection() reads from this context
-     * - This allows per-request authentication without global connection state
-     *
-     * For Direct Basic/JWT connections:
-     * - getMCPServer() does NOT pass connection to MCP server constructor
-     * - MCP handlers call getManagedConnection() which reads from sessionContext
-     * - Each request gets its own connection with its own JWT token
-     *
-     * For Destination-based connections:
-     * - getMCPServer() creates CloudSdkAbapConnection and passes it to constructor
-     * - sessionContext is still set (for consistency) but not used
-     * - Connection is pre-created and reused from instanceCache
-     */
-    await mcpSessionContext.run(
-      {
-        sessionId,
-        sapConfig: sessionSapConfig,
-      },
-      async () => {
-        // Verify context is set correctly
-        const context = mcpSessionContext.getStore();
-
-        // CRITICAL: Log what ACTUALLY got into sessionContext
-        log.info('🔥 sapConfig INSIDE sessionContext.run', {
-          hasJwtToken: !!context?.sapConfig?.jwtToken,
-          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0,
-          allKeys: Object.keys(context?.sapConfig || {}),
-        });
-
-        log.info('Inside sessionContext.run - context check', {
-          hasContext: !!context,
-          hasSessionId: !!context?.sessionId,
-          hasSapConfig: !!context?.sapConfig,
-          authType: context?.sapConfig?.authType,
-          hasJwtToken: !!context?.sapConfig?.jwtToken,
-          jwtTokenLength: context?.sapConfig?.jwtToken?.length || 0,
-        });
-
-        // NOTE: cloud-llm-hub does NOT support token refresh
-        // For BTP Destinations: Token management is automatic via BTP
-        // Clients must refresh tokens themselves and send new JWT token in each request
-
-        // Handle HTTP request through transport (like mcp-abap-adt)
-        // Pass body as third parameter (like mcp-abap-adt does)
-        try {
-          await transport.handleRequest(req, res, body);
-        } catch (transportError: any) {
-          // Enhanced error logging for transport errors
-          const errorDetails: any = {
-            error_type: transportError?.constructor?.name || 'Unknown',
-            error_message: transportError?.message || String(transportError),
-            toolName: body?.params?.name || body?.method?.replace('tools/', '') || 'unknown',
-            toolArgs: body?.params?.arguments ? Object.keys(body.params.arguments) : [],
-          };
-
-          // Extract HTTP error details if available
-          if (transportError?.response) {
-            errorDetails.http_status = transportError.response.status;
-            errorDetails.http_status_text = transportError.response.statusText;
-            errorDetails.http_url =
-              transportError.config?.url || transportError.response.config?.url;
-            errorDetails.http_method =
-              transportError.config?.method || transportError.response.config?.method;
-          }
-
-          // Extract specific tool arguments for better error context
-          if (body?.params?.arguments) {
-            const args = body.params.arguments;
-            errorDetails.object_name =
-              args.class_name ||
-              args.className ||
-              args.object_name ||
-              args.objectName ||
-              args.table_name ||
-              args.tableName ||
-              args.program_name ||
-              args.programName ||
-              'unknown';
-            errorDetails.is_standard_object =
-              errorDetails.object_name &&
-              (errorDetails.object_name.startsWith('CL_') ||
-                errorDetails.object_name.startsWith('IF_') ||
-                errorDetails.object_name.startsWith('CX_') ||
-                errorDetails.object_name.startsWith('Z') === false);
-          }
-
-          log.error('Transport request failed', errorDetails);
-          throw transportError;
-        }
-      }
-    );
-
-    log.debug('Request completed', {
-      sessionId: sessionId.substring(0, 8),
-    });
+    log.debug('Request completed');
   } catch (error: any) {
-    // Use synchronized error handling from errorUtils
-    const { logErrorSafely, formatErrorMessage } = await import('./lib/errorUtils');
-
-    // Build context for error logging
     const context: Record<string, any> = {
       path: req.path,
       method: req.method,
     };
 
-    // Add request body context if available
     if (body && typeof body === 'object') {
       context.tool_name = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
-      if (body.params?.arguments) {
-        const args = body.params.arguments;
-        context.object_name =
-          args.class_name ||
-          args.className ||
-          args.object_name ||
-          args.objectName ||
-          args.table_name ||
-          args.tableName ||
-          args.program_name ||
-          args.programName ||
-          'unknown';
-        context.is_standard_object =
-          context.object_name &&
-          (context.object_name.startsWith('CL_') ||
-            context.object_name.startsWith('IF_') ||
-            context.object_name.startsWith('CX_') ||
-            context.object_name.startsWith('Z') === false);
-      }
     }
 
-    // Log error with synchronized format
     logErrorSafely(log, 'HTTP request handling', error, context);
 
     if (!res.headersSent) {
@@ -435,6 +151,15 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       res.writeHead(statusCode).end(`Internal Server Error: ${userMessage}`);
     } else {
       res.end();
+    }
+  } finally {
+    // Ensure cleanup always runs
+    if (cleanup) {
+      try {
+        await cleanup();
+      } catch (err) {
+        log.warn('Cleanup failed', { error: String(err) });
+      }
     }
   }
 }

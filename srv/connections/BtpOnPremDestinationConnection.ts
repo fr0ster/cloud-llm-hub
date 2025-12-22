@@ -3,7 +3,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { AbapRequestOptions, SapConfig, ILogger } from '@mcp-abap-adt/connection';
 import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
 import type { OnPremAbapConnection as OnPremAbapConnectionType } from '@mcp-abap-adt/connection';
-import { logger } from '@fr0ster/mcp-abap-adt/dist/lib/logger';
+import { logger } from '../lib/logger';
 
 // Logger adapter for OnPremAbapConnection
 const loggerAdapter: ILogger = {

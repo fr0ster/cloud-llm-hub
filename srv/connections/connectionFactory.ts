@@ -10,7 +10,7 @@
 import type { AbapConnection, SapConfig, ILogger, ISessionStorage } from '@mcp-abap-adt/connection';
 import { createAbapConnection } from '@mcp-abap-adt/connection';
 import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
-import { loggerAdapter } from '@fr0ster/mcp-abap-adt/dist/lib/loggerAdapter';
+import { loggerAdapter } from '../lib/logger';
 
 export interface ConnectionOptions {
   /**
