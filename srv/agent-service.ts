@@ -5,15 +5,14 @@
  *
  * Architecture:
  * - Configuration comes from environment variables (set via mta.yaml or CF CLI)
- * - This service uses agent-manager.ts which loads configuration and creates agent instances
- * - Agent itself doesn't know about SAP destinations - it only works with MCP client
- * - MCP client connects to MCP proxy, which resolves destination and creates MCP server
- * - All authentication is handled through destinations (configured in BTP Cockpit)
+ * - Simple LLM chat: receives message → sends to SAP AI Core → returns response
+ * - All authentication is handled through SAP AI Core service binding
  */
 
 import cds, { type Request, type Service } from '@sap/cds';
-import type { AgentConfig } from './agent-config';
-import { getAgent } from './agent-manager';
+import { SapCoreAIProvider, type Message } from '@cloud-llm-hub/llm-agent';
+import { getAgentConfig, type AgentConfig } from './agent-config';
+import { createLLMProvider } from './agent-manager';
 
 /**
  * Register CAP service handlers
@@ -25,10 +24,10 @@ export default async function registerAgentServiceHandlers(
   log.info('Registering AgentService handlers');
 
   /**
-   * Chat endpoint - send message to agent
+   * Chat endpoint - send message to LLM via SAP AI Core
    *
-   * Agent manager loads configuration from environment variables and creates agent instance.
-   * Agent doesn't know about SAP - it just works with MCP client.
+   * Simple implementation: receives message → sends to SAP AI Core → returns response
+   * No MCP, no Agent orchestration - just direct LLM communication
    */
   srv.on('Chat', async (req: Request) => {
     const message = req.data.message as string;
@@ -48,16 +47,34 @@ export default async function registerAgentServiceHandlers(
     });
 
     try {
-      // Get agent instance - agent-manager handles all MCP configuration
-      const agent = await getAgent(req);
-      const response = await agent.process(message);
+      // Load configuration from environment variables
+      const config = getAgentConfig();
 
-      if (response.error) {
-        log.error('Agent processing error', { error: response.error });
-        throw new Error(response.error);
-      }
+      // Create LLM provider (SAP AI Core)
+      const llmProvider = await createLLMProvider(config);
 
-      return response.message;
+      log.debug('Sending message to SAP AI Core', {
+        model: config.llm.model,
+        messageLength: message.length,
+      });
+
+      // Format message for LLM provider (expects Message[] format)
+      const messages: Message[] = [
+        {
+          role: 'user',
+          content: message,
+        },
+      ];
+
+      // Call LLM provider directly (no Agent, no MCP)
+      const response = await llmProvider.chat(messages);
+
+      log.debug('Received response from SAP AI Core', {
+        responseLength: response.content?.length || 0,
+      });
+
+      // Return the response content
+      return response.content || '';
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error('Chat handler error', { error: err.message });
@@ -67,75 +84,46 @@ export default async function registerAgentServiceHandlers(
 
   /**
    * Get conversation history
-   * Note: History is per-agent-instance (cached by destination/config)
+   * Note: Simple implementation - no history stored (stateless)
+   * TODO: Add history storage if needed
    */
-  srv.on('GetHistory', async (req: Request) => {
-    try {
-      const agent = await getAgent(req);
-      const history = agent.getHistory();
-      return history.map((msg: { role?: string; content?: string }) => ({
-        role: msg.role,
-        content: msg.content,
-        timestamp: new Date(),
-      }));
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      log.warn('Failed to get history', { error: err.message });
-      return [];
-    }
+  srv.on('GetHistory', async (_req: Request) => {
+    // Simple implementation - no history for now
+    return [];
   });
 
   /**
    * Clear conversation history
-   * Clears history for the agent instance matching the request configuration
+   * Note: Simple implementation - no history stored (stateless)
    */
-  srv.on('ClearHistory', async (req: Request) => {
-    try {
-      const agent = await getAgent(req);
-      agent.clearHistory();
-      log.info('Conversation history cleared');
-
-      return {
-        success: true,
-        message: 'Conversation history cleared successfully',
-      };
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      log.error('Failed to clear history', { error: err.message });
-      return {
-        success: false,
-        message: err.message || 'Failed to clear history',
-      };
-    }
+  srv.on('ClearHistory', async (_req: Request) => {
+    log.info('ClearHistory called (no history stored in simple mode)');
+    return {
+      success: true,
+      message: 'Conversation history cleared successfully',
+    };
   });
 
   /**
    * Health check
-   * Uses configuration from environment variables (set via mta.yaml)
+   * Simple implementation - checks if SAP AI Core configuration is available
    */
-  srv.on('Health', async (req: Request) => {
-    const { getAgentConfig } = await import('./agent-config');
-
-    let agentReady = false;
-    let mcpConnected = false;
+  srv.on('Health', async (_req: Request) => {
+    let llmReady = false;
     let config: AgentConfig | null = null;
 
     try {
       // Load configuration to show in health check
       config = getAgentConfig();
 
-      const agent = await getAgent(req);
-      agentReady = !!agent;
-
-      // Try to list tools to check connection
+      // Try to create provider to verify configuration
       try {
-        const agentWithClient = agent as unknown as {
-          mcpClient?: { listTools?: () => Promise<unknown> };
-        };
-        await agentWithClient.mcpClient?.listTools?.();
-        mcpConnected = true;
-      } catch (_err) {
-        // Connection not ready
+        await createLLMProvider(config);
+        llmReady = true;
+      } catch (err) {
+        log.warn('Failed to create LLM provider', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -143,13 +131,11 @@ export default async function registerAgentServiceHandlers(
     }
 
     return {
-      status: agentReady && mcpConnected ? 'READY' : 'NOT_READY',
-      agentReady,
-      mcpConnected,
+      status: llmReady ? 'READY' : 'NOT_READY',
+      llmReady,
       llmProvider: 'SAP Core AI',
       llmDestination: config?.llm?.aiCoreService?.name || 'NOT_CONFIGURED',
       model: config?.llm?.model || 'NOT_CONFIGURED',
-      mcpDestination: config?.mcp?.destination || 'NOT_CONFIGURED',
       timestamp: new Date().toISOString(),
     };
   });

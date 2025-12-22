@@ -106,7 +106,7 @@ function getCacheKey(config: AgentConfig): string {
  * - LLM_AGENT_TEMPERATURE: Temperature (default: 0.7)
  * - LLM_AGENT_MAX_TOKENS: Max tokens (default: 2000)
  */
-async function createLLMProvider(
+export async function createLLMProvider(
   config: AgentConfig,
 ): Promise<SapCoreAIProvider> {
   const log = cds.log('agent-manager');
