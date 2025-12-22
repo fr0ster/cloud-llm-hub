@@ -47,3 +47,8 @@ submodules/llm-agent/
 mdd.env
 *.env
 .env
+
+# Test request scratch files (temporary testing files)
+test/requests/scratch/*.http
+!test/requests/scratch/.gitkeep
+!test/requests/scratch/README.md

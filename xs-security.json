@@ -81,6 +81,17 @@
       "https://*.*.ondemand.com/**",
       "https://oauth.pstmn.io/v1/callback",
       "https://oauth.pstmn.io/**"
+    ],
+    "grant-types": [
+      "authorization_code",
+      "password",
+      "client_credentials",
+      "refresh_token"
+    ],
+    "token-validity": 3600,
+    "refresh-token-validity": 2592000,
+    "system-attributes": [
+      "xs.system.attributes.rolecollections"
     ]
-}
+  }
 }
