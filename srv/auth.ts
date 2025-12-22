@@ -1,4 +1,4 @@
-import cds, { Request, Service } from '@sap/cds';
+import cds, { type Request, type Service } from '@sap/cds';
 
 /**
  * CAP User interface extension for type safety
@@ -26,7 +26,9 @@ interface CheckRolesData {
   required?: string[];
 }
 
-export default async function registerAuthHandlers(srv: Service): Promise<void> {
+export default async function registerAuthHandlers(
+  srv: Service,
+): Promise<void> {
   const log = cds.log('auth-service');
 
   srv.on('CheckAuth', async (req: Request) => {
@@ -81,9 +83,14 @@ export default async function registerAuthHandlers(srv: Service): Promise<void> 
     }
 
     const data = req.data as CheckRolesData;
-    const required: string[] = Array.isArray(data?.required) ? data.required : [];
+    const required: string[] = Array.isArray(data?.required)
+      ? data.required
+      : [];
 
-    log.debug('CheckRoles: Checking roles', { required, userRoles: user.roles });
+    log.debug('CheckRoles: Checking roles', {
+      required,
+      userRoles: user.roles,
+    });
 
     const missing = required.filter((r: string) => !user.is?.(r));
     if (missing.length) {
@@ -92,7 +99,10 @@ export default async function registerAuthHandlers(srv: Service): Promise<void> 
         missing,
         userRoles: user.roles,
       });
-      req.reject(403, `Forbidden: missing required roles: ${missing.join(', ')}`);
+      req.reject(
+        403,
+        `Forbidden: missing required roles: ${missing.join(', ')}`,
+      );
       return;
     }
 

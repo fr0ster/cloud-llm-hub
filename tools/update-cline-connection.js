@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const fs = require('fs').promises;
-const path = require('path');
-const os = require('os');
-const readline = require('readline');
-const { spawn } = require('child_process');
-const https = require('https');
+const fs = require('node:fs').promises;
+const path = require('node:path');
+const os = require('node:os');
+const readline = require('node:readline');
+const { spawn } = require('node:child_process');
+const https = require('node:https');
 const yaml = require('js-yaml');
 
 function parseArgs(argv) {
@@ -167,12 +167,17 @@ function getDefaultSettingsPath() {
     'globalStorage',
     'saoudrizwan.claude-dev',
     'settings',
-    'cline_mcp_settings.json'
+    'cline_mcp_settings.json',
   );
 }
 
 async function getDefaultEnvPath() {
-  const submoduleEnv = path.join(process.cwd(), 'submodules', 'mcp-abap-adt', '.env');
+  const submoduleEnv = path.join(
+    process.cwd(),
+    'submodules',
+    'mcp-abap-adt',
+    '.env',
+  );
   if (await fileExists(submoduleEnv)) {
     return submoduleEnv;
   }
@@ -199,9 +204,17 @@ async function resolveAuthScriptPath(scriptOverride) {
   const scriptDir = getScriptDirectory();
   candidates.push(path.join(scriptDir, 'sap-abap-auth-browser.js'));
   candidates.push(path.join(process.cwd(), 'sap-abap-auth-browser.js'));
-  candidates.push(path.join(process.cwd(), 'tools', 'sap-abap-auth-browser.js'));
   candidates.push(
-    path.join(process.cwd(), 'submodules', 'mcp-abap-adt', 'tools', 'sap-abap-auth-browser.js')
+    path.join(process.cwd(), 'tools', 'sap-abap-auth-browser.js'),
+  );
+  candidates.push(
+    path.join(
+      process.cwd(),
+      'submodules',
+      'mcp-abap-adt',
+      'tools',
+      'sap-abap-auth-browser.js',
+    ),
   );
 
   for (const candidate of candidates) {
@@ -214,7 +227,7 @@ async function resolveAuthScriptPath(scriptOverride) {
   }
 
   throw new Error(
-    'sap-abap-auth-browser.js not found. Provide --sap-auth-script <path> or copy the helper next to this script.'
+    'sap-abap-auth-browser.js not found. Provide --sap-auth-script <path> or copy the helper next to this script.',
   );
 }
 
@@ -269,7 +282,9 @@ async function fileExists(filePath) {
 }
 
 async function ensureFile(filePath, description) {
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+  const absolutePath = path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(process.cwd(), filePath);
   if (!(await fileExists(absolutePath))) {
     throw new Error(`${description} not found: ${absolutePath}`);
   }
@@ -326,7 +341,10 @@ function formatTimestamp(ts) {
 }
 
 async function confirmPrompt(message) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
   const answer = await new Promise((resolve) => {
     rl.question(message, resolve);
   });
@@ -337,13 +355,17 @@ async function confirmPrompt(message) {
 
 function getHeaderValue(headers, key) {
   const normalizedKey = key.toLowerCase();
-  const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
+  const existingKey = Object.keys(headers).find(
+    (k) => k.toLowerCase() === normalizedKey,
+  );
   return existingKey ? headers[existingKey] : undefined;
 }
 
 function setHeaderValue(headers, key, value, updated) {
   const normalizedKey = key.toLowerCase();
-  const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === normalizedKey);
+  const existingKey = Object.keys(headers).find(
+    (k) => k.toLowerCase() === normalizedKey,
+  );
 
   if (typeof value === 'string' && value.length > 0) {
     if (existingKey && existingKey !== normalizedKey) {
@@ -378,7 +400,9 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
   const authType = authTypeSource.toLowerCase();
 
   if (!['jwt', 'basic'].includes(authType)) {
-    throw new Error(`Unsupported SAP authentication type "${authTypeSource}". Use jwt or basic.`);
+    throw new Error(
+      `Unsupported SAP authentication type "${authTypeSource}". Use jwt or basic.`,
+    );
   }
 
   setHeaderValue(headers, 'x-sap-auth-type', authType, updatedKeys);
@@ -388,7 +412,7 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
     const token = overrides.token ?? sapConfig.SAP_JWT_TOKEN;
     if (!token) {
       throw new Error(
-        'JWT token not found. Provide --sap-token or add SAP_JWT_TOKEN to the .env file.'
+        'JWT token not found. Provide --sap-token or add SAP_JWT_TOKEN to the .env file.',
       );
     }
     setHeaderValue(headers, 'x-sap-jwt-token', token, updatedKeys);
@@ -401,7 +425,7 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
   const password = overrides.password ?? sapConfig.SAP_PASSWORD;
   if (!username || !password) {
     throw new Error(
-      'Basic auth requires both username and password. Provide --sap-username/--sap-password or set SAP_USERNAME/SAP_PASSWORD in the .env file.'
+      'Basic auth requires both username and password. Provide --sap-username/--sap-password or set SAP_USERNAME/SAP_PASSWORD in the .env file.',
     );
   }
 
@@ -446,7 +470,9 @@ function applyMcpAuth(headers, options) {
         throw new Error('MCP basic auth requires --mcp-username.');
       }
       if (password === undefined || password === null) {
-        throw new Error('MCP basic auth requires --mcp-password (use an empty string if needed).');
+        throw new Error(
+          'MCP basic auth requires --mcp-password (use an empty string if needed).',
+        );
       }
       const encoded = Buffer.from(`${username}:${password}`).toString('base64');
       setHeaderValue(headers, 'authorization', `Basic ${encoded}`, updated);
@@ -466,7 +492,7 @@ function applyMcpAuth(headers, options) {
       break;
     default:
       throw new Error(
-        'Unsupported MCP auth type. Use basic, jwt, bearer, none, or provide --mcp-auth-header.'
+        'Unsupported MCP auth type. Use basic, jwt, bearer, none, or provide --mcp-auth-header.',
       );
   }
 
@@ -502,16 +528,36 @@ function applyDestinationHeaders(headers, options) {
   if (connectivityMode === 'onprem') {
     setHeaderValue(headers, 'x-sap-connectivity-mode', 'onprem', updated);
     if (locationId) {
-      setHeaderValue(headers, 'x-sap-connectivity-location-id', locationId, updated);
+      setHeaderValue(
+        headers,
+        'x-sap-connectivity-location-id',
+        locationId,
+        updated,
+      );
     } else {
-      setHeaderValue(headers, 'x-sap-connectivity-location-id', undefined, updated);
+      setHeaderValue(
+        headers,
+        'x-sap-connectivity-location-id',
+        undefined,
+        updated,
+      );
     }
   } else if (connectivityMode === 'internet') {
     setHeaderValue(headers, 'x-sap-connectivity-mode', 'internet', updated);
-    setHeaderValue(headers, 'x-sap-connectivity-location-id', undefined, updated);
+    setHeaderValue(
+      headers,
+      'x-sap-connectivity-location-id',
+      undefined,
+      updated,
+    );
   } else {
     setHeaderValue(headers, 'x-sap-connectivity-mode', undefined, updated);
-    setHeaderValue(headers, 'x-sap-connectivity-location-id', undefined, updated);
+    setHeaderValue(
+      headers,
+      'x-sap-connectivity-location-id',
+      undefined,
+      updated,
+    );
   }
 
   return updated;
@@ -519,8 +565,10 @@ function applyDestinationHeaders(headers, options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const updateSap = options.updateScope === 'sap' || options.updateScope === 'all';
-  const updateMcp = options.updateScope === 'mcp' || options.updateScope === 'all';
+  const updateSap =
+    options.updateScope === 'sap' || options.updateScope === 'all';
+  const updateMcp =
+    options.updateScope === 'mcp' || options.updateScope === 'all';
 
   // Standalone mode: if --settings is explicitly provided, skip automatic .env discovery
   const isStandalone = !!options.settingsPath;
@@ -531,11 +579,11 @@ async function main() {
   if (options.serviceKey) {
     if (isStandalone) {
       console.warn(
-        '⚠️  --service-key is not supported in standalone mode (requires repository structure). Use --sap-token instead.'
+        '⚠️  --service-key is not supported in standalone mode (requires repository structure). Use --sap-token instead.',
       );
     } else if (!updateSap) {
       console.warn(
-        '⚠️  Ignoring --service-key because the update scope does not include SAP credentials.'
+        '⚠️  Ignoring --service-key because the update scope does not include SAP credentials.',
       );
     } else {
       console.log('🔄  Running sap-abap-auth-browser to refresh the JWT...');
@@ -551,29 +599,34 @@ async function main() {
         path.resolve(process.cwd(), envPath) !== defaultEnvPath
       ) {
         console.warn(
-          '⚠️  sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.'
+          '⚠️  sap-abap-auth-browser refreshed the token in the submodule default .env. Pass the same --env path if you need a different file.',
         );
       }
     }
   }
 
   const configPromise = readJsonFile(settingsPath);
-  const sapConfigPromise = updateSap ? readEnvFile(envPath) : Promise.resolve({});
-  const [config, sapConfig] = await Promise.all([configPromise, sapConfigPromise]);
+  const sapConfigPromise = updateSap
+    ? readEnvFile(envPath)
+    : Promise.resolve({});
+  const [config, sapConfig] = await Promise.all([
+    configPromise,
+    sapConfigPromise,
+  ]);
 
   if (updateSap && !options.destinationName) {
     if (isStandalone) {
       // In standalone mode, require explicit SAP credentials
       if (!options.sapToken && !options.sapUsername) {
         throw new Error(
-          'Standalone mode requires explicit SAP credentials. Provide --sap-token (or --sap-username/--sap-password for basic auth).'
+          'Standalone mode requires explicit SAP credentials. Provide --sap-token (or --sap-username/--sap-password for basic auth).',
         );
       }
     } else {
       const envFilePresent = envPath && (await fileExists(envPath));
       if (!envFilePresent && !options.sapToken) {
         console.warn(
-          `⚠️  .env file not found (${envPath}). Provide --sap-token or refresh the file via the authorization utility.`
+          `⚠️  .env file not found (${envPath}). Provide --sap-token or refresh the file via the authorization utility.`,
         );
       }
     }
@@ -588,7 +641,9 @@ async function main() {
     const available = Object.keys(config.mcpServers).length
       ? Object.keys(config.mcpServers).join(', ')
       : 'none';
-    throw new Error(`Connection "${options.connectionName}" not found. Available: ${available}`);
+    throw new Error(
+      `Connection "${options.connectionName}" not found. Available: ${available}`,
+    );
   }
 
   connection.headers = connection.headers ?? {};
@@ -632,11 +687,13 @@ async function main() {
       console.warn('⚠️  Unable to determine SAP JWT expiration from .env.');
     } else if (expiration <= Date.now()) {
       console.warn(
-        `⚠️  SAP JWT from .env has already expired (exp: ${formatTimestamp(expiration)}).`
+        `⚠️  SAP JWT from .env has already expired (exp: ${formatTimestamp(expiration)}).`,
       );
       const confirmed = await confirmPrompt('Continue with this token? [y/N] ');
       if (!confirmed) {
-        console.log('Operation cancelled. Refresh the token or provide it via --sap-token.');
+        console.log(
+          'Operation cancelled. Refresh the token or provide it via --sap-token.',
+        );
         process.exit(0);
       }
     }
@@ -650,7 +707,9 @@ async function main() {
   }
 
   const uniqueUpdated = [...new Set(updatedHeaders)];
-  console.log(`ℹ️  Updated headers: ${uniqueUpdated.length ? uniqueUpdated.join(', ') : 'none'}`);
+  console.log(
+    `ℹ️  Updated headers: ${uniqueUpdated.length ? uniqueUpdated.join(', ') : 'none'}`,
+  );
 }
 
 // ===== YAML MODE FUNCTIONS =====
@@ -757,7 +816,10 @@ function normalizeInlineServiceKeyDefinition(definition) {
 }
 
 function renderServiceKeysSection(definitions, placeholders = {}) {
-  const aliases = new Set([...Object.keys(definitions || {}), ...Object.keys(placeholders || {})]);
+  const aliases = new Set([
+    ...Object.keys(definitions || {}),
+    ...Object.keys(placeholders || {}),
+  ]);
   if (aliases.size === 0) {
     return '';
   }
@@ -779,7 +841,9 @@ function renderServiceKeysSection(definitions, placeholders = {}) {
   if (Object.keys(rendered).length === 0) {
     return '';
   }
-  const block = yaml.dump({ serviceKeys: rendered }, { lineWidth: 240 }).trimEnd();
+  const block = yaml
+    .dump({ serviceKeys: rendered }, { lineWidth: 240 })
+    .trimEnd();
   return block
     ? `${block}
 `
@@ -792,7 +856,11 @@ function renderCfSection(options) {
   }
   const normalized = {};
   for (const [key, value] of Object.entries(options)) {
-    if (value !== undefined && value !== null && String(value).trim().length > 0) {
+    if (
+      value !== undefined &&
+      value !== null &&
+      String(value).trim().length > 0
+    ) {
       normalized[key] = value;
     }
   }
@@ -821,7 +889,12 @@ function dedupeAliases(list) {
   return result;
 }
 
-function determineTokenAlias({ explicit, preferred = [], available = [], keywords = [] }) {
+function determineTokenAlias({
+  explicit,
+  preferred = [],
+  available = [],
+  keywords = [],
+}) {
   if (explicit) {
     return explicit;
   }
@@ -852,11 +925,14 @@ function determineTokenAlias({ explicit, preferred = [], available = [], keyword
 }
 
 function renderDirectBasicTemplate(options = {}) {
-  const endpoint = options.mcpEndpoint || 'http://localhost:4004/mcp/stream/sse';
+  const endpoint =
+    options.mcpEndpoint || 'http://localhost:4004/mcp/stream/sse';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
-  const connectionNameLine = options.connectionName ? `  name: ${options.connectionName}\n` : '';
+  const connectionNameLine = options.connectionName
+    ? `  name: ${options.connectionName}\n`
+    : '';
   return `# Template: Direct SAP connection using basic authentication
 settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
 ${cfBlock}${serviceKeysSection}mcpConnection:
@@ -893,18 +969,22 @@ abapConnection:
 }
 
 function renderDirectJwtTemplate(options = {}) {
-  const endpoint = options.mcpEndpoint || 'https://example.proxy.local/mcp/stream/http';
+  const endpoint =
+    options.mcpEndpoint || 'https://example.proxy.local/mcp/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const abapClient = options.abapClient || DEFAULT_ABAP_CLIENT;
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
-  const connectionNameLine = options.connectionName ? `  name: ${options.connectionName}\n` : '';
+  const connectionNameLine = options.connectionName
+    ? `  name: ${options.connectionName}\n`
+    : '';
   const connectionType = options.mcpType || 'stream | sse';
   const connectionDescription = options.mcpDescription || 'Direct SAP via JWT';
   const desiredAuthType = options.mcpAuthType
     ? String(options.mcpAuthType).toLowerCase()
     : undefined;
-  const hasBasicHints = options.mcpUsername !== undefined || options.mcpPassword !== undefined;
+  const hasBasicHints =
+    options.mcpUsername !== undefined || options.mcpPassword !== undefined;
   let resolvedAuthType;
 
   if (options.mcpAuthHeader) {
@@ -920,14 +1000,17 @@ function renderDirectJwtTemplate(options = {}) {
   switch (resolvedAuthType) {
     case 'header': {
       const headerValue =
-        options.mcpAuthHeader !== undefined ? options.mcpAuthHeader : '<authorization-header>';
+        options.mcpAuthHeader !== undefined
+          ? options.mcpAuthHeader
+          : '<authorization-header>';
       const headerLiteral = formatYamlScalar(headerValue);
       mcpAuthSection = `  auth:\n    type: header\n    header:\n      source:\n        type: const\n        value: ${headerLiteral}`;
       break;
     }
     case 'bearer':
     case 'jwt': {
-      const tokenValue = options.mcpToken !== undefined ? options.mcpToken : '<bearer-token>';
+      const tokenValue =
+        options.mcpToken !== undefined ? options.mcpToken : '<bearer-token>';
       const tokenLiteral = formatYamlScalar(tokenValue);
       mcpAuthSection = `  auth:\n    type: bearer\n    token:\n      source:\n        type: const\n        value: ${tokenLiteral}`;
       break;
@@ -938,8 +1021,11 @@ function renderDirectJwtTemplate(options = {}) {
     }
     case 'basic': {
       const usernameValue =
-        options.mcpUsername !== undefined ? options.mcpUsername : 'mcp-user@example.com';
-      const passwordValue = options.mcpPassword !== undefined ? options.mcpPassword : 'change-me';
+        options.mcpUsername !== undefined
+          ? options.mcpUsername
+          : 'mcp-user@example.com';
+      const passwordValue =
+        options.mcpPassword !== undefined ? options.mcpPassword : 'change-me';
       const usernameLiteral = formatYamlScalar(usernameValue);
       const passwordLiteral = formatYamlScalar(passwordValue);
       mcpAuthSection = `  auth:\n    type: basic\n    username:\n      source:\n        type: const\n        value: ${usernameLiteral}\n    password:\n      source:\n        type: const\n        value: ${passwordLiteral}`;
@@ -986,12 +1072,15 @@ ${abapTokenBlock}
 `;
 }
 function renderCloudInternetTemplate(options = {}) {
-  const endpoint = options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/http';
+  const endpoint =
+    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const abapClient = options.abapClient || DEFAULT_ABAP_CLIENT;
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
-  const connectionNameLine = options.connectionName ? `  name: ${options.connectionName}\n` : '';
+  const connectionNameLine = options.connectionName
+    ? `  name: ${options.connectionName}\n`
+    : '';
 
   const mcpAlias = options.mcpTokenAlias || 'mcpXsuaa';
   const mcpTokenBlock = mcpAlias
@@ -1045,8 +1134,11 @@ ${abapTokenBlock}
 function renderCloudDestinationTemplate(options = {}) {
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
-  const connectionNameLine = options.connectionName ? `  name: ${options.connectionName}\n` : '';
-  const endpoint = options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/sse';
+  const connectionNameLine = options.connectionName
+    ? `  name: ${options.connectionName}\n`
+    : '';
+  const endpoint =
+    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/sse';
   const mcpAlias = options.mcpTokenAlias || 'mcpXsuaa';
   const destinationName = options.destinationName || 'SAP_CLOUD_DEST';
   const mcpTokenBlock = mcpAlias
@@ -1104,10 +1196,17 @@ function isNewSchema(rawConfig) {
   if (!rawConfig || typeof rawConfig !== 'object') {
     return false;
   }
-  if ('mcpConnection' in rawConfig || 'abapConnection' in rawConfig || 'tools' in rawConfig) {
+  if (
+    'mcpConnection' in rawConfig ||
+    'abapConnection' in rawConfig ||
+    'tools' in rawConfig
+  ) {
     return true;
   }
-  if (!rawConfig.connections && (rawConfig.mcpConnection || rawConfig.abapConnection)) {
+  if (
+    !rawConfig.connections &&
+    (rawConfig.mcpConnection || rawConfig.abapConnection)
+  ) {
     return true;
   }
   return false;
@@ -1120,7 +1219,7 @@ function buildConnectionConfigFromNewSchema(rawConfig, connectionName) {
   const endpoint = mcp.endpoint || mcp.url || definition.endpoint;
   if (!endpoint) {
     throw new Error(
-      `mcpConnection.endpoint (or definition.endpoint) is required for "${connectionName}".`
+      `mcpConnection.endpoint (or definition.endpoint) is required for "${connectionName}".`,
     );
   }
   definition.endpoint = endpoint;
@@ -1180,18 +1279,21 @@ function buildConnectionConfigFromNewSchema(rawConfig, connectionName) {
     }
   }
 
-  const direct = abap.direct && typeof abap.direct === 'object' ? abap.direct : {};
+  const direct =
+    abap.direct && typeof abap.direct === 'object' ? abap.direct : {};
   const directUrl = direct.url || abap.url;
   if (directUrl) {
     sap.url = directUrl;
   }
 
-  const directClient = direct.client !== undefined ? direct.client : abap.client;
+  const directClient =
+    direct.client !== undefined ? direct.client : abap.client;
   if (directClient !== undefined) {
     sap.client = directClient;
   }
 
-  const directLanguage = direct.language !== undefined ? direct.language : abap.language;
+  const directLanguage =
+    direct.language !== undefined ? direct.language : abap.language;
   if (directLanguage !== undefined) {
     sap.language = directLanguage;
   }
@@ -1227,17 +1329,19 @@ function buildConnectionConfigFromNewSchema(rawConfig, connectionName) {
 
 function normalizeNewSchema(rawConfig, options = {}) {
   const configPath = options.configPath;
-  const derivedName = configPath ? path.basename(configPath, path.extname(configPath)) : undefined;
+  const derivedName = configPath
+    ? path.basename(configPath, path.extname(configPath))
+    : undefined;
   const candidate =
     options.primaryConnection ||
     rawConfig.connectionName ||
-    (rawConfig.mcpConnection && rawConfig.mcpConnection.name) ||
+    rawConfig.mcpConnection?.name ||
     derivedName;
   const connectionName = candidate ? String(candidate).trim() : undefined;
 
   if (!connectionName) {
     throw new Error(
-      'Unable to determine the MCP connection name. Provide --connection <name>, set mcpConnection.name, or rename the YAML file.'
+      'Unable to determine the MCP connection name. Provide --connection <name>, set mcpConnection.name, or rename the YAML file.',
     );
   }
 
@@ -1246,7 +1350,10 @@ function normalizeNewSchema(rawConfig, options = {}) {
       rawConfig.settingsPath ??
       rawConfig.mcpConnection?.settingsPath ??
       rawConfig.tools?.settingsPath,
-    serviceKeys: mergeObjects(rawConfig.serviceKeys, rawConfig.tools?.serviceKeys),
+    serviceKeys: mergeObjects(
+      rawConfig.serviceKeys,
+      rawConfig.tools?.serviceKeys,
+    ),
     cf: mergeObjects(rawConfig.cf, rawConfig.tools?.cf),
     defaults: rawConfig.defaults || {},
     connections: {},
@@ -1254,7 +1361,7 @@ function normalizeNewSchema(rawConfig, options = {}) {
 
   normalized.connections[connectionName] = buildConnectionConfigFromNewSchema(
     rawConfig,
-    connectionName
+    connectionName,
   );
 
   return normalized;
@@ -1265,13 +1372,17 @@ function normalizeRootConfig(rawConfig, options = {}) {
     return normalizeNewSchema(rawConfig, options);
   }
 
-  const cloudSection = rawConfig && typeof rawConfig.cloud === 'object' ? rawConfig.cloud : {};
+  const cloudSection =
+    rawConfig && typeof rawConfig.cloud === 'object' ? rawConfig.cloud : {};
   return {
     settingsPath: rawConfig.settingsPath ?? cloudSection.settingsPath,
     serviceKeys: mergeObjects(cloudSection.serviceKeys, rawConfig.serviceKeys),
     cf: mergeObjects(cloudSection.cf, rawConfig.cf),
     defaults: mergeObjects(cloudSection.defaults, rawConfig.defaults),
-    connections: mergeConnections(rawConfig.connections, cloudSection.connections),
+    connections: mergeConnections(
+      rawConfig.connections,
+      cloudSection.connections,
+    ),
   };
 }
 
@@ -1320,18 +1431,24 @@ function parseYamlArgs(argv) {
       case '--service-key-file': {
         const value = argv[++i];
         if (!value) {
-          console.error('❌  --service-key-file requires alias=/path/to/key.json.');
+          console.error(
+            '❌  --service-key-file requires alias=/path/to/key.json.',
+          );
           process.exit(1);
         }
         const separator = value.indexOf('=');
         if (separator === -1) {
-          console.error('❌  --service-key-file expects alias=/path/to/key.json.');
+          console.error(
+            '❌  --service-key-file expects alias=/path/to/key.json.',
+          );
           process.exit(1);
         }
         const alias = value.slice(0, separator).trim();
         const rawPath = value.slice(separator + 1).trim();
         if (!alias || !rawPath) {
-          console.error('❌  --service-key-file expects alias=/path/to/key.json.');
+          console.error(
+            '❌  --service-key-file expects alias=/path/to/key.json.',
+          );
           process.exit(1);
         }
         const resolvedPath = path.resolve(process.cwd(), rawPath);
@@ -1401,7 +1518,9 @@ function parseYamlArgs(argv) {
   }
 
   if (!options.configPath && !options.templateName) {
-    console.error('❌  Provide --config <path> to the YAML configuration file.');
+    console.error(
+      '❌  Provide --config <path> to the YAML configuration file.',
+    );
     printYamlHelp();
     process.exit(1);
   }
@@ -1440,13 +1559,12 @@ Options:
 `);
 }
 
-function determineTemplateOutputPath(templateName, cliOptions = {}) {
+function determineTemplateOutputPath(_templateName, cliOptions = {}) {
   if (cliOptions.templateOutput) {
     return cliOptions.templateOutput;
   }
   const connectionName =
-    cliOptions.primaryConnection ||
-    (cliOptions.connectionFilters && cliOptions.connectionFilters[0]);
+    cliOptions.primaryConnection || cliOptions.connectionFilters?.[0];
   if (connectionName) {
     return `${connectionName}.yaml`;
   }
@@ -1469,11 +1587,11 @@ async function printTemplate(name, cliOptions = {}) {
   const derivedValues = await deriveTemplateValues(key, cliOptions);
   const connectionName =
     cliOptions.primaryConnection ||
-    (cliOptions.connectionFilters && cliOptions.connectionFilters[0]) ||
+    cliOptions.connectionFilters?.[0] ||
     undefined;
   const serviceKeysSection = renderServiceKeysSection(
     derivedValues.serviceKeyDefinitions,
-    derivedValues.placeholderServiceKeys
+    derivedValues.placeholderServiceKeys,
   );
   const cfBlock = renderCfSection(derivedValues.cfOptions);
   const content = renderer({
@@ -1497,7 +1615,7 @@ async function printTemplate(name, cliOptions = {}) {
   const outputPath = determineTemplateOutputPath(name, cliOptions);
   if (!outputPath) {
     console.error(
-      '❌  Provide --connection <name> or --template-output <file> when using --template.'
+      '❌  Provide --connection <name> or --template-output <file> when using --template.',
     );
     process.exit(1);
   }
@@ -1506,7 +1624,8 @@ async function printTemplate(name, cliOptions = {}) {
     const resolvedPath = path.resolve(process.cwd(), outputPath);
     await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
     await fs.writeFile(resolvedPath, finalContent, 'utf8');
-    const relativePath = path.relative(process.cwd(), resolvedPath) || resolvedPath;
+    const relativePath =
+      path.relative(process.cwd(), resolvedPath) || resolvedPath;
     console.log(`✅  Template written to ${relativePath}`);
     console.log('   Adjust placeholders before running with --config.');
   } else {
@@ -1524,7 +1643,9 @@ function resolvePath(baseDir, targetPath) {
   } else if (normalized.startsWith('~/')) {
     normalized = path.join(os.homedir(), normalized.slice(2));
   }
-  return path.isAbsolute(normalized) ? normalized : path.resolve(baseDir, normalized);
+  return path.isAbsolute(normalized)
+    ? normalized
+    : path.resolve(baseDir, normalized);
 }
 
 async function readYamlFile(filePath) {
@@ -1532,7 +1653,9 @@ async function readYamlFile(filePath) {
     const raw = await fs.readFile(filePath, 'utf8');
     return yaml.load(raw);
   } catch (error) {
-    throw new Error(`Failed to read YAML config (${filePath}): ${error.message}`);
+    throw new Error(
+      `Failed to read YAML config (${filePath}): ${error.message}`,
+    );
   }
 }
 
@@ -1621,8 +1744,8 @@ async function runCommand(command, args, options = {}) {
       } else {
         reject(
           new Error(
-            `Command ${effectiveCommand} exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`
-          )
+            `Command ${effectiveCommand} exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`,
+          ),
         );
       }
     });
@@ -1636,7 +1759,9 @@ async function loadServiceKey(alias, context) {
 
   const definition = context.serviceKeys?.[alias];
   if (!definition) {
-    throw new Error(`Service key alias "${alias}" is not defined in the YAML file.`);
+    throw new Error(
+      `Service key alias "${alias}" is not defined in the YAML file.`,
+    );
   }
 
   let value;
@@ -1647,7 +1772,9 @@ async function loadServiceKey(alias, context) {
     case 'file': {
       const filePath = resolvePath(context.configDir, definition.path);
       if (!filePath) {
-        throw new Error(`Service key alias "${alias}" uses type file but path is missing.`);
+        throw new Error(
+          `Service key alias "${alias}" uses type file but path is missing.`,
+        );
       }
       const raw = await fs.readFile(filePath, 'utf8');
       value = JSON.parse(raw);
@@ -1658,20 +1785,30 @@ async function loadServiceKey(alias, context) {
       const instance = definition.instance;
       const key = definition.key;
       if (!instance || !key) {
-        throw new Error(`Service key alias "${alias}" must provide instance and key for type cf.`);
+        throw new Error(
+          `Service key alias "${alias}" must provide instance and key for type cf.`,
+        );
       }
-      const { stdout } = await runCommand(cfBinary, ['service-key', instance, key]);
+      const { stdout } = await runCommand(cfBinary, [
+        'service-key',
+        instance,
+        key,
+      ]);
       const firstBrace = stdout.indexOf('{');
       const lastBrace = stdout.lastIndexOf('}');
       if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-        throw new Error(`Unable to extract JSON from cf service-key output for alias "${alias}".`);
+        throw new Error(
+          `Unable to extract JSON from cf service-key output for alias "${alias}".`,
+        );
       }
       const json = JSON.parse(stdout.slice(firstBrace, lastBrace + 1));
       value = json.credentials ?? json;
       break;
     }
     default:
-      throw new Error(`Unsupported service key type "${definition.type}" for alias "${alias}".`);
+      throw new Error(
+        `Unsupported service key type "${definition.type}" for alias "${alias}".`,
+      );
   }
 
   value = cloneDeep(value);
@@ -1729,9 +1866,10 @@ async function fetchXsuaaToken(credentials, options = {}) {
   if (options.scope) {
     params.set('scope', options.scope);
   }
-  const auth = Buffer.from(`${credentials.clientid}:${credentials.clientsecret}`, 'utf8').toString(
-    'base64'
-  );
+  const auth = Buffer.from(
+    `${credentials.clientid}:${credentials.clientsecret}`,
+    'utf8',
+  ).toString('base64');
 
   const requestOptions = {
     method: 'POST',
@@ -1753,14 +1891,20 @@ async function fetchXsuaaToken(credentials, options = {}) {
       res.on('end', () => {
         const responseBody = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`Token request failed with status ${res.statusCode}: ${responseBody}`));
+          reject(
+            new Error(
+              `Token request failed with status ${res.statusCode}: ${responseBody}`,
+            ),
+          );
           return;
         }
         try {
           const json = JSON.parse(responseBody);
           resolve(json.access_token);
         } catch (error) {
-          reject(new Error(`Unable to parse XSUAA token response: ${error.message}`));
+          reject(
+            new Error(`Unable to parse XSUAA token response: ${error.message}`),
+          );
         }
       });
     });
@@ -1771,7 +1915,7 @@ async function fetchXsuaaToken(credentials, options = {}) {
   });
 }
 
-async function resolveSource(source, context, options = {}) {
+async function resolveSource(source, context, _options = {}) {
   if (!source || typeof source !== 'object') {
     throw new Error('Value source must be an object.');
   }
@@ -1815,12 +1959,16 @@ async function resolveSource(source, context, options = {}) {
         } else if (source.stdin.type === 'value') {
           stdin = String(source.stdin.value ?? '');
         } else {
-          throw new Error(`Unsupported stdin type for command source: ${source.stdin.type}`);
+          throw new Error(
+            `Unsupported stdin type for command source: ${source.stdin.type}`,
+          );
         }
       }
       const env = source.env ? { ...process.env, ...source.env } : process.env;
       const { stdout } = await runCommand(source.command, source.args || [], {
-        cwd: source.cwd ? resolvePath(context.configDir, source.cwd) : undefined,
+        cwd: source.cwd
+          ? resolvePath(context.configDir, source.cwd)
+          : undefined,
         env,
         shell: source.shell === true,
         stdin,
@@ -1838,24 +1986,34 @@ async function resolveSource(source, context, options = {}) {
 async function resolveString(spec, context, options = {}) {
   if (spec === undefined || spec === null) {
     if (options.required) {
-      throw new Error(`Missing required value for ${options.name || 'unknown field'}.`);
+      throw new Error(
+        `Missing required value for ${options.name || 'unknown field'}.`,
+      );
     }
     return undefined;
   }
 
   const allowEmpty = options.allowEmpty === true;
 
-  if (typeof spec === 'string' || typeof spec === 'number' || typeof spec === 'boolean') {
+  if (
+    typeof spec === 'string' ||
+    typeof spec === 'number' ||
+    typeof spec === 'boolean'
+  ) {
     const raw = String(spec);
     const trimmed = options.trim === false ? raw : raw.trim();
     if (options.required && !allowEmpty && !trimmed) {
-      throw new Error(`Value for ${options.name || 'unknown field'} cannot be empty.`);
+      throw new Error(
+        `Value for ${options.name || 'unknown field'} cannot be empty.`,
+      );
     }
     return options.trim === false ? raw : trimmed;
   }
 
   if (typeof spec !== 'object') {
-    throw new Error(`Unsupported value specification for ${options.name || 'unknown field'}.`);
+    throw new Error(
+      `Unsupported value specification for ${options.name || 'unknown field'}.`,
+    );
   }
 
   if (spec.value !== undefined && spec.source === undefined) {
@@ -1864,7 +2022,7 @@ async function resolveString(spec, context, options = {}) {
 
   if (!spec.source) {
     throw new Error(
-      `Value specification for ${options.name || 'unknown field'} must include a source.`
+      `Value specification for ${options.name || 'unknown field'} must include a source.`,
     );
   }
 
@@ -1879,18 +2037,28 @@ async function resolveString(spec, context, options = {}) {
     resolved = extractJsonPath(target, spec.jsonPath);
   }
 
-  if ((resolved === undefined || resolved === null) && spec.source?.type === 'serviceKey') {
+  if (
+    (resolved === undefined || resolved === null) &&
+    spec.source?.type === 'serviceKey'
+  ) {
     const credentials = normalizeServiceKeyCredentials(raw);
     const wantsXsuaaToken =
       (spec.auto && spec.auto === 'xsuaaToken') ||
-      (!spec.auto && spec.jsonPath && spec.jsonPath.toLowerCase().includes('access_token'));
-    if (wantsXsuaaToken && credentials && credentials.clientid && credentials.clientsecret) {
+      (!spec.auto &&
+        spec.jsonPath &&
+        spec.jsonPath.toLowerCase().includes('access_token'));
+    if (
+      wantsXsuaaToken &&
+      credentials &&
+      credentials.clientid &&
+      credentials.clientsecret
+    ) {
       try {
         resolved = await fetchXsuaaToken(credentials, spec.tokenOptions || {});
       } catch (error) {
         if (options.required) {
           throw new Error(
-            `Failed to fetch XSUAA token for ${options.name || 'unknown field'}: ${error.message}`
+            `Failed to fetch XSUAA token for ${options.name || 'unknown field'}: ${error.message}`,
           );
         }
         resolved = undefined;
@@ -1900,7 +2068,9 @@ async function resolveString(spec, context, options = {}) {
 
   if (resolved === undefined || resolved === null) {
     if (options.required) {
-      throw new Error(`Resolved value for ${options.name || 'unknown field'} is empty.`);
+      throw new Error(
+        `Resolved value for ${options.name || 'unknown field'} is empty.`,
+      );
     }
     return undefined;
   }
@@ -1910,7 +2080,7 @@ async function resolveString(spec, context, options = {}) {
       resolved = JSON.stringify(resolved);
     } else {
       throw new Error(
-        `Resolved value for ${options.name || 'unknown field'} is an object; set stringify: true if you need JSON text.`
+        `Resolved value for ${options.name || 'unknown field'} is an object; set stringify: true if you need JSON text.`,
       );
     }
   }
@@ -1930,7 +2100,9 @@ async function resolveString(spec, context, options = {}) {
   }
 
   if (options.required && !allowEmpty && !text) {
-    throw new Error(`Resolved value for ${options.name || 'unknown field'} cannot be empty.`);
+    throw new Error(
+      `Resolved value for ${options.name || 'unknown field'} cannot be empty.`,
+    );
   }
 
   return text;
@@ -1994,7 +2166,10 @@ async function buildTemplateServiceKeyContext(cliOptions) {
   let cf = {};
 
   if (cliOptions.configPath) {
-    const resolvedConfigPath = path.resolve(process.cwd(), cliOptions.configPath);
+    const resolvedConfigPath = path.resolve(
+      process.cwd(),
+      cliOptions.configPath,
+    );
     const rawConfig = await readYamlFile(resolvedConfigPath);
     const rootConfig = normalizeRootConfig(rawConfig, {
       configPath: resolvedConfigPath,
@@ -2005,9 +2180,14 @@ async function buildTemplateServiceKeyContext(cliOptions) {
     cf = rootConfig.cf || {};
   }
 
-  if (cliOptions.inlineServiceKeys && Object.keys(cliOptions.inlineServiceKeys).length > 0) {
+  if (
+    cliOptions.inlineServiceKeys &&
+    Object.keys(cliOptions.inlineServiceKeys).length > 0
+  ) {
     serviceKeys = { ...serviceKeys };
-    for (const [alias, definition] of Object.entries(cliOptions.inlineServiceKeys)) {
+    for (const [alias, definition] of Object.entries(
+      cliOptions.inlineServiceKeys,
+    )) {
       serviceKeys[alias] = definition;
     }
   }
@@ -2090,7 +2270,7 @@ async function fetchCfAppEnv(appName, context) {
   let data;
   try {
     data = JSON.parse(stdout);
-  } catch (error) {
+  } catch (_error) {
     data = parseCfEnvTextOutput(stdout);
   }
   if (!data) {
@@ -2170,7 +2350,9 @@ function findServiceEntry(vcapServices, keywords, fallbackPredicate) {
   if (!vcapServices || typeof vcapServices !== 'object') {
     return undefined;
   }
-  const lowerKeywords = (keywords || []).map((keyword) => String(keyword).toLowerCase());
+  const lowerKeywords = (keywords || []).map((keyword) =>
+    String(keyword).toLowerCase(),
+  );
   for (const [label, entries] of Object.entries(vcapServices)) {
     if (!Array.isArray(entries)) {
       continue;
@@ -2217,21 +2399,19 @@ async function deriveTemplateValues(templateName, cliOptions) {
 
   function chooseAlias(hints = [], keywords = [], excludeKeywords = []) {
     const remainingPool = aliasPool.filter((alias) => !usedAliases.has(alias));
-    const filteredPool =
-      excludeKeywords && excludeKeywords.length
-        ? remainingPool.filter((alias) => {
-            const lower = alias.toLowerCase();
-            return !excludeKeywords.some((keyword) => lower.includes(keyword));
-          })
-        : remainingPool;
+    const filteredPool = excludeKeywords?.length
+      ? remainingPool.filter((alias) => {
+          const lower = alias.toLowerCase();
+          return !excludeKeywords.some((keyword) => lower.includes(keyword));
+        })
+      : remainingPool;
     const poolToUse = filteredPool.length > 0 ? filteredPool : remainingPool;
-    const keywordMatches =
-      keywords && keywords.length
-        ? poolToUse.filter((alias) => {
-            const lower = alias.toLowerCase();
-            return keywords.some((keyword) => lower.includes(keyword));
-          })
-        : poolToUse.slice();
+    const keywordMatches = keywords?.length
+      ? poolToUse.filter((alias) => {
+          const lower = alias.toLowerCase();
+          return keywords.some((keyword) => lower.includes(keyword));
+        })
+      : poolToUse.slice();
 
     if (keywordMatches.length === 1) {
       const match = keywordMatches[0];
@@ -2257,7 +2437,7 @@ async function deriveTemplateValues(templateName, cliOptions) {
       return onlyAlias;
     }
 
-    if (hints && hints.length) {
+    if (hints?.length) {
       const candidate = determineTokenAlias({
         preferred: [],
         available: hints,
@@ -2278,15 +2458,19 @@ async function deriveTemplateValues(templateName, cliOptions) {
   }
 
   const mcpAlias =
-    requirements.mcp || (aliasHints.mcp && aliasHints.mcp.length)
-      ? chooseAlias(aliasHints.mcp || [], ['mcp', 'xsuaa', 'proxy', 'auth'], ['abap', 'backend'])
+    requirements.mcp || aliasHints.mcp?.length
+      ? chooseAlias(
+          aliasHints.mcp || [],
+          ['mcp', 'xsuaa', 'proxy', 'auth'],
+          ['abap', 'backend'],
+        )
       : undefined;
   const abapAlias =
-    requirements.abap || (aliasHints.abap && aliasHints.abap.length)
+    requirements.abap || aliasHints.abap?.length
       ? chooseAlias(
           aliasHints.abap || [],
           ['abap', 'sap', 'backend', 's4'],
-          ['mcp', 'xsuaa', 'proxy', 'auth']
+          ['mcp', 'xsuaa', 'proxy', 'auth'],
         )
       : undefined;
 
@@ -2300,7 +2484,8 @@ async function deriveTemplateValues(templateName, cliOptions) {
 
   const placeholderServiceKeys = {};
 
-  const isCloudTemplate = templateName === 'cloud-internet' || templateName === 'cloud-destination';
+  const isCloudTemplate =
+    templateName === 'cloud-internet' || templateName === 'cloud-destination';
   let mcpEndpoint;
   let abapUrl;
   let detectedXsuaaInstance;
@@ -2318,7 +2503,9 @@ async function deriveTemplateValues(templateName, cliOptions) {
   let cfAppData;
   const destinationOverride = cliOptions.destinationName;
   const cfDestinationName =
-    context.cf?.destination?.name || context.cf?.destinationName || context.cf?.destination;
+    context.cf?.destination?.name ||
+    context.cf?.destinationName ||
+    context.cf?.destination;
 
   async function tryLoadKey(alias) {
     if (!alias || !context.serviceKeys[alias]) {
@@ -2327,7 +2514,9 @@ async function deriveTemplateValues(templateName, cliOptions) {
     try {
       return await loadServiceKey(alias, context);
     } catch (error) {
-      console.warn(`⚠️  Failed to load service key "${alias}": ${error.message}`);
+      console.warn(
+        `⚠️  Failed to load service key "${alias}": ${error.message}`,
+      );
       return undefined;
     }
   }
@@ -2378,29 +2567,45 @@ async function deriveTemplateValues(templateName, cliOptions) {
   if (cfAppData) {
     const applicationUris = cfAppData?.VCAP_APPLICATION?.application_uris;
     const appUri = Array.isArray(applicationUris)
-      ? applicationUris.find((item) => typeof item === 'string' && item.trim().length > 0)
+      ? applicationUris.find(
+          (item) => typeof item === 'string' && item.trim().length > 0,
+        )
       : undefined;
     if (appUri) {
       const normalized = normalizeApplicationUri(appUri);
       if (normalized) {
-        mcpEndpoint = combineEndpoint(normalized, getTemplateEndpointSuffix(templateName));
+        mcpEndpoint = combineEndpoint(
+          normalized,
+          getTemplateEndpointSuffix(templateName),
+        );
       }
     }
 
-    const xsuaaInfo = findServiceEntry(cfAppData?.VCAP_SERVICES, ['xsuaa', 'auth']);
+    const xsuaaInfo = findServiceEntry(cfAppData?.VCAP_SERVICES, [
+      'xsuaa',
+      'auth',
+    ]);
     if (xsuaaInfo) {
-      detectedXsuaaInstance = xsuaaInfo.entry?.name || xsuaaInfo.entry?.service_instance_name;
+      detectedXsuaaInstance =
+        xsuaaInfo.entry?.name || xsuaaInfo.entry?.service_instance_name;
     }
 
-    const abapInfo = findServiceEntry(cfAppData?.VCAP_SERVICES, ['abap'], (entry, label) => {
-      const urlCandidate = entry?.credentials?.url || entry?.credentials?.uri;
-      return (
-        Boolean(urlCandidate && String(urlCandidate).toLowerCase().includes('.abap.')) ||
-        String(label).toLowerCase().includes('abap')
-      );
-    });
+    const abapInfo = findServiceEntry(
+      cfAppData?.VCAP_SERVICES,
+      ['abap'],
+      (entry, label) => {
+        const urlCandidate = entry?.credentials?.url || entry?.credentials?.uri;
+        return (
+          Boolean(
+            urlCandidate &&
+              String(urlCandidate).toLowerCase().includes('.abap.'),
+          ) || String(label).toLowerCase().includes('abap')
+        );
+      },
+    );
     if (abapInfo) {
-      detectedAbapInstance = abapInfo.entry?.name || abapInfo.entry?.service_instance_name;
+      detectedAbapInstance =
+        abapInfo.entry?.name || abapInfo.entry?.service_instance_name;
       if (!abapUrl) {
         const candidate = extractAbapUrl(abapInfo.entry?.credentials || {});
         if (candidate) {
@@ -2453,34 +2658,6 @@ async function deriveTemplateValues(templateName, cliOptions) {
   };
 }
 
-function setHeaderValue(headers, key, value, updated) {
-  const canonicalKey = canonicalizeHeaderName(key);
-  const normalizedKey = canonicalKey ? canonicalKey.toLowerCase() : key.toLowerCase();
-  const existingKey = Object.keys(headers).find(
-    (candidate) => candidate.toLowerCase() === normalizedKey
-  );
-
-  if (typeof value === 'string' && value.length > 0) {
-    if (existingKey && existingKey !== canonicalKey) {
-      delete headers[existingKey];
-    }
-    for (const candidate of Object.keys(headers)) {
-      if (candidate !== canonicalKey && candidate.toLowerCase() === normalizedKey) {
-        delete headers[candidate];
-      }
-    }
-    headers[canonicalKey] = value;
-    if (!updated.includes(canonicalKey)) {
-      updated.push(canonicalKey);
-    }
-  } else if (existingKey) {
-    delete headers[existingKey];
-    if (!updated.includes(existingKey)) {
-      updated.push(existingKey);
-    }
-  }
-}
-
 function removeSapDirectHeaders(headers, updated) {
   [
     'x-sap-url',
@@ -2495,23 +2672,34 @@ function removeSapDirectHeaders(headers, updated) {
 }
 
 function removeDestinationHeaders(headers, updated) {
-  ['x-sap-destination', 'x-sap-connectivity-mode', 'x-sap-connectivity-location-id'].forEach(
-    (key) => {
-      setHeaderValue(headers, key, undefined, updated);
-    }
-  );
+  [
+    'x-sap-destination',
+    'x-sap-connectivity-mode',
+    'x-sap-connectivity-location-id',
+  ].forEach((key) => {
+    setHeaderValue(headers, key, undefined, updated);
+  });
 }
 
-function convertDefinitionToClineConnection(definition = {}, connectionConfig = {}) {
+function convertDefinitionToClineConnection(
+  definition = {},
+  connectionConfig = {},
+) {
   const result = {};
   const endpoint =
-    definition.endpoint || definition.url || connectionConfig.url || connectionConfig.endpoint;
+    definition.endpoint ||
+    definition.url ||
+    connectionConfig.url ||
+    connectionConfig.endpoint;
   if (endpoint) {
     result.url = endpoint;
   }
 
   const rawType =
-    definition.transport || definition.type || connectionConfig.transport || connectionConfig.type;
+    definition.transport ||
+    definition.type ||
+    connectionConfig.transport ||
+    connectionConfig.type;
   if (rawType) {
     const normalized = String(rawType).toLowerCase();
     if (normalized === 'sse') {
@@ -2566,29 +2754,31 @@ async function applyCustomHeaders(headers, headerSpec, context, options) {
 }
 
 function resolveSapMode(sapConfig, connectionName) {
-  const explicit = sapConfig.mode ? String(sapConfig.mode).toLowerCase() : undefined;
+  const explicit = sapConfig.mode
+    ? String(sapConfig.mode).toLowerCase()
+    : undefined;
   const hasDestinationSignals = Boolean(
     sapConfig.destinationName ??
-    sapConfig.destination?.name ??
-    sapConfig.destination ??
-    sapConfig.connectivityMode ??
-    sapConfig.connectivityLocationId ??
-    sapConfig.connectivity
+      sapConfig.destination?.name ??
+      sapConfig.destination ??
+      sapConfig.connectivityMode ??
+      sapConfig.connectivityLocationId ??
+      sapConfig.connectivity,
   );
   const hasDirectSignals = Boolean(
-    sapConfig.url ?? sapConfig.auth ?? sapConfig.client ?? sapConfig.language
+    sapConfig.url ?? sapConfig.auth ?? sapConfig.client ?? sapConfig.language,
   );
 
   if (explicit && !['direct', 'destination'].includes(explicit)) {
     throw new Error(
-      `Connection "${connectionName}" uses unsupported sap.mode "${sapConfig.mode}".`
+      `Connection "${connectionName}" uses unsupported sap.mode "${sapConfig.mode}".`,
     );
   }
 
   if (explicit === 'destination') {
     if (hasDirectSignals) {
       throw new Error(
-        `Connection "${connectionName}" cannot combine sap.mode=destination with direct SAP parameters (url/auth/client).`
+        `Connection "${connectionName}" cannot combine sap.mode=destination with direct SAP parameters (url/auth/client).`,
       );
     }
     return 'destination';
@@ -2597,7 +2787,7 @@ function resolveSapMode(sapConfig, connectionName) {
   if (explicit === 'direct') {
     if (hasDestinationSignals) {
       throw new Error(
-        `Connection "${connectionName}" cannot combine sap.mode=direct with destination-specific parameters.`
+        `Connection "${connectionName}" cannot combine sap.mode=direct with destination-specific parameters.`,
       );
     }
     return 'direct';
@@ -2605,7 +2795,7 @@ function resolveSapMode(sapConfig, connectionName) {
 
   if (hasDestinationSignals && hasDirectSignals) {
     throw new Error(
-      `Connection "${connectionName}" mixes direct SAP parameters with destination configuration. Set sap.mode explicitly or remove the conflicting values.`
+      `Connection "${connectionName}" mixes direct SAP parameters with destination configuration. Set sap.mode explicitly or remove the conflicting values.`,
     );
   }
 
@@ -2623,7 +2813,9 @@ async function buildSapDirectConfig(sapConfig, context, options) {
       name: `${options.connection}.sap.client`,
     });
   }
-  env.SAP_AUTH_TYPE = sapConfig.auth?.type ? String(sapConfig.auth.type).toLowerCase() : 'jwt';
+  env.SAP_AUTH_TYPE = sapConfig.auth?.type
+    ? String(sapConfig.auth.type).toLowerCase()
+    : 'jwt';
 
   const overrides = {
     authType: env.SAP_AUTH_TYPE,
@@ -2660,7 +2852,12 @@ async function buildSapDirectConfig(sapConfig, context, options) {
   return { env, overrides };
 }
 
-async function handleSapConfiguration(connectionConfig, connectionState, context, options) {
+async function handleSapConfiguration(
+  connectionConfig,
+  connectionState,
+  context,
+  options,
+) {
   const updated = [];
   const scope = options.scope;
 
@@ -2670,7 +2867,7 @@ async function handleSapConfiguration(connectionConfig, connectionState, context
 
   if (!connectionConfig.sap) {
     throw new Error(
-      `Connection "${options.connection}" requires a sap section for update scope ${scope}.`
+      `Connection "${options.connection}" requires a sap section for update scope ${scope}.`,
     );
   }
 
@@ -2679,12 +2876,13 @@ async function handleSapConfiguration(connectionConfig, connectionState, context
   if (mode === 'destination') {
     removeSapDirectHeaders(connectionState.headers, updated);
     const destinationName = await resolveString(
-      connectionConfig.sap.destinationName ?? connectionConfig.sap.destination?.name,
+      connectionConfig.sap.destinationName ??
+        connectionConfig.sap.destination?.name,
       context,
       {
         required: true,
         name: `${options.connection}.sap.destination.name`,
-      }
+      },
     );
     const connectivityMode = await resolveString(
       connectionConfig.sap.connectivityMode ??
@@ -2693,7 +2891,7 @@ async function handleSapConfiguration(connectionConfig, connectionState, context
       context,
       {
         name: `${options.connection}.sap.connectivity.mode`,
-      }
+      },
     );
     const locationId = await resolveString(
       connectionConfig.sap.connectivityLocationId ??
@@ -2702,7 +2900,7 @@ async function handleSapConfiguration(connectionConfig, connectionState, context
       context,
       {
         name: `${options.connection}.sap.connectivity.locationId`,
-      }
+      },
     );
     const destUpdated = applyDestinationHeaders(connectionState.headers, {
       destinationName,
@@ -2712,17 +2910,32 @@ async function handleSapConfiguration(connectionConfig, connectionState, context
     updated.push(...destUpdated);
   } else if (mode === 'direct') {
     removeDestinationHeaders(connectionState.headers, updated);
-    const { env, overrides } = await buildSapDirectConfig(connectionConfig.sap, context, options);
-    const result = applySapConfigToHeaders(connectionState.headers, env, overrides);
+    const { env, overrides } = await buildSapDirectConfig(
+      connectionConfig.sap,
+      context,
+      options,
+    );
+    const result = applySapConfigToHeaders(
+      connectionState.headers,
+      env,
+      overrides,
+    );
     updated.push(...result.updated);
   } else {
-    throw new Error(`Unsupported sap.mode "${mode}" for connection "${options.connection}".`);
+    throw new Error(
+      `Unsupported sap.mode "${mode}" for connection "${options.connection}".`,
+    );
   }
 
   return updated;
 }
 
-async function handleMcpConfiguration(connectionConfig, connectionState, context, options) {
+async function handleMcpConfiguration(
+  connectionConfig,
+  connectionState,
+  context,
+  options,
+) {
   const updated = [];
   const scope = options.scope;
 
@@ -2740,10 +2953,14 @@ async function handleMcpConfiguration(connectionConfig, connectionState, context
 
   switch (type) {
     case 'header':
-      authOptions.authHeader = await resolveString(authConfig.header ?? authConfig.value, context, {
-        required: true,
-        name: `${options.connection}.mcp.auth.header`,
-      });
+      authOptions.authHeader = await resolveString(
+        authConfig.header ?? authConfig.value,
+        context,
+        {
+          required: true,
+          name: `${options.connection}.mcp.auth.header`,
+        },
+      );
       break;
     case 'basic':
       authOptions.authType = 'basic';
@@ -2770,7 +2987,7 @@ async function handleMcpConfiguration(connectionConfig, connectionState, context
       break;
     default:
       throw new Error(
-        `Unsupported MCP auth type "${type}" for connection "${options.connection}".`
+        `Unsupported MCP auth type "${type}" for connection "${options.connection}".`,
       );
   }
 
@@ -2782,8 +2999,13 @@ async function handleMcpConfiguration(connectionConfig, connectionState, context
 
 function ensureConnection(settings, connectionName, connectionConfig) {
   settings.mcpServers = settings.mcpServers ?? {};
-  const definition = connectionConfig?.definition ? cloneDeep(connectionConfig.definition) : {};
-  const desiredBase = convertDefinitionToClineConnection(definition, connectionConfig);
+  const definition = connectionConfig?.definition
+    ? cloneDeep(connectionConfig.definition)
+    : {};
+  const desiredBase = convertDefinitionToClineConnection(
+    definition,
+    connectionConfig,
+  );
   let connection = settings.mcpServers[connectionName];
   let created = false;
 
@@ -2803,7 +3025,8 @@ function ensureConnection(settings, connectionName, connectionConfig) {
       connection.description = desiredBase.description;
     }
     const explicitTimeout =
-      connectionConfig.definition?.timeout !== undefined || connectionConfig.timeout !== undefined;
+      connectionConfig.definition?.timeout !== undefined ||
+      connectionConfig.timeout !== undefined;
     if (explicitTimeout || connection.timeout === undefined) {
       if (desiredBase.timeout !== undefined) {
         connection.timeout = desiredBase.timeout;
@@ -2858,7 +3081,8 @@ async function applyConnectionPatch(connection, patchSpec, context, options) {
 }
 
 function determineScope(connectionConfig, rootConfig) {
-  const scope = connectionConfig.updateScope || rootConfig.defaults?.updateScope || 'all';
+  const scope =
+    connectionConfig.updateScope || rootConfig.defaults?.updateScope || 'all';
   const normalized = String(scope).toLowerCase();
   if (!['all', 'sap', 'mcp'].includes(normalized)) {
     throw new Error(`Invalid update scope "${scope}".`);
@@ -2875,7 +3099,9 @@ function selectConnections(rootConfig, filters) {
   if (Array.isArray(rootConfig.connections)) {
     for (const item of rootConfig.connections) {
       if (!item || typeof item !== 'object' || !item.name) {
-        throw new Error('Connections array entries must include a name property.');
+        throw new Error(
+          'Connections array entries must include a name property.',
+        );
       }
       if (filters.length === 0 || filters.includes(item.name)) {
         entries.push([item.name, item]);
@@ -2894,7 +3120,9 @@ function selectConnections(rootConfig, filters) {
 
 function resolveSettingsPath(connectionConfig, rootConfig, context) {
   const candidate = connectionConfig.settingsPath || rootConfig.settingsPath;
-  return candidate ? resolvePath(context.configDir, candidate) : getDefaultSettingsPath();
+  return candidate
+    ? resolvePath(context.configDir, candidate)
+    : getDefaultSettingsPath();
 }
 
 async function mainYaml() {
@@ -2907,13 +3135,17 @@ async function mainYaml() {
   }
 
   if (!cli.configPath) {
-    throw new Error('Configuration path is required when no template is requested.');
+    throw new Error(
+      'Configuration path is required when no template is requested.',
+    );
   }
 
   const configPath = path.resolve(process.cwd(), cli.configPath);
   const rawConfig = await readYamlFile(configPath);
   if (!rawConfig || typeof rawConfig !== 'object') {
-    throw new Error('YAML configuration must produce an object at the top level.');
+    throw new Error(
+      'YAML configuration must produce an object at the top level.',
+    );
   }
 
   const rootConfig = normalizeRootConfig(rawConfig, {
@@ -2944,7 +3176,11 @@ async function mainYaml() {
   const updates = [];
 
   for (const [connectionName, connectionConfig] of targets) {
-    const settingsPath = resolveSettingsPath(connectionConfig, rootConfig, context);
+    const settingsPath = resolveSettingsPath(
+      connectionConfig,
+      rootConfig,
+      context,
+    );
     const cacheKey = settingsPath;
 
     if (!settingsCache.has(cacheKey)) {
@@ -2956,14 +3192,19 @@ async function mainYaml() {
     const { connection, created } = ensureConnection(
       settingsData,
       connectionName,
-      connectionConfig
+      connectionConfig,
     );
     const scope = determineScope(connectionConfig, rootConfig);
     const perConnectionContext = { ...context, connection: connectionName };
 
-    await applyConnectionPatch(connection, connectionConfig.patch, perConnectionContext, {
-      connection: connectionName,
-    });
+    await applyConnectionPatch(
+      connection,
+      connectionConfig.patch,
+      perConnectionContext,
+      {
+        connection: connectionName,
+      },
+    );
 
     const headerUpdates = [];
 
@@ -2974,7 +3215,7 @@ async function mainYaml() {
       {
         scope,
         connection: connectionName,
-      }
+      },
     );
     headerUpdates.push(...sapUpdated);
 
@@ -2985,7 +3226,7 @@ async function mainYaml() {
       {
         scope,
         connection: connectionName,
-      }
+      },
     );
     headerUpdates.push(...mcpUpdated);
 
@@ -2996,7 +3237,7 @@ async function mainYaml() {
         perConnectionContext,
         {
           connection: connectionName,
-        }
+        },
       );
       headerUpdates.push(...customUpdated);
     }
@@ -3008,7 +3249,11 @@ async function mainYaml() {
       settingsPath,
       created,
       updatedHeaders: [
-        ...new Set(headerUpdates.filter(Boolean).map((name) => canonicalizeHeaderName(name))),
+        ...new Set(
+          headerUpdates
+            .filter(Boolean)
+            .map((name) => canonicalizeHeaderName(name)),
+        ),
       ],
     });
   }
@@ -3024,8 +3269,12 @@ async function mainYaml() {
 
   for (const update of updates) {
     const status = update.created ? 'created' : 'updated';
-    const headers = update.updatedHeaders.length ? update.updatedHeaders.join(', ') : 'none';
-    console.log(`ℹ️  ${update.connectionName} (${status}) -> headers: ${headers}`);
+    const headers = update.updatedHeaders.length
+      ? update.updatedHeaders.join(', ')
+      : 'none';
+    console.log(
+      `ℹ️  ${update.connectionName} (${status}) -> headers: ${headers}`,
+    );
   }
 }
 
@@ -3045,7 +3294,9 @@ if (require.main === module) {
   // Check if YAML mode is requested (--config or --template)
   const args = process.argv.slice(2);
   const hasYamlMode =
-    args.includes('--config') || args.includes('-c') || args.includes('--template');
+    args.includes('--config') ||
+    args.includes('-c') ||
+    args.includes('--template');
 
   if (hasYamlMode) {
     // Delegate to YAML handler
@@ -3066,4 +3317,9 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArgs, applySapConfigToHeaders, applyMcpAuth, applyDestinationHeaders };
+module.exports = {
+  parseArgs,
+  applySapConfigToHeaders,
+  applyMcpAuth,
+  applyDestinationHeaders,
+};

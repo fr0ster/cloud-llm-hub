@@ -1,15 +1,16 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import '../env-setup';
 
-import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
-import type { AxiosResponse } from 'axios';
+import { randomUUID } from 'node:crypto';
 import type {
   AbapConnection,
   AbapRequestOptions,
   SapConfig,
 } from '@mcp-abap-adt/connection';
-import { logger } from '../lib/logger';
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import type { AxiosResponse } from 'axios';
+import { logger } from '../lib/logger';
 
 /**
  * AbapConnection implementation using SAP Cloud SDK executeHttpRequest
@@ -26,7 +27,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
   constructor(
     private readonly config: SapConfig,
-    destinationName: string
+    destinationName: string,
   ) {
     this.destinationName = destinationName;
   }
@@ -41,6 +42,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
   setSessionType(type: 'stateless' | 'stateful'): void {
     this.sessionType = type;
+    logger.debug(`Session type set to: ${type}`, {
+      sessionId: this.sessionId?.substring(0, 8),
+    });
   }
 
   async connect(): Promise<void> {
@@ -139,9 +143,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
     for (let attempt = 0; attempt <= retryCount; attempt++) {
       try {
         if (attempt > 0) {
-          logger.csrfToken('retry', `Retry attempt ${attempt}/${retryCount} for CSRF token`, {
-            delay: retryDelay,
-          });
+          logger.csrfToken(
+            'retry',
+            `Retry attempt ${attempt}/${retryCount} for CSRF token`,
+            {
+              delay: retryDelay,
+            },
+          );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
         }
 
@@ -159,7 +167,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
               ...(await this.getAuthHeaders()),
               ...CSRF_CONFIG.REQUIRED_HEADERS,
             },
-          }
+          },
         );
 
         // Convert Cloud SDK response to Axios-like format
@@ -181,7 +189,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
         // Extract cookies from Set-Cookie header
         const setCookie = response.headers?.['set-cookie'];
         if (setCookie) {
-          this.cookies = Array.isArray(setCookie) ? setCookie.join('; ') : setCookie;
+          this.cookies = Array.isArray(setCookie)
+            ? setCookie.join('; ')
+            : setCookie;
           logger.csrfToken('success', 'Cookies extracted from response', {
             cookieLength: this.cookies?.length ?? 0,
           });
@@ -193,8 +203,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
         });
         return token;
       } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        const errorObj = error as { response?: { status?: number }; statusCode?: number };
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        const errorObj = error as {
+          response?: { status?: number };
+          statusCode?: number;
+        };
         logger.csrfToken('error', `CSRF token error: ${errorMessage}`, {
           url: csrfUrl,
           status: errorObj?.response?.status || errorObj?.statusCode,
@@ -207,12 +221,16 @@ export class CloudSdkAbapConnection implements AbapConnection {
         }
 
         // Use synchronized error message format
-        throw new Error(CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, errorMessage));
+        throw new Error(
+          CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, errorMessage),
+        );
       }
     }
 
     // This should never be reached, but TypeScript requires it
-    throw new Error(CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, 'Unexpected failure'));
+    throw new Error(
+      CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, 'Unexpected failure'),
+    );
   }
 
   /**
@@ -225,7 +243,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       statusText?: string;
       headers?: Record<string, unknown>;
     },
-    requestUrl: string
+    requestUrl: string,
   ): AxiosResponse {
     return {
       data: cloudSdkResponse.data,
@@ -267,24 +285,43 @@ export class CloudSdkAbapConnection implements AbapConnection {
       ...(await this.getAuthHeaders()),
     };
 
-    if ((normalizedMethod === 'POST' || normalizedMethod === 'PUT') && this.csrfToken) {
+    // ALWAYS add sap-adt-connection-id header (connectionId is sent for ALL session types)
+    if (this.sessionId) {
+      requestHeaders['sap-adt-connection-id'] = this.sessionId;
+    }
+
+    // Add stateful session headers if stateful mode enabled
+    if (this.sessionType === 'stateful') {
+      requestHeaders['x-sap-adt-sessiontype'] = 'stateful';
+      requestHeaders['sap-adt-request-id'] = randomUUID().replace(/-/g, '');
+      requestHeaders['X-sap-adt-profiling'] = 'server-time';
+    }
+
+    if (
+      (normalizedMethod === 'POST' || normalizedMethod === 'PUT') &&
+      this.csrfToken
+    ) {
       requestHeaders['x-csrf-token'] = this.csrfToken;
     }
 
     if (this.cookies) {
-      requestHeaders['Cookie'] = this.cookies;
+      requestHeaders.Cookie = this.cookies;
     }
 
-    if (!requestHeaders['Accept']) {
-      requestHeaders['Accept'] = 'application/xml, application/json, text/plain, */*';
+    if (!requestHeaders.Accept) {
+      requestHeaders.Accept =
+        'application/xml, application/json, text/plain, */*';
     }
 
     if ((normalizedMethod === 'POST' || normalizedMethod === 'PUT') && data) {
       if (typeof data === 'string' && !requestHeaders['Content-Type']) {
-        if (requestUrl.includes('/usageReferences') && data.includes('usageReferenceRequest')) {
+        if (
+          requestUrl.includes('/usageReferences') &&
+          data.includes('usageReferenceRequest')
+        ) {
           requestHeaders['Content-Type'] =
             'application/vnd.sap.adt.repository.usagereferences.request.v1+xml';
-          requestHeaders['Accept'] =
+          requestHeaders.Accept =
             'application/vnd.sap.adt.repository.usagereferences.result.v1+xml';
         } else {
           requestHeaders['Content-Type'] = 'text/plain; charset=utf-8';
@@ -309,12 +346,19 @@ export class CloudSdkAbapConnection implements AbapConnection {
       const response = await executeHttpRequest(
         { destinationName: this.destinationName },
         {
-          method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+          method: normalizedMethod as
+            | 'GET'
+            | 'POST'
+            | 'PUT'
+            | 'DELETE'
+            | 'PATCH',
           url: requestUrl,
           headers: requestHeaders,
+          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
           params: params as Record<string, any> | undefined,
+          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type is not fully typed
           data: data !== undefined ? (data as Record<string, any>) : undefined,
-        }
+        },
       );
 
       // Convert Cloud SDK response to AxiosResponse format
@@ -328,31 +372,48 @@ export class CloudSdkAbapConnection implements AbapConnection {
         destinationName: this.destinationName,
       });
 
-      const errorObj = error as { response?: { status?: number }; statusCode?: number };
+      const errorObj = error as {
+        response?: { status?: number };
+        statusCode?: number;
+      };
       // If CSRF token validation failed, try to refresh and retry once
       if (
         (errorObj?.response?.status === 403 || errorObj?.statusCode === 403) &&
         (normalizedMethod === 'POST' || normalizedMethod === 'PUT')
       ) {
-        logger.info('CSRF token validation failed, fetching new token and retrying request', {
-          url: requestUrl,
-        });
+        logger.info(
+          'CSRF token validation failed, fetching new token and retrying request',
+          {
+            url: requestUrl,
+          },
+        );
         this.csrfToken = await this.fetchCsrfToken(requestUrl);
 
         // Retry the request
         try {
           const retryHeaders = { ...requestHeaders };
-          retryHeaders['x-csrf-token'] = this.csrfToken!;
+          if (!this.csrfToken) {
+            throw new Error('CSRF token is required for retry');
+          }
+          retryHeaders['x-csrf-token'] = this.csrfToken;
 
           const retryResponse = await executeHttpRequest(
             { destinationName: this.destinationName },
             {
-              method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+              method: normalizedMethod as
+                | 'GET'
+                | 'POST'
+                | 'PUT'
+                | 'DELETE'
+                | 'PATCH',
               url: requestUrl,
               headers: retryHeaders,
+              // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
               params: params as Record<string, any> | undefined,
-              data: data !== undefined ? (data as Record<string, any>) : undefined,
-            }
+              data:
+                // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type is not fully typed
+                data !== undefined ? (data as Record<string, any>) : undefined,
+            },
           );
 
           return this.convertToAxiosResponse(retryResponse, requestUrl);

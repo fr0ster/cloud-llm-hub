@@ -8,25 +8,27 @@
  * Default app-name: cloud-llm-hub-srv
  */
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+const { execSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const APP_NAME = process.argv[2] || 'cloud-llm-hub-srv';
 const DEFAULT_ENV_PATH = path.join(__dirname, '..', 'default-env.json');
 
 function main() {
-  console.log(`📥 Отримую VCAP_SERVICES з BTP для додатку: ${APP_NAME}...`);
+  console.log(`📥 Fetching VCAP_SERVICES from BTP for app: ${APP_NAME}...`);
 
   try {
     // Get VCAP_SERVICES from CF
     const cfOutput = execSync(`cf env ${APP_NAME}`, { encoding: 'utf8' });
 
     // Extract VCAP_SERVICES JSON
-    const vcapMatch = cfOutput.match(/VCAP_SERVICES:\s*(\{[\s\S]*?\})\s*\n\nVCAP_APPLICATION/);
+    const vcapMatch = cfOutput.match(
+      /VCAP_SERVICES:\s*(\{[\s\S]*?\})\s*\n\nVCAP_APPLICATION/,
+    );
 
     if (!vcapMatch) {
-      console.error('❌ Не вдалося знайти VCAP_SERVICES у виводі cf env');
+      console.error('❌ Failed to find VCAP_SERVICES in cf env output');
       process.exit(1);
     }
 
@@ -36,7 +38,7 @@ function main() {
     try {
       vcapServices = JSON.parse(vcapServicesStr);
     } catch (parseError) {
-      console.error('❌ Помилка парсингу VCAP_SERVICES JSON:', parseError.message);
+      console.error('❌ Error parsing VCAP_SERVICES JSON:', parseError.message);
       process.exit(1);
     }
 
@@ -46,7 +48,10 @@ function main() {
       try {
         defaultEnv = JSON.parse(fs.readFileSync(DEFAULT_ENV_PATH, 'utf8'));
       } catch (readError) {
-        console.warn('⚠️  Помилка читання default-env.json, створю новий:', readError.message);
+        console.warn(
+          '⚠️  Error reading default-env.json, creating new one:',
+          readError.message,
+        );
       }
     }
 
@@ -54,17 +59,22 @@ function main() {
     defaultEnv.VCAP_SERVICES = vcapServices;
 
     // Write back
-    fs.writeFileSync(DEFAULT_ENV_PATH, JSON.stringify(defaultEnv, null, 2) + '\n');
+    fs.writeFileSync(
+      DEFAULT_ENV_PATH,
+      `${JSON.stringify(defaultEnv, null, 2)}\n`,
+    );
 
     // Show what was updated
-    console.log('✅ Оновлено default-env.json');
-    console.log('\n📋 Оновлені сервіси:');
+    console.log('✅ Updated default-env.json');
+    console.log('\n📋 Updated services:');
 
     if (vcapServices.xsuaa && vcapServices.xsuaa.length > 0) {
       const xsuaa = vcapServices.xsuaa[0];
       console.log(`  • XSUAA (${xsuaa.name})`);
       console.log(`    Binding GUID: ${xsuaa.binding_guid}`);
-      console.log(`    Client ID: ${xsuaa.credentials.clientid.substring(0, 40)}...`);
+      console.log(
+        `    Client ID: ${xsuaa.credentials.clientid.substring(0, 40)}...`,
+      );
     }
 
     if (vcapServices.destination && vcapServices.destination.length > 0) {
@@ -83,16 +93,16 @@ function main() {
           xsuaa.binding_guid === localXsuaa.binding_guid &&
           xsuaa.credentials.clientsecret === localXsuaa.credentials.clientsecret
         ) {
-          console.log('\n✅ Перевірка: credentials співпадають з BTP');
+          console.log('\n✅ Verification: credentials match BTP');
         } else {
-          console.log('\n⚠️  Перевірка: credentials відрізняються (було оновлено)');
+          console.log('\n⚠️  Verification: credentials differ (was updated)');
         }
       }
     }
 
-    console.log(`\n📁 Файл збережено: ${DEFAULT_ENV_PATH}`);
+    console.log(`\n📁 File saved: ${DEFAULT_ENV_PATH}`);
   } catch (error) {
-    console.error('❌ Помилка:', error.message);
+    console.error('❌ Error:', error.message);
     if (error.stderr) {
       console.error('Stderr:', error.stderr.toString());
     }

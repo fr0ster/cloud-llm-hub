@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.5] - 2025-12-22
+
+### Changed
+- **Biome Migration**: Migrated from ESLint/Prettier to Biome for linting and formatting
+  - Added `@biomejs/biome` as dev dependency
+  - Replaced ESLint/Prettier scripts with Biome commands (`lint`, `lint:check`, `format`)
+  - Created `biome.json` configuration with standard rules
+  - Integrated Biome check into build process (`npx biome check srv tools test --diagnostic-level=error`)
+- **Type Safety**: Improved type safety across the codebase
+  - Replaced `any` types with `unknown` in error handling functions (`errorUtils.ts`, `server.ts`, `mcp-proxy.ts`)
+  - Added type guards for safe property access on `unknown` types
+  - Updated Node.js imports to use `node:` protocol (`fs`, `path`, `http`, `child_process`, `crypto`)
+- **CloudSdkAbapConnection**: Added stateful session support
+  - Added `sessionType` property to track session mode (`stateless` | `stateful`)
+  - Implemented `setSessionType()` method to switch between session types
+  - Added stateful session headers (`x-sap-adt-sessiontype`, `sap-adt-request-id`, `X-sap-adt-profiling`) when `sessionType === 'stateful'`
+  - Added `sap-adt-connection-id` header for all session types
+- **Localization**: Translated all messages in `tools/update-default-env.js` to English
+
+### Fixed
+- Fixed type safety issues by replacing `any` with `unknown` in error handling
+- Fixed assignment in expressions by using block statements (`test/abap-connection.test.js`)
+- Removed duplicate function declarations (`tools/update-cline-connection.js`)
+- Improved error handling with proper type guards and `ErrorWithCode` type
+- Fixed unused variables by prefixing with underscore (`tools/bump-version.js`)
+- Fixed unused imports (`BtpOnPremDestinationConnection.ts`, `logger.ts`)
+- Fixed non-null assertions by adding proper null checks (`CloudSdkAbapConnection.ts`)
+- Fixed computed property access by using literal keys where possible
+- Fixed string concatenation by using template literals
+- Removed unused suppression comments
+
 ## [1.1.4] - 2025-12-22
 
 ### Changed

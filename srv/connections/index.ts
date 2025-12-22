@@ -1,15 +1,19 @@
-export { BtpOnPremDestinationConnection } from './BtpOnPremDestinationConnection';
 export type {
-  ConnectivityProxyConfig,
   BtpOnPremConnectionOptions,
+  ConnectivityProxyConfig,
 } from './BtpOnPremDestinationConnection';
-export {
-  shouldUseConnectivity,
-  extractConnectivityContext,
-  createBtpOnPremConnection,
-  refreshBtpOnPremConnection,
-  clearConnectivityCaches,
-} from './connectivityProxy';
+export { BtpOnPremDestinationConnection } from './BtpOnPremDestinationConnection';
 export { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
-export { createConnection, isCloudSdkConnection, getConnectionTypeName } from './connectionFactory';
 export type { ConnectionOptions } from './connectionFactory';
+export {
+  createConnection,
+  getConnectionTypeName,
+  isCloudSdkConnection,
+} from './connectionFactory';
+export {
+  clearConnectivityCaches,
+  createBtpOnPremConnection,
+  extractConnectivityContext,
+  refreshBtpOnPremConnection,
+  shouldUseConnectivity,
+} from './connectivityProxy';

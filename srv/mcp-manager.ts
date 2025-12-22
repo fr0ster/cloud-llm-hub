@@ -1,28 +1,30 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import './env-setup';
 
-import cds from '@sap/cds';
-// @ts-ignore - ESM import path with .js extension
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { Request } from 'express';
-import type { SapConfig, AbapConnection } from '@mcp-abap-adt/connection';
+import { EmbeddableMcpServer } from '@fr0ster/mcp-abap-adt/server/v1';
+import type { AbapConnection, SapConfig } from '@mcp-abap-adt/connection';
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import {
-  HEADER_SAP_DESTINATION,
+  HEADER_AUTHORIZATION,
   HEADER_SAP_CLIENT,
+  HEADER_SAP_DESTINATION,
   HEADER_SAP_LOGIN,
   HEADER_SAP_PASSWORD,
-  HEADER_AUTHORIZATION,
 } from '@mcp-abap-adt/interfaces';
-import { shouldUseConnectivity, extractConnectivityContext } from './connections';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import cds from '@sap/cds';
+import type { Request } from 'express';
 import {
-  resolveDestinationSapConfig,
-  type DestinationResolution,
-} from './connections/destinationResolver';
+  extractConnectivityContext,
+  shouldUseConnectivity,
+} from './connections';
 import { createConnection } from './connections/connectionFactory';
+import {
+  type DestinationResolution,
+  resolveDestinationSapConfig,
+} from './connections/destinationResolver';
 import { logErrorSafely } from './lib/errorUtils';
 import { loggerAdapter } from './lib/logger';
-import { EmbeddableMcpServer } from '@fr0ster/mcp-abap-adt/server/v1';
 
 interface SapContext {
   sapConfig: SapConfig;
@@ -59,8 +61,12 @@ function summarizeJwt(token?: string): { preview: string; length: number } {
  */
 export async function extractSapContext(req: Request): Promise<SapContext> {
   const log = cds.log('mcp-manager');
-  const destinationName = (req.headers[HEADER_SAP_DESTINATION] as string | undefined)?.trim();
-  const sapClientHeader = (req.headers[HEADER_SAP_CLIENT] as string | undefined)?.trim();
+  const destinationName = (
+    req.headers[HEADER_SAP_DESTINATION] as string | undefined
+  )?.trim();
+  const sapClientHeader = (
+    req.headers[HEADER_SAP_CLIENT] as string | undefined
+  )?.trim();
 
   // Priority 1: BTP Destination (cloud-llm-hub specific)
   // This is NOT covered by validateAuthHeaders because it requires BTP Destination Service
@@ -68,17 +74,26 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
     // Extract JWT from Authorization header if available
     // Note: JWT is only used for Principal Propagation destinations (OAuth2SAMLBearerAssertion)
     // For BasicAuthentication and OAuth2ClientCredentials, destination has its own credentials
-    const authHeader = req.headers[HEADER_AUTHORIZATION.toLowerCase()] as string | undefined;
+    const authHeader = req.headers[HEADER_AUTHORIZATION.toLowerCase()] as
+      | string
+      | undefined;
     const jwtToken =
       typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
         ? authHeader.substring(7)
         : undefined;
 
     // Check for x-sap-login / x-sap-password for destination with Basic override
-    const sapLogin = (req.headers[HEADER_SAP_LOGIN] as string | undefined)?.trim();
-    const sapPassword = (req.headers[HEADER_SAP_PASSWORD] as string | undefined)?.trim();
+    const sapLogin = (
+      req.headers[HEADER_SAP_LOGIN] as string | undefined
+    )?.trim();
+    const sapPassword = (
+      req.headers[HEADER_SAP_PASSWORD] as string | undefined
+    )?.trim();
 
-    const resolved = await resolveDestinationSapConfig(destinationName, jwtToken);
+    const resolved = await resolveDestinationSapConfig(
+      destinationName,
+      jwtToken,
+    );
     const sapConfig: SapConfig = { ...resolved.sapConfig };
 
     // Override with Basic auth from headers if provided
@@ -130,7 +145,9 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
     const errorMessages = validationResult.errors.join('; ');
     log.error('Header validation failed', {
       errors: validationResult.errors,
-      availableHeaders: Object.keys(req.headers).filter((h) => h.toLowerCase().includes('sap')),
+      availableHeaders: Object.keys(req.headers).filter((h) =>
+        h.toLowerCase().includes('sap'),
+      ),
     });
     throw new Error(`Invalid authentication headers: ${errorMessages}`);
   }
@@ -141,7 +158,9 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
   // Build SapConfig from validated headers
   const sapConfig: SapConfig = {
     url: config.sapUrl || '',
-    authType: (config.authType === 'xsuaa' ? 'jwt' : config.authType) as SapConfig['authType'],
+    authType: (config.authType === 'xsuaa'
+      ? 'jwt'
+      : config.authType) as SapConfig['authType'],
   };
 
   // Add client if provided
@@ -189,6 +208,7 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
  */
 export interface McpServerResult {
   /** EmbeddableMcpServer instance */
+  // biome-ignore lint/suspicious/noExplicitAny: EmbeddableMcpServer type is not exported from mcp-abap-adt
   server: any;
   /** Connection used by this server */
   connection: AbapConnection;
@@ -225,7 +245,9 @@ export interface McpServerResult {
  * @param req - HTTP request with SAP configuration in headers
  * @returns MCP server, connection, transport, and cleanup function
  */
-export async function createMCPServerForRequest(req: Request): Promise<McpServerResult> {
+export async function createMCPServerForRequest(
+  req: Request,
+): Promise<McpServerResult> {
   const log = cds.log('mcp-manager');
 
   try {
@@ -235,10 +257,14 @@ export async function createMCPServerForRequest(req: Request): Promise<McpServer
     const connectivityFromHeader = shouldUseConnectivity(req);
     const destinationRequiresConnectivity =
       (destination?.proxyType ?? '').toLowerCase() === 'onpremise';
-    const useConnectivity = connectivityFromHeader || destinationRequiresConnectivity;
+    const useConnectivity =
+      connectivityFromHeader || destinationRequiresConnectivity;
     const connectivityContext = extractConnectivityContext(req);
 
-    if (!connectivityContext.locationId && destination?.cloudConnectorLocationId) {
+    if (
+      !connectivityContext.locationId &&
+      destination?.cloudConnectorLocationId
+    ) {
       connectivityContext.locationId = destination.cloudConnectorLocationId;
     }
 
@@ -312,7 +338,9 @@ export async function createMCPServerForRequest(req: Request): Promise<McpServer
       transport,
       cleanup,
     };
+    // biome-ignore lint/suspicious/noExplicitAny: Error type from MCP server creation is not fully typed
   } catch (err: any) {
+    // biome-ignore lint/suspicious/noExplicitAny: Context can contain any values
     const context: Record<string, any> = {
       destination: (req.headers[HEADER_SAP_DESTINATION] as string) || undefined,
     };
@@ -320,8 +348,10 @@ export async function createMCPServerForRequest(req: Request): Promise<McpServer
     logErrorSafely(log, 'MCP server creation', err, context);
 
     if (err instanceof Error) {
-      (err as any).statusCode = (err as any).statusCode || 502;
-      (err as any).code = (err as any).code || err?.name || 'MCP_SERVER_CREATION_FAILED';
+      const errWithCode = err as Error & { statusCode?: number; code?: string };
+      errWithCode.statusCode = errWithCode.statusCode || 502;
+      errWithCode.code =
+        errWithCode.code || err?.name || 'MCP_SERVER_CREATION_FAILED';
     }
 
     throw err;

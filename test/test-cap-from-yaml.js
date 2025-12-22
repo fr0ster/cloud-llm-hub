@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const yaml = require('js-yaml');
 
 function readYaml(filePath) {
@@ -13,17 +13,21 @@ function buildHeaders(config) {
   const headers = {};
   const authHeader = config?.auth?.header;
   if (authHeader) {
-    headers['Authorization'] = authHeader;
+    headers.Authorization = authHeader;
   }
 
   const sap = config?.sap || {};
   const mode =
-    sap.mode || (sap.destination ? 'destination' : sap.direct ? 'direct' : undefined) || undefined;
+    sap.mode ||
+    (sap.destination ? 'destination' : sap.direct ? 'direct' : undefined) ||
+    undefined;
   if (mode === 'destination') {
     const name = sap.destination?.name || sap.destinationName;
     if (name) headers['X-SAP-Destination'] = name;
     const connectivityMode =
-      sap.destination?.connectivity?.mode || sap.connectivity?.mode || sap.connectivityMode;
+      sap.destination?.connectivity?.mode ||
+      sap.connectivity?.mode ||
+      sap.connectivityMode;
     if (connectivityMode) headers['X-SAP-Connectivity-Mode'] = connectivityMode;
     const locationId =
       sap.destination?.connectivity?.locationId ||
@@ -37,7 +41,8 @@ function buildHeaders(config) {
     const authType = (direct.auth?.type || sap.authType || 'jwt').toLowerCase();
     headers['X-SAP-Auth-Type'] = authType;
     if (authType === 'jwt') {
-      const token = direct.auth?.token || sap.token || sap.jwt || process.env.SAP_JWT_TOKEN;
+      const token =
+        direct.auth?.token || sap.token || sap.jwt || process.env.SAP_JWT_TOKEN;
       if (token) headers['X-SAP-JWT-Token'] = token;
     } else if (authType === 'basic') {
       const username = direct.auth?.username || sap.username;
@@ -66,19 +71,26 @@ async function run() {
   const args = process.argv.slice(2);
   const argIndex = args.findIndex((a) => a === '--config' || a === '-c');
   if (argIndex === -1 || !args[argIndex + 1]) {
-    console.error('Usage: node test/test-cap-from-yaml.js --config <file.yaml>');
+    console.error(
+      'Usage: node test/test-cap-from-yaml.js --config <file.yaml>',
+    );
     process.exit(1);
   }
 
   const configPath = path.resolve(process.cwd(), args[argIndex + 1]);
   if (!fs.existsSync(configPath)) {
     console.error(`❌ Config file not found: ${configPath}`);
-    console.error('   Copy template: cp test/integration.yaml.template test/integration.yaml');
+    console.error(
+      '   Copy template: cp test/integration.yaml.template test/integration.yaml',
+    );
     process.exit(1);
   }
 
   const cfg = readYaml(configPath);
-  const baseUrl = (cfg.baseUrl || cfg.baseURL || cfg.url || '').replace(/\/$/, '');
+  const baseUrl = (cfg.baseUrl || cfg.baseURL || cfg.url || '').replace(
+    /\/$/,
+    '',
+  );
   if (!baseUrl) {
     console.error('Config must include baseUrl');
     process.exit(1);
@@ -127,7 +139,10 @@ async function run() {
 
   // SSE (Express)
   try {
-    const res = await fetchWithTimeout(`${baseUrl}/mcp/stream/sse`, { method: 'GET', headers });
+    const res = await fetchWithTimeout(`${baseUrl}/mcp/stream/sse`, {
+      method: 'GET',
+      headers,
+    });
     const ok = res.status === 200 || res.status === 401 || res.status === 403; // availability/auth
     logResult('Stream SSE', ok, res.status, '');
   } catch (e) {
