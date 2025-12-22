@@ -6,6 +6,7 @@ We actively support the following versions of Cloud LLM Hub:
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 1.1.x   | :white_check_mark: |
 | 1.0.x   | :white_check_mark: |
 | < 1.0   | :x:                |
 
@@ -19,7 +20,7 @@ Security vulnerabilities should be reported privately to ensure responsible disc
 
 Please report security vulnerabilities via:
 
-- **Email:** [Add your security email here]
+- **Email:** oleksij.kyslytsja@gmail.com
 - **GitHub Security Advisory:** Use the "Report a vulnerability" button on the repository's Security tab
 - **Expected response time:** Within 48 hours
 
@@ -164,5 +165,5 @@ Security-related changes will be documented in:
 
 ---
 
-**Last Updated:** 2025-11-05  
-**Version:** 1.0
+**Last Updated:** 2025-12-22  
+**Version:** 1.1

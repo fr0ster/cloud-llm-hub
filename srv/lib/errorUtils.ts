@@ -18,7 +18,7 @@ export interface SafeErrorDetails {
   status?: number;
   statusText?: string;
   responseData?: string;
-  responseHeaders?: Record<string, any>;
+  responseHeaders?: Record<string, unknown>;
   stack?: string;
   code?: string;
   name?: string;
@@ -29,6 +29,7 @@ export interface SafeErrorDetails {
  * Safely extracts error details from any error type
  * Avoids circular references and handles AxiosError specially
  */
+// biome-ignore lint/suspicious/noExplicitAny: Error handling needs to accept any error type
 export function extractErrorDetails(error: any): SafeErrorDetails {
   const details: SafeErrorDetails = {
     message: 'Unknown error',
@@ -38,7 +39,8 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
   if (error?.response || (error?.statusCode && error?.config)) {
     // Cloud SDK errors have similar structure to AxiosError
     const status = error.response?.status || error.statusCode;
-    const statusText = error.response?.statusText || error.statusText || error.message;
+    const statusText =
+      error.response?.statusText || error.statusText || error.message;
 
     details.status = status;
     details.statusText = statusText;
@@ -51,7 +53,10 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
         details.responseData = error.response.data.substring(0, 500);
       } else {
         try {
-          details.responseData = JSON.stringify(error.response.data).substring(0, 500);
+          details.responseData = JSON.stringify(error.response.data).substring(
+            0,
+            500,
+          );
         } catch (_e) {
           details.responseData = String(error.response.data).substring(0, 500);
         }
@@ -73,7 +78,7 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
     details.message = error.message;
     details.stack = error.stack;
     details.name = error.name;
-    details.code = (error as any).code;
+    details.code = (error as { code?: string }).code;
   } else {
     // Other types
     try {
@@ -98,10 +103,11 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
  * @param context - Additional context to include in log
  */
 export function logErrorSafely(
-  logger: ILogger | { error: (message: string, meta?: any) => void },
+  logger: ILogger | { error: (message: string, meta?: unknown) => void },
   operationName: string,
+  // biome-ignore lint/suspicious/noExplicitAny: Error handling needs to accept any error type
   error: any,
-  context?: Record<string, any>
+  context?: Record<string, unknown>,
 ): void {
   if (!logger || !logger.error) {
     return;
@@ -121,7 +127,7 @@ export function logErrorSafely(
   }
 
   // Build error details object
-  const errorDetails: any = {
+  const errorDetails: Record<string, unknown> = {
     operation: operationName,
     ...details,
     ...context,
@@ -141,6 +147,7 @@ export function logErrorSafely(
  * Formats error message for user-facing responses
  * Extracts safe, readable error message without technical details
  */
+// biome-ignore lint/suspicious/noExplicitAny: Error handling needs to accept any error type
 export function formatErrorMessage(error: any): string {
   const details = extractErrorDetails(error);
 
@@ -164,7 +171,10 @@ export function formatErrorMessage(error: any): string {
     return 'Network error: Cannot resolve hostname. Please check your network connection and DNS settings.';
   }
 
-  if (details.code === 'ECONNREFUSED' || details.message?.includes('ECONNREFUSED')) {
+  if (
+    details.code === 'ECONNREFUSED' ||
+    details.message?.includes('ECONNREFUSED')
+  ) {
     return 'Connection refused: The server is not accepting connections. Please check if the service is running.';
   }
 
@@ -177,8 +187,9 @@ export function formatErrorMessage(error: any): string {
  * Similar to return_error from mcp-abap-adt
  */
 export function createErrorResponse(
+  // biome-ignore lint/suspicious/noExplicitAny: Error handling needs to accept any error type
   error: any,
-  operationName?: string
+  operationName?: string,
 ): {
   isError: boolean;
   content: Array<{ type: string; text: string }>;

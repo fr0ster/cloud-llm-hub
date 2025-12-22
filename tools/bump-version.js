@@ -3,7 +3,7 @@
 /**
  * Bump version in all files (package.json, mta.yaml)
  * Works like npm version but syncs version across all files
- * 
+ *
  * Usage:
  *   node tools/bump-version.js patch   # 1.0.0 -> 1.0.1
  *   node tools/bump-version.js minor   # 1.0.0 -> 1.1.0
@@ -11,9 +11,9 @@
  *   node tools/bump-version.js 1.2.3  # Set specific version
  */
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execSync } = require('node:child_process');
 
 const packageJsonPath = path.join(__dirname, '..', 'package.json');
 const mtaYamlPath = path.join(__dirname, '..', 'mta.yaml');
@@ -21,8 +21,10 @@ const mtaYamlPath = path.join(__dirname, '..', 'mta.yaml');
 // Parse semantic version
 function parseVersion(version) {
   const parts = version.split('.').map(Number);
-  if (parts.length !== 3 || parts.some(isNaN)) {
-    throw new Error(`Invalid version format: ${version}. Expected: major.minor.patch`);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) {
+    throw new Error(
+      `Invalid version format: ${version}. Expected: major.minor.patch`,
+    );
   }
   return { major: parts[0], minor: parts[1], patch: parts[2] };
 }
@@ -30,7 +32,7 @@ function parseVersion(version) {
 // Increment version
 function incrementVersion(currentVersion, type) {
   const version = parseVersion(currentVersion);
-  
+
   switch (type) {
     case 'major':
       return `${version.major + 1}.0.0`;
@@ -43,7 +45,9 @@ function incrementVersion(currentVersion, type) {
       if (/^\d+\.\d+\.\d+$/.test(type)) {
         return type;
       }
-      throw new Error(`Invalid version type: ${type}. Use patch, minor, major, or x.y.z`);
+      throw new Error(
+        `Invalid version type: ${type}. Use patch, minor, major, or x.y.z`,
+      );
   }
 }
 
@@ -58,8 +62,14 @@ function updatePackageJson(newVersion) {
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   const oldVersion = packageJson.version;
   packageJson.version = newVersion;
-  fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n', 'utf8');
-  console.log(`✅ Updated version in package.json: ${oldVersion} -> ${newVersion}`);
+  fs.writeFileSync(
+    packageJsonPath,
+    `${JSON.stringify(packageJson, null, 2)}\n`,
+    'utf8',
+  );
+  console.log(
+    `✅ Updated version in package.json: ${oldVersion} -> ${newVersion}`,
+  );
   return oldVersion;
 }
 
@@ -67,12 +77,16 @@ function updatePackageJson(newVersion) {
 function updateMtaYaml(newVersion) {
   let mtaContent = fs.readFileSync(mtaYamlPath, 'utf8');
   const versionRegex = /^version:\s*[\d.]+/m;
-  
+
   if (versionRegex.test(mtaContent)) {
-    const oldVersion = mtaContent.match(versionRegex)[0].replace(/^version:\s*/, '');
+    const oldVersion = mtaContent
+      .match(versionRegex)[0]
+      .replace(/^version:\s*/, '');
     mtaContent = mtaContent.replace(versionRegex, `version: ${newVersion}`);
     fs.writeFileSync(mtaYamlPath, mtaContent, 'utf8');
-    console.log(`✅ Updated version in mta.yaml: ${oldVersion} -> ${newVersion}`);
+    console.log(
+      `✅ Updated version in mta.yaml: ${oldVersion} -> ${newVersion}`,
+    );
     return oldVersion;
   } else {
     throw new Error('❌ Could not find version field in mta.yaml');
@@ -82,12 +96,12 @@ function updateMtaYaml(newVersion) {
 // Update version in package-lock.json
 function updatePackageLock(newVersion) {
   const packageLockPath = path.join(__dirname, '..', 'package-lock.json');
-  
+
   if (!fs.existsSync(packageLockPath)) {
     console.log('⚠️  package-lock.json not found, skipping');
     return;
   }
-  
+
   try {
     // Use npm to sync package-lock.json with package.json
     // This is the safest way to ensure consistency
@@ -96,7 +110,7 @@ function updatePackageLock(newVersion) {
       stdio: 'inherit',
     });
     console.log(`✅ Synced version in package-lock.json to ${newVersion}`);
-  } catch (error) {
+  } catch (_error) {
     console.error('⚠️  Failed to sync package-lock.json automatically');
     console.error('   Run manually: npm install --package-lock-only');
   }
@@ -105,9 +119,11 @@ function updatePackageLock(newVersion) {
 // Main function
 function main() {
   const type = process.argv[2];
-  
+
   if (!type) {
-    console.error('Usage: node tools/bump-version.js <patch|minor|major|version>');
+    console.error(
+      'Usage: node tools/bump-version.js <patch|minor|major|version>',
+    );
     console.error('Examples:');
     console.error('  node tools/bump-version.js patch   # 1.0.0 -> 1.0.1');
     console.error('  node tools/bump-version.js minor   # 1.0.0 -> 1.1.0');
@@ -119,27 +135,31 @@ function main() {
   try {
     const currentVersion = getCurrentVersion();
     console.log(`📦 Current version: ${currentVersion}`);
-    
+
     const newVersion = incrementVersion(currentVersion, type);
     console.log(`🚀 New version: ${newVersion}\n`);
-    
+
     // Update files
     updatePackageJson(newVersion);
     updateMtaYaml(newVersion);
     updatePackageLock(newVersion);
-    
+
     console.log(`\n✅ Version bumped to ${newVersion} in all files`);
     console.log(`\n💡 Next steps:`);
     console.log(`   1. Review changes: git diff`);
-    console.log(`   2. Commit: git add package.json package-lock.json mta.yaml && git commit -m "chore: bump version to ${newVersion}"`);
-    console.log(`   3. Tag: git tag -a v${newVersion} -m "Release v${newVersion}"`);
-    console.log(`   4. Push: git push origin main && git push origin v${newVersion}`);
-    
-  } catch (error) {
+    console.log(
+      `   2. Commit: git add package.json package-lock.json mta.yaml && git commit -m "chore: bump version to ${newVersion}"`,
+    );
+    console.log(
+      `   3. Tag: git tag -a v${newVersion} -m "Release v${newVersion}"`,
+    );
+    console.log(
+      `   4. Push: git push origin main && git push origin v${newVersion}`,
+    );
+  } catch (_error) {
     console.error(`❌ Error: ${error.message}`);
     process.exit(1);
   }
 }
 
 main();
-

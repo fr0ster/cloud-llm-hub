@@ -4,6 +4,141 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.5] - 2025-12-22
+
+### Changed
+- **Biome Migration**: Migrated from ESLint/Prettier to Biome for linting and formatting
+  - Added `@biomejs/biome` as dev dependency
+  - Replaced ESLint/Prettier scripts with Biome commands (`lint`, `lint:check`, `format`)
+  - Created `biome.json` configuration with standard rules
+  - Integrated Biome check into build process (`npx biome check srv tools test --diagnostic-level=error`)
+- **Type Safety**: Improved type safety across the codebase
+  - Replaced `any` types with `unknown` in error handling functions (`errorUtils.ts`, `server.ts`, `mcp-proxy.ts`)
+  - Added type guards for safe property access on `unknown` types
+  - Updated Node.js imports to use `node:` protocol (`fs`, `path`, `http`, `child_process`, `crypto`)
+- **CloudSdkAbapConnection**: Added stateful session support
+  - Added `sessionType` property to track session mode (`stateless` | `stateful`)
+  - Implemented `setSessionType()` method to switch between session types
+  - Added stateful session headers (`x-sap-adt-sessiontype`, `sap-adt-request-id`, `X-sap-adt-profiling`) when `sessionType === 'stateful'`
+  - Added `sap-adt-connection-id` header for all session types
+- **Localization**: Translated all messages in `tools/update-default-env.js` to English
+
+### Fixed
+- Fixed type safety issues by replacing `any` with `unknown` in error handling
+- Fixed assignment in expressions by using block statements (`test/abap-connection.test.js`)
+- Removed duplicate function declarations (`tools/update-cline-connection.js`)
+- Improved error handling with proper type guards and `ErrorWithCode` type
+- Fixed unused variables by prefixing with underscore (`tools/bump-version.js`)
+- Fixed unused imports (`BtpOnPremDestinationConnection.ts`, `logger.ts`)
+- Fixed non-null assertions by adding proper null checks (`CloudSdkAbapConnection.ts`)
+- Fixed computed property access by using literal keys where possible
+- Fixed string concatenation by using template literals
+- Removed unused suppression comments
+
+## [1.1.4] - 2025-12-22
+
+### Changed
+- **Dependencies Update**: Updated `@mcp-abap-adt` packages to latest versions
+  - `@mcp-abap-adt/adt-clients`: `^0.1.34` → `^0.2.6`
+  - `@mcp-abap-adt/auth-broker`: `^0.1.4` → `^0.2.10`
+  - `@mcp-abap-adt/connection`: `^0.1.13` → `^0.2.5`
+  - `@mcp-abap-adt/header-validator`: `^0.1.3` → `^0.1.8`
+  - Updated `mcp-abap-adt` submodule: `v1.2.3` → `v1.2.4`
+  - Added `@mcp-abap-adt/interfaces`: `^0.2.7`
+  - Added `@mcp-abap-adt/logger`: `^0.1.4`
+
+## [1.1.3] - 2025-12-22
+
+### Fixed
+
+- **CI/CD**: Replace `format:check` with auto-format in release workflow
+  - Changed GitHub Actions release workflow to auto-format code instead of failing on formatting issues
+  - Ensures consistent formatting across different prettier versions between local and CI environments
+
+## [1.1.2] - 2025-12-22
+
+### Fixed
+
+- **ESLint/Prettier Configuration**: Explicit prettier config in ESLint to enforce `singleQuote: true`
+  - Added explicit prettier options in `eslint.config.mjs` to prevent conflicts with `@sap/cds` ESLint config
+  - Ensures consistent quote style between local development and CI
+
+- **Type Safety**: Removed unused code and improved error handling
+  - Removed unused `extractJwtFromRequest` function from `destinationResolver.ts`
+  - Replaced `any` types with proper error types in destination and connectivity modules
+  - Renamed unused catch parameters with underscore prefix
+
+### Changed
+
+- **Documentation Organization**: Restructured documentation for better navigation
+  - Moved `DEBUG_JWT_AUTH.md` to `docs/development/`
+  - Created `docs/development/roadmaps/archive/` for reorganization plan documents
+  - Updated documentation links in `README.md` to reflect new structure
+
+- **Security Policy**: Updated `SECURITY.md`
+  - Added 1.1.x as supported version
+  - Updated contact email and last updated date
+
+## [1.1.1] - 2025-12-22
+
+### Fixed
+
+- **ESLint/Prettier Consistency**: Unified quote style between local and CI
+  - Added `eslint.config.mjs` to `.prettierignore` to prevent quote conflicts
+  - ESLint config uses double quotes (CI requirement), code uses single quotes (Prettier singleQuote: true)
+
+- **Type Safety Improvements**: Replaced `any` types with proper types
+  - `CloudSdkAbapConnection`: Typed CSRF error handling, session state, response conversion
+  - `BtpOnPremDestinationConnection`: Logger adapter uses `Record<string, unknown>`
+  - Renamed unused variables with underscore prefix (`_timeout`)
+
+## [1.1.0] - 2025-12-22
+
+### Changed
+
+- **Per-Request MCP Server Architecture**: Complete rewrite of request handling
+  - Each POST request now creates fresh connection, MCP server, and transport
+  - Removed instance caching (`instanceCache`) - follows standard MCP pattern
+  - Removed `sessionContext` dependency - connection passed directly to EmbeddableMcpServer
+  - Simplified `handleStreamHTTP` handler with proper cleanup in `finally` block
+  - Added `createMCPServerForRequest()` function returning server, connection, transport, and cleanup
+
+- **Header Constants from Interfaces Package**: Use shared constants instead of hardcoded strings
+  - Import `HEADER_SAP_DESTINATION`, `HEADER_SAP_CLIENT`, `HEADER_SAP_LOGIN`, `HEADER_SAP_PASSWORD`, `HEADER_AUTHORIZATION` from `@mcp-abap-adt/interfaces`
+  - Consistent header naming across all packages
+
+### Added
+
+- **Destination Auth Override**: Support for `x-sap-login` and `x-sap-password` headers
+  - When using `x-sap-destination`, can override destination auth with Basic auth from headers
+  - Useful for testing or when destination uses different credentials
+
+- **Type Safety in Auth Handlers**: Replaced `any` types with proper interfaces
+  - `CdsUser` interface for CAP user object
+  - `RequestHeaders` interface for request headers
+  - `CheckRolesData` interface for CheckRoles action data
+
+### Fixed
+
+- **ESLint Configuration**: Fixed quote style for CI compliance
+  - Changed all strings in `eslint.config.mjs` to use double quotes
+  - Resolved Prettier formatting conflicts in GitHub Actions
+
+## [1.0.4] - 2025-12-21
+
+### Changed
+
+- **mcp-abap-adt Submodule Update**: Updated to v1.2.0
+  - Added handlers path in tsconfig for proper type resolution
+  - Includes EmbeddableMcpServer for lightweight embedding scenarios
+
+## [1.0.3] - 2025-12-20
+
+### Changed
+
+- **mcp-abap-adt Submodule Updates**: Updated through v1.1.31 → v1.1.32
+  - Various bug fixes and improvements in the MCP ABAP ADT library
+
 ## [1.0.2] - 2025-12-01
 
 ### Added
@@ -219,4 +354,3 @@ This release includes a comprehensive documentation overhaul that brings the pro
 - **Enterprise-ready** with production runbooks, monitoring guides, and troubleshooting procedures
 - **International support** with Ukrainian translations of key documents
 - **Testing infrastructure** ready for high code coverage with detailed guidelines
-

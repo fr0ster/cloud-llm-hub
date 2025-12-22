@@ -11,9 +11,9 @@
  *   node test/abap-connection.test.js
  */
 
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Color output
 const colors = {
@@ -75,7 +75,8 @@ const config = {
   refreshToken: process.env.SAP_REFRESH_TOKEN || dotenv.SAP_REFRESH_TOKEN,
   uaaUrl: process.env.SAP_UAA_URL || dotenv.SAP_UAA_URL,
   uaaClientId: process.env.SAP_UAA_CLIENT_ID || dotenv.SAP_UAA_CLIENT_ID,
-  uaaClientSecret: process.env.SAP_UAA_CLIENT_SECRET || dotenv.SAP_UAA_CLIENT_SECRET,
+  uaaClientSecret:
+    process.env.SAP_UAA_CLIENT_SECRET || dotenv.SAP_UAA_CLIENT_SECRET,
   client: process.env.SAP_CLIENT || dotenv.SAP_CLIENT,
 };
 
@@ -89,31 +90,61 @@ log('ℹ', colors.cyan, 'Configuration', {
   hasJwtToken: !!config.jwtToken,
   jwtTokenLength: config.jwtToken?.length || 0,
   hasRefreshToken: !!config.refreshToken,
-  hasUaaCredentials: !!(config.uaaUrl && config.uaaClientId && config.uaaClientSecret),
+  hasUaaCredentials: !!(
+    config.uaaUrl &&
+    config.uaaClientId &&
+    config.uaaClientSecret
+  ),
   client: config.client || '(not specified)',
 });
 
 // Validate configuration
 // Skip tests gracefully if .env is missing (e.g., in CI/CD without secrets)
 if (!config.sapUrl) {
-  log('⚠', colors.yellow, 'SAP_URL not set in .env file - skipping integration tests');
-  log('ℹ', colors.cyan, 'To run integration tests, create .env file with SAP credentials');
+  log(
+    '⚠',
+    colors.yellow,
+    'SAP_URL not set in .env file - skipping integration tests',
+  );
+  log(
+    'ℹ',
+    colors.cyan,
+    'To run integration tests, create .env file with SAP credentials',
+  );
   process.exit(0);
 }
 
 if (!config.jwtToken) {
-  log('⚠', colors.yellow, 'SAP_JWT_TOKEN not set in .env file - skipping integration tests');
-  log('ℹ', colors.cyan, 'To run integration tests, create .env file with SAP credentials');
+  log(
+    '⚠',
+    colors.yellow,
+    'SAP_JWT_TOKEN not set in .env file - skipping integration tests',
+  );
+  log(
+    'ℹ',
+    colors.cyan,
+    'To run integration tests, create .env file with SAP credentials',
+  );
   process.exit(0);
 }
 
-if (!config.refreshToken || !config.uaaUrl || !config.uaaClientId || !config.uaaClientSecret) {
-  log('⚠', colors.yellow, 'UAA credentials incomplete - auto-refresh will not work', {
-    hasRefreshToken: !!config.refreshToken,
-    hasUaaUrl: !!config.uaaUrl,
-    hasClientId: !!config.uaaClientId,
-    hasClientSecret: !!config.uaaClientSecret,
-  });
+if (
+  !config.refreshToken ||
+  !config.uaaUrl ||
+  !config.uaaClientId ||
+  !config.uaaClientSecret
+) {
+  log(
+    '⚠',
+    colors.yellow,
+    'UAA credentials incomplete - auto-refresh will not work',
+    {
+      hasRefreshToken: !!config.refreshToken,
+      hasUaaUrl: !!config.uaaUrl,
+      hasClientId: !!config.uaaClientId,
+      hasClientSecret: !!config.uaaClientSecret,
+    },
+  );
 }
 
 console.log('');
@@ -155,7 +186,9 @@ function mcpRequest(method, params) {
 
     const req = http.request(options, (res) => {
       let data = '';
-      res.on('data', (chunk) => (data += chunk));
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
       res.on('end', () => {
         if (res.statusCode !== 200) {
           reject(new Error(`HTTP ${res.statusCode}: ${data}`));
@@ -167,7 +200,11 @@ function mcpRequest(method, params) {
           const responses = lines.map((line) => JSON.parse(line));
           resolve(responses);
         } catch (err) {
-          reject(new Error(`Failed to parse response: ${err.message}\nData: ${data}`));
+          reject(
+            new Error(
+              `Failed to parse response: ${err.message}\nData: ${data}`,
+            ),
+          );
         }
       });
     });
@@ -215,7 +252,11 @@ async function runTest() {
     console.log('');
 
     // Test 2: Call GetTable for T000
-    log('ℹ', colors.cyan, 'Test 2: GetTable for T000 (tests ABAP connection + auto-refresh)');
+    log(
+      'ℹ',
+      colors.cyan,
+      'Test 2: GetTable for T000 (tests ABAP connection + auto-refresh)',
+    );
     try {
       const getTableResponse = await mcpRequest('tools/call', {
         name: 'GetTable',
@@ -232,7 +273,7 @@ async function runTest() {
           contentType: content.type,
           hasText: !!content.text,
           textLength: content.text?.length || 0,
-          textPreview: content.text?.substring(0, 200) + '...',
+          textPreview: `${content.text?.substring(0, 200)}...`,
         });
         passed++;
       } else {
@@ -249,17 +290,23 @@ async function runTest() {
         console.log('  1. JWT token has expired');
         console.log('  2. Auto-refresh failed (check cloud-llm-hub logs)');
         console.log('  3. UAA credentials incorrect');
-        console.log('  4. Refresh token has expired (re-authenticate via mcp-abap-adt)');
+        console.log(
+          '  4. Refresh token has expired (re-authenticate via mcp-abap-adt)',
+        );
       }
     }
 
-    console.log('\n============================================================');
+    console.log(
+      '\n============================================================',
+    );
     if (failed === 0) {
       log('✓', colors.green, `All ${passed} tests passed!`);
     } else {
       log('✗', colors.red, `${failed} test(s) failed, ${passed} passed`);
     }
-    console.log('============================================================\n');
+    console.log(
+      '============================================================\n',
+    );
 
     process.exit(failed > 0 ? 1 : 0);
   } catch (error) {
@@ -269,9 +316,13 @@ async function runTest() {
       stack: error.stack,
     });
 
-    console.log('\n============================================================');
+    console.log(
+      '\n============================================================',
+    );
     log('✗', colors.red, 'Tests failed');
-    console.log('============================================================\n');
+    console.log(
+      '============================================================\n',
+    );
 
     process.exit(1);
   }
