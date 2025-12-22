@@ -1,8 +1,8 @@
 /**
  * Agent Service - CAP service for LLM Agent
- * 
+ *
  * Provides OData endpoints to interact with the LLM agent.
- * 
+ *
  * Architecture:
  * - Configuration comes from environment variables (set via mta.yaml or CF CLI)
  * - This service uses agent-manager.ts which loads configuration and creates agent instances
@@ -11,50 +11,56 @@
  * - All authentication is handled through destinations (configured in BTP Cockpit)
  */
 
-import cds, { type Service, type Request } from '@sap/cds';
+import cds, { type Request, type Service } from '@sap/cds';
+import type { AgentConfig } from './agent-config';
 import { getAgent } from './agent-manager';
-import type { BaseAgent } from '@cloud-llm-hub/llm-agent';
 
 /**
  * Register CAP service handlers
  */
-export default async function registerAgentServiceHandlers(srv: Service): Promise<void> {
+export default async function registerAgentServiceHandlers(
+  srv: Service,
+): Promise<void> {
   const log = cds.log('agent-service');
   log.info('Registering AgentService handlers');
 
   /**
    * Chat endpoint - send message to agent
-   * 
+   *
    * Agent manager loads configuration from environment variables and creates agent instance.
    * Agent doesn't know about SAP - it just works with MCP client.
    */
   srv.on('Chat', async (req: Request) => {
     const message = req.data.message as string;
-    
+
     if (!message || typeof message !== 'string') {
-      const error = new Error('Message parameter is required and must be a string');
-      (error as any).statusCode = 400;
+      const error = new Error(
+        'Message parameter is required and must be a string',
+      );
+      (error as Error & { statusCode?: number }).statusCode = 400;
       throw error;
     }
 
-    log.info('Chat request received', { 
+    const user = req.user as { id?: string } | undefined;
+    log.info('Chat request received', {
       messageLength: message.length,
-      user: (req.user as any)?.id,
+      user: user?.id,
     });
 
     try {
       // Get agent instance - agent-manager handles all MCP configuration
       const agent = await getAgent(req);
       const response = await agent.process(message);
-      
+
       if (response.error) {
         log.error('Agent processing error', { error: response.error });
         throw new Error(response.error);
       }
 
       return response.message;
-    } catch (error: any) {
-      log.error('Chat handler error', { error: error.message });
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error('Chat handler error', { error: err.message });
       throw error;
     }
   });
@@ -67,13 +73,14 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
     try {
       const agent = await getAgent(req);
       const history = agent.getHistory();
-      return history.map((msg: any) => ({
+      return history.map((msg: { role?: string; content?: string }) => ({
         role: msg.role,
         content: msg.content,
         timestamp: new Date(),
       }));
-    } catch (error: any) {
-      log.warn('Failed to get history', { error: error.message });
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.warn('Failed to get history', { error: err.message });
       return [];
     }
   });
@@ -92,11 +99,12 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
         success: true,
         message: 'Conversation history cleared successfully',
       };
-    } catch (error: any) {
-      log.error('Failed to clear history', { error: error.message });
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error('Failed to clear history', { error: err.message });
       return {
         success: false,
-        message: error.message || 'Failed to clear history',
+        message: err.message || 'Failed to clear history',
       };
     }
   });
@@ -107,27 +115,31 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
    */
   srv.on('Health', async (req: Request) => {
     const { getAgentConfig } = await import('./agent-config');
-    
+
     let agentReady = false;
     let mcpConnected = false;
-    let config: any = null;
-    
+    let config: AgentConfig | null = null;
+
     try {
       // Load configuration to show in health check
       config = getAgentConfig();
-      
+
       const agent = await getAgent(req);
       agentReady = !!agent;
-      
+
       // Try to list tools to check connection
       try {
-        await (agent as any).mcpClient.listTools();
+        const agentWithClient = agent as unknown as {
+          mcpClient?: { listTools?: () => Promise<unknown> };
+        };
+        await agentWithClient.mcpClient?.listTools?.();
         mcpConnected = true;
-      } catch (err) {
+      } catch (_err) {
         // Connection not ready
       }
-    } catch (err: any) {
-      log.warn('Health check failed', { error: err.message });
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log.warn('Health check failed', { error: error.message });
     }
 
     return {
@@ -147,4 +159,3 @@ export default async function registerAgentServiceHandlers(srv: Service): Promis
 
 // CommonJS compatibility for CAP
 module.exports = registerAgentServiceHandlers;
-

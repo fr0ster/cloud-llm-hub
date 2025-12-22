@@ -17,8 +17,7 @@
  *   npm run deploy  # Uses mbt deploy -p which handles substitution automatically
  */
 
-const { readFileSync, writeFileSync, existsSync } = require('fs');
-const { resolve } = require('path');
+const { readFileSync, writeFileSync, existsSync } = require('node:fs');
 
 const PARAMS_FILE = 'mta-deploy.yaml';
 const TEMPLATE_FILE = 'mta-deploy.yaml.template';
@@ -46,7 +45,7 @@ function main() {
     const params = {};
     const lines = paramsContent.split('\n');
 
-    lines.forEach(line => {
+    lines.forEach((line) => {
       const trimmed = line.trim();
       // Skip comments and empty lines
       if (trimmed && !trimmed.startsWith('#')) {
@@ -55,8 +54,10 @@ function main() {
           const key = match[1];
           let value = match[2];
           // Remove quotes if present
-          if ((value.startsWith('"') && value.endsWith('"')) ||
-              (value.startsWith("'") && value.endsWith("'"))) {
+          if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+          ) {
             value = value.slice(1, -1);
           }
           params[key] = value;
@@ -65,7 +66,7 @@ function main() {
     });
 
     console.log('📋 Loaded parameters:');
-    Object.keys(params).forEach(key => {
+    Object.keys(params).forEach((key) => {
       console.log(`   ${key}: ${params[key]}`);
     });
     console.log('');
@@ -81,7 +82,7 @@ function main() {
 
     // Substitute parameters (~{PARAM_NAME} → value)
     let substitutedContent = mtaContent;
-    Object.keys(params).forEach(key => {
+    Object.keys(params).forEach((key) => {
       const placeholder = `~{${key}}`;
       const value = params[key];
       // Escape special regex characters in placeholder
@@ -90,7 +91,9 @@ function main() {
       const matches = substitutedContent.match(regex);
       if (matches) {
         substitutedContent = substitutedContent.replace(regex, value);
-        console.log(`   ✓ Substituted ${placeholder} → ${value} (${matches.length} occurrence(s))`);
+        console.log(
+          `   ✓ Substituted ${placeholder} → ${value} (${matches.length} occurrence(s))`,
+        );
       }
     });
 
@@ -103,7 +106,6 @@ function main() {
     console.log(`   2. Run: mbt build`);
     console.log(`   3. Run: cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar`);
     console.log(`\n💡 To restore original: cp ${MTA_BACKUP} ${MTA_FILE}`);
-
   } catch (error) {
     console.error('\n❌ Error:', error.message);
     if (existsSync(MTA_BACKUP)) {
@@ -116,4 +118,3 @@ function main() {
 }
 
 main();
-
