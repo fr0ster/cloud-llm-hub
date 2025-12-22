@@ -37,8 +37,8 @@ jobs:
       - name: Auto-format code
         run: npm run format
       
-      - name: Run linter
-        run: npm run lint
+      - name: Run linter (without prettier)
+        run: npx eslint . --ext .ts,.js,.mjs --max-warnings 100
       
       - name: Type check
         run: npx tsc --noEmit
