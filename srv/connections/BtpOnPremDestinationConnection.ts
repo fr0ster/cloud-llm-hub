@@ -3,25 +3,10 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { AbapRequestOptions, SapConfig, ILogger } from '@mcp-abap-adt/connection';
 import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
 import type { OnPremAbapConnection as OnPremAbapConnectionType } from '@mcp-abap-adt/connection';
-import { logger } from '../lib/logger';
 
 // Logger adapter for OnPremAbapConnection
-const loggerAdapter: ILogger = {
-  info: (message: string, meta?: Record<string, unknown>) => logger.info(message, meta),
-  error: (message: string, meta?: Record<string, unknown>) => logger.error(message, meta),
-  warn: (message: string, meta?: Record<string, unknown>) => logger.warn(message, meta),
-  debug: (message: string, meta?: Record<string, unknown>) => logger.debug(message, meta),
-  csrfToken: (
-    action: 'fetch' | 'retry' | 'success' | 'error',
-    message: string,
-    meta?: Record<string, unknown>
-  ) => {
-    logger.csrfToken(action, message, meta);
-  },
-  tlsConfig: (rejectUnauthorized: boolean) => {
-    logger.tlsConfig(rejectUnauthorized);
-  },
-};
+// ILogger doesn't include csrfToken and tlsConfig, so we use loggerAdapter from lib/logger
+import { loggerAdapter } from '../lib/logger';
 
 export interface ConnectivityProxyConfig {
   host: string;
@@ -46,9 +31,9 @@ export class BtpOnPremDestinationConnection
   private readonly additionalRequestHeaders: Record<string, string>;
 
   constructor(options: BtpOnPremConnectionOptions) {
-    // OnPremAbapConnection constructor now requires: config, loggerAdapter?, sessionStorage?, sessionId?
-    // For BTP on-premise, we use logger adapter and default session storage
-    super(options.sapConfig, loggerAdapter, undefined, 'btp-onprem-session');
+    // BaseAbapConnection constructor: config, logger?, sessionId?
+    // For BTP on-premise, we use logger adapter
+    super(options.sapConfig, loggerAdapter, 'btp-onprem-session');
 
     if (options.sapConfig.authType !== 'basic') {
       throw new Error('BTP on-premise destinations require basic authentication credentials.');
