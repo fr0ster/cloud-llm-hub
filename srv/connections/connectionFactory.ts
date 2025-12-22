@@ -7,10 +7,14 @@
  * - Direct URL + Basic/JWT → createAbapConnection from @mcp-abap-adt/connection
  */
 
-import type { AbapConnection, SapConfig, ILogger } from '@mcp-abap-adt/connection';
+import type {
+  AbapConnection,
+  ILogger,
+  SapConfig,
+} from '@mcp-abap-adt/connection';
 import { createAbapConnection } from '@mcp-abap-adt/connection';
-import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
 import { loggerAdapter } from '../lib/logger';
+import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
 
 export interface ConnectionOptions {
   /**
@@ -87,7 +91,8 @@ export interface ConnectionOptions {
  * });
  */
 export function createConnection(options: ConnectionOptions): AbapConnection {
-  const { sapConfig, destinationName, logger, sessionId, tokenRefresher } = options;
+  const { sapConfig, destinationName, logger, sessionId, tokenRefresher } =
+    options;
 
   // Priority 1: Destination-based connection (BTP Cloud)
   if (destinationName) {
@@ -109,7 +114,12 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
   // Use provided logger or default loggerAdapter from mcp-abap-adt
   const effectiveLogger = logger || loggerAdapter;
 
-  return createAbapConnection(sapConfig, effectiveLogger, sessionId, tokenRefresher);
+  return createAbapConnection(
+    sapConfig,
+    effectiveLogger,
+    sessionId,
+    tokenRefresher,
+  );
 }
 
 /**
@@ -119,7 +129,7 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
  * @returns true if connection is CloudSdkAbapConnection
  */
 export function isCloudSdkConnection(
-  connection: AbapConnection
+  connection: AbapConnection,
 ): connection is CloudSdkAbapConnection {
   return connection instanceof CloudSdkAbapConnection;
 }

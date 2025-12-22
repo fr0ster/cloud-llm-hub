@@ -1,6 +1,6 @@
-import cds, { Request, Service } from '@sap/cds';
-import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import cds, { type Request, type Service } from '@sap/cds';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
 interface ProxyInvocation {
   toolId: string;
@@ -20,7 +20,9 @@ const DEFAULT_MODE: 'sse' | 'stream-http' = 'stream-http';
  * CAP service handler for McpProxyService.
  * CAP enforces the `@requires: 'MCP_Connector'` annotation defined in the CDS model.
  */
-export default async function registerMcpProxyHandlers(srv: Service): Promise<void> {
+export default async function registerMcpProxyHandlers(
+  srv: Service,
+): Promise<void> {
   const log = cds.log('mcp-proxy');
   log.info('🔥🔥🔥 REGISTERING McpProxyService handlers', {
     serviceName: srv.name,
@@ -30,11 +32,12 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
   // Health check endpoint
   srv.on('Health', async (req: Request) => {
     const now = new Date().toISOString();
+    const user = req.user as { id?: string; roles?: string[] } | undefined;
     log.info('🔥 Health check handler CALLED', {
       now,
       hasUser: !!req.user,
-      userId: (req.user as any)?.id,
-      userRoles: (req.user as any)?.roles,
+      userId: user?.id,
+      userRoles: user?.roles,
     });
 
     return {
@@ -47,12 +50,18 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
   // Uses executeHttpRequest from SAP Cloud SDK - direct destination handling
   srv.on('ProbeDestination', async (req: Request) => {
     // CAP functions receive parameters via req.data or req.query
+    const reqData = req.data as { destination?: string } | undefined;
+    const reqQuery = req.query as
+      | { destination?: string; name?: string }
+      | undefined;
     const destination =
-      (req.data as any)?.destination || (req.query as any)?.destination || (req.query as any)?.name;
+      reqData?.destination || reqQuery?.destination || reqQuery?.name;
 
     if (!destination || typeof destination !== 'string') {
-      const error = new Error('Query parameter "destination" (or "name") is required.');
-      (error as any).statusCode = 400;
+      const error = new Error(
+        'Query parameter "destination" (or "name") is required.',
+      );
+      (error as Error & { statusCode?: number }).statusCode = 400;
       throw error;
     }
 
@@ -74,16 +83,20 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
       const proxyType = destinationConfig.proxyType
         ? String(destinationConfig.proxyType)
         : 'Internet';
-      const connectivityMode = proxyType.toLowerCase() === 'onpremise' ? 'onprem' : 'internet';
+      const connectivityMode =
+        proxyType.toLowerCase() === 'onpremise' ? 'onprem' : 'internet';
       const authentication = destinationConfig.authentication || 'Unknown';
 
       // Get sap-client from destination if available
+      const originalProps = destinationConfig.originalProperties as
+        | Record<string, unknown>
+        | undefined;
       const sapClient =
-        (destinationConfig.originalProperties as any)?.['sap-client'] ||
-        (destinationConfig.originalProperties as any)?.['SAP-Client'] ||
+        (originalProps?.['sap-client'] as string) ||
+        (originalProps?.['SAP-Client'] as string) ||
         '';
       const cloudConnectorLocationId =
-        (destinationConfig.originalProperties as any)?.['CloudConnectorLocationId'] || '';
+        (originalProps?.CloudConnectorLocationId as string) || '';
 
       let status: number | undefined;
       let statusText: string | undefined;
@@ -109,7 +122,7 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
             method: 'GET',
             url: '/',
             headers: sapClient ? { 'X-SAP-Client': sapClient } : {},
-          }
+          },
         );
 
         // executeHttpRequest returns response with status, statusText, headers, data
@@ -124,6 +137,7 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
           status,
           contentType,
         });
+        // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK error type is not fully typed
       } catch (error: any) {
         // executeHttpRequest throws errors with response object for HTTP errors
         // Extract status from error response
@@ -132,7 +146,8 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
           status = error.response.status;
           statusText = error.response.statusText || error.message || 'Error';
           const errorHeaders = error.response.headers || {};
-          contentType = errorHeaders['content-type'] || errorHeaders['Content-Type'] || '';
+          contentType =
+            errorHeaders['content-type'] || errorHeaders['Content-Type'] || '';
 
           log.debug('Destination probe returned status (expected for probe)', {
             destinationName,
@@ -185,6 +200,7 @@ export default async function registerMcpProxyHandlers(srv: Service): Promise<vo
         },
         timestamp: new Date().toISOString(),
       };
+      // biome-ignore lint/suspicious/noExplicitAny: Error type from executeHttpRequest is not fully typed
     } catch (error: any) {
       // Use synchronized error handling from errorUtils
       const { logErrorSafely } = await import('./lib/errorUtils');

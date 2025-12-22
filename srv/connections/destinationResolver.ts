@@ -1,6 +1,6 @@
-import { getDestination } from '@sap-cloud-sdk/connectivity';
-import type { Destination } from '@sap-cloud-sdk/connectivity';
 import type { SapConfig } from '@mcp-abap-adt/connection';
+import type { Destination } from '@sap-cloud-sdk/connectivity';
+import { getDestination } from '@sap-cloud-sdk/connectivity';
 
 // Ensure VCAP_SERVICES is loaded from default-env.json for local development
 // CAP loads it automatically, but we ensure it's available for SAP Cloud SDK
@@ -27,7 +27,10 @@ export interface DestinationResolution {
 /**
  * Get case-insensitive property from destination configuration
  */
-function getCaseInsensitive(destination: Destination, key: string): string | undefined {
+function getCaseInsensitive(
+  destination: Destination,
+  key: string,
+): string | undefined {
   const config = destination.originalProperties || {};
 
   // Try exact match first
@@ -73,23 +76,31 @@ function getCaseInsensitive(destination: Destination, key: string): string | und
 async function buildSapConfigFromDestination(
   destinationName: string,
   destination: Destination,
-  jwtToken?: string
+  jwtToken?: string,
 ): Promise<DestinationResolution> {
   const rawUrl = destination.url || getCaseInsensitive(destination, 'URL');
   if (!rawUrl) {
-    throw new Error(`Destination "${destinationName}" is missing URL property.`);
+    throw new Error(
+      `Destination "${destinationName}" is missing URL property.`,
+    );
   }
 
   const proxyType = destination.proxyType
     ? String(destination.proxyType)
     : getCaseInsensitive(destination, 'ProxyType');
   const authentication =
-    destination.authentication || getCaseInsensitive(destination, 'Authentication');
+    destination.authentication ||
+    getCaseInsensitive(destination, 'Authentication');
   const sapClient = getCaseInsensitive(destination, 'sap-client');
-  const cloudConnectorLocationId = getCaseInsensitive(destination, 'CloudConnectorLocationId');
+  const cloudConnectorLocationId = getCaseInsensitive(
+    destination,
+    'CloudConnectorLocationId',
+  );
 
   if (!authentication) {
-    throw new Error(`Destination "${destinationName}" is missing Authentication property.`);
+    throw new Error(
+      `Destination "${destinationName}" is missing Authentication property.`,
+    );
   }
 
   // Determine authType based on destination authentication
@@ -104,7 +115,7 @@ async function buildSapConfigFromDestination(
       break;
     default:
       throw new Error(
-        `Destination "${destinationName}" uses unsupported authentication type "${authentication}".`
+        `Destination "${destinationName}" uses unsupported authentication type "${authentication}".`,
       );
   }
 
@@ -156,13 +167,16 @@ async function buildSapConfigFromDestination(
  */
 export async function resolveDestinationSapConfig(
   destinationName: string,
-  jwtToken?: string
+  jwtToken?: string,
 ): Promise<DestinationResolution> {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const log = require('@sap/cds').log('destination-resolver');
 
   try {
-    log.debug('Resolving destination via SAP Cloud SDK', { destinationName, hasJwt: !!jwtToken });
+    log.debug('Resolving destination via SAP Cloud SDK', {
+      destinationName,
+      hasJwt: !!jwtToken,
+    });
 
     // First, get destination without JWT to check authentication type
     // Destination credentials are stored in destination itself, not in user JWT
@@ -174,7 +188,8 @@ export async function resolveDestinationSapConfig(
     }
 
     const authentication =
-      destination.authentication || getCaseInsensitive(destination, 'Authentication');
+      destination.authentication ||
+      getCaseInsensitive(destination, 'Authentication');
 
     log.debug('Destination retrieved successfully', {
       destinationName,
@@ -186,23 +201,36 @@ export async function resolveDestinationSapConfig(
     // Only pass JWT token if destination requires Principal Propagation
     // For BasicAuthentication and OAuth2ClientCredentials, destination has its own credentials
     if (authentication === 'OAuth2SAMLBearerAssertion' && jwtToken) {
-      log.debug('Using Principal Propagation (OAuth2SAMLBearerAssertion) with user JWT', {
-        destinationName,
-        jwtTokenLength: jwtToken.length,
-      });
+      log.debug(
+        'Using Principal Propagation (OAuth2SAMLBearerAssertion) with user JWT',
+        {
+          destinationName,
+          jwtTokenLength: jwtToken.length,
+        },
+      );
     } else if (authentication === 'OAuth2SAMLBearerAssertion' && !jwtToken) {
-      log.warn('Destination requires Principal Propagation but no JWT token provided', {
-        destinationName,
-        authentication,
-      });
+      log.warn(
+        'Destination requires Principal Propagation but no JWT token provided',
+        {
+          destinationName,
+          authentication,
+        },
+      );
     } else if (jwtToken && authentication !== 'OAuth2SAMLBearerAssertion') {
-      log.debug('Ignoring user JWT token - destination uses its own credentials', {
-        destinationName,
-        authentication,
-      });
+      log.debug(
+        'Ignoring user JWT token - destination uses its own credentials',
+        {
+          destinationName,
+          authentication,
+        },
+      );
     }
 
-    return buildSapConfigFromDestination(destinationName, destination, jwtToken);
+    return buildSapConfigFromDestination(
+      destinationName,
+      destination,
+      jwtToken,
+    );
   } catch (error: unknown) {
     // Use synchronized error handling from errorUtils
     const { logErrorSafely } = await import('../lib/errorUtils');
@@ -214,12 +242,14 @@ export async function resolveDestinationSapConfig(
     const { formatErrorMessage } = await import('../lib/errorUtils');
     const message = formatErrorMessage(error);
     const destinationError = new Error(
-      `Failed to resolve destination "${destinationName}": ${message}`
+      `Failed to resolve destination "${destinationName}": ${message}`,
     ) as Error & { statusCode?: number; code?: string };
     destinationError.statusCode = 502; // Bad Gateway
     const errorObj = error as { code?: string };
     destinationError.code =
-      error instanceof Error && errorObj.code ? errorObj.code : 'DESTINATION_RESOLUTION_FAILED';
+      error instanceof Error && errorObj.code
+        ? errorObj.code
+        : 'DESTINATION_RESOLUTION_FAILED';
     throw destinationError;
   }
 }

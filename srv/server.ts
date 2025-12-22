@@ -14,11 +14,22 @@
 import './env-setup';
 
 import cds from '@sap/cds';
-import type { Application, Request, Response, NextFunction } from 'express';
-// @ts-ignore - @sap/xsenv doesn't have types
+// @ts-expect-error - @sap/xsenv doesn't have types
 import { loadEnv } from '@sap/xsenv';
+import type { Application, NextFunction, Request, Response } from 'express';
+import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
-import { logErrorSafely, formatErrorMessage } from './lib/errorUtils';
+
+/**
+ * Type guard for MCP request body
+ */
+function isMcpRequestBody(body: unknown): body is {
+  method?: string;
+  params?: { name?: string; arguments?: Record<string, unknown> };
+  id?: string | number;
+} {
+  return body !== null && typeof body === 'object' && !Array.isArray(body);
+}
 
 /**
  * Stream-HTTP endpoint handler - proxies to embedded MCP server
@@ -47,9 +58,9 @@ import { logErrorSafely, formatErrorMessage } from './lib/errorUtils';
  * @param req - HTTP request
  * @param res - HTTP response
  */
-async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
+async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
   const log = cds.log('mcp-proxy/stream-http');
-  let body: any = null;
+  let body: unknown = null;
   let cleanup: (() => Promise<void>) | null = null;
 
   // Only handle POST requests (like mcp-abap-adt)
@@ -78,8 +89,9 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     }
 
     // Log request details for debugging
-    if (body && typeof body === 'object') {
-      const toolName = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
+    if (isMcpRequestBody(body)) {
+      const toolName =
+        body.params?.name || body.method?.replace('tools/', '') || 'unknown';
       const toolArgs = body.params?.arguments || {};
       log.info('MCP request', {
         method: body.method,
@@ -117,16 +129,25 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     // Handle HTTP request through transport
     try {
       await result.transport.handleRequest(req, res, body);
-    } catch (transportError: any) {
-      const errorDetails: any = {
-        error_type: transportError?.constructor?.name || 'Unknown',
-        error_message: transportError?.message || String(transportError),
-        toolName: body?.params?.name || 'unknown',
+    } catch (transportError: unknown) {
+      const errorObj = transportError as {
+        message?: string;
+        constructor?: { name?: string };
+      };
+      const errorDetails: Record<string, unknown> = {
+        error_type: errorObj?.constructor?.name || 'Unknown',
+        error_message: errorObj?.message || String(transportError),
+        toolName: isMcpRequestBody(body)
+          ? body.params?.name || 'unknown'
+          : 'unknown',
       };
 
-      if (transportError?.response) {
-        errorDetails.http_status = transportError.response.status;
-        errorDetails.http_status_text = transportError.response.statusText;
+      const transportErr = transportError as {
+        response?: { status?: number; statusText?: string };
+      };
+      if (transportErr?.response) {
+        errorDetails.http_status = transportErr.response.status;
+        errorDetails.http_status_text = transportErr.response.statusText;
       }
 
       log.error('Transport request failed', errorDetails);
@@ -134,20 +155,25 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
     }
 
     log.debug('Request completed');
-  } catch (error: any) {
-    const context: Record<string, any> = {
+  } catch (error: unknown) {
+    const context: Record<string, unknown> = {
       path: req.path,
       method: req.method,
     };
 
-    if (body && typeof body === 'object') {
-      context.tool_name = body.params?.name || body.method?.replace('tools/', '') || 'unknown';
+    if (isMcpRequestBody(body)) {
+      context.tool_name =
+        body.params?.name || body.method?.replace('tools/', '') || 'unknown';
     }
 
     logErrorSafely(log, 'HTTP request handling', error, context);
 
     if (!res.headersSent) {
-      const statusCode = error?.response?.status || error?.statusCode || 500;
+      const err = error as {
+        response?: { status?: number };
+        statusCode?: number;
+      };
+      const statusCode = err?.response?.status || err?.statusCode || 500;
       const userMessage = formatErrorMessage(error);
       res.writeHead(statusCode).end(`Internal Server Error: ${userMessage}`);
     } else {
@@ -174,13 +200,16 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
 async function getOAuthToken(
   clientId: string,
   clientSecret: string,
-  tokenUrl: string
+  tokenUrl: string,
 ): Promise<string> {
   const fetch = (await import('node-fetch')).default;
   const log = cds.log('oauth-token');
 
   try {
-    log.debug('Requesting OAuth token', { clientId: clientId.substring(0, 20) + '...', tokenUrl });
+    log.debug('Requesting OAuth token', {
+      clientId: `${clientId.substring(0, 20)}...`,
+      tokenUrl,
+    });
 
     const response = await fetch(tokenUrl, {
       method: 'POST',
@@ -195,16 +224,22 @@ async function getOAuthToken(
 
     if (!response.ok) {
       const errorText = await response.text();
-      log.error('OAuth token request failed', { status: response.status, error: errorText });
-      throw new Error(`OAuth token request failed: ${response.status} ${errorText}`);
+      log.error('OAuth token request failed', {
+        status: response.status,
+        error: errorText,
+      });
+      throw new Error(
+        `OAuth token request failed: ${response.status} ${errorText}`,
+      );
     }
 
     const data = (await response.json()) as { access_token: string };
     log.debug('OAuth token obtained successfully');
     return data.access_token;
-  } catch (error: any) {
-    log.error('Failed to get OAuth token', { error: error.message });
-    throw error;
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    log.error('Failed to get OAuth token', { error: err.message });
+    throw err;
   }
 }
 
@@ -223,21 +258,27 @@ cds.on('bootstrap', (app: Application) => {
    * - Accept: application/json, text/event-stream (required by transport even with enableJsonResponse: true)
    * Note: enableJsonResponse: true means we use JSON format, not SSE, but transport still requires both in Accept
    */
-  app.use('/mcp/stream/http', (req: Request, res: Response, next: NextFunction) => {
-    // Fix Content-Type: convert application/x-ndjson to application/json
-    if (req.headers['content-type'] === 'application/x-ndjson') {
-      req.headers['content-type'] = 'application/json';
-    }
+  app.use(
+    '/mcp/stream/http',
+    (req: Request, _res: Response, next: NextFunction) => {
+      // Fix Content-Type: convert application/x-ndjson to application/json
+      if (req.headers['content-type'] === 'application/x-ndjson') {
+        req.headers['content-type'] = 'application/json';
+      }
 
-    // Ensure Accept header includes both required types (transport requirement)
-    // Even with enableJsonResponse: true, transport requires both types in Accept header
-    const accept = req.headers.accept || '';
-    if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
-      req.headers.accept = 'application/json, text/event-stream';
-    }
+      // Ensure Accept header includes both required types (transport requirement)
+      // Even with enableJsonResponse: true, transport requires both types in Accept header
+      const accept = req.headers.accept || '';
+      if (
+        !accept.includes('application/json') ||
+        !accept.includes('text/event-stream')
+      ) {
+        req.headers.accept = 'application/json, text/event-stream';
+      }
 
-    next();
-  });
+      next();
+    },
+  );
 
   /**
    * Convert Basic auth to Bearer token in production mode
@@ -277,7 +318,9 @@ cds.on('bootstrap', (app: Application) => {
 
       const xsuaa = vcapServices?.xsuaa?.[0]?.credentials;
       if (!xsuaa) {
-        convertLog.warn('⚠️ XSUAA credentials not found, cannot convert Basic to Bearer');
+        convertLog.warn(
+          '⚠️ XSUAA credentials not found, cannot convert Basic to Bearer',
+        );
         return;
       }
 
@@ -286,17 +329,22 @@ cds.on('bootstrap', (app: Application) => {
       convertLog.info('📡 Requesting OAuth token', { tokenUrl });
 
       // Get token using client_credentials flow
-      const token = await getOAuthToken(xsuaa.clientid, xsuaa.clientsecret, tokenUrl);
+      const token = await getOAuthToken(
+        xsuaa.clientid,
+        xsuaa.clientsecret,
+        tokenUrl,
+      );
 
       // Replace Basic auth with Bearer token
       req.headers.authorization = `Bearer ${token}`;
       convertLog.info('✅ Successfully converted Basic auth to Bearer token', {
         tokenLength: token.length,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
       convertLog.error('❌ Failed to convert Basic auth to Bearer', {
-        error: error.message,
-        stack: error.stack?.substring(0, 300),
+        error: err.message,
+        stack: err.stack?.substring(0, 300),
       });
       // Don't throw - let auth check fail later
     }
@@ -312,8 +360,8 @@ cds.on('bootstrap', (app: Application) => {
     try {
       debugLog.info('🔍 Checking auth via CAP CheckAuth (in-process)', {
         hasAuthHeader: !!req.headers.authorization,
-        hasUser: !!(req as any).user,
-        userId: (req as any).user?.id,
+        hasUser: !!(req as Request & { user?: { id?: string } }).user,
+        userId: (req as Request & { user?: { id?: string } }).user?.id,
       });
 
       // Get AuthService (internal CAP service, same process)
@@ -331,22 +379,27 @@ cds.on('bootstrap', (app: Application) => {
       // Call CheckAuth function using modern CAP API (srv.run with req)
       // This automatically picks up the request context (user/tenant/locale)
       // CAP will authenticate based on req.headers.authorization and set req.user
-      let result;
+      let result: unknown;
       try {
         // Call CheckAuth function through service with request context
         // The request object is passed to propagate user/tenant/locale
         result = await srv.run('CheckAuth', req);
-      } catch (authError: any) {
+      } catch (authError: unknown) {
         // Handle CAP rejections (401, 403, etc.)
-        if (authError.code === 401 || authError.statusCode === 401) {
+        const authErr = authError as {
+          code?: number;
+          statusCode?: number;
+          message?: string;
+        };
+        if (authErr.code === 401 || authErr.statusCode === 401) {
           debugLog.warn('❌ CheckAuth: Unauthorized', {
-            code: authError.code || authError.statusCode,
-            message: authError.message,
+            code: authErr.code || authErr.statusCode,
+            message: authErr.message,
           });
           if (!res.headersSent) {
             res.status(401).json({
               error: 'Unauthorized',
-              message: authError.message || 'Authentication failed',
+              message: authErr.message || 'Authentication failed',
             });
           }
           return false;
@@ -354,43 +407,62 @@ cds.on('bootstrap', (app: Application) => {
         throw authError;
       }
 
+      // Type guard for CheckAuth result
+      const checkAuthResult = result as {
+        authenticated?: boolean;
+        id?: string;
+        roles?: string[];
+      };
+
       debugLog.info('✅ CheckAuth succeeded', {
-        authenticated: result?.authenticated,
-        userId: result?.id,
-        roles: result?.roles,
+        authenticated: checkAuthResult?.authenticated,
+        userId: checkAuthResult?.id,
+        roles: checkAuthResult?.roles,
       });
 
       // Set req.user from CheckAuth result for subsequent handlers
-      if (result && !(req as any).user) {
-        (req as any).user = {
-          id: result.id,
-          roles: result.roles || [],
+      const reqWithUser = req as Request & {
+        user?: { id?: string; roles?: string[]; _is_anonymous?: boolean };
+      };
+      const resultWithUser = checkAuthResult;
+      if (resultWithUser && !reqWithUser.user) {
+        reqWithUser.user = {
+          id: resultWithUser.id,
+          roles: resultWithUser.roles || [],
           _is_anonymous: false,
         };
       }
 
       return true;
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      const errWithStatus = err as Error & {
+        statusCode?: number;
+        code?: number;
+      };
       debugLog.error('❌ requireAuth error', {
-        error: e.message,
-        statusCode: e?.statusCode,
-        code: e?.code,
-        name: e?.name,
-        stack: e?.stack?.substring(0, 500),
+        error: err.message,
+        statusCode: errWithStatus?.statusCode,
+        code: errWithStatus?.code,
+        name: err.name,
+        stack: err.stack?.substring(0, 500),
       });
 
-      const status = e?.statusCode || (e?.code === 401 ? 401 : 500);
+      const status =
+        errWithStatus?.statusCode || (errWithStatus?.code === 401 ? 401 : 500);
       if (!res.headersSent) {
         res.status(status).json({
           error: status === 401 ? 'Unauthorized' : 'Internal Server Error',
-          message: e?.message || 'Authorization failed',
+          message: err.message || 'Authorization failed',
         });
       }
       return false;
     }
   }
 
-  const ensureAuth = (handler: (req: Request, res: Response) => Promise<any>) => {
+  const ensureAuth = (
+    handler: (req: Request, res: Response) => Promise<void>,
+  ) => {
     return async (req: Request, res: Response, next: NextFunction) => {
       const authLog = cds.log('mcp-proxy/auth-middleware');
       authLog.info('🔐 ensureAuth middleware called', {
@@ -416,36 +488,45 @@ cds.on('bootstrap', (app: Application) => {
           return;
         }
 
-        authLog.info('✅ requireAuth succeeded, calling handler', { path: req.path });
+        authLog.info('✅ requireAuth succeeded, calling handler', {
+          path: req.path,
+        });
 
         try {
           await handler(req, res);
           authLog.info('✅ Handler completed', { path: req.path });
-        } catch (err: any) {
+        } catch (err: unknown) {
+          const error = err instanceof Error ? err : new Error(String(err));
           authLog.error('❌ Handler error', {
             path: req.path,
-            error: err.message,
-            stack: err.stack?.substring(0, 300),
+            error: error.message,
+            stack: error.stack?.substring(0, 300),
           });
-          next(err);
+          next(error);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const error = err instanceof Error ? err : new Error(String(err));
         authLog.error('❌ ensureAuth middleware error', {
           path: req.path,
-          error: err.message,
-          stack: err.stack?.substring(0, 300),
+          error: error.message,
+          stack: error.stack?.substring(0, 300),
         });
-        next(err);
+        next(error);
       }
     };
   };
 
   // Error handler for /mcp routes
-  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  app.use((err: unknown, req: Request, _res: Response, next: NextFunction) => {
     // Only handle errors for /mcp routes
     if (req.path?.startsWith('/mcp')) {
       const errorLog = cds.log('mcp-proxy/error-handler');
-      errorLog.error('Error in /mcp route', { error: err.message, path: req.path, name: err.name });
+      const error = err instanceof Error ? err : new Error(String(err));
+      errorLog.error('Error in /mcp route', {
+        error: error.message,
+        path: req.path,
+        name: error.name,
+      });
     }
 
     // For non-/mcp routes, pass to next error handler
@@ -456,22 +537,25 @@ cds.on('bootstrap', (app: Application) => {
   // NOTE: /mcp/destination/probe is now a CAP function: GET /mcp/ProbeDestination?destination=NAME
 
   // Log all requests to /mcp/stream/* for debugging
-  app.use('/mcp/stream/*', (req: Request, res: Response, next: NextFunction) => {
-    const debugLog = cds.log('mcp-proxy/request-logger');
-    debugLog.info('📥 Request received', {
-      method: req.method,
-      path: req.path,
-      url: req.url,
-      originalUrl: req.originalUrl,
-      headers: {
-        'content-type': req.headers['content-type'],
-        accept: req.headers.accept,
-        'mcp-session-id': req.headers['mcp-session-id'],
-        authorization: req.headers.authorization ? 'present' : 'missing',
-      },
-    });
-    next();
-  });
+  app.use(
+    '/mcp/stream/*',
+    (req: Request, _res: Response, next: NextFunction) => {
+      const debugLog = cds.log('mcp-proxy/request-logger');
+      debugLog.info('📥 Request received', {
+        method: req.method,
+        path: req.path,
+        url: req.url,
+        originalUrl: req.originalUrl,
+        headers: {
+          'content-type': req.headers['content-type'],
+          accept: req.headers.accept,
+          'mcp-session-id': req.headers['mcp-session-id'],
+          authorization: req.headers.authorization ? 'present' : 'missing',
+        },
+      });
+      next();
+    },
+  );
 
   // StreamableHTTP endpoint: POST only (bidirectional NDJSON streaming)
   // This is the only transport we support - SSE is not needed
@@ -492,7 +576,7 @@ cds.on('bootstrap', (app: Application) => {
         supportedMethod: 'POST',
         endpoint: '/mcp/stream/http',
       });
-    })
+    }),
   );
 
   // Handle any requests to /mcp/stream/sse (not supported)
@@ -512,11 +596,12 @@ cds.on('bootstrap', (app: Application) => {
         supportedEndpoint: '/mcp/stream/http',
         method: 'POST',
       });
-    })
+    }),
   );
 
   log.info('Custom Express endpoints registered', {
     streamHttp: 'POST /mcp/stream/http',
-    destinationProbe: 'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
+    destinationProbe:
+      'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
   });
 });

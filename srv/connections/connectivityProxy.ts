@@ -1,14 +1,15 @@
 import axios from 'axios';
 import type { Request } from 'express';
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- xsenv has no type definitions
 const xsenv = require('@sap/xsenv');
 
 import type { SapConfig } from '@mcp-abap-adt/connection';
-import { BtpOnPremDestinationConnection } from './BtpOnPremDestinationConnection';
 import type {
-  ConnectivityProxyConfig,
   BtpOnPremConnectionOptions,
+  ConnectivityProxyConfig,
 } from './BtpOnPremDestinationConnection';
+import { BtpOnPremDestinationConnection } from './BtpOnPremDestinationConnection';
 
 interface ConnectivityCredentials {
   onpremise_proxy_host: string;
@@ -34,11 +35,13 @@ function loadConnectivityCredentials(): ConnectivityCredentials {
   if (!cachedCredentials) {
     xsenv.loadEnv();
     try {
-      const services = xsenv.getServices({ connectivity: { tag: 'connectivity' } });
+      const services = xsenv.getServices({
+        connectivity: { tag: 'connectivity' },
+      });
       cachedCredentials = services.connectivity as ConnectivityCredentials;
     } catch (_error) {
       throw new Error(
-        'Connectivity service binding with tag "connectivity" is required for on-premise destinations.'
+        'Connectivity service binding with tag "connectivity" is required for on-premise destinations.',
       );
     }
   }
@@ -46,11 +49,11 @@ function loadConnectivityCredentials(): ConnectivityCredentials {
 }
 
 async function fetchConnectivityToken(
-  credentials: ConnectivityCredentials
+  credentials: ConnectivityCredentials,
 ): Promise<ConnectivityToken> {
-  const authHeader = Buffer.from(`${credentials.clientid}:${credentials.clientsecret}`).toString(
-    'base64'
-  );
+  const authHeader = Buffer.from(
+    `${credentials.clientid}:${credentials.clientsecret}`,
+  ).toString('base64');
 
   const response = await axios.post(
     credentials.token_service_url,
@@ -60,14 +63,16 @@ async function fetchConnectivityToken(
         Authorization: `Basic ${authHeader}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-    }
+    },
   );
 
   const accessToken = response.data?.access_token;
   const expiresIn = Number(response.data?.expires_in ?? 0);
 
   if (!accessToken) {
-    throw new Error('Connectivity token response did not contain access_token.');
+    throw new Error(
+      'Connectivity token response did not contain access_token.',
+    );
   }
 
   const expiresAt = Date.now() + Math.max(expiresIn - 60, 30) * 1000; // refresh one minute early
@@ -75,7 +80,9 @@ async function fetchConnectivityToken(
   return { token: accessToken, expiresAt };
 }
 
-async function getConnectivityToken(credentials: ConnectivityCredentials): Promise<string> {
+async function getConnectivityToken(
+  credentials: ConnectivityCredentials,
+): Promise<string> {
   const now = Date.now();
   if (cachedToken && cachedToken.expiresAt > now) {
     return cachedToken.token;
@@ -87,7 +94,7 @@ async function getConnectivityToken(credentials: ConnectivityCredentials): Promi
 
 async function buildConnectivityProxyConfig(
   locationId?: string,
-  principalToken?: string
+  principalToken?: string,
 ): Promise<ConnectivityProxyConfig> {
   const credentials = loadConnectivityCredentials();
   const authorization = await getConnectivityToken(credentials);
@@ -109,7 +116,11 @@ async function buildConnectivityProxyConfig(
  * @returns true if connectivity mode header is set to 'onprem'
  */
 export function shouldUseConnectivity(req: Request): boolean {
-  return (req.headers[CONNECTIVITY_MODE_HEADER] as string | undefined)?.toLowerCase() === 'onprem';
+  return (
+    (
+      req.headers[CONNECTIVITY_MODE_HEADER] as string | undefined
+    )?.toLowerCase() === 'onprem'
+  );
 }
 
 /**
@@ -122,8 +133,12 @@ export function extractConnectivityContext(req: Request): {
   locationId?: string;
   principalToken?: string;
 } {
-  const locationId = req.headers[CONNECTIVITY_LOCATION_HEADER] as string | undefined;
-  const principalToken = req.headers[CONNECTIVITY_PRINCIPAL_HEADER] as string | undefined;
+  const locationId = req.headers[CONNECTIVITY_LOCATION_HEADER] as
+    | string
+    | undefined;
+  const principalToken = req.headers[CONNECTIVITY_PRINCIPAL_HEADER] as
+    | string
+    | undefined;
   return { locationId, principalToken };
 }
 
@@ -136,9 +151,12 @@ export function extractConnectivityContext(req: Request): {
  */
 export async function createBtpOnPremConnection(
   sapConfig: SapConfig,
-  context: ReturnType<typeof extractConnectivityContext>
+  context: ReturnType<typeof extractConnectivityContext>,
 ): Promise<BtpOnPremDestinationConnection> {
-  const proxy = await buildConnectivityProxyConfig(context.locationId, context.principalToken);
+  const proxy = await buildConnectivityProxyConfig(
+    context.locationId,
+    context.principalToken,
+  );
 
   const options: BtpOnPremConnectionOptions = {
     sapConfig,
@@ -160,9 +178,12 @@ export async function createBtpOnPremConnection(
  */
 export async function refreshBtpOnPremConnection(
   connection: BtpOnPremDestinationConnection,
-  context: ReturnType<typeof extractConnectivityContext>
+  context: ReturnType<typeof extractConnectivityContext>,
 ): Promise<void> {
-  const proxy = await buildConnectivityProxyConfig(context.locationId, context.principalToken);
+  const proxy = await buildConnectivityProxyConfig(
+    context.locationId,
+    context.principalToken,
+  );
   connection.updateProxyAuthorization(proxy.authorizationHeader);
   connection.updatePrincipalPropagation(context.principalToken);
 }

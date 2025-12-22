@@ -1,8 +1,11 @@
-import axios, { AxiosInstance, AxiosResponse } from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import type { AbapRequestOptions, SapConfig, ILogger } from '@mcp-abap-adt/connection';
+import type {
+  AbapRequestOptions,
+  OnPremAbapConnection as OnPremAbapConnectionType,
+  SapConfig,
+} from '@mcp-abap-adt/connection';
 import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
-import type { OnPremAbapConnection as OnPremAbapConnectionType } from '@mcp-abap-adt/connection';
+import axios, { type AxiosInstance, type AxiosResponse } from 'axios';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // Logger adapter for OnPremAbapConnection
 // ILogger doesn't include csrfToken and tlsConfig, so we use loggerAdapter from lib/logger
@@ -36,7 +39,9 @@ export class BtpOnPremDestinationConnection
     super(options.sapConfig, loggerAdapter, 'btp-onprem-session');
 
     if (options.sapConfig.authType !== 'basic') {
-      throw new Error('BTP on-premise destinations require basic authentication credentials.');
+      throw new Error(
+        'BTP on-premise destinations require basic authentication credentials.',
+      );
     }
 
     const { protocol = 'http', ...restProxy } = options.proxy;
@@ -83,11 +88,13 @@ export class BtpOnPremDestinationConnection
     headers['Proxy-Authorization'] = this.proxySettings.authorizationHeader;
 
     if (this.proxySettings.locationId) {
-      headers['SAP-Connectivity-SCC-Location_ID'] = this.proxySettings.locationId;
+      headers['SAP-Connectivity-SCC-Location_ID'] =
+        this.proxySettings.locationId;
     }
 
     if (this.proxySettings.principalPropagationToken) {
-      headers['SAP-Connectivity-Authentication'] = this.proxySettings.principalPropagationToken;
+      headers['SAP-Connectivity-Authentication'] =
+        this.proxySettings.principalPropagationToken;
     }
 
     for (const [key, value] of Object.entries(this.additionalRequestHeaders)) {
@@ -130,7 +137,8 @@ export class BtpOnPremDestinationConnection
     };
 
     if (this.proxySettings.locationId) {
-      headers['SAP-Connectivity-SCC-Location_ID'] = this.proxySettings.locationId;
+      headers['SAP-Connectivity-SCC-Location_ID'] =
+        this.proxySettings.locationId;
     }
 
     const proxyProtocol = this.proxySettings.protocol ?? 'http';
