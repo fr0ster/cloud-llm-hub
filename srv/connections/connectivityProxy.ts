@@ -36,7 +36,7 @@ function loadConnectivityCredentials(): ConnectivityCredentials {
     try {
       const services = xsenv.getServices({ connectivity: { tag: 'connectivity' } });
       cachedCredentials = services.connectivity as ConnectivityCredentials;
-    } catch (error) {
+    } catch (_error) {
       throw new Error(
         'Connectivity service binding with tag "connectivity" is required for on-premise destinations.'
       );

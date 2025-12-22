@@ -2,17 +2,6 @@ import { getDestination } from '@sap-cloud-sdk/connectivity';
 import type { Destination } from '@sap-cloud-sdk/connectivity';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 
-// Helper to extract JWT from request headers if available
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function extractJwtFromRequest(req?: any): string | undefined {
-  if (!req) return undefined;
-  const authHeader = req.headers?.authorization || req.get?.('authorization');
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.substring(7);
-  }
-  return undefined;
-}
-
 // Ensure VCAP_SERVICES is loaded from default-env.json for local development
 // CAP loads it automatically, but we ensure it's available for SAP Cloud SDK
 if (!process.env.VCAP_SERVICES && process.env.VCAP_APPLICATION === undefined) {
@@ -226,12 +215,11 @@ export async function resolveDestinationSapConfig(
     const message = formatErrorMessage(error);
     const destinationError = new Error(
       `Failed to resolve destination "${destinationName}": ${message}`
-    );
-    (destinationError as any).statusCode = 502; // Bad Gateway
-    (destinationError as any).code =
-      error instanceof Error && (error as any).code
-        ? (error as any).code
-        : 'DESTINATION_RESOLUTION_FAILED';
+    ) as Error & { statusCode?: number; code?: string };
+    destinationError.statusCode = 502; // Bad Gateway
+    const errorObj = error as { code?: string };
+    destinationError.code =
+      error instanceof Error && errorObj.code ? errorObj.code : 'DESTINATION_RESOLUTION_FAILED';
     throw destinationError;
   }
 }

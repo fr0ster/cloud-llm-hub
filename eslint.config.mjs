@@ -41,7 +41,19 @@ export default [
     },
     rules: {
       ...eslintConfigPrettier.rules,
-      "prettier/prettier": "error",
+      "prettier/prettier": [
+        "error",
+        {
+          singleQuote: true,
+          semi: true,
+          trailingComma: "es5",
+          printWidth: 100,
+          tabWidth: 2,
+          useTabs: false,
+          arrowParens: "always",
+          endOfLine: "lf",
+        },
+      ],
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": [
         "warn",
@@ -61,7 +73,19 @@ export default [
     },
     rules: {
       ...eslintConfigPrettier.rules,
-      "prettier/prettier": "error",
+      "prettier/prettier": [
+        "error",
+        {
+          singleQuote: true,
+          semi: true,
+          trailingComma: "es5",
+          printWidth: 100,
+          tabWidth: 2,
+          useTabs: false,
+          arrowParens: "always",
+          endOfLine: "lf",
+        },
+      ],
     },
   },
 ];
