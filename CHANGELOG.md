@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.3] - 2025-12-22
+
+### Fixed
+
+- **CI/CD**: Replace `format:check` with auto-format in release workflow
+  - Changed GitHub Actions release workflow to auto-format code instead of failing on formatting issues
+  - Ensures consistent formatting across different prettier versions between local and CI environments
+
 ## [1.1.2] - 2025-12-22
 
 ### Fixed
