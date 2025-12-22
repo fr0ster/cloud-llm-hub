@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.2] - 2025-12-22
+
+### Fixed
+
+- **ESLint/Prettier Configuration**: Explicit prettier config in ESLint to enforce `singleQuote: true`
+  - Added explicit prettier options in `eslint.config.mjs` to prevent conflicts with `@sap/cds` ESLint config
+  - Ensures consistent quote style between local development and CI
+
+- **Type Safety**: Removed unused code and improved error handling
+  - Removed unused `extractJwtFromRequest` function from `destinationResolver.ts`
+  - Replaced `any` types with proper error types in destination and connectivity modules
+  - Renamed unused catch parameters with underscore prefix
+
+### Changed
+
+- **Documentation Organization**: Restructured documentation for better navigation
+  - Moved `DEBUG_JWT_AUTH.md` to `docs/development/`
+  - Created `docs/development/roadmaps/archive/` for reorganization plan documents
+  - Updated documentation links in `README.md` to reflect new structure
+
+- **Security Policy**: Updated `SECURITY.md`
+  - Added 1.1.x as supported version
+  - Updated contact email and last updated date
+
 ## [1.1.1] - 2025-12-22
 
 ### Fixed
