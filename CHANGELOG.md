@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.0] - 2025-12-22
+
+### Changed
+
+- **Per-Request MCP Server Architecture**: Complete rewrite of request handling
+  - Each POST request now creates fresh connection, MCP server, and transport
+  - Removed instance caching (`instanceCache`) - follows standard MCP pattern
+  - Removed `sessionContext` dependency - connection passed directly to EmbeddableMcpServer
+  - Simplified `handleStreamHTTP` handler with proper cleanup in `finally` block
+  - Added `createMCPServerForRequest()` function returning server, connection, transport, and cleanup
+
+- **Header Constants from Interfaces Package**: Use shared constants instead of hardcoded strings
+  - Import `HEADER_SAP_DESTINATION`, `HEADER_SAP_CLIENT`, `HEADER_SAP_LOGIN`, `HEADER_SAP_PASSWORD`, `HEADER_AUTHORIZATION` from `@mcp-abap-adt/interfaces`
+  - Consistent header naming across all packages
+
+### Added
+
+- **Destination Auth Override**: Support for `x-sap-login` and `x-sap-password` headers
+  - When using `x-sap-destination`, can override destination auth with Basic auth from headers
+  - Useful for testing or when destination uses different credentials
+
+- **Type Safety in Auth Handlers**: Replaced `any` types with proper interfaces
+  - `CdsUser` interface for CAP user object
+  - `RequestHeaders` interface for request headers
+  - `CheckRolesData` interface for CheckRoles action data
+
+### Fixed
+
+- **ESLint Configuration**: Fixed quote style for CI compliance
+  - Changed all strings in `eslint.config.mjs` to use double quotes
+  - Resolved Prettier formatting conflicts in GitHub Actions
+
+## [1.0.4] - 2025-12-21
+
+### Changed
+
+- **mcp-abap-adt Submodule Update**: Updated to v1.2.0
+  - Added handlers path in tsconfig for proper type resolution
+  - Includes EmbeddableMcpServer for lightweight embedding scenarios
+
+## [1.0.3] - 2025-12-20
+
+### Changed
+
+- **mcp-abap-adt Submodule Updates**: Updated through v1.1.31 → v1.1.32
+  - Various bug fixes and improvements in the MCP ABAP ADT library
+
 ## [1.0.2] - 2025-12-01
 
 ### Added
