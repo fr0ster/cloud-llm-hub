@@ -297,14 +297,26 @@ cds.on('bootstrap', (app: Application) => {
       return; // Not Basic auth, skip
     }
 
+    // Check if we're in development mode (mocked auth) or production (real XSUAA)
     const isDevelopment =
       cds.env.profiles?.includes('development') ||
       process.env.CDS_ENV === 'development' ||
       cds.env.requires?.auth?.['[development]']?.kind === 'mocked';
 
-    if (isDevelopment) {
-      convertLog.info('⏭️ Development mode, keeping Basic auth');
-      return; // Keep Basic auth in development
+    // Check if we have real XSUAA credentials available
+    // In hybrid mode, we might be in production profile but want to use mocked auth
+    const hasVcapApplication = !!process.env.VCAP_APPLICATION;
+    const isLocal = !hasVcapApplication && !process.env.CF_INSTANCE_INDEX;
+
+    // If development mode OR local without VCAP_APPLICATION, keep Basic auth
+    // This allows hybrid debugging with mocked auth
+    if (isDevelopment || (isLocal && !hasVcapApplication)) {
+      convertLog.info('⏭️ Development/local mode, keeping Basic auth', {
+        isDevelopment,
+        isLocal,
+        hasVcapApplication,
+      });
+      return; // Keep Basic auth in development or local mode
     }
 
     // Production mode - convert Basic to Bearer

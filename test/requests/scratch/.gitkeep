@@ -1,0 +1,4 @@
+# This directory is for temporary test files
+# Files in this directory are ignored by Git (see .gitignore)
+# Copy templates from templates/ directory and modify as needed for testing
+

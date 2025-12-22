@@ -1,0 +1,160 @@
+### Cloud LLM Hub - Cloud (BTP) Testing Requests
+### For VS Code REST Client extension
+### Replace {{appName}} and {{region}} with your actual values
+
+@baseUrl = https://{{appName}}.cfapps.{{region}}.hana.ondemand.com
+@authBearer = Bearer {{jwtToken}}
+
+### Variables - Update these with your values
+@appName = cloud-llm-hub-srv
+@region = eu10
+@destination = SAP_DEV_DEST
+@message = Hello! Can you introduce yourself?
+@jwtToken = YOUR_JWT_TOKEN_HERE
+
+##########################################
+# Authentication
+##########################################
+
+### Get XSUAA Token (Client Credentials)
+# Replace {{clientId}} and {{clientSecret}} with values from VCAP_SERVICES
+POST https://{{subdomain}}.authentication.{{region}}.hana.ondemand.com/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id={{clientId}}&client_secret={{clientSecret}}
+
+### Get XSUAA Token (Password Grant - for testing)
+# Replace {{username}} and {{password}} with your BTP user credentials
+POST https://{{subdomain}}.authentication.{{region}}.hana.ondemand.com/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&username={{username}}&password={{password}}&client_id={{clientId}}&client_secret={{clientSecret}}
+
+##########################################
+# MCP Proxy Service (OData V4)
+##########################################
+
+### Health Check - MCP Proxy
+GET {{baseUrl}}/odata/v4/mcp/Health()
+Authorization: {{authBearer}}
+Accept: application/json
+
+### Probe Destination
+GET {{baseUrl}}/odata/v4/mcp/ProbeDestination?destination={{destination}}
+Authorization: {{authBearer}}
+Accept: application/json
+
+### Probe Destination (positional parameter)
+GET {{baseUrl}}/odata/v4/mcp/ProbeDestination(destination='{{destination}}')
+Authorization: {{authBearer}}
+Accept: application/json
+
+##########################################
+# Agent Service (OData V4)
+##########################################
+
+### Agent Health Check
+GET {{baseUrl}}/odata/v4/agent/Health()
+Authorization: {{authBearer}}
+Accept: application/json
+
+### Agent Chat - Send Message
+POST {{baseUrl}}/odata/v4/agent/Chat
+Authorization: {{authBearer}}
+Content-Type: application/json
+
+{
+  "message": "{{message}}"
+}
+
+### Agent Chat - Get History
+GET {{baseUrl}}/odata/v4/agent/GetHistory()
+Authorization: {{authBearer}}
+Accept: application/json
+
+### Agent Chat - Clear History
+POST {{baseUrl}}/odata/v4/agent/ClearHistory
+Authorization: {{authBearer}}
+Content-Type: application/json
+
+##########################################
+# MCP Streaming Endpoints (Express)
+##########################################
+
+### MCP Stream SSE (Server-Sent Events)
+GET {{baseUrl}}/mcp/stream/sse
+Authorization: {{authBearer}}
+Accept: text/event-stream
+
+### MCP Stream HTTP (NDJSON) - Ping
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBearer}}
+Content-Type: application/json
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"1","method":"ping"}
+
+### MCP Stream HTTP - Initialize
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBearer}}
+Content-Type: application/json
+X-SAP-Destination: {{destination}}
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}
+
+### MCP Stream HTTP - List Tools
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBearer}}
+Content-Type: application/json
+X-SAP-Destination: {{destination}}
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"2","method":"tools/list"}
+
+### MCP Stream HTTP - Get Includes List
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBearer}}
+Content-Type: application/json
+X-SAP-Destination: {{destination}}
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"GetIncludesList","arguments":{"objectName":"ZCL_TEST","objectType":"CLAS"}}}
+
+##########################################
+# Auth Service (OData V4)
+##########################################
+
+### Check Auth
+GET {{baseUrl}}/odata/v4/auth/CheckAuth()
+Authorization: {{authBearer}}
+Accept: application/json
+
+### Check Roles
+GET {{baseUrl}}/odata/v4/auth/CheckRoles?required=["MCP_Connector"]
+Authorization: {{authBearer}}
+Accept: application/json
+
+### Check Roles (positional parameter)
+GET {{baseUrl}}/odata/v4/auth/CheckRoles(required=['MCP_Connector'])
+Authorization: {{authBearer}}
+Accept: application/json
+
+##########################################
+# Error Testing
+##########################################
+
+### Health Check - No Auth (should return 401)
+GET {{baseUrl}}/odata/v4/mcp/Health()
+Accept: application/json
+
+### Health Check - Invalid Token (should return 401)
+GET {{baseUrl}}/odata/v4/mcp/Health()
+Authorization: Bearer invalid_token_here
+Accept: application/json
+
+### Probe Destination - Invalid Destination (should return error)
+GET {{baseUrl}}/odata/v4/mcp/ProbeDestination?destination=INVALID_DEST
+Authorization: {{authBearer}}
+Accept: application/json
+
