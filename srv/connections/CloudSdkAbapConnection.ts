@@ -3,7 +3,12 @@ import '../env-setup';
 
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import type { AxiosResponse } from 'axios';
-import type { AbapConnection, AbapRequestOptions, SapConfig } from '@mcp-abap-adt/connection';
+import type {
+  AbapConnection,
+  AbapRequestOptions,
+  SapConfig,
+  SessionState,
+} from '@mcp-abap-adt/connection';
 import { logger } from '../lib/logger';
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
 
@@ -18,12 +23,15 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private cachedBaseUrl: string | null = null;
   private sessionId: string = 'cloud-sdk-session';
   private sessionType: 'stateless' | 'stateful' = 'stateless';
-  private sessionState: any = null;
+  private sessionState: SessionState | null = null;
+  private readonly destinationName: string;
 
   constructor(
     private readonly config: SapConfig,
-    private readonly destinationName: string
-  ) {}
+    destinationName: string
+  ) {
+    this.destinationName = destinationName;
+  }
 
   getConfig(): SapConfig {
     return this.config;
@@ -42,11 +50,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
     // This is a no-op for Cloud SDK implementation
   }
 
-  getSessionState(): any {
+  getSessionState(): SessionState | null {
     return this.sessionState;
   }
 
-  setSessionState(state: any): void {
+  setSessionState(state: SessionState): void {
     this.sessionState = state;
   }
 
@@ -195,11 +203,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
           tokenLength: token.length,
         });
         return token;
-      } catch (error: any) {
+      } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorObj = error as { response?: { status?: number }; statusCode?: number };
         logger.csrfToken('error', `CSRF token error: ${errorMessage}`, {
           url: csrfUrl,
-          status: error?.response?.status || error?.statusCode,
+          status: errorObj?.response?.status || errorObj?.statusCode,
           attempt: attempt + 1,
           maxAttempts: retryCount + 1,
         });
@@ -220,7 +229,15 @@ export class CloudSdkAbapConnection implements AbapConnection {
   /**
    * Convert Cloud SDK response to AxiosResponse format
    */
-  private convertToAxiosResponse(cloudSdkResponse: any, requestUrl: string): AxiosResponse {
+  private convertToAxiosResponse(
+    cloudSdkResponse: {
+      data: unknown;
+      status?: number;
+      statusText?: string;
+      headers?: Record<string, unknown>;
+    },
+    requestUrl: string
+  ): AxiosResponse {
     return {
       data: cloudSdkResponse.data,
       status: cloudSdkResponse.status || 200,
@@ -229,13 +246,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
       config: {
         url: requestUrl,
         method: 'GET',
-      } as any,
+      } as AxiosResponse['config'],
       request: {},
     } as AxiosResponse;
   }
 
   async makeAdtRequest(options: AbapRequestOptions): Promise<AxiosResponse> {
-    const { url, method, timeout, data, params } = options;
+    const { url, method, timeout: _timeout, data, params } = options;
     const normalizedMethod = method.toUpperCase();
 
     // Get base URL and build full URL from endpoint
@@ -313,7 +330,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
       // Convert Cloud SDK response to AxiosResponse format
       return this.convertToAxiosResponse(response, requestUrl);
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Use synchronized error handling from errorUtils
       const { logErrorSafely } = await import('../lib/errorUtils');
       logErrorSafely(logger, 'ADT request', error, {
@@ -322,9 +339,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
         destinationName: this.destinationName,
       });
 
+      const errorObj = error as { response?: { status?: number }; statusCode?: number };
       // If CSRF token validation failed, try to refresh and retry once
       if (
-        (error?.response?.status === 403 || error?.statusCode === 403) &&
+        (errorObj?.response?.status === 403 || errorObj?.statusCode === 403) &&
         (normalizedMethod === 'POST' || normalizedMethod === 'PUT')
       ) {
         logger.info('CSRF token validation failed, fetching new token and retrying request', {
@@ -349,7 +367,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           );
 
           return this.convertToAxiosResponse(retryResponse, requestUrl);
-        } catch (retryError: any) {
+        } catch (retryError: unknown) {
           logErrorSafely(logger, 'ADT request retry', retryError, {
             url: requestUrl,
             method: normalizedMethod,
