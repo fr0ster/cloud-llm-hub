@@ -1,6 +1,6 @@
 /**
  * Logger module for cloud-llm-hub
- * 
+ *
  * Provides a unified logger interface wrapping @mcp-abap-adt/logger
  * with additional CSRF and TLS logging methods for compatibility
  */

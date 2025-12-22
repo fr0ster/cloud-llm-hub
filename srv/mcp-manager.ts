@@ -14,10 +14,7 @@ import {
   HEADER_SAP_PASSWORD,
   HEADER_AUTHORIZATION,
 } from '@mcp-abap-adt/interfaces';
-import {
-  shouldUseConnectivity,
-  extractConnectivityContext,
-} from './connections';
+import { shouldUseConnectivity, extractConnectivityContext } from './connections';
 import {
   resolveDestinationSapConfig,
   type DestinationResolution,

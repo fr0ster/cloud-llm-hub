@@ -84,14 +84,15 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<any> {
       log.info('MCP request', {
         method: body.method,
         toolName,
-        toolArgs: Object.keys(toolArgs).length > 0
-          ? {
-              class_name: toolArgs.class_name || toolArgs.className,
-              object_name: toolArgs.object_name || toolArgs.objectName,
-              table_name: toolArgs.table_name || toolArgs.tableName,
-              allKeys: Object.keys(toolArgs),
-            }
-          : {},
+        toolArgs:
+          Object.keys(toolArgs).length > 0
+            ? {
+                class_name: toolArgs.class_name || toolArgs.className,
+                object_name: toolArgs.object_name || toolArgs.objectName,
+                table_name: toolArgs.table_name || toolArgs.tableName,
+                allKeys: Object.keys(toolArgs),
+              }
+            : {},
         requestId: body.id || 'no-id',
       });
     }

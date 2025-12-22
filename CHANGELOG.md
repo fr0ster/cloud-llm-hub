@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.1] - 2025-12-22
+
+### Fixed
+
+- **ESLint/Prettier Consistency**: Unified quote style between local and CI
+  - Added `eslint.config.mjs` to `.prettierignore` to prevent quote conflicts
+  - ESLint config uses double quotes (CI requirement), code uses single quotes (Prettier singleQuote: true)
+
+- **Type Safety Improvements**: Replaced `any` types with proper types
+  - `CloudSdkAbapConnection`: Typed CSRF error handling, session state, response conversion
+  - `BtpOnPremDestinationConnection`: Logger adapter uses `Record<string, unknown>`
+  - Renamed unused variables with underscore prefix (`_timeout`)
+
 ## [1.1.0] - 2025-12-22
 
 ### Changed

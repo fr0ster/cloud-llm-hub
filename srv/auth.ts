@@ -7,7 +7,8 @@ interface CdsUser {
   id?: string;
   _is_anonymous?: boolean;
   roles?: string[];
-  is?: (_role: string) => boolean;
+  // eslint-disable-next-line no-unused-vars
+  is?: (role: string) => boolean;
 }
 
 /**
@@ -65,7 +66,10 @@ export default async function registerAuthHandlers(srv: Service): Promise<void> 
   srv.on('CheckRoles', async (req: Request) => {
     const user = req.user as CdsUser | undefined;
 
-    log.debug('CheckRoles handler called', { hasUser: !!user, userId: user?.id });
+    log.debug('CheckRoles handler called', {
+      hasUser: !!user,
+      userId: user?.id,
+    });
 
     if (!user || user._is_anonymous) {
       log.warn('CheckRoles: Unauthorized - no user or anonymous', {
