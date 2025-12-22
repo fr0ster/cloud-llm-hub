@@ -55,6 +55,7 @@
     "proxytype",
     "PURBOOK",
     "RMSNPSRC",
+    "roadmaps",
     "runbook",
     "runbooks",
     "SALV",
@@ -63,6 +64,7 @@
     "SAPMV",
     "SESSIONID",
     "sessiontype",
+    "softprops",
     "streamable",
     "TABL",
     "testclasses",
@@ -70,6 +72,8 @@
     "uaadomain",
     "usagereferences",
     "xsapp",
-    "ztst"
+    "ztst",
+    "Вирішення",
+    "проблем"
   ]
 }

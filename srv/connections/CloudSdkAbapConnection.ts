@@ -7,7 +7,6 @@ import type {
   AbapConnection,
   AbapRequestOptions,
   SapConfig,
-  SessionState,
 } from '@mcp-abap-adt/connection';
 import { logger } from '../lib/logger';
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
@@ -23,7 +22,6 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private cachedBaseUrl: string | null = null;
   private sessionId: string = 'cloud-sdk-session';
   private sessionType: 'stateless' | 'stateful' = 'stateless';
-  private sessionState: SessionState | null = null;
   private readonly destinationName: string;
 
   constructor(
@@ -50,19 +48,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
     // This is a no-op for Cloud SDK implementation
   }
 
-  getSessionState(): SessionState | null {
-    return this.sessionState;
-  }
-
-  setSessionState(state: SessionState): void {
-    this.sessionState = state;
-  }
-
   reset(): void {
     this.csrfToken = null;
     this.cookies = null;
     this.cachedBaseUrl = null;
-    this.sessionState = null;
   }
 
   async getBaseUrl(): Promise<string> {
@@ -323,8 +312,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
           method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
           url: requestUrl,
           headers: requestHeaders,
-          params,
-          data: data !== undefined ? data : undefined,
+          params: params as Record<string, any> | undefined,
+          data: data !== undefined ? (data as Record<string, any>) : undefined,
         }
       );
 
@@ -361,8 +350,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
               method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
               url: requestUrl,
               headers: retryHeaders,
-              params,
-              data: data !== undefined ? data : undefined,
+              params: params as Record<string, any> | undefined,
+              data: data !== undefined ? (data as Record<string, any>) : undefined,
             }
           );
 

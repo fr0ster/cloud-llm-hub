@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.4] - 2025-12-22
+
+### Changed
+- **Dependencies Update**: Updated `@mcp-abap-adt` packages to latest versions
+  - `@mcp-abap-adt/adt-clients`: `^0.1.34` → `^0.2.6`
+  - `@mcp-abap-adt/auth-broker`: `^0.1.4` → `^0.2.10`
+  - `@mcp-abap-adt/connection`: `^0.1.13` → `^0.2.5`
+  - `@mcp-abap-adt/header-validator`: `^0.1.3` → `^0.1.8`
+  - Updated `mcp-abap-adt` submodule: `v1.2.3` → `v1.2.4`
+  - Added `@mcp-abap-adt/interfaces`: `^0.2.7`
+  - Added `@mcp-abap-adt/logger`: `^0.1.4`
+
 ## [1.1.3] - 2025-12-22
 
 ### Fixed

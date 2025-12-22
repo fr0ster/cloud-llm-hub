@@ -297,7 +297,8 @@ export async function createMCPServerForRequest(req: Request): Promise<McpServer
         });
       }
       try {
-        connection.reset();
+        // reset() exists in implementation but not in interface, use type assertion
+        (connection as { reset?: () => void }).reset?.();
       } catch (err) {
         log.warn('Failed to reset connection during cleanup', {
           error: err instanceof Error ? err.message : String(err),
