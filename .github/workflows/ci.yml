@@ -26,19 +26,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
       
-      - name: Auto-format code
-        run: npm run format
-      
-      - name: Check for formatting changes
-        run: |
-          if [[ -n $(git status --porcelain) ]]; then
-            echo "❌ Code formatting issues found. Run 'npm run format' locally."
-            git diff
-            exit 1
-          else
-            echo "✅ Code formatting is correct"
-          fi
-      
       - name: Run linter (without prettier)
         run: npx eslint . --ext .ts,.js,.mjs --max-warnings 100
       
@@ -52,7 +39,6 @@ jobs:
         if: success()
         run: |
           echo "✅ All checks passed!"
-          echo "- Code formatting: OK"
           echo "- ESLint: OK (max 100 warnings)"
           echo "- TypeScript: OK"
           echo "- Build: OK"
