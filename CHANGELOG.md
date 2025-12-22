@@ -279,4 +279,3 @@ This release includes a comprehensive documentation overhaul that brings the pro
 - **Enterprise-ready** with production runbooks, monitoring guides, and troubleshooting procedures
 - **International support** with Ukrainian translations of key documents
 - **Testing infrastructure** ready for high code coverage with detailed guidelines
-

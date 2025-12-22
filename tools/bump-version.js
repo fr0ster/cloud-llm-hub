@@ -3,7 +3,7 @@
 /**
  * Bump version in all files (package.json, mta.yaml)
  * Works like npm version but syncs version across all files
- * 
+ *
  * Usage:
  *   node tools/bump-version.js patch   # 1.0.0 -> 1.0.1
  *   node tools/bump-version.js minor   # 1.0.0 -> 1.1.0
@@ -30,7 +30,7 @@ function parseVersion(version) {
 // Increment version
 function incrementVersion(currentVersion, type) {
   const version = parseVersion(currentVersion);
-  
+
   switch (type) {
     case 'major':
       return `${version.major + 1}.0.0`;
@@ -67,7 +67,7 @@ function updatePackageJson(newVersion) {
 function updateMtaYaml(newVersion) {
   let mtaContent = fs.readFileSync(mtaYamlPath, 'utf8');
   const versionRegex = /^version:\s*[\d.]+/m;
-  
+
   if (versionRegex.test(mtaContent)) {
     const oldVersion = mtaContent.match(versionRegex)[0].replace(/^version:\s*/, '');
     mtaContent = mtaContent.replace(versionRegex, `version: ${newVersion}`);
@@ -82,12 +82,12 @@ function updateMtaYaml(newVersion) {
 // Update version in package-lock.json
 function updatePackageLock(newVersion) {
   const packageLockPath = path.join(__dirname, '..', 'package-lock.json');
-  
+
   if (!fs.existsSync(packageLockPath)) {
     console.log('⚠️  package-lock.json not found, skipping');
     return;
   }
-  
+
   try {
     // Use npm to sync package-lock.json with package.json
     // This is the safest way to ensure consistency
@@ -105,7 +105,7 @@ function updatePackageLock(newVersion) {
 // Main function
 function main() {
   const type = process.argv[2];
-  
+
   if (!type) {
     console.error('Usage: node tools/bump-version.js <patch|minor|major|version>');
     console.error('Examples:');
@@ -119,22 +119,23 @@ function main() {
   try {
     const currentVersion = getCurrentVersion();
     console.log(`📦 Current version: ${currentVersion}`);
-    
+
     const newVersion = incrementVersion(currentVersion, type);
     console.log(`🚀 New version: ${newVersion}\n`);
-    
+
     // Update files
     updatePackageJson(newVersion);
     updateMtaYaml(newVersion);
     updatePackageLock(newVersion);
-    
+
     console.log(`\n✅ Version bumped to ${newVersion} in all files`);
     console.log(`\n💡 Next steps:`);
     console.log(`   1. Review changes: git diff`);
-    console.log(`   2. Commit: git add package.json package-lock.json mta.yaml && git commit -m "chore: bump version to ${newVersion}"`);
+    console.log(
+      `   2. Commit: git add package.json package-lock.json mta.yaml && git commit -m "chore: bump version to ${newVersion}"`
+    );
     console.log(`   3. Tag: git tag -a v${newVersion} -m "Release v${newVersion}"`);
     console.log(`   4. Push: git push origin main && git push origin v${newVersion}`);
-    
   } catch (error) {
     console.error(`❌ Error: ${error.message}`);
     process.exit(1);
@@ -142,4 +143,3 @@ function main() {
 }
 
 main();
-
