@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.6] - 2025-12-24
+
+### Changed
+- Updated `mcp-abap-adt` submodule: `v1.2.4` → `v1.2.5`
+- Ignored `AGENTS.md` to prevent local agent docs from being tracked
+
 ## [1.1.5] - 2025-12-22
 
 ### Changed
