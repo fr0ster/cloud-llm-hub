@@ -52,3 +52,4 @@ mdd.env
 test/requests/scratch/*.http
 !test/requests/scratch/.gitkeep
 !test/requests/scratch/README.md
+AGENTS.md
