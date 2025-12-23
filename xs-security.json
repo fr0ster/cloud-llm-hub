@@ -1,5 +1,5 @@
 {
-  "xsappname": "cloud-llm-hub-${space-guid}",
+  "xsappname": "cloud-llm-hub-{space-guid}",
   "tenant-mode": "shared",
   "scopes": [
     {
@@ -75,12 +75,22 @@
   "attributes": [],
   "oauth2-configuration": {
     "redirect-uris": [
-      "http://localhost:*",
-      "https://localhost:*",
+      "http://localhost:*/**",
+      "https://localhost:*/**",
+      "http://localhost:4004/callback",
+      "http://localhost:8080/callback",
+      "https://localhost:*/callback",
       "https://*.*.cloud.com/**",
       "https://*.*.ondemand.com/**",
       "https://oauth.pstmn.io/v1/callback",
       "https://oauth.pstmn.io/**"
-    ]
+    ],
+    "grant-types": [
+      "authorization_code",
+      "refresh_token"
+    ],
+    "token-validity": 3600,
+    "refresh-token-validity": 2592000
+  }
 }
 }
