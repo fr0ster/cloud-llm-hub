@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.10] - 2025-12-24
+
+### Changed
+- Relaxed npm engine requirement to allow npm 10+ in CI and local installs
+
 ## [1.1.9] - 2025-12-24
 
 ### Fixed
