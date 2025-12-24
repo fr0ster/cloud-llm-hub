@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.11] - 2025-12-24
+
+### Changed
+- Added explicit submodule build step in CI before type checking
+- Made Biome config path explicit in lint commands
+
 ## [1.1.10] - 2025-12-24
 
 ### Changed
