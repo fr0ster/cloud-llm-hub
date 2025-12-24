@@ -14,8 +14,6 @@
 import './env-setup';
 
 import cds from '@sap/cds';
-// @ts-expect-error - @sap/xsenv doesn't have types
-import { loadEnv } from '@sap/xsenv';
 import type { Application, NextFunction, Request, Response } from 'express';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
