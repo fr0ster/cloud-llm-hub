@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.8] - 2025-12-24
+
+### Fixed
+- Enabled TypeScript path resolution for `@fr0ster/mcp-abap-adt` subpaths to avoid CI typecheck failures
+
 ## [1.1.7] - 2025-12-24
 
 ### Changed
