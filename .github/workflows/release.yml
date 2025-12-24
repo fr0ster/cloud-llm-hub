@@ -24,6 +24,11 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Sync submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
