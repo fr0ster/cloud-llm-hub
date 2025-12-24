@@ -1,14 +1,14 @@
-# LLM Agent & UI Architecture Proposal
+# LLM Proxy & UI Architecture Proposal
 
 ## 🎯 Overview
 
 This document proposes the architecture for adding:
-1. **LLM Agent** - A minimal agent that works with MCP servers and various LLMs via API
+1. **LLM Proxy** - A minimal agent that works with MCP servers and various LLMs via API
 2. **Simple UI** - A web interface for interacting with the agent
 
 ## 📋 Requirements
 
-### LLM Agent Requirements
+### LLM Proxy Requirements
 - ✅ Work with MCP servers (use existing MCP proxy infrastructure)
 - ✅ Support multiple LLM providers (OpenAI, Anthropic, etc.)
 - ✅ Minimal implementation to start
@@ -29,7 +29,7 @@ This document proposes the architecture for adding:
 cloud-llm-hub/
 ├── submodules/
 │   ├── mcp-abap-adt/          # Existing MCP server
-│   └── llm-agent/              # NEW: LLM Agent submodule
+│   └── llm-proxy/              # LLM Proxy documentation
 │       ├── src/
 │       │   ├── agent.ts        # Core agent logic
 │       │   ├── llm-providers/  # LLM provider adapters
@@ -95,7 +95,7 @@ cloud-llm-hub/
 
 ## 🔧 Technical Stack
 
-### LLM Agent (Submodule)
+### LLM Proxy (Submodule)
 
 **Core Technologies:**
 - **TypeScript** - Type safety and modern JavaScript
@@ -187,7 +187,7 @@ service AgentService {
 
 ```typescript
 // srv/agent-service.ts
-import { Agent } from '@cloud-llm-hub/llm-agent';
+import { Agent } from '@mcp-abap-adt/llm-proxy';
 
 export default class AgentService extends cds.Service {
   private agent: Agent;
@@ -277,10 +277,10 @@ export default class AgentService extends cds.Service {
 
 ## 🗂️ File Structure Details
 
-### LLM Agent Submodule
+### LLM Proxy Submodule
 
 ```
-submodules/llm-agent/
+node_modules/@mcp-abap-adt/llm-proxy/
 ├── src/
 │   ├── index.ts                 # Main export
 │   ├── agent.ts                 # Core agent class
@@ -334,7 +334,7 @@ sequenceDiagram
     participant U as User (UI)
     participant UI as Web UI
     participant CAP as CAP Service
-    participant A as LLM Agent
+    participant A as LLM Proxy
     participant LLM as LLM API
     participant MCP as MCP Proxy
     
@@ -368,10 +368,10 @@ npm install @modelcontextprotocol/sdk axios
 npm install -D typescript @types/node tsx
 ```
 
-### Step 2: Add as Submodule
+### Step 2: Install Package
 ```bash
 cd cloud-llm-hub
-git submodule add <agent-repo-url> submodules/llm-agent
+npm install @mcp-abap-adt/llm-proxy
 ```
 
 ### Step 3: Create UI
@@ -420,4 +420,3 @@ mkdir -p app/router/webapp
 **Author:** Architecture Team
 
 **Date:** 2025-11-05
-

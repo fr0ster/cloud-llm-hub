@@ -1,4 +1,4 @@
-# LLM Agent Configuration Usage Guide
+# LLM Proxy Configuration Usage Guide
 
 ## Overview
 
@@ -11,7 +11,7 @@ The LLM agent is configured through parameters when creating an instance. All ne
 When using SAP Destination Service, specify the destination name in headers:
 
 ```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 
 const agent = new Agent({
   llmProvider: new OpenAIProvider({
@@ -62,7 +62,7 @@ const response = await agent.process('What tools are available?');
 You can also create the MCP client separately and pass it to the agent:
 
 ```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 
 const mcpClient = new MCPClientWrapper({
   url: 'http://localhost:4004/mcp/stream/http',
@@ -187,7 +187,7 @@ mcpConfig: {
 ## Complete Example
 
 ```typescript
-import { Agent, OpenAIProvider } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider } from '@mcp-abap-adt/llm-proxy';
 
 async function main() {
   // Create agent with configuration

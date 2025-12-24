@@ -7,7 +7,7 @@ This project is configured to ensure consistent behavior across different operat
 ## Configuration Files
 
 ### `.npmrc`
-Both root project and submodules (`llm-agent`, `mcp-abap-adt`) have identical `.npmrc` files that ensure:
+Both root project and submodules (`mcp-abap-adt`) have identical `.npmrc` files that ensure:
 - Consistent `package-lock.json` generation across all OS
 - Legacy peer dependencies mode to prevent `peer: true` appearing on Windows
 - Disabled audit and fund messages for cleaner output
@@ -35,7 +35,7 @@ Ensures consistent code formatting:
 - Consistent indentation (2 spaces)
 - Trailing whitespace removal
 
-Present in: root, `llm-agent`, `mcp-abap-adt`
+Present in: root, `mcp-abap-adt`
 
 ### `.gitattributes`
 Enforces consistent line endings in Git:
@@ -43,13 +43,13 @@ Enforces consistent line endings in Git:
 - `package-lock.json` explicitly set to LF
 - Binary files marked correctly
 
-Present in: root, `llm-agent`, `mcp-abap-adt`
+Present in: root, `mcp-abap-adt`
 
 ### `tsconfig.json`
 All projects have:
 - `forceConsistentCasingInFileNames: true` - ensures case-sensitive file imports work on all OS
 
-Present in: root, `llm-agent`, `mcp-abap-adt`
+Present in: root, `mcp-abap-adt`
 
 ## Best Practices
 
@@ -109,10 +109,8 @@ Present in: root, `llm-agent`, `mcp-abap-adt`
    # In root (CAP project)
    cds build
    
-   # In submodules/llm-agent
-   cd submodules/llm-agent
-   npm run build
-   cd ../..
+   # LLM proxy is installed from npm
+   npm install @mcp-abap-adt/llm-proxy
    
    # In submodules/mcp-abap-adt
    cd submodules/mcp-abap-adt
@@ -130,7 +128,7 @@ Present in: root, `llm-agent`, `mcp-abap-adt`
 **Cause:** `.npmrc` is missing or has wrong settings
 
 **Solution:**
-1. Verify `.npmrc` exists in root, `submodules/llm-agent/`, and `submodules/mcp-abap-adt/`
+1. Verify `.npmrc` exists in root and `submodules/mcp-abap-adt/`
 2. Verify `legacy-peer-deps=true` is set in all `.npmrc` files
 3. Delete `node_modules` and `package-lock.json` in affected directories
 4. Run `npm install` again
@@ -155,7 +153,7 @@ git reset --hard HEAD
 **Cause:** Missing or different `.npmrc` settings, or npm hoisting differences
 
 **Solution:**
-1. Ensure `.npmrc` is identical in all projects (root, llm-agent, mcp-abap-adt)
+1. Ensure `.npmrc` is identical in all projects (root, mcp-abap-adt)
 2. Verify `install-strategy=nested` is set (prevents hoisting differences)
 3. Use same npm version (>=9.0.0)
 4. Use same Node.js version (>=18.0.0)
@@ -208,5 +206,5 @@ git config --get core.eol       # Should be: lf
 find . -name "*.ts" -o -name "*.js" -o -name "*.json" | xargs file | grep CRLF
 
 # Check package-lock.json
-grep -n "peer.*true" package-lock.json submodules/llm-agent/package-lock.json
+grep -n "peer.*true" package-lock.json
 ```

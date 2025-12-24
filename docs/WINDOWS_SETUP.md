@@ -36,10 +36,8 @@ This will check:
 # Root project
 npm install
 
-# Submodule (if needed separately)
-cd submodules\llm-agent
-npm install
-cd ..\..
+# LLM proxy is installed from npm
+npm install @mcp-abap-adt/llm-proxy
 ```
 
 ## Common Issues
@@ -49,7 +47,7 @@ cd ..\..
 **Cause:** `.npmrc` is missing or has incorrect settings
 
 **Solution:**
-1. Verify `.npmrc` exists in root, `submodules/llm-agent/`, and `submodules/mcp-abap-adt/`
+1. Verify `.npmrc` exists in root and `submodules/mcp-abap-adt/`
 2. Run `npm run verify:setup` to check configuration
 3. Delete `node_modules` and `package-lock.json` in affected directories
 4. Run `npm install` again
@@ -98,11 +96,6 @@ git reset --hard HEAD
 # Build main project (CAP project)
 cds build
 
-# Build llm-agent submodule
-cd submodules\llm-agent
-npm run build
-cd ..\..
-
 # Build mcp-abap-adt submodule
 cd submodules\mcp-abap-adt
 npm run build
@@ -130,7 +123,7 @@ git status
 
 # Verify package-lock.json hasn't changed unexpectedly
 git diff package-lock.json
-git diff submodules/llm-agent/package-lock.json
+git diff package-lock.json
 git diff submodules/mcp-abap-adt/package-lock.json
 ```
 

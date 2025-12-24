@@ -1,4 +1,4 @@
-# LLM Agent Embedded Usage Guide
+# LLM Proxy Embedded Usage Guide
 
 ## Overview
 
@@ -22,7 +22,7 @@ This guide focuses on embedded usage within CAP services.
 ### Basic Import
 
 ```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 ```
 
 ### Type Imports
@@ -33,7 +33,7 @@ import type {
   MCPClientConfig, 
   AgentResponse,
   Message 
-} from '@cloud-llm-hub/llm-agent';
+} from '@mcp-abap-adt/llm-proxy';
 ```
 
 ## Usage in CAP Service
@@ -71,7 +71,7 @@ Similar to how `mcp-manager.ts` creates MCP servers per request:
 // srv/agent-manager.ts
 import cds from '@sap/cds';
 import type { Request } from 'express';
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 
 interface AgentInstance {
   agent: Agent;
@@ -156,7 +156,7 @@ type ChatMessage {
 ```typescript
 // srv/agent-service.ts
 import cds, { Service, Request } from '@sap/cds';
-import { Agent, OpenAIProvider } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider } from '@mcp-abap-adt/llm-proxy';
 import { getAgent } from './agent-manager';
 
 export default class AgentService extends cds.Service {
@@ -271,8 +271,8 @@ try {
 ```typescript
 // srv/agent-service.ts
 import cds, { Service, Request } from '@sap/cds';
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
-import type { MCPClientConfig } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+import type { MCPClientConfig } from '@mcp-abap-adt/llm-proxy';
 
 export default class AgentService extends cds.Service {
   private agentCache = new Map<string, Agent>();

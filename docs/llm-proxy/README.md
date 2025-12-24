@@ -1,4 +1,4 @@
-# LLM Agent - Developer Guide
+# LLM Proxy - Developer Guide
 
 ## 🎯 Quick Start
 
@@ -13,7 +13,7 @@ cd cloud-llm-hub
 npm install
 
 # Build llm-agent submodule
-cd submodules/llm-agent
+npm install @mcp-abap-adt/llm-proxy
 npm install
 npm run build
 cd ../..
@@ -27,7 +27,7 @@ Create `.env` file in project root:
 
 ```bash
 # Copy from agent submodule (if already configured)
-cp submodules/llm-agent/.env .env
+touch .env
 
 # Or create new
 cat > .env << EOF
@@ -106,7 +106,7 @@ cloud-llm-hub/
 │   └── agent-config.ts             # Configuration loading ⭐
 │
 ├── submodules/
-│   ├── llm-agent/                  # LLM Agent module (peer to mcp-abap-adt)
+│   ├── llm-proxy/                  # LLM Proxy module (peer to mcp-abap-adt)
 │   │   ├── src/
 │   │   │   ├── agents/
 │   │   │   │   └── sap-core-ai-agent.ts
@@ -118,7 +118,7 @@ cloud-llm-hub/
 │   └── mcp-abap-adt/               # MCP ABAP server (peer to llm-agent)
 │
 └── docs/
-    └── llm-agent/
+    └── llm-proxy/
         ├── ROADMAP.md              # Detailed roadmap
         ├── TASK.md                 # Task description
         └── README.md               # This file
@@ -305,11 +305,11 @@ Expected result:
 
 ## 📚 Additional Resources
 
-- [LLM Agent Roadmap](ROADMAP.md) - detailed development roadmap
-- [LLM Agent Task](TASK.md) - task description and acceptance criteria
-- [LLM Agent Testing Guide](../LLM_AGENT_TESTING.md) - testing guide
-- [LLM Agent Embedded Usage](../LLM_AGENT_EMBEDDED_USAGE.md) - usage examples
-- [LLM Agent Config Usage](../LLM_AGENT_CONFIG_USAGE.md) - configuration
+- [LLM Proxy Roadmap](ROADMAP.md) - detailed development roadmap
+- [LLM Proxy Task](TASK.md) - task description and acceptance criteria
+- [LLM Proxy Testing Guide](../LLM_PROXY_TESTING.md) - testing guide
+- [LLM Proxy Embedded Usage](../LLM_PROXY_EMBEDDED_USAGE.md) - usage examples
+- [LLM Proxy Config Usage](../LLM_PROXY_CONFIG_USAGE.md) - configuration
 
 ## ✅ Completion Checklist
 
@@ -328,8 +328,7 @@ Expected result:
 ## 📞 Questions?
 
 If you have questions:
-1. Check documentation in `docs/llm-agent/*.md`
+1. Check documentation in `docs/llm-proxy/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
 4. Contact the team for clarifications
-

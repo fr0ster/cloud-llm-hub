@@ -1,4 +1,4 @@
-# LLM Agent Configuration Proposal
+# LLM Proxy Configuration Proposal
 
 ## Problem
 

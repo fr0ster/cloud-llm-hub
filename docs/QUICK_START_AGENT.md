@@ -1,4 +1,4 @@
-# Quick Start: Testing LLM Agent
+# Quick Start: Testing LLM Proxy
 
 ## Quick Start
 
@@ -8,11 +8,8 @@
 # Install main project dependencies
 npm install
 
-# Build llm-agent submodule
-cd submodules/llm-agent
-npm install
-npm run build
-cd ../..
+# LLM proxy is installed from npm
+npm install @mcp-abap-adt/llm-proxy
 ```
 
 ### 2. Configure Environment Variables
@@ -20,17 +17,14 @@ cd ../..
 **Option A: Using .env file (recommended for local development)**
 
 ```bash
-# Copy .env from agent (if you already configured it)
-cp submodules/llm-agent/.env .env
-
-# Or create from template
-cp .env.template .env
+# Create .env in project root
+touch .env
 
 # Edit .env and add your API keys
 nano .env
 ```
 
-**Important:** The `.env` file in project root (`cloud-llm-hub/.env`) is **the same as the agent's .env** (`submodules/llm-agent/.env`). Copy it from agent: `cp submodules/llm-agent/.env .env`
+**Important:** The `.env` file in project root (`cloud-llm-hub/.env`) is used by the proxy and CAP service.
 
 **Option B: Export environment variables**
 
@@ -115,6 +109,6 @@ curl -X GET \
 
 ## Detailed Documentation
 
-- [LLM_AGENT_TESTING.md](LLM_AGENT_TESTING.md) - complete testing guide
-- [LLM_AGENT_EMBEDDED_USAGE.md](LLM_AGENT_EMBEDDED_USAGE.md) - embedded usage
-- [LLM_AGENT_CONFIG_USAGE.md](LLM_AGENT_CONFIG_USAGE.md) - configuration
+- [LLM_PROXY_TESTING.md](LLM_PROXY_TESTING.md) - complete testing guide
+- [LLM_PROXY_EMBEDDED_USAGE.md](LLM_PROXY_EMBEDDED_USAGE.md) - embedded usage
+- [LLM_PROXY_CONFIG_USAGE.md](LLM_PROXY_CONFIG_USAGE.md) - configuration

@@ -1,4 +1,4 @@
-# Testing LLM Agent After Deployment
+# Testing LLM Proxy After Deployment
 
 ## Prerequisites
 
@@ -249,7 +249,7 @@ AI_CORE_DEST="${SAP_CORE_AI_DESTINATION:-SAP_AI_CORE_DEST}"
 MODEL="${SAP_CORE_AI_MODEL:-gpt-4o-mini}"
 SAP_DEST="${SAP_DESTINATION:-}"
 
-echo "🧪 Testing LLM Agent on BTP"
+echo "🧪 Testing LLM Proxy on BTP"
 echo "================================"
 echo "Base URL: $BASE_URL"
 echo "AI Core Destination: $AI_CORE_DEST"
@@ -366,7 +366,7 @@ cf restage cloud-llm-hub-srv
 
 ## Next Steps
 
-- [LLM_AGENT_TESTING.md](LLM_AGENT_TESTING.md) - Complete testing guide
+- [LLM_PROXY_TESTING.md](LLM_PROXY_TESTING.md) - Complete testing guide
 - [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) - Deployment checklist
 - [AGENT_TEST_CHECKLIST.md](AGENT_TEST_CHECKLIST.md) - Test checklist
 

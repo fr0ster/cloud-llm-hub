@@ -10,7 +10,7 @@
  */
 
 import cds, { type Request, type Service } from '@sap/cds';
-import { SapCoreAIProvider, type Message } from '@cloud-llm-hub/llm-agent';
+import { SapCoreAIProvider, type Message } from '@mcp-abap-adt/llm-proxy';
 import { getAgentConfig, type AgentConfig } from './agent-config';
 import { createLLMProvider } from './agent-manager';
 

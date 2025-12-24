@@ -1,8 +1,8 @@
-# LLM Agent - Quick Summary
+# LLM Proxy - Quick Summary
 
 ## 📋 What is it?
 
-LLM Agent is a module that:
+LLM Proxy is a module that:
 - Accepts messages from consumers (UI or OData endpoints)
 - Works with LLM through SAP AI Core for message processing
 - Orchestrates communication between LLM and MCP (LLM communicates with MCP through the agent)
@@ -16,7 +16,7 @@ LLM Agent is a module that:
 
 ## 🎯 Main Goal
 
-Create a fully functional LLM Agent that:
+Create a fully functional LLM Proxy that:
 - Works as a central orchestrator between LLM and MCP
 - Accepts messages from consumers (UI, OData endpoints)
 - Enables LLM to communicate with MCP (embedded mcp-abap-adt in cloud-llm-hub) through the agent
@@ -31,7 +31,7 @@ srv/
 ├── agent-manager.ts           # Agent management ⭐
 └── agent-config.ts            # Configuration ⭐
 
-submodules/llm-agent/          # LLM Agent module
+node_modules/@mcp-abap-adt/llm-proxy/          # LLM Proxy module
 ```
 
 ## 🚀 Quick Start
@@ -39,10 +39,10 @@ submodules/llm-agent/          # LLM Agent module
 ```bash
 # 1. Install dependencies
 npm install
-cd submodules/llm-agent && npm install && npm run build && cd ../..
+npm install @mcp-abap-adt/llm-proxy && npm install && npm run build && cd ../..
 
 # 2. Configure .env (optional for local development)
-cp submodules/llm-agent/.env .env
+touch .env
 
 # 3. Run
 cds watch --profile development
@@ -68,7 +68,7 @@ bash test/test-agent.sh
    - Project structure
    - Debugging
 
-4. **[LLM_AGENT_TESTING.md](../LLM_AGENT_TESTING.md)** - Testing guide
+4. **[LLM_PROXY_TESTING.md](../LLM_PROXY_TESTING.md)** - Testing guide
    - How to test
    - Request examples
    - Troubleshooting

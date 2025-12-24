@@ -16,7 +16,7 @@ Developer guides, debugging tools, and testing resources for cloud-llm-hub devel
 
 ### Development Roadmaps
 
-- [**LLM Agent Roadmap**](roadmaps/LLM_AGENT_ROADMAP.md) - Development roadmap for LLM Agent feature
+- [**LLM Proxy Roadmap**](roadmaps/LLM_PROXY_ROADMAP.md) - Development roadmap for LLM Proxy feature
 
 ## Related Documentation
 

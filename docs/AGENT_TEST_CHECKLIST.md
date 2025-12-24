@@ -1,4 +1,4 @@
-# Checklist: Testing LLM Agent
+# Checklist: Testing LLM Proxy
 
 ## ✅ Before Testing
 
@@ -8,11 +8,8 @@
 # From project root
 npm install
 
-# Build llm-agent submodule
-cd submodules/llm-agent
-npm install
-npm run build
-cd ../..
+# LLM proxy is installed from npm
+npm install @mcp-abap-adt/llm-proxy
 ```
 
 ### 2. Configure Environment Variables
@@ -20,14 +17,13 @@ cd ../..
 **Option A: Using .env file (recommended)**
 
 ```bash
-# Copy .env from agent (this is the agent's .env file)
-cp submodules/llm-agent/.env .env
-
-# Edit .env and ensure LLM_PROVIDER is set
+# Create .env in project root and ensure LLM_PROVIDER is set
+touch .env
+nano .env
 nano .env
 ```
 
-**Important:** The `.env` file in project root (`cloud-llm-hub/.env`) is **the same as the agent's .env** (`submodules/llm-agent/.env`). Copy it from agent: `cp submodules/llm-agent/.env .env`
+**Important:** The `.env` file in project root (`cloud-llm-hub/.env`) is used by the proxy and CAP service.
 
 **Option B: Export environment variables**
 
@@ -159,7 +155,7 @@ curl -X POST \
 
 #### ❌ "LLM provider must be explicitly specified" or "OPENAI_API_KEY is required"
 **Solution:** 
-- Set `LLM_PROVIDER=openai` in `.env` file (copy from agent: `cp submodules/llm-agent/.env .env`)
+- Set `LLM_PROVIDER=openai` in `.env` file (copy from agent: `touch .env`)
 - Or export: `export LLM_PROVIDER="openai"` and `export OPENAI_API_KEY="sk-..."`
 
 #### ❌ "MCP client configuration required"

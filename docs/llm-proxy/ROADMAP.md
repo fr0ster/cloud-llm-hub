@@ -1,8 +1,8 @@
-# LLM Agent Development Roadmap
+# LLM Proxy Development Roadmap
 
 ## 🎯 Goal
 
-Develop LLM Agent as a separate module that:
+Develop LLM Proxy as a separate module that:
 - Accepts messages from consumers (UI or OData endpoints)
 - Works with LLM through SAP AI Core
 - Acts as an orchestrator between LLM and MCP (embedded mcp-abap-adt)
@@ -14,7 +14,7 @@ Develop LLM Agent as a separate module that:
 
 ### ✅ What's Already Done
 
-1. **Basic llm-agent module** (`submodules/llm-agent/`)
+1. **Basic llm-agent module** (`node_modules/@mcp-abap-adt/llm-proxy/`)
    - ✅ Project structure
    - ✅ SAP Core AI Provider
    - ✅ MCP Client Wrapper
@@ -130,10 +130,10 @@ Develop LLM Agent as a separate module that:
 
 ## 📝 Detailed Task Description
 
-### Task: LLM Agent Development for Cloud LLM Hub
+### Task: LLM Proxy Development for Cloud LLM Hub
 
 **Context:**
-Cloud LLM Hub integrates `mcp-abap-adt` (MCP server for ABAP), `llm-agent` (LLM orchestrator), and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level. The LLM Agent:
+Cloud LLM Hub integrates `mcp-abap-adt` (MCP server for ABAP), `llm-agent` (LLM orchestrator), and future UI into a unified system. `llm-agent` and `mcp-abap-adt` are peer components at the same level. The LLM Proxy:
 - Accepts messages from consumers (OData endpoints or future UI)
 - Works with LLM through SAP AI Core for message processing
 - Orchestrates communication between LLM and MCP (LLM communicates with MCP through the agent)
@@ -194,7 +194,7 @@ Cloud LLM Hub integrates `mcp-abap-adt` (MCP server for ABAP), `llm-agent` (LLM 
 - `srv/agent-manager.ts` - agent management
 - `srv/agent-config.ts` - configuration
 - `srv/agent-service.cds` - OData service definition
-- `submodules/llm-agent/` - agent module
+- `node_modules/@mcp-abap-adt/llm-proxy/` - agent module
 
 **Dependencies:**
 
@@ -262,7 +262,7 @@ Cloud LLM Hub integrates `mcp-abap-adt` (MCP server for ABAP), `llm-agent` (LLM 
    git clone <repo>
    cd cloud-llm-hub
    npm install
-   cd submodules/llm-agent
+   npm install @mcp-abap-adt/llm-proxy
    npm install
    npm run build
    cd ../..
@@ -306,7 +306,7 @@ srv/
 ├── agent-manager.ts            # Agent instance management
 └── agent-config.ts             # Configuration loading
 
-submodules/llm-agent/
+node_modules/@mcp-abap-adt/llm-proxy/
 ├── src/
 │   ├── agents/
 │   │   └── sap-core-ai-agent.ts # SAP AI Core agent
@@ -368,8 +368,7 @@ submodules/llm-agent/
 ## 📞 Contacts and Questions
 
 If you have questions during development:
-1. Check documentation in `docs/llm-agent/*.md`
+1. Check documentation in `docs/llm-proxy/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
 4. Contact the team for clarifications
-
