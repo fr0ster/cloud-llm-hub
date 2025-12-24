@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.9] - 2025-12-24
+
+### Fixed
+- Added explicit TypeScript path for `@fr0ster/mcp-abap-adt/server/v1` to prevent CI typecheck failures
+- Enforced npm 9.x usage to avoid lockfile churn across npm majors
+
 ## [1.1.8] - 2025-12-24
 
 ### Fixed
