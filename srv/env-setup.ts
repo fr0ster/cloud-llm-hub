@@ -10,7 +10,7 @@
  * LLM provider API keys configuration:
  * - Local development: Load from .env file (if exists)
  *   IMPORTANT: The .env file in project root is the same as the agent's .env file.
- *   Copy it from agent: cp submodules/llm-agent/.env .env
+ *   Create .env in project root for proxy configuration.
  * - BTP deployment: Use environment variables set during deployment (via mta.yaml or CF CLI)
  * - Runtime: Can be overridden via HTTP headers (X-OpenAI-API-Key, etc.)
  */

@@ -283,9 +283,6 @@ function main() {
   checkFile('.npmrc', 'Root .npmrc');
   checkFile('.editorconfig', 'Root .editorconfig');
   checkFile('.gitattributes', 'Root .gitattributes');
-  checkFile('submodules/llm-agent/.npmrc', 'llm-agent .npmrc');
-  checkFile('submodules/llm-agent/.editorconfig', 'llm-agent .editorconfig');
-  checkFile('submodules/llm-agent/.gitattributes', 'llm-agent .gitattributes');
   checkFile('submodules/mcp-abap-adt/.npmrc', 'mcp-abap-adt .npmrc');
   checkFile(
     'submodules/mcp-abap-adt/.editorconfig',
@@ -301,7 +298,6 @@ function main() {
   console.log('⚙️  NPM Configuration');
   console.log('-------------------');
   checkNpmrcSettings('.npmrc');
-  checkNpmrcSettings('submodules/llm-agent/.npmrc');
   checkNpmrcSettings('submodules/mcp-abap-adt/.npmrc');
   console.log('');
 
@@ -324,14 +320,12 @@ function main() {
   console.log('📦 Package Lock Files');
   console.log('-------------------');
   checkPeerDeps('package-lock.json');
-  checkPeerDeps('submodules/llm-agent/package-lock.json');
   checkPeerDeps('submodules/mcp-abap-adt/package-lock.json');
   console.log('');
 
   console.log('🔧 Nested Dependencies');
   console.log('--------------------');
   checkNestedNodeModules('package-lock.json');
-  checkNestedNodeModules('submodules/llm-agent/package-lock.json');
   checkNestedNodeModules('submodules/mcp-abap-adt/package-lock.json');
   console.log('');
 

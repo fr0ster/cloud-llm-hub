@@ -1,8 +1,8 @@
-# LLM Agent Development Roadmap
+# LLM Proxy Development Roadmap
 
 ## 🎯 Goal
 
-Develop LLM Agent as a separate module that:
+Develop LLM Proxy as a separate module that:
 - Accepts messages from consumers (UI or OData endpoints)
 - Works with LLM through SAP AI Core
 - Acts as an orchestrator between LLM and MCP (embedded mcp-abap-adt)
@@ -14,7 +14,7 @@ Develop LLM Agent as a separate module that:
 
 ### ✅ What's Already Done
 
-1. **Basic llm-agent module** (`submodules/llm-agent/`)
+1. **Basic llm-agent module** (`node_modules/@mcp-abap-adt/llm-proxy/`)
    - ✅ Project structure
    - ✅ SAP Core AI Provider
    - ✅ MCP Client Wrapper
@@ -214,8 +214,8 @@ Agent Manager
 
 ## 📚 Related Documentation
 
-- **[TASK.md](../../llm-agent/TASK.md)** - Detailed task description
-- **[README.md](../../llm-agent/README.md)** - Developer guide
+- **[TASK.md](../../llm-proxy/TASK.md)** - Detailed task description
+- **[README.md](../../llm-proxy/README.md)** - Developer guide
 - **[HYBRID_DEBUG_SETUP.md](../HYBRID_DEBUG_SETUP.md)** - Hybrid debugging setup
 - **[SAP_AI_CORE_ISSUE.md](../../SAP_AI_CORE_ISSUE.md)** - Known SAP AI Core issues
 
@@ -246,8 +246,7 @@ Agent Manager
 ## 📞 Questions?
 
 If you have questions:
-1. Check documentation in `docs/llm-agent/*.md`
+1. Check documentation in `docs/llm-proxy/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
 4. See troubleshooting in `docs/SAP_AI_CORE_ISSUE.md`
-

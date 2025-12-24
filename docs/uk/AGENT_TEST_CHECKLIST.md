@@ -9,7 +9,7 @@
 npm install
 
 # Збудувати llm-agent субмодуль
-cd submodules/llm-agent
+npm install @mcp-abap-adt/llm-proxy
 npm install
 npm run build
 cd ../..
@@ -21,13 +21,13 @@ cd ../..
 
 ```bash
 # Скопіювати .env від агента (це файл від агента)
-cp submodules/llm-agent/.env .env
+touch .env
 
 # Редагувати .env і впевнитися що LLM_PROVIDER встановлено
 nano .env
 ```
 
-**Важливо:** Файл `.env` в корені проекту (`cloud-llm-hub/.env`) - це **той самий файл що й у агента** (`submodules/llm-agent/.env`). Скопіюйте його від агента: `cp submodules/llm-agent/.env .env`
+**Важливо:** Файл `.env` в корені проекту (`cloud-llm-hub/.env`) - це **той самий файл що й у агента** (`cloud-llm-hub/.env`). Скопіюйте його від агента: `touch .env`
 
 **Варіант B: Експорт змінних оточення**
 
@@ -159,7 +159,7 @@ curl -X POST \
 
 #### ❌ "LLM provider must be explicitly specified" або "OPENAI_API_KEY is required"
 **Рішення:** 
-- Встановити `LLM_PROVIDER=openai` в `.env` файлі (скопіювати від агента: `cp submodules/llm-agent/.env .env`)
+- Встановити `LLM_PROVIDER=openai` в `.env` файлі (скопіювати від агента: `touch .env`)
 - Або експортувати: `export LLM_PROVIDER="openai"` та `export OPENAI_API_KEY="sk-..."`
 
 #### ❌ "MCP client configuration required"

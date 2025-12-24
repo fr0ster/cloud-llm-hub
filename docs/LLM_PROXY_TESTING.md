@@ -1,4 +1,4 @@
-# LLM Agent Testing Guide
+# LLM Proxy Testing Guide
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ For local development, create a `.env` file in the **project root** (`cloud-llm-
 
 ```bash
 # Option 1: Copy from agent's .env (recommended - if you already have it configured)
-cp submodules/llm-agent/.env .env
+touch .env
 
 # Option 2: Copy template (if starting fresh)
 cp .env.template .env
@@ -58,10 +58,10 @@ nano .env  # or use your favorite editor
 
 **Important:** 
 - `.env` file location: `cloud-llm-hub/.env` (project root)
-- **This `.env` file is from the agent** - it's the same configuration used by `submodules/llm-agent/.env`
-- The agent's `.env` file (`submodules/llm-agent/.env`) is used for standalone agent testing
+- **This `.env` file is from the agent** - it's the same configuration used by `cloud-llm-hub/.env`
+- The agent's `.env` file (`cloud-llm-hub/.env`) is used for standalone agent testing
 - The root `.env` file (`cloud-llm-hub/.env`) is used by cloud-llm-hub service for local development
-- **Both files should have the same content** - you can copy from agent to root: `cp submodules/llm-agent/.env .env`
+- **Both files should have the same content** - you can copy from agent to root: `touch .env`
 
 Example `.env` file (in project root - same as agent's .env):
 ```env
@@ -86,13 +86,13 @@ LLM_PROVIDER=openai
 The `.env` file is automatically loaded when running locally (not in BTP).
 
 **File Locations:**
-- `cloud-llm-hub/.env` - **This is the agent's .env file** (copied from `submodules/llm-agent/.env`)
+- `cloud-llm-hub/.env` - **This is the agent's .env file** (copied from `cloud-llm-hub/.env`)
   - Used by `srv/env-setup.ts` for cloud-llm-hub service local development
   - Used by `tools/set-btp-env.js` for BTP deployment script
-  - **Same content as agent's .env** - copy with: `cp submodules/llm-agent/.env .env`
-- `submodules/llm-agent/.env` - Original agent's .env file
-  - Used by `submodules/llm-agent/src/cli.ts` for standalone agent testing
-  - **Copy this to root for cloud-llm-hub**: `cp submodules/llm-agent/.env .env`
+  - **Same content as agent's .env** - copy with: `touch .env`
+- `cloud-llm-hub/.env` - Original agent's .env file
+  - Used by `node_modules/@mcp-abap-adt/llm-proxy/src/cli.ts` for standalone agent testing
+  - **Copy this to root for cloud-llm-hub**: `touch .env`
 
 ### Option 3: BTP Deployment (Environment Variables)
 
@@ -153,7 +153,7 @@ cf restage cloud-llm-hub-srv
 npm install
 
 # Build llm-agent submodule
-cd submodules/llm-agent && npm install && npm run build && cd ../..
+npm install @mcp-abap-adt/llm-proxy && npm install && npm run build && cd ../..
 
 # Start CAP service
 cds watch --profile development

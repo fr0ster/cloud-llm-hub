@@ -9,7 +9,7 @@
 npm install
 
 # Збудувати llm-agent субмодуль
-cd submodules/llm-agent
+npm install @mcp-abap-adt/llm-proxy
 npm install
 npm run build
 cd ../..
@@ -21,7 +21,7 @@ cd ../..
 
 ```bash
 # Скопіювати .env від агента (якщо вже налаштовано)
-cp submodules/llm-agent/.env .env
+touch .env
 
 # Або створити з шаблону
 cp .env.template .env
@@ -30,7 +30,7 @@ cp .env.template .env
 nano .env
 ```
 
-**Важливо:** Файл `.env` в корені проекту (`cloud-llm-hub/.env`) - це **той самий файл що й у агента** (`submodules/llm-agent/.env`). Скопіюйте його від агента: `cp submodules/llm-agent/.env .env`
+**Важливо:** Файл `.env` в корені проекту (`cloud-llm-hub/.env`) - це **той самий файл що й у агента** (`cloud-llm-hub/.env`). Скопіюйте його від агента: `touch .env`
 
 **Варіант B: Експорт змінних оточення**
 
@@ -115,6 +115,6 @@ curl -X GET \
 
 ## Детальна документація
 
-- [LLM_AGENT_TESTING.md](../LLM_AGENT_TESTING.md) - повний гайд з тестування
-- [LLM_AGENT_EMBEDDED_USAGE.md](../LLM_AGENT_EMBEDDED_USAGE.md) - embedded використання
-- [LLM_AGENT_CONFIG_USAGE.md](../LLM_AGENT_CONFIG_USAGE.md) - конфігурація
+- [LLM_PROXY_TESTING.md](../LLM_PROXY_TESTING.md) - повний гайд з тестування
+- [LLM_PROXY_EMBEDDED_USAGE.md](../LLM_PROXY_EMBEDDED_USAGE.md) - embedded використання
+- [LLM_PROXY_CONFIG_USAGE.md](../LLM_PROXY_CONFIG_USAGE.md) - конфігурація

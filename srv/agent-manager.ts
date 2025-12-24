@@ -17,13 +17,13 @@
  * - All authentication handled through destinations
  */
 
-import type { MCPClientConfig } from '@cloud-llm-hub/llm-agent';
+import type { MCPClientConfig } from '@mcp-abap-adt/llm-proxy';
 import {
   type BaseAgent,
   MCPClientWrapper,
   SapCoreAIAgent,
   SapCoreAIProvider,
-} from '@cloud-llm-hub/llm-agent';
+} from '@mcp-abap-adt/llm-proxy';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 
