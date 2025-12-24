@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.7] - 2025-12-24
+
+### Changed
+- Switched CI and release workflows to Biome linting (`npm run lint:check`)
+
 ## [1.1.6] - 2025-12-24
 
 ### Changed

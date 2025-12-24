@@ -37,8 +37,8 @@ jobs:
       - name: Auto-format code
         run: npm run format
       
-      - name: Run linter (without prettier)
-        run: npx eslint . --ext .ts,.js,.mjs --max-warnings 100
+      - name: Run linter (Biome)
+        run: npm run lint:check
       
       - name: Type check
         run: npx tsc --noEmit
@@ -90,4 +90,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
