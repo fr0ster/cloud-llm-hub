@@ -17,21 +17,6 @@
       ],
       "#cds-models/*": [
         "./@cds-models/*"
-      ],
-      "@fr0ster/mcp-abap-adt": [
-        "./submodules/mcp-abap-adt/dist/index"
-      ],
-      "@fr0ster/mcp-abap-adt/server/v1": [
-        "./submodules/mcp-abap-adt/dist/server/v1/index"
-      ],
-      "@fr0ster/mcp-abap-adt/handlers": [
-        "./submodules/mcp-abap-adt/dist/lib/handlers/index"
-      ],
-      "@fr0ster/mcp-abap-adt/utils": [
-        "./submodules/mcp-abap-adt/dist/lib/utils"
-      ],
-      "@fr0ster/mcp-abap-adt/*": [
-        "./submodules/mcp-abap-adt/dist/*"
       ]
     }
   },
