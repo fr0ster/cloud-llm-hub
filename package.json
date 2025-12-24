@@ -1,10 +1,10 @@
 {
   "name": "cloud-llm-hub",
-  "version": "1.1.6",
+  "version": "1.1.12",
   "description": "A simple CAP project.",
   "dependencies": {
     "@cloud-llm-hub/llm-agent": "file:submodules/llm-agent",
-    "@fr0ster/mcp-abap-adt": "file:submodules/mcp-abap-adt",
+    "@fr0ster/mcp-abap-adt": "https://github.com/fr0ster/mcp-abap-adt/releases/download/v1.2.5/fr0ster-mcp-abap-adt-1.2.5.tgz",
     "@mcp-abap-adt/adt-clients": "^0.2.6",
     "@mcp-abap-adt/auth-broker": "^0.2.10",
     "@mcp-abap-adt/connection": "^0.2.5",
@@ -49,9 +49,9 @@
     "test:unit": "jest",
     "test:unit:watch": "jest --watch",
     "test:unit:coverage": "jest --coverage",
-    "lint": "npx biome check --write srv tools test",
-    "lint:check": "npx biome check srv tools test",
-    "format": "npx biome format --write srv tools test",
+    "lint": "npx biome check --write --config-path . srv tools test",
+    "lint:check": "npx biome check --config-path . srv tools test",
+    "format": "npx biome format --write --config-path . srv tools test",
     "update:cline": "node tools/update-cline-connection.js",
     "update:cline:yaml": "node tools/update-cline-connection.js",
     "copy:mcp-submodule": "node tools/copy-mcp-submodule.js",
@@ -63,8 +63,8 @@
   "license": "MIT",
   "private": true,
   "engines": {
-    "node": "22.16.0",
-    "npm": ">=9.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=10"
   },
   "cds": {
     "watch": {

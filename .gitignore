@@ -37,6 +37,7 @@ mta_archives/
 sk.json
 .env
 *.json
+!biome.json
 
 # Submodules (exclude from this branch, keep folder for other branches)
 submodules/llm-agent/

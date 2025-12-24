@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.12] - 2025-12-24
+
+### Changed
+- Switched `@fr0ster/mcp-abap-adt` to a release tarball dependency and removed the git submodule
+- Simplified CI/release workflows now that submodules are no longer required
+
+## [1.1.11] - 2025-12-24
+
+### Changed
+- Added explicit submodule build step in CI before type checking
+- Made Biome config path explicit in lint commands
+
+## [1.1.10] - 2025-12-24
+
+### Changed
+- Relaxed npm engine requirement to allow npm 10+ in CI and local installs
+
+## [1.1.9] - 2025-12-24
+
+### Fixed
+- Added explicit TypeScript path for `@fr0ster/mcp-abap-adt/server/v1` to prevent CI typecheck failures
+- Enforced npm 9.x usage to avoid lockfile churn across npm majors
+
+## [1.1.8] - 2025-12-24
+
+### Fixed
+- Enabled TypeScript path resolution for `@fr0ster/mcp-abap-adt` subpaths to avoid CI typecheck failures
+
+## [1.1.7] - 2025-12-24
+
+### Changed
+- Switched CI and release workflows to Biome linting (`npm run lint:check`)
+
 ## [1.1.6] - 2025-12-24
 
 ### Changed
