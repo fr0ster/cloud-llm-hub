@@ -1,3 +1,3 @@
 [submodule "submodules/mcp-abap-adt"]
 	path = submodules/mcp-abap-adt
-	url = git@github.com:fr0ster/mcp-abap-adt.git
+	url = https://github.com/fr0ster/mcp-abap-adt.git
