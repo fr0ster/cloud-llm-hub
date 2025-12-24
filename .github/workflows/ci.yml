@@ -30,6 +30,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build mcp-abap-adt submodule
+        run: |
+          npm ci --prefix submodules/mcp-abap-adt
+          npm run build:fast --prefix submodules/mcp-abap-adt
       
       - name: Run linter (Biome)
         run: npx biome check --config-path . srv tools test
