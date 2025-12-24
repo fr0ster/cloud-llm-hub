@@ -14,8 +14,6 @@
 import './env-setup';
 
 import cds from '@sap/cds';
-// @ts-expect-error - @sap/xsenv doesn't have types
-import { loadEnv } from '@sap/xsenv';
 import type { Application, NextFunction, Request, Response } from 'express';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -195,55 +193,6 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
 // It uses executeHttpRequest from SAP Cloud SDK for automatic destination handling
 
 /**
- * Get OAuth token using client_credentials flow
- */
-async function getOAuthToken(
-  clientId: string,
-  clientSecret: string,
-  tokenUrl: string,
-): Promise<string> {
-  const fetch = (await import('node-fetch')).default;
-  const log = cds.log('oauth-token');
-
-  try {
-    log.debug('Requesting OAuth token', {
-      clientId: `${clientId.substring(0, 20)}...`,
-      tokenUrl,
-    });
-
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-      }).toString(),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      log.error('OAuth token request failed', {
-        status: response.status,
-        error: errorText,
-      });
-      throw new Error(
-        `OAuth token request failed: ${response.status} ${errorText}`,
-      );
-    }
-
-    const data = (await response.json()) as { access_token: string };
-    log.debug('OAuth token obtained successfully');
-    return data.access_token;
-  } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    log.error('Failed to get OAuth token', { error: err.message });
-    throw err;
-  }
-}
-
-/**
  * Register middleware for /mcp routes
  * All authentication/authorization is handled via CAP AuthService.CheckAuth
  */
@@ -279,88 +228,6 @@ cds.on('bootstrap', (app: Application) => {
       next();
     },
   );
-
-  /**
-   * Convert Basic auth to Bearer token in production mode
-   */
-  async function convertBasicToBearer(req: Request): Promise<void> {
-    const convertLog = cds.log('auth-convert');
-    const authHeader = req.headers.authorization;
-
-    convertLog.info('🔄 convertBasicToBearer called', {
-      hasAuthHeader: !!authHeader,
-      authType: authHeader?.substring(0, 10) || 'none',
-    });
-
-    if (!authHeader || !authHeader.startsWith('Basic ')) {
-      convertLog.info('⏭️ Not Basic auth, skipping conversion');
-      return; // Not Basic auth, skip
-    }
-
-    // Check if we're in development mode (mocked auth) or production (real XSUAA)
-    const isDevelopment =
-      cds.env.profiles?.includes('development') ||
-      process.env.CDS_ENV === 'development' ||
-      cds.env.requires?.auth?.['[development]']?.kind === 'mocked';
-
-    // Check if we have real XSUAA credentials available
-    // In hybrid mode, we might be in production profile but want to use mocked auth
-    const hasVcapApplication = !!process.env.VCAP_APPLICATION;
-    const isLocal = !hasVcapApplication && !process.env.CF_INSTANCE_INDEX;
-
-    // If development mode OR local without VCAP_APPLICATION, keep Basic auth
-    // This allows hybrid debugging with mocked auth
-    if (isDevelopment || (isLocal && !hasVcapApplication)) {
-      convertLog.info('⏭️ Development/local mode, keeping Basic auth', {
-        isDevelopment,
-        isLocal,
-        hasVcapApplication,
-      });
-      return; // Keep Basic auth in development or local mode
-    }
-
-    // Production mode - convert Basic to Bearer
-    convertLog.info('🔄 Converting Basic auth to Bearer token in production');
-
-    try {
-      // Get XSUAA credentials from VCAP_SERVICES
-      const vcapServices = process.env.VCAP_SERVICES
-        ? JSON.parse(process.env.VCAP_SERVICES)
-        : loadEnv()?.VCAP_SERVICES || {};
-
-      const xsuaa = vcapServices?.xsuaa?.[0]?.credentials;
-      if (!xsuaa) {
-        convertLog.warn(
-          '⚠️ XSUAA credentials not found, cannot convert Basic to Bearer',
-        );
-        return;
-      }
-
-      // Build token URL
-      const tokenUrl = `${xsuaa.url}/oauth/token`;
-      convertLog.info('📡 Requesting OAuth token', { tokenUrl });
-
-      // Get token using client_credentials flow
-      const token = await getOAuthToken(
-        xsuaa.clientid,
-        xsuaa.clientsecret,
-        tokenUrl,
-      );
-
-      // Replace Basic auth with Bearer token
-      req.headers.authorization = `Bearer ${token}`;
-      convertLog.info('✅ Successfully converted Basic auth to Bearer token', {
-        tokenLength: token.length,
-      });
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      convertLog.error('❌ Failed to convert Basic auth to Bearer', {
-        error: err.message,
-        stack: err.stack?.substring(0, 300),
-      });
-      // Don't throw - let auth check fail later
-    }
-  }
 
   /**
    * Check authentication via CAP AuthService.CheckAuth
@@ -484,14 +351,6 @@ cds.on('bootstrap', (app: Application) => {
       });
 
       try {
-        // Convert Basic auth to Bearer token in production if needed
-        authLog.info('🔄 Calling convertBasicToBearer...');
-        await convertBasicToBearer(req);
-        authLog.info('✅ convertBasicToBearer completed', {
-          hasAuthHeader: !!req.headers.authorization,
-          authType: req.headers.authorization?.substring(0, 10) || 'none',
-        });
-
         // Check authentication via CAP AuthService.CheckAuth
         authLog.info('🔄 Calling requireAuth...');
         const ok = await requireAuth(req, res);
