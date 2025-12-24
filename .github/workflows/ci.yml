@@ -15,12 +15,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
-
-      - name: Sync submodules
-        run: |
-          git submodule sync --recursive
-          git submodule update --init --recursive
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -30,11 +24,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Build mcp-abap-adt submodule
-        run: |
-          npm ci --prefix submodules/mcp-abap-adt
-          npm run build:fast --prefix submodules/mcp-abap-adt
       
       - name: Run linter (Biome)
         run: npx biome check --config-path . srv tools test

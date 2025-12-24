@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.12] - 2025-12-24
+
+### Changed
+- Switched `@fr0ster/mcp-abap-adt` to a release tarball dependency and removed the git submodule
+- Simplified CI/release workflows now that submodules are no longer required
+
 ## [1.1.11] - 2025-12-24
 
 ### Changed
