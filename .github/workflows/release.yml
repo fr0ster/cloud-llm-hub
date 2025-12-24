@@ -38,7 +38,7 @@ jobs:
         run: npm run format
       
       - name: Run linter (Biome)
-        run: npm run lint:check
+        run: npx biome check --config-path . srv tools test
       
       - name: Type check
         run: npx tsc --noEmit
