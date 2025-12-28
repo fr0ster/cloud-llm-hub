@@ -87,9 +87,7 @@ function main() {
       const aicore = vcapServices.aicore[0];
       console.log(`  • SAP AI Core (${aicore.name})`);
       console.log(`    Binding GUID: ${aicore.binding_guid}`);
-      console.log(
-        `    Has Client ID: ${!!aicore.credentials?.clientid}`,
-      );
+      console.log(`    Has Client ID: ${!!aicore.credentials?.clientid}`);
       console.log(
         `    Has Client Secret: ${!!aicore.credentials?.clientsecret}`,
       );
