@@ -139,10 +139,25 @@ try {
 
 ## 🎨 Formatting
 
+**We use [Biome](https://biomejs.dev/) for formatting and linting.**
+
+### Running Biome
+
+```bash
+# Format code
+npm run format
+
+# Check linting (without auto-fix)
+npm run lint:check
+
+# Check and auto-fix linting issues
+npm run lint
+```
+
 ### Indentation
 
 - **2 spaces** (no tabs)
-- Consistent with existing code
+- Configured in `biome.json`
 
 ### Line Length
 
@@ -199,6 +214,15 @@ const template = `Template with ${variable}`;
 // ⚠️ Acceptable (for JSON keys)
 const obj = { key: 'value' };
 ```
+
+### Biome Configuration
+
+Formatting rules are configured in `biome.json`. Key settings:
+
+- **Indent:** 2 spaces
+- **Quote style:** Single quotes
+- **Semicolons:** Always
+- **Line width:** 100 characters (prefer 80)
 
 ## 📦 Imports
 
@@ -370,6 +394,42 @@ console.error('Connection failed', error);
 - **`log.info()`** - General information
 - **`log.warn()`** - Warnings
 - **`log.error()`** - Errors
+
+## 🔧 Linting and Code Quality
+
+### Biome Configuration
+
+We use [Biome](https://biomejs.dev/) for linting and formatting. Configuration is in `biome.json`.
+
+**Key rules:**
+- `noExplicitAny`: Warns about `any` types (use `unknown` or proper types)
+- `noUnusedVariables`: Warns about unused variables
+- `noUnusedImports`: Warns about unused imports
+- `organizeImports`: Automatically organizes imports
+
+**Running Biome:**
+
+```bash
+# Format and lint with auto-fix
+npm run lint
+
+# Check only (no auto-fix)
+npm run lint:check
+
+# Format only
+npm run format
+```
+
+**Suppressing rules:**
+
+When necessary, you can suppress Biome rules with comments:
+
+```typescript
+// biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any are standard
+function example<T = any>(): T {
+  // ...
+}
+```
 
 ## 🚫 Common Mistakes to Avoid
 

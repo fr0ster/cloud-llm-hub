@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.13] - 2025-12-28
+
+### Changed
+- **Dependencies Update**: Updated `@fr0ster/mcp-abap-adt` from `v1.2.5` to `v1.2.7`
+- **Complete Biome Migration**: Removed all ESLint/Prettier dependencies and configuration
+  - Removed `@typescript-eslint/eslint-plugin`, `@typescript-eslint/parser`, `eslint`, `eslint-config-prettier`, `eslint-plugin-prettier`, and `prettier` from devDependencies
+  - Deleted `eslint.config.mjs` configuration file
+  - All linting and formatting now handled exclusively by Biome
+
+### Fixed
+- **Type Safety**: Fixed TypeScript compatibility issues with `IAbapConnection` interface
+  - Updated `CloudSdkAbapConnection.makeAdtRequest()` to return `Promise<IAdtResponse<T, D>>` instead of `Promise<AxiosResponse>`
+  - Changed `convertToAxiosResponse()` to `convertToAdtResponse()` with proper `IAdtResponse` return type
+  - Fixed type guard `isCloudSdkConnection()` to use `IAbapConnection` interface
+  - Added proper imports for `IAbapConnection` and `IAdtResponse` from `@mcp-abap-adt/interfaces`
+- **Code Quality**: Added Biome ignore comments for generic type parameters with default `any` values (standard practice for flexible response types)
+
 ## [1.1.12] - 2025-12-24
 
 ### Changed
