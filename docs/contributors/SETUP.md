@@ -185,6 +185,25 @@ cd test/smoke
 npm exec -- tsc --noEmit
 ```
 
+### Linting and Formatting
+
+We use [Biome](https://biomejs.dev/) for linting and formatting:
+
+```bash
+# Format code
+npm run format
+
+# Check linting (without auto-fix)
+npm run lint:check
+
+# Check and auto-fix linting issues
+npm run lint
+```
+
+**Before committing:**
+- Run `npm run lint` to ensure code follows style guidelines
+- Run `npm run lint:check` in CI to verify formatting
+
 ## 🏗️ Build Process
 
 ### Local Build

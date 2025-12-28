@@ -8,8 +8,8 @@ import type {
   SapConfig,
 } from '@mcp-abap-adt/connection';
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
+import type { IAdtResponse } from '@mcp-abap-adt/interfaces';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
-import type { AxiosResponse } from 'axios';
 import { logger } from '../lib/logger';
 
 /**
@@ -234,9 +234,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   /**
-   * Convert Cloud SDK response to AxiosResponse format
+   * Convert Cloud SDK response to IAdtResponse format
    */
-  private convertToAxiosResponse(
+  // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any are standard for flexible response types
+  private convertToAdtResponse<T = any, D = any>(
     cloudSdkResponse: {
       data: unknown;
       status?: number;
@@ -244,21 +245,27 @@ export class CloudSdkAbapConnection implements AbapConnection {
       headers?: Record<string, unknown>;
     },
     requestUrl: string,
-  ): AxiosResponse {
+  ): IAdtResponse<T, D> {
     return {
-      data: cloudSdkResponse.data,
+      data: cloudSdkResponse.data as T,
       status: cloudSdkResponse.status || 200,
       statusText: cloudSdkResponse.statusText || 'OK',
-      headers: cloudSdkResponse.headers || {},
+      headers: (cloudSdkResponse.headers || {}) as Record<
+        string,
+        string | string[] | number | boolean | null | undefined | object
+      >,
       config: {
         url: requestUrl,
         method: 'GET',
-      } as AxiosResponse['config'],
+      } as D,
       request: {},
-    } as AxiosResponse;
+    };
   }
 
-  async makeAdtRequest(options: AbapRequestOptions): Promise<AxiosResponse> {
+  // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any match IAbapConnection interface signature
+  async makeAdtRequest<T = any, D = any>(
+    options: AbapRequestOptions,
+  ): Promise<IAdtResponse<T, D>> {
     const { url, method, timeout: _timeout, data, params } = options;
     const normalizedMethod = method.toUpperCase();
 
@@ -361,8 +368,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
         },
       );
 
-      // Convert Cloud SDK response to AxiosResponse format
-      return this.convertToAxiosResponse(response, requestUrl);
+      // Convert Cloud SDK response to IAdtResponse format
+      return this.convertToAdtResponse<T, D>(response, requestUrl);
     } catch (error: unknown) {
       // Use synchronized error handling from errorUtils
       // In development (cds watch), TypeScript files are executed directly, so use .ts extension
@@ -427,7 +434,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
             },
           );
 
-          return this.convertToAxiosResponse(retryResponse, requestUrl);
+          return this.convertToAdtResponse<T, D>(retryResponse, requestUrl);
         } catch (retryError: unknown) {
           logErrorSafely(logger, 'ADT request retry', retryError, {
             url: requestUrl,

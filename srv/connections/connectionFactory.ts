@@ -13,6 +13,7 @@ import type {
   SapConfig,
 } from '@mcp-abap-adt/connection';
 import { createAbapConnection } from '@mcp-abap-adt/connection';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
 import { loggerAdapter } from '../lib/logger';
 import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
 
@@ -129,7 +130,7 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
  * @returns true if connection is CloudSdkAbapConnection
  */
 export function isCloudSdkConnection(
-  connection: AbapConnection,
+  connection: IAbapConnection,
 ): connection is CloudSdkAbapConnection {
   return connection instanceof CloudSdkAbapConnection;
 }
