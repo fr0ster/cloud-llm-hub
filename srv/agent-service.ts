@@ -9,9 +9,9 @@
  * - All authentication is handled through SAP AI Core service binding
  */
 
+import { type Message } from '@mcp-abap-adt/llm-proxy';
 import cds, { type Request, type Service } from '@sap/cds';
-import { SapCoreAIProvider, type Message } from '@mcp-abap-adt/llm-proxy';
-import { getAgentConfig, type AgentConfig } from './agent-config';
+import { type AgentConfig, getAgentConfig } from './agent-config';
 import { createLLMProvider } from './agent-manager';
 
 /**

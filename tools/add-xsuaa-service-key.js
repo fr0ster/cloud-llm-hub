@@ -12,7 +12,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SERVICE_KEY_FILE = process.argv[2] || path.join(__dirname, '..', 'mcp.json');
+const SERVICE_KEY_FILE =
+  process.argv[2] || path.join(__dirname, '..', 'mcp.json');
 const SERVICE_NAME = process.argv[3] || 'cloud-llm-hub-xsuaa';
 const DEFAULT_ENV_PATH = path.join(__dirname, '..', 'default-env.json');
 
@@ -24,8 +25,12 @@ function main() {
   // Read service key
   if (!fs.existsSync(SERVICE_KEY_FILE)) {
     console.error(`❌ Error: Service key file not found: ${SERVICE_KEY_FILE}`);
-    console.error(`   Create service key: cf create-service-key <xsuaa-instance> <key-name>`);
-    console.error(`   Get service key: cf service-key <xsuaa-instance> <key-name>`);
+    console.error(
+      `   Create service key: cf create-service-key <xsuaa-instance> <key-name>`,
+    );
+    console.error(
+      `   Get service key: cf service-key <xsuaa-instance> <key-name>`,
+    );
     process.exit(1);
   }
 
@@ -39,7 +44,9 @@ function main() {
 
   // Validate service key structure
   if (!serviceKey.clientid || !serviceKey.clientsecret || !serviceKey.url) {
-    console.error('❌ Error: Service key is missing required fields (clientid, clientsecret, url)');
+    console.error(
+      '❌ Error: Service key is missing required fields (clientid, clientsecret, url)',
+    );
     process.exit(1);
   }
 
@@ -90,7 +97,8 @@ function main() {
       subaccountid: serviceKey.subaccountid,
       'credential-type': serviceKey['credential-type'] || 'binding-secret',
     },
-    instance_guid: serviceKey.serviceInstanceId || `xsuaa-instance-${Date.now()}`,
+    instance_guid:
+      serviceKey.serviceInstanceId || `xsuaa-instance-${Date.now()}`,
     instance_name: SERVICE_NAME,
     label: 'xsuaa',
     name: SERVICE_NAME,
@@ -138,4 +146,3 @@ if (require.main === module) {
 }
 
 module.exports = { main };
-
