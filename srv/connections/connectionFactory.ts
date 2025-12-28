@@ -12,8 +12,8 @@ import type {
   ILogger,
   SapConfig,
 } from '@mcp-abap-adt/connection';
-import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
 import { createAbapConnection } from '@mcp-abap-adt/connection';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
 import { loggerAdapter } from '../lib/logger';
 import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
 

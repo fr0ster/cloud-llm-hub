@@ -236,6 +236,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
   /**
    * Convert Cloud SDK response to IAdtResponse format
    */
+  // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any are standard for flexible response types
   private convertToAdtResponse<T = any, D = any>(
     cloudSdkResponse: {
       data: unknown;
@@ -261,6 +262,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
     };
   }
 
+  // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any match IAbapConnection interface signature
   async makeAdtRequest<T = any, D = any>(
     options: AbapRequestOptions,
   ): Promise<IAdtResponse<T, D>> {
