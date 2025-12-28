@@ -1,6 +1,6 @@
 {
   "name": "cloud-llm-hub",
-  "version": "1.1.12",
+  "version": "1.1.13",
   "description": "A simple CAP project.",
   "dependencies": {
     "@fr0ster/mcp-abap-adt": "https://github.com/fr0ster/mcp-abap-adt/releases/download/v1.2.7/fr0ster-mcp-abap-adt-1.2.7.tgz",
