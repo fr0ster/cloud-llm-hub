@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.1.16] - 2025-12-29
+
+### Changed
+- **Dependencies Update**: Updated `@fr0ster/mcp-abap-adt` from `v1.2.9` to `v1.3.0`
+
+## [1.1.15] - 2025-12-29
+
+### Changed
+- **Dependencies Update**: Updated `@fr0ster/mcp-abap-adt` from `v1.2.8` to `v1.2.9`
+
+## [1.1.14] - 2025-12-29
+
+### Changed
+- **Dependencies Update**: Updated `@fr0ster/mcp-abap-adt` from `v1.2.7` to `v1.2.8`
+
 ## [1.1.13] - 2025-12-28
 
 ### Changed
