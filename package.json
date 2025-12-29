@@ -5,11 +5,11 @@
   "dependencies": {
     "@fr0ster/mcp-abap-adt": "https://github.com/fr0ster/mcp-abap-adt/releases/download/v1.2.7/fr0ster-mcp-abap-adt-1.2.7.tgz",
     "@mcp-abap-adt/llm-proxy": "^0.0.1",
-    "@mcp-abap-adt/adt-clients": "^0.2.6",
+    "@mcp-abap-adt/adt-clients": "^0.3.10",
     "@mcp-abap-adt/auth-broker": "^0.2.10",
     "@mcp-abap-adt/connection": "^0.2.5",
     "@mcp-abap-adt/header-validator": "^0.1.8",
-    "@mcp-abap-adt/interfaces": "^0.2.7",
+    "@mcp-abap-adt/interfaces": "^0.2.15",
     "@mcp-abap-adt/logger": "^0.1.4",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@sap-cloud-sdk/connectivity": "^4",
