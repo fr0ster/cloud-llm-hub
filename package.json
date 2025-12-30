@@ -3,6 +3,7 @@
   "version": "1.2.0",
   "description": "A simple CAP project.",
   "dependencies": {
+    "@mcp-abap-adt/llm-proxy": "^0.0.1",
     "@mcp-abap-adt/adt-clients": "^0.3.10",
     "@mcp-abap-adt/auth-broker": "^0.2.10",
     "@mcp-abap-adt/connection": "^0.2.5",
