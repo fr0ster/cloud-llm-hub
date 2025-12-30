@@ -1,8 +1,8 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import './env-setup';
 
-import { EmbeddableMcpServer } from '@fr0ster/mcp-abap-adt/server/v1';
 import type { AbapConnection, SapConfig } from '@mcp-abap-adt/connection';
+import { EmbeddableMcpServer } from '@mcp-abap-adt/core/server';
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import {
   HEADER_AUTHORIZATION,
@@ -208,8 +208,7 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
  */
 export interface McpServerResult {
   /** EmbeddableMcpServer instance */
-  // biome-ignore lint/suspicious/noExplicitAny: EmbeddableMcpServer type is not exported from mcp-abap-adt
-  server: any;
+  server: EmbeddableMcpServer;
   /** Connection used by this server */
   connection: AbapConnection;
   /** Transport for handling the request */
@@ -287,13 +286,12 @@ export async function createMCPServerForRequest(
       authType: sapConfig.authType,
     });
 
-    // Create NEW EmbeddableMcpServer with this connection
-    const mcpServerInstance = new EmbeddableMcpServer({
-      context: {
-        connection,
-        logger: loggerAdapter,
-      },
-      exposition: ['readonly', 'high'],
+    // Create NEW EmbeddableMcpServer with injected connection
+    // EmbeddableMcpServer handles proper handler registration via BaseMcpServer
+    const mcpServer = new EmbeddableMcpServer({
+      connection,
+      logger: loggerAdapter,
+      exposition: ['readonly', 'high', 'system', 'search'],
     });
 
     // Create NEW transport for this request
@@ -306,7 +304,7 @@ export async function createMCPServerForRequest(
     });
 
     // Connect transport to MCP server
-    await mcpServerInstance.mcpServer.connect(transport);
+    await mcpServer.connect(transport);
 
     log.info('MCP server created for request', {
       connectionType: connection.constructor.name,
@@ -333,7 +331,7 @@ export async function createMCPServerForRequest(
     };
 
     return {
-      server: mcpServerInstance,
+      server: mcpServer,
       connection,
       transport,
       cleanup,
