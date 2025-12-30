@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.2.0] - 2025-12-30
+
+### Changed
+- **Major dependency migration**: Replaced `@fr0ster/mcp-abap-adt` with `@mcp-abap-adt/core@^2.0.1`
+- **EmbeddableMcpServer**: Now using `EmbeddableMcpServer` from `@mcp-abap-adt/core/server` for proper handler registration
+- **Extended handler groups**: Added `system` and `search` handler groups alongside `readonly` and `high`
+  - Now includes: `GetPackageTree`, `GetInactiveObjects`, `SearchObject`, `GetObjectsList`, `GetObjectsByType`
+
+### Added
+- **test:check script**: Added `npm run test:check` for TypeScript type checking
+
 ## [1.1.16] - 2025-12-29
 
 ### Changed
