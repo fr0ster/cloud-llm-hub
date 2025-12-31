@@ -115,33 +115,43 @@ curl -X POST \
 
 ## 🚢 Deploying to SAP BTP via MTA
 
-The project now ships with an `mta.yaml` descriptor and build hooks that streamline SAP BTP Cloud Foundry deployment.
+The project now ships with an `mta.yaml` descriptor and an optimized build process that streamline SAP BTP Cloud Foundry deployment.
 
-1. **Build the CAP artifacts**
+1. **Build the MTA archive**
 
+Using the provided npm script (recommended):
 ```bash
-npx cds build --production
+npm run build:mta
+```
+Or using the Cloud MTA Build Tool directly:
+```bash
+npx mbt build -t gen/mta_archives --mtar cloud-llm-hub.tar
 ```
 
-2. **Create the MTAR** (requires the SAP `mbt` tool or the Cloud MTA Build Tool):
+2. **Deploy to Cloud Foundry**
 
+Using the provided npm script (recommended):
 ```bash
-mbt build
+npm run deploy
+```
+Or using the `cf deploy` command:
+```bash
+cf deploy gen/mta_archives/cloud-llm-hub.tar --abort-on-error --delete-services
 ```
 
-3. **Deploy to Cloud Foundry**
+### Build Optimization
 
-```bash
-cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar
-```
+The `mta.yaml` uses a custom builder to minimize the deployment size:
+- Uses `npm ci --omit=dev` to exclude development dependencies.
+- Removes source maps (`*.map`), markdown documentation (`*.md`), and `docs/` folders from `node_modules`.
+- Cleans up development tools like `tsx` and `esbuild`.
+- **Result:** The final MTA archive size is reduced to **~16MB**.
 
-The descriptor provisions two application modules (CAP service + approuter) and automatically creates and binds:
+The descriptor provisions application modules (CAP service + approuter) and automatically creates and binds:
 
 - **XSUAA service** (`cloud-llm-hub-auth`) for authentication and authorization
 - **Destination service** (`cloud-llm-hub-destination`) for destination management
 - **Connectivity service** (`cloud-llm-hub-connectivity`) with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise connectivity via Cloud Connector
-
-The `before-all` hook compiles `submodules/mcp-abap-adt`, then copies its built assets into `gen/srv/submodules`, ensuring the packaged MTAR contains the MCP backend automatically. All destination interactions use SAP Cloud SDK's `executeHttpRequest` for automatic authentication, proxy handling, and token management.
 
 Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
 
@@ -425,47 +435,6 @@ curl -N -H "Accept: text/event-stream" \
      -H "Authorization: Basic dW5rbm93bjo=" \
      http://localhost:4004/mcp/stream/sse
 ```
-
-## 🔗 MCP Backend Integration
-
-The proxy forwards requests to `mcp-abap-adt` service.
-
-### Configuration
-
-Edit `package.json`:
-
-```json
-{
-  "cds": {
-    "requires": {
-      "mcpTarget": {
-        "kind": "rest",
-        "credentials": {
-          "url": "http://127.0.0.1:7070"
-        }
-      }
-    }
-  }
-}
-```
-
-### Add as Git Submodule
-
-```bash
-# Add mcp-abap-adt submodule
-git submodule add <repo-url> external/mcp-abap-adt
-git submodule update --init --recursive
-
-# Start the MCP backend
-cd external/mcp-abap-adt
-npm install
-npm start
-```
-
-Expected upstream endpoints:
-
-- SSE: `http://127.0.0.1:7070/sse`
-- Stream: `http://127.0.0.1:7070/stream`
 
 ## 🛡️ Security
 
