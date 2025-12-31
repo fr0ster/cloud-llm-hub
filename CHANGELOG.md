@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file. The format 
 - **Optimization**: Further reduced archive size by removing source maps, markdown files, and documentation folders from production dependencies
   - Added cleanup for `*.map` files (~17MB)
   - Added cleanup for `*.md` files and `docs/` directories
+  - **Result**: Final MTA archive size reduced to **~16MB** (from >100MB)
 - **Fix**: Removed broken symlinks for `esbuild` and `tsx` in `node_modules/.bin`
 
 ## [1.3.0] - 2025-12-31
