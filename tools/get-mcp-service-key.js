@@ -9,7 +9,9 @@ const KEY_NAME = 'mcp';
 const OUTPUT_FILE = 'mcp.json';
 
 function main() {
-  console.log(`🔍 Fetching service key "${KEY_NAME}" for service "${SERVICE_NAME}"...`);
+  console.log(
+    `🔍 Fetching service key "${KEY_NAME}" for service "${SERVICE_NAME}"...`,
+  );
 
   try {
     // Attempt to get the service key
@@ -28,7 +30,7 @@ function main() {
     }
 
     const jsonContent = output.substring(firstBrace, lastBrace + 1);
-    
+
     // Validate JSON before saving
     JSON.parse(jsonContent);
 
@@ -37,9 +39,13 @@ function main() {
 
     console.log(`✅ Successfully saved service key to ${OUTPUT_FILE}`);
   } catch (error) {
-    if (error.message && error.message.includes('Service key mcp not found')) {
-      console.error(`❌ Error: Service key "${KEY_NAME}" not found for service "${SERVICE_NAME}".`);
-      console.log(`💡 Try creating it first: cf create-service-key ${SERVICE_NAME} ${KEY_NAME}`);
+    if (error.message?.includes('Service key mcp not found')) {
+      console.error(
+        `❌ Error: Service key "${KEY_NAME}" not found for service "${SERVICE_NAME}".`,
+      );
+      console.log(
+        `💡 Try creating it first: cf create-service-key ${SERVICE_NAME} ${KEY_NAME}`,
+      );
     } else {
       console.error('❌ Error fetching service key:', error.message);
     }
