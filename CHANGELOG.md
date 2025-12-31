@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.2.1] - 2025-12-31
+
+### Changed
+- **Dependencies Update**: Bumped `@mcp-abap-adt/adt-clients` (`^0.3.10` → `^0.3.14`), `@mcp-abap-adt/auth-broker` (`^0.2.10` → `^0.2.17`), and `@mcp-abap-adt/core` (`^2.0.1` → `^2.0.2`).
+
 ## [1.2.0] - 2025-12-30
 
 ### Changed
