@@ -18,23 +18,16 @@ function main() {
       stdio: ['inherit', 'pipe', 'pipe'],
     });
 
-    // The output of cf service-key contains some header lines we need to skip
-    // Usually it looks like:
-    // Getting key mcp for service instance cloud-llm-hub-auth as email@example.com...
-    //
-    // {
-    //   "apiurl": "...",
-    //   ...
-    // }
-    
-    const lines = output.split('\n');
-    const jsonStartIndex = lines.findIndex(line => line.trim().startsWith('{'));
-    
-    if (jsonStartIndex === -1) {
-      throw new Error('Could not find JSON in cf service-key output');
+    // The output of cf service-key contains some header lines and potentially footer lines.
+    // We search for the first '{' and the last '}' to extract the JSON content.
+    const firstBrace = output.indexOf('{');
+    const lastBrace = output.lastIndexOf('}');
+
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+      throw new Error('Could not find JSON object in cf service-key output');
     }
 
-    const jsonContent = lines.slice(jsonStartIndex).join('\n');
+    const jsonContent = output.substring(firstBrace, lastBrace + 1);
     
     // Validate JSON before saving
     JSON.parse(jsonContent);
