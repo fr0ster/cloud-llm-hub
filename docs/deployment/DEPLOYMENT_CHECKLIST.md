@@ -78,9 +78,23 @@ cf env cloud-llm-hub-srv | grep -A 5 connectivity
 
 ## Deployment Checklist
 
-- [ ] Deploy MTA
+- [ ] Deploy to Cloud Foundry
   ```bash
-  cf deploy mta_archives/cloud-llm-hub.mtar
+  npm run deploy
+  # or
+  cf deploy gen/mta_archives/cloud-llm-hub.tar --abort-on-error --delete-services
+  ```
+- [ ] Recreate and fetch MCP service key
+  > Note: Deployment might update the XSUAA instance, invalidating old keys.
+  ```bash
+  # Check if key exists
+  cf service-key cloud-llm-hub-auth mcp
+  
+  # If missing or needs rotation:
+  cf create-service-key cloud-llm-hub-auth mcp
+  
+  # Fetch and save to mcp.json
+  npm run get:key
   ```
 - [ ] Verify services exist and bound
   ```bash
