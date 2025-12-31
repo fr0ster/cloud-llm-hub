@@ -155,3 +155,17 @@ Deploy and operate in production:
 - Deploy with `npm run deploy`. All services are automatically bound to the application.
 - **Important:** After deployment, the XSUAA service might be updated. You may need to recreate the service key (`cf create-service-key cloud-llm-hub-auth mcp`) and fetch it again using `npm run get:key`.
 - For local XSUAA testing, copy `default-env.json.template` to `default-env.json` and fill in service credentials, or use `npm run update:env` to fetch credentials from the deployed application.
+
+## Configuration & Secrets
+
+Sensitive configuration (like LLM model names, destination names) should not be committed to Git. Instead, use an MTA Extension Descriptor:
+
+1. Copy the template:
+   ```bash
+   cp mta-config.mtaext.template mta-config.mtaext
+   ```
+2. Edit `mta-config.mtaext` with your real values. This file is git-ignored.
+3. Deploy with the configuration:
+   ```bash
+   cf deploy gen/mta_archives/cloud-llm-hub.tar -e mta-config.mtaext --abort-on-error --delete-services
+   ```
