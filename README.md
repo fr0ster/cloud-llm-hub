@@ -153,4 +153,5 @@ Deploy and operate in production:
   - Destination service (`cloud-llm-hub-destination`) for destination management
   - Connectivity service (`cloud-llm-hub-connectivity`) with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise connectivity via Cloud Connector
 - Deploy with `npm run deploy`. All services are automatically bound to the application.
+- **Important:** After deployment, the XSUAA service might be updated. You may need to recreate the service key (`cf create-service-key cloud-llm-hub-auth mcp`) and fetch it again using `npm run get:key`.
 - For local XSUAA testing, copy `default-env.json.template` to `default-env.json` and fill in service credentials, or use `npm run update:env` to fetch credentials from the deployed application.
