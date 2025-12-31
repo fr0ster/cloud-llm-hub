@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.3.1] - 2025-12-31
+
+### Changed
+- **Optimization**: Further reduced archive size by removing source maps, markdown files, and documentation folders from production dependencies
+  - Added cleanup for `*.map` files (~17MB)
+  - Added cleanup for `*.md` files and `docs/` directories
+- **Fix**: Removed broken symlinks for `esbuild` and `tsx` in `node_modules/.bin`
+
 ## [1.3.0] - 2025-12-31
 
 ### Changed
