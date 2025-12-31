@@ -25,7 +25,7 @@ modules:
       builder: custom
       commands:
         - npm ci --omit=dev
-        - rm -rf node_modules/tsx node_modules/@esbuild node_modules/esbuild
+        - rm -rf node_modules/tsx node_modules/@esbuild node_modules/esbuild node_modules/.bin/esbuild node_modules/.bin/tsx
     provides:
       - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:
