@@ -17,7 +17,6 @@
 | `srv/`         | MCP proxy implementation (`mcp-proxy.ts`, `mcp-manager.ts`, connectivity helpers) |
 | `docs/`        | End-user and operator documentation (usage guides, ADRs, testing cheatsheets)     |
 | `tools/`       | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)        |
-| `submodules/`  | External MCP providers (notably `mcp-abap-adt`)                                   |
 
 ## 🎯 Quick Start for Consumers
 
@@ -147,11 +146,11 @@ Deploy and operate in production:
 
 ## Deployment Notes
 
-- Use `cds build --production` or run the MTA build (`mbt build`) before pushing to SAP BTP.
-- The build hooks in `mta.yaml` first compile `submodules/mcp-abap-adt` and copy its `dist` payload into `gen/srv`, so the MTAR already contains the ABAP MCP server without any manual steps.
+- Use the optimized build command `npm run build:mta` before pushing to SAP BTP.
+- The build process in `mta.yaml` uses a custom builder with `npm ci --omit=dev` and aggressive cleanup (removal of source maps, documentation, and development tools) to achieve a small deployment footprint (**~16MB**).
 - The `mta.yaml` descriptor packages both the CAP service and approuter, and automatically provisions:
   - XSUAA service (`cloud-llm-hub-auth`) for authentication
   - Destination service (`cloud-llm-hub-destination`) for destination management
   - Connectivity service (`cloud-llm-hub-connectivity`) with `ConnectorID: AA45023094B911E8B0C6F0E30A06C478` for on-premise connectivity via Cloud Connector
-- Deploy with `cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar`. All services are automatically bound to the application.
+- Deploy with `npm run deploy`. All services are automatically bound to the application.
 - For local XSUAA testing, copy `default-env.json.template` to `default-env.json` and fill in service credentials, or use `npm run update:env` to fetch credentials from the deployed application.
