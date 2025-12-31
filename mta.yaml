@@ -8,11 +8,8 @@ build-parameters:
   before-all:
     - builder: custom
       commands:
-        - npm ci --prefix submodules/mcp-abap-adt
-        - npm run build --prefix submodules/mcp-abap-adt
         - npm ci
         - npx cds build --production
-        - node tools/copy-mcp-submodule.js
 modules:
   - name: cloud-llm-hub-srv
     type: nodejs
@@ -25,7 +22,10 @@ modules:
       #   NODE_OPTIONS: "--inspect=0.0.0.0:9229"
       #   DEBUG: "*"
     build-parameters:
-      builder: npm-ci
+      builder: custom
+      commands:
+        - npm ci --omit=dev
+        - rm -rf node_modules/tsx node_modules/@esbuild node_modules/esbuild
     provides:
       - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:
