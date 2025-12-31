@@ -53,6 +53,7 @@
     "build:mta": "npx mbt build -t gen/mta_archives --mtar cloud-llm-hub.tar",
     "deploy": "cf deploy gen/mta_archives/cloud-llm-hub.tar --abort-on-error --delete-services",
     "cf-env": "cf e cloud-llm-hub-srv",
+    "get:key": "node tools/get-mcp-service-key.js",
     "update:cline": "node tools/update-cline-connection.js",
     "update:cline:yaml": "node tools/update-cline-connection.js",
     "update:env": "node tools/update-default-env.js",

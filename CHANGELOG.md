@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file. The format 
   - `npm run build:mta`: Builds the MTA archive with optimized settings
   - `npm run deploy`: Deploys the archive to Cloud Foundry
   - `npm run cf-env`: Quickly inspects environment variables of the deployed service
+  - `npm run get:key`: Fetches the 'mcp' service key from XSUAA and saves it to `mcp.json`
+  - **Note**: After deployment, you may need to recreate the `mcp` service key if the XSUAA service was updated (`cf create-service-key cloud-llm-hub-auth mcp`).
+- **Documentation**: Updated all core documentation (`README.md`, `GEMINI.md`, `ASSISTANT_GUIDELINES.md`, `MCP_PROXY_USAGE.md`) to reflect the removal of git submodules and the new optimized build process.
 
 ### Changed
 - **Optimization**: Further reduced archive size by removing source maps, markdown files, and documentation folders from production dependencies
