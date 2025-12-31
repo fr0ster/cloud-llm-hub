@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.3.1] - 2025-12-31
+
+### Changed
+- **Optimization**: Further reduced archive size by removing source maps, markdown files, and documentation folders from production dependencies
+  - Added cleanup for `*.map` files (~17MB)
+  - Added cleanup for `*.md` files and `docs/` directories
+  - **Result**: Final MTA archive size reduced to **~16MB** (from >100MB)
+- **Fix**: Removed broken symlinks for `esbuild` and `tsx` in `node_modules/.bin`
+
+## [1.3.0] - 2025-12-31
+
+### Changed
+- **Optimization**: Significantly reduced the size of the deployment archive (MTA) by optimizing the build process
+  - Switched to `npm ci --omit=dev` to exclude development dependencies from the production build
+  - Added a cleanup step to remove `tsx` and `esbuild` artifacts from `node_modules`
+  - Resolved dependency duplication in `@mcp-abap-adt/core`
+  - Result: `node_modules` size reduced from ~107MB to ~82MB
+- **Dependencies Update**: Updated `@mcp-abap-adt/core` to `^2.1.0` to fix nested `node_modules` issue
+
 ## [1.2.1] - 2025-12-31
 
 ### Changed

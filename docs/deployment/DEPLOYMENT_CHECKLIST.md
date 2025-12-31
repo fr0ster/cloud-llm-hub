@@ -67,7 +67,13 @@ cf env cloud-llm-hub-srv | grep -A 5 connectivity
   ```
 - [ ] Build MTA archive
   ```bash
+  npm run build:mta
+  # or
   mbt build
+  ```
+- [ ] Verify archive size (should be ~16MB)
+  ```bash
+  ls -lh gen/mta_archives/cloud-llm-hub.tar
   ```
 
 ## Deployment Checklist

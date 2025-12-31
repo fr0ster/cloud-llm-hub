@@ -1,6 +1,6 @@
 _schema-version: 3.3.0
 ID: cloud-llm-hub
-version: 1.2.1
+version: 1.3.1
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
@@ -13,14 +13,8 @@ build-parameters:
   before-all:
     - builder: custom
       commands:
-        - npm ci --prefix submodules/mcp-abap-adt
-        - npm run build --prefix submodules/mcp-abap-adt
-        - npm ci --prefix submodules/llm-agent
-        - npm run build --prefix submodules/llm-agent
         - npm ci
         - npx cds build --production
-        - node tools/copy-mcp-submodule.js
-        - node tools/copy-llm-agent-submodule.js
 modules:
   - name: cloud-llm-hub-srv
     type: nodejs
@@ -65,7 +59,13 @@ modules:
         # If not set, will be auto-detected from request (for BTP) or use localhost (for local dev)
         # LLM_AGENT_MCP_ENDPOINT: ~{LLM_AGENT_MCP_ENDPOINT}
     build-parameters:
-      builder: npm-ci
+      builder: custom
+      commands:
+        - npm ci --omit=dev
+        - rm -rf node_modules/tsx node_modules/@esbuild node_modules/esbuild node_modules/.bin/esbuild node_modules/.bin/tsx
+        - find node_modules -name "*.map" -type f -delete
+        - find node_modules -name "*.md" -type f -delete
+        - find node_modules -type d -name "docs" -exec rm -rf {} +
     provides:
       - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:
@@ -128,11 +128,3 @@ resources:
     parameters:
       service: aicore
       service-plan: extended
-      # SAP AI Core provides access to LLM providers (OpenAI, Anthropic, DeepSeek, etc.)
-      # All LLM providers are accessed through SAP AI Core, not directly
-      #
-      # If AI Core service already exists in your subaccount, uncomment and set service-name:
-      # service-name: your-existing-ai-core-service-name
-      # This will bind to existing service instead of creating a new one
-      #
-      # The destination for AI Core should be configured in Destination service
