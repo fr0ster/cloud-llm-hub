@@ -77,15 +77,13 @@ The project is deployed as a Multi-Target Application (MTA).
 
 1.  **Build the MTA archive:**
     ```bash
-    mbt build
-    # or
-    cds build --production
+    npm run build:mta
     ```
-    *Note: The build process automatically handles submodules (`mcp-abap-adt`).*
+    *Note: The build process uses a custom builder to achieve an optimized archive size (~16MB).*
 
 2.  **Deploy to Cloud Foundry:**
     ```bash
-    cf deploy mta_archives/cloud-llm-hub_1.0.0.mtar
+    npm run deploy
     ```
 
 ## Architecture Notes

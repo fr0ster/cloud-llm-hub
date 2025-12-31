@@ -106,9 +106,6 @@ resources:
       config:
         xsappname: cloud-llm-hub-${space-guid}
         tenant-mode: shared
-        oauth2-configuration:
-          redirect-uris:
-            - https://*~{app-api/app-uri}/**
     requires:
       - name: app-api
   - name: cloud-llm-hub-destination

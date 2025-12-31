@@ -7,18 +7,18 @@
 
 - Keep repository artifacts in English while mirroring the user’s language in conversation.
 - Capture essential project context (name, purpose, modules, commands, build hooks, runtime notes, tests) so new sessions recover quickly.
-- Reference `mta.yaml` build automation and the `copy-mcp-submodule.js` helper whenever deployment packaging is discussed.
+- Reference `mta.yaml` build automation for production-ready packaging.
 
 ## Project Snapshot
 
-- **Name:** Cloud LLM Hub – SAP CAP service that exposes streaming MCP endpoints (SSE + Streamable HTTP) backed by the `mcp-abap-adt` MCP server.
-- **Key Modules:** `srv/` contains the CAP handlers; `app/router/` hosts the approuter; `submodules/mcp-abap-adt/` is the TypeScript MCP backend compiled to `dist/`.
+- **Name:** Cloud LLM Hub – SAP CAP service that exposes streaming MCP endpoints (SSE + Streamable HTTP).
+- **Key Modules:** `srv/` contains the CAP handlers; `app/router/` hosts the approuter. Core logic is provided by `@mcp-abap-adt/core` and other scoped npm packages.
 - **Primary Commands:**
   - `npm install` followed by `cds watch --profile development` for local work.
-  - `npx cds build --production` to generate `gen/` artifacts.
-  - `npx mbt build --mtar cloud-llm-hub.mtar` then `cf deploy ... --abort-on-error --delete-services` for SAP BTP deployment.
-- **Build Hooks:** `mta.yaml` runs `npm ci` inside the submodule, builds it, installs root dependencies, executes `cds build`, and copies the compiled submodule payload into `gen/srv/submodules/mcp-abap-adt` via `tools/copy-mcp-submodule.js`.
-- **Runtime Notes:** Production dependencies include `dotenv`; the srv module imports from `@fr0ster/mcp-abap-adt/dist/...` to load the packaged code at runtime.
-- **Testing:** Smoke scripts live in `test/smoke/`; health endpoint is `/mcp/Health`.
+  - `npm run build:mta` to generate the optimized MTA archive.
+  - `npm run deploy` to deploy to SAP BTP Cloud Foundry.
+- **Build Hooks:** `mta.yaml` uses an optimized custom builder with `npm ci --omit=dev` and aggressive cleanup of unnecessary artifacts (source maps, documentation) to achieve a small deployment footprint (~16MB).
+- **Runtime Notes:** Production dependencies are managed via npm.
+- **Testing:** Integration tests are driven by YAML playbooks (`npm test`). Health endpoint is `/mcp/Health`.
 
 Use this snapshot to rehydrate context quickly when a new chat session starts.
