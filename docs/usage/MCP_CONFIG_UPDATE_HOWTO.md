@@ -111,7 +111,7 @@ node tools/update-cline-connection.js \
 Available overrides:
 
 - `--mcp-endpoint <url>` — inject a specific MCP endpoint.
-- `--mcp-type <transport>` — set the transport (`streamableHttp`, `sse`, etc.).
+- `--mcp-type <transport>` — set the transport (`streamableHttp`, etc.).
 - `--mcp-description <text>` — customise the connection description.
 - `--mcp-auth-type <basic|bearer|jwt|header|none>` — choose the MCP auth block.
 - `--mcp-auth-header <value>` — supply a raw `Authorization` header value when `header` is selected.
@@ -148,8 +148,8 @@ cloud:
   connections:
     sap-dev:
       definition:
-        type: sse
-        endpoint: https://cloud-llm-hub.example.com/mcp/stream/sse
+        type: streamableHttp
+        endpoint: https://cloud-llm-hub.example.com/mcp/stream/http
         description: Cloud Destination (DEV)
       sap:
         mode: destination
@@ -172,7 +172,7 @@ cloud:
       updateScope: sap
       patch:
         endpoint: https://cloud-llm-hub.example.com/mcp/stream/http
-        type: stream
+        type: streamableHttp
       sap:
         mode: direct
         url: https://my-qa.sap.example.com
@@ -217,7 +217,7 @@ The CLI output (JSON) is what the YAML playbook consumes when you declare a `typ
 ```bash
 node tools/update-cline-connection.js \
   --connection sap-dev \
-  --service-key submodules/mcp-abap-adt/service-key.json \
+  --service-key path/to/service-key.json \
   --mcp-token "<mcp-proxy-jwt>"
 ```
 
@@ -270,7 +270,7 @@ The script injects the SAP basic credentials and the MCP basic credentials witho
 
 ## 6. Related References
 
-- [`docs/MCP_PROXY_USAGE.md`](./MCP_PROXY_USAGE.md) — End-to-end usage guide covering SSE and Stream-HTTP transports.
+- [`docs/MCP_PROXY_USAGE.md`](./MCP_PROXY_USAGE.md) — End-to-end usage guide covering Stream-HTTP transport.
 - [`docs/examples/`](./examples/) — Sample Cline configuration payloads for different connection types.
 - [`docs/templates/mcp-config/`](./templates/mcp-config/) — Ready-to-fill YAML skeletons for common scenarios.
 - [`tools/update-cline-connection.js`](../tools/update-cline-connection.js) — Source code for the unified CLI (supports both CLI and YAML modes, works standalone).

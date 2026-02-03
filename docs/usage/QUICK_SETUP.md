@@ -124,7 +124,7 @@ node tools/update-cline-connection.js \
 node tools/update-cline-connection.js \
   --template direct-basic \
   --connection sap-test \
-  --mcp-endpoint http://localhost:4004/mcp/stream/sse \
+  --mcp-endpoint http://localhost:4004/mcp/stream/http \
   --mcp-username alice \
   --mcp-password "" \
   --sap-username developer \

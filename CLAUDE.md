@@ -65,14 +65,13 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 
 ### Core Components
 
-- **srv/server.ts** - CAP bootstrap, Express routes for `/mcp/stream/sse` and `/mcp/stream/http`
-- **srv/mcp-manager.ts** - MCP server lifecycle, SAP context extraction from headers, server caching (30min TTL)
+- **srv/server.ts** - CAP bootstrap, Express route for `/mcp/stream/http`
+- **srv/mcp-manager.ts** - MCP server lifecycle, SAP context extraction from headers, per-request servers
 - **srv/mcp-proxy.ts** - CAP service handlers, health check, ProbeDestination diagnostics
 - **srv/connections/** - Connection factory pattern for BTP destinations and direct connections
 
 ### MCP Transport
 
-- **SSE**: `GET /mcp/stream/sse` - long-lived Server-Sent Events connection
 - **Stream-HTTP**: `POST /mcp/stream/http` - request-response with session ID
   - First request must omit `Mcp-Session-Id` header; server returns generated ID
   - Subsequent requests include the session ID for server reuse
