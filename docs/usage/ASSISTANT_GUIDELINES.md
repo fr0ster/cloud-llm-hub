@@ -11,7 +11,7 @@
 
 ## Project Snapshot
 
-- **Name:** Cloud LLM Hub – SAP CAP service that exposes streaming MCP endpoints (SSE + Streamable HTTP).
+- **Name:** Cloud LLM Hub – SAP CAP service that exposes Stream-HTTP MCP endpoints.
 - **Key Modules:** `srv/` contains the CAP handlers; `app/router/` hosts the approuter. Core logic is provided by `@mcp-abap-adt/core` and other scoped npm packages.
 - **Primary Commands:**
   - `npm install` followed by `cds watch --profile development` for local work.

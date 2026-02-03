@@ -6,7 +6,7 @@
 
 - ⚡ **One-command setup** - Get started in 60 seconds
 - 🔒 **Enterprise security** - XSUAA authentication, on-premise support
-- 🔌 **Multiple transports** - SSE and Stream-HTTP
+- 🔌 **Stream-HTTP transport** - SSE currently disabled
 - 🛠️ **Automation tools** - YAML-driven configuration, CI/CD ready
 - 🌐 **Cloud & on-premise** - Seamless SAP Cloud Connector integration
 
@@ -37,8 +37,8 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Streamable HTTP & Session Handling
 
-- The proxy exposes streaming endpoints (`GET /mcp/stream/sse`, `POST /mcp/stream/http`) implemented in `srv/mcp-proxy.ts`.
-- Embedded MCP servers are created on demand in `srv/mcp-manager.ts` and cached per SAP system URL for 30 minutes.
+- The proxy exposes the Stream-HTTP endpoint (`POST /mcp/stream/http`) implemented in `srv/mcp-proxy.ts`.
+- Embedded MCP servers are created per request in `srv/mcp-manager.ts` (no server instance cache).
 - The first Streamable HTTP request **must** omit the `Mcp-Session-Id` header. The proxy returns a generated session ID which clients must echo in subsequent calls.
 - Dropping the header (or restarting the proxy) forces a clean re-initialization, which is useful after rotating SAP credentials or clearing stale state.
 - Detailed lifecycle notes and integration examples are documented in [`docs/usage/MCP_PROXY_USAGE.md`](docs/usage/MCP_PROXY_USAGE.md#streamable-http-session-lifecycle).
@@ -68,7 +68,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **Integration tests**: YAML-driven test runner via `npm test` (requires `test/integration.yaml` config).
   - Copy `test/integration.yaml.template` to `test/integration.yaml` and fill in your values.
   - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
-- Legacy smoke tests under `test/smoke/` (manual scripts for health, SSE, Stream-HTTP).
+- Legacy smoke tests under `test/smoke/` (manual scripts for health and Stream-HTTP).
 - Run `npm exec -- tsc --noEmit` to type-check the project.
 - The `docs/development/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.
 

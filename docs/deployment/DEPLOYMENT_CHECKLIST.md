@@ -7,7 +7,7 @@
 - [ ] `mta.yaml` present and correctly configured
 - [ ] `xs-security.json` present with required scopes/roles
 - [ ] `app/router/xs-app.json` routes configured
-- [ ] Build script `tools/copy-mcp-submodule.js` available
+- [ ] Build scripts in `package.json` are available
 
 ### Required Services & Tags (CF/BTP)
 
@@ -52,18 +52,9 @@ cf env cloud-llm-hub-srv | grep -A 5 connectivity
   ```bash
   npm install
   ```
-- [ ] Build submodule `submodules/mcp-abap-adt`
-  ```bash
-  npm ci --prefix submodules/mcp-abap-adt
-  npm run build --prefix submodules/mcp-abap-adt
-  ```
 - [ ] Build CAP project
   ```bash
   npx cds build --production
-  ```
-- [ ] Copy submodule build into deployment folder
-  ```bash
-  node tools/copy-mcp-submodule.js
   ```
 - [ ] Build MTA archive
   ```bash
@@ -241,7 +232,7 @@ cf restage cloud-llm-hub-srv
   #   "VCAP_SERVICES": { ... }
   # }
   ```
-- [ ] Ensure root app does not depend on submodule `.env` (only `default-env.json`)
+- [ ] Ensure root app only relies on `default-env.json`
 - [ ] For stream-HTTP tests, set timeout via headers when needed:
   - `X-MCP-Timeout: <ms>`
   - `X-Request-Timeout: <ms>`
@@ -249,7 +240,6 @@ cf restage cloud-llm-hub-srv
 ## Testing Checklist
 
 - [ ] Health endpoint responds: `/odata/v4/mcp/Health()`
-- [ ] SSE endpoint accessible: `/mcp/stream/sse`
 - [ ] Stream-HTTP endpoint accessible: `/mcp/stream/http`
 - [ ] Destination probe works: `/odata/v4/mcp/ProbeDestination?destination=XXX`
 - [ ] Authentication required for all endpoints

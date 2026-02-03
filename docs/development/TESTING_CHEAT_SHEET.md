@@ -30,49 +30,6 @@ echo -n "unknown:" | base64
 
 ---
 
-## ✅ SSE Tests (copy & paste)
-
-### 1. Alice (should succeed ✅)
-
-```bash
-curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/mcp/stream/sse
-```
-
-### 2. Bob (should succeed ✅)
-
-```bash
-curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Basic Ym9iOg==" \
-     http://localhost:4004/mcp/stream/sse
-```
-
-### 3. No authorization (401 ❌)
-
-```bash
-curl -v -H "Accept: text/event-stream" \
-     http://localhost:4004/mcp/stream/sse
-```
-
-### 4. Unknown user (403 ❌)
-
-```bash
-curl -v -H "Accept: text/event-stream" \
-     -H "Authorization: Basic dW5rbm93bjo=" \
-     http://localhost:4004/mcp/stream/sse
-```
-
-### 5. With timeout (quick check)
-
-```bash
-timeout 5 curl -N -H "Accept: text/event-stream" \
-               -H "Authorization: Basic YWxpY2U6" \
-               http://localhost:4004/mcp/stream/sse
-```
-
----
-
 ## ✅ Stream-HTTP Tests (copy & paste)
 
 ### 1. Alice (should succeed ✅)
@@ -154,22 +111,12 @@ cd test/smoke
 ```bash
 cd test/smoke
 ./test-health.sh       # Health check
-./test-sse.sh          # SSE endpoint
 ./test-stream-http.sh  # Stream-HTTP endpoint
 ```
 
 ---
 
 ## 🔍 Debug commands
-
-### SSE with verbose output
-
-```bash
-curl -N -vvv \
-     -H "Accept: text/event-stream" \
-     -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/mcp/stream/sse 2>&1 | tee sse-debug.log
-```
 
 ### Stream-HTTP with timing information
 
@@ -205,14 +152,12 @@ Expected logs for successful authorization:
 
 ```
 [mcp-proxy/authShim] - Basic auth detected { username: 'alice' }
-[mcp-proxy/sse] - SSE connection established { user: 'alice' }
 ```
 
 Expected logs when something goes wrong:
 
 ```
 [mcp-proxy/authShim] - Unauthorized request - missing or invalid Authorization header
-[mcp-proxy/sse] - Forbidden: User lacks MCP_Connector role { user: 'unknown' }
 ```
 
 ---
@@ -225,17 +170,11 @@ Expected logs when something goes wrong:
 curl -s http://localhost:4004/mcp/Health | jq .
 ```
 
-### Quick SSE test (5 seconds)
-
-```bash
-timeout 5 curl -sN -H "Accept: text/event-stream" -H "Authorization: Basic YWxpY2U6" http://localhost:4004/mcp/stream/sse | head -5
-```
-
 ### Verify status codes for each user
 
 ```bash
 for user in "YWxpY2U6" "Ym9iOg==" "dW5rbm93bjo=" ""; do
-  code=$(curl -s -o /dev/null -w "%{http_code}" -H "Accept: text/event-stream" -H "Authorization: Basic $user" http://localhost:4004/mcp/stream/sse)
+  code=$(echo '{"command":"test"}' | curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/x-ndjson" -H "Authorization: Basic $user" --data-binary @- http://localhost:4004/mcp/stream/http)
   echo "User: ${user:-none} -> Status: $code"
 done
 ```
@@ -249,11 +188,6 @@ done
 ```bash
 # Install: pip install httpie
 
-# SSE
-http --stream GET localhost:4004/mcp/stream/sse \
-  Accept:text/event-stream \
-  Authorization:"Basic YWxpY2U6"
-
 # Stream-HTTP
 echo '{"test":"data"}' | http POST localhost:4004/mcp/stream/http \
   Content-Type:application/x-ndjson \
@@ -261,14 +195,6 @@ echo '{"test":"data"}' | http POST localhost:4004/mcp/stream/http \
 ```
 
 ### Postman / Insomnia
-
-**SSE Request:**
-
-- Method: `GET`
-- URL: `http://localhost:4004/mcp/stream/sse`
-- Headers:
-  - `Accept: text/event-stream`
-  - `Authorization: Basic YWxpY2U6`
 
 **Stream-HTTP Request:**
 
@@ -305,7 +231,7 @@ echo "YWxpY2U6" | base64 -d && echo ""
 ### Check every endpoint
 
 ```bash
-for endpoint in "/mcp/Health" "/mcp/stream/sse" "/mcp/stream/http"; do
+for endpoint in "/mcp/Health" "/mcp/stream/http"; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:4004$endpoint")
   echo "$endpoint -> $code"
 done
@@ -337,7 +263,6 @@ Add to `~/.zshrc` or `~/.bashrc`:
 # MCP Proxy shortcuts
 alias mcp-start='cd /home/developer/prj/cloud-llm-hub && cds watch --profile development'
 alias mcp-health='curl -s http://localhost:4004/mcp/Health | jq .'
-alias mcp-sse-alice='timeout 5 curl -sN -H "Accept: text/event-stream" -H "Authorization: Basic YWxpY2U6" http://localhost:4004/mcp/stream/sse'
 alias mcp-test='cd /home/developer/prj/cloud-llm-hub/test/smoke && ./test-auth-interactive.sh'
 alias mcp-logs='cd /home/developer/prj/cloud-llm-hub && cds watch --profile development 2>&1 | grep -E "(auth|MCP_|Unauthorized|Forbidden)"'
 ```
@@ -353,7 +278,6 @@ Usage:
 ```bash
 mcp-start      # Start the service
 mcp-health     # Check the health endpoint
-mcp-sse-alice  # Quick SSE test
 mcp-test       # Run the auth smoke tests
 mcp-logs       # Watch authorization logs
 ```
@@ -365,8 +289,6 @@ mcp-logs       # Watch authorization logs
 | Scenario       | Command                                                                                                                                                             | Expected result                    |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | Health         | `curl localhost:4004/mcp/Health`                                                                                                                                    | 200 with `status: "UP"`            |
-| SSE + alice    | `timeout 3 curl -N -H "Accept: text/event-stream" -H "Authorization: Basic YWxpY2U6" localhost:4004/mcp/stream/sse`                                                 | 200, retry hint, heartbeat         |
-| SSE – no auth  | `curl -I localhost:4004/mcp/stream/sse`                                                                                                                             | 401 Unauthorized                   |
 | HTTP + alice   | `echo '{"test":"data"}' \| curl -X POST -H "Authorization: Basic YWxpY2U6" -H "Content-Type: application/x-ndjson" --data-binary @- localhost:4004/mcp/stream/http` | 200 or 502 (if backend is offline) |
 | HTTP – no auth | `curl -I -X POST localhost:4004/mcp/stream/http`                                                                                                                    | 401 Unauthorized                   |
 

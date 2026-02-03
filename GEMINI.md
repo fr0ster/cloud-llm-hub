@@ -10,7 +10,7 @@ The solution provides a secure bridge for AI tools to interact with on-premise a
 - **Framework:** SAP Cloud Application Programming Model (CAP) with Node.js
 - **Language:** TypeScript
 - **Infrastructure:** SAP BTP (Cloud Foundry), SAP Cloud SDK
-- **Protocols:** MCP (Model Context Protocol) via SSE and Stream-HTTP
+- **Protocols:** MCP (Model Context Protocol) via Stream-HTTP
 - **Authentication:** XSUAA (OAuth 2.0)
 - **Linting/Formatting:** Biome
 
@@ -95,7 +95,7 @@ The project is deployed as a Multi-Target Application (MTA).
     *   Uses **SAP Cloud SDK** (`@sap-cloud-sdk/http-client`) for destination resolution and connectivity.
     *   Supports **On-Premise** connectivity via the Connectivity Service and Cloud Connector.
 *   **MCP Implementation:**
-    *   Exposes streaming endpoints (`GET /mcp/stream/sse`, `POST /mcp/stream/http`) in `srv/mcp-proxy.ts`.
+*   Exposes streaming endpoint (`POST /mcp/stream/http`) in `srv/mcp-proxy.ts`.
     *   Manages MCP server instances dynamically in `srv/mcp-manager.ts`.
 
 ## Language Conventions

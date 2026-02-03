@@ -156,7 +156,7 @@ Cloud LLM Hub provides access to these MCP tools:
 - **DetectObjectTypeListArray** - Batch detect object types
 - **DetectObjectTypeListJson** - Batch detect with JSON payload
 
-**Full list:** See [submodules/mcp-abap-adt/README.md](../submodules/mcp-abap-adt/README.md)
+**Full list:** See the ABAP ADT MCP server documentation for `@mcp-abap-adt/core`.
 
 ## 📋 Configuration Options
 
@@ -212,7 +212,7 @@ node tools/update-cline-connection.js \
 node tools/update-cline-connection.js \
   --template direct-basic \
   --connection sap-test \
-  --mcp-endpoint http://localhost:4004/mcp/stream/sse \
+  --mcp-endpoint http://localhost:4004/mcp/stream/http \
   --mcp-username alice \
   --sap-username developer \
   --sap-password "change-me"
@@ -381,7 +381,6 @@ const result = await mcpClient.callTool('DetectObjectTypeListArray', { objects }
 
 ### Endpoints
 
-- **SSE:** `GET /mcp/stream/sse`
 - **Stream-HTTP:** `POST /mcp/stream/http`
 - **Health:** `GET /odata/v4/mcp/Health()`
 - **Probe:** `GET /odata/v4/mcp/ProbeDestination?destination=NAME`
