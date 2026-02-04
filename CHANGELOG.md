@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-02-02
+
+### Changed
+- **Documentation**: Aligned core docs with Stream-HTTP-only transport and SSE disabled.
+- **Documentation**: Clarified per-request MCP server lifecycle and removed server cache references.
+- **Documentation**: Updated examples and guides to reflect npm package usage instead of submodules.
+
 ## [1.3.1] - 2025-12-31
 
 ### Added
