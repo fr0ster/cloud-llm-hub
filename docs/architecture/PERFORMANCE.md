@@ -22,7 +22,6 @@ Performance characteristics, optimization recommendations, and tuning guidelines
 | ----------------- | --------- | ----- | ----- | ----------------------- |
 | Health Check      | 5ms       | 10ms  | 15ms  | CAP endpoint            |
 | Destination Probe | 150ms     | 300ms | 500ms | Includes SAP connection |
-| SSE Stream Init   | 200ms     | 400ms | 600ms | First connection        |
 | Stream-HTTP Init  | 200ms     | 400ms | 600ms | First request           |
 | MCP Tool Call     | 100-500ms | 1-2s  | 3-5s  | Depends on SAP response |
 
@@ -97,42 +96,19 @@ cf scale cloud-llm-hub-srv -i 5
 
 ---
 
-### 2. Caching Strategy
+### 2. Server Lifecycle
 
-#### MCP Server Cache
+#### MCP Server Instances
 
 **Current Implementation:**
 
-- Cache TTL: 30 minutes
-- Cache key: SAP system URL
-- Cache size: Limited by available memory
-
-**Optimization:**
-
-```typescript
-// Adjust cache TTL based on usage
-const CACHE_TTL = process.env.CACHE_TTL || 1800000; // 30 min default
-
-// Increase for stable connections
-const STABLE_CACHE_TTL = 3600000; // 60 min
-
-// Decrease for frequent credential changes
-const DYNAMIC_CACHE_TTL = 900000; // 15 min
-```
+- MCP server instances are created per request
+- No server instance cache is maintained
 
 **Recommendations:**
 
-- **Increase TTL** if SAP credentials are stable
-- **Decrease TTL** if credentials rotate frequently
-- **Monitor cache hit rate** (target: > 80%)
-
-#### Response Caching (Future)
-
-**Consider implementing:**
-
-- Cache frequently accessed MCP tool results
-- Cache destination configurations
-- Cache health check results
+- Prefer Stream-HTTP request reuse in clients that support it
+- Tune request timeouts based on tool complexity
 
 ---
 
@@ -231,8 +207,8 @@ cf app cloud-llm-hub-srv --guid | xargs cf curl /v2/apps/{guid}/stats
 
 **Optimization:**
 
-- Limit cache size
-- Clear expired cache entries
+- Limit concurrent requests per instance
+- Review request timeouts for heavy workloads
 - Monitor for memory leaks
 - Set appropriate memory limits
 
@@ -281,9 +257,6 @@ const agent = new https.Agent({
 **Tuning Parameters:**
 
 ```bash
-# Cache TTL (milliseconds)
-CACHE_TTL=1800000
-
 # Session timeout (milliseconds)
 SESSION_TIMEOUT=120000
 
@@ -337,14 +310,6 @@ echo -n "Destination Probe: "
 time curl -s -H "Authorization: Bearer $TOKEN" \
      "$ENDPOINT/odata/v4/mcp/ProbeDestination?destination=SAP_DEV_DEST" > /dev/null
 
-# SSE Stream Init
-echo -n "SSE Stream Init: "
-time curl -s -N -H "Authorization: Bearer $TOKEN" \
-     -H "Accept: text/event-stream" \
-     "$ENDPOINT/mcp/stream/sse" &
-PID=$!
-sleep 2
-kill $PID 2>/dev/null
 ```
 
 ### Load Testing
@@ -461,9 +426,9 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 **Solutions:**
 
 - Increase instance memory
-- Reduce cache TTL
+- Reduce concurrent requests per instance
 - Limit concurrent connections
-- Optimize cache size
+- Review request timeouts for heavy workloads
 
 #### 3. Connection Pool Exhaustion
 
@@ -517,12 +482,6 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 - P99: 500ms
 - Includes SAP connection
 
-**SSE Stream:**
-
-- Init time: 200-400ms
-- Event latency: < 50ms
-- Throughput: 50-100 concurrent streams
-
 **Stream-HTTP:**
 
 - Init time: 200-400ms
@@ -537,7 +496,6 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 
 | Parameter       | Default | Recommended | Notes                                |
 | --------------- | ------- | ----------- | ------------------------------------ |
-| Cache TTL       | 30 min  | 30-60 min   | Adjust based on credential stability |
 | Session Timeout | 2 min   | 2-5 min     | Adjust based on usage patterns       |
 | Max Connections | 100     | 50-200      | Adjust based on instance size        |
 | Request Timeout | 15s     | 10-30s      | Adjust based on SAP response time    |

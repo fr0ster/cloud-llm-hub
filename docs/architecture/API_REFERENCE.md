@@ -111,58 +111,11 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-### 3. SSE Stream
+### 3. SSE Stream (disabled)
 
 **Endpoint:** `GET /mcp/stream/sse`
 
-**Description:** Server-Sent Events stream for MCP communication.
-
-**Authentication:** Required
-
-**Headers:**
-
-- `Authorization` (required) - Basic or Bearer token
-- `Accept: text/event-stream` (required)
-- `X-SAP-Destination` (optional) - Destination name for destination mode
-- `X-SAP-URL` (optional) - Direct SAP URL for direct mode
-- `X-SAP-Client` (optional) - SAP client number
-- `X-SAP-Auth-Type` (optional) - `jwt` or `basic`
-- `X-SAP-Auth-Token` (optional) - SAP JWT token (for direct mode)
-
-**Response:**
-
-- Content-Type: `text/event-stream`
-- Heartbeat: Every 15 seconds (`: ping`)
-- Reconnection hint: `retry: 15000`
-- Timeout: 2 minutes
-
-**Status Codes:**
-
-- `200 OK` - Stream started successfully
-- `401 Unauthorized` - Missing or invalid authentication
-- `403 Forbidden` - Insufficient permissions
-- `502 Bad Gateway` - MCP server connection failed
-
-**Example:**
-
-```bash
-curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Basic YWxpY2U6" \
-     -H "X-SAP-Destination: SAP_DEV_DEST" \
-     http://localhost:4004/mcp/stream/sse
-```
-
-**Event Format:**
-
-```
-event: message
-data: {"jsonrpc":"2.0","id":1,"result":{...}}
-
-: ping
-
-event: message
-data: {"jsonrpc":"2.0","id":2,"result":{...}}
-```
+**Description:** SSE transport is currently disabled. Requests return `404`.
 
 ---
 
@@ -354,7 +307,6 @@ Currently, no rate limiting is enforced. Consider implementing:
 
 ## Timeouts
 
-- **SSE Stream:** 2 minutes (120 seconds)
 - **Stream-HTTP:** 2 minutes (120 seconds)
 - **Health Check:** 5 seconds
 - **Probe Destination:** 30 seconds
@@ -407,7 +359,7 @@ Cloud LLM Hub implements the Model Context Protocol (MCP) specification. All MCP
 }
 ```
 
-For full list of available tools, see [submodules/mcp-abap-adt/README.md](../submodules/mcp-abap-adt/README.md).
+For the full list of available tools, see the ABAP ADT MCP server documentation for `@mcp-abap-adt/core`.
 
 ---
 

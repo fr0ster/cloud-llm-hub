@@ -1,0 +1,34 @@
+---
+alwaysApply: true
+description: Configuration files and deployment guidelines
+---
+
+# Configuration Files
+
+## Sensitive Data
+- Never commit files with real credentials or sensitive data
+- Use `.template` files for version control (e.g., `mta-deploy.yaml.template`)
+- Actual configuration files (e.g., `mta-deploy.yaml`) should be in `.gitignore`
+- Document required environment variables and configuration in templates
+
+## Environment Variables
+- Use environment variables for deployment-specific configuration
+- Document all required variables in `mta.yaml` or configuration templates
+- Provide default values where appropriate
+- Use MTA parameters (`~{PARAM_NAME}`) for externalization
+
+## Build and Deployment
+
+### MTA Deployment
+- Use `mta-deploy.yaml` for deployment parameters (not committed to Git)
+- Use `mta-deploy.yaml.template` as a template (committed to Git)
+- Run `npm run deploy:prepare` to prepare deployment
+- Run `npm run deploy:build` to build MTA archive
+- Run `npm run deploy:deploy` to deploy to BTP
+
+### Build Process
+1. Install dependencies: `npm install`
+2. Build submodules (handled by `mta.yaml` hooks)
+3. Build CAP service: `npx cds build --production`
+4. Copy submodule artifacts to `gen/srv/submodules/`
+5. Package MTA archive: `npx mbt build`

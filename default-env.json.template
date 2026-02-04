@@ -2,7 +2,7 @@
   "VCAP_SERVICES": {
     "xsuaa": [
       {
-        "name": "mcp-xsuaa",
+        "name": "cloud-llm-hub-auth",
         "label": "xsuaa",
         "tags": ["xsuaa"],
         "credentials": {
@@ -16,6 +16,45 @@
           "identityzone": "<your-subdomain>",
           "identityzoneid": "<zone-id>",
           "tenantid": "<tenant-id>"
+        }
+      }
+    ],
+    "destination": [
+      {
+        "name": "cloud-llm-hub-destination",
+        "label": "destination",
+        "tags": ["destination", "conn", "connsvc"],
+        "credentials": {
+          "clientid": "<destination-client-id>",
+          "clientsecret": "<destination-client-secret>",
+          "uri": "https://destination-configuration.cfapps.<region>.hana.ondemand.com",
+          "url": "https://<your-subdomain>.authentication.<region>.hana.ondemand.com"
+        }
+      }
+    ],
+    "connectivity": [
+      {
+        "name": "cloud-llm-hub-connectivity",
+        "label": "connectivity",
+        "tags": ["connectivity", "conn", "connsvc"],
+        "credentials": {
+          "clientid": "<connectivity-client-id>",
+          "clientsecret": "<connectivity-client-secret>",
+          "onpremise_proxy_host": "connectivityproxy.internal.cf.<region>.hana.ondemand.com",
+          "onpremise_proxy_port": "20003"
+        }
+      }
+    ],
+    "ai-core": [
+      {
+        "name": "cloud-llm-hub-ai-core",
+        "label": "ai-core",
+        "tags": ["ai-core"],
+        "credentials": {
+          "clientid": "<ai-core-client-id>",
+          "clientsecret": "<ai-core-client-secret>",
+          "url": "https://<ai-core-instance-url>",
+          "uaadomain": "authentication.<region>.hana.ondemand.com"
         }
       }
     ]

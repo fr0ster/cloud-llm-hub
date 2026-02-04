@@ -1,0 +1,11 @@
+---
+alwaysApply: true
+description: Testing guidelines and standards
+---
+
+# Testing
+
+- Test files: English only (names, descriptions, comments)
+- Test data: Can use realistic examples but keep names in English
+- Test documentation: English only
+- Follow testing guidelines in `docs/contributors/TESTING.md`

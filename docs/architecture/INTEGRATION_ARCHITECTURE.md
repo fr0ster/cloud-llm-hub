@@ -53,7 +53,7 @@
 │  └────────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  MCP Manager (mcp-manager.ts)                          │  │
-│  │  - Server instance caching                             │  │
+│  │  - Per-request server lifecycle                        │  │
 │  │  - Connection factory                                  │  │
 │  │  - SAP config extraction                               │  │
 │  └────────────────────────────────────────────────────────┘  │
@@ -406,15 +406,15 @@ MCP Server → ADT Tools → Cloud SDK → ABAP System
 - Supports multiple concurrent requests with different tokens
 - Matches mcp-abap-adt standalone behavior
 
-### 3. Connection Caching
+### 3. Server Lifecycle
 
-**Decision:** Cache MCP server instances, not just connections
+**Decision:** Create MCP server instances per request
 
 **Rationale:**
 
-- MCP server initialization is expensive
-- Connections are managed by base library (for direct) or Cloud SDK (for destinations)
-- Cache key includes destination/auth type/client for proper isolation
+- Aligns with Stream-HTTP request lifecycle
+- Avoids stale sessions across credential changes
+- Keeps server memory usage predictable
 
 ### 4. Shared CSRF Config
 

@@ -45,24 +45,17 @@
 
 - **Method**: POST
 - **URL**: `/odata/v4/mcp/InvokeTool`
-- **Status**: ⚠️ Deprecated - use `/mcp/stream/sse` or `/mcp/stream/http` instead
+- **Status**: ⚠️ Deprecated - use `/mcp/stream/http` instead
 
 ## Express Endpoints (Non-CAP)
 
 These endpoints are registered directly in Express and bypass CAP's OData layer.
 
-### Stream SSE
+### Stream SSE (disabled)
 
 - **Method**: GET, POST
 - **URL**: `/mcp/stream/sse`
-- **Authorization**: ✅ Required - scope `MCP_Connector` needed
-- **Content-Type**: `text/event-stream`
-- **Purpose**: Server-Sent Events transport for MCP protocol
-- **Example**:
-  ```bash
-  GET http://localhost:4004/mcp/stream/sse
-  Authorization: Basic YWxpY2U6  # for development
-  ```
+- **Status**: Not available in the current build (returns `404`)
 
 ### Stream HTTP (StreamableHTTP)
 
@@ -230,10 +223,6 @@ curl -H "Authorization: Basic YWxpY2U6" \
 curl -H "Authorization: Basic YWxpY2U6" \
   "http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=S4HANA"
 
-# Stream SSE (Express endpoint)
-curl -H "Authorization: Basic YWxpY2U6" \
-  http://localhost:4004/mcp/stream/sse
-
 # Stream HTTP (Express endpoint)
 curl -X POST \
   -H "Authorization: Basic YWxpY2U6" \
@@ -259,7 +248,7 @@ curl -X POST \
 ### Error: "Function not found" or 404
 
 - CAP functions require `()` at the end: `/odata/v4/mcp/Health()` not `/odata/v4/mcp/Health`
-- Express endpoints don't use `/odata/v4/` prefix: `/mcp/stream/sse` not `/odata/v4/mcp/stream/sse`
+- Express endpoints don't use `/odata/v4/` prefix: `/mcp/stream/http` not `/odata/v4/mcp/stream/http`
 
 ### Error: "Malformed parameters"
 
@@ -271,7 +260,7 @@ curl -X POST \
 | Endpoint Type      | Path Prefix       | Authorization | Purpose                                               |
 | ------------------ | ----------------- | ------------- | ----------------------------------------------------- |
 | **CAP Functions**  | `/odata/v4/mcp/*` | **Required**  | OData V4 service functions (Health, ProbeDestination) |
-| **Express Routes** | `/mcp/*`          | **Required**  | Direct Express endpoints (stream/sse, stream/http)    |
+| **Express Routes** | `/mcp/*`          | **Required**  | Direct Express endpoints (stream/http)                |
 
 ### CAP Functions
 
@@ -281,6 +270,6 @@ curl -X POST \
 
 ### Express Endpoints
 
-- Direct Express routes: `/mcp/stream/sse`, `/mcp/stream/http`
+- Direct Express routes: `/mcp/stream/http`
 - No OData prefix required
-- Used for streaming protocols (SSE, NDJSON)
+- Used for streaming protocols (NDJSON)

@@ -8,7 +8,7 @@
 ## Why Cloud LLM Hub?
 
 ✅ **Zero Configuration** - Works out of the box with your existing SAP systems  
-✅ **Multiple Transport Options** - SSE and Stream-HTTP support  
+✅ **Stream-HTTP Transport** - Streamable HTTP support  
 ✅ **Enterprise Ready** - Built on SAP CAP with XSUAA authentication  
 ✅ **On-Premise Support** - Seamless Cloud Connector integration  
 ✅ **Automation Tools** - One-command setup scripts  
@@ -71,23 +71,8 @@ Copy the template from `docs/templates/mcp-config/` and fill in your values.
 
 **For Claude Desktop:**
 
-```json
-{
-  "mcpServers": {
-    "sap-system": {
-      "command": "curl",
-      "args": [
-        "-N",
-        "-H",
-        "Authorization: Bearer YOUR_TOKEN",
-        "-H",
-        "X-SAP-Destination: SAP_ABAP_DESTINATION",
-        "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/sse"
-      ]
-    }
-  }
-}
-```
+Use a client configuration that supports Stream-HTTP and points to
+`https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http`.
 
 **That's it!** You're now connected to your SAP ABAP system via MCP.
 
@@ -139,7 +124,7 @@ Build your own MCP-powered tools.
 **Benefits:**
 
 - RESTful API access
-- Streaming support (SSE/HTTP)
+- Streaming support (Stream-HTTP)
 - Standard MCP protocol
 - Enterprise authentication
 
@@ -300,25 +285,7 @@ Trigger → HTTP Request (MCP) → Process Results → Send Notification
 
 ### API Integration
 
-**Direct HTTP/SSE Access:**
-
-```javascript
-// SSE Example
-const eventSource = new EventSource(
-  'https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/sse',
-  {
-    headers: {
-      Authorization: 'Bearer YOUR_TOKEN',
-      'X-SAP-Destination': 'SAP_ABAP_DESTINATION',
-    },
-  }
-);
-
-eventSource.onmessage = (event) => {
-  const mcpResponse = JSON.parse(event.data);
-  console.log('MCP Response:', mcpResponse);
-};
-```
+**Direct Stream-HTTP Access:**
 
 **Stream-HTTP Example:**
 
@@ -359,7 +326,7 @@ Cloud LLM Hub provides access to all MCP tools from the underlying ABAP ADT serv
 - **Include Management:** `GetIncludesList`
 - **Batch Operations:** `DetectObjectTypeListArray`, `DetectObjectTypeListJson`
 
-**Full list:** See [submodules/mcp-abap-adt/README.md](../submodules/mcp-abap-adt/README.md)
+**Full list:** See the ABAP ADT MCP server documentation for `@mcp-abap-adt/core`.
 
 ## 📚 Next Steps
 

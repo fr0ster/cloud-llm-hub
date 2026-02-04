@@ -1,0 +1,33 @@
+---
+alwaysApply: true
+description: Code standards and style guidelines
+---
+
+# Code Standards
+
+## Code Artifacts
+- Source code (`.ts`, `.js`, `.cds` files): English only
+- Comments: English only, explain "why" not "what"
+- Variable/function/class names: English only, follow naming conventions from `docs/contributors/CODE_STYLE.md`
+- Error messages: English only
+- Log messages: English only
+
+## Documentation
+- README files: English only
+- API documentation: English only
+- Code examples: English only
+- Commit messages: English only, follow conventional commits format
+- CHANGELOG entries: English only
+
+## Code Style
+Follow the code style guide in `docs/contributors/CODE_STYLE.md`:
+- Use camelCase for variables and functions
+- Use PascalCase for classes and interfaces
+- Use UPPER_SNAKE_CASE for constants
+- Use kebab-case for files and directories
+- Prefer explicit types for function parameters and return values
+- Prefer `interface` for object shapes, `type` for unions/intersections
+- Prefer `async/await` over Promises
+- Use CAP logger instead of console.log
+- Always use semicolons
+- Use single quotes for strings

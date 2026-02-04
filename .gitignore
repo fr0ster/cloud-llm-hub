@@ -48,3 +48,6 @@ submodules/llm-agent/
 mdd.env
 *.env
 .env
+AGENTS.md
+GEMINI.md
+*.mtaext

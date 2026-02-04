@@ -3,7 +3,7 @@
 **Version:** 1.0.0  
 **Last Updated:** 2025-11-05
 
-CAP-based secure proxy for MCP (Model Command Protocol) with SSE and Stream-HTTP support.
+CAP-based secure proxy for MCP (Model Command Protocol) with Stream-HTTP support.
 
 ## 🚀 Quick Start
 
@@ -155,49 +155,10 @@ The descriptor provisions application modules (CAP service + approuter) and auto
 
 Adjust service plans or quotas inside `mta.yaml` before deploying to production landscapes.
 
-### SSE Endpoint: `GET /mcp/stream/sse`
+### SSE Endpoint: `GET /mcp/stream/sse` (currently disabled)
 
-Server-Sent Events stream with automatic heartbeat and reconnection hints.
-
-**Features:**
-
-- Content-Type: `text/event-stream`
-- Heartbeat every 15 seconds (`: ping`)
-- Reconnection hint: `retry: 15000`
-- No buffering or compression
-- 2-minute timeout
-
-**Example with curl:**
-
-```bash
-# Development mode
-curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/mcp/stream/sse
-
-# Production mode
-curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Bearer <your-jwt-token>" \
-     https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/sse
-```
-
-**Example with JavaScript:**
-
-```javascript
-const eventSource = new EventSource('http://localhost:4004/mcp/stream/sse', {
-  headers: {
-    Authorization: 'Basic YWxpY2U6',
-  },
-});
-
-eventSource.onmessage = (event) => {
-  console.log('Received:', event.data);
-};
-
-eventSource.onerror = (error) => {
-  console.error('SSE Error:', error);
-};
-```
+The SSE transport is not available in the current build. Requests to this endpoint return `404`.
+Use Stream-HTTP instead.
 
 ### Stream-HTTP Endpoint: `POST /mcp/stream/http`
 
@@ -255,22 +216,9 @@ while (true) {
 - All follow-up requests must echo that identifier via `Mcp-Session-Id`, otherwise the proxy interprets the call as a new initialization attempt and tears down the previous transport.
 - Cline, Claude Desktop, and other Streamable HTTP clients automatically forward the header once they receive it; if you write a custom integration, capture the header returned by the proxy and attach it to every subsequent POST.
 - To deliberately reset the session (for example, after rotating SAP credentials), drop the `Mcp-Session-Id` header or restart the proxy. The next request will negotiate a new session cleanly.
-- The proxy caches initialized MCP server instances per SAP URL for 30 minutes. Reusing the session prevents "Invalid Request: Server already initialized" errors and keeps the tool catalog hot between calls.
+- The proxy creates MCP server instances per request (no server instance cache). The `Mcp-Session-Id` header is still required for Stream-HTTP session continuity.
 
 ## 🔧 Cline Integration
-
-### SSE Configuration (`cline.json`)
-
-```json
-{
-  "type": "sse",
-  "endpoint": "http://localhost:4004/mcp/stream/sse",
-  "headers": {
-    "Authorization": "Basic YWxpY2U6"
-  },
-  "timeoutMs": 0
-}
-```
 
 ### Stream-HTTP Configuration (`cline.json`)
 
@@ -289,12 +237,12 @@ while (true) {
 
 ```json
 {
-  "type": "sse",
-  "endpoint": "https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/sse",
+  "type": "stream-http",
+  "endpoint": "https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp/stream/http",
   "headers": {
-    "Authorization": "Bearer ${ACCESS_TOKEN}"
-  },
-  "timeoutMs": 0
+    "Authorization": "Bearer ${ACCESS_TOKEN}",
+    "Content-Type": "application/x-ndjson"
+  }
 }
 ```
 
@@ -330,7 +278,7 @@ node update-cline-connection.js \
   --sap-token <sap-jwt-token>
 ```
 
-Only the script is required—no other files from this repository. When the ABAP submodule (and its `.env`) is absent, supply credentials explicitly by using `--sap-token` (or `--sap-username/--sap-password`) and the MCP headers via `--mcp-*` flags. Pass `--sap-auth-script <path>` if you keep `sap-abap-auth-browser.js` outside of the original submodule.
+Only the script is required—no other files from this repository. When no local ABAP `.env` is available, supply credentials explicitly by using `--sap-token` (or `--sap-username/--sap-password`) and the MCP headers via `--mcp-*` flags. Pass `--sap-auth-script <path>` if you keep `sap-abap-auth-browser.js` outside of the repository.
 
 #### Helpful flags
 
@@ -340,7 +288,7 @@ Only the script is required—no other files from this repository. When the ABAP
 - `--sap-auth-script` defines the location of `sap-abap-auth-browser.js` when regenerating tokens from a service key without the git submodule present.
 - `--dry-run` prints the changes without rewriting the settings file.
 
-The script picks defaults for the Cline settings file and the ABAP `.env` automatically. If neither the submodule nor a local `.env` is found, you will be prompted to pass explicit values.
+The script picks defaults for the Cline settings file and the ABAP `.env` automatically. If no local `.env` is found, you will be prompted to pass explicit values.
 
 ### Health Check
 
@@ -400,18 +348,6 @@ The function automatically:
 
 For on-premise destinations, the function automatically routes through the Connectivity proxy using the configured `ConnectorID`.
 
-### Test SSE Stream
-
-```bash
-# Terminal 1: Start the server
-cds watch --profile development
-
-# Terminal 2: Test SSE endpoint
-curl -N -H "Accept: text/event-stream" \
-     -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/mcp/stream/sse
-```
-
 ### Test Stream-HTTP
 
 ```bash
@@ -428,12 +364,15 @@ curl -X POST \
 
 ```bash
 # Should return 401
-curl -I http://localhost:4004/mcp/stream/sse
+curl -I -X POST http://localhost:4004/mcp/stream/http
 
 # Should return 403 (if user lacks role)
-curl -N -H "Accept: text/event-stream" \
+echo '{"test":"data"}' | \
+curl -X POST \
      -H "Authorization: Basic dW5rbm93bjo=" \
-     http://localhost:4004/mcp/stream/sse
+     -H "Content-Type: application/x-ndjson" \
+     --data-binary @- \
+     http://localhost:4004/mcp/stream/http
 ```
 
 ## 🛡️ Security
@@ -493,9 +432,12 @@ curl http://127.0.0.1:7070/health
 cds watch --profile development --debug
 
 # Test with verbose curl
-curl -v -N -H "Accept: text/event-stream" \
+echo '{"test":"data"}' | \
+curl -v -X POST \
      -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/mcp/stream/sse
+     -H "Content-Type: application/x-ndjson" \
+     --data-binary @- \
+     http://localhost:4004/mcp/stream/http
 ```
 
 ## 📚 Additional Resources

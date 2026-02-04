@@ -41,16 +41,11 @@ Built on SAP CAP with enterprise-grade security.
 - ✅ No credentials in code
 - ✅ Token management via BTP (for destinations) or client (for direct JWT)
 
-### 3. **Multiple Transport Options**
+### 3. **Stream-HTTP Transport**
 
 Choose the best transport for your use case.
 
-**SSE (Server-Sent Events):**
-
-- ✅ Real-time streaming
-- ✅ Automatic reconnection
-- ✅ Built-in heartbeat
-- ✅ Perfect for monitoring
+**Note:** SSE is currently disabled in this build.
 
 **Stream-HTTP:**
 
@@ -222,7 +217,7 @@ const objects = await client.getObjectList('CLAS', 'Z_MY_PACKAGE');
 - ✅ Standard MCP protocol
 - ✅ Multiple client support
 - ✅ Built-in authentication
-- ✅ Caching and optimization
+- ✅ Optimized per-request server lifecycle
 
 **Direct SAP:**
 

@@ -2,16 +2,76 @@ import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { Destination } from '@sap-cloud-sdk/connectivity';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 
-// Ensure VCAP_SERVICES is loaded from default-env.json for local development
-// CAP loads it automatically, but we ensure it's available for SAP Cloud SDK
-if (!process.env.VCAP_SERVICES && process.env.VCAP_APPLICATION === undefined) {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const xsenv = require('@sap/xsenv');
-    xsenv.loadEnv();
-  } catch {
-    // If @sap/xsenv is not available or loadEnv fails, continue
-    // CAP should have already loaded default-env.json
+/**
+ * Ensure VCAP_SERVICES is loaded from default-env.json for local development
+ * This is called lazily when needed, not at module load time,
+ * to ensure CAP has already loaded default-env.json
+ */
+function ensureVcapServicesLoaded(): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const log = require('@sap/cds').log('destination-resolver');
+
+  // Only load if VCAP_SERVICES is not already set and we're in local mode
+  if (
+    !process.env.VCAP_SERVICES &&
+    process.env.VCAP_APPLICATION === undefined
+  ) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const xsenv = require('@sap/xsenv');
+      const loaded = xsenv.loadEnv();
+      // If loadEnv returns something, it means it loaded default-env.json
+      if (loaded?.VCAP_SERVICES) {
+        process.env.VCAP_SERVICES = JSON.stringify(loaded.VCAP_SERVICES);
+        log.debug('VCAP_SERVICES loaded from default-env.json via xsenv', {
+          hasDestination: !!(
+            loaded.VCAP_SERVICES.destination &&
+            loaded.VCAP_SERVICES.destination.length > 0
+          ),
+          destinationCount: loaded.VCAP_SERVICES.destination?.length || 0,
+        });
+      } else {
+        log.warn('xsenv.loadEnv() returned no VCAP_SERVICES');
+      }
+    } catch (error) {
+      // If @sap/xsenv is not available or loadEnv fails, continue
+      // CAP should have already loaded default-env.json
+      log.debug(
+        'xsenv.loadEnv() failed (this is OK if CAP already loaded default-env.json)',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+
+  // Verify VCAP_SERVICES structure for destination service
+  if (process.env.VCAP_SERVICES) {
+    try {
+      const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
+      const hasDestination = !!(
+        vcapServices.destination && vcapServices.destination.length > 0
+      );
+      if (!hasDestination) {
+        log.warn('VCAP_SERVICES loaded but no destination service found', {
+          availableServices: Object.keys(vcapServices),
+        });
+      } else {
+        const destService = vcapServices.destination[0];
+        log.debug('Destination service found in VCAP_SERVICES', {
+          name: destService.name,
+          hasCredentials: !!destService.credentials,
+          hasClientId: !!destService.credentials?.clientid,
+          hasClientSecret: !!destService.credentials?.clientsecret,
+          hasUri: !!destService.credentials?.uri,
+        });
+      }
+    } catch (parseError) {
+      log.error('Failed to parse VCAP_SERVICES', {
+        error:
+          parseError instanceof Error ? parseError.message : String(parseError),
+      });
+    }
   }
 }
 
@@ -173,9 +233,15 @@ export async function resolveDestinationSapConfig(
   const log = require('@sap/cds').log('destination-resolver');
 
   try {
+    // Ensure VCAP_SERVICES is loaded before resolving destination
+    // This is important for hybrid debugging mode where default-env.json needs to be loaded
+    ensureVcapServicesLoaded();
+
     log.debug('Resolving destination via SAP Cloud SDK', {
       destinationName,
       hasJwt: !!jwtToken,
+      hasVcapServices: !!process.env.VCAP_SERVICES,
+      isLocal: !process.env.VCAP_APPLICATION,
     });
 
     // First, get destination without JWT to check authentication type
@@ -232,14 +298,127 @@ export async function resolveDestinationSapConfig(
       jwtToken,
     );
   } catch (error: unknown) {
+    // Log detailed error information for debugging
+    const errorDetails: Record<string, unknown> = {
+      destinationName,
+      hasVcapServices: !!process.env.VCAP_SERVICES,
+      isLocal: !process.env.VCAP_APPLICATION,
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
+
+    // Add error code if available
+    const errWithCode = error as Error & {
+      code?: string;
+      cause?: unknown;
+      rootCause?: unknown;
+    };
+    if (error instanceof Error && errWithCode.code) {
+      errorDetails.errorCode = errWithCode.code;
+    }
+
+    // Add cause/rootCause if available (SAP Cloud SDK errors often have cause)
+    if (error instanceof Error && errWithCode.cause) {
+      errorDetails.cause =
+        errWithCode.cause instanceof Error
+          ? errWithCode.cause.message
+          : String(errWithCode.cause);
+    }
+    if (error instanceof Error && errWithCode.rootCause) {
+      errorDetails.rootCause =
+        errWithCode.rootCause instanceof Error
+          ? errWithCode.rootCause.message
+          : String(errWithCode.rootCause);
+    }
+
+    // Add VCAP_SERVICES destination service info if available
+    if (process.env.VCAP_SERVICES) {
+      try {
+        const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
+        const destService = vcapServices.destination?.[0];
+        if (destService) {
+          errorDetails.destinationService = {
+            name: destService.name,
+            hasCredentials: !!destService.credentials,
+            hasClientId: !!destService.credentials?.clientid,
+            hasClientSecret: !!destService.credentials?.clientsecret,
+            hasUri: !!destService.credentials?.uri,
+            uri: destService.credentials?.uri,
+            url: destService.credentials?.url,
+          };
+        } else {
+          errorDetails.destinationService = 'NOT_FOUND_IN_VCAP_SERVICES';
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Add stack trace in development mode
+    if (
+      error instanceof Error &&
+      error.stack &&
+      process.env.NODE_ENV !== 'production'
+    ) {
+      errorDetails.stack = error.stack.substring(0, 500);
+    }
+
+    log.error('Destination resolution failed', errorDetails);
+
     // Use synchronized error handling from errorUtils
-    const { logErrorSafely } = await import('../lib/errorUtils');
+    // In development (cds watch), TypeScript files are executed directly, so use .ts extension
+    // In production (compiled), files are .js
+    // Try .ts first (development), fallback to .js (production)
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
+    let logErrorSafely: any;
+    // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
+    let formatErrorMessage: any;
+
+    try {
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
+      let errorUtils: any;
+      try {
+        // @ts-expect-error - Dynamic import with .ts extension for development mode
+        errorUtils = await import('../lib/errorUtils.ts');
+      } catch {
+        errorUtils = await import('../lib/errorUtils.js');
+      }
+      logErrorSafely = errorUtils.logErrorSafely;
+      formatErrorMessage = errorUtils.formatErrorMessage;
+    } catch (importError) {
+      // Fallback if errorUtils cannot be imported
+      log.error('Failed to import errorUtils, using fallback error handling', {
+        error:
+          importError instanceof Error
+            ? importError.message
+            : String(importError),
+      });
+      // Fallback implementations
+      logErrorSafely = (
+        // biome-ignore lint/suspicious/noExplicitAny: Fallback logger can be any type
+        logger: any,
+        operation: string,
+        // biome-ignore lint/suspicious/noExplicitAny: Fallback error can be any type
+        err: any,
+        // biome-ignore lint/suspicious/noExplicitAny: Fallback context can be any type
+        context?: any,
+      ) => {
+        logger.error(`${operation} failed`, {
+          error: err instanceof Error ? err.message : String(err),
+          context,
+        });
+      };
+      // biome-ignore lint/suspicious/noExplicitAny: Fallback error can be any type
+      formatErrorMessage = (err: any) => {
+        return err instanceof Error ? err.message : String(err);
+      };
+    }
+
     logErrorSafely(log, 'Destination resolution', error, {
       destinationName,
     });
 
     // Create error with status code for proper HTTP response
-    const { formatErrorMessage } = await import('../lib/errorUtils');
     const message = formatErrorMessage(error);
     const destinationError = new Error(
       `Failed to resolve destination "${destinationName}": ${message}`,

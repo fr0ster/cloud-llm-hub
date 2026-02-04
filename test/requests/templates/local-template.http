@@ -1,0 +1,136 @@
+### Cloud LLM Hub - Local Testing Template
+### Template file - copy to scratch/ for testing
+### Base URL: http://localhost:4004
+
+@baseUrl = http://localhost:4004
+@authBasic = Basic YWxpY2U6
+@authBasicBob = Basic Ym9iOg==
+
+### Variables - Update these for your testing
+@destination = SAP_DEV_DEST
+@message = Hello! Can you introduce yourself?
+
+##########################################
+# MCP Proxy Service (OData V4)
+##########################################
+
+### Health Check - MCP Proxy
+GET {{baseUrl}}/odata/v4/mcp/Health()
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Probe Destination
+GET {{baseUrl}}/odata/v4/mcp/ProbeDestination?destination={{destination}}
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Probe Destination (positional parameter)
+GET {{baseUrl}}/odata/v4/mcp/ProbeDestination(destination='{{destination}}')
+Authorization: {{authBasic}}
+Accept: application/json
+
+##########################################
+# Agent Service (OData V4)
+##########################################
+
+### Agent Health Check
+GET {{baseUrl}}/odata/v4/agent/Health()
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Agent Chat - Send Message
+POST {{baseUrl}}/odata/v4/agent/Chat
+Authorization: {{authBasic}}
+Content-Type: application/json
+
+{
+  "message": "{{message}}"
+}
+
+### Agent Chat - Get History
+GET {{baseUrl}}/odata/v4/agent/GetHistory()
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Agent Chat - Clear History
+POST {{baseUrl}}/odata/v4/agent/ClearHistory
+Authorization: {{authBasic}}
+Content-Type: application/json
+
+##########################################
+# MCP Streaming Endpoints (Express)
+##########################################
+
+### MCP Stream SSE (Server-Sent Events)
+GET {{baseUrl}}/mcp/stream/sse
+Authorization: {{authBasic}}
+Accept: text/event-stream
+
+### MCP Stream HTTP (NDJSON) - Ping
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBasic}}
+Content-Type: application/json
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"1","method":"ping"}
+
+### MCP Stream HTTP - Initialize
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBasic}}
+Content-Type: application/json
+X-SAP-Destination: {{destination}}
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}
+
+### MCP Stream HTTP - List Tools
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBasic}}
+Content-Type: application/json
+X-SAP-Destination: {{destination}}
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"2","method":"tools/list"}
+
+### MCP Stream HTTP - Get Includes List
+POST {{baseUrl}}/mcp/stream/http
+Authorization: {{authBasic}}
+Content-Type: application/json
+X-SAP-Destination: {{destination}}
+X-MCP-Timeout: 60000
+
+{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"GetIncludesList","arguments":{"objectName":"ZCL_TEST","objectType":"CLAS"}}}
+
+##########################################
+# Auth Service (OData V4)
+##########################################
+
+### Check Auth
+GET {{baseUrl}}/odata/v4/auth/CheckAuth()
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Check Roles
+GET {{baseUrl}}/odata/v4/auth/CheckRoles?required=["MCP_Connector"]
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Check Roles (positional parameter)
+GET {{baseUrl}}/odata/v4/auth/CheckRoles(required=['MCP_Connector'])
+Authorization: {{authBasic}}
+Accept: application/json
+
+##########################################
+# Testing with different users
+##########################################
+
+### Health Check - Alice (MCP_Connector + MCP_Admin)
+GET {{baseUrl}}/odata/v4/mcp/Health()
+Authorization: {{authBasic}}
+Accept: application/json
+
+### Health Check - Bob (MCP_Connector only)
+GET {{baseUrl}}/odata/v4/mcp/Health()
+Authorization: {{authBasicBob}}
+Accept: application/json
+
