@@ -83,6 +83,19 @@ function main() {
       console.log(`    Binding GUID: ${dest.binding_guid}`);
     }
 
+    if (vcapServices.aicore && vcapServices.aicore.length > 0) {
+      const aicore = vcapServices.aicore[0];
+      console.log(`  • SAP AI Core (${aicore.name})`);
+      console.log(`    Binding GUID: ${aicore.binding_guid}`);
+      console.log(`    Has Client ID: ${!!aicore.credentials?.clientid}`);
+      console.log(
+        `    Has Client Secret: ${!!aicore.credentials?.clientsecret}`,
+      );
+      console.log(
+        `    AI API URL: ${aicore.credentials?.serviceurls?.AI_API_URL || aicore.credentials?.url || 'NOT_SET'}`,
+      );
+    }
+
     // Verify XSUAA credentials
     if (vcapServices.xsuaa && vcapServices.xsuaa.length > 0) {
       const xsuaa = vcapServices.xsuaa[0];

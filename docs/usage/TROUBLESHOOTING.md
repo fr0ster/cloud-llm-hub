@@ -329,46 +329,7 @@ cf restage cloud-llm-hub-srv
 
 ---
 
-## 📡 Streaming Issues
-
-### Problem: SSE Stream Disconnects
-
-**Symptoms:**
-
-- SSE connection closes unexpectedly
-- No heartbeat received
-- Connection timeout errors
-
-**Solutions:**
-
-**1. Check Network Stability:**
-
-```bash
-# Test with verbose curl
-curl -v -N -H "Accept: text/event-stream" \
-     -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/mcp/stream/sse
-```
-
-**2. Verify Heartbeat:**
-
-- SSE should send `: ping` every 15 seconds
-- If missing, check server logs
-- Verify timeout settings
-
-**3. Handle Reconnection:**
-
-```javascript
-// Client should handle reconnection
-eventSource.onerror = (error) => {
-  // Reconnect after delay
-  setTimeout(() => {
-    eventSource = new EventSource(url);
-  }, 15000);
-};
-```
-
----
+## 📡 Stream-HTTP Issues
 
 ### Problem: Stream-HTTP Session Issues
 
@@ -408,11 +369,10 @@ curl -X POST \
 # Useful after credential rotation
 ```
 
-**3. Check Session Expiration:**
+**3. Reset When Needed:**
 
-- Sessions expire after 30 minutes of inactivity
-- Cache is cleared on proxy restart
-- Force re-initialization if needed
+- The proxy creates MCP server instances per request (no server cache)
+- Omit `Mcp-Session-Id` to force re-initialization
 
 ---
 
@@ -459,29 +419,6 @@ npm exec -- tsc --noEmit
 rm -rf dist/ node_modules/@types
 npm install
 npm exec -- tsc --noEmit
-```
-
----
-
-### Problem: Submodule Issues
-
-**Symptoms:**
-
-- MCP server not found
-- Import errors from submodule
-
-**Solutions:**
-
-```bash
-# Reinitialize submodules
-git submodule deinit --all
-git submodule update --init --recursive
-
-# Build submodule
-cd submodules/mcp-abap-adt
-npm install
-npm run build
-cd ../..
 ```
 
 ---

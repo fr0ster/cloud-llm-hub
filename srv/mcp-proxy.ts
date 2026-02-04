@@ -203,7 +203,17 @@ export default async function registerMcpProxyHandlers(
       // biome-ignore lint/suspicious/noExplicitAny: Error type from executeHttpRequest is not fully typed
     } catch (error: any) {
       // Use synchronized error handling from errorUtils
-      const { logErrorSafely } = await import('./lib/errorUtils');
+      // In development (cds watch), TypeScript files are executed directly, so use .ts extension
+      // In production (compiled), files are .js
+      // Try .ts first (development), fallback to .js (production)
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
+      let errorUtils: any;
+      try {
+        errorUtils = await import('./lib/errorUtils');
+      } catch {
+        errorUtils = await import('./lib/errorUtils.js');
+      }
+      const { logErrorSafely } = errorUtils;
       logErrorSafely(log, 'Destination probe', error, {
         destination: destinationName,
       });

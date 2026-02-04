@@ -17,6 +17,12 @@
       ],
       "#cds-models/*": [
         "./@cds-models/*"
+      ],
+      "@cloud-llm-hub/llm-agent": [
+        "./submodules/llm-agent/dist/index"
+      ],
+      "@cloud-llm-hub/llm-agent/*": [
+        "./submodules/llm-agent/dist/*"
       ]
     }
   },
