@@ -4,7 +4,8 @@ import type {
   SapConfig,
 } from '@mcp-abap-adt/connection';
 import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
-import axios, { type AxiosInstance, type AxiosResponse } from 'axios';
+import type { IAdtResponse } from '@mcp-abap-adt/interfaces';
+import axios, { type AxiosInstance } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // Logger adapter for OnPremAbapConnection
@@ -104,9 +105,11 @@ export class BtpOnPremDestinationConnection
     return headers;
   }
 
-  async makeAdtRequest(options: AbapRequestOptions): Promise<AxiosResponse> {
+  async makeAdtRequest<T = any, D = any>(
+    options: AbapRequestOptions,
+  ): Promise<IAdtResponse<T, D>> {
     this.ensureAxiosInstance();
-    return super.makeAdtRequest(options);
+    return super.makeAdtRequest<T, D>(options);
   }
 
   private ensureAxiosInstance(): void {
