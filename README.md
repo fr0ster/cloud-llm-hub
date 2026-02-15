@@ -18,6 +18,24 @@
 | `docs/`        | End-user and operator documentation (usage guides, ADRs, testing cheatsheets)     |
 | `tools/`       | Utility scripts (e.g., `update-cline-connection.js` for Cline header sync)        |
 
+## Product Intent and Target Consumers
+
+`mcp-abap-adt` (base layer) was created as a practical toolset for **AI-assisted development / AI pair programming** in SAP ABAP contexts.
+
+`cloud-llm-hub` is the enterprise iteration of that foundation:
+
+- keeps developer productivity goals, but adds enterprise runtime controls;
+- enables teams to accumulate and reuse development/support experience together as shared organizational knowledge, so LLM-assisted workflows become more valuable over time;
+- increases effectiveness of both the LLM and the developer: the LLM removes routine work, while the developer focuses on decisions that require human judgment;
+- enforces role model and function-level authorization boundaries for shared enterprise usage.
+
+Target consumers are SAP technical teams:
+
+- SAP support engineers;
+- SAP developers (ABAP developers and SAP consultants working as developers).
+
+This project is not positioned as a generic public API business platform or a commercial pipeline product.
+
 ## 🎯 Quick Start for Consumers
 
 **New to Cloud LLM Hub?** Start here:
