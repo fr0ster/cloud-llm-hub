@@ -26,10 +26,16 @@ Base `mcp-abap-adt` intent:
 
 `cloud-llm-hub` enterprise intent:
 
-- keep the same AI-assisted development foundation, but move it into enterprise operations;
+- keep the same AI-assisted development foundation, but move it into enterprise operations with a knowledge-first model;
 - enable teams to accumulate and retain development/support experience together as a shared organizational knowledge layer, so LLM-assisted workflows become progressively more valuable;
 - increase effectiveness of both the LLM and the developer: the LLM absorbs repetitive routine work, while the developer focuses on decisions that require human judgment;
 - enforce enterprise controls (role model and function-level authorization boundaries) around the same MCP capabilities.
+
+Primary goal priority for `cloud-llm-hub`:
+
+1. accumulate and reuse experience from real development/support work;
+2. improve AI-assisted outcomes session by session;
+3. apply enterprise-grade access control and operational governance.
 
 ### 1.2 Target consumer audience
 
@@ -59,6 +65,21 @@ Technical/operational APIs (platform operations):
 - `GET /odata/v4/mcp/Health()` for service liveness checks.
 - `GET /odata/v4/mcp/ProbeDestination?destination=...` for destination/connectivity diagnostics.
 - `InvokeTool` is retained only as a legacy/deprecated operational action.
+
+### 1.5 Core knowledge model (three RAG bases)
+
+`cloud-llm-hub` is designed around three distinct RAG knowledge bases:
+
+1. Client/domain RAG
+- customer-specific context: incidents, analysis outcomes, resolved fixes, internal documents, and delivery constraints for the SAP landscape being supported.
+
+2. General SAP engineering RAG
+- shared best practices and anti-patterns: ABAP/RAP BO patterns, framework usage, legacy on-premise specifics, modern cloud-first specifics, and recurring architecture guidance.
+
+3. Pair-programming session RAG
+- experience produced during user + AI collaboration: decisions, accepted alternatives, implementation notes, and practical lessons that should persist across sessions.
+
+This tri-RAG model is the core mechanism for turning operational work into reusable intelligence, not an optional add-on.
 
 ## 2. Responsibility boundaries (critical)
 
@@ -310,7 +331,29 @@ This is a dedicated operational API surface for DevOps/Support workflows.
 
 ---
 
-## 3.10 Layer J — BTP CF Deployment Layer
+## 3.10 Layer J — Knowledge Accumulation & RAG Layer
+
+### Responsibility
+
+- classify incoming context and outputs into the right knowledge lane;
+- separate tenant/customer-specific knowledge from general SAP engineering knowledge;
+- persist pair-programming experience as reusable memory for later sessions.
+
+### RAG partitioning policy
+
+- RAG-1 (Client/domain): strict customer boundary, incident and document memory.
+- RAG-2 (General SAP engineering): reusable engineering guidance across contexts.
+- RAG-3 (Pair-session memory): user+AI collaboration outcomes promoted into durable memory.
+
+### Why it is architectural, not feature-level
+
+- this layer defines long-term quality growth of assistant output;
+- it directly changes answer relevance and implementation quality over time;
+- it is the core differentiator beyond basic MCP transport/integration.
+
+---
+
+## 3.11 Layer K — BTP CF Deployment Layer
 
 ### `mta.yaml` topology
 
@@ -368,6 +411,17 @@ This is a dedicated operational API surface for DevOps/Support workflows.
 4. Agent instance is created or loaded from cache.
 5. Agent runs chat (with tools or LLM-only fallback).
 6. Response text is returned.
+
+## 4.5 Knowledge Capture and RAG Promotion
+
+1. User request + session context enters through MCP/Agent path.
+2. Execution output is evaluated for reusable knowledge signals.
+3. Knowledge is classified into one of three RAG bases:
+   - client/domain-specific;
+   - general SAP engineering;
+   - pair-programming session experience.
+4. Selected artifacts are persisted with boundary-aware metadata.
+5. Future sessions retrieve from these stores to improve relevance and reduce repeated routine analysis.
 
 ## 5. Security model in detail
 
@@ -449,6 +503,7 @@ This is a dedicated operational API surface for DevOps/Support workflows.
 - BTP destination/connectivity orchestration: `cloud-llm-hub` yes.
 - BTP CF MTA deployment topology: `cloud-llm-hub` yes.
 - Agent + SAP AI Core integration: `cloud-llm-hub` yes.
+- Three-base RAG knowledge accumulation (client/general/pair-session): `cloud-llm-hub` yes.
 - MCP protocol/tool engine: base yes, hub consumes.
 
 ## 10. Risks and control points
@@ -462,6 +517,7 @@ This is a dedicated operational API surface for DevOps/Support workflows.
 
 `cloud-llm-hub` is a **CAP-based Integration Hub** that extends base `mcp-abap-adt` in BTP CF through:
 
+- knowledge-first architecture with three RAG bases for accumulated development/support experience,
 - security perimeter (XSUAA + role model),
 - destination-driven SAP connectivity (including on-prem via Connectivity/Cloud Connector),
 - per-request embedded MCP runtime orchestration,
