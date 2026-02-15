@@ -24,10 +24,16 @@
 
 `cloud-llm-hub` is the enterprise iteration of that foundation:
 
-- keeps developer productivity goals, but adds enterprise runtime controls;
+- keeps developer productivity goals, but adds a knowledge-first enterprise runtime model;
 - enables teams to accumulate and reuse development/support experience together as shared organizational knowledge, so LLM-assisted workflows become more valuable over time;
 - increases effectiveness of both the LLM and the developer: the LLM removes routine work, while the developer focuses on decisions that require human judgment;
 - enforces role model and function-level authorization boundaries for shared enterprise usage.
+
+Priority of goals in `cloud-llm-hub`:
+
+1. accumulate and reuse experience from real development/support work;
+2. improve AI-assisted outcomes from session to session;
+3. apply enterprise-grade role and function boundaries.
 
 Target consumers are SAP technical teams:
 
@@ -35,6 +41,21 @@ Target consumers are SAP technical teams:
 - SAP developers (ABAP developers and SAP consultants working as developers).
 
 This project is not positioned as a generic public API business platform or a commercial pipeline product.
+
+## Core Knowledge Model (3 RAG Bases)
+
+The killer feature for consumers is not only MCP integration; it is systematic knowledge accumulation.
+
+1. Client/domain RAG
+- customer-specific knowledge: known incidents, analysis outcomes, problem resolutions, internal documents, and constraints for the supported SAP landscape.
+
+2. General SAP engineering RAG
+- cross-project SAP knowledge: best practices, anti-patterns, ABAP/RAP BO specifics, legacy on-premise specifics, and modern cloud specifics.
+
+3. Pair-programming session RAG
+- durable memory from user+AI collaboration: decisions, accepted approaches, implementation notes, and lessons that should be reused in future sessions.
+
+Enterprise controls (XSUAA roles, scope-based access, separation of functions) are critical, but they support this primary knowledge objective.
 
 ## 🎯 Quick Start for Consumers
 
