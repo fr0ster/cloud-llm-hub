@@ -35,3 +35,7 @@ Implement a PoC RAG flow in `cloud-llm-hub` using LangChain: vectorize query, re
    - HANA vector option
    - one BTP CF fallback option
 5. Basic run/check instructions are documented.
+
+## Pre-architecture Questions
+Detailed list of mandatory questions before architecture and implementation:
+- `docs/llm-proxy/RAG_PREARCH_QUESTIONS.md`
