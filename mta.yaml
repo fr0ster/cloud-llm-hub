@@ -62,10 +62,8 @@ modules:
       builder: custom
       commands:
         - npm ci --omit=dev
-        - rm -rf node_modules/tsx node_modules/@esbuild node_modules/esbuild node_modules/.bin/esbuild node_modules/.bin/tsx
-        - find node_modules -name "*.map" -type f -delete
-        - find node_modules -name "*.md" -type f -delete
-        - find node_modules -type d -name "docs" -exec rm -rf {} +
+        - node -e "const fs=require('fs');for(const d of['tsx','@esbuild','esbuild']){fs.rmSync('node_modules/'+d,{recursive:true,force:true})};for(const f of['esbuild','tsx']){for(const ext of['','.cmd','.ps1']){fs.rmSync('node_modules/.bin/'+f+ext,{force:true})}}"
+        - node -e "const fs=require('fs'),p=require('path');(function walk(dir){try{for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=p.join(dir,e.name);if(e.isDirectory()){if(e.name==='docs'){fs.rmSync(f,{recursive:true,force:true})}else{walk(f)}}else if(e.name.endsWith('.map')||e.name.endsWith('.md')){fs.rmSync(f,{force:true})}}}catch{}})('node_modules')"
     provides:
       - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:
