@@ -8,25 +8,26 @@
 ## Table of Contents
 
 1. [High-Level Overview](#1-high-level-overview)
-2. [Project Structure](#2-project-structure)
-3. [Module Map & Responsibilities](#3-module-map--responsibilities)
-4. [Module Dependency Graph](#4-module-dependency-graph)
-5. [Request Lifecycle — MCP Proxy Flow](#5-request-lifecycle--mcp-proxy-flow)
-6. [Request Lifecycle — Agent / LLM Flow](#6-request-lifecycle--agent--llm-flow)
-7. [Authentication & Authorization Flow](#7-authentication--authorization-flow)
-8. [Connection Strategy](#8-connection-strategy)
-9. [SAP BTP Deployment Architecture](#9-sap-btp-deployment-architecture)
-10. [CDS Service Model](#10-cds-service-model)
-11. [Configuration & Environment](#11-configuration--environment)
-12. [External Dependencies](#12-external-dependencies)
-13. [Testing Strategy](#13-testing-strategy)
-14. [Key Design Decisions](#14-key-design-decisions)
+2. [Relationship with mcp-abap-adt](#2-relationship-with-mcp-abap-adt)
+3. [Project Structure](#3-project-structure)
+4. [Module Map & Responsibilities](#4-module-map--responsibilities)
+5. [Module Dependency Graph](#5-module-dependency-graph)
+6. [Request Lifecycle — MCP Proxy Flow](#6-request-lifecycle--mcp-proxy-flow)
+7. [Request Lifecycle — Agent / LLM Flow](#7-request-lifecycle--agent--llm-flow)
+8. [Authentication & Authorization Flow](#8-authentication--authorization-flow)
+9. [Connection Strategy](#9-connection-strategy)
+10. [SAP BTP Deployment Architecture](#10-sap-btp-deployment-architecture)
+11. [CDS Service Model](#11-cds-service-model)
+12. [Configuration & Environment](#12-configuration--environment)
+13. [External Dependencies](#13-external-dependencies)
+14. [Testing Strategy](#14-testing-strategy)
+15. [Key Design Decisions](#15-key-design-decisions)
 
 ---
 
 ## 1. High-Level Overview
 
-Cloud LLM Hub is an **enterprise MCP (Model Context Protocol) proxy** built on SAP CAP that bridges AI assistants (Cline, Claude Desktop, n8n) with SAP ABAP systems. It has two main runtime paths:
+Cloud LLM Hub is an **enterprise MCP orchestrator and LLM-agent platform** built on SAP CAP. It connects AI assistants (Cline, Claude Desktop, n8n) and autonomous LLM agents with SAP ABAP systems, managing transport, authentication, destination resolution, and agent orchestration. It has two main runtime paths:
 
 ```mermaid
 graph LR
@@ -39,7 +40,7 @@ graph LR
     subgraph "Cloud LLM Hub (CAP)"
         AR[Approuter]
         SRV[CAP Server]
-        MCP_PROXY[MCP Proxy<br/>Stream-HTTP]
+        MCP_PROXY[MCP Gateway<br/>Stream-HTTP]
         AGENT[Agent Service<br/>OData]
         AUTH[Auth Service]
     end
@@ -67,12 +68,134 @@ graph LR
 
 | Path | Entry Point | Purpose |
 |------|-------------|---------|
-| **MCP Proxy** | `POST /mcp/stream/http` | Proxies MCP protocol to embedded `mcp-abap-adt` server; used by AI assistants directly |
-| **Agent Service** | `GET/POST /agent/*` (OData) | Receives natural language → calls SAP AI Core LLM → optionally uses MCP tools via internal proxy call |
+| **MCP Gateway** | `POST /mcp/stream/http` | Orchestrates MCP protocol requests: auth, destination resolution, connection creation, then delegates to embedded `mcp-abap-adt` server; used by AI assistants directly |
+| **Agent Service** | `GET/POST /agent/*` (OData) | LLM-agent endpoint: receives natural language → calls SAP AI Core LLM → uses MCP tools via internal orchestration loop |
 
 ---
 
-## 2. Project Structure
+## 2. Relationship with mcp-abap-adt
+
+**`mcp-abap-adt`** is a separate open-source project that implements the actual MCP server with ABAP/ADT tools. **Cloud LLM Hub does NOT implement MCP tools itself** — it uses `mcp-abap-adt` as an embedded component, orchestrating connections, authentication, and agent workflows around it.
+
+### How the two projects relate
+
+```mermaid
+graph TB
+    subgraph MCP_ABAP["mcp-abap-adt  (separate project)"]
+        direction TB
+        CORE["@mcp-abap-adt/core
+        ━━━━━━━━━
+        EmbeddableMcpServer
+        MCP tools for ABAP:
+        read class, search objects,
+        get table content, etc."]
+        CONN_PKG["@mcp-abap-adt/connection
+        ━━━━━━━━━
+        AbapConnection interface
+        SapConfig type
+        createAbapConnection
+        CSRF handling"]
+        HV["@mcp-abap-adt/header-validator
+        ━━━━━━━━━
+        validateAuthHeaders
+        Header parsing"]
+        IFACE["@mcp-abap-adt/interfaces
+        ━━━━━━━━━
+        ILogger, IAdtResponse
+        Header constants
+        IAbapConnection"]
+        LOG["@mcp-abap-adt/logger
+        ━━━━━━━━━
+        defaultLogger"]
+        LLM["@mcp-abap-adt/llm-proxy
+        ━━━━━━━━━
+        SapCoreAIProvider
+        SapCoreAIAgent
+        MCPClientWrapper"]
+    end
+
+    subgraph CLH["cloud-llm-hub  (this project)"]
+        direction TB
+        SERVER["server.ts — HTTP transport, auth"]
+        MGR["mcp-manager.ts — creates EmbeddableMcpServer per request"]
+        CONNECTIONS["connections/ — CloudSdkAbapConnection, destinationResolver"]
+        AGENT["agent-manager.ts — LLM provider, agent orchestration"]
+        LIB["lib/ — logger adapter, error utils"]
+    end
+
+    MGR -->|"creates instance"| CORE
+    MGR -->|"validates headers"| HV
+    CONNECTIONS -->|"implements interface"| CONN_PKG
+    CONNECTIONS -->|"uses CSRF config"| CONN_PKG
+    AGENT -->|"creates provider + agent"| LLM
+    LIB -->|"wraps"| LOG
+    LIB -->|"implements"| IFACE
+    MGR -->|"uses types + constants"| IFACE
+
+    style MCP_ABAP fill:#1e3a5f,color:#fff
+    style CLH fill:#1a4731,color:#fff
+    style CORE fill:#2563eb,color:#fff
+    style LLM fill:#7c3aed,color:#fff
+```
+
+### What each `@mcp-abap-adt/*` package provides
+
+| Package | What cloud-llm-hub uses from it | Where used |
+|---------|--------------------------------|------------|
+| **`@mcp-abap-adt/core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools (read class, search, table content, etc.) | `mcp-manager.ts` |
+| **`@mcp-abap-adt/connection`** | `AbapConnection` interface, `SapConfig` type, `createAbapConnection()` factory, `CSRF_CONFIG`, `OnPremAbapConnection` base class | `connections/*`, `mcp-manager.ts` |
+| **`@mcp-abap-adt/header-validator`** | `validateAuthHeaders()` — validates SAP auth headers for direct connections | `mcp-manager.ts` |
+| **`@mcp-abap-adt/interfaces`** | `ILogger`, `IAdtResponse`, `IAbapConnection`, `ITokenRefresher`, `HEADER_*` constants | Throughout `srv/` |
+| **`@mcp-abap-adt/logger`** | `defaultLogger` — base logging implementation | `lib/logger.ts` |
+| **`@mcp-abap-adt/llm-proxy`** | `SapCoreAIProvider`, `SapCoreAIAgent`, `MCPClientWrapper`, `BaseAgent`, `Message` type | `agent-manager.ts`, `agent-service.ts` |
+
+### Boundary of responsibility
+
+```mermaid
+graph LR
+    subgraph BOUNDARY_CLH["cloud-llm-hub responsibility"]
+        A["HTTP transport
+        + auth + routing"]
+        B["BTP Destination
+        resolution"]
+        C["Cloud Connector
+        proxy"]
+        D["Agent orchestration
+        + SAP AI Core"]
+    end
+
+    subgraph BOUNDARY_MCP["mcp-abap-adt responsibility"]
+        E["MCP protocol
+        implementation"]
+        F["ABAP/ADT tools
+        read, search, etc."]
+        G["AbapConnection
+        base classes"]
+        H["LLM provider
+        abstractions"]
+    end
+
+    A -->|"creates + injects connection"| E
+    B -->|"resolves credentials for"| G
+    D -->|"uses"| H
+
+    style BOUNDARY_CLH fill:#1a4731,color:#fff
+    style BOUNDARY_MCP fill:#1e3a5f,color:#fff
+```
+
+**Key principle:** Cloud LLM Hub is the orchestrator — it creates a connection (`AbapConnection`), injects it into `EmbeddableMcpServer`, and manages the full lifecycle (auth → destination → connection → MCP server → transport → cleanup). The MCP server uses that connection to talk to ABAP. Cloud LLM Hub never calls ABAP tools directly — all ABAP interaction goes through the embedded MCP server. The Agent Service adds an LLM-agent layer on top, where SAP AI Core LLM autonomously decides which MCP tools to call.
+
+### Implications for developers
+
+- **Adding/modifying MCP tools** (e.g., new ABAP read operation) → change `mcp-abap-adt`, NOT this project
+- **Adding/modifying transport, auth, routing, BTP integration** → change this project (`srv/`)
+- **Adding new connection type** (e.g., new auth method) → implement `AbapConnection` interface in `srv/connections/`, register in `connectionFactory.ts`
+- **Changing LLM provider behavior** → if it's provider abstraction → `mcp-abap-adt/llm-proxy`; if it's SAP AI Core binding specifics → `agent-manager.ts` in this project
+- **Updating `mcp-abap-adt` version** → update in `package.json`, test that `EmbeddableMcpServer` API hasn't changed, run integration tests
+
+---
+
+## 3. Project Structure
 
 ```mermaid
 graph TD
@@ -136,7 +259,7 @@ cloud-llm-hub/
 
 ---
 
-## 3. Module Map & Responsibilities
+## 4. Module Map & Responsibilities
 
 ```mermaid
 graph TD
@@ -247,7 +370,7 @@ graph TD
 
 ---
 
-## 4. Module Dependency Graph
+## 5. Module Dependency Graph
 
 ```mermaid
 graph TB
@@ -377,7 +500,7 @@ graph TB
 
 ---
 
-## 5. Request Lifecycle — MCP Proxy Flow
+## 6. Request Lifecycle — MCP Proxy Flow
 
 This is the primary flow when an AI assistant (Cline, Claude Desktop) sends an MCP request.
 
@@ -467,7 +590,7 @@ graph LR
 
 ---
 
-## 6. Request Lifecycle — Agent / LLM Flow
+## 7. Request Lifecycle — Agent / LLM Flow
 
 ```mermaid
 sequenceDiagram
@@ -507,7 +630,7 @@ sequenceDiagram
 
 ---
 
-## 7. Authentication & Authorization Flow
+## 8. Authentication & Authorization Flow
 
 ```mermaid
 graph TB
@@ -568,7 +691,7 @@ graph TB
 
 ---
 
-## 8. Connection Strategy
+## 9. Connection Strategy
 
 ```mermaid
 graph TB
@@ -666,7 +789,7 @@ classDiagram
 
 ---
 
-## 9. SAP BTP Deployment Architecture
+## 10. SAP BTP Deployment Architecture
 
 ```mermaid
 graph TB
@@ -725,7 +848,7 @@ The `mta.yaml` build step runs:
 
 ---
 
-## 10. CDS Service Model
+## 11. CDS Service Model
 
 ```mermaid
 graph LR
@@ -757,7 +880,7 @@ graph LR
 
 ---
 
-## 11. Configuration & Environment
+## 12. Configuration & Environment
 
 ```mermaid
 graph TB
@@ -815,7 +938,7 @@ graph TB
 
 ---
 
-## 12. External Dependencies
+## 13. External Dependencies
 
 ```mermaid
 graph TB
@@ -854,7 +977,7 @@ graph TB
 
 ---
 
-## 13. Testing Strategy
+## 14. Testing Strategy
 
 ```mermaid
 graph LR
@@ -890,7 +1013,7 @@ graph LR
 
 ---
 
-## 14. Key Design Decisions
+## 15. Key Design Decisions
 
 ### Per-Request Architecture (No Server Cache)
 
