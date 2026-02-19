@@ -425,66 +425,64 @@ graph TB
 
 This is the primary flow when an AI assistant (Cline, Claude Desktop) sends an MCP request.
 
+#### Step 1 — Authentication
+
 ```mermaid
 sequenceDiagram
-    participant Client as AI Assistant<br/>(Cline / Claude)
+    participant Client as AI Assistant
     participant AR as Approuter
-    participant MW as Express Middleware<br/>(server.ts)
-    participant AuthSrv as AuthService<br/>(auth.ts)
-    participant Handler as handleStreamHTTP<br/>(server.ts)
-    participant MCPMgr as mcp-manager.ts
-    participant ConnFactory as connectionFactory.ts
-    participant DestRes as destinationResolver.ts
-    participant CloudSDK as CloudSdkAbapConnection
-    participant MCP as EmbeddableMcpServer<br/>(@mcp-abap-adt/core)
-    participant Transport as StreamableHTTP<br/>Transport
-    participant ABAP as SAP ABAP System
+    participant MW as server.ts
+    participant Auth as AuthService
 
-    Client->>AR: POST /mcp/stream/http<br/>+ Auth header<br/>+ X-SAP-Destination header
-    AR->>MW: Forward (with JWT)
+    Client->>AR: POST /mcp/stream/http
+    AR->>MW: Forward with JWT
+    MW->>Auth: CheckAuth(req)
+    Auth-->>MW: authenticated, id, roles
+    MW->>MW: handleStreamHTTP(req, res)
+```
 
-    Note over MW: Fix Content-Type & Accept<br/>headers for Cline compat
+#### Step 2 — Create Connection + MCP Server
 
-    MW->>AuthSrv: srv.run('CheckAuth', req)
-    AuthSrv-->>MW: {authenticated: true, id, roles}
+```mermaid
+sequenceDiagram
+    participant Handler as server.ts
+    participant Mgr as mcp-manager.ts
+    participant Dest as destinationResolver
+    participant Conn as connectionFactory
 
-    MW->>Handler: handleStreamHTTP(req, res)
+    Handler->>Mgr: createMCPServerForRequest(req)
+    Mgr->>Mgr: extractSapContext(req)
 
-    Handler->>Handler: Read & parse request body<br/>(JSON-RPC MCP message)
-
-    Handler->>MCPMgr: createMCPServerForRequest(req)
-
-    MCPMgr->>MCPMgr: extractSapContext(req)
-
-    alt X-SAP-Destination present
-        MCPMgr->>DestRes: resolveDestinationSapConfig(name, jwt?)
-        DestRes-->>MCPMgr: {sapConfig, proxyType, authType}
-        MCPMgr->>ConnFactory: createConnection({sapConfig, destinationName})
-        ConnFactory->>CloudSDK: new CloudSdkAbapConnection(config, dest)
-    else Direct connection (URL + Basic/JWT)
-        MCPMgr->>MCPMgr: validateAuthHeaders(req.headers)
-        MCPMgr->>ConnFactory: createConnection({sapConfig})
-        ConnFactory->>ConnFactory: createAbapConnection(config)
+    alt BTP Destination
+        Mgr->>Dest: resolveDestinationSapConfig(name)
+        Dest-->>Mgr: sapConfig + authType
+        Mgr->>Conn: createConnection(sapConfig, dest)
+    else Direct connection
+        Mgr->>Mgr: validateAuthHeaders
+        Mgr->>Conn: createConnection(sapConfig)
     end
 
-    MCPMgr->>MCP: new EmbeddableMcpServer({connection, logger})
-    MCPMgr->>Transport: new StreamableHTTPServerTransport({stateless})
-    MCPMgr->>MCP: mcpServer.connect(transport)
+    Mgr->>Mgr: new EmbeddableMcpServer(connection)
+    Mgr->>Mgr: new StreamableHTTPTransport
+    Mgr-->>Handler: server + transport + cleanup
+```
 
-    MCPMgr-->>Handler: {server, connection, transport, cleanup}
+#### Step 3 — Execute MCP Request
 
-    Handler->>Transport: transport.handleRequest(req, res, body)
-    Transport->>MCP: Process JSON-RPC request
-    MCP->>CloudSDK: makeAdtRequest(options)
-    CloudSDK->>ABAP: executeHttpRequest({destinationName}, ...)
-    ABAP-->>CloudSDK: ADT Response
-    CloudSDK-->>MCP: IAdtResponse
-    MCP-->>Transport: MCP Response
-    Transport-->>Handler: HTTP Response written
+```mermaid
+sequenceDiagram
+    participant Handler as server.ts
+    participant Transport as HTTPTransport
+    participant MCP as EmbeddableMcpServer
+    participant ABAP as SAP ABAP
 
-    Handler->>Handler: cleanup() — close transport, reset connection
-
-    Handler-->>Client: JSON response
+    Handler->>Transport: handleRequest(req, res, body)
+    Transport->>MCP: JSON-RPC request
+    MCP->>ABAP: ADT HTTP call
+    ABAP-->>MCP: ADT response
+    MCP-->>Transport: MCP response
+    Transport-->>Handler: HTTP response
+    Handler->>Handler: cleanup()
 ```
 
 ### Per-Request Architecture (Key Design)
@@ -513,40 +511,52 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
+#### Step 1 — Config + Provider
+
 ```mermaid
 sequenceDiagram
     participant Client as App / User
-    participant AR as Approuter
-    participant AgentSrv as AgentService<br/>(agent-service.ts)
-    participant AgentMgr as agent-manager.ts
-    participant AgentCfg as agent-config.ts
-    participant AICoreProvider as SapCoreAIProvider
+    participant Srv as AgentService
+    participant Cfg as agent-config.ts
+    participant Mgr as agent-manager.ts
+
+    Client->>Srv: POST /agent/Chat {message}
+    Srv->>Cfg: getAgentConfig()
+    Cfg-->>Srv: model, temperature, AI Core binding
+    Srv->>Mgr: createLLMProvider(config)
+    Mgr->>Mgr: Get OAuth2 token from AI Core
+    Mgr-->>Srv: SapCoreAIProvider
+```
+
+#### Step 2 — LLM Call
+
+```mermaid
+sequenceDiagram
+    participant Srv as AgentService
+    participant Provider as SapCoreAIProvider
     participant AICore as SAP AI Core
-    participant MCPClient as MCPClientWrapper
-    participant MCPProxy as MCP Proxy<br/>(/mcp/stream/http)
 
-    Client->>AR: POST /agent/Chat<br/>{message: "..."}
-    AR->>AgentSrv: CAP dispatches to Chat handler
+    Srv->>Provider: provider.chat(messages)
+    Provider->>AICore: POST /chat/completions
+    AICore-->>Provider: LLM response
+    Provider-->>Srv: response.content
+    Srv-->>Srv: return to client
+```
 
-    AgentSrv->>AgentCfg: getAgentConfig()
-    Note over AgentCfg: Reads LLM_AGENT_MODEL,<br/>TEMPERATURE, MAX_TOKENS<br/>from env vars +<br/>AI Core from VCAP_SERVICES
+#### Step 3 — Agent Mode (optional, with MCP tools)
 
-    AgentSrv->>AgentMgr: createLLMProvider(config)
-    AgentMgr->>AgentMgr: Get OAuth2 token<br/>from AI Core service binding
+```mermaid
+sequenceDiagram
+    participant Agent as SapCoreAIAgent
+    participant MCP as MCPClientWrapper
+    participant Proxy as /mcp/stream/http
 
-    AgentMgr->>AICoreProvider: new SapCoreAIProvider({...})
-
-    AgentSrv->>AICoreProvider: provider.chat([{role:'user', content: msg}])
-    AICoreProvider->>AICore: POST /chat/completions<br/>Bearer {oauth2_token}
-    AICore-->>AICoreProvider: LLM response
-
-    Note over AgentMgr: Optional: Agent mode with MCP tools
-    AgentMgr->>MCPClient: new MCPClientWrapper({url, headers})
-    MCPClient->>MCPProxy: POST /mcp/stream/http<br/>+ X-SAP-Destination header
-    MCPProxy-->>MCPClient: MCP tool results
-
-    AICoreProvider-->>AgentSrv: response.content
-    AgentSrv-->>Client: LLM response string
+    Agent->>MCP: connect to own MCP Gateway
+    Agent->>Agent: LLM decides which tool to call
+    Agent->>MCP: call MCP tool
+    MCP->>Proxy: POST /mcp/stream/http
+    Proxy-->>MCP: tool result
+    MCP-->>Agent: result for next LLM step
 ```
 
 ---
