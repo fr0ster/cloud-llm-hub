@@ -80,110 +80,31 @@ graph LR
 ### How the two projects relate
 
 ```mermaid
-graph TB
-    subgraph MCP_ABAP["mcp-abap-adt  (separate project)"]
-        direction TB
-        CORE["@mcp-abap-adt/core
-        ━━━━━━━━━
-        EmbeddableMcpServer
-        MCP tools for ABAP:
-        read class, search objects,
-        get table content, etc."]
-        CONN_PKG["@mcp-abap-adt/connection
-        ━━━━━━━━━
-        AbapConnection interface
-        SapConfig type
-        createAbapConnection
-        CSRF handling"]
-        HV["@mcp-abap-adt/header-validator
-        ━━━━━━━━━
-        validateAuthHeaders
-        Header parsing"]
-        IFACE["@mcp-abap-adt/interfaces
-        ━━━━━━━━━
-        ILogger, IAdtResponse
-        Header constants
-        IAbapConnection"]
-        LOG["@mcp-abap-adt/logger
-        ━━━━━━━━━
-        defaultLogger"]
-        LLM["@mcp-abap-adt/llm-proxy
-        ━━━━━━━━━
-        SapCoreAIProvider
-        SapCoreAIAgent
-        MCPClientWrapper"]
-    end
+flowchart LR
+    A(Request) --> B(cloud-llm-hub<br/>Auth + Destination<br/>+ Connection) -- injects<br/>connection --> C(mcp-abap-adt<br/>MCP Server<br/>+ ABAP Tools) --> D(SAP ABAP)
 
-    subgraph CLH["cloud-llm-hub  (this project)"]
-        direction TB
-        SERVER["server.ts — HTTP transport, auth"]
-        MGR["mcp-manager.ts — creates EmbeddableMcpServer per request"]
-        CONNECTIONS["connections/ — CloudSdkAbapConnection, destinationResolver"]
-        AGENT["agent-manager.ts — LLM provider, agent orchestration"]
-        LIB["lib/ — logger adapter, error utils"]
-    end
-
-    MGR -->|"creates instance"| CORE
-    MGR -->|"validates headers"| HV
-    CONNECTIONS -->|"implements interface"| CONN_PKG
-    CONNECTIONS -->|"uses CSRF config"| CONN_PKG
-    AGENT -->|"creates provider + agent"| LLM
-    LIB -->|"wraps"| LOG
-    LIB -->|"implements"| IFACE
-    MGR -->|"uses types + constants"| IFACE
-
-    style MCP_ABAP fill:#1e3a5f,color:#fff
-    style CLH fill:#1a4731,color:#fff
-    style CORE fill:#2563eb,color:#fff
-    style LLM fill:#7c3aed,color:#fff
+    style B fill:#16a34a,color:#fff,font-size:16px
+    style C fill:#2563eb,color:#fff,font-size:16px
+    style D fill:#9333ea,color:#fff,font-size:16px
 ```
 
-### What each `@mcp-abap-adt/*` package provides
+**Key point:** `mcp-abap-adt` is the **base implementation** of the MCP server. Cloud LLM Hub **delegates all MCP work** to it. The delegation pattern:
 
-| Package | What cloud-llm-hub uses from it | Where used |
-|---------|--------------------------------|------------|
-| **`@mcp-abap-adt/core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools (read class, search, table content, etc.) | `mcp-manager.ts` |
-| **`@mcp-abap-adt/connection`** | `AbapConnection` interface, `SapConfig` type, `createAbapConnection()` factory, `CSRF_CONFIG`, `OnPremAbapConnection` base class | `connections/*`, `mcp-manager.ts` |
-| **`@mcp-abap-adt/header-validator`** | `validateAuthHeaders()` — validates SAP auth headers for direct connections | `mcp-manager.ts` |
-| **`@mcp-abap-adt/interfaces`** | `ILogger`, `IAdtResponse`, `IAbapConnection`, `ITokenRefresher`, `HEADER_*` constants | Throughout `srv/` |
-| **`@mcp-abap-adt/logger`** | `defaultLogger` — base logging implementation | `lib/logger.ts` |
-| **`@mcp-abap-adt/llm-proxy`** | `SapCoreAIProvider`, `SapCoreAIAgent`, `MCPClientWrapper`, `BaseAgent`, `Message` type | `agent-manager.ts`, `agent-service.ts` |
+1. Cloud LLM Hub handles everything **before** MCP: auth, destination resolution, connection creation
+2. Cloud LLM Hub creates `EmbeddableMcpServer` (from `@mcp-abap-adt/core`) and **injects** the connection
+3. From that point, `mcp-abap-adt` does **all** the MCP protocol handling and ABAP tool execution
+4. Cloud LLM Hub never calls ABAP tools directly — it only provides the connection
 
-### Boundary of responsibility
+### What cloud-llm-hub uses from `@mcp-abap-adt/*`
 
-```mermaid
-graph LR
-    subgraph BOUNDARY_CLH["cloud-llm-hub responsibility"]
-        A["HTTP transport
-        + auth + routing"]
-        B["BTP Destination
-        resolution"]
-        C["Cloud Connector
-        proxy"]
-        D["Agent orchestration
-        + SAP AI Core"]
-    end
-
-    subgraph BOUNDARY_MCP["mcp-abap-adt responsibility"]
-        E["MCP protocol
-        implementation"]
-        F["ABAP/ADT tools
-        read, search, etc."]
-        G["AbapConnection
-        base classes"]
-        H["LLM provider
-        abstractions"]
-    end
-
-    A -->|"creates + injects connection"| E
-    B -->|"resolves credentials for"| G
-    D -->|"uses"| H
-
-    style BOUNDARY_CLH fill:#1a4731,color:#fff
-    style BOUNDARY_MCP fill:#1e3a5f,color:#fff
-```
-
-**Key principle:** Cloud LLM Hub is the orchestrator — it creates a connection (`AbapConnection`), injects it into `EmbeddableMcpServer`, and manages the full lifecycle (auth → destination → connection → MCP server → transport → cleanup). The MCP server uses that connection to talk to ABAP. Cloud LLM Hub never calls ABAP tools directly — all ABAP interaction goes through the embedded MCP server. The Agent Service adds an LLM-agent layer on top, where SAP AI Core LLM autonomously decides which MCP tools to call.
+| Package | Role | Where used |
+|---------|------|------------|
+| **`core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
+| **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
+| **`llm-proxy`** | `SapCoreAIProvider`, `SapCoreAIAgent`, `MCPClientWrapper` — LLM agent abstractions | `agent-manager.ts` |
+| **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
+| **`interfaces`** | Shared types: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
+| **`logger`** | Base logging implementation | `lib/logger.ts` |
 
 ### Implications for developers
 

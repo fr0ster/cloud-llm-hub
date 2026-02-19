@@ -22,18 +22,17 @@
 
 > ⚠️ **Это ключевой момент — без понимания этого разделения будут проблемы.**
 
-**Что показывать:** диаграмму «Relationship with mcp-abap-adt» из `docs/architecture/ARCHITECTURE.md` (секция 2), затем `package.json` (зависимости `@mcp-abap-adt/*`), затем `mcp-manager.ts` (строка с `new EmbeddableMcpServer`)
+**Что показывать:** диаграмму «How the two projects relate» из `docs/architecture/ARCHITECTURE.md` (секция 2), затем `mcp-manager.ts`
 
 **Что говорить:**
 
-1. «Cloud LLM Hub — это НЕ реализация MCP-сервера. Это оркестратор — enterprise-слой, который управляет авторизацией, подключениями, destination-ами и агентным workflow. А вся реализация MCP-протокола и ABAP-инструментов живёт в ОТДЕЛЬНОМ проекте — **mcp-abap-adt**»
-2. Открыть **`package.json`** — показать блок зависимостей `@mcp-abap-adt/*`:
-   - «Шесть пакетов: `core` — сам MCP-сервер с тулами, `connection` — интерфейс и фабрика подключений к ABAP, `header-validator` — валидация SAP заголовков, `interfaces` — общие типы и константы, `logger` — логгер, `llm-proxy` — LLM-провайдер и агент»
-3. Показать диаграмму из ARCHITECTURE.md — «Вот граница ответственности:»
-   - **cloud-llm-hub** (оркестратор) отвечает за: HTTP транспорт, аутентификацию XSUAA, маршрутизацию, резолвинг BTP Destination, Cloud Connector, интеграцию с SAP AI Core, агентную оркестрацию
-   - **mcp-abap-adt** (компонент) отвечает за: реализацию MCP-протокола, все ABAP/ADT инструменты (чтение классов, поиск объектов, содержимое таблиц), базовые классы подключений, абстракции LLM-провайдеров
-4. Открыть **`mcp-manager.ts`**, показать строку `new EmbeddableMcpServer({connection, logger})` — «Вот это и есть точка интеграции. Cloud LLM Hub как оркестратор создаёт connection, инжектит его в MCP-сервер из mcp-abap-adt и управляет полным жизненным циклом: auth → destination → connection → MCP server → transport → cleanup. А Agent Service добавляет сверху LLM-агент, который сам решает какие MCP-инструменты вызывать»
-5. «**Правило для разработчика:** если задача — добавить или изменить MCP-тул (новая операция с ABAP) — это правки в mcp-abap-adt, не здесь. Если задача — изменить транспорт, авторизацию, конфигурацию BTP, агентную логику — это правки здесь, в cloud-llm-hub»
+1. Показать диаграмму из ARCHITECTURE.md (секция 2) — «Вот как устроена система. Смотрите на поток слева направо:»
+   - «Запрос приходит → **cloud-llm-hub** делает всё ДО MCP: аутентификация, резолвинг destination, создание connection»
+   - «Потом connection инжектится в **EmbeddableMcpServer** из mcp-abap-adt — и ВСЯ работа с MCP-протоколом и ABAP делается ТАМ»
+   - «mcp-abap-adt — это базовая реализация MCP-сервера. Cloud LLM Hub делегирует ему ВСЕ MCP-задачи»
+2. Открыть **`mcp-manager.ts`**, показать строку `new EmbeddableMcpServer({connection, logger})` — «Вот точка делегации. Cloud LLM Hub создаёт connection и передаёт его. Дальше mcp-abap-adt сам обрабатывает MCP-запросы, вызывает ABAP через ADT, возвращает результат. Cloud LLM Hub НИКОГДА не вызывает ABAP напрямую»
+3. Открыть **`package.json`** — показать зависимости `@mcp-abap-adt/*`: «Главный пакет — `core`, остальные — вспомогательные: `connection` (интерфейсы подключений), `llm-proxy` (LLM-агент), `interfaces`, `logger`, `header-validator`»
+4. «**Правило для разработчика:** если задача связана с MCP-тулами (новая операция с ABAP) — это правки в mcp-abap-adt. Если задача — транспорт, авторизация, BTP, агентная логика — правки здесь, в cloud-llm-hub»
 
 ---
 
