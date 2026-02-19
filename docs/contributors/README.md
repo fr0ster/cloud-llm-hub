@@ -8,7 +8,7 @@ Welcome, contributors! This directory contains comprehensive guides for contribu
 
 - **[SETUP.md](SETUP.md)** - Development environment setup
 - **[WORKFLOW.md](WORKFLOW.md)** - Git workflow (fork → branch → PR)
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture overview
+- **[ARCHITECTURE.md](../architecture/ARCHITECTURE.md)** - System architecture overview
 
 ### Development
 
@@ -43,7 +43,6 @@ docs/
 │   ├── SETUP.md                    # Development setup
 │   ├── WORKFLOW.md                 # Git workflow
 │   ├── CODE_STYLE.md               # Coding standards
-│   ├── ARCHITECTURE.md             # Architecture overview
 │   ├── TESTING.md                  # Testing guide
 │   ├── MCP_ABAP_ADT_INTEGRATION.md # mcp-abap-adt integration roadmap
 │   └── CONNECTION_ARCHITECTURE.md  # Connection types architecture

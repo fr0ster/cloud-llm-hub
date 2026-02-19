@@ -22,7 +22,7 @@
 
 > ⚠️ **Это ключевой момент — без понимания этого разделения будут проблемы.**
 
-**Что показывать:** диаграмму «Relationship with mcp-abap-adt» из `docs/architechure/ARCHITECTURE.md` (секция 2), затем `package.json` (зависимости `@mcp-abap-adt/*`), затем `mcp-manager.ts` (строка с `new EmbeddableMcpServer`)
+**Что показывать:** диаграмму «Relationship with mcp-abap-adt» из `docs/architecture/ARCHITECTURE.md` (секция 2), затем `package.json` (зависимости `@mcp-abap-adt/*`), затем `mcp-manager.ts` (строка с `new EmbeddableMcpServer`)
 
 **Что говорить:**
 
@@ -58,7 +58,7 @@
 
 ### 4:30–5:45 — MCP Gateway Flow (основной)
 
-**Что показывать:** открыть `docs/architechure/ARCHITECTURE.md`, секция 6 (Request Lifecycle — MCP Gateway Flow), sequence-диаграмма. Параллельно открывать файлы по ходу объяснения.
+**Что показывать:** открыть `docs/architecture/ARCHITECTURE.md`, секция 6 (Request Lifecycle — MCP Gateway Flow), sequence-диаграмма. Параллельно открывать файлы по ходу объяснения.
 
 **Что говорить:**
 
@@ -186,7 +186,7 @@
 
 | Проблема | Где искать |
 |----------|-----------|
-| Не понимаю как устроена система | `docs/architechure/ARCHITECTURE.md` — эту архитектурную документацию |
+| Не понимаю как устроена система | `docs/architecture/ARCHITECTURE.md` — эту архитектурную документацию |
 | Ошибка авторизации (401/403) | `srv/auth.ts`, `xs-security.json`, логи `auth-check` и `auth-service` |
 | Ошибка подключения к ABAP | `srv/connections/` — логи `mcp-manager`, `destination-resolver` |
 | Ошибка MCP-протокола | `srv/server.ts` (handleStreamHTTP), `srv/mcp-manager.ts` |
@@ -207,7 +207,7 @@
 - `cds.log('destination-resolver')` — резолвинг destination
 - `cds.log('agent-manager')` — агент и LLM
 
-**Завершение:** «Документация живёт в `docs/`. CONTRIBUTING.md описывает workflow для PR. Если что-то неясно после этого видео — начните с `docs/architechure/ARCHITECTURE.md` и идите по ссылкам»
+**Завершение:** «Документация живёт в `docs/`. CONTRIBUTING.md описывает workflow для PR. Если что-то неясно после этого видео — начните с `docs/architecture/ARCHITECTURE.md` и идите по ссылкам»
 
 ---
 
@@ -215,7 +215,7 @@
 
 - [ ] Открыть проект в IDE
 - [ ] Запустить `cds watch --profile development` (чтобы показать работающий сервер)
-- [ ] Открыть `docs/architechure/ARCHITECTURE.md` в preview (для диаграмм)
+- [ ] Открыть `docs/architecture/ARCHITECTURE.md` в preview (для диаграмм)
 - [ ] Подготовить терминал с примерами команд
 - [ ] Проверить что `default-env.json` НЕ виден на экране (секреты!)
 - [ ] Подготовить браузер с `localhost:4004` (показать Health endpoint)
