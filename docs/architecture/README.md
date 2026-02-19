@@ -21,7 +21,7 @@ System architecture, design decisions, and technical specifications for cloud-ll
 ## Related Documentation
 
 - [Architecture Decision Records](../adrs/) - ADR documentation
-- [Contributors Architecture](../contributors/ARCHITECTURE.md) - Internal architecture for contributors
+- [Architecture Overview](ARCHITECTURE.md) - Full architecture documentation
 
 ## Quick Links
 
