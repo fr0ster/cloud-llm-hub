@@ -13,6 +13,7 @@ build-parameters:
   before-all:
     - builder: custom
       commands:
+        - node -e "try{require('fs').rmSync('node_modules',{recursive:true,force:true,maxRetries:3,retryDelay:1000})}catch{}"
         - npm ci
         - npx cds build --production
 modules:

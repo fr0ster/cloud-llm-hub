@@ -50,6 +50,7 @@
     "lint": "npx biome check --write --config-path . srv tools test",
     "lint:check": "npx biome check --config-path . srv tools test",
     "format": "npx biome format --write --config-path . srv tools test",
+    "build": "npx cds b",
     "build:mta": "npx mbt build -t gen/mta_archives --mtar cloud-llm-hub.tar",
     "deploy": "cf deploy gen/mta_archives/cloud-llm-hub.tar --abort-on-error --delete-services",
     "cf-env": "cf e cloud-llm-hub-srv",
