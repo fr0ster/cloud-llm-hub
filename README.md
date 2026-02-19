@@ -154,7 +154,7 @@ For contributors and developers:
   - [Setup Guide](docs/contributors/SETUP.md) - Development environment
   - [Git Workflow](docs/contributors/WORKFLOW.md) - Fork → Branch → PR
   - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
-  - [Architecture](docs/contributors/ARCHITECTURE.md) - System overview
+  - [Architecture](docs/architecture/ARCHITECTURE.md) - System overview
   - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
   - [🗺️ mcp-abap-adt Integration](docs/contributors/MCP_ABAP_ADT_INTEGRATION.md) - v1.1.22 integration roadmap
 - **[🐛 Debugging](docs/development/DEBUGGING.md)** - Debugging techniques

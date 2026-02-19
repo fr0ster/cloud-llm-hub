@@ -226,7 +226,7 @@ Understanding the codebase:
 - `docs/` - Documentation
 - `submodules/` - External dependencies (git submodules)
 
-**Architecture overview:** See [docs/contributors/ARCHITECTURE.md](docs/contributors/ARCHITECTURE.md)
+**Architecture overview:** See [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)
 
 ## ❓ Questions?
 
