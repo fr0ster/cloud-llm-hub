@@ -15,8 +15,14 @@ import './env-setup';
 
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
+import express from 'express';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
+import {
+  handleChatCompletions,
+  handleModels,
+  handleUsage,
+} from './openai-handler';
 
 /**
  * Type guard for MCP request body
@@ -470,8 +476,39 @@ cds.on('bootstrap', (app: Application) => {
     }),
   );
 
+  // -------------------------------------------------------------------
+  // OpenAI-compatible endpoints (/v1/*)
+  // -------------------------------------------------------------------
+
+  // CORS preflight for /v1/* routes
+  app.options('/v1/*', (_req: Request, res: Response) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Session-Id',
+    );
+    res.writeHead(204);
+    res.end();
+  });
+
+  // Parse JSON body for /v1/* routes
+  app.use('/v1', express.json({ limit: '10mb' }));
+
+  // POST /v1/chat/completions — main chat (streaming + non-streaming)
+  app.post('/v1/chat/completions', ensureAuth(handleChatCompletions));
+
+  // GET /v1/models — model list (no auth required)
+  app.get('/v1/models', handleModels as never);
+
+  // GET /v1/usage — token usage
+  app.get('/v1/usage', ensureAuth(handleUsage));
+
   log.info('Custom Express endpoints registered', {
     streamHttp: 'POST /mcp/stream/http',
+    chatCompletions: 'POST /v1/chat/completions',
+    models: 'GET /v1/models',
+    usage: 'GET /v1/usage',
     destinationProbe:
       'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
   });

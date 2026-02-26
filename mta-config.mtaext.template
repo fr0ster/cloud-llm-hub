@@ -14,6 +14,12 @@ modules:
         # MCP Connection
         # Name of the destination in BTP Cockpit pointing to the ABAP system
         LLM_AGENT_MCP_DESTINATION: "ABAP_SYSTEM_DESTINATION_NAME"
-        
+
+        # SmartAgent Configuration
+        LLM_AGENT_MODE: "smart"           # 'smart' | 'pass' | 'hard'
+        LLM_AGENT_MAX_ITERATIONS: "10"    # max tool loop iterations
+        LLM_AGENT_RAG_TYPE: "in-memory"   # 'in-memory' | 'ollama'
+        # LLM_AGENT_RESOURCE_GROUP: "default"  # SAP AI Core resource group
+
         # Optional: Override MCP Endpoint (usually auto-detected)
         # LLM_AGENT_MCP_ENDPOINT: "https://..."

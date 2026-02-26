@@ -246,7 +246,7 @@ Agent Manager
 ## 📞 Questions?
 
 If you have questions:
-1. Check documentation in `docs/llm-proxy/*.md`
+1. Check documentation in `docs/llm-agent/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
 4. See troubleshooting in `docs/SAP_AI_CORE_ISSUE.md`

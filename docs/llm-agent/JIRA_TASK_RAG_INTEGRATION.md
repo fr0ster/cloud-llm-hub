@@ -38,4 +38,4 @@ Implement a PoC RAG flow in `cloud-llm-hub` using LangChain: vectorize query, re
 
 ## Pre-architecture Questions
 Detailed list of mandatory questions before architecture and implementation:
-- `docs/llm-proxy/RAG_PREARCH_QUESTIONS.md`
+- `docs/llm-agent/RAG_PREARCH_QUESTIONS.md`
