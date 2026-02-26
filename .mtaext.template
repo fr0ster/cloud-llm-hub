@@ -32,6 +32,16 @@ parameters:
   # MCP Configuration
   # Destination name configured in BTP Cockpit
   LLM_AGENT_MCP_DESTINATION: YOUR_MCP_DESTINATION_NAME
-  
+
+  # SmartAgent Configuration
+  # Mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only)
+  LLM_AGENT_MODE: "smart"
+  # Max tool loop iterations
+  LLM_AGENT_MAX_ITERATIONS: "10"
+  # RAG backend: 'in-memory' or 'ollama'
+  LLM_AGENT_RAG_TYPE: "in-memory"
+  # SAP AI Core resource group (optional, leave empty if not needed)
+  # LLM_AGENT_RESOURCE_GROUP: "default"
+
   # Optional: MCP Proxy endpoint (auto-detected if not set)
   # LLM_AGENT_MCP_ENDPOINT: "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http"

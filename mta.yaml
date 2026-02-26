@@ -9,6 +9,10 @@ parameters:
   LLM_AGENT_TEMPERATURE:
   LLM_AGENT_MAX_TOKENS:
   LLM_AGENT_MCP_DESTINATION:
+  LLM_AGENT_MODE:
+  LLM_AGENT_MAX_ITERATIONS:
+  LLM_AGENT_RAG_TYPE:
+  LLM_AGENT_RESOURCE_GROUP:
 build-parameters:
   before-all:
     - builder: custom
@@ -56,9 +60,15 @@ modules:
         # MCP proxy will resolve this destination and create MCP server with SAP config
         LLM_AGENT_MCP_DESTINATION: <LLM_AGENT_MCP_DESTINATION>
 
-        # MCP Proxy endpoint (optional)
-        # If not set, will be auto-detected from request (for BTP) or use localhost (for local dev)
-        # LLM_AGENT_MCP_ENDPOINT: ~{LLM_AGENT_MCP_ENDPOINT}
+        # SmartAgent Configuration
+        # Mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only)
+        LLM_AGENT_MODE: <LLM_AGENT_MODE>
+        # Max tool loop iterations
+        LLM_AGENT_MAX_ITERATIONS: <LLM_AGENT_MAX_ITERATIONS>
+        # RAG backend: 'in-memory' or 'ollama'
+        LLM_AGENT_RAG_TYPE: <LLM_AGENT_RAG_TYPE>
+        # SAP AI Core resource group (optional)
+        LLM_AGENT_RESOURCE_GROUP: <LLM_AGENT_RESOURCE_GROUP>
     build-parameters:
       builder: custom
       commands:

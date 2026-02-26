@@ -1,45 +1,38 @@
 /**
- * Agent Manager - Wrapper for LLM Agent
+ * Agent Manager - SmartAgent lifecycle management
  *
- * This wrapper handles all configuration at cloud-llm-hub level.
+ * Builds and manages SmartAgent instances using SmartAgentBuilder.
  * Configuration comes from environment variables (set via mta.yaml or CF CLI).
  *
  * Architecture:
- * - Configuration → Agent Manager → creates LLM provider with SAP AI Core destination → creates MCP client with MCP destination → passes to Agent
- * - Agent → works with MCP client (doesn't know about SAP)
- * - MCP Client → connects to MCP proxy with destination header
- * - MCP Proxy → resolves destination and creates MCP server with SAP config
+ * - SmartAgentBuilder wires together: LLM (sap-ai-sdk pipeline), MCP (McpClientAdapter), RAG (in-memory)
+ * - LLM: Uses @sap-ai-sdk/orchestration via pipeline provider 'sap-ai-sdk'
+ * - MCP: MCPClientWrapper → McpClientAdapter → connects to /mcp/stream/http (self-loop)
+ * - RAG: InMemoryRag (no external embedding service needed)
  *
  * Configuration:
  * - LLM settings (model, temperature, maxTokens) from env vars
- * - SAP AI Core destination from env vars
+ * - SAP AI Core credentials from AICORE_SERVICE_KEY or VCAP_SERVICES (read by SDK)
  * - MCP destination from env vars
- * - All authentication handled through destinations
  */
 
-import type { MCPClientConfig } from '@mcp-abap-adt/llm-proxy';
-import {
-  type BaseAgent,
-  MCPClientWrapper,
-  SapCoreAIAgent,
-  SapCoreAIProvider,
-} from '@mcp-abap-adt/llm-proxy';
+import type { MCPClientConfig } from '@mcp-abap-adt/llm-agent';
+import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
+// Deep imports for SmartAgent subsystem (not re-exported from main entry)
+import { McpClientAdapter } from '@mcp-abap-adt/llm-agent/dist/smart-agent/adapters/mcp-client-adapter';
+import type { SmartAgentHandle } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
+import { makeLlmFromProvider } from '@mcp-abap-adt/llm-agent/dist/smart-agent/pipeline';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 
-interface AgentInstance {
-  agent: BaseAgent;
-  created: number;
-  expiresAt?: number;
-  destinationName?: string;
-}
-
-const agentCache = new Map<string, AgentInstance>();
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+/** Cached SmartAgent handle (singleton per configuration) */
+let agentHandle: SmartAgentHandle | null = null;
+let agentConfig: AgentConfig | null = null;
 
 /**
- * Build MCP client configuration from agent configuration
- * MCP client connects to MCP proxy, which resolves destination and creates MCP server
+ * Build MCP client configuration from agent configuration.
+ * MCP client connects to MCP proxy, which resolves destination and creates MCP server.
  */
 function buildMCPConfig(config: AgentConfig, req: Request): MCPClientConfig {
   const log = cds.log('agent-manager');
@@ -47,7 +40,6 @@ function buildMCPConfig(config: AgentConfig, req: Request): MCPClientConfig {
   // MCP endpoint - use config or construct from request
   let mcpEndpoint = config.mcp.endpoint;
   if (!mcpEndpoint) {
-    // On BTP, construct URL from request
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host =
       req.headers.host || req.headers['x-forwarded-host'] || 'localhost:4004';
@@ -57,16 +49,12 @@ function buildMCPConfig(config: AgentConfig, req: Request): MCPClientConfig {
   // Extract authentication from request (for MCP proxy authentication)
   const authHeader = (req.headers.authorization as string) || 'Basic YWxpY2U6';
 
-  // Build headers for MCP proxy
-  // MCP proxy will resolve destination and create MCP server with SAP config
   const headers: Record<string, string> = {
     Authorization: authHeader,
-    // Pass destination name to MCP proxy
-    // MCP proxy will resolve this destination and use it for ABAP connection
     'X-SAP-Destination': config.mcp.destination,
   };
 
-  log.debug('Building MCP config from agent configuration', {
+  log.debug('Building MCP config', {
     mcpEndpoint,
     mcpDestination: config.mcp.destination,
   });
@@ -78,258 +66,125 @@ function buildMCPConfig(config: AgentConfig, req: Request): MCPClientConfig {
 }
 
 /**
- * Get cache key for agent instance
- * Since configuration is global (from env vars), we use a single cache key
+ * Get or create SmartAgent handle.
+ *
+ * Lazy-initializes a singleton SmartAgent built via SmartAgentBuilder:
+ * - LLM: sap-ai-sdk pipeline provider (wraps @sap-ai-sdk/orchestration)
+ * - MCP: MCPClientWrapper → McpClientAdapter (connects to /mcp/stream/http)
+ * - RAG: in-memory (no external embedding service)
  */
-function getCacheKey(config: AgentConfig): string {
-  // Cache by MCP destination (since that's what varies per agent instance)
-  return `agent:config:${config.mcp.destination}:${config.llm.model}`;
-}
-
-/**
- * Create LLM provider based on agent configuration
- *
- * IMPORTANT: All LLM providers are accessed through SAP AI Core.
- * - OpenAI models → SAP AI Core → OpenAI
- * - Anthropic models → SAP AI Core → Anthropic
- * - DeepSeek models → SAP AI Core → DeepSeek
- *
- * Architecture:
- * - Configuration comes from environment variables (set via mta.yaml or CF CLI)
- * - SAP AI Core access via service binding (cloud-llm-hub-ai-core from mta.yaml)
- * - Service binding provides credentials (clientid, clientsecret, serviceurls)
- * - All authentication is handled through service binding (OAuth2ClientCredentials)
- * - Model/provider configuration is done in SAP AI Core Launchpad
- *
- * Configuration (from env vars):
- * - LLM_AGENT_MODEL: Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet')
- * - LLM_AGENT_TEMPERATURE: Temperature (default: 0.7)
- * - LLM_AGENT_MAX_TOKENS: Max tokens (default: 2000)
- */
-export async function createLLMProvider(
-  config: AgentConfig,
-): Promise<SapCoreAIProvider> {
+export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
-
-  const aiCoreService = config.llm.aiCoreService;
-  const serviceCredentials = aiCoreService.credentials;
-  const serviceUrl =
-    serviceCredentials?.serviceurls?.AI_API_URL ||
-    serviceCredentials?.url ||
-    'https://api.ai.prod.eu-central-1.aws.ml.hana.ondemand.com';
-
-  log.info('Creating SAP Core AI provider via service binding', {
-    serviceName: aiCoreService.name,
-    serviceUrl: serviceUrl,
-    model: config.llm.model,
-  });
-
-  // Create SAP Core AI provider with HTTP client using service binding
-  // All authentication is handled through service binding (OAuth2ClientCredentials)
-  return new SapCoreAIProvider({
-    destinationName: 'cloud-llm-hub-ai-core', // Fallback name (not used, serviceUrl is used instead)
-    apiKey: '', // Not used for SAP AI Core
-    model: config.llm.model,
-    temperature: config.llm.temperature,
-    maxTokens: config.llm.maxTokens,
-    httpClient: async (httpConfig) => {
-      log.debug('Making request to SAP AI Core via service binding', {
-        serviceUrl: serviceUrl,
-        url: httpConfig.url,
-        method: httpConfig.method,
-      });
-
-      // Use service binding directly - make HTTP request to service URL
-      const axios = await import('axios');
-      const fullUrl = `${serviceUrl}${httpConfig.url}`;
-
-      // Get OAuth2 token from service binding credentials
-      // SAP AI Core uses OAuth2ClientCredentials flow
-      let accessToken: string | undefined;
-      if (serviceCredentials.clientid && serviceCredentials.clientsecret) {
-        try {
-          const tokenUrl =
-            serviceCredentials.tokenurl ||
-            serviceCredentials.url ||
-            'https://acme-subaccount.authentication.eu10.hana.ondemand.com/oauth/token';
-
-          const tokenResponse = await axios.default.post(
-            tokenUrl,
-            new URLSearchParams({
-              grant_type: 'client_credentials',
-              client_id: serviceCredentials.clientid,
-              client_secret: serviceCredentials.clientsecret,
-            }),
-            {
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-            },
-          );
-
-          accessToken = tokenResponse.data.access_token;
-          log.debug('Obtained OAuth2 token from service binding');
-        } catch (tokenError: unknown) {
-          const err =
-            tokenError instanceof Error
-              ? tokenError
-              : new Error(String(tokenError));
-          log.warn('Failed to get OAuth2 token from service binding', {
-            error: err.message,
-          });
-          // Fallback to Basic auth if OAuth2 fails
-        }
-      }
-
-      // Use OAuth2 token if available, otherwise try Basic auth
-      const authHeader = accessToken
-        ? `Bearer ${accessToken}`
-        : serviceCredentials.clientid && serviceCredentials.clientsecret
-          ? `Basic ${Buffer.from(`${serviceCredentials.clientid}:${serviceCredentials.clientsecret}`).toString('base64')}`
-          : undefined;
-
-      if (!authHeader) {
-        throw new Error('No authentication method available for SAP AI Core');
-      }
-
-      const response = await axios.default.request({
-        // biome-ignore lint/suspicious/noExplicitAny: axios method type is not fully compatible with httpConfig.method
-        method: httpConfig.method as any,
-        url: fullUrl,
-        headers: {
-          ...httpConfig.headers,
-          Authorization: authHeader,
-        },
-        data: httpConfig.data,
-      });
-
-      return { data: response.data };
-    },
-    log: log,
-  });
-}
-
-/**
- * Create agent instance based on LLM provider type
- *
- * All agents use SAP Core AI provider, which routes to different LLM providers
- * based on the model name (e.g., 'gpt-4o-mini' → OpenAI, 'claude-3-5-sonnet' → Anthropic)
- */
-async function createAgentForProvider(
-  llmProvider: SapCoreAIProvider,
-  mcpClient: MCPClientWrapper,
-): Promise<BaseAgent> {
-  const log = cds.log('agent-manager');
-
-  // All agents use SAP Core AI provider
-  log.debug('Creating SapCoreAIAgent');
-  return new SapCoreAIAgent({
-    llmProvider,
-    mcpClient,
-  });
-}
-
-/**
- * Get or create agent instance
- * Configuration comes from environment variables (set via mta.yaml or CF CLI)
- * This is the main entry point - agent doesn't know about SAP, only about MCP client
- */
-export async function getAgent(req: Request): Promise<BaseAgent> {
-  const log = cds.log('agent-manager');
-
-  // Load configuration from environment variables
   const config = getAgentConfig();
 
-  // Create LLM provider from configuration
-  const llmProvider = await createLLMProvider(config);
-
-  // Get cache key (based on configuration)
-  const llmProviderType = llmProvider.constructor.name;
-  const cacheKey = `${getCacheKey(config)}:${llmProviderType}`;
-
-  // Check cache
-  const cached = agentCache.get(cacheKey);
-  if (cached) {
-    const now = Date.now();
-    if (!cached.expiresAt || now < cached.expiresAt) {
-      log.debug('Using cached agent instance', { cacheKey });
-      return cached.agent;
-    }
-    // Expired, remove from cache
-    agentCache.delete(cacheKey);
+  // Return cached handle if config hasn't changed
+  if (agentHandle && agentConfig === config) {
+    log.debug('Using cached SmartAgent handle');
+    return agentHandle;
   }
 
-  // Build MCP configuration from agent configuration
-  const mcpConfig = buildMCPConfig(config, req);
+  // Close existing agent if config changed
+  if (agentHandle) {
+    log.info('Config changed, closing existing SmartAgent');
+    await agentHandle.close().catch((err) => {
+      log.warn('Failed to close previous SmartAgent', { error: String(err) });
+    });
+    agentHandle = null;
+  }
 
-  log.info('Creating new agent instance', {
-    cacheKey,
-    mcpEndpoint: mcpConfig.url,
-    mcpDestination: config.mcp.destination,
-    llmProvider: llmProviderType,
+  log.info('Building SmartAgent', {
     model: config.llm.model,
-  });
-
-  // Create MCP client with configuration
-  // Agent doesn't know about SAP - it just works with MCP client
-  const mcpClient = new MCPClientWrapper(mcpConfig);
-
-  // Create agent instance
-  const agent = await createAgentForProvider(llmProvider, mcpClient);
-
-  // Connect agent to MCP
-  // If connection fails, agent will work in LLM-only mode
-  try {
-    await agent.connect();
-    log.debug('Agent connected to MCP successfully');
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    // If error is about missing destination or connection issues, log warning but continue
-    // Agent will work in LLM-only mode (no tools available)
-    if (
-      errorMessage.includes('Bad Gateway') ||
-      errorMessage.includes('destination') ||
-      errorMessage.includes('ECONNREFUSED') ||
-      errorMessage.includes('ENOTFOUND')
-    ) {
-      log.warn('MCP connection failed, agent will work in LLM-only mode', {
-        error: errorMessage,
-        cacheKey,
-        mcpDestination: config.mcp.destination,
-      });
-      // Agent will still work, just without MCP tools
-      // The tools list will be empty, so agent will only use LLM
-    } else {
-      // For other errors, rethrow
-      log.error('MCP connection failed with unexpected error', {
-        error: errorMessage,
-      });
-      throw error;
-    }
-  }
-
-  // Cache instance
-  const expiresAt = Date.now() + CACHE_TTL;
-  agentCache.set(cacheKey, {
-    agent,
-    created: Date.now(),
-    expiresAt,
-    destinationName: config.mcp.destination,
-  });
-
-  log.info('Agent instance created and connected', {
-    cacheKey,
-    agentType: agent.constructor.name,
+    mode: config.agent.mode,
+    maxIterations: config.agent.maxIterations,
+    ragType: config.agent.ragType,
     mcpDestination: config.mcp.destination,
   });
 
-  return agent;
+  // Create main LLM via pipeline factory (uses @sap-ai-sdk/orchestration)
+  const mainLlm = makeLlmFromProvider(
+    {
+      provider: 'sap-ai-sdk',
+      apiKey: 'sap-ai-sdk-managed',
+      model: config.llm.model,
+      temperature: config.llm.temperature,
+      resourceGroup: config.llm.resourceGroup,
+    },
+    config.llm.temperature,
+  );
+
+  // Create classifier LLM (same provider, lower temperature)
+  const classifierLlm = makeLlmFromProvider(
+    {
+      provider: 'sap-ai-sdk',
+      apiKey: 'sap-ai-sdk-managed',
+      model: config.llm.model,
+      resourceGroup: config.llm.resourceGroup,
+    },
+    0.1,
+  );
+
+  // Create MCP client and wrap in adapter
+  const mcpConfig = buildMCPConfig(config, req);
+  const mcpClient = new MCPClientWrapper(mcpConfig);
+  const mcpAdapter = new McpClientAdapter(mcpClient);
+
+  // Build SmartAgent
+  const builder = new SmartAgentBuilder({
+    llm: { apiKey: 'sap-ai-sdk-managed', model: config.llm.model },
+    rag: { type: config.agent.ragType },
+    agent: {
+      maxIterations: config.agent.maxIterations,
+      mode: config.agent.mode,
+    },
+  })
+    .withMainLlm(mainLlm)
+    .withClassifierLlm(classifierLlm)
+    .withMcpClients([mcpAdapter]);
+
+  const handle = await builder.build();
+  agentHandle = handle;
+  agentConfig = config;
+
+  // Run health check in background
+  handle.agent
+    .healthCheck()
+    .then((res) => {
+      if (res.ok) {
+        const v = res.value;
+        const mcpStatus =
+          v.mcp.length === 0
+            ? 'NONE'
+            : v.mcp.every((m) => m.ok)
+              ? 'OK'
+              : 'PARTIAL/FAIL';
+        log.info('SmartAgent health check', {
+          llm: v.llm ? 'OK' : 'FAIL',
+          rag: v.rag ? 'OK' : 'FAIL',
+          mcp: mcpStatus,
+        });
+      } else {
+        log.warn('SmartAgent health check failed', {
+          error: res.error.message,
+        });
+      }
+    })
+    .catch((e) => {
+      log.warn('SmartAgent health check error', { error: String(e) });
+    });
+
+  log.info('SmartAgent built and ready');
+  return handle;
 }
 
 /**
- * Clear agent cache (useful for testing or when configurations change)
+ * Gracefully close the SmartAgent (call on shutdown)
  */
-export function clearAgentCache(): void {
-  agentCache.clear();
-  cds.log('agent-manager').info('Agent cache cleared');
+export async function closeSmartAgent(): Promise<void> {
+  if (agentHandle) {
+    const log = cds.log('agent-manager');
+    log.info('Closing SmartAgent');
+    await agentHandle.close();
+    agentHandle = null;
+    agentConfig = null;
+  }
 }
