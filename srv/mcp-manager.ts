@@ -108,6 +108,18 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
       });
     }
 
+    // NoAuthentication destinations require explicit credentials via headers
+    if (
+      resolved.authenticationType === 'NoAuthentication' &&
+      !sapLogin &&
+      !sapPassword
+    ) {
+      throw new Error(
+        `Destination "${destinationName}" uses NoAuthentication. ` +
+          'Provide x-sap-login and x-sap-password headers.',
+      );
+    }
+
     if (sapClientHeader) {
       sapConfig.client = sapClientHeader;
     }
