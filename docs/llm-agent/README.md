@@ -307,9 +307,9 @@ Expected result:
 
 - [LLM Proxy Roadmap](ROADMAP.md) - detailed development roadmap
 - [LLM Proxy Task](TASK.md) - task description and acceptance criteria
-- [LLM Proxy Testing Guide](../LLM_PROXY_TESTING.md) - testing guide
-- [LLM Proxy Embedded Usage](../LLM_PROXY_EMBEDDED_USAGE.md) - usage examples
-- [LLM Proxy Config Usage](../LLM_PROXY_CONFIG_USAGE.md) - configuration
+- [LLM Agent Testing Guide](TESTING.md) - testing guide
+- [LLM Agent Embedded Usage](EMBEDDED_USAGE.md) - usage examples
+- [LLM Agent Config Usage](CONFIG_USAGE.md) - configuration
 
 ## ✅ Completion Checklist
 

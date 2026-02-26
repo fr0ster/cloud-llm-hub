@@ -396,9 +396,9 @@ bash test/test-agent.sh
 ## 📚 Additional Resources
 
 - [LLM Proxy Roadmap](ROADMAP.md) - detailed roadmap
-- [LLM Proxy Testing Guide](../LLM_PROXY_TESTING.md) - testing guide
-- [LLM Proxy Embedded Usage](../LLM_PROXY_EMBEDDED_USAGE.md) - usage examples
-- [LLM Proxy Config Usage](../LLM_PROXY_CONFIG_USAGE.md) - configuration
+- [LLM Agent Testing Guide](TESTING.md) - testing guide
+- [LLM Agent Embedded Usage](EMBEDDED_USAGE.md) - usage examples
+- [LLM Agent Config Usage](CONFIG_USAGE.md) - configuration
 
 ## 📞 Questions?
 
