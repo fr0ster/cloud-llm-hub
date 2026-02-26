@@ -1,92 +1,244 @@
-# RAG: Питання до архітектури та реалізації
+# RAG Architecture & Implementation Decisions (PoC)
 
-## 1) Use Case і продуктова поведінка
-- Які саме користувацькі сценарії RAG має покращити в PoC?
-  *Наприклад: "Пошук відповіді по внутрішній технічній документації CAP/BTP для саппорт-інженера".*
-- Що означає "хороша відповідь" для цих сценаріїв (критерії якості)?
-  *Наприклад: "Відповідь містить конкретну інструкцію + посилання на 1-2 джерела, без галюцинацій".*
-- Чи мають джерела повертатися за замовчуванням, чи лише за запитом?
-  *Наприклад: "У PoC джерела завжди повертаються внизу відповіді".*
-- Яка очікувана поведінка, якщо retrieval не повернув релевантних chunk?
-  *Наприклад: "Повертаємо відповідь без RAG-контексту і явно пишемо, що релевантні джерела не знайдено".*
+## 1) Use Case and Product Behavior
 
-## 2) Дані та ingestion
-- Які джерела даних входять у PoC (docs, APIs, files, KB)?
-  *Наприклад: "Confluence space X + markdown з репозиторію + FAQ у JSON".*
-- Хто є owner цих джерел і як часто вони змінюються?
-  *Наприклад: "Owner: команда Platform; оновлення 2-3 рази на тиждень".*
-- Як саме виконуватиметься ingestion і re-index (batch/manual/triggered)?
-  *Наприклад: "Щоденний batch о 02:00 UTC + ручний re-index по кнопці".*
-- Чи потрібні metadata-фільтри (tenant, namespace, тип документа, мова)?
-  *Наприклад: "Фільтруємо за tenant і типом документа (runbook/policy)".*
-- Яка chunking-стратегія очікується як дефолт для PoC corpus?
-  *Наприклад: "Chunk size 800 токенів, overlap 120, розбиття по заголовках".*
+### Primary Goal
 
-## 3) Embeddings і retrieval
-- Яка embedding-модель є primary (`EMBEDDING_MODEL_ID`) і чому?
-  *Наприклад: "`text-embedding-3-large` через кращу якість на технічних запитах".*
-- Чи потрібна backup embedding-модель, і яка стратегія перемикання?
-  *Наприклад: "Так, backup `text-embedding-3-small`; перемикання через env var без зміни коду".*
-- Який стартовий `RAG_TOP_K`, і який максимально дозволений cap?
-  *Наприклад: "Старт `top_k=5`, максимум `top_k=10` для контролю latency".*
-- Яка similarity-метрика підтримується обраним vector store?
-  *Наприклад: "Cosine similarity".*
-- Чи потрібен reranking у PoC, чи достатньо базового top-k retrieval?
-  *Наприклад: "Для PoC без reranking, додамо на наступному етапі за потреби".*
+The RAG implementation is part of an agent-based architecture (`@mcp-abap-adt/llm-agent`) and supports:
 
-## 4) Vector store і BTP CF інфраструктура
-- Чи доступний SAP HANA vector у цільовому landscape вже зараз?
-  *Наприклад: "Так, доступний у subaccount DEV, план `hana-cloud`".*
-- Який конкретний fallback для BTP CF погоджено, якщо HANA vector недоступний?
-  *Наприклад: "PostgreSQL + pgvector як fallback для DEV/PoC".*
-- Який очікуваний розмір індексу, retention-період і прогноз росту?
-  *Наприклад: "Початково 1-2 ГБ, retention 180 днів, ріст ~15%/місяць".*
-- Який service plan/sizing потрібен (CPU, memory, storage)?
-  *Наприклад: "2 vCPU, 8 GB RAM, 50 GB storage для PoC".*
-- Які мережеві/connectivity-обмеження є у CF space/subaccount?
-  *Наприклад: "Лише приватні endpoint, вихід у публічний інтернет через корпоративний proxy".*
+- Support engineer assistance  
+- Deep technical analysis (code, architecture, dependencies)  
+- Experience accumulation and reuse  
+- Multi-step agent workflows  
 
-## 5) Prompting і контракт відповіді
-- Як саме retrieved context має інжектитися в prompt template?
-  *Наприклад: "Окремий блок `Context:` після system prompt, перед user question".*
-- Який max token budget дозволено для retrieved context?
-  *Наприклад: "До 2000 токенів сумарно на всі chunk".*
-- Які поля source metadata обов'язкові у відповіді (`id`, `title`, `uri`, `score`)?
-  *Наприклад: "Обов'язково: `title`, `uri`, `score`; `id` - внутрішній".*
-- Чи дозволено LLM відповідати, якщо впевненість у контексті низька?
-  *Наприклад: "Так, але з дисклеймером і рекомендацією перевірити джерела".*
+RAG is not a standalone QA module, but a capability within a multi-step orchestration pipeline.
 
-## 6) Security і compliance
-- Чи можуть індексовані дані містити sensitive/confidential інформацію?
-  *Наприклад: "Так, але без персональних даних і секретів".*
-- Які правила redaction/sanitization потрібні до indexing і prompting?
-  *Наприклад: "Вирізаємо токени, паролі, API keys регулярками перед індексацією".*
-- Чи є вимоги tenant isolation для vector index і retrieval?
-  *Наприклад: "Так, окремий namespace/index на tenant".*
-- Які audit-вимоги є до retrieved chunk і згенерованої відповіді?
-  *Наприклад: "Логувати query id, ids джерел, timestamp, модель; без зберігання повного тексту".*
+---
 
-## 7) Надійність, fallback та observability
-- Що має відбуватись при timeout/error vector store: fail fast чи LLM-only fallback?
-  *Наприклад: "У PoC - LLM-only fallback + warning у відповіді".*
-- Яка timeout/retry-політика потрібна для embedding і retrieval викликів?
-  *Наприклад: "Timeout 2s retrieval, 5s embedding; 2 retry з exponential backoff".*
-- Які latency-цілі очікуються (retrieval p95, generation p95)?
-  *Наприклад: "retrieval p95 <= 800ms, generation p95 <= 6s".*
-- Які logs/metrics є обов'язковими понад baseline:
-  - retrieval latency
-  - generation latency
-  - retrieved chunk count
-  *Наприклад: "Додатково: error rate, fallback rate, token usage".*
-- Які мінімальні smoke/integration checks потрібні до rollout?
-  *Наприклад: "3 smoke-тести: успішний retrieval, empty retrieval, vector timeout".*
+### What Is Considered a “Good Answer”
 
-## 8) Delivery і ownership
-- Хто затверджує архітектурні рішення та fallback-стратегію?
-  *Наприклад: "Tech Lead + Platform Owner".*
-- Хто є owner ingestion-операцій і index lifecycle після PoC?
-  *Наприклад: "Команда Platform Ops".*
-- Який Definition of Ready для старту реалізації?
-  *Наприклад: "Затверджені рішення по model/vector store, зафіксовані контракти, є test-plan".*
-- Який Definition of Done для завершення PoC?
-  *Наприклад: "RAG працює end-to-end, є метрики, документація запуску, пройдені smoke-тести".*
+A high-quality answer:
+
+- May include concrete actionable instructions  
+- May include references to retrieved sources  
+- Supports normal and debug/audit modes  
+- Avoids unnecessary verbosity in normal mode  
+
+Source visibility is controlled by mode (normal vs debug).
+
+---
+
+### Behavior When Retrieval Returns No Results
+
+If no relevant chunks are retrieved:
+
+- No context is injected  
+- The original query is passed directly to the LLM  
+- No explicit warning in normal mode  
+
+---
+
+## 2) Data and Ingestion
+
+### Multi-RAG Architecture
+
+- Multiple independent RAG instances  
+- Some RAGs reside in customer networks  
+- Some RAGs reside in our environment  
+- A single user request may query multiple RAGs  
+- Aggregation is allowed if user roles permit access  
+
+---
+
+### Memory Architecture
+
+Memory is implemented as a dedicated RAG:
+
+- Session memory  
+- Long-term user memory  
+- Per-user isolation  
+- Optional per-session isolation  
+- Custom interface (in-memory or external backend)  
+
+Memory can be injected:
+
+- Via prompt  
+- Via retrieval  
+- Or in hybrid mode  
+
+---
+
+### Ingestion Strategy
+
+- Defined per RAG  
+- Chunking policy is adaptive  
+- Strategy depends on data type (code, documentation, incidents, memory, etc.)  
+
+---
+
+### Chunking Policy
+
+- No global default  
+- Per-RAG configurable policy  
+- Adaptive to data type  
+- Fully configurable  
+
+---
+
+## 3) Embeddings and Retrieval
+
+### LLM and Embeddings
+
+- Default provider: SAP AI Core  
+- Pluggable provider support per tenant / per RAG  
+- Fully abstracted via interface  
+
+---
+
+### Retrieval Parameters
+
+- `top_k` is configurable per RAG  
+- Hard upper cap enforced  
+- Confidence threshold is configurable  
+- Chunks below threshold are excluded  
+
+---
+
+### Reranking
+
+- Optional mode  
+- Not automatically delegated to agent reasoning  
+- Can be enabled for high-precision scenarios  
+
+---
+
+### Token Budget
+
+- Controlled by the pipeline  
+- Policy-driven  
+- Adaptive to model and scenario  
+
+---
+
+## 4) Vector Store and Infrastructure
+
+### Vector Store Design
+
+- Fully pluggable via interface  
+- Implementation depends on environment  
+
+Possible deployments:
+
+- Same BTP subaccount  
+- Customer network deployment  
+- Access via BTP Destination  
+- Separate client ID / secret per customer  
+
+---
+
+### Security Model
+
+- Standard BTP role-based authorization  
+- Roles determine accessible MCP tools and RAG instances  
+- Aggregation allowed only if roles permit  
+
+---
+
+### Isolation
+
+- Physical isolation (separate infrastructure) possible  
+- Logical isolation (namespace / metadata) possible  
+- Depends on tenant requirements  
+
+---
+
+## 5) Prompting and Response Contract
+
+### Context Injection
+
+- Managed by pipeline  
+- Not hardcoded inside RAG  
+- Context block may be empty  
+
+---
+
+### Source Metadata (Debug Mode)
+
+Logged in debug/audit mode:
+
+- Chunk IDs  
+- Similarity scores  
+- RAG ID  
+- Routing decision  
+
+Normal mode suppresses technical noise.
+
+---
+
+## 6) Security and Compliance
+
+- Full audit trail  
+- Role-based access control  
+- Customer RAG accessed via secure Destination  
+- Pluggable embedding and LLM providers  
+
+---
+
+## 7) Reliability and Observability
+
+### Fallback Strategy
+
+Defined per RAG type:
+
+- Memory RAG may fallback differently  
+- Customer RAG may enforce strict failure  
+- Technical RAG may fallback to LLM-only  
+
+---
+
+### Mandatory Logging
+
+- Query ID  
+- User ID  
+- Used RAG instances  
+- Retrieved chunk IDs  
+- Similarity scores  
+- Routing decision  
+- LLM model ID  
+- Token usage  
+- Retrieval latency  
+- Generation latency  
+
+---
+
+## 8) Index Lifecycle
+
+- Index versioning supported  
+- No parallel index versions  
+- No ingestion rollback  
+
+---
+
+## Definition of Done (PoC)
+
+PoC is considered complete when:
+
+- End-to-end multi-RAG pipeline works  
+- Retrieval quality metrics are available  
+- Latency metrics are available  
+- Smoke/integration tests exist  
+- Deployment documentation exists  
+- Demo scenario is prepared  
+
+---
+
+## Architectural Characteristics
+
+- Agent-first RAG architecture  
+- Multi-RAG orchestration  
+- Pluggable vector store  
+- Pluggable LLM provider  
+- Policy-driven pipeline  
+- Role-based access control  
+- Enterprise-grade observability  
+- Memory-aware design  
