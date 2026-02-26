@@ -68,7 +68,7 @@ bash test/test-agent.sh
    - Project structure
    - Debugging
 
-4. **[LLM_PROXY_TESTING.md](../LLM_PROXY_TESTING.md)** - Testing guide
+4. **[TESTING.md](TESTING.md)** - Testing guide
    - How to test
    - Request examples
    - Troubleshooting

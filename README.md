@@ -160,7 +160,7 @@ For contributors and developers:
 - **[🐛 Debugging](docs/development/DEBUGGING.md)** - Debugging techniques
 - **[🔍 Debug Cline Requests](docs/development/DEBUG_CLINE_REQUESTS.md)** - Cline integration debugging
 - **[🧪 Testing Cheat Sheet](docs/development/TESTING_CHEAT_SHEET.md)** - Testing workflows
-- **[🔑 JWT Token Refresh](docs/development/JWT_TOKEN_REFRESH_GUIDE.md)** - Token management
+- **[🔑 JWT Token Refresh](docs/archive/JWT_TOKEN_REFRESH_GUIDE.md)** - Token management (deprecated)
 
 ### 🚀 Deployment
 
