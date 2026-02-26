@@ -83,8 +83,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
       headers['X-SAP-Client'] = this.config.client;
     }
 
-    // Note: executeHttpRequest handles authentication automatically via destination
-    // We only need to add SAP-specific headers here
+    // Add Basic auth header when credentials are provided via x-sap-login/x-sap-password override
+    // This takes precedence over destination-configured authentication
+    if (this.config.username && this.config.password) {
+      const credentials = Buffer.from(
+        `${this.config.username}:${this.config.password}`,
+      ).toString('base64');
+      headers.Authorization = `Basic ${credentials}`;
+    }
 
     return headers;
   }

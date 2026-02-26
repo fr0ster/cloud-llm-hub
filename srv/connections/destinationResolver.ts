@@ -173,6 +173,9 @@ async function buildSapConfigFromDestination(
     case 'OAuth2SAMLBearerAssertion':
       authType = 'jwt';
       break;
+    case 'NoAuthentication':
+      authType = 'basic'; // will be populated by x-sap-login/x-sap-password headers
+      break;
     default:
       throw new Error(
         `Destination "${destinationName}" uses unsupported authentication type "${authentication}".`,

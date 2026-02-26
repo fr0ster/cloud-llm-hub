@@ -195,18 +195,39 @@ EOF
 
 **Description:** Use SAP BTP Destination service for connection configuration.
 
+**Supported Authentication Types:**
+
+- `BasicAuthentication` — destination stores credentials
+- `OAuth2ClientCredentials` — automatic token management via BTP
+- `OAuth2SAMLBearerAssertion` — Principal Propagation with user context
+- `NoAuthentication` — destination has no credentials; caller must provide `X-SAP-Login` and `X-SAP-Password` headers
+
 **Benefits:**
 
 - Centralized configuration
 - Automatic authentication handling
 - Cloud Connector support
-- No credentials in requests
+- No credentials in requests (except `NoAuthentication`)
 
-**Example:**
+**Credential Override:** For any destination type, you can override authentication by providing `X-SAP-Login` and `X-SAP-Password` headers. This is useful for testing or when destination-configured credentials need to be replaced.
+
+**Example (standard destination):**
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
      -H "X-SAP-Destination: SAP_PROD_DEST" \
+     https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http
+```
+
+**Example (NoAuthentication destination with credential headers):**
+
+```bash
+curl -X POST \
+     -H "Authorization: Bearer <token>" \
+     -H "X-SAP-Destination: SAP_NO_AUTH_DEST" \
+     -H "X-SAP-Login: MY_USER" \
+     -H "X-SAP-Password: MY_PASS" \
+     -H "Content-Type: application/x-ndjson" \
      https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http
 ```
 
