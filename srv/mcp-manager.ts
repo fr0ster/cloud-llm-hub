@@ -32,6 +32,49 @@ interface SapContext {
   destination?: DestinationResolution;
 }
 
+/**
+ * Resolve MCP exposition groups based on user roles.
+ *
+ * Role hierarchy (each higher role includes all lower):
+ * - MCP_Reader:    readonly + search
+ * - MCP_Analyst:   + system
+ * - MCP_Developer: + high (per-object granular CRUD)
+ * - MCP_Full:      + compact (unified CRUD router, both sets available)
+ */
+type ExpositionLevel =
+  | 'readonly'
+  | 'search'
+  | 'system'
+  | 'compact'
+  | 'high'
+  | 'low';
+
+function resolveExposition(userRoles: string[]): ExpositionLevel[] {
+  const roles = new Set(userRoles);
+
+  // Base: readonly + search for any authenticated user with MCP_Reader
+  if (!roles.has('MCP_Reader')) {
+    return [];
+  }
+
+  const exposition: ExpositionLevel[] = ['readonly', 'search'];
+
+  if (roles.has('MCP_Analyst')) {
+    exposition.push('system');
+  }
+
+  if (roles.has('MCP_Developer')) {
+    exposition.push('high');
+  }
+
+  // MCP_Full adds compact on top of high — both sets available
+  if (roles.has('MCP_Full')) {
+    exposition.push('compact');
+  }
+
+  return exposition;
+}
+
 function summarizeJwt(token?: string): { preview: string; length: number } {
   if (!token) {
     return { preview: 'none', length: 0 };
@@ -286,12 +329,28 @@ export async function createMCPServerForRequest(
       authType: sapConfig.authType,
     });
 
+    // Resolve exposition based on user roles from CAP auth
+    const reqWithUser = req as Request & {
+      user?: { roles?: string[]; is?: (role: string) => boolean };
+    };
+    const userRoles: string[] = reqWithUser.user?.roles ?? [];
+    const exposition = resolveExposition(userRoles);
+
+    if (exposition.length === 0) {
+      throw new Error('Access denied: user has no MCP roles assigned');
+    }
+
+    log.info('Resolved MCP exposition for user roles', {
+      roles: userRoles,
+      exposition,
+    });
+
     // Create NEW EmbeddableMcpServer with injected connection
     // EmbeddableMcpServer handles proper handler registration via BaseMcpServer
     const mcpServer = new EmbeddableMcpServer({
       connection,
       logger: loggerAdapter,
-      exposition: ['readonly', 'high', 'system', 'search', 'compact'],
+      exposition,
     });
 
     // Create NEW transport for this request
