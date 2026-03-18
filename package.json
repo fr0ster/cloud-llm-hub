@@ -3,16 +3,16 @@
   "version": "2.0.0",
   "description": "A simple CAP project.",
   "dependencies": {
-    "@mcp-abap-adt/adt-clients": "^1.0.0",
+    "@mcp-abap-adt/adt-clients": "^3.10.2",
     "@mcp-abap-adt/auth-broker": "^1.0.5",
-    "@mcp-abap-adt/connection": "^1.1.0",
-    "@mcp-abap-adt/core": "^2.5.2",
+    "@mcp-abap-adt/connection": "^1.5.0",
+    "@mcp-abap-adt/core": "^4.2.1",
     "@mcp-abap-adt/header-validator": "^0.1.8",
-    "@mcp-abap-adt/interfaces": "^2.6.0",
+    "@mcp-abap-adt/interfaces": "^3.1.0",
     "@mcp-abap-adt/llm-agent": "^2.1.1",
     "@mcp-abap-adt/logger": "^0.1.4",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@sap-cloud-sdk/connectivity": "^4.4.0",
+    "@sap-cloud-sdk/connectivity": "^4",
     "@sap-cloud-sdk/http-client": "^4.4.0",
     "@sap/cds": "^9.7.1",
     "@sap/xsenv": "^6.1.0",
@@ -46,6 +46,7 @@
     "test:unit": "jest",
     "test:unit:watch": "jest --watch",
     "test:unit:coverage": "jest --coverage",
+    "test:integration": "jest --testMatch='**/test/integration/**/*.test.ts'",
     "test:check": "npx tsc --noEmit",
     "lint": "npx biome check --write --config-path . srv tools test",
     "lint:check": "npx biome check --config-path . srv tools test",
@@ -65,7 +66,7 @@
   "license": "MIT",
   "private": true,
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=20.0.0",
     "npm": ">=10"
   },
   "cds": {
@@ -87,13 +88,28 @@
           "users": {
             "alice": {
               "roles": [
-                "MCP_Connector",
-                "MCP_Admin"
+                "MCP_Full",
+                "MCP_Developer",
+                "MCP_Analyst",
+                "MCP_Reader"
               ]
             },
             "bob": {
               "roles": [
-                "MCP_Connector"
+                "MCP_Developer",
+                "MCP_Analyst",
+                "MCP_Reader"
+              ]
+            },
+            "carol": {
+              "roles": [
+                "MCP_Analyst",
+                "MCP_Reader"
+              ]
+            },
+            "dave": {
+              "roles": [
+                "MCP_Reader"
               ]
             }
           }
