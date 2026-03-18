@@ -3,72 +3,85 @@
   "tenant-mode": "shared",
   "scopes": [
     {
-      "name": "$XSAPPNAME.proxyAccess",
-      "description": "Access to MCP proxy endpoints exposed by the hub."
+      "name": "$XSAPPNAME.MCP_Reader",
+      "description": "Read-only access to ABAP objects and search"
     },
     {
-      "name": "$XSAPPNAME.MCP_Connect",
-      "description": "Connect to MCP stream endpoints"
+      "name": "$XSAPPNAME.MCP_Analyst",
+      "description": "Read access plus system analysis tools (SQL, AST, profiling, dumps)"
     },
     {
-      "name": "$XSAPPNAME.MCP_Read",
-      "description": "Read MCP stream data"
+      "name": "$XSAPPNAME.MCP_Developer",
+      "description": "CRUD operations via compact handlers plus read and system tools"
     },
     {
-      "name": "$XSAPPNAME.MCP_Admin",
-      "description": "Admin operations on MCP proxy"
-    },
-    {
-      "name": "$XSAPPNAME.MCP_Connector",
-      "description": "MCP_Connector"
+      "name": "$XSAPPNAME.MCP_Full",
+      "description": "Full access with per-object granular CRUD handlers"
     }
   ],
   "role-templates": [
     {
-      "name": "CloudLLMHubProxy",
-      "description": "Grants access to MCP proxy features.",
+      "name": "MCP_Reader",
+      "description": "Read-only MCP access - browse and search ABAP objects",
       "scope-references": [
-        "$XSAPPNAME.proxyAccess"
+        "$XSAPPNAME.MCP_Reader"
       ]
     },
     {
-      "name": "MCP_Connector",
-      "description": "Basic MCP access - connect and read streams",
+      "name": "MCP_Analyst",
+      "description": "MCP analyst - read plus system analysis (SQL, AST, where-used, profiling)",
       "scope-references": [
-        "$XSAPPNAME.MCP_Connect",
-        "$XSAPPNAME.MCP_Read"
+        "$XSAPPNAME.MCP_Reader",
+        "$XSAPPNAME.MCP_Analyst"
       ]
     },
     {
-      "name": "MCP_Admin",
-      "description": "Full administrative access to MCP proxy",
+      "name": "MCP_Developer",
+      "description": "MCP developer - compact CRUD, read, search, system tools",
       "scope-references": [
-        "$XSAPPNAME.MCP_Admin",
-        "$XSAPPNAME.MCP_Connect",
-        "$XSAPPNAME.MCP_Read"
+        "$XSAPPNAME.MCP_Reader",
+        "$XSAPPNAME.MCP_Analyst",
+        "$XSAPPNAME.MCP_Developer"
+      ]
+    },
+    {
+      "name": "MCP_Full",
+      "description": "Full MCP access - all tool groups including per-object CRUD",
+      "scope-references": [
+        "$XSAPPNAME.MCP_Reader",
+        "$XSAPPNAME.MCP_Analyst",
+        "$XSAPPNAME.MCP_Developer",
+        "$XSAPPNAME.MCP_Full"
       ]
     }
   ],
   "role-collections": [
     {
-      "name": "Cloud LLM Hub Proxy Access",
-      "description": "Assign to users or service keys that may call the MCP proxy.",
+      "name": "MCP Reader Access",
+      "description": "Read-only access to ABAP objects via MCP.",
       "role-template-references": [
-        "$XSAPPNAME.CloudLLMHubProxy"
+        "$XSAPPNAME.MCP_Reader"
       ]
     },
     {
-      "name": "MCP Connector Access",
-      "description": "Basic MCP stream access for users and service keys.",
+      "name": "MCP Analyst Access",
+      "description": "Read and analyze ABAP objects via MCP.",
       "role-template-references": [
-        "$XSAPPNAME.MCP_Connector"
+        "$XSAPPNAME.MCP_Analyst"
       ]
     },
     {
-      "name": "MCP Admin Access",
-      "description": "Full MCP proxy administrative access.",
+      "name": "MCP Developer Access",
+      "description": "Develop ABAP objects via MCP with compact CRUD.",
       "role-template-references": [
-        "$XSAPPNAME.MCP_Admin"
+        "$XSAPPNAME.MCP_Developer"
+      ]
+    },
+    {
+      "name": "MCP Full Access",
+      "description": "Full MCP access with all tool groups.",
+      "role-template-references": [
+        "$XSAPPNAME.MCP_Full"
       ]
     }
   ],
