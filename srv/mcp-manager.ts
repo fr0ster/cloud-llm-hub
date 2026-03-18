@@ -24,6 +24,7 @@ import {
   resolveDestinationSapConfig,
 } from './connections/destinationResolver';
 import { logErrorSafely } from './lib/errorUtils';
+import { resolveExposition } from './lib/exposition';
 import { loggerAdapter } from './lib/logger';
 
 interface SapContext {
@@ -286,12 +287,40 @@ export async function createMCPServerForRequest(
       authType: sapConfig.authType,
     });
 
+    // Resolve exposition based on user roles from CAP auth
+    // CAP user has is() method for role checks; roles array may not be populated
+    const reqWithUser = req as Request & {
+      user?: { id?: string; roles?: string[]; is?: (role: string) => boolean };
+    };
+    const allMcpRoles = [
+      'MCP_Reader',
+      'MCP_Analyst',
+      'MCP_Developer',
+      'MCP_Full',
+    ];
+    const userRoles: string[] = allMcpRoles.filter(
+      (role) =>
+        reqWithUser.user?.is?.(role) ??
+        reqWithUser.user?.roles?.includes(role) ??
+        false,
+    );
+    const exposition = resolveExposition(userRoles);
+
+    if (exposition.length === 0) {
+      throw new Error('Access denied: user has no MCP roles assigned');
+    }
+
+    log.info('Resolved MCP exposition for user roles', {
+      roles: userRoles,
+      exposition,
+    });
+
     // Create NEW EmbeddableMcpServer with injected connection
     // EmbeddableMcpServer handles proper handler registration via BaseMcpServer
     const mcpServer = new EmbeddableMcpServer({
       connection,
       logger: loggerAdapter,
-      exposition: ['readonly', 'high', 'system', 'search'],
+      exposition,
     });
 
     // Create NEW transport for this request
