@@ -24,55 +24,13 @@ import {
   resolveDestinationSapConfig,
 } from './connections/destinationResolver';
 import { logErrorSafely } from './lib/errorUtils';
+import { resolveExposition } from './lib/exposition';
 import { loggerAdapter } from './lib/logger';
 
 interface SapContext {
   sapConfig: SapConfig;
   source: 'headers' | 'destination';
   destination?: DestinationResolution;
-}
-
-/**
- * Resolve MCP exposition groups based on user roles.
- *
- * Role hierarchy (each higher role includes all lower):
- * - MCP_Reader:    readonly + search
- * - MCP_Analyst:   + system
- * - MCP_Developer: + high (per-object granular CRUD)
- * - MCP_Full:      + compact (unified CRUD router, both sets available)
- */
-type ExpositionLevel =
-  | 'readonly'
-  | 'search'
-  | 'system'
-  | 'compact'
-  | 'high'
-  | 'low';
-
-function resolveExposition(userRoles: string[]): ExpositionLevel[] {
-  const roles = new Set(userRoles);
-
-  // Base: readonly + search for any authenticated user with MCP_Reader
-  if (!roles.has('MCP_Reader')) {
-    return [];
-  }
-
-  const exposition: ExpositionLevel[] = ['readonly', 'search'];
-
-  if (roles.has('MCP_Analyst')) {
-    exposition.push('system');
-  }
-
-  if (roles.has('MCP_Developer')) {
-    exposition.push('high');
-  }
-
-  // MCP_Full adds compact on top of high — both sets available
-  if (roles.has('MCP_Full')) {
-    exposition.push('compact');
-  }
-
-  return exposition;
 }
 
 function summarizeJwt(token?: string): { preview: string; length: number } {
@@ -330,10 +288,22 @@ export async function createMCPServerForRequest(
     });
 
     // Resolve exposition based on user roles from CAP auth
+    // CAP user has is() method for role checks; roles array may not be populated
     const reqWithUser = req as Request & {
-      user?: { roles?: string[]; is?: (role: string) => boolean };
+      user?: { id?: string; roles?: string[]; is?: (role: string) => boolean };
     };
-    const userRoles: string[] = reqWithUser.user?.roles ?? [];
+    const allMcpRoles = [
+      'MCP_Reader',
+      'MCP_Analyst',
+      'MCP_Developer',
+      'MCP_Full',
+    ];
+    const userRoles: string[] = allMcpRoles.filter(
+      (role) =>
+        reqWithUser.user?.is?.(role) ??
+        reqWithUser.user?.roles?.includes(role) ??
+        false,
+    );
     const exposition = resolveExposition(userRoles);
 
     if (exposition.length === 0) {

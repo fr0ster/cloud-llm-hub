@@ -193,30 +193,28 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
 // It uses executeHttpRequest from SAP Cloud SDK for automatic destination handling
 
 /**
- * Register middleware for /mcp routes
- * All authentication/authorization is handled via CAP AuthService.CheckAuth
+ * Register middleware and endpoints for /mcp routes.
+ *
+ * Authentication is handled by CAP auth middleware (cds.auth()):
+ * - Development: mocked auth via Basic header (users from package.json cds config)
+ * - Production: XSUAA (JWT) via app router
+ *
+ * Role-based authorization for MCP tools is handled in mcp-manager.ts
+ * by reading req.user roles set by the auth middleware.
  */
 cds.on('bootstrap', (app: Application) => {
   const log = cds.log('mcp-proxy/bootstrap');
-  log.info('Registering /mcp endpoints - authentication via CAP AuthService');
+  log.info('Registering /mcp endpoints');
 
   /**
    * Fix Content-Type and Accept headers for Cline compatibility
-   * StreamableHTTPServerTransport requires:
-   * - Content-Type: application/json (not application/x-ndjson)
-   * - Accept: application/json, text/event-stream (required by transport even with enableJsonResponse: true)
-   * Note: enableJsonResponse: true means we use JSON format, not SSE, but transport still requires both in Accept
    */
   app.use(
     '/mcp/stream/http',
     (req: Request, _res: Response, next: NextFunction) => {
-      // Fix Content-Type: convert application/x-ndjson to application/json
       if (req.headers['content-type'] === 'application/x-ndjson') {
         req.headers['content-type'] = 'application/json';
       }
-
-      // Ensure Accept header includes both required types (transport requirement)
-      // Even with enableJsonResponse: true, transport requires both types in Accept header
       const accept = req.headers.accept || '';
       if (
         !accept.includes('application/json') ||
@@ -224,251 +222,117 @@ cds.on('bootstrap', (app: Application) => {
       ) {
         req.headers.accept = 'application/json, text/event-stream';
       }
-
       next();
     },
   );
 
-  /**
-   * Check authentication via CAP AuthService.CheckAuth
-   * Uses in-process call via cds.connect.to() for proper user propagation
-   * This is faster, network-free, and correctly propagates user/tenant/locale
-   */
-  async function requireAuth(req: Request, res: Response): Promise<boolean> {
-    const debugLog = cds.log('auth-check');
-    try {
-      debugLog.info('🔍 Checking auth via CAP CheckAuth (in-process)', {
-        hasAuthHeader: !!req.headers.authorization,
-        hasUser: !!(req as Request & { user?: { id?: string } }).user,
-        userId: (req as Request & { user?: { id?: string } }).user?.id,
+  // Auth middleware for /mcp routes
+  // Custom Express routes don't go through CAP's middleware chain (context → auth → ctx_model),
+  // so we resolve the user manually using cds.User from the Authorization header.
+  app.use('/mcp', (req: Request, res: Response, next: NextFunction) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Missing Authorization header',
       });
+      return;
+    }
 
-      // Get AuthService (internal CAP service, same process)
-      // cds.connect.to() works for both internal and external services
-      const srv = await cds.connect.to('AuthService');
-      if (!srv) {
-        debugLog.error('❌ AuthService not found');
-        throw new Error('AuthService not available');
+    // Parse Basic auth (mocked dev) or Bearer/JWT (production XSUAA)
+    const basicMatch = authHeader.match(/^Basic\s+(.+)$/i);
+    if (basicMatch) {
+      const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf-8');
+      const [userId] = decoded.split(':');
+      if (!userId) {
+        res
+          .status(401)
+          .json({ error: 'Unauthorized', message: 'Invalid credentials' });
+        return;
       }
 
-      debugLog.info('📡 Calling CheckAuth via in-process (srv.run)', {
-        hasAuthHeader: !!req.headers.authorization,
-      });
+      // Create CAP User from mocked config
+      // biome-ignore lint/suspicious/noExplicitAny: cds.User constructor accepts object with roles
+      const user = new (cds.User as any)({ id: userId });
 
-      // Call CheckAuth function using modern CAP API (srv.run with req)
-      // This automatically picks up the request context (user/tenant/locale)
-      // CAP will authenticate based on req.headers.authorization and set req.user
-      let result: unknown;
-      try {
-        // Call CheckAuth function through service with request context
-        // The request object is passed to propagate user/tenant/locale
-        result = await srv.run('CheckAuth', req);
-      } catch (authError: unknown) {
-        // Handle CAP rejections (401, 403, etc.)
-        const authErr = authError as {
-          code?: number;
-          statusCode?: number;
-          message?: string;
-        };
-        if (authErr.code === 401 || authErr.statusCode === 401) {
-          debugLog.warn('❌ CheckAuth: Unauthorized', {
-            code: authErr.code || authErr.statusCode,
-            message: authErr.message,
-          });
-          if (!res.headersSent) {
-            res.status(401).json({
-              error: 'Unauthorized',
-              message: authErr.message || 'Authentication failed',
-            });
+      // Look up roles from CDS mocked auth config
+      const mockedUsers = cds.env.requires?.auth?.users as
+        | Record<string, { roles?: string[] }>
+        | undefined;
+      const userConfig = mockedUsers?.[userId];
+      if (userConfig?.roles) {
+        // CDS config may store roles as array ["R1","R2"] or object {"R1":1,"R2":1}
+        const roles = userConfig.roles;
+        if (Array.isArray(roles)) {
+          for (const role of roles) {
+            user.roles[role] = true;
           }
-          return false;
+        } else if (typeof roles === 'object') {
+          for (const role of Object.keys(roles)) {
+            user.roles[role] = true;
+          }
         }
-        throw authError;
       }
 
-      // Type guard for CheckAuth result
-      const checkAuthResult = result as {
-        authenticated?: boolean;
-        id?: string;
-        roles?: string[];
-      };
-
-      debugLog.info('✅ CheckAuth succeeded', {
-        authenticated: checkAuthResult?.authenticated,
-        userId: checkAuthResult?.id,
-        roles: checkAuthResult?.roles,
-      });
-
-      // Set req.user from CheckAuth result for subsequent handlers
-      const reqWithUser = req as Request & {
-        user?: { id?: string; roles?: string[]; _is_anonymous?: boolean };
-      };
-      const resultWithUser = checkAuthResult;
-      if (resultWithUser && !reqWithUser.user) {
-        reqWithUser.user = {
-          id: resultWithUser.id,
-          roles: resultWithUser.roles || [],
-          _is_anonymous: false,
-        };
-      }
-
-      return true;
-    } catch (e: unknown) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      const errWithStatus = err as Error & {
-        statusCode?: number;
-        code?: number;
-      };
-      debugLog.error('❌ requireAuth error', {
-        error: err.message,
-        statusCode: errWithStatus?.statusCode,
-        code: errWithStatus?.code,
-        name: err.name,
-        stack: err.stack?.substring(0, 500),
-      });
-
-      const status =
-        errWithStatus?.statusCode || (errWithStatus?.code === 401 ? 401 : 500);
-      if (!res.headersSent) {
-        res.status(status).json({
-          error: status === 401 ? 'Unauthorized' : 'Internal Server Error',
-          message: err.message || 'Authorization failed',
-        });
-      }
-      return false;
-    }
-  }
-
-  const ensureAuth = (
-    handler: (req: Request, res: Response) => Promise<void>,
-  ) => {
-    return async (req: Request, res: Response, next: NextFunction) => {
-      const authLog = cds.log('mcp-proxy/auth-middleware');
-      authLog.info('🔐 ensureAuth middleware called', {
-        path: req.path,
-        method: req.method,
-        hasAuthHeader: !!req.headers.authorization,
-      });
-
-      try {
-        // Check authentication via CAP AuthService.CheckAuth
-        authLog.info('🔄 Calling requireAuth...');
-        const ok = await requireAuth(req, res);
-        if (!ok) {
-          authLog.warn('❌ requireAuth failed', { path: req.path });
-          return;
-        }
-
-        authLog.info('✅ requireAuth succeeded, calling handler', {
-          path: req.path,
-        });
-
-        try {
-          await handler(req, res);
-          authLog.info('✅ Handler completed', { path: req.path });
-        } catch (err: unknown) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          authLog.error('❌ Handler error', {
-            path: req.path,
-            error: error.message,
-            stack: error.stack?.substring(0, 300),
-          });
-          next(error);
-        }
-      } catch (err: unknown) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        authLog.error('❌ ensureAuth middleware error', {
-          path: req.path,
-          error: error.message,
-          stack: error.stack?.substring(0, 300),
-        });
-        next(error);
-      }
-    };
-  };
-
-  // Error handler for /mcp routes
-  app.use((err: unknown, req: Request, _res: Response, next: NextFunction) => {
-    // Only handle errors for /mcp routes
-    if (req.path?.startsWith('/mcp')) {
-      const errorLog = cds.log('mcp-proxy/error-handler');
-      const error = err instanceof Error ? err : new Error(String(err));
-      errorLog.error('Error in /mcp route', {
-        error: error.message,
-        path: req.path,
-        name: error.name,
-      });
+      // Set on both req and cds.context for downstream handlers
+      (req as Request & { user: unknown }).user = user;
     }
 
-    // For non-/mcp routes, pass to next error handler
-    next(err);
+    // For Bearer/JWT — in production, XSUAA/app router sets req.user before reaching here
+    next();
   });
 
-  // Register endpoints - auth is already handled by middleware above
-  // NOTE: /mcp/destination/probe is now a CAP function: GET /mcp/ProbeDestination?destination=NAME
-
-  // Log all requests to /mcp/stream/* for debugging
+  // Request logger for debugging
   app.use(
     '/mcp/stream/*',
     (req: Request, _res: Response, next: NextFunction) => {
       const debugLog = cds.log('mcp-proxy/request-logger');
-      debugLog.info('📥 Request received', {
+      debugLog.info('Request received', {
         method: req.method,
-        path: req.path,
-        url: req.url,
-        originalUrl: req.originalUrl,
-        headers: {
-          'content-type': req.headers['content-type'],
-          accept: req.headers.accept,
-          'mcp-session-id': req.headers['mcp-session-id'],
-          authorization: req.headers.authorization ? 'present' : 'missing',
-        },
+        path: req.originalUrl,
+        userId: (req as Request & { user?: { id?: string } }).user?.id,
+        authorization: req.headers.authorization ? 'present' : 'missing',
       });
       next();
     },
   );
 
-  // StreamableHTTP endpoint: POST only (bidirectional NDJSON streaming)
-  // This is the only transport we support - SSE is not needed
-  app.post('/mcp/stream/http', ensureAuth(handleStreamHTTP));
+  // StreamableHTTP endpoint: POST only
+  app.post('/mcp/stream/http', async (req: Request, res: Response) => {
+    try {
+      await handleStreamHTTP(req, res);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log.error('Handler error', {
+        path: req.path,
+        error: error.message,
+      });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal Server Error' });
+      }
+    }
+  });
 
   // Handle GET requests to /mcp/stream/http (should be POST)
-  app.get(
-    '/mcp/stream/http',
-    ensureAuth(async (req: Request, res: Response) => {
-      const log = cds.log('mcp-proxy/bootstrap');
-      log.warn('GET request to StreamableHTTP endpoint (should be POST)', {
-        path: req.path,
-        url: req.url,
-      });
-      res.status(405).json({
-        error: 'Method Not Allowed',
-        message: 'StreamableHTTP endpoint requires POST method, not GET',
-        supportedMethod: 'POST',
-        endpoint: '/mcp/stream/http',
-      });
-    }),
-  );
+  app.get('/mcp/stream/http', (_req: Request, res: Response) => {
+    res.status(405).json({
+      error: 'Method Not Allowed',
+      message: 'StreamableHTTP endpoint requires POST method, not GET',
+      supportedMethod: 'POST',
+      endpoint: '/mcp/stream/http',
+    });
+  });
 
-  // Handle any requests to /mcp/stream/sse (not supported)
-  app.all(
-    '/mcp/stream/sse',
-    ensureAuth(async (req: Request, res: Response) => {
-      const log = cds.log('mcp-proxy/bootstrap');
-      log.warn('SSE endpoint requested (not supported)', {
-        method: req.method,
-        path: req.path,
-        url: req.url,
-      });
-      res.status(404).json({
-        error: 'SSE endpoint not available',
-        message:
-          'This server only supports StreamableHTTP transport. Use POST /mcp/stream/http instead.',
-        supportedEndpoint: '/mcp/stream/http',
-        method: 'POST',
-      });
-    }),
-  );
+  // Handle requests to /mcp/stream/sse (not supported)
+  app.all('/mcp/stream/sse', (_req: Request, res: Response) => {
+    res.status(404).json({
+      error: 'SSE endpoint not available',
+      message:
+        'This server only supports StreamableHTTP transport. Use POST /mcp/stream/http instead.',
+      supportedEndpoint: '/mcp/stream/http',
+      method: 'POST',
+    });
+  });
 
   log.info('Custom Express endpoints registered', {
     streamHttp: 'POST /mcp/stream/http',
