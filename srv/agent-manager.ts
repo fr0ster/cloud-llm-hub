@@ -22,7 +22,7 @@ import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
 import { McpClientAdapter } from '@mcp-abap-adt/llm-agent/dist/smart-agent/adapters/mcp-client-adapter';
 import type { SmartAgentHandle } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
-import { makeLlmFromProvider } from '@mcp-abap-adt/llm-agent/dist/smart-agent/pipeline';
+import { makeLlm } from '@mcp-abap-adt/llm-agent/dist/smart-agent/providers';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 
@@ -100,8 +100,8 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     mcpDestination: config.mcp.destination,
   });
 
-  // Create main LLM via pipeline factory (uses @sap-ai-sdk/orchestration)
-  const mainLlm = makeLlmFromProvider(
+  // Create main LLM via provider factory (uses @sap-ai-sdk/orchestration)
+  const mainLlm = makeLlm(
     {
       provider: 'sap-ai-sdk',
       apiKey: 'sap-ai-sdk-managed',
@@ -113,7 +113,7 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   );
 
   // Create classifier LLM (same provider, lower temperature)
-  const classifierLlm = makeLlmFromProvider(
+  const classifierLlm = makeLlm(
     {
       provider: 'sap-ai-sdk',
       apiKey: 'sap-ai-sdk-managed',
@@ -130,8 +130,6 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
 
   // Build SmartAgent
   const builder = new SmartAgentBuilder({
-    llm: { apiKey: 'sap-ai-sdk-managed', model: config.llm.model },
-    rag: { type: config.agent.ragType },
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
