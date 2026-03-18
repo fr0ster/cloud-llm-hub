@@ -291,7 +291,7 @@ export async function createMCPServerForRequest(
     const mcpServer = new EmbeddableMcpServer({
       connection,
       logger: loggerAdapter,
-      exposition: ['readonly', 'high', 'system', 'search'],
+      exposition: ['readonly', 'high', 'system', 'search', 'compact'],
     });
 
     // Create NEW transport for this request
