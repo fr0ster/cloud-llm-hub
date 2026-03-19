@@ -14,16 +14,16 @@
  */
 
 import {
-  type MCPClientConfig,
-  type SmartAgentHandle,
   InMemoryRag,
+  type MCPClientConfig,
   MCPClientWrapper,
   McpClientAdapter,
+  makeLlm,
   SessionManager,
   SmartAgentBuilder,
+  type SmartAgentHandle,
   ToolCache,
   VectorRag,
-  makeLlm,
 } from '@mcp-abap-adt/llm-agent';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
