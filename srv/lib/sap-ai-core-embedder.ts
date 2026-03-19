@@ -5,8 +5,7 @@
  * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
  */
 
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent/dist/smart-agent/interfaces/rag';
-import type { CallOptions } from '@mcp-abap-adt/llm-agent/dist/smart-agent/interfaces/types';
+import type { CallOptions, IEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   type EmbeddingModel,
   OrchestrationEmbeddingClient,

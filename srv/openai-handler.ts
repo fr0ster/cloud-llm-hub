@@ -10,9 +10,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { Message } from '@mcp-abap-adt/llm-agent';
-import { normalizeAndValidateExternalTools } from '@mcp-abap-adt/llm-agent/dist/smart-agent/utils/external-tools-normalizer';
-import { toToolCallDelta } from '@mcp-abap-adt/llm-agent/dist/smart-agent/utils/tool-call-deltas';
+import type { LlmTool, Message } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getSmartAgent } from './agent-manager';
@@ -44,6 +42,164 @@ function extractText(c: unknown): string {
     )
     .map((b: { text: string }) => b.text)
     .join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// External tools validation (inlined from llm-agent — not exposed via exports)
+// ---------------------------------------------------------------------------
+
+interface ExternalToolValidationError {
+  code: string;
+  message: string;
+  param: string;
+  toolIndex: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asSchema(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : { type: 'object', properties: {} };
+}
+
+function normalizeExternalTool(
+  raw: unknown,
+  toolIndex: number,
+): { tool: LlmTool | null; error: ExternalToolValidationError | null } {
+  if (!isRecord(raw)) {
+    return {
+      tool: null,
+      error: {
+        code: 'INVALID_TOOL_SCHEMA',
+        message: `tools[${toolIndex}] must be an object`,
+        param: `tools[${toolIndex}]`,
+        toolIndex,
+      },
+    };
+  }
+
+  const name = asString(raw.name);
+  if (name) {
+    if (!isRecord(raw.inputSchema) && raw.inputSchema !== undefined) {
+      return {
+        tool: null,
+        error: {
+          code: 'TOOL_PARAMETERS_INVALID',
+          message: `tools[${toolIndex}].inputSchema must be an object`,
+          param: `tools[${toolIndex}].inputSchema`,
+          toolIndex,
+        },
+      };
+    }
+    return {
+      tool: {
+        name,
+        description: asString(raw.description) ?? '',
+        inputSchema: asSchema(raw.inputSchema),
+      },
+      error: null,
+    };
+  }
+
+  if (!isRecord(raw.function)) {
+    return {
+      tool: null,
+      error: {
+        code: 'UNSUPPORTED_TOOL_FORMAT',
+        message: `tools[${toolIndex}] must contain either name or function.name`,
+        param: `tools[${toolIndex}]`,
+        toolIndex,
+      },
+    };
+  }
+
+  const fn = raw.function as Record<string, unknown>;
+  const functionName = asString(fn.name);
+  if (!functionName) {
+    return {
+      tool: null,
+      error: {
+        code: 'TOOL_NAME_INVALID',
+        message: `tools[${toolIndex}].function.name must be a non-empty string`,
+        param: `tools[${toolIndex}].function.name`,
+        toolIndex,
+      },
+    };
+  }
+
+  if (!isRecord(fn.parameters) && fn.parameters !== undefined) {
+    return {
+      tool: null,
+      error: {
+        code: 'TOOL_PARAMETERS_INVALID',
+        message: `tools[${toolIndex}].function.parameters must be an object`,
+        param: `tools[${toolIndex}].function.parameters`,
+        toolIndex,
+      },
+    };
+  }
+
+  return {
+    tool: {
+      name: functionName,
+      description: asString(fn.description) ?? '',
+      inputSchema: asSchema(fn.parameters),
+    },
+    error: null,
+  };
+}
+
+function normalizeAndValidateExternalTools(rawTools?: unknown[]): {
+  tools: LlmTool[];
+  errors: ExternalToolValidationError[];
+} {
+  if (!Array.isArray(rawTools) || rawTools.length === 0) {
+    return { tools: [], errors: [] };
+  }
+  const tools: LlmTool[] = [];
+  const errors: ExternalToolValidationError[] = [];
+  for (const [index, rawTool] of rawTools.entries()) {
+    const { tool, error } = normalizeExternalTool(rawTool, index);
+    if (tool) tools.push(tool);
+    if (error) errors.push(error);
+  }
+  return { tools, errors };
+}
+
+// ---------------------------------------------------------------------------
+// Tool call delta helper (inlined from llm-agent — not exposed via exports)
+// ---------------------------------------------------------------------------
+
+interface ToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  arguments?: string;
+}
+
+function toToolCallDelta(
+  call: { id: string; name: string; arguments: Record<string, unknown> } | { index: number; id?: string; name?: string; arguments?: string },
+  fallbackIndex: number,
+): ToolCallDelta {
+  if (!('index' in call)) {
+    return {
+      index: fallbackIndex,
+      id: call.id,
+      name: call.name,
+      arguments: JSON.stringify(call.arguments),
+    };
+  }
+  return {
+    index: call.index,
+    id: call.id,
+    name: call.name,
+    arguments: call.arguments,
+  };
 }
 
 // ---------------------------------------------------------------------------
