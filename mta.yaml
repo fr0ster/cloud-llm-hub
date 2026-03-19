@@ -4,7 +4,7 @@ version: 2.0.0
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
-  # LLM Agent deployment parameters (provided via .mtaext)
+  # LLM Agent deployment parameters (values provided via .mtaext)
   LLM_AGENT_MODEL:
   LLM_AGENT_TEMPERATURE:
   LLM_AGENT_MAX_TOKENS:
@@ -13,6 +13,7 @@ parameters:
   LLM_AGENT_MAX_ITERATIONS:
   LLM_AGENT_RAG_TYPE:
   LLM_AGENT_RESOURCE_GROUP:
+  LLM_AGENT_EMBEDDING_MODEL:
 build-parameters:
   before-all:
     - builder: custom
@@ -69,6 +70,8 @@ modules:
         LLM_AGENT_RAG_TYPE: <LLM_AGENT_RAG_TYPE>
         # SAP AI Core resource group (optional)
         LLM_AGENT_RESOURCE_GROUP: <LLM_AGENT_RESOURCE_GROUP>
+        # Embedding model for RAG semantic search
+        LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
     build-parameters:
       builder: custom
       commands:

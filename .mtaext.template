@@ -16,21 +16,20 @@ ID: cloud-llm-hub-deploy
 extends: cloud-llm-hub
 version: 1.0.0
 
-# Global parameters - override values from mta.yaml
 parameters:
   # LLM Model Configuration
   # Model name determines which provider SAP AI Core routes to:
-  # - 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo' → OpenAI
-  # - 'claude-3-5-sonnet', 'claude-3-opus' → Anthropic
+  # - 'anthropic--claude-4.6-sonnet' → Anthropic Claude
+  # - 'gpt-4o-mini', 'gpt-4o' → OpenAI
   # - 'deepseek-chat' → DeepSeek
   LLM_AGENT_MODEL: YOUR_LLM_MODEL_NAME
-  
+
   # LLM Parameters
   LLM_AGENT_TEMPERATURE: "0.7"
   LLM_AGENT_MAX_TOKENS: "2000"
-  
+
   # MCP Configuration
-  # Destination name configured in BTP Cockpit
+  # Destination name configured in BTP Cockpit (points to ABAP system)
   LLM_AGENT_MCP_DESTINATION: YOUR_MCP_DESTINATION_NAME
 
   # SmartAgent Configuration
@@ -38,10 +37,13 @@ parameters:
   LLM_AGENT_MODE: "smart"
   # Max tool loop iterations
   LLM_AGENT_MAX_ITERATIONS: "10"
-  # RAG backend: 'in-memory' or 'ollama'
+  # RAG backend: 'in-memory'
   LLM_AGENT_RAG_TYPE: "in-memory"
-  # SAP AI Core resource group (optional, leave empty if not needed)
+  # SAP AI Core resource group (optional)
   # LLM_AGENT_RESOURCE_GROUP: "default"
+
+  # Embedding model for RAG semantic search
+  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
 
   # Optional: MCP Proxy endpoint (auto-detected if not set)
   # LLM_AGENT_MCP_ENDPOINT: "https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http"

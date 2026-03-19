@@ -5,26 +5,29 @@
  * Configuration comes from environment variables (set via mta.yaml or CF CLI).
  *
  * Architecture:
- * - SmartAgentBuilder wires together: LLM (sap-ai-sdk pipeline), MCP (McpClientAdapter), RAG (in-memory)
- * - LLM: Uses @sap-ai-sdk/orchestration via pipeline provider 'sap-ai-sdk'
- * - MCP: MCPClientWrapper → McpClientAdapter → connects to /mcp/stream/http (self-loop)
- * - RAG: InMemoryRag (no external embedding service needed)
- *
- * Configuration:
- * - LLM settings (model, temperature, maxTokens) from env vars
- * - SAP AI Core credentials from AICORE_SERVICE_KEY or VCAP_SERVICES (read by SDK)
- * - MCP destination from env vars
+ * - SmartAgentBuilder wires together: LLM, MCP, RAG, resilience, caching
+ * - LLM: SAP AI Core via sap-ai-sdk provider
+ * - MCP: MCPClientWrapper → McpClientAdapter → /mcp/stream/http
+ * - RAG: VectorRag (in-memory hybrid vector + keyword) with SAP AI Core embeddings
+ * - Resilience: CircuitBreaker for LLM/embedder failures
+ * - Caching: ToolCache for deduplication, SessionManager for token budget
  */
 
 import type { MCPClientConfig } from '@mcp-abap-adt/llm-agent';
-import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
-// Deep imports for SmartAgent subsystem (not re-exported from main entry)
+import {
+  InMemoryRag,
+  MCPClientWrapper,
+  SessionManager,
+  ToolCache,
+  VectorRag,
+} from '@mcp-abap-adt/llm-agent';
 import { McpClientAdapter } from '@mcp-abap-adt/llm-agent/dist/smart-agent/adapters/mcp-client-adapter';
 import type { SmartAgentHandle } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
 import { makeLlm } from '@mcp-abap-adt/llm-agent/dist/smart-agent/providers';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
+import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 
 /** Cached SmartAgent handle (singleton per configuration) */
 let agentHandle: SmartAgentHandle | null = null;
@@ -69,9 +72,10 @@ function buildMCPConfig(config: AgentConfig, req: Request): MCPClientConfig {
  * Get or create SmartAgent handle.
  *
  * Lazy-initializes a singleton SmartAgent built via SmartAgentBuilder:
- * - LLM: sap-ai-sdk pipeline provider (wraps @sap-ai-sdk/orchestration)
+ * - LLM: sap-ai-sdk provider (wraps @sap-ai-sdk/orchestration)
  * - MCP: MCPClientWrapper → McpClientAdapter (connects to /mcp/stream/http)
- * - RAG: in-memory (no external embedding service)
+ * - RAG: VectorRag with SAP AI Core embeddings (hybrid vector + keyword)
+ * - Resilience: CircuitBreaker, ToolCache, SessionManager
  */
 export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
@@ -92,11 +96,15 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     agentHandle = null;
   }
 
+  // Embedding model for RAG semantic search
+  const embeddingModel =
+    process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
+
   log.info('Building SmartAgent', {
     model: config.llm.model,
+    embeddingModel,
     mode: config.agent.mode,
     maxIterations: config.agent.maxIterations,
-    ragType: config.agent.ragType,
     mcpDestination: config.mcp.destination,
   });
 
@@ -128,6 +136,18 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const mcpClient = new MCPClientWrapper(mcpConfig);
   const mcpAdapter = new McpClientAdapter(mcpClient);
 
+  // Create embedder for RAG semantic search via SAP AI Core
+  const embedder = new SapAiCoreEmbedder({
+    model: embeddingModel,
+    resourceGroup: config.llm.resourceGroup,
+  });
+
+  // VectorRag: in-memory hybrid search (semantic + keyword)
+  const vectorRag = new VectorRag(embedder, {
+    vectorWeight: 0.7,
+    keywordWeight: 0.3,
+  });
+
   // Build SmartAgent
   const builder = new SmartAgentBuilder({
     agent: {
@@ -137,7 +157,21 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   })
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
-    .withMcpClients([mcpAdapter]);
+    .withMcpClients([mcpAdapter])
+    // RAG: semantic search via SAP AI Core embeddings
+    .withRag({
+      facts: vectorRag,
+      feedback: vectorRag,
+      state: new InMemoryRag(),
+    })
+    // Resilience: auto-recovery on SAP AI Core outages
+    .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
+    // Caching: avoid duplicate tool calls
+    .withToolCache(new ToolCache())
+    // Session: token budget control
+    .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
+    // History: compress long conversations
+    .withHistorySummarization(20);
 
   const handle = await builder.build();
   agentHandle = handle;
