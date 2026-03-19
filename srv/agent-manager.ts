@@ -5,16 +5,24 @@
  * Configuration comes from environment variables (set via mta.yaml or CF CLI).
  *
  * Architecture:
- * - SmartAgentBuilder wires together: LLM, MCP, RAG, resilience, caching
+ * - SmartAgentBuilder wires together: LLM, MCP, RAG, resilience, caching, metrics
  * - LLM: SAP AI Core via sap-ai-sdk provider
  * - MCP: MCPClientWrapper → McpClientAdapter → /mcp/stream/http
- * - RAG: VectorRag (in-memory hybrid vector + keyword) with SAP AI Core embeddings
- * - Resilience: CircuitBreaker for LLM/embedder failures
+ * - RAG: FallbackRag(VectorRag → InMemoryRag) with CircuitBreakerEmbedder
+ * - RAG quality: LlmQueryExpander (synonym expansion) + LlmReranker (semantic re-scoring)
+ * - Resilience: CircuitBreaker for LLM + embedder failures
  * - Caching: ToolCache for deduplication, SessionManager for token budget
+ * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
  */
 
 import {
+  CircuitBreaker,
+  CircuitBreakerEmbedder,
+  FallbackRag,
+  InMemoryMetrics,
   InMemoryRag,
+  LlmQueryExpander,
+  LlmReranker,
   type MCPClientConfig,
   MCPClientWrapper,
   McpClientAdapter,
@@ -32,6 +40,14 @@ import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 /** Cached SmartAgent handle (singleton per configuration) */
 let agentHandle: SmartAgentHandle | null = null;
 let agentConfig: AgentConfig | null = null;
+
+/** Shared metrics instance (survives agent rebuilds) */
+const metrics = new InMemoryMetrics();
+
+/** Get agent metrics snapshot */
+export function getAgentMetrics() {
+  return metrics.snapshot();
+}
 
 /**
  * Build MCP client configuration from agent configuration.
@@ -136,17 +152,28 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const mcpClient = new MCPClientWrapper(mcpConfig);
   const mcpAdapter = new McpClientAdapter(mcpClient);
 
-  // Create embedder for RAG semantic search via SAP AI Core
-  const embedder = new SapAiCoreEmbedder({
+  // Embedder with circuit breaker for resilience
+  const embedderBreaker = new CircuitBreaker({
+    failureThreshold: 3,
+    recoveryWindowMs: 60_000,
+  });
+  const rawEmbedder = new SapAiCoreEmbedder({
     model: embeddingModel,
     resourceGroup: config.llm.resourceGroup,
   });
+  const embedder = new CircuitBreakerEmbedder(rawEmbedder, embedderBreaker);
 
-  // VectorRag: in-memory hybrid search (semantic + keyword)
+  // VectorRag with fallback to InMemoryRag when embedder circuit opens
   const vectorRag = new VectorRag(embedder, {
     vectorWeight: 0.7,
     keywordWeight: 0.3,
   });
+  const inMemoryRag = new InMemoryRag();
+  const factsRag = new FallbackRag(vectorRag, inMemoryRag, embedderBreaker);
+
+  // RAG quality: query expansion + re-ranking via classifier LLM
+  const reranker = new LlmReranker(classifierLlm);
+  const queryExpander = new LlmQueryExpander(classifierLlm);
 
   // Build SmartAgent
   const builder = new SmartAgentBuilder({
@@ -158,16 +185,26 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
     .withMcpClients([mcpAdapter])
-    // RAG: semantic search via SAP AI Core embeddings
+    // RAG: semantic search with fallback
     .withRag({
-      facts: vectorRag,
-      feedback: vectorRag,
-      state: new InMemoryRag(),
+      facts: factsRag,
+      feedback: factsRag,
+      state: inMemoryRag,
     })
+    // RAG quality: expand queries + re-rank results
+    .withReranker(reranker)
+    .withQueryExpander(queryExpander)
+    // RAG behavior
+    .withClassification(true)
+    .withRagRetrieval('auto')
+    .withRagTranslation(true)
+    .withRagUpsert(true)
     // Resilience: auto-recovery on SAP AI Core outages
     .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
     // Caching: avoid duplicate tool calls
     .withToolCache(new ToolCache())
+    // Metrics: request/tool/RAG/LLM counters and latencies
+    .withMetrics(metrics)
     // Session: token budget control
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     // History: compress long conversations
