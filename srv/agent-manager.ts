@@ -13,18 +13,18 @@
  * - Caching: ToolCache for deduplication, SessionManager for token budget
  */
 
-import type { MCPClientConfig } from '@mcp-abap-adt/llm-agent';
 import {
+  type MCPClientConfig,
+  type SmartAgentHandle,
   InMemoryRag,
   MCPClientWrapper,
+  McpClientAdapter,
   SessionManager,
+  SmartAgentBuilder,
   ToolCache,
   VectorRag,
+  makeLlm,
 } from '@mcp-abap-adt/llm-agent';
-import { McpClientAdapter } from '@mcp-abap-adt/llm-agent/dist/smart-agent/adapters/mcp-client-adapter';
-import type { SmartAgentHandle } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/dist/smart-agent/builder';
-import { makeLlm } from '@mcp-abap-adt/llm-agent/dist/smart-agent/providers';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
