@@ -1,14 +1,19 @@
 _schema-version: 3.3.0
 ID: cloud-llm-hub
-version: 1.3.2
+version: 2.0.0
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
-  # LLM Agent deployment parameters (provided via .mtaext)
+  # LLM Agent deployment parameters (values provided via .mtaext)
   LLM_AGENT_MODEL:
   LLM_AGENT_TEMPERATURE:
   LLM_AGENT_MAX_TOKENS:
   LLM_AGENT_MCP_DESTINATION:
+  LLM_AGENT_MODE:
+  LLM_AGENT_MAX_ITERATIONS:
+  LLM_AGENT_RAG_TYPE:
+  LLM_AGENT_RESOURCE_GROUP: "default"
+  LLM_AGENT_EMBEDDING_MODEL:
 build-parameters:
   before-all:
     - builder: custom
@@ -23,50 +28,23 @@ modules:
     parameters:
       instances: 1
       buildpack: nodejs_buildpack
-      # Uncomment for hybrid debugging (development/test only!)
-      # env:
-      #   NODE_OPTIONS: "--inspect=0.0.0.0:9229"
-      #   DEBUG: "*"
-      env:
-        # LLM Agent Configuration
-        # These environment variables are set during deployment and used by Agent Service (OData)
-        # Values are provided via mta-deploy.yaml (not committed to Git)
-        # See mta-deploy.yaml.template for configuration template
-
-        # NOTE: SAP AI Core access is via service binding (cloud-llm-hub-ai-core resource)
-        # Service binding is configured in mta.yaml and provides credentials via VCAP_SERVICES
-        # No destination is needed for SAP AI Core - service binding is used directly
-
-        # LLM Model configuration
-        # Model name determines which underlying provider SAP AI Core routes to:
-        # - 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo' → OpenAI
-        # - 'claude-3-5-sonnet', 'claude-3-opus' → Anthropic
-        # - 'deepseek-chat' → DeepSeek
-        # Model must be configured in SAP AI Core Launchpad
-        LLM_AGENT_MODEL: <LLM_AGENT_MODEL>
-
-        # LLM Parameters
-        LLM_AGENT_TEMPERATURE: <LLM_AGENT_TEMPERATURE>
-        LLM_AGENT_MAX_TOKENS: <LLM_AGENT_MAX_TOKENS>
-
-        # MCP Configuration
-        # MCP destination for ABAP connection
-        # This destination must be configured in Destination service (BTP Cockpit)
-        # The destination should point to your ABAP system (same as MCP proxy uses)
-        # MCP proxy will resolve this destination and create MCP server with SAP config
-        LLM_AGENT_MCP_DESTINATION: <LLM_AGENT_MCP_DESTINATION>
-
-        # MCP Proxy endpoint (optional)
-        # If not set, will be auto-detected from request (for BTP) or use localhost (for local dev)
-        # LLM_AGENT_MCP_ENDPOINT: ~{LLM_AGENT_MCP_ENDPOINT}
+    properties:
+      # LLM Agent Configuration (values from .mtaext via global parameters)
+      LLM_AGENT_MODEL: ${LLM_AGENT_MODEL}
+      LLM_AGENT_TEMPERATURE: ${LLM_AGENT_TEMPERATURE}
+      LLM_AGENT_MAX_TOKENS: ${LLM_AGENT_MAX_TOKENS}
+      LLM_AGENT_MCP_DESTINATION: ${LLM_AGENT_MCP_DESTINATION}
+      LLM_AGENT_MODE: ${LLM_AGENT_MODE}
+      LLM_AGENT_MAX_ITERATIONS: ${LLM_AGENT_MAX_ITERATIONS}
+      LLM_AGENT_RAG_TYPE: ${LLM_AGENT_RAG_TYPE}
+      LLM_AGENT_RESOURCE_GROUP: ${LLM_AGENT_RESOURCE_GROUP}
+      LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
     build-parameters:
       builder: custom
       commands:
         - npm ci --omit=dev
-        - rm -rf node_modules/tsx node_modules/@esbuild node_modules/esbuild node_modules/.bin/esbuild node_modules/.bin/tsx
-        - find node_modules -name "*.map" -type f -delete
-        - find node_modules -name "*.md" -type f -delete
-        - find node_modules -type d -name "docs" -exec rm -rf {} +
+        - node -e "const fs=require('fs');for(const d of['tsx','@esbuild','esbuild']){fs.rmSync('node_modules/'+d,{recursive:true,force:true})};for(const f of['esbuild','tsx']){for(const ext of['','.cmd','.ps1']){fs.rmSync('node_modules/.bin/'+f+ext,{force:true})}}"
+        - node -e "const fs=require('fs'),p=require('path');(function walk(dir){try{for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=p.join(dir,e.name);if(e.isDirectory()){if(e.name==='docs'){fs.rmSync(f,{recursive:true,force:true})}else{walk(f)}}else if(e.name.endsWith('.map')||e.name.endsWith('.md')){fs.rmSync(f,{force:true})}}}catch{}})('node_modules')"
     provides:
       - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:

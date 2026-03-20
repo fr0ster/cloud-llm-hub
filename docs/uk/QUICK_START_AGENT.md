@@ -115,6 +115,6 @@ curl -X GET \
 
 ## Детальна документація
 
-- [LLM_PROXY_TESTING.md](../LLM_PROXY_TESTING.md) - повний гайд з тестування
-- [LLM_PROXY_EMBEDDED_USAGE.md](../LLM_PROXY_EMBEDDED_USAGE.md) - embedded використання
-- [LLM_PROXY_CONFIG_USAGE.md](../LLM_PROXY_CONFIG_USAGE.md) - конфігурація
+- [TESTING.md](../llm-agent/TESTING.md) - повний гайд з тестування
+- [EMBEDDED_USAGE.md](../llm-agent/EMBEDDED_USAGE.md) - embedded використання
+- [CONFIG_USAGE.md](../llm-agent/CONFIG_USAGE.md) - конфігурація

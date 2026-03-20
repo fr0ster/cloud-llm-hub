@@ -80,110 +80,31 @@ graph LR
 ### How the two projects relate
 
 ```mermaid
-graph TB
-    subgraph MCP_ABAP["mcp-abap-adt  (separate project)"]
-        direction TB
-        CORE["@mcp-abap-adt/core
-        ━━━━━━━━━
-        EmbeddableMcpServer
-        MCP tools for ABAP:
-        read class, search objects,
-        get table content, etc."]
-        CONN_PKG["@mcp-abap-adt/connection
-        ━━━━━━━━━
-        AbapConnection interface
-        SapConfig type
-        createAbapConnection
-        CSRF handling"]
-        HV["@mcp-abap-adt/header-validator
-        ━━━━━━━━━
-        validateAuthHeaders
-        Header parsing"]
-        IFACE["@mcp-abap-adt/interfaces
-        ━━━━━━━━━
-        ILogger, IAdtResponse
-        Header constants
-        IAbapConnection"]
-        LOG["@mcp-abap-adt/logger
-        ━━━━━━━━━
-        defaultLogger"]
-        LLM["@mcp-abap-adt/llm-proxy
-        ━━━━━━━━━
-        SapCoreAIProvider
-        SapCoreAIAgent
-        MCPClientWrapper"]
-    end
+flowchart LR
+    A(Request) --> B(cloud-llm-hub<br/>Auth + Destination<br/>+ Connection) -- injects<br/>connection --> C(mcp-abap-adt<br/>MCP Server<br/>+ ABAP Tools) --> D(SAP ABAP)
 
-    subgraph CLH["cloud-llm-hub  (this project)"]
-        direction TB
-        SERVER["server.ts — HTTP transport, auth"]
-        MGR["mcp-manager.ts — creates EmbeddableMcpServer per request"]
-        CONNECTIONS["connections/ — CloudSdkAbapConnection, destinationResolver"]
-        AGENT["agent-manager.ts — LLM provider, agent orchestration"]
-        LIB["lib/ — logger adapter, error utils"]
-    end
-
-    MGR -->|"creates instance"| CORE
-    MGR -->|"validates headers"| HV
-    CONNECTIONS -->|"implements interface"| CONN_PKG
-    CONNECTIONS -->|"uses CSRF config"| CONN_PKG
-    AGENT -->|"creates provider + agent"| LLM
-    LIB -->|"wraps"| LOG
-    LIB -->|"implements"| IFACE
-    MGR -->|"uses types + constants"| IFACE
-
-    style MCP_ABAP fill:#1e3a5f,color:#fff
-    style CLH fill:#1a4731,color:#fff
-    style CORE fill:#2563eb,color:#fff
-    style LLM fill:#7c3aed,color:#fff
+    style B fill:#16a34a,color:#fff,font-size:16px
+    style C fill:#2563eb,color:#fff,font-size:16px
+    style D fill:#9333ea,color:#fff,font-size:16px
 ```
 
-### What each `@mcp-abap-adt/*` package provides
+**Key point:** `mcp-abap-adt` is the **base implementation** of the MCP server. Cloud LLM Hub **delegates all MCP work** to it. The delegation pattern:
 
-| Package | What cloud-llm-hub uses from it | Where used |
-|---------|--------------------------------|------------|
-| **`@mcp-abap-adt/core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools (read class, search, table content, etc.) | `mcp-manager.ts` |
-| **`@mcp-abap-adt/connection`** | `AbapConnection` interface, `SapConfig` type, `createAbapConnection()` factory, `CSRF_CONFIG`, `OnPremAbapConnection` base class | `connections/*`, `mcp-manager.ts` |
-| **`@mcp-abap-adt/header-validator`** | `validateAuthHeaders()` — validates SAP auth headers for direct connections | `mcp-manager.ts` |
-| **`@mcp-abap-adt/interfaces`** | `ILogger`, `IAdtResponse`, `IAbapConnection`, `ITokenRefresher`, `HEADER_*` constants | Throughout `srv/` |
-| **`@mcp-abap-adt/logger`** | `defaultLogger` — base logging implementation | `lib/logger.ts` |
-| **`@mcp-abap-adt/llm-proxy`** | `SapCoreAIProvider`, `SapCoreAIAgent`, `MCPClientWrapper`, `BaseAgent`, `Message` type | `agent-manager.ts`, `agent-service.ts` |
+1. Cloud LLM Hub handles everything **before** MCP: auth, destination resolution, connection creation
+2. Cloud LLM Hub creates `EmbeddableMcpServer` (from `@mcp-abap-adt/core`) and **injects** the connection
+3. From that point, `mcp-abap-adt` does **all** the MCP protocol handling and ABAP tool execution
+4. Cloud LLM Hub never calls ABAP tools directly — it only provides the connection
 
-### Boundary of responsibility
+### What cloud-llm-hub uses from `@mcp-abap-adt/*`
 
-```mermaid
-graph LR
-    subgraph BOUNDARY_CLH["cloud-llm-hub responsibility"]
-        A["HTTP transport
-        + auth + routing"]
-        B["BTP Destination
-        resolution"]
-        C["Cloud Connector
-        proxy"]
-        D["Agent orchestration
-        + SAP AI Core"]
-    end
-
-    subgraph BOUNDARY_MCP["mcp-abap-adt responsibility"]
-        E["MCP protocol
-        implementation"]
-        F["ABAP/ADT tools
-        read, search, etc."]
-        G["AbapConnection
-        base classes"]
-        H["LLM provider
-        abstractions"]
-    end
-
-    A -->|"creates + injects connection"| E
-    B -->|"resolves credentials for"| G
-    D -->|"uses"| H
-
-    style BOUNDARY_CLH fill:#1a4731,color:#fff
-    style BOUNDARY_MCP fill:#1e3a5f,color:#fff
-```
-
-**Key principle:** Cloud LLM Hub is the orchestrator — it creates a connection (`AbapConnection`), injects it into `EmbeddableMcpServer`, and manages the full lifecycle (auth → destination → connection → MCP server → transport → cleanup). The MCP server uses that connection to talk to ABAP. Cloud LLM Hub never calls ABAP tools directly — all ABAP interaction goes through the embedded MCP server. The Agent Service adds an LLM-agent layer on top, where SAP AI Core LLM autonomously decides which MCP tools to call.
+| Package | Role | Where used |
+|---------|------|------------|
+| **`core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
+| **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
+| **`llm-proxy`** | `SapCoreAIProvider`, `SapCoreAIAgent`, `MCPClientWrapper` — LLM agent abstractions | `agent-manager.ts` |
+| **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
+| **`interfaces`** | Shared types: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
+| **`logger`** | Base logging implementation | `lib/logger.ts` |
 
 ### Implications for developers
 
@@ -504,66 +425,64 @@ graph TB
 
 This is the primary flow when an AI assistant (Cline, Claude Desktop) sends an MCP request.
 
+#### Step 1 — Authentication
+
 ```mermaid
 sequenceDiagram
-    participant Client as AI Assistant<br/>(Cline / Claude)
+    participant Client as AI Assistant
     participant AR as Approuter
-    participant MW as Express Middleware<br/>(server.ts)
-    participant AuthSrv as AuthService<br/>(auth.ts)
-    participant Handler as handleStreamHTTP<br/>(server.ts)
-    participant MCPMgr as mcp-manager.ts
-    participant ConnFactory as connectionFactory.ts
-    participant DestRes as destinationResolver.ts
-    participant CloudSDK as CloudSdkAbapConnection
-    participant MCP as EmbeddableMcpServer<br/>(@mcp-abap-adt/core)
-    participant Transport as StreamableHTTP<br/>Transport
-    participant ABAP as SAP ABAP System
+    participant MW as server.ts
+    participant Auth as AuthService
 
-    Client->>AR: POST /mcp/stream/http<br/>+ Auth header<br/>+ X-SAP-Destination header
-    AR->>MW: Forward (with JWT)
+    Client->>AR: POST /mcp/stream/http
+    AR->>MW: Forward with JWT
+    MW->>Auth: CheckAuth(req)
+    Auth-->>MW: authenticated, id, roles
+    MW->>MW: handleStreamHTTP(req, res)
+```
 
-    Note over MW: Fix Content-Type & Accept<br/>headers for Cline compat
+#### Step 2 — Create Connection + MCP Server
 
-    MW->>AuthSrv: srv.run('CheckAuth', req)
-    AuthSrv-->>MW: {authenticated: true, id, roles}
+```mermaid
+sequenceDiagram
+    participant Handler as server.ts
+    participant Mgr as mcp-manager.ts
+    participant Dest as destinationResolver
+    participant Conn as connectionFactory
 
-    MW->>Handler: handleStreamHTTP(req, res)
+    Handler->>Mgr: createMCPServerForRequest(req)
+    Mgr->>Mgr: extractSapContext(req)
 
-    Handler->>Handler: Read & parse request body<br/>(JSON-RPC MCP message)
-
-    Handler->>MCPMgr: createMCPServerForRequest(req)
-
-    MCPMgr->>MCPMgr: extractSapContext(req)
-
-    alt X-SAP-Destination present
-        MCPMgr->>DestRes: resolveDestinationSapConfig(name, jwt?)
-        DestRes-->>MCPMgr: {sapConfig, proxyType, authType}
-        MCPMgr->>ConnFactory: createConnection({sapConfig, destinationName})
-        ConnFactory->>CloudSDK: new CloudSdkAbapConnection(config, dest)
-    else Direct connection (URL + Basic/JWT)
-        MCPMgr->>MCPMgr: validateAuthHeaders(req.headers)
-        MCPMgr->>ConnFactory: createConnection({sapConfig})
-        ConnFactory->>ConnFactory: createAbapConnection(config)
+    alt BTP Destination
+        Mgr->>Dest: resolveDestinationSapConfig(name)
+        Dest-->>Mgr: sapConfig + authType
+        Mgr->>Conn: createConnection(sapConfig, dest)
+    else Direct connection
+        Mgr->>Mgr: validateAuthHeaders
+        Mgr->>Conn: createConnection(sapConfig)
     end
 
-    MCPMgr->>MCP: new EmbeddableMcpServer({connection, logger})
-    MCPMgr->>Transport: new StreamableHTTPServerTransport({stateless})
-    MCPMgr->>MCP: mcpServer.connect(transport)
+    Mgr->>Mgr: new EmbeddableMcpServer(connection)
+    Mgr->>Mgr: new StreamableHTTPTransport
+    Mgr-->>Handler: server + transport + cleanup
+```
 
-    MCPMgr-->>Handler: {server, connection, transport, cleanup}
+#### Step 3 — Execute MCP Request
 
-    Handler->>Transport: transport.handleRequest(req, res, body)
-    Transport->>MCP: Process JSON-RPC request
-    MCP->>CloudSDK: makeAdtRequest(options)
-    CloudSDK->>ABAP: executeHttpRequest({destinationName}, ...)
-    ABAP-->>CloudSDK: ADT Response
-    CloudSDK-->>MCP: IAdtResponse
-    MCP-->>Transport: MCP Response
-    Transport-->>Handler: HTTP Response written
+```mermaid
+sequenceDiagram
+    participant Handler as server.ts
+    participant Transport as HTTPTransport
+    participant MCP as EmbeddableMcpServer
+    participant ABAP as SAP ABAP
 
-    Handler->>Handler: cleanup() — close transport, reset connection
-
-    Handler-->>Client: JSON response
+    Handler->>Transport: handleRequest(req, res, body)
+    Transport->>MCP: JSON-RPC request
+    MCP->>ABAP: ADT HTTP call
+    ABAP-->>MCP: ADT response
+    MCP-->>Transport: MCP response
+    Transport-->>Handler: HTTP response
+    Handler->>Handler: cleanup()
 ```
 
 ### Per-Request Architecture (Key Design)
@@ -592,40 +511,52 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
+#### Step 1 — Config + Provider
+
 ```mermaid
 sequenceDiagram
     participant Client as App / User
-    participant AR as Approuter
-    participant AgentSrv as AgentService<br/>(agent-service.ts)
-    participant AgentMgr as agent-manager.ts
-    participant AgentCfg as agent-config.ts
-    participant AICoreProvider as SapCoreAIProvider
+    participant Srv as AgentService
+    participant Cfg as agent-config.ts
+    participant Mgr as agent-manager.ts
+
+    Client->>Srv: POST /agent/Chat {message}
+    Srv->>Cfg: getAgentConfig()
+    Cfg-->>Srv: model, temperature, AI Core binding
+    Srv->>Mgr: createLLMProvider(config)
+    Mgr->>Mgr: Get OAuth2 token from AI Core
+    Mgr-->>Srv: SapCoreAIProvider
+```
+
+#### Step 2 — LLM Call
+
+```mermaid
+sequenceDiagram
+    participant Srv as AgentService
+    participant Provider as SapCoreAIProvider
     participant AICore as SAP AI Core
-    participant MCPClient as MCPClientWrapper
-    participant MCPProxy as MCP Proxy<br/>(/mcp/stream/http)
 
-    Client->>AR: POST /agent/Chat<br/>{message: "..."}
-    AR->>AgentSrv: CAP dispatches to Chat handler
+    Srv->>Provider: provider.chat(messages)
+    Provider->>AICore: POST /chat/completions
+    AICore-->>Provider: LLM response
+    Provider-->>Srv: response.content
+    Srv-->>Srv: return to client
+```
 
-    AgentSrv->>AgentCfg: getAgentConfig()
-    Note over AgentCfg: Reads LLM_AGENT_MODEL,<br/>TEMPERATURE, MAX_TOKENS<br/>from env vars +<br/>AI Core from VCAP_SERVICES
+#### Step 3 — Agent Mode (optional, with MCP tools)
 
-    AgentSrv->>AgentMgr: createLLMProvider(config)
-    AgentMgr->>AgentMgr: Get OAuth2 token<br/>from AI Core service binding
+```mermaid
+sequenceDiagram
+    participant Agent as SapCoreAIAgent
+    participant MCP as MCPClientWrapper
+    participant Proxy as /mcp/stream/http
 
-    AgentMgr->>AICoreProvider: new SapCoreAIProvider({...})
-
-    AgentSrv->>AICoreProvider: provider.chat([{role:'user', content: msg}])
-    AICoreProvider->>AICore: POST /chat/completions<br/>Bearer {oauth2_token}
-    AICore-->>AICoreProvider: LLM response
-
-    Note over AgentMgr: Optional: Agent mode with MCP tools
-    AgentMgr->>MCPClient: new MCPClientWrapper({url, headers})
-    MCPClient->>MCPProxy: POST /mcp/stream/http<br/>+ X-SAP-Destination header
-    MCPProxy-->>MCPClient: MCP tool results
-
-    AICoreProvider-->>AgentSrv: response.content
-    AgentSrv-->>Client: LLM response string
+    Agent->>MCP: connect to own MCP Gateway
+    Agent->>Agent: LLM decides which tool to call
+    Agent->>MCP: call MCP tool
+    MCP->>Proxy: POST /mcp/stream/http
+    Proxy-->>MCP: tool result
+    MCP-->>Agent: result for next LLM step
 ```
 
 ---

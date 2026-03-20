@@ -128,6 +128,7 @@ const connection = new CloudSdkAbapConnection(
   - OAuth2ClientCredentials
   - OAuth2SAMLBearerAssertion
   - Principal Propagation (user context)
+  - NoAuthentication (credentials via `x-sap-login`/`x-sap-password` headers)
 - **Proxy:** Cloud Connector (automatically via Destination)
 - **Token management:** Automatic via BTP
 - **CSRF handling:** Cloud SDK-based implementation

@@ -217,7 +217,7 @@ Agent Manager
 - **[TASK.md](../../llm-proxy/TASK.md)** - Detailed task description
 - **[README.md](../../llm-proxy/README.md)** - Developer guide
 - **[HYBRID_DEBUG_SETUP.md](../HYBRID_DEBUG_SETUP.md)** - Hybrid debugging setup
-- **[SAP_AI_CORE_ISSUE.md](../../SAP_AI_CORE_ISSUE.md)** - Known SAP AI Core issues
+- **[SAP_AI_CORE_ISSUE.md](../../archive/SAP_AI_CORE_ISSUE.md)** - Known SAP AI Core issues
 
 ## ✅ Completion Checklist
 
@@ -246,7 +246,7 @@ Agent Manager
 ## 📞 Questions?
 
 If you have questions:
-1. Check documentation in `docs/llm-proxy/*.md`
+1. Check documentation in `docs/llm-agent/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
-4. See troubleshooting in `docs/SAP_AI_CORE_ISSUE.md`
+4. See troubleshooting in `docs/archive/SAP_AI_CORE_ISSUE.md`

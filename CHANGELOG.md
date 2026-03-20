@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-02-26
+
+### Added
+- **NoAuthentication Destination Support**: BTP destinations configured with `NoAuthentication` are now supported
+  - Caller provides credentials via `x-sap-login` and `x-sap-password` headers
+  - Clear error message when `NoAuthentication` destination is used without login/password headers
+- **Basic Auth Override for Destinations**: `x-sap-login`/`x-sap-password` headers now correctly override destination authentication
+  - Works for both `NoAuthentication` and `BasicAuthentication` destinations
+  - `CloudSdkAbapConnection.getAuthHeaders()` generates `Authorization: Basic` header from provided credentials
+
+### Fixed
+- **Destination Auth Override**: Fixed `x-sap-login`/`x-sap-password` headers being ignored for BTP destination connections
+  - Previously, credentials set via override headers were stored in `sapConfig` but never used by `executeHttpRequest`
+  - Now `CloudSdkAbapConnection` generates the `Authorization` header from `sapConfig.username`/`password`
+
+### Changed
+- **destinationResolver.ts**: `NoAuthentication` is now a recognized authentication type (mapped to `authType: 'basic'`)
+- **CloudSdkAbapConnection.ts**: `getAuthHeaders()` adds `Authorization: Basic` header when `config.username` and `config.password` are present
+- **mcp-manager.ts**: Added validation — `NoAuthentication` destinations require `x-sap-login` and `x-sap-password` headers
+
 ## [1.3.2] - 2026-02-02
 
 ### Changed

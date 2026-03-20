@@ -1,18 +1,17 @@
 /**
  * Agent Service - CAP service for LLM Agent
  *
- * Provides OData endpoints to interact with the LLM agent.
+ * Provides OData endpoints to interact with SmartAgent.
  *
  * Architecture:
- * - Configuration comes from environment variables (set via mta.yaml or CF CLI)
- * - Simple LLM chat: receives message → sends to SAP AI Core → returns response
- * - All authentication is handled through SAP AI Core service binding
+ * - SmartAgent orchestrates LLM + MCP + RAG pipeline
+ * - LLM access via SAP AI Core (@sap-ai-sdk/orchestration)
+ * - MCP tools via self-loop to /mcp/stream/http
  */
 
-import type { Message } from '@mcp-abap-adt/llm-proxy';
 import cds, { type Request, type Service } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
-import { createLLMProvider } from './agent-manager';
+import { getSmartAgent } from './agent-manager';
 
 /**
  * Register CAP service handlers
@@ -24,10 +23,9 @@ export default async function registerAgentServiceHandlers(
   log.info('Registering AgentService handlers');
 
   /**
-   * Chat endpoint - send message to LLM via SAP AI Core
+   * Chat endpoint - send message to SmartAgent
    *
-   * Simple implementation: receives message → sends to SAP AI Core → returns response
-   * No MCP, no Agent orchestration - just direct LLM communication
+   * SmartAgent orchestrates: intent classification → RAG lookup → LLM + MCP tool loop → response
    */
   srv.on('Chat', async (req: Request) => {
     const message = req.data.message as string;
@@ -47,34 +45,23 @@ export default async function registerAgentServiceHandlers(
     });
 
     try {
-      // Load configuration from environment variables
-      const config = getAgentConfig();
+      const handle = await getSmartAgent(req);
+      const result = await handle.agent.process(message);
 
-      // Create LLM provider (SAP AI Core)
-      const llmProvider = await createLLMProvider(config);
+      if (result.ok) {
+        log.debug('SmartAgent response', {
+          iterations: result.value.iterations,
+          toolCalls: result.value.toolCallCount,
+          stopReason: result.value.stopReason,
+        });
+        return result.value.content || '';
+      }
 
-      log.debug('Sending message to SAP AI Core', {
-        model: config.llm.model,
-        messageLength: message.length,
+      log.error('SmartAgent processing failed', {
+        error: result.error.message,
+        code: result.error.code,
       });
-
-      // Format message for LLM provider (expects Message[] format)
-      const messages: Message[] = [
-        {
-          role: 'user',
-          content: message,
-        },
-      ];
-
-      // Call LLM provider directly (no Agent, no MCP)
-      const response = await llmProvider.chat(messages);
-
-      log.debug('Received response from SAP AI Core', {
-        responseLength: response.content?.length || 0,
-      });
-
-      // Return the response content
-      return response.content || '';
+      throw new Error(result.error.message);
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error('Chat handler error', { error: err.message });
@@ -84,20 +71,16 @@ export default async function registerAgentServiceHandlers(
 
   /**
    * Get conversation history
-   * Note: Simple implementation - no history stored (stateless)
-   * TODO: Add history storage if needed
    */
   srv.on('GetHistory', async (_req: Request) => {
-    // Simple implementation - no history for now
     return [];
   });
 
   /**
    * Clear conversation history
-   * Note: Simple implementation - no history stored (stateless)
    */
   srv.on('ClearHistory', async (_req: Request) => {
-    log.info('ClearHistory called (no history stored in simple mode)');
+    log.info('ClearHistory called');
     return {
       success: true,
       message: 'Conversation history cleared successfully',
@@ -105,37 +88,61 @@ export default async function registerAgentServiceHandlers(
   });
 
   /**
-   * Health check
-   * Simple implementation - checks if SAP AI Core configuration is available
+   * Health check - verifies SmartAgent subsystems (LLM, RAG, MCP)
    */
-  srv.on('Health', async (_req: Request) => {
-    let llmReady = false;
+  srv.on('Health', async (req: Request) => {
     let config: AgentConfig | null = null;
+    try {
+      config = getAgentConfig();
+    } catch {
+      return {
+        status: 'NOT_READY',
+        agentReady: false,
+        mcpConnected: false,
+        llmProvider: 'SAP Core AI',
+        llmDestination: 'NOT_CONFIGURED',
+        model: 'NOT_CONFIGURED',
+        mcpDestination: 'NOT_CONFIGURED',
+        timestamp: new Date().toISOString(),
+      };
+    }
 
     try {
-      // Load configuration to show in health check
-      config = getAgentConfig();
+      const handle = await getSmartAgent(req);
+      const healthResult = await handle.agent.healthCheck();
 
-      // Try to create provider to verify configuration
-      try {
-        await createLLMProvider(config);
-        llmReady = true;
-      } catch (err) {
-        log.warn('Failed to create LLM provider', {
-          error: err instanceof Error ? err.message : String(err),
-        });
+      if (healthResult.ok) {
+        const v = healthResult.value;
+        const mcpConnected = v.mcp.length > 0 && v.mcp.every((m) => m.ok);
+
+        return {
+          status: v.llm ? 'READY' : 'NOT_READY',
+          agentReady: v.llm,
+          mcpConnected,
+          llmProvider: 'SAP Core AI',
+          llmDestination: 'sap-ai-sdk',
+          model: config.llm.model,
+          mcpDestination: config.mcp.destination,
+          timestamp: new Date().toISOString(),
+        };
       }
+
+      log.warn('Health check returned error result', {
+        error: healthResult.error.message,
+      });
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       log.warn('Health check failed', { error: error.message });
     }
 
     return {
-      status: llmReady ? 'READY' : 'NOT_READY',
-      llmReady,
+      status: 'NOT_READY',
+      agentReady: false,
+      mcpConnected: false,
       llmProvider: 'SAP Core AI',
-      llmDestination: config?.llm?.aiCoreService?.name || 'NOT_CONFIGURED',
-      model: config?.llm?.model || 'NOT_CONFIGURED',
+      llmDestination: 'sap-ai-sdk',
+      model: config.llm.model,
+      mcpDestination: config.mcp.destination,
       timestamp: new Date().toISOString(),
     };
   });
