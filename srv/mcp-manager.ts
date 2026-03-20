@@ -299,11 +299,8 @@ export async function createMCPServerForRequest(
       authType: sapConfig.authType,
     });
 
-    // Resolve exposition based on user roles from CAP auth
-    // CAP user has is() method for role checks; roles array may not be populated
-    const reqWithUser = req as Request & {
-      user?: { id?: string; roles?: string[]; is?: (role: string) => boolean };
-    };
+    // Resolve exposition based on user roles from CAP auth (cds.context.user)
+    const user = cds.context?.user;
     const allMcpRoles = [
       'MCP_Reader',
       'MCP_Analyst',
@@ -311,10 +308,7 @@ export async function createMCPServerForRequest(
       'MCP_Full',
     ];
     const userRoles: string[] = allMcpRoles.filter(
-      (role) =>
-        reqWithUser.user?.is?.(role) ??
-        reqWithUser.user?.roles?.includes(role) ??
-        false,
+      (role) => user?.is?.(role) ?? false,
     );
     const exposition = resolveExposition(userRoles);
 

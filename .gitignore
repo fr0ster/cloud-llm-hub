@@ -47,6 +47,7 @@ submodules/llm-agent/
 !**/*.template.yaml
 mdd.env
 *.env
+!.env.example
 .env
 AGENTS.md
 GEMINI.md
