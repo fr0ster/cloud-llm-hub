@@ -31,7 +31,7 @@ srv/
 ├── agent-manager.ts           # Agent management ⭐
 └── agent-config.ts            # Configuration ⭐
 
-node_modules/@mcp-abap-adt/llm-proxy/          # LLM Proxy module
+node_modules/@mcp-abap-adt/llm-agent/          # LLM Proxy module
 ```
 
 ## 🚀 Quick Start
@@ -39,7 +39,7 @@ node_modules/@mcp-abap-adt/llm-proxy/          # LLM Proxy module
 ```bash
 # 1. Install dependencies
 npm install
-npm install @mcp-abap-adt/llm-proxy && npm install && npm run build && cd ../..
+npm install @mcp-abap-adt/llm-agent && npm install && npm run build && cd ../..
 
 # 2. Configure .env (optional for local development)
 touch .env
@@ -68,7 +68,7 @@ bash test/test-agent.sh
    - Project structure
    - Debugging
 
-4. **[LLM_PROXY_TESTING.md](../LLM_PROXY_TESTING.md)** - Testing guide
+4. **[TESTING.md](TESTING.md)** - Testing guide
    - How to test
    - Request examples
    - Troubleshooting

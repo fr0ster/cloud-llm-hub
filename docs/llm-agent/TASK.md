@@ -175,7 +175,7 @@ Service health check.
   - `LLM_AGENT_MAX_TOKENS` - max tokens (default: 2000)
 
 **Implementation:**
-- Use `SapCoreAIProvider` from `node_modules/@mcp-abap-adt/llm-proxy`
+- Use `SapCoreAIProvider` from `node_modules/@mcp-abap-adt/llm-agent`
 - Create provider in `agent-manager.ts`
 - Get service binding from `VCAP_SERVICES`
 
@@ -189,7 +189,7 @@ Service health check.
 - Fallback to LLM-only mode if MCP unavailable
 
 **Implementation:**
-- Use `MCPClientWrapper` from `node_modules/@mcp-abap-adt/llm-proxy`
+- Use `MCPClientWrapper` from `node_modules/@mcp-abap-adt/llm-agent`
 - Endpoint: `http://localhost:4004/mcp/stream/http` (locally)
 - Endpoint: auto-detect from request headers (on BTP)
 - Pass destination via `X-SAP-Destination` header
@@ -248,9 +248,9 @@ LLM_AGENT_MCP_ENDPOINT=http://localhost:4004/mcp/stream/http  # optional
 
 ### llm-agent Module
 
-5. **`node_modules/@mcp-abap-adt/llm-proxy/src/agents/sap-core-ai-agent.ts`** - SAP AI Core agent
-6. **`node_modules/@mcp-abap-adt/llm-proxy/src/llm-providers/sap-core-ai.ts`** - SAP AI Core provider
-7. **`node_modules/@mcp-abap-adt/llm-proxy/src/mcp/client.ts`** - MCP client wrapper
+5. **`node_modules/@mcp-abap-adt/llm-agent/src/agents/sap-core-ai-agent.ts`** - SAP AI Core agent
+6. **`node_modules/@mcp-abap-adt/llm-agent/src/llm-providers/sap-core-ai.ts`** - SAP AI Core provider
+7. **`node_modules/@mcp-abap-adt/llm-agent/src/mcp/client.ts`** - MCP client wrapper
 
 ## ✅ Acceptance Criteria
 
@@ -396,14 +396,14 @@ bash test/test-agent.sh
 ## 📚 Additional Resources
 
 - [LLM Proxy Roadmap](ROADMAP.md) - detailed roadmap
-- [LLM Proxy Testing Guide](../LLM_PROXY_TESTING.md) - testing guide
-- [LLM Proxy Embedded Usage](../LLM_PROXY_EMBEDDED_USAGE.md) - usage examples
-- [LLM Proxy Config Usage](../LLM_PROXY_CONFIG_USAGE.md) - configuration
+- [LLM Agent Testing Guide](TESTING.md) - testing guide
+- [LLM Agent Embedded Usage](EMBEDDED_USAGE.md) - usage examples
+- [LLM Agent Config Usage](CONFIG_USAGE.md) - configuration
 
 ## 📞 Questions?
 
 If you have questions:
-1. Check documentation in `docs/llm-proxy/*.md`
+1. Check documentation in `docs/llm-agent/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
 4. Contact the team for clarifications

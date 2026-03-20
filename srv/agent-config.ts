@@ -2,13 +2,13 @@
  * Agent Configuration Module
  *
  * Reads configuration from environment variables (set via mta.yaml or CF CLI).
- * This configuration is used by Agent Service (OData) to connect to LLM and MCP.
+ * This configuration is used by Agent Service (OData) and OpenAI-compatible
+ * endpoints to connect SmartAgent to LLM (SAP AI Core) and MCP.
  *
  * Architecture:
  * - Configuration comes from environment variables (mta.yaml deployment or CF CLI)
- * - SAP AI Core access via service binding (cloud-llm-hub-ai-core from mta.yaml)
+ * - SAP AI Core access via @sap-ai-sdk/orchestration (reads AICORE_SERVICE_KEY or VCAP_SERVICES)
  * - MCP destination is resolved via SAP Cloud SDK (same as MCP proxy)
- * - All authentication is handled through service binding (AI Core) and destination (MCP)
  *
  * Configuration variables:
  * - LLM_AGENT_MODEL: Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet')
@@ -16,34 +16,21 @@
  * - LLM_AGENT_MAX_TOKENS: Max tokens (default: 2000)
  * - LLM_AGENT_MCP_DESTINATION: Destination name for MCP/ABAP connection (required)
  * - LLM_AGENT_MCP_ENDPOINT: MCP proxy endpoint URL (optional, defaults to local)
+ * - LLM_AGENT_MODE: SmartAgent mode: 'smart' | 'pass' | 'hard' (default: 'smart')
+ * - LLM_AGENT_MAX_ITERATIONS: Max tool loop iterations (default: 10)
+ * - LLM_AGENT_RAG_TYPE: RAG backend: 'in-memory' | 'ollama' (default: 'in-memory')
  */
 
 import cds from '@sap/cds';
 
-export interface AICoreServiceBinding {
-  name: string;
-  credentials: {
-    clientid: string;
-    clientsecret: string;
-    url?: string;
-    tokenurl?: string;
-    serviceurls?: {
-      AI_API_URL?: string;
-    };
-  };
-}
+export type SmartAgentMode = 'smart' | 'pass' | 'hard';
+export type RagType = 'in-memory' | 'ollama';
 
 export interface AgentConfig {
   /**
    * LLM Configuration
    */
   llm: {
-    /**
-     * SAP AI Core service binding (from VCAP_SERVICES)
-     * Service is bound via mta.yaml (cloud-llm-hub-ai-core resource)
-     */
-    aiCoreService: AICoreServiceBinding;
-
     /**
      * Model name (determines which LLM provider SAP AI Core routes to)
      * Examples: 'gpt-4o-mini' (OpenAI), 'claude-3-5-sonnet' (Anthropic)
@@ -59,6 +46,11 @@ export interface AgentConfig {
      * Maximum tokens in response
      */
     maxTokens: number;
+
+    /**
+     * SAP AI Core resource group (optional)
+     */
+    resourceGroup?: string;
   };
 
   /**
@@ -78,32 +70,20 @@ export interface AgentConfig {
      */
     endpoint?: string;
   };
-}
 
-/**
- * Get SAP AI Core service binding from VCAP_SERVICES
- * Service is bound via mta.yaml (cloud-llm-hub-ai-core resource)
- */
-function getAICoreServiceBinding(): AICoreServiceBinding | null {
-  try {
-    const vcapServices = process.env.VCAP_SERVICES
-      ? JSON.parse(process.env.VCAP_SERVICES)
-      : {};
+  /**
+   * SmartAgent orchestration settings
+   */
+  agent: {
+    /** Agent mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only) */
+    mode: SmartAgentMode;
 
-    // Try different possible service names
-    if (vcapServices.aicore && vcapServices.aicore.length > 0) {
-      return vcapServices.aicore[0];
-    }
+    /** Maximum tool loop iterations */
+    maxIterations: number;
 
-    // Also try 'ai-core' (with hyphen)
-    if (vcapServices['ai-core'] && vcapServices['ai-core'].length > 0) {
-      return vcapServices['ai-core'][0];
-    }
-
-    return null;
-  } catch (_error) {
-    return null;
-  }
+    /** RAG backend type */
+    ragType: RagType;
+  };
 }
 
 /**
@@ -118,32 +98,23 @@ function getAICoreServiceBinding(): AICoreServiceBinding | null {
 export function loadAgentConfig(): AgentConfig {
   const log = cds.log('agent-config');
 
-  // LLM Configuration - get SAP AI Core service binding
-  const aiCoreService = getAICoreServiceBinding();
-
-  if (!aiCoreService) {
-    throw new Error(
-      'SAP AI Core service binding not found in VCAP_SERVICES.\n' +
-        'Ensure that cloud-llm-hub-ai-core resource is bound in mta.yaml.\n' +
-        'The service binding provides access to SAP AI Core via service credentials.',
-    );
-  }
-
+  // LLM Configuration
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
     'gpt-4o-mini';
-  const temperature = parseFloat(
+  const temperature = Number.parseFloat(
     process.env.LLM_AGENT_TEMPERATURE ||
       process.env.SAP_CORE_AI_TEMPERATURE ||
       '0.7',
   );
-  const maxTokens = parseInt(
+  const maxTokens = Number.parseInt(
     process.env.LLM_AGENT_MAX_TOKENS ||
       process.env.SAP_CORE_AI_MAX_TOKENS ||
       '2000',
     10,
   );
+  const resourceGroup = process.env.LLM_AGENT_RESOURCE_GROUP;
 
   // MCP Configuration
   const mcpDestination = process.env.LLM_AGENT_MCP_DESTINATION;
@@ -159,24 +130,39 @@ export function loadAgentConfig(): AgentConfig {
   const mcpEndpoint =
     process.env.LLM_AGENT_MCP_ENDPOINT || process.env.MCP_ENDPOINT;
 
+  // SmartAgent settings
+  const mode = (process.env.LLM_AGENT_MODE || 'smart') as SmartAgentMode;
+  const maxIterations = Number.parseInt(
+    process.env.LLM_AGENT_MAX_ITERATIONS || '10',
+    10,
+  );
+  const ragType = (process.env.LLM_AGENT_RAG_TYPE || 'in-memory') as RagType;
+
   const config: AgentConfig = {
     llm: {
-      aiCoreService,
       model,
       temperature,
       maxTokens,
+      resourceGroup,
     },
     mcp: {
       destination: mcpDestination,
       endpoint: mcpEndpoint,
     },
+    agent: {
+      mode,
+      maxIterations,
+      ragType,
+    },
   };
 
   log.info('Agent configuration loaded', {
     model: config.llm.model,
-    aiCoreServiceName: config.llm.aiCoreService.name,
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',
+    agentMode: config.agent.mode,
+    maxIterations: config.agent.maxIterations,
+    ragType: config.agent.ragType,
   });
 
   return config;

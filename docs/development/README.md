@@ -12,7 +12,7 @@ Developer guides, debugging tools, and testing resources for cloud-llm-hub devel
 
 ### Authentication & Security
 
-- [**JWT Token Refresh Guide**](JWT_TOKEN_REFRESH_GUIDE.md) - JWT token refresh implementation
+- [**JWT Token Refresh Guide**](../archive/JWT_TOKEN_REFRESH_GUIDE.md) - JWT token refresh implementation (deprecated)
 
 ### Development Roadmaps
 

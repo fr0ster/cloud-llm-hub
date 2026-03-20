@@ -160,5 +160,5 @@ Settings → Editor → Code Style → Enable EditorConfig support
 ## Need Help?
 
 - Run `npm run verify:setup` to diagnose issues
-- See [docs/CROSS_PLATFORM_GUIDE.md](CROSS_PLATFORM_GUIDE.md) for detailed troubleshooting
-- Check [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) for general issues
+- See [Cross-Platform Guide](CROSS_PLATFORM_GUIDE.md) for detailed troubleshooting
+- Check [Troubleshooting](../usage/TROUBLESHOOTING.md) for general issues

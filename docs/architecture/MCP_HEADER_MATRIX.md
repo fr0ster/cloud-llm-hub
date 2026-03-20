@@ -48,6 +48,16 @@ The sections below list the minimum YAML keys and the headers they populate for 
 - `sap-abap`/`sap-abap-file` service key aliases — include only when the Destination requires ABAP-issued JWTs.
 - Direct SAP fields (`sap.url`, `sap.auth.*`) are **not** used in this scenario; the script drops the matching headers automatically.
 
+### 5. Cloud Destination with NoAuthentication + credential override
+
+- `definition.endpoint` → MCP URL.
+- `sap.destinationName` → `X-SAP-Destination`.
+- `sap.login` → header `X-SAP-Login` (required for NoAuthentication destinations).
+- `sap.password` → header `X-SAP-Password` (required for NoAuthentication destinations).
+- `mcp.auth.token` → `Authorization: Bearer <token>`.
+- The destination itself has no credentials; authentication is provided entirely by the caller via `x-sap-login` / `x-sap-password` headers.
+- These headers also work with `BasicAuthentication` destinations to override destination-configured credentials.
+
 ### 4. Cloud Direct (internet)
 
 - `definition.endpoint` → MCP URL.
@@ -99,6 +109,8 @@ Applies to the cloud destination template when no Connectivity location ID is pr
 | `x-sap-destination`              | Yes         | Destination name           | `sap.destinationName`                                               |
 | `x-sap-connectivity-mode`        | Optional    | `internet`                 | Only set when `sap.connectivity.mode` is declared                   |
 | `x-sap-connectivity-location-id` | No          | _Removed_                  | Not needed for pure internet destinations                           |
+| `x-sap-login`                    | Conditional | SAP username               | Required when destination uses `NoAuthentication`; optional override for `BasicAuthentication` |
+| `x-sap-password`                 | Conditional | SAP password               | Required when destination uses `NoAuthentication`; optional override for `BasicAuthentication` |
 | `authorization`                  | Yes (proxy) | Typically `Bearer <token>` | `mcp.auth` (e.g. `serviceKey` → `mcp-xsuaa.access_token`)           |
 | Direct SAP headers               | No          | _Removed_                  | `x-sap-url`, `x-sap-client`, `x-sap-auth-type`, credentials cleared |
 | Custom headers                   | Optional    | e.g. tracing flags         | `headers` block (const/env/serviceKey)                              |

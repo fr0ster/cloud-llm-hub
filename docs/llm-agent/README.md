@@ -13,7 +13,7 @@ cd cloud-llm-hub
 npm install
 
 # Build llm-agent submodule
-npm install @mcp-abap-adt/llm-proxy
+npm install @mcp-abap-adt/llm-agent
 npm install
 npm run build
 cd ../..
@@ -106,7 +106,7 @@ cloud-llm-hub/
 │   └── agent-config.ts             # Configuration loading ⭐
 │
 ├── submodules/
-│   ├── llm-proxy/                  # LLM Proxy module (peer to mcp-abap-adt)
+│   ├── llm-agent/                  # LLM Proxy module (peer to mcp-abap-adt)
 │   │   ├── src/
 │   │   │   ├── agents/
 │   │   │   │   └── sap-core-ai-agent.ts
@@ -118,7 +118,7 @@ cloud-llm-hub/
 │   └── mcp-abap-adt/               # MCP ABAP server (peer to llm-agent)
 │
 └── docs/
-    └── llm-proxy/
+    └── llm-agent/
         ├── ROADMAP.md              # Detailed roadmap
         ├── TASK.md                 # Task description
         └── README.md               # This file
@@ -307,9 +307,9 @@ Expected result:
 
 - [LLM Proxy Roadmap](ROADMAP.md) - detailed development roadmap
 - [LLM Proxy Task](TASK.md) - task description and acceptance criteria
-- [LLM Proxy Testing Guide](../LLM_PROXY_TESTING.md) - testing guide
-- [LLM Proxy Embedded Usage](../LLM_PROXY_EMBEDDED_USAGE.md) - usage examples
-- [LLM Proxy Config Usage](../LLM_PROXY_CONFIG_USAGE.md) - configuration
+- [LLM Agent Testing Guide](TESTING.md) - testing guide
+- [LLM Agent Embedded Usage](EMBEDDED_USAGE.md) - usage examples
+- [LLM Agent Config Usage](CONFIG_USAGE.md) - configuration
 
 ## ✅ Completion Checklist
 
@@ -328,7 +328,7 @@ Expected result:
 ## 📞 Questions?
 
 If you have questions:
-1. Check documentation in `docs/llm-proxy/*.md`
+1. Check documentation in `docs/llm-agent/*.md`
 2. Check code in `srv/agent-*.ts`
 3. Check examples in `test/test-agent.sh`
 4. Contact the team for clarifications
