@@ -148,8 +148,17 @@ export async function handleChatCompletions(
   });
 
   // Get SmartAgent handle (uses CAP request for auth context)
-  // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request; cast needed for getSmartAgent
-  const handle = await getSmartAgent(req as any);
+  let handle: Awaited<ReturnType<typeof getSmartAgent>>;
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request; cast needed for getSmartAgent
+    handle = await getSmartAgent(req as any);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error('Failed to initialize SmartAgent', { error: message });
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(jsonError(`Agent initialization failed: ${message}`, 'server_error'));
+    return;
+  }
 
   const opts = {
     stream: body.stream,
@@ -229,95 +238,120 @@ export async function handleChatCompletions(
     const stream = handle.agent.streamProcess(normalizedMessages, opts);
 
     let firstChunk = true;
+    let chunkCount = 0;
     let lastUsage: {
       prompt_tokens: number;
       completion_tokens: number;
       total_tokens: number;
     } | null = null;
 
-    for await (const chunk of stream) {
-      if (!chunk.ok) {
-        res.write(
-          `data: ${jsonError(chunk.error.message, 'server_error')}\n\n`,
-        );
-        break;
-      }
+    log.info('Starting streamProcess iteration');
 
-      if (chunk.value.usage) {
-        lastUsage = {
-          prompt_tokens: chunk.value.usage.promptTokens,
-          completion_tokens: chunk.value.usage.completionTokens,
-          total_tokens: chunk.value.usage.totalTokens,
-        };
-      }
-
-      const baseResponse = {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: 'smart-agent',
-        usage: null,
-      };
-
-      if (firstChunk) {
-        res.write(
-          `data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  role: 'assistant',
-                  content: chunk.value.content || '',
-                },
-                finish_reason: null,
-              },
-            ],
-          })}\n\n`,
-        );
-        firstChunk = false;
-        if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
-      }
-
-      if (chunk.value.content || chunk.value.toolCalls) {
-        const delta: Record<string, unknown> = {};
-        if (chunk.value.content) delta.content = chunk.value.content;
-        if (chunk.value.toolCalls) {
-          delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
-            const tc = toToolCallDelta(call, index);
-            return {
-              index: tc.index,
-              id: tc.id,
-              type: 'function',
-              function: {
-                name: tc.name,
-                arguments: tc.arguments || '',
-              },
-            };
-          });
+    try {
+      for await (const chunk of stream) {
+        chunkCount++;
+        if (!chunk.ok) {
+          const errMsg = chunk.error.message;
+          log.error('Stream error chunk', { chunkCount, error: errMsg });
+          res.write(
+            `data: ${jsonError(errMsg, 'server_error')}\n\n`,
+          );
+          break;
         }
-        res.write(
-          `data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [{ index: 0, delta, finish_reason: null }],
-          })}\n\n`,
-        );
-      }
 
-      if (chunk.value.finishReason) {
-        res.write(
-          `data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [
-              {
-                index: 0,
-                delta: {},
-                finish_reason: mapStopReason(chunk.value.finishReason),
-              },
-            ],
-          })}\n\n`,
-        );
+        log.info('Stream chunk', {
+          chunkCount,
+          hasContent: !!chunk.value.content,
+          contentLen: chunk.value.content?.length || 0,
+          contentPreview: (chunk.value.content || '').substring(0, 80),
+          hasToolCalls: !!chunk.value.toolCalls,
+          toolCallNames: chunk.value.toolCalls?.map((tc) => tc.name) || [],
+          finishReason: chunk.value.finishReason || null,
+          hasUsage: !!chunk.value.usage,
+        });
+
+        if (chunk.value.usage) {
+          lastUsage = {
+            prompt_tokens: chunk.value.usage.promptTokens,
+            completion_tokens: chunk.value.usage.completionTokens,
+            total_tokens: chunk.value.usage.totalTokens,
+          };
+        }
+
+        const baseResponse = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: 'smart-agent',
+          usage: null,
+        };
+
+        if (firstChunk) {
+          res.write(
+            `data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: 'assistant',
+                    content: chunk.value.content || '',
+                  },
+                  finish_reason: null,
+                },
+              ],
+            })}\n\n`,
+          );
+          firstChunk = false;
+          if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
+        }
+
+        if (chunk.value.content || chunk.value.toolCalls) {
+          const delta: Record<string, unknown> = {};
+          if (chunk.value.content) delta.content = chunk.value.content;
+          if (chunk.value.toolCalls) {
+            delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
+              const tc = toToolCallDelta(call, index);
+              return {
+                index: tc.index,
+                id: tc.id,
+                type: 'function',
+                function: {
+                  name: tc.name,
+                  arguments: tc.arguments || '',
+                },
+              };
+            });
+          }
+          res.write(
+            `data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [{ index: 0, delta, finish_reason: null }],
+            })}\n\n`,
+          );
+        }
+
+        if (chunk.value.finishReason) {
+          res.write(
+            `data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [
+                {
+                  index: 0,
+                  delta: {},
+                  finish_reason: mapStopReason(chunk.value.finishReason),
+                },
+              ],
+            })}\n\n`,
+          );
+        }
       }
+    } catch (streamErr) {
+      const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+      log.error('Stream exception', { error: errMsg, stack: streamErr instanceof Error ? streamErr.stack : undefined });
+      res.write(
+        `data: ${jsonError(errMsg, 'server_error')}\n\n`,
+      );
     }
 
     if (body.stream_options?.include_usage && lastUsage) {
@@ -332,6 +366,12 @@ export async function handleChatCompletions(
         })}\n\n`,
       );
     }
+
+    log.info('Stream completed', {
+      chunkCount,
+      hasUsage: !!lastUsage,
+      durationMs: Date.now() - t0,
+    });
 
     res.write('data: [DONE]\n\n');
     res.end();
