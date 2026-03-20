@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud LLM Hub - Chat Terminal</title>
+    <style>
+        body { font-family: 'Courier New', Courier, monospace; background: #0a0a0a; color: #00ff00; margin: 0; padding: 0; overflow: hidden; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 10px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+        .system-bar { background: #111; padding: 12px; border: 1px solid #333; margin-bottom: 10px; display: flex; justify-content: space-between; font-size: 13px; border-radius: 4px; flex-wrap: wrap; gap: 8px; }
+        #chat-window { flex: 1; overflow-y: auto; background: #000; padding: 20px; border: 1px solid #333; margin-bottom: 15px; border-radius: 4px; }
+        .message { margin-bottom: 25px; border-bottom: 1px solid #1a1a1a; padding-bottom: 15px; }
+        .user { color: #00bfff; font-weight: bold; font-size: 16px; }
+        .agent { color: #e0e0e0; white-space: pre-wrap; font-size: 16px; line-height: 1.6; display: block; margin-top: 5px; }
+        .thinking { color: #ffcc00; font-style: italic; animation: blink 1s infinite; font-size: 14px; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+
+        .trace-container { margin-top: 15px; background: #0c0c0c; border: 1px solid #222; padding: 12px; border-left: 4px solid #ffcc00; border-radius: 2px; }
+        .trace-header { font-weight: bold; color: #ffcc00; font-size: 11px; text-transform: uppercase; margin-bottom: 8px; }
+        .trace-step { font-size: 13px; color: #aaa; margin: 8px 0; font-family: 'Consolas', monospace; }
+        .trace-step b { color: #fff; }
+        .trace-args { color: #666; font-size: 11px; display: block; margin-top: 2px; font-style: italic; }
+
+        .stats-bar { margin-top: 10px; font-size: 12px; color: #888; display: flex; gap: 20px; padding: 6px 0; }
+        .stats-bar .val { color: #ff00ff; font-weight: bold; }
+
+        .input-area { display: flex; gap: 10px; padding-bottom: 10px; }
+        #user-input { flex: 1; padding: 18px 20px; border: 2px solid #333; background: #111; color: #00ff00; outline: none; font-size: 18px; font-family: 'Courier New', Courier, monospace; border-radius: 6px; }
+        #user-input:focus { border-color: #00ff00; }
+        button { background: #1a1a1a; color: #00ff00; border: 2px solid #333; cursor: pointer; padding: 0 30px; font-weight: bold; font-size: 16px; border-radius: 6px; }
+        button:hover:not(:disabled) { background: #00ff00; color: #000; }
+        button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
+        #clear-btn { color: #ff5555; border-color: #552222; padding: 0 15px; font-size: 13px; }
+        #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
+        .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
+        .status-ready { color: #00ff00; }
+        .status-error { color: #ff5555; }
+        .status-streaming { color: #00bfff; animation: blink 1s infinite; }
+
+        pre code { display: block; background: #2d2d2d; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; color: #e0e0e0; }
+        code { background: #383838; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="system-bar">
+            <span>CORE: Cloud-LLM-Hub</span>
+            <span>AGENT: <span id="model-name">loading...</span></span>
+            <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
+        </div>
+        <div id="chat-window"></div>
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
+                   onkeydown="if(event.key === 'Enter') sendMessage()">
+            <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
+            <button id="clear-btn" onclick="clearChat()">CLR</button>
+        </div>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const statusText = document.getElementById('status-text');
+        const modelName = document.getElementById('model-name');
+        let conversationHistory = [];
+        let ready = false;
+
+        function setStatus(text, cls) {
+            statusText.innerText = text;
+            statusText.className = cls;
+        }
+
+        function setInputEnabled(enabled) {
+            userInput.disabled = !enabled;
+            sendBtn.disabled = !enabled;
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        function markdownToHtml(text) {
+            if (!text) return '';
+            let html = text;
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, _lang, code) =>
+                '<pre><code>' + escapeHtml(code.trim()) + '</code></pre>');
+            html = html.replace(/`([^`]+)`/g, (_, code) =>
+                '<code>' + escapeHtml(code) + '</code>');
+            html = html.replace(/^### (.+)$/gm, '<strong style="font-size:14px">$1</strong><br>');
+            html = html.replace(/^## (.+)$/gm, '<strong style="font-size:15px">$1</strong><br>');
+            html = html.replace(/^# (.+)$/gm, '<strong style="font-size:16px">$1</strong><br>');
+            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            html = html.replace(/^[\-\*] (.+)$/gm, '&bull; $1<br>');
+            html = html.replace(/^\d+\. (.+)$/gm, '&bull; $1<br>');
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#00bfff">$1</a>');
+            html = html.replace(/\n\n/g, '<br><br>');
+            html = html.replace(/\n/g, '<br>');
+            return html;
+        }
+
+        // Check model availability
+        async function checkReady() {
+            try {
+                const resp = await fetch('/v1/models');
+                const data = await resp.json();
+                if (data.data && data.data.length > 0) {
+                    modelName.innerText = data.data[0].id;
+                    ready = true;
+                    setStatus('READY', 'status-ready');
+                    setInputEnabled(true);
+                    userInput.focus();
+                    return;
+                }
+            } catch (e) { /* retry */ }
+            setStatus('CONNECTING...', 'status-connecting');
+            setTimeout(checkReady, 3000);
+        }
+        checkReady();
+
+        function clearChat() {
+            conversationHistory = [];
+            chatWindow.innerHTML = '';
+        }
+
+        async function sendMessage() {
+            if (!ready) return;
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            // Show user message
+            chatWindow.innerHTML += `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`;
+            userInput.value = '';
+            setInputEnabled(false);
+            setStatus('PROCESSING', 'status-connecting');
+
+            // Add to conversation history
+            conversationHistory.push({ role: 'user', content: text });
+
+            // Show thinking indicator
+            const thinkingId = 'thinking-' + Date.now();
+            chatWindow.innerHTML += `<div class="message" id="${thinkingId}"><span class="thinking">> SYSTEM: AGENT IS PROCESSING...</span></div>`;
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+
+            let assistantContent = '';
+            let toolCalls = [];
+            let usage = null;
+
+            try {
+                const response = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        messages: conversationHistory,
+                        stream: true,
+                        stream_options: { include_usage: true }
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error('HTTP ' + response.status + ': ' + errText);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                setStatus('STREAMING', 'status-streaming');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop() || '';
+
+                    for (const part of parts) {
+                        const lines = part.split('\n');
+                        for (const line of lines) {
+                            const trimmed = line.trim();
+                            if (!trimmed || trimmed.charAt(0) === ':') continue;
+                            if (trimmed === 'data: [DONE]') continue;
+                            if (!trimmed.startsWith('data: ')) continue;
+
+                            try {
+                                const data = JSON.parse(trimmed.substring(6));
+
+                                // Server error
+                                if (data.error && data.error.message) {
+                                    throw new Error(data.error.message);
+                                }
+
+                                // Usage chunk
+                                if (data.usage) {
+                                    usage = data.usage;
+                                }
+
+                                if (!data.choices || !data.choices.length) continue;
+                                const delta = data.choices[0].delta || {};
+
+                                // Text content
+                                if (delta.content) {
+                                    assistantContent += delta.content;
+                                    // Update thinking placeholder with streaming content
+                                    const el = document.getElementById(thinkingId);
+                                    if (el) {
+                                        el.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(assistantContent) + '</span>';
+                                        chatWindow.scrollTop = chatWindow.scrollHeight;
+                                    }
+                                }
+
+                                // Tool calls
+                                if (delta.tool_calls && delta.tool_calls.length) {
+                                    setStatus('TOOL CALL', 'status-connecting');
+                                    for (const tc of delta.tool_calls) {
+                                        const idx = tc.index != null ? tc.index : toolCalls.length;
+                                        if (!toolCalls[idx]) toolCalls[idx] = { name: '', arguments: '' };
+                                        if (tc.function) {
+                                            if (tc.function.name) toolCalls[idx].name += tc.function.name;
+                                            if (tc.function.arguments) toolCalls[idx].arguments += tc.function.arguments;
+                                        }
+                                    }
+                                    // Show tool calls in thinking indicator
+                                    const el = document.getElementById(thinkingId);
+                                    if (el) {
+                                        let toolHtml = toolCalls.filter(t => t.name).map(t =>
+                                            `<span class="thinking">> SYSTEM: CALLING TOOL: ${escapeHtml(t.name)}</span>`
+                                        ).join('<br>');
+                                        if (assistantContent) {
+                                            toolHtml = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(assistantContent) + '</span><br>' + toolHtml;
+                                        }
+                                        el.innerHTML = toolHtml;
+                                        chatWindow.scrollTop = chatWindow.scrollHeight;
+                                    }
+                                }
+                            } catch (parseErr) {
+                                if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
+                            }
+                        }
+                    }
+                }
+
+                // Save assistant response to history
+                if (assistantContent) {
+                    conversationHistory.push({ role: 'assistant', content: assistantContent });
+                }
+
+                // Build final message
+                const placeholder = document.getElementById(thinkingId);
+
+                let toolsHtml = '';
+                if (toolCalls.length > 0) {
+                    let stepsHtml = '';
+                    toolCalls.forEach(tc => {
+                        if (!tc.name) return;
+                        let argsStr = tc.arguments || '{}';
+                        try { argsStr = JSON.stringify(JSON.parse(argsStr), null, 2); } catch(e) {}
+                        stepsHtml += `<div class="trace-step"><b>${escapeHtml(tc.name)}</b><span class="trace-args">${escapeHtml(argsStr)}</span></div>`;
+                    });
+                    if (stepsHtml) {
+                        const traceId = 'trace-' + Date.now();
+                        toolsHtml = `<div class="trace-container"><div class="trace-header">Tool Calls</div>${stepsHtml}</div>`;
+                    }
+                }
+
+                let usageHtml = '';
+                if (usage) {
+                    const total = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+                    usageHtml = `<div class="stats-bar">
+                        <span>TOKENS: <span class="val">${total}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>
+                    </div>`;
+                }
+
+                if (placeholder) {
+                    placeholder.innerHTML = `
+                        <span class="agent"><b>> AGENT:</b> ${markdownToHtml(assistantContent) || '<em style="color:#888">No response</em>'}</span>
+                        ${toolsHtml}${usageHtml}
+                    `;
+                    placeholder.className = 'message';
+                }
+
+            } catch (e) {
+                const placeholder = document.getElementById(thinkingId);
+                if (placeholder) {
+                    placeholder.innerHTML = `<span style="color:#ff5555"><b>> ERROR:</b> ${escapeHtml(e.message)}</span>`;
+                    placeholder.className = 'message';
+                }
+                setStatus('ERROR', 'status-error');
+                setInputEnabled(true);
+                userInput.focus();
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+                return;
+            }
+
+            setStatus('READY', 'status-ready');
+            setInputEnabled(true);
+            userInput.focus();
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+    </script>
+</body>
+</html>
