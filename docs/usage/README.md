@@ -9,10 +9,15 @@ User guides and how-to documentation for using cloud-llm-hub.
 - [**Getting Started**](GETTING_STARTED.md) - Complete getting started guide
 - [**Quick Setup**](QUICK_SETUP.md) - Quick setup for immediate use
 
+### Connection Guides
+
+- [**OpenAI-Compatible Agent**](OPENAI_AGENT.md) - Connect via OpenAI API (`/v1/chat/completions`)
+- [**MCP Stream-HTTP Connection**](MCP_CONNECTION.md) - Connect via MCP protocol (`/mcp/stream/http`)
+
 ### Usage Guides
 
 - [**Consumer Guide**](CONSUMER_GUIDE.md) - Guide for API consumers
-- [**MCP Proxy Usage**](MCP_PROXY_USAGE.md) - Using the MCP proxy
+- [**MCP Proxy Usage**](MCP_PROXY_USAGE.md) - Using the MCP proxy (legacy)
 - [**MCP Config Update How-to**](MCP_CONFIG_UPDATE_HOWTO.md) - Updating MCP configuration
 - [**Assistant Guidelines**](ASSISTANT_GUIDELINES.md) - Guidelines for AI assistants
 

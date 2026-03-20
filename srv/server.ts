@@ -199,14 +199,20 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
 // It uses executeHttpRequest from SAP Cloud SDK for automatic destination handling
 
 /**
- * Register middleware and endpoints for /mcp routes.
+ * Register middleware and endpoints for /mcp and /v1 routes.
  *
- * Authentication is handled by CAP auth middleware (cds.auth()):
+ * Authentication uses CAP's built-in middleware (cds.middlewares.before)
+ * applied to custom Express routes. This handles both:
  * - Development: mocked auth via Basic header (users from package.json cds config)
- * - Production: XSUAA (JWT) via app router
+ * - Production: XSUAA JWT validation via @sap/xssec
+ *
+ * Custom Express routes registered in cds.on('bootstrap') don't go through
+ * CAP's middleware chain automatically, so we apply context + auth manually.
+ * See: https://cap.cloud.sap/docs/node.js/cds-serve#cds-middlewares
+ * See: docs/development/CAP_EXPRESS_AUTH.md
  *
  * Role-based authorization for MCP tools is handled in mcp-manager.ts
- * by reading req.user roles set by the auth middleware.
+ * by checking cds.context.user roles.
  */
 cds.on('bootstrap', (app: Application) => {
   const log = cds.log('mcp-proxy/bootstrap');
@@ -232,61 +238,27 @@ cds.on('bootstrap', (app: Application) => {
     },
   );
 
-  // Auth middleware for /mcp routes
-  // Custom Express routes don't go through CAP's middleware chain (context → auth → ctx_model),
-  // so we resolve the user manually using cds.User from the Authorization header.
-  app.use('/mcp', (req: Request, res: Response, next: NextFunction) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      res.status(401).json({
-        error: 'Unauthorized',
-        message: 'Missing Authorization header',
-      });
-      return;
-    }
-
-    // Parse Basic auth (mocked dev) or Bearer/JWT (production XSUAA)
-    const basicMatch = authHeader.match(/^Basic\s+(.+)$/i);
-    if (basicMatch) {
-      const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf-8');
-      const [userId] = decoded.split(':');
-      if (!userId) {
-        res
-          .status(401)
-          .json({ error: 'Unauthorized', message: 'Invalid credentials' });
+  // Reuse CAP's built-in auth middleware for custom Express routes.
+  // Custom routes registered via cds.on('bootstrap') don't go through CAP's
+  // middleware chain automatically. We apply context + auth middleware manually
+  // so that cds.context.user is populated for both mocked (dev) and XSUAA JWT (prod).
+  // See: docs/development/CAP_EXPRESS_AUTH.md
+  const [context, , auth] = cds.middlewares.before;
+  app.use(
+    '/mcp',
+    context,
+    auth,
+    (_req: Request, res: Response, next: NextFunction) => {
+      if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
+        res.status(401).json({
+          error: 'Unauthorized',
+          message: 'Missing or invalid Authorization header',
+        });
         return;
       }
-
-      // Create CAP User from mocked config
-      // biome-ignore lint/suspicious/noExplicitAny: cds.User constructor accepts object with roles
-      const user = new (cds.User as any)({ id: userId });
-
-      // Look up roles from CDS mocked auth config
-      const mockedUsers = cds.env.requires?.auth?.users as
-        | Record<string, { roles?: string[] }>
-        | undefined;
-      const userConfig = mockedUsers?.[userId];
-      if (userConfig?.roles) {
-        // CDS config may store roles as array ["R1","R2"] or object {"R1":1,"R2":1}
-        const roles = userConfig.roles;
-        if (Array.isArray(roles)) {
-          for (const role of roles) {
-            user.roles[role] = true;
-          }
-        } else if (typeof roles === 'object') {
-          for (const role of Object.keys(roles)) {
-            user.roles[role] = true;
-          }
-        }
-      }
-
-      // Set on both req and cds.context for downstream handlers
-      (req as Request & { user: unknown }).user = user;
-    }
-
-    // For Bearer/JWT — in production, XSUAA/app router sets req.user before reaching here
-    next();
-  });
+      next();
+    },
+  );
 
   // Request logger for debugging
   app.use(
@@ -296,7 +268,7 @@ cds.on('bootstrap', (app: Application) => {
       debugLog.info('Request received', {
         method: req.method,
         path: req.originalUrl,
-        userId: (req as Request & { user?: { id?: string } }).user?.id,
+        userId: cds.context?.user?.id,
         authorization: req.headers.authorization ? 'present' : 'missing',
       });
       next();
@@ -344,51 +316,22 @@ cds.on('bootstrap', (app: Application) => {
   // OpenAI-compatible endpoints (/v1/*)
   // -------------------------------------------------------------------
 
-  // Auth middleware for /v1 routes (same pattern as /mcp)
-  app.use('/v1', (req: Request, res: Response, next: NextFunction) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      res.status(401).json({
-        error: 'Unauthorized',
-        message: 'Missing Authorization header',
-      });
-      return;
-    }
-
-    const basicMatch = authHeader.match(/^Basic\s+(.+)$/i);
-    if (basicMatch) {
-      const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf-8');
-      const [userId] = decoded.split(':');
-      if (!userId) {
-        res
-          .status(401)
-          .json({ error: 'Unauthorized', message: 'Invalid credentials' });
+  // Reuse CAP auth middleware for /v1 routes (same as /mcp above)
+  app.use(
+    '/v1',
+    context,
+    auth,
+    (_req: Request, res: Response, next: NextFunction) => {
+      if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
+        res.status(401).json({
+          error: 'Unauthorized',
+          message: 'Missing or invalid Authorization header',
+        });
         return;
       }
-
-      // biome-ignore lint/suspicious/noExplicitAny: cds.User constructor accepts object with roles
-      const user = new (cds.User as any)({ id: userId });
-      const mockedUsers = cds.env.requires?.auth?.users as
-        | Record<string, { roles?: string[] }>
-        | undefined;
-      const userConfig = mockedUsers?.[userId];
-      if (userConfig?.roles) {
-        const roles = userConfig.roles;
-        if (Array.isArray(roles)) {
-          for (const role of roles) {
-            user.roles[role] = true;
-          }
-        } else if (typeof roles === 'object') {
-          for (const role of Object.keys(roles)) {
-            user.roles[role] = true;
-          }
-        }
-      }
-      (req as Request & { user: unknown }).user = user;
-    }
-
-    next();
-  });
+      next();
+    },
+  );
 
   // CORS preflight for /v1/* routes
   app.options('/v1/*', (_req: Request, res: Response) => {
