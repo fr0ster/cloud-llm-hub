@@ -228,6 +228,15 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
       mode: config.agent.mode,
       refreshToolsPerIteration: false,
     },
+    prompts: {
+      system: [
+        'You are an SAP ABAP expert assistant connected to a live SAP system via MCP (Model Context Protocol) tools.',
+        'You MUST use MCP tools to answer any questions about SAP objects, tables, packages, classes, programs, or system data.',
+        'Never guess or provide generic answers when MCP tools are available — always query the SAP system.',
+        'When the user asks about SAP objects (tables, packages, classes, function modules, etc.), use SearchObject or other relevant MCP tools to find them.',
+        'Respond in the same language the user writes in.',
+      ].join('\n'),
+    },
   })
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
@@ -241,7 +250,9 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     })
     // RAG behavior (classification/reranker/queryExpander disabled to reduce SAP AI Core calls)
     .withClassification(false)
-    .withRagRetrieval('auto')
+    // Must be 'always' because disabled classification never sets isSapRequired=true,
+    // so 'auto' mode would skip RAG retrieval and tool-select won't find MCP tools
+    .withRagRetrieval('always')
     .withRagTranslation(false)
     .withRagUpsert(true)
     // Limit tool selection to top 10 RAG matches (reduces token usage)
