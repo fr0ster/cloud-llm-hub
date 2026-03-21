@@ -15,6 +15,8 @@
  * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
  */
 
+import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
+import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
@@ -30,8 +32,6 @@ import {
   ToolCache,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
-import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
-import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
 import cds, { type Request } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 import { createConnection } from './connections/connectionFactory';
@@ -85,7 +85,8 @@ async function buildEmbeddedMcpAdapter(
 
   // Handler context with injected connection
   const context: HandlerContext = {
-    connection: connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
+    connection:
+      connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
     logger: loggerAdapter,
   };
 
@@ -307,7 +308,9 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
           llm: v.llm ? 'OK' : 'FAIL',
           rag: v.rag ? 'OK' : 'FAIL',
           mcp: mcpStatus,
-          mcpErrors: v.mcp.filter((m) => !m.ok).map((m) => m.error || 'unknown'),
+          mcpErrors: v.mcp
+            .filter((m) => !m.ok)
+            .map((m) => m.error || 'unknown'),
         });
       } else {
         log.warn('SmartAgent health check failed', {

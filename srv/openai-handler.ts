@@ -17,8 +17,8 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
-import { getSmartAgent } from './agent-manager';
 import { getAgentConfig } from './agent-config';
+import { getSmartAgent } from './agent-manager';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -157,7 +157,9 @@ export async function handleChatCompletions(
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
     res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(jsonError(`Agent initialization failed: ${message}`, 'server_error'));
+    res.end(
+      jsonError(`Agent initialization failed: ${message}`, 'server_error'),
+    );
     return;
   }
 
@@ -251,7 +253,11 @@ export async function handleChatCompletions(
 
     // Keepalive timer: write SSE comment every 10s to prevent CF GoRouter timeout (60s)
     const keepalive = setInterval(() => {
-      try { res.write(': keepalive\n\n'); } catch { /* connection closed */ }
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        /* connection closed */
+      }
     }, 10_000);
 
     try {
@@ -260,9 +266,7 @@ export async function handleChatCompletions(
         if (!chunk.ok) {
           const errMsg = chunk.error.message;
           log.error('Stream error chunk', { chunkCount, error: errMsg });
-          res.write(
-            `data: ${jsonError(errMsg, 'server_error')}\n\n`,
-          );
+          res.write(`data: ${jsonError(errMsg, 'server_error')}\n\n`);
           break;
         }
 
@@ -277,8 +281,9 @@ export async function handleChatCompletions(
 
         // Timing: SSE comment with performance metrics
         if (v.timing) {
-          const parts = (v.timing as Array<{ phase: string; duration: number }>)
-            .map((t) => `${t.phase}=${t.duration}ms`);
+          const parts = (
+            v.timing as Array<{ phase: string; duration: number }>
+          ).map((t) => `${t.phase}=${t.duration}ms`);
           res.write(`: timing ${parts.join(' ')}\n\n`);
         }
 
@@ -367,18 +372,22 @@ export async function handleChatCompletions(
         }
       }
     } catch (streamErr) {
-      const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
-      log.error('Stream exception', { error: errMsg, stack: streamErr instanceof Error ? streamErr.stack : undefined });
-      res.write(
-        `data: ${jsonError(errMsg, 'server_error')}\n\n`,
-      );
+      const errMsg =
+        streamErr instanceof Error ? streamErr.message : String(streamErr);
+      log.error('Stream exception', {
+        error: errMsg,
+        stack: streamErr instanceof Error ? streamErr.stack : undefined,
+      });
+      res.write(`data: ${jsonError(errMsg, 'server_error')}\n\n`);
     }
 
     clearInterval(keepalive);
 
     // Ensure finish_reason is always sent — Cline/Goose require it to detect stream end
     if (!finishReasonSent) {
-      log.debug('Sending fallback finish_reason:stop (SmartAgent did not emit one)');
+      log.debug(
+        'Sending fallback finish_reason:stop (SmartAgent did not emit one)',
+      );
       res.write(
         `data: ${JSON.stringify({
           id,
@@ -500,7 +509,8 @@ export async function handleModels(
             max_iterations: config.agent.maxIterations,
             rag_type: config.agent.ragType,
             mcp_destination: config.mcp.destination,
-            embedding_model: process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
+            embedding_model:
+              process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
           },
         },
       ],

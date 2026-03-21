@@ -43,9 +43,7 @@ if (isLocal) {
           require('node:fs').readFileSync(defaultEnvPath, 'utf-8'),
         );
         if (defaultEnv.VCAP_SERVICES) {
-          process.env.VCAP_SERVICES = JSON.stringify(
-            defaultEnv.VCAP_SERVICES,
-          );
+          process.env.VCAP_SERVICES = JSON.stringify(defaultEnv.VCAP_SERVICES);
           if (process.env.NODE_ENV !== 'production') {
             const services = Object.keys(defaultEnv.VCAP_SERVICES);
             console.log(
