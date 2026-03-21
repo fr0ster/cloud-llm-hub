@@ -1,0 +1,58 @@
+<mvc:View
+  controllerName="cloud.llm.hub.chat.controller.Chat"
+  xmlns:mvc="sap.ui.core.mvc"
+  xmlns="sap.m"
+  xmlns:core="sap.ui.core"
+  height="100%"
+>
+  <Page id="chatPage" showHeader="false" backgroundDesign="Solid">
+    <subHeader>
+      <Toolbar>
+        <Label text="CORE: Cloud-LLM-Hub v2" class="sapUiTinyMarginEnd" />
+        <ToolbarSeparator />
+        <Label text="AGENT:" class="sapUiTinyMarginBeginEnd" />
+        <Text text="{/modelName}" />
+        <ToolbarSpacer />
+        <Label text="STATUS:" class="sapUiTinyMarginEnd" />
+        <ObjectStatus text="{/statusText}" state="{= ${/busy} ? 'Warning' : 'Success'}" />
+      </Toolbar>
+    </subHeader>
+
+    <content>
+      <ScrollContainer
+        id="chatScroll"
+        height="100%"
+        vertical="true"
+        horizontal="false"
+      >
+        <core:HTML id="chatOutput" content="&lt;div id='chat-window' style='padding:12px'&gt;&lt;/div&gt;" />
+      </ScrollContainer>
+    </content>
+
+    <footer>
+      <Toolbar>
+        <Input
+          id="chatInput"
+          value="{/inputValue}"
+          placeholder="Type your message... (Enter to send)"
+          enabled="{= !${/busy}}"
+          submit=".onSendMessage"
+          width="100%"
+        />
+        <Button
+          text="Send"
+          icon="sap-icon://paper-plane"
+          type="Emphasized"
+          press=".onSendMessage"
+          enabled="{= !${/busy}}"
+        />
+        <Button
+          icon="sap-icon://delete"
+          type="Transparent"
+          press=".onClearHistory"
+          tooltip="Clear chat"
+        />
+      </Toolbar>
+    </footer>
+  </Page>
+</mvc:View>
