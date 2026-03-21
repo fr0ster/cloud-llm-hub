@@ -218,6 +218,10 @@ cds.on('bootstrap', (app: Application) => {
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Registering /mcp endpoints');
 
+  // Serve chat UI static files (app/chat/webapp is copied to gen/srv/app/chat/webapp during build)
+  const chatPath = require('path').join(__dirname, 'app', 'chat', 'webapp');
+  app.use('/chat/webapp', express.static(chatPath));
+
   /**
    * Fix Content-Type and Accept headers for Cline compatibility
    */

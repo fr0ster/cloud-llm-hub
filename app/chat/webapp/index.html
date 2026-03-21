@@ -44,8 +44,10 @@
 <body>
     <div class="container">
         <div class="system-bar">
-            <span>CORE: Cloud-LLM-Hub</span>
-            <span>AGENT: <span id="model-name">loading...</span></span>
+            <span>LLM: <span id="llm-model">...</span></span>
+            <span>MODE: <span id="agent-mode">...</span></span>
+            <span>RAG: <span id="rag-type">...</span></span>
+            <span>MCP: <span id="mcp-dest">...</span></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
         </div>
         <div id="chat-window"></div>
@@ -62,9 +64,9 @@
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
         const statusText = document.getElementById('status-text');
-        const modelName = document.getElementById('model-name');
         let conversationHistory = [];
         let ready = false;
+        const sessionId = 'ui-' + crypto.randomUUID();
 
         function setStatus(text, cls) {
             statusText.innerText = text;
@@ -100,13 +102,17 @@
             return html;
         }
 
-        // Check model availability
+        // Check model availability and populate system bar
         async function checkReady() {
             try {
                 const resp = await fetch('/v1/models');
                 const data = await resp.json();
                 if (data.data && data.data.length > 0) {
-                    modelName.innerText = data.data[0].id;
+                    const m = data.data[0].meta || {};
+                    document.getElementById('llm-model').innerText = m.llm_model || data.data[0].id;
+                    document.getElementById('agent-mode').innerText = m.mode || '?';
+                    document.getElementById('rag-type').innerText = m.rag_type || '?';
+                    document.getElementById('mcp-dest').innerText = m.mcp_destination || '?';
                     ready = true;
                     setStatus('READY', 'status-ready');
                     setInputEnabled(true);
@@ -129,30 +135,40 @@
             const text = userInput.value.trim();
             if (!text) return;
 
-            // Show user message
             chatWindow.innerHTML += `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`;
             userInput.value = '';
             setInputEnabled(false);
-            setStatus('PROCESSING', 'status-connecting');
 
-            // Add to conversation history
             conversationHistory.push({ role: 'user', content: text });
 
-            // Show thinking indicator
             const thinkingId = 'thinking-' + Date.now();
             chatWindow.innerHTML += `<div class="message" id="${thinkingId}"><span class="thinking">> SYSTEM: AGENT IS PROCESSING...</span></div>`;
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
             let assistantContent = '';
             let toolCalls = [];
+            const toolCallNames = new Set();
             let usage = null;
+            const t0 = Date.now();
+
+            // Single timer for elapsed seconds in status bar
+            const elapsed = () => ((Date.now() - t0) / 1000).toFixed(0);
+            let phase = 'PROCESSING';
+            setStatus(`${phase} 0s`, 'status-connecting');
+            const timer = setInterval(() => {
+                const cls = phase === 'STREAMING' ? 'status-streaming' : 'status-connecting';
+                setStatus(`${phase} ${elapsed()}s`, cls);
+            }, 1000);
+
+            function stopTimer() { clearInterval(timer); }
 
             try {
+                // Send only current message — SmartAgent manages session history internally
                 const response = await fetch('/v1/chat/completions', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId },
                     body: JSON.stringify({
-                        messages: conversationHistory,
+                        messages: [{ role: 'user', content: text }],
                         stream: true,
                         stream_options: { include_usage: true }
                     })
@@ -166,8 +182,7 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
-
-                setStatus('STREAMING', 'status-streaming');
+                phase = 'STREAMING';
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -178,8 +193,7 @@
                     buffer = parts.pop() || '';
 
                     for (const part of parts) {
-                        const lines = part.split('\n');
-                        for (const line of lines) {
+                        for (const line of part.split('\n')) {
                             const trimmed = line.trim();
                             if (!trimmed || trimmed.charAt(0) === ':') continue;
                             if (trimmed === 'data: [DONE]') continue;
@@ -188,23 +202,22 @@
                             try {
                                 const data = JSON.parse(trimmed.substring(6));
 
-                                // Server error
-                                if (data.error && data.error.message) {
-                                    throw new Error(data.error.message);
-                                }
-
-                                // Usage chunk
-                                if (data.usage) {
-                                    usage = data.usage;
-                                }
-
+                                if (data.error && data.error.message) throw new Error(data.error.message);
+                                if (data.usage) usage = data.usage;
                                 if (!data.choices || !data.choices.length) continue;
+
                                 const delta = data.choices[0].delta || {};
 
-                                // Text content
                                 if (delta.content) {
                                     assistantContent += delta.content;
-                                    // Update thinking placeholder with streaming content
+                                    // Detect internal tool executions from content (deduplicate by name+count)
+                                    const execMatch = delta.content.match(/\[SmartAgent: Executing (\w+)\.\.\.\]/);
+                                    if (execMatch) {
+                                        const toolName = execMatch[1];
+                                        toolCalls.push({ name: toolName, arguments: '' });
+                                        toolCallNames.add(toolName);
+                                        phase = 'TOOL: ' + toolName;
+                                    }
                                     const el = document.getElementById(thinkingId);
                                     if (el) {
                                         el.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(assistantContent) + '</span>';
@@ -212,9 +225,7 @@
                                     }
                                 }
 
-                                // Tool calls
                                 if (delta.tool_calls && delta.tool_calls.length) {
-                                    setStatus('TOOL CALL', 'status-connecting');
                                     for (const tc of delta.tool_calls) {
                                         const idx = tc.index != null ? tc.index : toolCalls.length;
                                         if (!toolCalls[idx]) toolCalls[idx] = { name: '', arguments: '' };
@@ -223,18 +234,7 @@
                                             if (tc.function.arguments) toolCalls[idx].arguments += tc.function.arguments;
                                         }
                                     }
-                                    // Show tool calls in thinking indicator
-                                    const el = document.getElementById(thinkingId);
-                                    if (el) {
-                                        let toolHtml = toolCalls.filter(t => t.name).map(t =>
-                                            `<span class="thinking">> SYSTEM: CALLING TOOL: ${escapeHtml(t.name)}</span>`
-                                        ).join('<br>');
-                                        if (assistantContent) {
-                                            toolHtml = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(assistantContent) + '</span><br>' + toolHtml;
-                                        }
-                                        el.innerHTML = toolHtml;
-                                        chatWindow.scrollTop = chatWindow.scrollHeight;
-                                    }
+                                    phase = 'TOOL CALL';
                                 }
                             } catch (parseErr) {
                                 if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
@@ -243,36 +243,38 @@
                     }
                 }
 
-                // Save assistant response to history
+                stopTimer();
+
                 if (assistantContent) {
                     conversationHistory.push({ role: 'assistant', content: assistantContent });
                 }
 
-                // Build final message
                 const placeholder = document.getElementById(thinkingId);
-
                 let toolsHtml = '';
-                if (toolCalls.length > 0) {
-                    let stepsHtml = '';
-                    toolCalls.forEach(tc => {
-                        if (!tc.name) return;
-                        let argsStr = tc.arguments || '{}';
-                        try { argsStr = JSON.stringify(JSON.parse(argsStr), null, 2); } catch(e) {}
-                        stepsHtml += `<div class="trace-step"><b>${escapeHtml(tc.name)}</b><span class="trace-args">${escapeHtml(argsStr)}</span></div>`;
-                    });
-                    if (stepsHtml) {
-                        const traceId = 'trace-' + Date.now();
-                        toolsHtml = `<div class="trace-container"><div class="trace-header">Tool Calls</div>${stepsHtml}</div>`;
+                const namedTools = toolCalls.filter(t => t.name);
+                if (namedTools.length > 0) {
+                    // Group by tool name and show call count
+                    const toolCountMap = new Map();
+                    for (const tc of namedTools) {
+                        toolCountMap.set(tc.name, (toolCountMap.get(tc.name) || 0) + 1);
                     }
+                    const stepsHtml = [...toolCountMap.entries()].map(([name, count]) => {
+                        const countLabel = count > 1 ? ` <span style="color:#888">×${count}</span>` : '';
+                        return `<div class="trace-step"><b>${escapeHtml(name)}</b>${countLabel}</div>`;
+                    }).join('');
+                    toolsHtml = `<div class="trace-container"><div class="trace-header">Tool Calls (${namedTools.length})</div>${stepsHtml}</div>`;
                 }
 
-                let usageHtml = '';
+                const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
+                let usageHtml = `<div class="stats-bar"><span>TIME: <span class="val">${durationSec}s</span></span>`;
                 if (usage) {
                     const total = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
-                    usageHtml = `<div class="stats-bar">
-                        <span>TOKENS: <span class="val">${total}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>
-                    </div>`;
+                    usageHtml += `<span>TOKENS: <span class="val">${total}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>`;
                 }
+                if (namedTools.length > 0) {
+                    usageHtml += `<span>TOOLS: <span class="val">${toolCallNames.size} unique / ${namedTools.length} calls</span></span>`;
+                }
+                usageHtml += '</div>';
 
                 if (placeholder) {
                     placeholder.innerHTML = `
@@ -283,9 +285,12 @@
                 }
 
             } catch (e) {
+                stopTimer();
+                const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
                 const placeholder = document.getElementById(thinkingId);
                 if (placeholder) {
-                    placeholder.innerHTML = `<span style="color:#ff5555"><b>> ERROR:</b> ${escapeHtml(e.message)}</span>`;
+                    placeholder.innerHTML = `<span style="color:#ff5555"><b>> ERROR:</b> ${escapeHtml(e.message)}</span>
+                        <div class="stats-bar"><span>TIME: <span class="val">${durationSec}s</span></span></div>`;
                     placeholder.className = 'message';
                 }
                 setStatus('ERROR', 'status-error');

@@ -21,8 +21,6 @@ import {
   FallbackRag,
   InMemoryMetrics,
   InMemoryRag,
-  LlmQueryExpander,
-  LlmReranker,
   MCPClientWrapper,
   McpClientAdapter,
   makeLlm,
@@ -116,6 +114,9 @@ async function buildEmbeddedMcpAdapter(
     },
   });
 
+  // connect() populates internal tools list from listToolsHandler
+  await mcpClient.connect();
+
   return new McpClientAdapter(mcpClient);
 }
 
@@ -151,8 +152,14 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const embeddingModel =
     process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
 
+  // Classifier model: cheaper/faster model for classification, reranking, query expansion
+  // Falls back to main model if not explicitly configured
+  const classifierModel =
+    process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
+
   log.info('Building SmartAgent', {
     model: config.llm.model,
+    classifierModel,
     embeddingModel,
     mode: config.agent.mode,
     maxIterations: config.agent.maxIterations,
@@ -166,17 +173,19 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
       apiKey: 'sap-ai-sdk-managed',
       model: config.llm.model,
       temperature: config.llm.temperature,
+      maxTokens: config.llm.maxTokens,
       resourceGroup: config.llm.resourceGroup,
     },
     config.llm.temperature,
   );
 
-  // Create classifier LLM (same provider, lower temperature)
+  // Create classifier LLM (uses classifier model if available, falls back to main model)
   const classifierLlm = makeLlm(
     {
       provider: 'sap-ai-sdk',
       apiKey: 'sap-ai-sdk-managed',
-      model: config.llm.model,
+      model: classifierModel,
+      maxTokens: config.llm.maxTokens,
       resourceGroup: config.llm.resourceGroup,
     },
     0.1,
@@ -212,34 +221,31 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const inMemoryRag = new InMemoryRag();
   const factsRag = new FallbackRag(vectorRag, inMemoryRag, embedderBreaker);
 
-  // RAG quality: query expansion + re-ranking via classifier LLM
-  const reranker = new LlmReranker(classifierLlm);
-  const queryExpander = new LlmQueryExpander(classifierLlm);
-
   // Build SmartAgent
   const builder = new SmartAgentBuilder({
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
+      refreshToolsPerIteration: false,
     },
   })
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
     .withMcpClients(mcpAdapter ? [mcpAdapter] : [])
     // RAG: semantic search with fallback
+    // facts = tool discovery + domain knowledge, feedback = separate store
     .withRag({
       facts: factsRag,
-      feedback: factsRag,
+      feedback: inMemoryRag,
       state: inMemoryRag,
     })
-    // RAG quality: expand queries + re-rank results
-    .withReranker(reranker)
-    .withQueryExpander(queryExpander)
-    // RAG behavior
-    .withClassification(true)
+    // RAG behavior (classification/reranker/queryExpander disabled to reduce SAP AI Core calls)
+    .withClassification(false)
     .withRagRetrieval('auto')
-    .withRagTranslation(true)
+    .withRagTranslation(false)
     .withRagUpsert(true)
+    // Limit tool selection to top 10 RAG matches (reduces token usage)
+    .withRagQueryK(10)
     // Resilience: auto-recovery on SAP AI Core outages
     .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
     // Caching: avoid duplicate tool calls
@@ -254,6 +260,25 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   const handle = await builder.build();
   agentHandle = handle;
   agentConfig = config;
+
+  // Vectorize MCP tools into RAG facts store for tool-select stage.
+  // withMcpClients() skips auto-vectorization, so we do it manually.
+  if (mcpAdapter) {
+    const toolsResult = await mcpAdapter.listTools();
+    if (toolsResult.ok) {
+      const factsStore = handle.ragStores.facts;
+      for (const t of toolsResult.value) {
+        // Only name + description for RAG discovery; full schema is passed as OpenAI function tools
+        await factsStore.upsert(
+          `Tool: ${t.name}\nDescription: ${t.description}`,
+          { id: `tool:${t.name}` },
+        );
+      }
+      log.info('Vectorized MCP tools into RAG', {
+        toolCount: toolsResult.value.length,
+      });
+    }
+  }
 
   // Run health check in background
   handle.agent

@@ -18,6 +18,7 @@ import {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getSmartAgent } from './agent-manager';
+import { getAgentConfig } from './agent-config';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -239,6 +240,7 @@ export async function handleChatCompletions(
 
     let firstChunk = true;
     let chunkCount = 0;
+    let finishReasonSent = false;
     let lastUsage: {
       prompt_tokens: number;
       completion_tokens: number;
@@ -246,6 +248,11 @@ export async function handleChatCompletions(
     } | null = null;
 
     log.info('Starting streamProcess iteration');
+
+    // Keepalive timer: write SSE comment every 10s to prevent CF GoRouter timeout (60s)
+    const keepalive = setInterval(() => {
+      try { res.write(': keepalive\n\n'); } catch { /* connection closed */ }
+    }, 10_000);
 
     try {
       for await (const chunk of stream) {
@@ -259,24 +266,36 @@ export async function handleChatCompletions(
           break;
         }
 
-        log.info('Stream chunk', {
-          chunkCount,
-          hasContent: !!chunk.value.content,
-          contentLen: chunk.value.content?.length || 0,
-          contentPreview: (chunk.value.content || '').substring(0, 80),
-          hasToolCalls: !!chunk.value.toolCalls,
-          toolCallNames: chunk.value.toolCalls?.map((tc) => tc.name) || [],
-          finishReason: chunk.value.finishReason || null,
-          hasUsage: !!chunk.value.usage,
-        });
+        const v = chunk.value;
 
-        if (chunk.value.usage) {
+        // Heartbeat: SSE comment to keep connection alive during tool execution
+        if (v.heartbeat) {
+          const hb = v.heartbeat as { tool: string; elapsed: number };
+          res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
+          continue;
+        }
+
+        // Timing: SSE comment with performance metrics
+        if (v.timing) {
+          const parts = (v.timing as Array<{ phase: string; duration: number }>)
+            .map((t) => `${t.phase}=${t.duration}ms`);
+          res.write(`: timing ${parts.join(' ')}\n\n`);
+        }
+
+        if (v.usage) {
           lastUsage = {
-            prompt_tokens: chunk.value.usage.promptTokens,
-            completion_tokens: chunk.value.usage.completionTokens,
-            total_tokens: chunk.value.usage.totalTokens,
+            prompt_tokens: v.usage.promptTokens,
+            completion_tokens: v.usage.completionTokens,
+            total_tokens: v.usage.totalTokens,
           };
         }
+
+        log.debug('Stream chunk', {
+          chunkCount,
+          hasContent: !!v.content,
+          contentLen: v.content?.length || 0,
+          finishReason: v.finishReason || null,
+        });
 
         const baseResponse = {
           id,
@@ -295,7 +314,7 @@ export async function handleChatCompletions(
                   index: 0,
                   delta: {
                     role: 'assistant',
-                    content: chunk.value.content || '',
+                    content: v.content || '',
                   },
                   finish_reason: null,
                 },
@@ -303,14 +322,14 @@ export async function handleChatCompletions(
             })}\n\n`,
           );
           firstChunk = false;
-          if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
+          if (!v.finishReason && !v.toolCalls) continue;
         }
 
-        if (chunk.value.content || chunk.value.toolCalls) {
+        if (v.content || v.toolCalls) {
           const delta: Record<string, unknown> = {};
-          if (chunk.value.content) delta.content = chunk.value.content;
-          if (chunk.value.toolCalls) {
-            delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
+          if (v.content) delta.content = v.content;
+          if (v.toolCalls) {
+            delta.tool_calls = v.toolCalls.map((call, index) => {
               const tc = toToolCallDelta(call, index);
               return {
                 index: tc.index,
@@ -331,7 +350,7 @@ export async function handleChatCompletions(
           );
         }
 
-        if (chunk.value.finishReason) {
+        if (v.finishReason) {
           res.write(
             `data: ${JSON.stringify({
               ...baseResponse,
@@ -339,11 +358,12 @@ export async function handleChatCompletions(
                 {
                   index: 0,
                   delta: {},
-                  finish_reason: mapStopReason(chunk.value.finishReason),
+                  finish_reason: mapStopReason(v.finishReason),
                 },
               ],
             })}\n\n`,
           );
+          finishReasonSent = true;
         }
       }
     } catch (streamErr) {
@@ -351,6 +371,28 @@ export async function handleChatCompletions(
       log.error('Stream exception', { error: errMsg, stack: streamErr instanceof Error ? streamErr.stack : undefined });
       res.write(
         `data: ${jsonError(errMsg, 'server_error')}\n\n`,
+      );
+    }
+
+    clearInterval(keepalive);
+
+    // Ensure finish_reason is always sent — Cline/Goose require it to detect stream end
+    if (!finishReasonSent) {
+      log.debug('Sending fallback finish_reason:stop (SmartAgent did not emit one)');
+      res.write(
+        `data: ${JSON.stringify({
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: 'smart-agent',
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: 'stop',
+            },
+          ],
+        })}\n\n`,
       );
     }
 
@@ -431,11 +473,14 @@ export async function handleChatCompletions(
 
 /**
  * GET /v1/models
+ *
+ * Returns model info enriched with agent configuration (LLM, RAG, MCP).
  */
 export async function handleModels(
   _req: Request,
   res: Response,
 ): Promise<void> {
+  const config = getAgentConfig();
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(
     JSON.stringify({
@@ -446,6 +491,17 @@ export async function handleModels(
           object: 'model',
           owned_by: 'smart-agent',
           context_window: 2000000,
+          // Extended info for UI
+          meta: {
+            llm_model: config.llm.model,
+            temperature: config.llm.temperature,
+            max_tokens: config.llm.maxTokens,
+            mode: config.agent.mode,
+            max_iterations: config.agent.maxIterations,
+            rag_type: config.agent.ragType,
+            mcp_destination: config.mcp.destination,
+            embedding_model: process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
+          },
         },
       ],
     }),
