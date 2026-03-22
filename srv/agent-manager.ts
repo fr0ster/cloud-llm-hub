@@ -33,11 +33,48 @@ import {
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds, { type Request } from '@sap/cds';
+import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
+
+/**
+ * Convert inputSchema from HandlerExporter to JSON Schema.
+ *
+ * HandlerExporter returns Zod raw shapes (Record<string, ZodType>),
+ * not JSON Schema. The MCP SDK converts them automatically in listTools,
+ * but our embedded MCP path bypasses that conversion.
+ */
+function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
+  if (!inputSchema || typeof inputSchema !== 'object') {
+    return { type: 'object', properties: {} };
+  }
+
+  // Already JSON Schema (from high-level handlers that define it directly)
+  if (
+    (inputSchema as Record<string, unknown>).type === 'object' &&
+    (inputSchema as Record<string, unknown>).properties
+  ) {
+    return inputSchema as Record<string, unknown>;
+  }
+
+  // Zod raw shape: Record<string, ZodType> — wrap in z.object() and convert
+  // Uses Zod v4 built-in toJSONSchema, then strips $schema and additionalProperties
+  // which SAP AI Core Orchestration API doesn't expect in tool parameter schemas
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: Zod raw shape type varies between handler groups
+    const zodObj = z.object(inputSchema as any);
+    const result = z.toJSONSchema(zodObj) as Record<string, unknown>;
+    delete result.$schema;
+    delete result.additionalProperties;
+    return result;
+  } catch {
+    // Fallback: return empty schema
+    return { type: 'object', properties: {} };
+  }
+}
 
 /** Cached SmartAgent handle (singleton per configuration) */
 let agentHandle: SmartAgentHandle | null = null;
@@ -79,9 +116,6 @@ async function buildEmbeddedMcpAdapter(
   });
 
   const entries = exporter.getHandlerEntries();
-  const handlerMap = new Map(
-    entries.map((e) => [e.toolDefinition.name, e.handler]),
-  );
 
   // Handler context with injected connection
   const context: HandlerContext = {
@@ -89,6 +123,23 @@ async function buildEmbeddedMcpAdapter(
       connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
     logger: loggerAdapter,
   };
+
+  // Inject real connection into handler groups so closure-based handlers (handler.length === 1)
+  // use our connection instead of dummyContext (connection: null).
+  // HandlerExporter creates groups with dummyContext; BaseMcpServer.registerHandlers() fixes this
+  // by setting group.context before calling, but we bypass that — so we do it here.
+  // biome-ignore lint/suspicious/noExplicitAny: accessing private handlerGroups field
+  const handlerGroups = (exporter as any).handlerGroups as Array<{ context: HandlerContext }>;
+  if (handlerGroups) {
+    for (const group of handlerGroups) {
+      group.context = context;
+    }
+  }
+
+  // Build handler map (handlers now use updated group.context via closure)
+  const handlerMap = new Map(
+    entries.map((e) => [e.toolDefinition.name, e.handler]),
+  );
 
   log.info('Building embedded MCP client', {
     destination: config.mcp.destination,
@@ -104,14 +155,40 @@ async function buildEmbeddedMcpAdapter(
       entries.map((e) => ({
         name: e.toolDefinition.name,
         description: e.toolDefinition.description,
-        inputSchema: e.toolDefinition.inputSchema,
+        inputSchema: toJsonSchema(e.toolDefinition.inputSchema),
       })),
     callToolHandler: async (name, args) => {
       const handler = handlerMap.get(name);
       if (!handler) {
         throw new Error(`Unknown MCP tool: ${name}`);
       }
-      return handler(context, args);
+      try {
+        // Handlers from HandlerExporter have two signatures:
+        // - length >= 2: (context, args) => ... (direct handlers)
+        // - length === 1: (args) => ... (closure-based, uses group.context)
+        // Match BaseMcpServer.registerHandlers() logic (line 283-301)
+        // biome-ignore lint/suspicious/noExplicitAny: handler may be 1-arg closure or 2-arg direct
+        const result =
+          handler.length >= 2
+            ? await handler(context, args)
+            : await (handler as any)(args);
+        const resultStr = JSON.stringify(result).slice(0, 1000);
+        log.info('MCP tool call', {
+          tool: name,
+          argsKeys: Object.keys(args || {}),
+          args: JSON.stringify(args).slice(0, 300),
+          resultLength: resultStr.length,
+          resultPreview: resultStr.slice(0, 500),
+        });
+        return result;
+      } catch (err) {
+        log.error('MCP tool call failed', {
+          tool: name,
+          args: JSON.stringify(args).slice(0, 500),
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
     },
   });
 
@@ -168,7 +245,7 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
   });
 
   // Create main LLM via provider factory (uses @sap-ai-sdk/orchestration)
-  const mainLlm = makeLlm(
+  const rawMainLlm = makeLlm(
     {
       provider: 'sap-ai-sdk',
       apiKey: 'sap-ai-sdk-managed',
@@ -203,31 +280,45 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     });
   }
 
-  // Embedder with circuit breaker for resilience
-  const embedderBreaker = new CircuitBreaker({
-    failureThreshold: 3,
-    recoveryWindowMs: 60_000,
-  });
-  const rawEmbedder = new SapAiCoreEmbedder({
-    model: embeddingModel,
-    resourceGroup: config.llm.resourceGroup,
-  });
-  const embedder = new CircuitBreakerEmbedder(rawEmbedder, embedderBreaker);
-
-  // VectorRag with fallback to InMemoryRag when embedder circuit opens
-  const vectorRag = new VectorRag(embedder, {
-    vectorWeight: 0.7,
-    keywordWeight: 0.3,
-  });
+  // RAG store: respect LLM_AGENT_RAG_TYPE config
+  // 'in-memory' = keyword search only (no embedder, no API calls during vectorization)
+  // 'vector'    = VectorRag with SapAiCoreEmbedder + FallbackRag to InMemoryRag
   const inMemoryRag = new InMemoryRag();
-  const factsRag = new FallbackRag(vectorRag, inMemoryRag, embedderBreaker);
+  let factsRag: InMemoryRag | FallbackRag = inMemoryRag;
+
+  // Keep reference to embedder circuit breaker for diagnostics
+  let embedderBreaker: CircuitBreaker | null = null;
+
+  if (config.agent.ragType !== 'in-memory') {
+    embedderBreaker = new CircuitBreaker({
+      failureThreshold: 30,
+      recoveryWindowMs: 60_000,
+    });
+    const rawEmbedder = new SapAiCoreEmbedder({
+      model: embeddingModel,
+      resourceGroup: config.llm.resourceGroup,
+    });
+    const embedder = new CircuitBreakerEmbedder(rawEmbedder, embedderBreaker);
+    const vectorRag = new VectorRag(embedder, {
+      vectorWeight: 0.7,
+      keywordWeight: 0.3,
+    });
+    factsRag = new FallbackRag(vectorRag, inMemoryRag, embedderBreaker);
+  }
+
+  log.info('RAG configured', {
+    ragType: config.agent.ragType,
+    factsRagType: factsRag.constructor.name,
+  });
 
   // Build SmartAgent
   const builder = new SmartAgentBuilder({
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
-      refreshToolsPerIteration: false,
+      // After first iteration, tool-loop re-lists ALL MCP tools (not just RAG-selected)
+      // This ensures generic tools like SearchObject become available on iteration 2+
+      refreshToolsPerIteration: true,
     },
     prompts: {
       system: [
@@ -239,7 +330,7 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
       ].join('\n'),
     },
   })
-    .withMainLlm(mainLlm)
+    .withMainLlm(rawMainLlm)
     .withClassifierLlm(classifierLlm)
     .withMcpClients(mcpAdapter ? [mcpAdapter] : [])
     // RAG: semantic search with fallback
@@ -249,17 +340,14 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
       feedback: inMemoryRag,
       state: inMemoryRag,
     })
-    // RAG behavior (classification/reranker/queryExpander disabled to reduce SAP AI Core calls)
-    .withClassification(false)
-    // Must be 'always' because disabled classification never sets isSapRequired=true,
-    // so 'auto' mode would skip RAG retrieval and tool-select won't find MCP tools
-    .withRagRetrieval('always')
-    .withRagTranslation(false)
+    // RAG behavior: match reference SmartServer defaults
+    // Classification enabled (default) — classifier sets isSapRequired for RAG routing
+    // ragRetrieval 'auto' (default) — retrieves RAG only when classifier says SAP-related
+    // ragQueryK default (10) — reference uses default
+    .withRagTranslation(true)
     .withRagUpsert(true)
-    // Limit tool selection to top 10 RAG matches (reduces token usage)
-    .withRagQueryK(10)
-    // Resilience: auto-recovery on SAP AI Core outages
-    .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
+    // No .withCircuitBreaker() — our FallbackRag already handles circuit breaking;
+    // builder's withCircuitBreaker() would double-wrap RAG stores in another FallbackRag
     // Caching: avoid duplicate tool calls
     .withToolCache(new ToolCache())
     // Metrics: request/tool/RAG/LLM counters and latencies
@@ -279,23 +367,38 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     const toolsResult = await mcpAdapter.listTools();
     if (toolsResult.ok) {
       const factsStore = handle.ragStores.facts;
+
+      // Vectorize using same format as builder's auto-vectorization (reference)
+      let upsertOk = 0;
+      let upsertFail = 0;
       for (const t of toolsResult.value) {
-        // Only name + description for RAG discovery; full schema is passed as OpenAI function tools
-        await factsStore.upsert(
-          `Tool: ${t.name}\nDescription: ${t.description}`,
-          { id: `tool:${t.name}` },
-        );
+        const text = `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`;
+        const res = await factsStore.upsert(text, { id: `tool:${t.name}` });
+        if (res.ok) {
+          upsertOk++;
+        } else {
+          upsertFail++;
+          if (upsertFail <= 3) {
+            log.warn('Tool vectorization failed', {
+              tool: t.name,
+              error: 'error' in res ? String(res.error) : 'unknown',
+            });
+          }
+        }
       }
       log.info('Vectorized MCP tools into RAG', {
         toolCount: toolsResult.value.length,
+        upsertOk,
+        upsertFail,
+        embedderBreakerState: embedderBreaker?.state ?? 'n/a',
       });
     }
   }
 
-  // Run health check in background
-  handle.agent
-    .healthCheck()
-    .then((res) => {
+  // Run health check in background (includes streaming test)
+  (async () => {
+    try {
+      const res = await handle.agent.healthCheck();
       if (res.ok) {
         const v = res.value;
         const mcpStatus =
@@ -317,10 +420,10 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
           error: res.error.message,
         });
       }
-    })
-    .catch((e) => {
+    } catch (e) {
       log.warn('SmartAgent health check error', { error: String(e) });
-    });
+    }
+  })();
 
   log.info('SmartAgent built and ready');
   return handle;
