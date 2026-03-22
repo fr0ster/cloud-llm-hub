@@ -163,11 +163,28 @@ export async function handleChatCompletions(
     return;
   }
 
+  const pipelineLog = cds.log('smart-pipeline');
   const opts = {
     stream: body.stream,
     externalTools,
     sessionId,
     trace: { traceId },
+    sessionLogger: {
+      logStep(name: string, data: unknown) {
+        // Log key pipeline steps for diagnostics
+        if (
+          name === 'tools_selected' ||
+          name === 'rag_query_facts' ||
+          name === 'classification_skipped' ||
+          name === 'tool_select_rag_fallback' ||
+          name.startsWith('final_context') ||
+          name.startsWith('llm_request') ||
+          name.startsWith('llm_response')
+        ) {
+          pipelineLog.info(name, data);
+        }
+      },
+    },
   };
 
   // Normalize messages to SmartAgent Message format
@@ -264,9 +281,26 @@ export async function handleChatCompletions(
       for await (const chunk of stream) {
         chunkCount++;
         if (!chunk.ok) {
-          const errMsg = chunk.error.message;
-          log.error('Stream error chunk', { chunkCount, error: errMsg });
-          res.write(`data: ${jsonError(errMsg, 'server_error')}\n\n`);
+          const err = chunk.error;
+          // Extract root cause from ErrorWithCause chain (SAP AI SDK wraps errors)
+          const causes: string[] = [];
+          let current: unknown = err;
+          while (current) {
+            if (current instanceof Error) {
+              causes.push(current.message);
+              current = (current as { cause?: unknown }).cause;
+            } else {
+              causes.push(String(current));
+              break;
+            }
+          }
+          log.error('Stream error chunk', {
+            chunkCount,
+            error: err.message,
+            causes,
+            stack: err instanceof Error ? err.stack : undefined,
+          });
+          res.write(`data: ${jsonError(err.message, 'server_error')}\n\n`);
           break;
         }
 
