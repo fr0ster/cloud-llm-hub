@@ -316,9 +316,9 @@ export async function getSmartAgent(req: Request): Promise<SmartAgentHandle> {
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
-      // After first iteration, tool-loop re-lists ALL MCP tools (not just RAG-selected)
-      // This ensures generic tools like SearchObject become available on iteration 2+
-      refreshToolsPerIteration: true,
+      // Keep RAG-selected tools across iterations (don't reload all 259 MCP tools)
+      // RAG already selected the relevant tools; refreshing defeats RAG's purpose
+      refreshToolsPerIteration: false,
     },
     prompts: {
       system: [
