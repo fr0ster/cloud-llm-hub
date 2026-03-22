@@ -18,7 +18,7 @@ import {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig } from './agent-config';
-import { getSmartAgent } from './agent-manager';
+import { getSmartAgent, isAgentReady } from './agent-manager';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,6 +86,18 @@ export async function handleChatCompletions(
 ): Promise<void> {
   const log = cds.log('openai-handler');
 
+  // Block requests until SmartAgent is fully initialized (MCP + vectorization)
+  if (!isAgentReady()) {
+    res.status(503).json({
+      error: {
+        message:
+          'SmartAgent is initializing (MCP connect + tool vectorization). Please retry in a moment.',
+        type: 'service_unavailable',
+      },
+    });
+    return;
+  }
+
   // Parse body (Express may have already parsed it if json middleware is active,
   // but for raw body we parse manually)
   let body: OpenAIChatRequest;
@@ -152,7 +164,7 @@ export async function handleChatCompletions(
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request; cast needed for getSmartAgent
-    handle = await getSmartAgent(req as any);
+    handle = await getSmartAgent();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
@@ -458,6 +470,18 @@ export async function handleChatCompletions(
       durationMs: Date.now() - t0,
     });
 
+    if (chunkCount === 0) {
+      log.warn('Stream produced 0 chunks — pipeline may have failed silently', {
+        messageCount: normalizedMessages.length,
+        lastUserMessage: normalizedMessages
+          .filter((m) => m.role === 'user')
+          .slice(-1)[0]
+          ?.content?.toString()
+          .slice(0, 200),
+        sessionId,
+      });
+    }
+
     res.write('data: [DONE]\n\n');
     res.end();
     return;
@@ -558,7 +582,7 @@ export async function handleModels(
 export async function handleUsage(req: Request, res: Response): Promise<void> {
   try {
     // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request
-    const handle = await getSmartAgent(req as any);
+    const handle = await getSmartAgent();
     const usage = handle.getUsage();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(usage));
