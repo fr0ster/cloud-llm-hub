@@ -16,6 +16,7 @@ import './env-setup';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
+import { getSmartAgent } from './agent-manager';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
@@ -369,4 +370,24 @@ cds.on('bootstrap', (app: Application) => {
     destinationProbe:
       'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
   });
+});
+
+// Pre-initialize SmartAgent at server startup (after all CAP services are served).
+// This runs MCP connection + tool vectorization so the first user request is fast.
+// IMPORTANT: Do NOT await — vectorization takes 60+ seconds and would block the
+// server from listening on port 8080, causing CF health check timeout (60s).
+// The 503 readiness guard in openai-handler.ts protects against requests before ready.
+cds.on('served', () => {
+  const log = cds.log('agent-manager/init');
+  log.info('Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking');
+  getSmartAgent()
+    .then(() => log.info('SmartAgent pre-initialized and ready'))
+    .catch((err) => {
+      log.warn(
+        'SmartAgent pre-initialization failed, will retry on first request',
+        {
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    });
 });
