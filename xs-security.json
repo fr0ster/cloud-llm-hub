@@ -85,6 +85,9 @@
       ]
     }
   ],
+  "authorities": [
+    "$XSAPPNAME.MCP_Reader"
+  ],
   "attributes": [],
   "oauth2-configuration": {
     "redirect-uris": [
@@ -100,6 +103,7 @@
     ],
     "grant-types": [
       "authorization_code",
+      "client_credentials",
       "refresh_token"
     ],
     "token-validity": 3600,
