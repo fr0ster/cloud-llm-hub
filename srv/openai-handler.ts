@@ -417,6 +417,19 @@ export async function handleChatCompletions(
         }
       : {};
 
+  // Detect if client expects tool_call response (agentic clients like Cline).
+  // If client sent `attempt_completion` in tools, wrap SmartAgent's text response
+  // in a streaming tool_call — otherwise Cline rejects plain text responses.
+  const clientToolNames = new Set(
+    (body.tools || [])
+      .map((t: unknown) => {
+        const tool = t as { function?: { name?: string } };
+        return tool?.function?.name;
+      })
+      .filter(Boolean),
+  );
+  const useToolCallResponse = clientToolNames.has('attempt_completion');
+
   // --- Streaming ---
   if (body.stream) {
     res.writeHead(200, {
@@ -427,6 +440,7 @@ export async function handleChatCompletions(
     });
 
     const id = `chatcmpl-${randomUUID()}`;
+    const toolCallId = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
     const created = Math.floor(Date.now() / 1000);
     const stream = handle.agent.streamProcess(normalizedMessages, opts);
 
@@ -440,10 +454,12 @@ export async function handleChatCompletions(
       total_tokens: number;
     } | null = null;
 
-    log.info('Starting streamProcess iteration');
+    log.info('Starting streamProcess', {
+      useToolCallResponse,
+      clientTools: [...clientToolNames].slice(0, 10),
+    });
 
     // Keepalive timer: send SSE comment every 15s to prevent CF GoRouter timeout (60s)
-    // Using plain colon-newline which is the most compatible SSE keepalive format
     const keepalive = setInterval(() => {
       try {
         res.write(':\n\n');
@@ -457,7 +473,6 @@ export async function handleChatCompletions(
         chunkCount++;
         if (!chunk.ok) {
           const err = chunk.error;
-          // Extract root cause from ErrorWithCause chain (SAP AI SDK wraps errors)
           const causes: string[] = [];
           let current: unknown = err;
           while (current) {
@@ -473,7 +488,6 @@ export async function handleChatCompletions(
             chunkCount,
             error: err.message,
             causes,
-            stack: err instanceof Error ? err.stack : undefined,
           });
           res.write(`data: ${jsonError(err.message, 'server_error')}\n\n`);
           break;
@@ -481,9 +495,7 @@ export async function handleChatCompletions(
 
         const v = chunk.value;
 
-        // Skip heartbeat and timing chunks — SSE comments (: ...) can
-        // confuse clients like Cline that don't parse them per SSE spec.
-        // Keepalive is handled by the interval timer below.
+        // Skip heartbeat and timing — internal diagnostics, not for client
         if (v.heartbeat || v.timing) {
           continue;
         }
@@ -496,13 +508,6 @@ export async function handleChatCompletions(
           };
         }
 
-        log.debug('Stream chunk', {
-          chunkCount,
-          hasContent: !!v.content,
-          contentLen: v.content?.length || 0,
-          finishReason: v.finishReason || null,
-        });
-
         const baseResponse = {
           id,
           object: 'chat.completion.chunk',
@@ -511,44 +516,136 @@ export async function handleChatCompletions(
         };
 
         if (firstChunk) {
-          // First chunk: role only (matches OpenAI format exactly)
-          res.write(
-            `data: ${JSON.stringify({
-              ...baseResponse,
-              choices: [
-                {
-                  index: 0,
-                  delta: { role: 'assistant', content: '' },
-                  finish_reason: null,
-                },
-              ],
-            })}\n\n`,
-          );
+          if (useToolCallResponse) {
+            // Agentic client (Cline): send tool_call header with attempt_completion
+            // First chunk: role + tool_call name + opening JSON for arguments
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: 'assistant',
+                      tool_calls: [
+                        {
+                          index: 0,
+                          id: toolCallId,
+                          type: 'function',
+                          function: {
+                            name: 'attempt_completion',
+                            arguments: '',
+                          },
+                        },
+                      ],
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+            // Send opening of JSON arguments: {"result": "
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          function: { arguments: '{"result": "' },
+                        },
+                      ],
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+          } else {
+            // Regular client: send role header
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: { role: 'assistant', content: '' },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+          }
           firstChunk = false;
-          // Don't skip — fall through to send content in a separate chunk
         }
 
-        // Only stream text content to the client.
-        // SmartAgent's internal MCP tool_calls are NOT forwarded — they are
-        // resolved internally by the tool-loop stage. Streaming them would
-        // confuse clients like Cline that expect only their own tools.
+        // Stream content — either as text delta or as tool_call arguments
         if (v.content) {
           accumulatedContent += v.content;
-          res.write(
-            `data: ${JSON.stringify({
-              ...baseResponse,
-              choices: [
-                {
-                  index: 0,
-                  delta: { content: v.content },
-                  finish_reason: null,
-                },
-              ],
-            })}\n\n`,
-          );
+
+          if (useToolCallResponse) {
+            // Escape content for JSON string embedding
+            const escaped = v.content
+              .replace(/\\/g, '\\\\')
+              .replace(/"/g, '\\"')
+              .replace(/\n/g, '\\n')
+              .replace(/\r/g, '\\r')
+              .replace(/\t/g, '\\t');
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        { index: 0, function: { arguments: escaped } },
+                      ],
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+          } else {
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: v.content },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+          }
         }
 
         if (v.finishReason) {
+          if (useToolCallResponse) {
+            // Close the JSON arguments: "}
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        { index: 0, function: { arguments: '"}' } },
+                      ],
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+          }
           res.write(
             `data: ${JSON.stringify({
               ...baseResponse,
@@ -576,11 +673,30 @@ export async function handleChatCompletions(
 
     clearInterval(keepalive);
 
-    // Ensure finish_reason is always sent — Cline/Goose require it to detect stream end
+    // Ensure finish_reason is always sent — clients require it to detect stream end
     if (!finishReasonSent) {
-      log.debug(
-        'Sending fallback finish_reason:stop (SmartAgent did not emit one)',
-      );
+      if (useToolCallResponse && accumulatedContent) {
+        // Close tool_call arguments JSON before finish
+        res.write(
+          `data: ${JSON.stringify({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { arguments: '"}' } },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })}\n\n`,
+        );
+      }
       res.write(
         `data: ${JSON.stringify({
           id,
