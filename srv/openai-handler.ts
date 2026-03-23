@@ -383,7 +383,9 @@ export async function handleChatCompletions(
   const userId = getUserId();
   const opts = {
     stream: body.stream,
-    externalTools,
+    // Client tools (attempt_completion, read_file, etc.) are NOT passed to SmartAgent.
+    // SmartAgent manages its own MCP tools internally via RAG-based selection.
+    // Client tools are only used to detect response format (tool_call vs text).
     sessionId,
     // RAG namespace isolation: each user sees only their own facts/feedback/state
     // userId (not sessionId) — knowledge persists across sessions for the same user
