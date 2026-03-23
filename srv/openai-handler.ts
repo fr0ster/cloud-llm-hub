@@ -17,7 +17,8 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
-import { getSmartAgent } from './agent-manager';
+import { getAgentConfig } from './agent-config';
+import { getSmartAgent, isAgentReady } from './agent-manager';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,6 +86,18 @@ export async function handleChatCompletions(
 ): Promise<void> {
   const log = cds.log('openai-handler');
 
+  // Block requests until SmartAgent is fully initialized (MCP + vectorization)
+  if (!isAgentReady()) {
+    res.status(503).json({
+      error: {
+        message:
+          'SmartAgent is initializing (MCP connect + tool vectorization). Please retry in a moment.',
+        type: 'service_unavailable',
+      },
+    });
+    return;
+  }
+
   // Parse body (Express may have already parsed it if json middleware is active,
   // but for raw body we parse manually)
   let body: OpenAIChatRequest;
@@ -148,14 +161,42 @@ export async function handleChatCompletions(
   });
 
   // Get SmartAgent handle (uses CAP request for auth context)
-  // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request; cast needed for getSmartAgent
-  const handle = await getSmartAgent(req as any);
+  let handle: Awaited<ReturnType<typeof getSmartAgent>>;
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request; cast needed for getSmartAgent
+    handle = await getSmartAgent();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error('Failed to initialize SmartAgent', { error: message });
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(
+      jsonError(`Agent initialization failed: ${message}`, 'server_error'),
+    );
+    return;
+  }
 
+  const pipelineLog = cds.log('smart-pipeline');
   const opts = {
     stream: body.stream,
     externalTools,
     sessionId,
     trace: { traceId },
+    sessionLogger: {
+      logStep(name: string, data: unknown) {
+        // Log key pipeline steps for diagnostics
+        if (
+          name === 'tools_selected' ||
+          name === 'rag_query_facts' ||
+          name === 'classification_skipped' ||
+          name === 'tool_select_rag_fallback' ||
+          name.startsWith('final_context') ||
+          name.startsWith('llm_request') ||
+          name.startsWith('llm_response')
+        ) {
+          pipelineLog.info(name, data);
+        }
+      },
+    },
   };
 
   // Normalize messages to SmartAgent Message format
@@ -229,95 +270,185 @@ export async function handleChatCompletions(
     const stream = handle.agent.streamProcess(normalizedMessages, opts);
 
     let firstChunk = true;
+    let chunkCount = 0;
+    let finishReasonSent = false;
     let lastUsage: {
       prompt_tokens: number;
       completion_tokens: number;
       total_tokens: number;
     } | null = null;
 
-    for await (const chunk of stream) {
-      if (!chunk.ok) {
-        res.write(
-          `data: ${jsonError(chunk.error.message, 'server_error')}\n\n`,
-        );
-        break;
+    log.info('Starting streamProcess iteration');
+
+    // Keepalive timer: write SSE comment every 10s to prevent CF GoRouter timeout (60s)
+    const keepalive = setInterval(() => {
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        /* connection closed */
       }
+    }, 10_000);
 
-      if (chunk.value.usage) {
-        lastUsage = {
-          prompt_tokens: chunk.value.usage.promptTokens,
-          completion_tokens: chunk.value.usage.completionTokens,
-          total_tokens: chunk.value.usage.totalTokens,
-        };
-      }
-
-      const baseResponse = {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: 'smart-agent',
-        usage: null,
-      };
-
-      if (firstChunk) {
-        res.write(
-          `data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  role: 'assistant',
-                  content: chunk.value.content || '',
-                },
-                finish_reason: null,
-              },
-            ],
-          })}\n\n`,
-        );
-        firstChunk = false;
-        if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
-      }
-
-      if (chunk.value.content || chunk.value.toolCalls) {
-        const delta: Record<string, unknown> = {};
-        if (chunk.value.content) delta.content = chunk.value.content;
-        if (chunk.value.toolCalls) {
-          delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
-            const tc = toToolCallDelta(call, index);
-            return {
-              index: tc.index,
-              id: tc.id,
-              type: 'function',
-              function: {
-                name: tc.name,
-                arguments: tc.arguments || '',
-              },
-            };
+    try {
+      for await (const chunk of stream) {
+        chunkCount++;
+        if (!chunk.ok) {
+          const err = chunk.error;
+          // Extract root cause from ErrorWithCause chain (SAP AI SDK wraps errors)
+          const causes: string[] = [];
+          let current: unknown = err;
+          while (current) {
+            if (current instanceof Error) {
+              causes.push(current.message);
+              current = (current as { cause?: unknown }).cause;
+            } else {
+              causes.push(String(current));
+              break;
+            }
+          }
+          log.error('Stream error chunk', {
+            chunkCount,
+            error: err.message,
+            causes,
+            stack: err instanceof Error ? err.stack : undefined,
           });
+          res.write(`data: ${jsonError(err.message, 'server_error')}\n\n`);
+          break;
         }
-        res.write(
-          `data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [{ index: 0, delta, finish_reason: null }],
-          })}\n\n`,
-        );
-      }
 
-      if (chunk.value.finishReason) {
-        res.write(
-          `data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [
-              {
-                index: 0,
-                delta: {},
-                finish_reason: mapStopReason(chunk.value.finishReason),
-              },
-            ],
-          })}\n\n`,
-        );
+        const v = chunk.value;
+
+        // Heartbeat: SSE comment to keep connection alive during tool execution
+        if (v.heartbeat) {
+          const hb = v.heartbeat as { tool: string; elapsed: number };
+          res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
+          continue;
+        }
+
+        // Timing: SSE comment with performance metrics
+        if (v.timing) {
+          const parts = (
+            v.timing as Array<{ phase: string; duration: number }>
+          ).map((t) => `${t.phase}=${t.duration}ms`);
+          res.write(`: timing ${parts.join(' ')}\n\n`);
+        }
+
+        if (v.usage) {
+          lastUsage = {
+            prompt_tokens: v.usage.promptTokens,
+            completion_tokens: v.usage.completionTokens,
+            total_tokens: v.usage.totalTokens,
+          };
+        }
+
+        log.debug('Stream chunk', {
+          chunkCount,
+          hasContent: !!v.content,
+          contentLen: v.content?.length || 0,
+          finishReason: v.finishReason || null,
+        });
+
+        const baseResponse = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: 'smart-agent',
+          usage: null,
+        };
+
+        if (firstChunk) {
+          res.write(
+            `data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: 'assistant',
+                    content: v.content || '',
+                  },
+                  finish_reason: null,
+                },
+              ],
+            })}\n\n`,
+          );
+          firstChunk = false;
+          if (!v.finishReason && !v.toolCalls) continue;
+        }
+
+        if (v.content || v.toolCalls) {
+          const delta: Record<string, unknown> = {};
+          if (v.content) delta.content = v.content;
+          if (v.toolCalls) {
+            delta.tool_calls = v.toolCalls.map((call, index) => {
+              const tc = toToolCallDelta(call, index);
+              return {
+                index: tc.index,
+                id: tc.id,
+                type: 'function',
+                function: {
+                  name: tc.name,
+                  arguments: tc.arguments || '',
+                },
+              };
+            });
+          }
+          res.write(
+            `data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [{ index: 0, delta, finish_reason: null }],
+            })}\n\n`,
+          );
+        }
+
+        if (v.finishReason) {
+          res.write(
+            `data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [
+                {
+                  index: 0,
+                  delta: {},
+                  finish_reason: mapStopReason(v.finishReason),
+                },
+              ],
+            })}\n\n`,
+          );
+          finishReasonSent = true;
+        }
       }
+    } catch (streamErr) {
+      const errMsg =
+        streamErr instanceof Error ? streamErr.message : String(streamErr);
+      log.error('Stream exception', {
+        error: errMsg,
+        stack: streamErr instanceof Error ? streamErr.stack : undefined,
+      });
+      res.write(`data: ${jsonError(errMsg, 'server_error')}\n\n`);
+    }
+
+    clearInterval(keepalive);
+
+    // Ensure finish_reason is always sent — Cline/Goose require it to detect stream end
+    if (!finishReasonSent) {
+      log.debug(
+        'Sending fallback finish_reason:stop (SmartAgent did not emit one)',
+      );
+      res.write(
+        `data: ${JSON.stringify({
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: 'smart-agent',
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: 'stop',
+            },
+          ],
+        })}\n\n`,
+      );
     }
 
     if (body.stream_options?.include_usage && lastUsage) {
@@ -331,6 +462,24 @@ export async function handleChatCompletions(
           usage: lastUsage,
         })}\n\n`,
       );
+    }
+
+    log.info('Stream completed', {
+      chunkCount,
+      hasUsage: !!lastUsage,
+      durationMs: Date.now() - t0,
+    });
+
+    if (chunkCount === 0) {
+      log.warn('Stream produced 0 chunks — pipeline may have failed silently', {
+        messageCount: normalizedMessages.length,
+        lastUserMessage: normalizedMessages
+          .filter((m) => m.role === 'user')
+          .slice(-1)[0]
+          ?.content?.toString()
+          .slice(0, 200),
+        sessionId,
+      });
     }
 
     res.write('data: [DONE]\n\n');
@@ -391,11 +540,14 @@ export async function handleChatCompletions(
 
 /**
  * GET /v1/models
+ *
+ * Returns model info enriched with agent configuration (LLM, RAG, MCP).
  */
 export async function handleModels(
   _req: Request,
   res: Response,
 ): Promise<void> {
+  const config = getAgentConfig();
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(
     JSON.stringify({
@@ -406,6 +558,18 @@ export async function handleModels(
           object: 'model',
           owned_by: 'smart-agent',
           context_window: 2000000,
+          // Extended info for UI
+          meta: {
+            llm_model: config.llm.model,
+            temperature: config.llm.temperature,
+            max_tokens: config.llm.maxTokens,
+            mode: config.agent.mode,
+            max_iterations: config.agent.maxIterations,
+            rag_type: config.agent.ragType,
+            mcp_destination: config.mcp.destination,
+            embedding_model:
+              process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
+          },
         },
       ],
     }),
@@ -418,7 +582,7 @@ export async function handleModels(
 export async function handleUsage(req: Request, res: Response): Promise<void> {
   try {
     // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request
-    const handle = await getSmartAgent(req as any);
+    const handle = await getSmartAgent();
     const usage = handle.getUsage();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(usage));

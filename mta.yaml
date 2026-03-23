@@ -13,6 +13,7 @@ parameters:
   LLM_AGENT_MAX_ITERATIONS:
   LLM_AGENT_RAG_TYPE:
   LLM_AGENT_RESOURCE_GROUP: "default"
+  LLM_AGENT_CLASSIFIER_MODEL:
   LLM_AGENT_EMBEDDING_MODEL:
 build-parameters:
   before-all:
@@ -21,6 +22,7 @@ build-parameters:
         - node -e "try{require('fs').rmSync('node_modules',{recursive:true,force:true,maxRetries:3,retryDelay:1000})}catch{}"
         - npm ci
         - npx cds build --production
+        - node -e "require('fs').cpSync('app/chat/webapp','gen/srv/app/chat/webapp',{recursive:true})"
 modules:
   - name: cloud-llm-hub-srv
     type: nodejs
@@ -38,6 +40,7 @@ modules:
       LLM_AGENT_MAX_ITERATIONS: ${LLM_AGENT_MAX_ITERATIONS}
       LLM_AGENT_RAG_TYPE: ${LLM_AGENT_RAG_TYPE}
       LLM_AGENT_RESOURCE_GROUP: ${LLM_AGENT_RESOURCE_GROUP}
+      LLM_AGENT_CLASSIFIER_MODEL: ${LLM_AGENT_CLASSIFIER_MODEL}
       LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
     build-parameters:
       builder: custom
@@ -61,6 +64,13 @@ modules:
       keep-existing-routes: true
       disk-quota: 256M
       memory: 256M
+    properties:
+      TENANT_HOST_PATTERN: "^(.*)-cloud-llm-hub.cfapps.eu10.hana.ondemand.com"
+    build-parameters:
+      builder: custom
+      commands:
+        - npm install --production
+        - node -e "require('fs').cpSync('../../app/chat/webapp','chat/webapp',{recursive:true})"
     requires:
       - name: srv-api
         group: destinations
@@ -68,6 +78,7 @@ modules:
           name: srv-api # must be used in xs-app.json as well
           url: ~{srv-url}
           forwardAuthToken: true
+          timeout: 120000
       - name: cloud-llm-hub-auth
     provides:
       - name: app-api

@@ -26,11 +26,34 @@ if (isLocal) {
   const envPath = resolve(process.cwd(), '.env');
   if (existsSync(envPath)) {
     config({ path: envPath });
-    // Only log in development mode
     if (process.env.NODE_ENV !== 'production') {
       console.log(
         `[env-setup] Loaded LLM configuration from .env file: ${envPath}`,
       );
+    }
+  }
+
+  // Load VCAP_SERVICES from default-env.json for hybrid development
+  // SAP AI SDK and Cloud SDK need VCAP_SERVICES in process.env
+  if (!process.env.VCAP_SERVICES) {
+    const defaultEnvPath = resolve(process.cwd(), 'default-env.json');
+    if (existsSync(defaultEnvPath)) {
+      try {
+        const defaultEnv = JSON.parse(
+          require('node:fs').readFileSync(defaultEnvPath, 'utf-8'),
+        );
+        if (defaultEnv.VCAP_SERVICES) {
+          process.env.VCAP_SERVICES = JSON.stringify(defaultEnv.VCAP_SERVICES);
+          if (process.env.NODE_ENV !== 'production') {
+            const services = Object.keys(defaultEnv.VCAP_SERVICES);
+            console.log(
+              `[env-setup] Loaded VCAP_SERVICES from default-env.json: ${services.join(', ')}`,
+            );
+          }
+        }
+      } catch (err) {
+        console.warn('[env-setup] Failed to load default-env.json:', err);
+      }
     }
   }
 }
