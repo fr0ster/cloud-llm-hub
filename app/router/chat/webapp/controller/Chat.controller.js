@@ -13,9 +13,12 @@ sap.ui.define([
   return Controller.extend("cloud.llm.hub.chat.controller.Chat", {
     _abortStream: null,
     _messages: [],
+    _sessionId: null,
 
     onInit: function () {
-      console.log("[Chat] Controller v2 initialized");
+      // Generate unique session ID for server-side history management
+      this._sessionId = "chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+      console.log("[Chat] Controller v3 initialized, sessionId:", this._sessionId);
       var that = this;
       StreamClient.getModels()
         .then(function (data) {
@@ -50,13 +53,8 @@ sap.ui.define([
       this._renderChat();
       this._scrollToBottom();
 
-      var apiMessages = [];
-      for (var i = 0; i < this._messages.length; i++) {
-        var m = this._messages[i];
-        if (m.role === "user" || (m.role === "assistant" && m.content)) {
-          apiMessages.push({ role: m.role, content: m.content });
-        }
-      }
+      // Send only the new user message — server manages conversation history
+      var apiMessages = [{ role: "user", content: sValue }];
 
       var that = this;
       var assistantIdx = this._messages.length - 1;
@@ -64,6 +62,7 @@ sap.ui.define([
 
       this._abortStream = StreamClient.streamChat({
         messages: apiMessages,
+        sessionId: this._sessionId,
 
         onDelta: function (content) {
           that._messages[assistantIdx].content += content;
@@ -125,6 +124,15 @@ sap.ui.define([
         this._abortStream = null;
         oModel.setProperty("/busy", false);
       }
+      // Clear server-side session history
+      if (this._sessionId) {
+        fetch(StreamClient._getBaseUrl() + "/v1/session", {
+          method: "DELETE",
+          headers: { "x-session-id": this._sessionId }
+        }).catch(function () { /* best effort */ });
+      }
+      // Generate new session ID
+      this._sessionId = "chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
       this._renderChat();
     },
 
