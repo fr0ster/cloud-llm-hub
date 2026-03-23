@@ -20,6 +20,7 @@ import { getSmartAgent } from './agent-manager';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
+  clearSession,
   handleChatCompletions,
   handleModels,
   handleUsage,
@@ -362,11 +363,27 @@ cds.on('bootstrap', (app: Application) => {
   // GET /v1/usage — token usage
   app.get('/v1/usage', handleUsage as never);
 
+  // DELETE /v1/session — clear server-side conversation history
+  app.delete('/v1/session', ((req: Request, res: Response) => {
+    const sessionId = req.headers['x-session-id'] as string | undefined;
+    if (sessionId) {
+      clearSession(sessionId);
+      res.writeHead(204);
+      res.end();
+    } else {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({ error: { message: 'x-session-id header required' } }),
+      );
+    }
+  }) as never);
+
   log.info('Custom Express endpoints registered', {
     streamHttp: 'POST /mcp/stream/http',
     chatCompletions: 'POST /v1/chat/completions',
     models: 'GET /v1/models',
     usage: 'GET /v1/usage',
+    sessionClear: 'DELETE /v1/session',
     destinationProbe:
       'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
   });
@@ -379,7 +396,9 @@ cds.on('bootstrap', (app: Application) => {
 // The 503 readiness guard in openai-handler.ts protects against requests before ready.
 cds.on('served', () => {
   const log = cds.log('agent-manager/init');
-  log.info('Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking');
+  log.info(
+    'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
+  );
   getSmartAgent()
     .then(() => log.info('SmartAgent pre-initialized and ready'))
     .catch((err) => {

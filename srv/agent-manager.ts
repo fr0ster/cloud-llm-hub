@@ -221,7 +221,12 @@ class CustomToolSelectHandler implements IStageHandler {
     }
 
     if (toolsStore && ctx.mcpTools.length > 0) {
-      const result = await toolsStore.query(queryText, k, ctx.options);
+      // Query tools store WITHOUT ragFilter — tools are shared (no namespace).
+      // ctx.options contains ragFilter.namespace for per-user isolation,
+      // but tool records were upserted without namespace metadata.
+      // Passing ragFilter would filter out ALL tool records → 0 results → hallucination.
+      const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ?? {}) as Record<string, unknown>;
+      const result = await toolsStore.query(queryText, k, toolQueryOpts);
       if (result.ok) {
         ragToolNames = new Set(
           result.value
@@ -280,6 +285,83 @@ class CustomToolSelectHandler implements IStageHandler {
       activeCount: ctx.activeTools.length,
     });
 
+    return true;
+  }
+}
+
+/**
+ * Custom rag-upsert handler — stores classified subprompts (fact, feedback, state)
+ * with per-session namespace for user isolation.
+ *
+ * The built-in RagUpsertHandler reads namespace from static `ctx.config.sessionPolicy`,
+ * but our singleton SmartAgent serves all users. This handler reads the sessionId
+ * from `ctx.options` (passed per-request) and uses it as the namespace.
+ *
+ * This ensures each user's facts/feedback/state are isolated in RAG queries.
+ * The 'tools' store is shared — it has no namespace and is NOT written here.
+ */
+class CustomRagUpsertHandler implements IStageHandler {
+  async execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    span: ISpan,
+  ): Promise<boolean> {
+    const log = cds.log('agent-manager/rag-upsert');
+
+    // Use ragFilter.namespace (= userId) for per-user isolation.
+    // Set in openai-handler.ts from cds.context.user.id (XSUAA/mocked auth).
+    // biome-ignore lint/suspicious/noExplicitAny: ragFilter not in CallOptions type
+    const namespace = (ctx.options as any)?.ragFilter?.namespace as
+      | string
+      | undefined;
+    const metadata: Record<string, unknown> = {};
+    if (namespace) {
+      metadata.namespace = namespace;
+    }
+    // TTL: 1 hour
+    metadata.ttl = Math.floor((Date.now() + 3600_000) / 1000);
+
+    // Resolve store by subprompt type (fact→facts, feedback→feedback, state→state)
+    const resolveStore = (type: string) =>
+      ctx.ragStores[type] ?? ctx.ragStores[`${type}s`];
+
+    // Filter: skip actions and chat, only upsert fact/feedback/state
+    const toStore = ctx.subprompts.filter(
+      (sp: { type: string }) =>
+        sp.type !== 'action' && sp.type !== 'chat' && resolveStore(sp.type),
+    );
+
+    if (toStore.length === 0) {
+      span.setAttribute('skipped', true);
+      return true;
+    }
+
+    const results = await Promise.allSettled(
+      toStore.map(async (sp: { type: string; text: string }) => {
+        const store = resolveStore(sp.type);
+        if (!store) return;
+        const res = await store.upsert(sp.text, metadata, ctx.options);
+        if (!res.ok) {
+          log.warn('RAG upsert failed', {
+            type: sp.type,
+            error: 'error' in res ? String(res.error) : 'unknown',
+          });
+        }
+        return { type: sp.type, ok: res.ok };
+      }),
+    );
+
+    const stored = results
+      .filter((r) => r.status === 'fulfilled' && r.value?.ok)
+      .map((r) => (r as PromiseFulfilledResult<{ type: string }>).value.type);
+
+    log.info('RAG upsert completed', {
+      namespace: namespace ?? 'none',
+      subpromptTypes: toStore.map((sp: { type: string }) => sp.type),
+      storedTypes: stored,
+    });
+
+    span.setAttribute('stored_count', stored.length);
     return true;
   }
 }
@@ -651,6 +733,8 @@ export async function getSmartAgent(): Promise<SmartAgentHandle> {
     // Custom classify: wraps built-in + sets ctx.ragText from action subprompts
     // (built-in ClassifyHandler doesn't set ragText, breaking translate/expand/rag-query)
     .withStageHandler('classify', new CustomClassifyHandler())
+    // Custom rag-upsert: stores fact/feedback/state with per-session namespace
+    .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
     // Custom tool-select: queries ctx.ragStores.tools, not ctx.ragResults
     .withStageHandler('tool-select', new CustomToolSelectHandler())
     // Caching: avoid duplicate tool calls

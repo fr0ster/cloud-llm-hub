@@ -20,6 +20,11 @@ import type { Request, Response } from 'express';
 import { getAgentConfig } from './agent-config';
 import { getSmartAgent, isAgentReady } from './agent-manager';
 
+/** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
+function getUserId(): string {
+  return cds.context?.user?.id || 'anonymous';
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -47,6 +52,135 @@ function extractText(c: unknown): string {
     )
     .map((b: { text: string }) => b.text)
     .join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Server-side session history
+// ---------------------------------------------------------------------------
+
+/** Max messages kept in server session (before SmartAgent's own summarization) */
+const SESSION_MAX_MESSAGES = 20;
+
+/** Session TTL: 30 minutes of inactivity */
+const SESSION_TTL_MS = 30 * 60 * 1000;
+
+/** Cleanup interval: every 5 minutes */
+const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+
+interface SessionEntry {
+  messages: Message[];
+  lastAccess: number;
+}
+
+const sessionStore = new Map<string, SessionEntry>();
+
+/** Periodic cleanup of expired sessions */
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of sessionStore) {
+    if (now - entry.lastAccess > SESSION_TTL_MS) {
+      sessionStore.delete(id);
+    }
+  }
+}, SESSION_CLEANUP_INTERVAL_MS);
+
+/** Get or create session history */
+function getSessionHistory(sessionId: string): Message[] {
+  const entry = sessionStore.get(sessionId);
+  if (entry) {
+    entry.lastAccess = Date.now();
+    return entry.messages;
+  }
+  return [];
+}
+
+/** Append messages to session history, trimming to max size */
+function appendToSession(sessionId: string, ...msgs: Message[]): void {
+  let entry = sessionStore.get(sessionId);
+  if (!entry) {
+    entry = { messages: [], lastAccess: Date.now() };
+    sessionStore.set(sessionId, entry);
+  }
+  entry.lastAccess = Date.now();
+  entry.messages.push(...msgs);
+
+  // Keep only last N messages
+  if (entry.messages.length > SESSION_MAX_MESSAGES) {
+    entry.messages = entry.messages.slice(-SESSION_MAX_MESSAGES);
+  }
+}
+
+/** Replace session history entirely (for client-managed history mode) */
+function setSessionHistory(sessionId: string, msgs: Message[]): void {
+  const trimmed = msgs.slice(-SESSION_MAX_MESSAGES);
+  sessionStore.set(sessionId, { messages: trimmed, lastAccess: Date.now() });
+}
+
+/** Clear session history */
+export function clearSession(sessionId: string): void {
+  sessionStore.delete(sessionId);
+}
+
+/**
+ * Trim messages for SmartAgent context to prevent context window overflow.
+ *
+ * Strategy:
+ * - ALL assistant messages are truncated (MCP tool outputs can be enormous)
+ * - Older assistant messages: aggressive limit (200 chars)
+ * - Recent assistant messages (last pair): moderate limit (500 chars)
+ * - User messages: kept intact (they're short prompts)
+ * - Total history budget: 6000 chars max — if exceeded, drop oldest pairs
+ * - Remove [SmartAgent: Executing ...] progress markers from all messages
+ */
+function trimHistoryForContext(messages: Message[]): Message[] {
+  const TOTAL_BUDGET = 6000;
+  const OLDER_ASSISTANT_LIMIT = 200;
+  const RECENT_ASSISTANT_LIMIT = 500;
+
+  if (messages.length <= 2) return messages;
+
+  // Clean all assistant messages: remove progress markers + truncate
+  const cleaned = messages.map((m, i) => {
+    if (m.role !== 'assistant' || typeof m.content !== 'string') return m;
+
+    let content = m.content.replace(
+      /\n\n\[SmartAgent: Executing [^\]]+\.\.\.\]\n/g,
+      '',
+    );
+
+    // Last assistant message gets moderate limit, older ones get aggressive limit
+    const isLastAssistant =
+      i ===
+      messages.length -
+        1 -
+        [...messages].reverse().findIndex((msg) => msg.role === 'assistant');
+    const limit = isLastAssistant
+      ? RECENT_ASSISTANT_LIMIT
+      : OLDER_ASSISTANT_LIMIT;
+
+    if (content.length > limit) {
+      content = `${content.slice(0, limit)}... [truncated]`;
+    }
+    return { ...m, content };
+  });
+
+  // Check total size — drop oldest pairs if over budget
+  let totalChars = cleaned.reduce(
+    (sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0),
+    0,
+  );
+
+  let result = cleaned;
+  while (totalChars > TOTAL_BUDGET && result.length > 2) {
+    // Drop the oldest message
+    const dropped = result[0];
+    const droppedLen =
+      typeof dropped.content === 'string' ? dropped.content.length : 0;
+    result = result.slice(1);
+    totalChars -= droppedLen;
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,19 +285,89 @@ export async function handleChatCompletions(
   }
 
   const traceId = randomUUID();
-  const sessionId =
-    (req.headers['x-session-id'] as string | undefined) || 'default';
+  const clientSessionId = req.headers['x-session-id'] as string | undefined;
+  const sessionId = clientSessionId || randomUUID();
   const t0 = Date.now();
+
+  // Two modes of history management:
+  // 1. Server-managed session (our UI): x-session-id header present, client sends only new message
+  // 2. Client-managed history (OpenAI clients like Cline): no header, client sends full history
+  const serverManaged = !!clientSessionId;
+
+  let normalizedMessages: Message[];
+
+  if (serverManaged) {
+    // Server session mode: extract last user message, prepend server history
+    const lastUserContent = extractText(
+      userMessages[userMessages.length - 1].content,
+    );
+    const newUserMessage: Message = { role: 'user', content: lastUserContent };
+    const serverHistory = getSessionHistory(sessionId);
+    normalizedMessages = [...serverHistory, newUserMessage];
+  } else {
+    // Client history mode: normalize all client messages
+    normalizedMessages = body.messages
+      .map((m) => {
+        const role = m.role as Message['role'];
+        const msg: Message = { role, content: extractText(m.content) };
+        if (role === 'tool') {
+          if (typeof m.tool_call_id === 'string' && m.tool_call_id.trim()) {
+            msg.tool_call_id = m.tool_call_id;
+          } else {
+            return null;
+          }
+        }
+        if (role === 'assistant' && Array.isArray(m.tool_calls)) {
+          const toolCalls = m.tool_calls
+            .filter(
+              (tc) =>
+                typeof tc === 'object' &&
+                tc !== null &&
+                typeof tc.id === 'string' &&
+                tc.type === 'function' &&
+                typeof tc.function?.name === 'string' &&
+                typeof tc.function?.arguments === 'string',
+            )
+            .map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              },
+            }));
+          if (toolCalls.length > 0) {
+            msg.tool_calls = toolCalls;
+            if (!msg.content) msg.content = null;
+          }
+        }
+        return msg;
+      })
+      .filter((m): m is Message => m !== null);
+
+    // Store client history in server session for potential future server-managed use
+    setSessionHistory(sessionId, normalizedMessages);
+  }
+
+  // Trim history to prevent context overflow
+  normalizedMessages = trimHistoryForContext(normalizedMessages);
+
   log.info('Chat completions request', {
     stream: body.stream ?? false,
     traceId,
-    messageCount: body.messages.length,
+    sessionId,
+    mode: serverManaged ? 'server-session' : 'client-history',
+    historySize: normalizedMessages.length,
+    userMessage: normalizedMessages
+      .filter((m) => m.role === 'user')
+      .slice(-1)[0]
+      ?.content?.toString()
+      .slice(0, 200),
   });
 
-  // Get SmartAgent handle (uses CAP request for auth context)
+  // Get SmartAgent handle
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request; cast needed for getSmartAgent
     handle = await getSmartAgent();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -176,19 +380,24 @@ export async function handleChatCompletions(
   }
 
   const pipelineLog = cds.log('smart-pipeline');
+  const userId = getUserId();
   const opts = {
     stream: body.stream,
     externalTools,
     sessionId,
+    // RAG namespace isolation: each user sees only their own facts/feedback/state
+    // userId (not sessionId) — knowledge persists across sessions for the same user
+    ragFilter: { namespace: userId },
     trace: { traceId },
     sessionLogger: {
       logStep(name: string, data: unknown) {
-        // Log key pipeline steps for diagnostics
         if (
           name === 'tools_selected' ||
           name === 'rag_query_facts' ||
           name === 'classification_skipped' ||
           name === 'tool_select_rag_fallback' ||
+          name.startsWith('custom_classify') ||
+          name.startsWith('custom_tool_select') ||
           name.startsWith('final_context') ||
           name.startsWith('llm_request') ||
           name.startsWith('llm_response')
@@ -198,54 +407,6 @@ export async function handleChatCompletions(
       },
     },
   };
-
-  // Normalize messages to SmartAgent Message format
-  const normalizedMessages: Message[] = body.messages
-    .map((m) => {
-      const role = m.role as Message['role'];
-      const normalizedMessage: Message = {
-        role,
-        content: extractText(m.content),
-      };
-
-      // Handle tool result messages
-      if (role === 'tool') {
-        if (typeof m.tool_call_id === 'string' && m.tool_call_id.trim()) {
-          normalizedMessage.tool_call_id = m.tool_call_id;
-        } else {
-          return null;
-        }
-      }
-
-      // Handle assistant messages with tool calls
-      if (role === 'assistant' && Array.isArray(m.tool_calls)) {
-        const toolCalls = m.tool_calls
-          .filter(
-            (tc) =>
-              typeof tc === 'object' &&
-              tc !== null &&
-              typeof tc.id === 'string' &&
-              tc.type === 'function' &&
-              typeof tc.function?.name === 'string' &&
-              typeof tc.function?.arguments === 'string',
-          )
-          .map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: {
-              name: tc.function.name,
-              arguments: tc.function.arguments,
-            },
-          }));
-        if (toolCalls.length > 0) {
-          normalizedMessage.tool_calls = toolCalls;
-          if (!normalizedMessage.content) normalizedMessage.content = null;
-        }
-      }
-
-      return normalizedMessage;
-    })
-    .filter((m): m is Message => m !== null);
 
   const invalidToolsHeader: Record<string, string> =
     externalToolsValidation.errors.length > 0
@@ -272,6 +433,7 @@ export async function handleChatCompletions(
     let firstChunk = true;
     let chunkCount = 0;
     let finishReasonSent = false;
+    let accumulatedContent = ''; // Accumulate full response for session history
     let lastUsage: {
       prompt_tokens: number;
       completion_tokens: number;
@@ -378,7 +540,10 @@ export async function handleChatCompletions(
 
         if (v.content || v.toolCalls) {
           const delta: Record<string, unknown> = {};
-          if (v.content) delta.content = v.content;
+          if (v.content) {
+            delta.content = v.content;
+            accumulatedContent += v.content;
+          }
           if (v.toolCalls) {
             delta.tool_calls = v.toolCalls.map((call, index) => {
               const tc = toToolCallDelta(call, index);
@@ -468,16 +633,25 @@ export async function handleChatCompletions(
       chunkCount,
       hasUsage: !!lastUsage,
       durationMs: Date.now() - t0,
+      responseLength: accumulatedContent.length,
     });
+
+    // Save conversation turn to server session
+    if (accumulatedContent) {
+      const lastUser = normalizedMessages
+        .filter((m) => m.role === 'user')
+        .slice(-1)[0];
+      if (lastUser) {
+        appendToSession(sessionId, lastUser, {
+          role: 'assistant',
+          content: accumulatedContent,
+        } as Message);
+      }
+    }
 
     if (chunkCount === 0) {
       log.warn('Stream produced 0 chunks — pipeline may have failed silently', {
         messageCount: normalizedMessages.length,
-        lastUserMessage: normalizedMessages
-          .filter((m) => m.role === 'user')
-          .slice(-1)[0]
-          ?.content?.toString()
-          .slice(0, 200),
         sessionId,
       });
     }
@@ -510,6 +684,19 @@ export async function handleChatCompletions(
       completion_tokens: result.value.usage.completionTokens,
       total_tokens: result.value.usage.totalTokens,
     };
+  }
+
+  // Save conversation turn to server session
+  if (result.ok && finalContent !== '(no response)') {
+    const lastUser = normalizedMessages
+      .filter((m) => m.role === 'user')
+      .slice(-1)[0];
+    if (lastUser) {
+      appendToSession(sessionId, lastUser, {
+        role: 'assistant',
+        content: finalContent,
+      } as Message);
+    }
   }
 
   res.writeHead(200, {
