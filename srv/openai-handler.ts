@@ -515,7 +515,6 @@ export async function handleChatCompletions(
           object: 'chat.completion.chunk',
           created,
           model: 'smart-agent',
-          usage: null,
         };
 
         if (firstChunk) {
@@ -538,30 +537,22 @@ export async function handleChatCompletions(
           if (!v.finishReason && !v.toolCalls) continue;
         }
 
-        if (v.content || v.toolCalls) {
-          const delta: Record<string, unknown> = {};
-          if (v.content) {
-            delta.content = v.content;
-            accumulatedContent += v.content;
-          }
-          if (v.toolCalls) {
-            delta.tool_calls = v.toolCalls.map((call, index) => {
-              const tc = toToolCallDelta(call, index);
-              return {
-                index: tc.index,
-                id: tc.id,
-                type: 'function',
-                function: {
-                  name: tc.name,
-                  arguments: tc.arguments || '',
-                },
-              };
-            });
-          }
+        // Only stream text content to the client.
+        // SmartAgent's internal MCP tool_calls are NOT forwarded — they are
+        // resolved internally by the tool-loop stage. Streaming them would
+        // confuse clients like Cline that expect only their own tools.
+        if (v.content) {
+          accumulatedContent += v.content;
           res.write(
             `data: ${JSON.stringify({
               ...baseResponse,
-              choices: [{ index: 0, delta, finish_reason: null }],
+              choices: [
+                {
+                  index: 0,
+                  delta: { content: v.content },
+                  finish_reason: null,
+                },
+              ],
             })}\n\n`,
           );
         }
