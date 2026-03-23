@@ -442,14 +442,15 @@ export async function handleChatCompletions(
 
     log.info('Starting streamProcess iteration');
 
-    // Keepalive timer: write SSE comment every 10s to prevent CF GoRouter timeout (60s)
+    // Keepalive timer: send SSE comment every 15s to prevent CF GoRouter timeout (60s)
+    // Using plain colon-newline which is the most compatible SSE keepalive format
     const keepalive = setInterval(() => {
       try {
-        res.write(': keepalive\n\n');
+        res.write(':\n\n');
       } catch {
         /* connection closed */
       }
-    }, 10_000);
+    }, 15_000);
 
     try {
       for await (const chunk of stream) {
@@ -480,19 +481,11 @@ export async function handleChatCompletions(
 
         const v = chunk.value;
 
-        // Heartbeat: SSE comment to keep connection alive during tool execution
-        if (v.heartbeat) {
-          const hb = v.heartbeat as { tool: string; elapsed: number };
-          res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
+        // Skip heartbeat and timing chunks — SSE comments (: ...) can
+        // confuse clients like Cline that don't parse them per SSE spec.
+        // Keepalive is handled by the interval timer below.
+        if (v.heartbeat || v.timing) {
           continue;
-        }
-
-        // Timing: SSE comment with performance metrics
-        if (v.timing) {
-          const parts = (
-            v.timing as Array<{ phase: string; duration: number }>
-          ).map((t) => `${t.phase}=${t.duration}ms`);
-          res.write(`: timing ${parts.join(' ')}\n\n`);
         }
 
         if (v.usage) {
@@ -518,23 +511,21 @@ export async function handleChatCompletions(
         };
 
         if (firstChunk) {
+          // First chunk: role only (matches OpenAI format exactly)
           res.write(
             `data: ${JSON.stringify({
               ...baseResponse,
               choices: [
                 {
                   index: 0,
-                  delta: {
-                    role: 'assistant',
-                    content: v.content || '',
-                  },
+                  delta: { role: 'assistant', content: '' },
                   finish_reason: null,
                 },
               ],
             })}\n\n`,
           );
           firstChunk = false;
-          if (!v.finishReason && !v.toolCalls) continue;
+          // Don't skip — fall through to send content in a separate chunk
         }
 
         // Only stream text content to the client.
