@@ -45,7 +45,7 @@ export default async function registerAgentServiceHandlers(
     });
 
     try {
-      const handle = await getSmartAgent(req);
+      const handle = await getSmartAgent();
       const result = await handle.agent.process(message);
 
       if (result.ok) {
@@ -108,7 +108,7 @@ export default async function registerAgentServiceHandlers(
     }
 
     try {
-      const handle = await getSmartAgent(req);
+      const handle = await getSmartAgent();
       const healthResult = await handle.agent.healthCheck();
 
       if (healthResult.ok) {
