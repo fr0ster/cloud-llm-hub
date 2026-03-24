@@ -1,13 +1,50 @@
 # ✨ Features & Benefits
 
-**Version:** 1.0.0  
-**Last Updated:** 2025-11-05
+**Version:** 2.2.0
+**Last Updated:** 2026-03-25
 
 **Why choose Cloud LLM Hub?** Here's what makes it the best choice for connecting SAP to modern AI and automation tools.
 
 ## 🚀 Key Features
 
-### 1. **One-Command Setup**
+### 1. **LLM Agent with RAG Pipeline** *(v2.1+)*
+
+SmartAgent powered by SAP AI Core with intelligent tool selection via vector similarity.
+
+**Features:**
+
+- RAG-based tool selection — only relevant tools sent to LLM context
+- Dynamic model switching at runtime (UI dropdown or API)
+- OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`)
+- Streaming SSE and non-streaming JSON responses
+- External tools passthrough for client-provided tools
+
+**Benefits:**
+
+- Handles 259+ MCP tools without context overflow
+- Switch between Claude, GPT, DeepSeek models on the fly
+- Standard OpenAI protocol — works with any compatible client
+
+### 2. **Multi-Destination Support** *(v2.2+)*
+
+Automatic discovery and management of multiple SAP ABAP systems.
+
+**Features:**
+
+- BTP Destination Service auto-discovery of SAP systems
+- Per-destination tool vectorization with background processing
+- Live destination status in UI (ready/vectorizing/pending/error)
+- Per-request destination switching via `X-SAP-Destination` header
+- No page refresh needed — 15s polling for status updates
+
+**Benefits:**
+
+- Connect to multiple SAP systems from a single deployment
+- Zero configuration for new destinations — auto-discovered from BTP
+- Switch between SAP systems mid-conversation
+- Non-blocking startup — primary destination ready first, others in background
+
+### 3. **One-Command Setup**
 
 Get started in 60 seconds with automated configuration tools.
 
