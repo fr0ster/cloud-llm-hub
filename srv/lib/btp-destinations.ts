@@ -72,9 +72,7 @@ async function fetchDestinations(): Promise<SapDestination[]> {
   );
 
   if (!response.ok) {
-    throw new Error(
-      `BTP Destination Service API failed: ${response.status}`,
-    );
+    throw new Error(`BTP Destination Service API failed: ${response.status}`);
   }
 
   const raw = (await response.json()) as RawDestination[];
