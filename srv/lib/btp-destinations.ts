@@ -32,8 +32,16 @@ interface RawDestination {
  * - URL contains SAP-typical patterns (/sap/, known SAP ports)
  * - Excludes OData-only, AI, and non-ABAP destinations
  */
+/** Destination names that are technical/infrastructure, not SAP ABAP systems */
+const EXCLUDED_DESTINATION_NAMES = [
+  'cloud-connector',
+  'cloud_connector',
+  'connectivity',
+];
+
 function isSapAbapDestination(d: RawDestination): boolean {
   const url = d.URL?.toLowerCase() || '';
+  const name = d.Name?.toLowerCase() || '';
   const auth = d.Authentication || '';
   const proxy = d.ProxyType || '';
 
@@ -42,6 +50,9 @@ function isSapAbapDestination(d: RawDestination): boolean {
 
   // Must be OnPremise (Cloud Connector to SAP system)
   if (proxy !== 'OnPremise') return false;
+
+  // Exclude known technical/infrastructure destinations
+  if (EXCLUDED_DESTINATION_NAMES.includes(name)) return false;
 
   // Exclude OData-only endpoints (specific service paths)
   if (url.includes('/sap/opu/odata')) return false;

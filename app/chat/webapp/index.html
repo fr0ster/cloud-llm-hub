@@ -143,20 +143,10 @@
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
                     const destinations = data._destinations || [];
-                    destSelect.innerHTML = '';
                     if (destinations.length > 0) {
-                        for (const d of destinations) {
-                            const opt = document.createElement('option');
-                            opt.value = d.name;
-                            const statusIcon = d.status === 'ready' ? '\u2713' : d.status === 'vectorizing' ? '\u23F3' : '\u2717';
-                            opt.textContent = `${d.name} [${statusIcon} ${d.toolCount}t]`;
-                            if (d.name === activeDest) opt.selected = true;
-                            if (d.status !== 'ready') opt.disabled = true;
-                            destSelect.appendChild(opt);
-                        }
-                        destSelect.disabled = false;
+                        renderDestinations(destinations, activeDest);
                     } else {
-                        // Fallback: show configured destination
+                        destSelect.innerHTML = '';
                         const opt = document.createElement('option');
                         opt.value = activeDest;
                         opt.textContent = activeDest;
@@ -185,18 +175,8 @@
                 const data = await resp.json();
                 const destinations = data._destinations || [];
                 const activeDest = data._active_destination || '';
-                if (destinations.length === 0) return;
-
-                const currentVal = destSelect.value;
-                destSelect.innerHTML = '';
-                for (const d of destinations) {
-                    const opt = document.createElement('option');
-                    opt.value = d.name;
-                    const statusIcon = d.status === 'ready' ? '\u2713' : d.status === 'vectorizing' ? '\u23F3' : '\u2717';
-                    opt.textContent = `${d.name} [${statusIcon} ${d.toolCount}t]`;
-                    if (d.name === currentVal) opt.selected = true;
-                    if (d.status !== 'ready') opt.disabled = true;
-                    destSelect.appendChild(opt);
+                if (destinations.length > 0) {
+                    renderDestinations(destinations, activeDest);
                 }
             } catch (e) { /* ignore */ }
         }, 15000);
@@ -212,6 +192,29 @@
 
         function getSelectedDestination() {
             return destSelect.value || undefined;
+        }
+
+        function renderDestinations(destinations, activeDest) {
+            if (!destinations || destinations.length === 0) return;
+            const currentVal = destSelect.value || activeDest;
+            destSelect.innerHTML = '';
+            for (const d of destinations) {
+                const opt = document.createElement('option');
+                opt.value = d.name;
+                const icon = d.status === 'ready' ? '\u2713'
+                    : d.status === 'vectorizing' ? '\u23F3'
+                    : d.status === 'pending' ? '\u2022'
+                    : '\u2717';
+                const label = d.status === 'ready' ? `${d.toolCount}t`
+                    : d.status === 'vectorizing' ? 'vectorizing...'
+                    : d.status === 'pending' ? 'pending'
+                    : 'error';
+                opt.textContent = `${d.name} [${icon} ${label}]`;
+                if (d.name === currentVal) opt.selected = true;
+                if (d.status !== 'ready') opt.disabled = true;
+                destSelect.appendChild(opt);
+            }
+            destSelect.disabled = false;
         }
 
         async function sendMessage() {
