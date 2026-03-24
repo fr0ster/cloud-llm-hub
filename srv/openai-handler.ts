@@ -18,7 +18,8 @@ import {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig } from './agent-config';
-import { getSmartAgent, isAgentReady } from './agent-manager';
+import { getSmartAgent, getCurrentModel, isAgentReady } from './agent-manager';
+import { getAvailableModels } from './lib/ai-core-models';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
 function getUserId(): string {
@@ -369,10 +370,11 @@ export async function handleChatCompletions(
       .slice(0, 200),
   });
 
-  // Get SmartAgent handle
+  // Get SmartAgent handle (pass body.model to trigger model switch if needed)
+  const requestedModel = typeof body.model === 'string' ? body.model : undefined;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent();
+    handle = await getSmartAgent(requestedModel);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
@@ -492,7 +494,7 @@ export async function handleChatCompletions(
           id,
           object: 'chat.completion.chunk',
           created,
-          model: 'smart-agent',
+          model: getCurrentModel(),
           usage: null,
         };
 
@@ -584,7 +586,7 @@ export async function handleChatCompletions(
           id,
           object: 'chat.completion.chunk',
           created,
-          model: 'smart-agent',
+          model: getCurrentModel(),
           choices: [
             {
               index: 0,
@@ -602,7 +604,7 @@ export async function handleChatCompletions(
           id,
           object: 'chat.completion.chunk',
           created,
-          model: 'smart-agent',
+          model: getCurrentModel(),
           choices: [],
           usage: lastUsage,
         })}\n\n`,
@@ -688,7 +690,7 @@ export async function handleChatCompletions(
       id: `chatcmpl-${randomUUID()}`,
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
-      model: 'smart-agent',
+      model: getCurrentModel(),
       choices: [
         {
           index: 0,
@@ -708,39 +710,46 @@ export async function handleChatCompletions(
 /**
  * GET /v1/models
  *
- * Returns model info enriched with agent configuration (LLM, RAG, MCP).
+ * Returns available LLM models from SAP AI Core in OpenAI format.
+ * Includes _meta with agent configuration for UI system bar.
  */
 export async function handleModels(
   _req: Request,
   res: Response,
 ): Promise<void> {
+  const log = cds.log('openai-handler/models');
   const config = getAgentConfig();
+  const activeModel = getCurrentModel();
+
+  let models: { id: string; object: string; created: number; owned_by: string }[];
+  try {
+    models = await getAvailableModels();
+  } catch (err) {
+    log.warn('Failed to fetch AI Core models, returning active model only', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    models = [{ id: activeModel, object: 'model', created: 0, owned_by: 'sap-ai-core' }];
+  }
+
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(
     JSON.stringify({
       object: 'list',
-      data: [
-        {
-          id: 'smart-agent',
-          object: 'model',
-          owned_by: 'smart-agent',
-          context_window: 2000000,
-          // Extended info for UI
-          meta: {
-            llm_model: config.llm.model,
-            temperature: config.llm.temperature,
-            max_tokens: config.llm.maxTokens,
-            mode: config.agent.mode,
-            max_iterations: config.agent.maxIterations,
-            rag_type: config.agent.ragType,
-            mcp_destination: config.mcp.destination,
-            classifier_model:
-              process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
-            embedding_model:
-              process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
-          },
-        },
-      ],
+      data: models,
+      // Extension: active model + agent meta for UI
+      _active_model: activeModel,
+      _meta: {
+        temperature: config.llm.temperature,
+        max_tokens: config.llm.maxTokens,
+        mode: config.agent.mode,
+        max_iterations: config.agent.maxIterations,
+        rag_type: config.agent.ragType,
+        mcp_destination: config.mcp.destination,
+        classifier_model:
+          process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+        embedding_model:
+          process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
+      },
     }),
   );
 }
