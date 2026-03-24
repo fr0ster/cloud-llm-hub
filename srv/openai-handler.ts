@@ -734,6 +734,8 @@ export async function handleModels(
             max_iterations: config.agent.maxIterations,
             rag_type: config.agent.ragType,
             mcp_destination: config.mcp.destination,
+            classifier_model:
+              process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
             embedding_model:
               process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
           },
