@@ -479,7 +479,7 @@ export interface DestinationState {
   mcpAdapter: McpClientAdapter | null;
   toolsRag: IRag;
   toolCount: number;
-  status: 'ready' | 'vectorizing' | 'error';
+  status: 'pending' | 'ready' | 'vectorizing' | 'error';
   error?: string;
 }
 
@@ -755,9 +755,22 @@ async function initBackgroundDestinations(): Promise<void> {
       destinations: others.map((d) => d.name),
     });
 
+    // Register all destinations as 'pending' immediately so UI sees the full list
+    for (const dest of others) {
+      if (!destinationStates.has(dest.name)) {
+        destinationStates.set(dest.name, {
+          mcpAdapter: null,
+          toolsRag: new InMemoryRag(),
+          toolCount: 0,
+          status: 'pending',
+        });
+      }
+    }
+
     // Sequential: each destination does embedding calls, avoid overwhelming API
     for (const dest of others) {
-      if (destinationStates.has(dest.name)) continue;
+      const state = destinationStates.get(dest.name);
+      if (state?.status === 'ready') continue;
       await initDestination(dest.name);
     }
 
@@ -947,7 +960,8 @@ export async function getSmartAgent(
     const oldHandle = agentHandle!;
     rebuildPromise = (async () => {
       try {
-        // Close existing agent
+        // Close existing agent — but keep agentReady=true so requests aren't 503'd
+        // New requests during rebuild get the old agent via rebuildPromise check
         await oldHandle.close().catch((err) => {
           log.warn('Failed to close previous SmartAgent', {
             error: String(err),
@@ -955,7 +969,6 @@ export async function getSmartAgent(
         });
         agentHandle = null;
         agentConfig = null;
-        agentReady = false;
 
         // Recursive call will hit the normal build path (no cached handle)
         const handle = await getSmartAgent();
