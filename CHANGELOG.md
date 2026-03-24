@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-03-25
+
+### Added
+
+- **Multi-destination support**: Automatic discovery of SAP ABAP destinations from BTP Destination Service REST API
+- **Background vectorization**: Primary destination blocks at startup; additional destinations vectorize sequentially in background
+- **Destination selector UI**: Dropdown in chat webapp with live status indicators (ready/vectorizing/pending/error) and 15s polling
+- **`X-SAP-Destination` header for `/v1/*` endpoints**: Per-request destination switching in OpenAI-compatible API
+- **`GET /v1/models` extensions**: Response includes `_destinations` array with status/tool counts and `_active_destination` field
+- **`X-SAP-Active-Destination` response header**: Returned in SSE streaming responses
+- **BTP OAuth2 helper** (`srv/lib/btp-oauth.ts`): Shared `getServiceCredentials()` and `getToken()` extracted for reuse across modules
+- **BTP destinations client** (`srv/lib/btp-destinations.ts`): Discovers SAP systems from Destination Service API with `isSapAbapDestination()` heuristic filter
+
+### Fixed
+
+- **503 errors during destination switch**: Old agent stays ready while rebuild happens in background (`agentReady` no longer reset during rebuild)
+- **Technical destinations in list**: `cloud-connector`, `cloud_connector`, `connectivity` excluded via `EXCLUDED_DESTINATION_NAMES`
+- **Vectorization retry**: CircuitBreaker failures handled with 65s cooldown and automatic retry
+
+### Changed
+
+- **`agent-manager.ts`**: Refactored to per-destination `DestinationState` map with shared embedder and RAG stores (facts/feedback/state shared; tools RAG per-destination)
+- **`ai-core-models.ts`**: Refactored to use shared `btp-oauth` helper instead of inline OAuth logic
+- **`openai-handler.ts`**: Reads `X-SAP-Destination` header, passes to `getSmartAgent(model, destination)`, returns destination metadata in `/v1/models`
+
+## [2.1.0] - 2026-03-20
+
+### Added
+
+- **SmartAgent with RAG pipeline**: Tool selection via vector similarity (RAG) instead of passing all tools to LLM context
+- **Dynamic model switching**: UI dropdown to switch LLM models at runtime via `/v1/models` endpoint
+- **Classifier model**: Separate gpt-4o-mini classifier for intent routing in SmartAgent pipeline
+- **OpenAI-compatible endpoints**: `POST /v1/chat/completions` (streaming SSE + JSON), `GET /v1/models`, `GET /v1/usage`
+- **Chat webapp** (`app/chat/`): Terminal-styled chat UI with model selector, markdown rendering, and SSE streaming
+- **Server-side session management** for chat UI with history per authenticated user
+- **Client credentials grant** for service-to-service integrations (non-interactive OAuth2 flow)
+- **External tools passthrough**: Clients can provide their own tools alongside MCP tools via `tools` array in request
+
+### Fixed
+
+- Context window overflow with aggressive history trimming
+- RAG filter excluded from tool-select query to prevent hallucination
+- Classification made opt-in to prevent silent pipeline failures
+- Streaming format aligned with SmartAgentServer for Cline compatibility
+- Internal MCP tool_calls no longer leaked to client stream
+
+### Changed
+
+- Migrated from `@mcp-abap-adt/llm-proxy` to `@mcp-abap-adt/llm-agent` v3.x with structured pipeline and SmartAgentBuilder
+- Non-blocking vectorization at startup — agent becomes ready before all tools are embedded
+- Upgraded to `@mcp-abap-adt/llm-agent` ^3.1.0
+
 ## [2.0.0] - 2026-02-26
 
 ### Added

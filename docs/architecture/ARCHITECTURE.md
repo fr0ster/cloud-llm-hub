@@ -1,6 +1,6 @@
 # Cloud LLM Hub — Developer Architecture Guide
 
-> **Version:** 1.3.2 | **Stack:** SAP CAP (Node.js) + TypeScript + SAP BTP  
+> **Version:** 2.2.0 | **Stack:** SAP CAP (Node.js) + TypeScript + SAP BTP
 > **Purpose:** This document gives a new developer everything needed to understand, navigate, and modify the codebase.
 
 ---
@@ -101,7 +101,7 @@ flowchart LR
 |---------|------|------------|
 | **`core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
-| **`llm-proxy`** | `SapCoreAIProvider`, `SapCoreAIAgent`, `MCPClientWrapper` — LLM agent abstractions | `agent-manager.ts` |
+| **`llm-agent`** | `SmartAgent`, `SmartAgentBuilder`, `McpClientAdapter`, `IRag` — LLM agent with RAG pipeline | `agent-manager.ts` |
 | **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
 | **`interfaces`** | Shared types: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
 | **`logger`** | Base logging implementation | `lib/logger.ts` |
@@ -165,9 +165,13 @@ cloud-llm-hub/
 │   │   ├── destinationResolver.ts     # SAP Cloud SDK destination resolution
 │   │   ├── connectivityProxy.ts       # On-premise Cloud Connector support
 │   │   └── BtpOnPremDestinationConnection.ts  # On-prem connection via proxy
+│   ├── openai-handler.ts         # OpenAI-compatible /v1/* HTTP handlers
 │   └── lib/                      # Shared utilities
 │       ├── errorUtils.ts         # Centralized error handling
-│       └── logger.ts             # Logger adapter wrapping @mcp-abap-adt/logger
+│       ├── logger.ts             # Logger adapter wrapping @mcp-abap-adt/logger
+│       ├── btp-oauth.ts          # Shared BTP OAuth2 token helper
+│       ├── btp-destinations.ts   # BTP Destination Service client
+│       └── ai-core-models.ts     # AI Core model list (cached)
 ├── app/
 │   └── router/                   # SAP BTP Approuter (xs-app.json routes)
 ├── test/                         # Tests (YAML-driven integration, smoke, unit)
@@ -277,7 +281,8 @@ graph TD
 | **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service at path `/mcp`. Exposes `Health()`, `ProbeDestination(destination)`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
 | **MCP Manager** | `mcp-manager.ts` | Core factory. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
 | **Agent Service** | `agent-service.ts` + `.cds` | CAP service at path `/agent`. Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Delegates to `agent-manager.ts`. |
-| **Agent Manager** | `agent-manager.ts` | Creates `SapCoreAIProvider` with OAuth2 token from AI Core service binding. Builds MCP client config to loop back into own proxy. Caches agent instances (30 min TTL). |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background vectorization for non-primary destinations. |
+| **OpenAI Handler** | `openai-handler.ts` | OpenAI-compatible HTTP handlers: `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (with destination metadata), `GET /v1/usage`. Reads `X-SAP-Destination` header for per-request destination switching. |
 | **Agent Config** | `agent-config.ts` | Reads `LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`, `LLM_AGENT_MCP_DESTINATION` from env vars. Reads AI Core service binding from `VCAP_SERVICES`. Singleton pattern. |
 | **Auth Service** | `auth.ts` + `.cds` | CAP service at path `/auth`. `CheckAuth()` validates user identity. `CheckRoles(required)` checks specific roles. Used by `server.ts` middleware for `/mcp/*` routes. |
 | **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → `createAbapConnection` (direct). |
@@ -849,8 +854,9 @@ graph TB
 | `LLM_AGENT_MODEL` | `agent-config.ts` | LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`) |
 | `LLM_AGENT_TEMPERATURE` | `agent-config.ts` | Temperature (0.0–2.0, default: 0.7) |
 | `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
-| `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | BTP Destination name for ABAP system |
+| `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | Primary BTP Destination name for ABAP system (blocks at startup) |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | MCP proxy URL (optional, auto-detected) |
+| `LLM_AGENT_RESOURCE_GROUP` | `ai-core-models.ts` | AI Core resource group (default: `default`) |
 | `VCAP_SERVICES` | `agent-config.ts`, `destinationResolver.ts` | Service bindings (AI Core, Destination, Connectivity) |
 | `MCP_SKIP_AUTO_START` | `env-setup.ts` | Prevents mcp-abap-adt auto-start |
 | `MCP_SKIP_ENV_LOAD` | `env-setup.ts` | Prevents mcp-abap-adt .env loading |
@@ -944,7 +950,71 @@ graph LR
 
 ---
 
-## 15. Key Design Decisions
+## 15. Multi-Destination Architecture (v2.2.0)
+
+Cloud LLM Hub automatically discovers SAP ABAP destinations from BTP Destination Service and manages per-destination state.
+
+### Destination Discovery & Filtering
+
+```mermaid
+graph LR
+    BTP_API["BTP Destination Service<br/>GET /destination-configuration/v1/subaccountDestinations"] --> FILTER["Filter Heuristic"]
+    FILTER -->|"OnPremise + BasicAuth<br/>Exclude OData, /srvd_a2x/<br/>Exclude cloud-connector"| SAP_DESTS["SAP ABAP Destinations"]
+```
+
+**Heuristic:** `isSapAbapDestination()` selects OnPremise + BasicAuthentication destinations, excluding OData service endpoints and technical destinations (`cloud-connector`, `cloud_connector`, `connectivity`).
+
+### Per-Destination State
+
+```mermaid
+graph TB
+    subgraph "Shared Components"
+        EMB["Embedder<br/>(text-embedding model)"]
+        FACTS["Facts RAG Store"]
+        FB["Feedback RAG Store"]
+        STATE["State RAG Store"]
+    end
+
+    subgraph "Per-Destination State Map"
+        D1["S4HANA_DEV<br/>status: ready<br/>toolCount: 259"]
+        D2["S4HANA_TST<br/>status: vectorizing<br/>toolCount: 0"]
+        D3["S4HANA_QAS<br/>status: pending<br/>toolCount: 0"]
+    end
+
+    D1 --> MCP1["McpClientAdapter"]
+    D1 --> RAG1["Tools RAG Store"]
+    D2 --> MCP2["McpClientAdapter"]
+    D2 --> RAG2["Tools RAG Store"]
+
+    EMB --> RAG1
+    EMB --> RAG2
+
+    style D1 fill:#16a34a,color:#fff
+    style D2 fill:#f59e0b,color:#000
+    style D3 fill:#6b7280,color:#fff
+```
+
+Each destination has its own `McpClientAdapter` (MCP connection) and `Tools RAG Store` (vectorized tool descriptions). The embedder and facts/feedback/state RAG stores are shared.
+
+### Startup & Background Vectorization
+
+1. **Primary destination** (from `LLM_AGENT_MCP_DESTINATION` env var) blocks at startup — agent not ready until complete
+2. After primary is ready, `initBackgroundDestinations()` fires:
+   - Fetches all BTP destinations via Destination Service API
+   - Registers ALL as `pending` immediately (visible in UI)
+   - Vectorizes each sequentially in background
+3. UI polls `GET /v1/models` every 15s to update destination status
+
+### Destination Switching
+
+- Client sends `X-SAP-Destination: <name>` header on `POST /v1/chat/completions`
+- `getSmartAgent(model?, destination?)` checks pre-built `DestinationState` map
+- If destination is `ready`, uses pre-built adapter + tools RAG — no rebuild needed
+- Old agent stays ready during any rebuild (no 503 errors)
+
+---
+
+## 16. Key Design Decisions
 
 ### Per-Request Architecture (No Server Cache)
 
@@ -989,4 +1059,4 @@ graph LR
 
 ---
 
-> **Last updated:** February 2026 | **Source:** Auto-generated from codebase analysis
+> **Last updated:** March 2026 | **Source:** Auto-generated from codebase analysis

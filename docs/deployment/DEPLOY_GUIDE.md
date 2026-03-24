@@ -106,8 +106,40 @@ modules:
 - `.mtaext` - Your config (NOT committed, in .gitignore)
 - `mta.yaml` - MTA descriptor (committed to Git)
 
+## Multi-Destination Support (v2.2+)
+
+After deployment, Cloud LLM Hub automatically discovers SAP ABAP destinations from BTP Destination Service.
+
+### How It Works
+
+1. The **primary destination** (`LLM_AGENT_MCP_DESTINATION`) is initialized at startup — agent blocks until ready
+2. All other SAP ABAP destinations are discovered automatically and vectorized in the background
+3. The UI shows all destinations with live status indicators
+
+### Discovery Heuristic
+
+Destinations are included if they match:
+- **ProxyType:** `OnPremise`
+- **Authentication:** `BasicAuthentication`
+- **Not excluded:** OData endpoints, `/srvd_a2x/` services, and technical names (`cloud-connector`, `connectivity`)
+
+### Adding New Destinations
+
+Simply create a new destination in BTP Destination Service with the criteria above. Cloud LLM Hub will discover it automatically (within 5 min cache TTL) — no redeployment needed.
+
+### Per-Request Destination Override
+
+Clients can switch destinations per request using the `X-SAP-Destination` header:
+
+```bash
+curl -X POST .../v1/chat/completions \
+  -H "X-SAP-Destination: S4HANA_TST" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [...]}'
+```
+
 ## Security
 
-⚠️ **Never commit `.mtaext`** - it contains sensitive configuration!
+**Never commit `.mtaext`** — it contains sensitive configuration!
 
 The `.mtaext` file is in `.gitignore` and will not be committed to Git.

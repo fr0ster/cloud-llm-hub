@@ -1,7 +1,7 @@
 # API Reference
 
-**Version:** 1.0.0  
-**Last Updated:** 2025-11-05
+**Version:** 2.2.0
+**Last Updated:** 2026-03-25
 
 Complete API specification for Cloud LLM Hub endpoints.
 
@@ -111,7 +111,111 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-### 3. SSE Stream (disabled)
+### 3. OpenAI-Compatible Chat Completions
+
+**Endpoint:** `POST /v1/chat/completions`
+
+**Description:** OpenAI-compatible chat endpoint powered by SmartAgent with RAG-based tool selection.
+
+**Authentication:** Required
+
+**Headers:**
+
+- `Authorization` (required) - Basic or Bearer token
+- `Content-Type: application/json` (required)
+- `X-SAP-Destination` (optional) - Override active SAP destination for this request
+
+**Request Body:**
+
+```json
+{
+  "model": "anthropic--claude-4.5-sonnet",
+  "messages": [
+    { "role": "user", "content": "List all classes in package Z_MY_PKG" }
+  ],
+  "stream": true,
+  "tools": []
+}
+```
+
+- `model` (optional) — LLM model name; if different from current, triggers model switch
+- `messages` (required) — OpenAI-format message array
+- `stream` (optional, default: `true`) — SSE streaming or JSON response
+- `tools` (optional) — external tool definitions to pass alongside MCP tools
+
+**Response (streaming):** Server-Sent Events with OpenAI delta format.
+
+**Response (non-streaming):**
+
+```json
+{
+  "id": "chatcmpl-<uuid>",
+  "object": "chat.completion",
+  "model": "anthropic--claude-4.5-sonnet",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "Found 12 classes..." },
+      "finish_reason": "stop"
+    }
+  ]
+}
+```
+
+**Status Codes:**
+
+- `200 OK` - Chat response
+- `401 Unauthorized` - Missing or invalid authentication
+- `503 Service Unavailable` - SmartAgent is initializing (MCP connect + tool vectorization)
+
+---
+
+### 4. List Models
+
+**Endpoint:** `GET /v1/models`
+
+**Description:** Returns available LLM models from SAP AI Core, plus destination status information.
+
+**Authentication:** Required
+
+**Response:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "anthropic--claude-4.5-sonnet", "object": "model", "created": 0, "owned_by": "sap-ai-core" },
+    { "id": "gpt-4o-mini", "object": "model", "created": 0, "owned_by": "sap-ai-core" }
+  ],
+  "_active_model": "anthropic--claude-4.5-sonnet",
+  "_active_destination": "S4HANA_DEV",
+  "_destinations": [
+    { "name": "S4HANA_DEV", "status": "ready", "toolCount": 259 },
+    { "name": "S4HANA_TST", "status": "vectorizing", "toolCount": 0 },
+    { "name": "S4HANA_QAS", "status": "pending", "toolCount": 0 }
+  ]
+}
+```
+
+**Extension fields** (not part of OpenAI spec):
+
+- `_active_model` — currently selected LLM model
+- `_active_destination` — currently active SAP destination
+- `_destinations` — array of discovered destinations with vectorization status and tool count
+
+---
+
+### 5. Token Usage
+
+**Endpoint:** `GET /v1/usage`
+
+**Description:** Returns cumulative token usage statistics for the current session.
+
+**Authentication:** Required
+
+---
+
+### 6. SSE Stream (disabled)
 
 **Endpoint:** `GET /mcp/stream/sse`
 
@@ -119,7 +223,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-### 4. Stream-HTTP
+### 7. Stream-HTTP
 
 **Endpoint:** `POST /mcp/stream/http`
 
@@ -392,5 +496,5 @@ For the full list of available tools, see the ABAP ADT MCP server documentation 
 
 ---
 
-**Last Updated:** 2025-11-05  
-**API Version:** 1.0
+**Last Updated:** 2026-03-25
+**API Version:** 2.2

@@ -1,7 +1,7 @@
 # 🚀 Getting Started with Cloud LLM Hub
 
-**Version:** 1.0.0  
-**Last Updated:** 2025-11-05
+**Version:** 2.2.0
+**Last Updated:** 2026-03-25
 
 **Welcome!** This guide will get you up and running with Cloud LLM Hub in **under 5 minutes**. Whether you're integrating with Cline, Claude Desktop, n8n, or building custom automations, we've got you covered.
 
@@ -315,6 +315,44 @@ while (true) {
   console.log('Chunk:', new TextDecoder().decode(value));
 }
 ```
+
+## 🎛️ Chat UI & Destination Switching *(v2.2+)*
+
+Cloud LLM Hub includes a built-in chat webapp at `/chat/webapp/index.html` with:
+
+- **Model selector** — switch between LLM models (Claude, GPT, DeepSeek) at runtime
+- **Destination selector** — switch between discovered SAP systems with live status:
+  - **✓ ready** — destination vectorized, tools available
+  - **⏳ vectorizing** — tool embeddings being created
+  - **• pending** — queued for vectorization
+  - **✗ error** — vectorization failed
+
+### OpenAI-Compatible API
+
+Use the `/v1/chat/completions` endpoint with any OpenAI-compatible client:
+
+```bash
+curl -X POST "https://your-app.cfapps.eu10.hana.ondemand.com/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-SAP-Destination: S4HANA_DEV" \
+  -d '{
+    "model": "anthropic--claude-4.5-sonnet",
+    "messages": [{"role": "user", "content": "List classes in package Z_MY_PKG"}],
+    "stream": true
+  }'
+```
+
+### Discover Available Destinations
+
+```bash
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+     "https://your-app.cfapps.eu10.hana.ondemand.com/v1/models"
+```
+
+The response includes `_destinations` array with status and tool counts for each SAP system.
+
+---
 
 ## 🛠️ Available Tools
 
