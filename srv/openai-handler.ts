@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import {
   type Message,
   normalizeAndValidateExternalTools,
+  toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
@@ -138,8 +139,12 @@ function trimHistoryForContext(messages: Message[]): Message[] {
 
   if (messages.length <= 2) return messages;
 
+  // Separate system messages (must be preserved for client adapter detection)
+  const systemMessages = messages.filter((m) => m.role === 'system');
+  const nonSystem = messages.filter((m) => m.role !== 'system');
+
   // Clean all assistant messages: remove progress markers + truncate
-  const cleaned = messages.map((m, i) => {
+  const cleaned = nonSystem.map((m, i) => {
     if (m.role !== 'assistant' || typeof m.content !== 'string') return m;
 
     let content = m.content.replace(
@@ -150,9 +155,9 @@ function trimHistoryForContext(messages: Message[]): Message[] {
     // Last assistant message gets moderate limit, older ones get aggressive limit
     const isLastAssistant =
       i ===
-      messages.length -
+      nonSystem.length -
         1 -
-        [...messages].reverse().findIndex((msg) => msg.role === 'assistant');
+        [...nonSystem].reverse().findIndex((msg) => msg.role === 'assistant');
     const limit = isLastAssistant
       ? RECENT_ASSISTANT_LIMIT
       : OLDER_ASSISTANT_LIMIT;
@@ -163,7 +168,7 @@ function trimHistoryForContext(messages: Message[]): Message[] {
     return { ...m, content };
   });
 
-  // Check total size — drop oldest pairs if over budget
+  // Check total size (excluding system) — drop oldest if over budget
   let totalChars = cleaned.reduce(
     (sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0),
     0,
@@ -171,7 +176,6 @@ function trimHistoryForContext(messages: Message[]): Message[] {
 
   let result = cleaned;
   while (totalChars > TOTAL_BUDGET && result.length > 2) {
-    // Drop the oldest message
     const dropped = result[0];
     const droppedLen =
       typeof dropped.content === 'string' ? dropped.content.length : 0;
@@ -179,7 +183,8 @@ function trimHistoryForContext(messages: Message[]): Message[] {
     totalChars -= droppedLen;
   }
 
-  return result;
+  // Re-attach system messages at the front
+  return [...systemMessages, ...result];
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +279,9 @@ export async function handleChatCompletions(
     return;
   }
 
-  // Validate external tools (for diagnostic header only — not passed to SmartAgent)
+  // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
+  const externalTools = externalToolsValidation.tools;
   if (externalToolsValidation.errors.length > 0) {
     log.debug('Invalid external tools detected', {
       count: externalToolsValidation.errors.length,
@@ -381,9 +387,9 @@ export async function handleChatCompletions(
   const userId = getUserId();
   const opts = {
     stream: body.stream,
-    // Client tools (attempt_completion, read_file, etc.) are NOT passed to SmartAgent.
-    // SmartAgent manages its own MCP tools internally via RAG-based selection.
-    // Client tools are only used to detect response format (tool_call vs text).
+    // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
+    // for ClineClientAdapter detection and external tool_call routing.
+    externalTools,
     sessionId,
     // RAG namespace isolation: each user sees only their own facts/feedback/state
     // userId (not sessionId) — knowledge persists across sessions for the same user
@@ -490,7 +496,7 @@ export async function handleChatCompletions(
           usage: null,
         };
 
-        // First chunk: include role + any initial content (matches SmartAgentServer)
+        // First chunk: role + initial content (matches SmartServer)
         if (firstChunk) {
           const initialContent = v.content || '';
           if (initialContent) accumulatedContent += initialContent;
@@ -507,19 +513,37 @@ export async function handleChatCompletions(
             })}\n\n`,
           );
           firstChunk = false;
-          if (!v.finishReason) continue;
+          if (!v.finishReason && !v.toolCalls) continue;
         }
 
-        // Regular content chunks
-        if (v.content) {
-          accumulatedContent += v.content;
+        // Content and/or tool_calls delta (matches SmartServer)
+        if (v.content || v.toolCalls) {
+          const delta: Record<string, unknown> = {};
+          if (v.content) {
+            accumulatedContent += v.content;
+            delta.content = v.content;
+          }
+          if (v.toolCalls) {
+            delta.tool_calls = v.toolCalls.map((call, index) => {
+              const tc = toToolCallDelta(call, index);
+              return {
+                index: tc.index,
+                id: tc.id,
+                type: 'function',
+                function: {
+                  name: tc.name,
+                  arguments: tc.arguments || '',
+                },
+              };
+            });
+          }
           res.write(
             `data: ${JSON.stringify({
               ...baseResponse,
               choices: [
                 {
                   index: 0,
-                  delta: { content: v.content },
+                  delta,
                   finish_reason: null,
                 },
               ],

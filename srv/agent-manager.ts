@@ -20,6 +20,7 @@ import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  ClineClientAdapter,
   FallbackRag,
   InMemoryMetrics,
   InMemoryRag,
@@ -744,7 +745,9 @@ export async function getSmartAgent(): Promise<SmartAgentHandle> {
     // Session: token budget control
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     // History: compress long conversations
-    .withHistorySummarization(20);
+    .withHistorySummarization(20)
+    // Cline adapter: detect Cline by system prompt, wrap response in <attempt_completion> XML
+    .withClientAdapter(new ClineClientAdapter());
 
   const handle = await builder.build();
   agentHandle = handle;
