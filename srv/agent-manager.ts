@@ -103,8 +103,7 @@ class CustomClassifyHandler implements IStageHandler {
       classificationEnabled: ctx.config.classificationEnabled,
     });
     // Classify input into subprompts (same logic as built-in ClassifyHandler)
-    // Classification is opt-in: skip unless explicitly enabled
-    if (ctx.config.classificationEnabled !== true) {
+    if (ctx.config.classificationEnabled === false) {
       ctx.subprompts = [
         { type: 'action', text: ctx.inputText, dependency: 'independent' },
       ];
@@ -112,15 +111,24 @@ class CustomClassifyHandler implements IStageHandler {
     } else {
       const result = await ctx.classifier.classify(ctx.inputText, ctx.options);
       if (!result.ok) {
-        ctx.options?.sessionLogger?.logStep('classify_error', {
+        // Classification failed — log error but fallback to action, don't kill pipeline
+        log.error('Classifier failed, falling back to action subprompt', {
           error: result.error.message,
         });
-        return false;
+        ctx.subprompts = [
+          {
+            type: 'action',
+            text: ctx.inputText,
+            context: 'sap-abap',
+            dependency: 'independent',
+          },
+        ];
+      } else {
+        ctx.subprompts = result.value;
+        ctx.options?.sessionLogger?.logStep('classifier_response', {
+          subprompts: result.value,
+        });
       }
-      ctx.subprompts = result.value;
-      ctx.options?.sessionLogger?.logStep('classifier_response', {
-        subprompts: result.value,
-      });
     }
 
     // Update control flags (same logic as built-in ClassifyHandler._updateControlFlags)
