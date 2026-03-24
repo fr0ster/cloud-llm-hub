@@ -1,0 +1,61 @@
+# Multi-Destination Support — Roadmap
+
+Dynamic SAP destination switching with per-destination tool vectorization.
+
+## Architecture
+
+```
+Map<destination, {
+  mcpAdapter: McpClientAdapter,
+  toolsRag: IRag,
+  toolCount: number,
+  status: 'ready' | 'vectorizing' | 'error',
+  error?: string
+}>
+```
+
+- Primary destination (from env var) vectorized blocking at startup
+- Other SAP destinations vectorized in background
+- On switch: swap MCP adapter + tools RAG (pre-built), rebuild SmartAgent (fast)
+- Failed destinations excluded from UI dropdown
+
+## Tasks
+
+### Phase 1: BTP Destinations Discovery
+- [ ] `srv/lib/btp-destinations.ts` — fetch subaccount destinations from BTP Destination Service REST API
+- [ ] Filter: OnPremise + BasicAuth with SAP-like URLs (heuristic)
+- [ ] Cache with TTL (5min, same as models)
+- [ ] Graceful fallback: if API fails, return only current destination from env
+
+### Phase 2: Multi-Destination Agent Manager
+- [ ] New type `DestinationState` — mcpAdapter, toolsRag, status, toolCount, error
+- [ ] `destinationStates: Map<string, DestinationState>` in agent-manager.ts
+- [ ] Extract `buildEmbeddedMcpAdapter()` to accept destination name parameter
+- [ ] Extract tool vectorization into reusable function
+- [ ] Primary destination: vectorize blocking (existing behavior)
+- [ ] Background vectorization: after agent ready, vectorize remaining destinations
+- [ ] Per-destination status tracking: ready / vectorizing / error
+- [ ] `getSmartAgent(model?, destination?)` — switch destination using pre-built state
+- [ ] On destination switch: rebuild SmartAgent with pre-built mcpAdapter + toolsRag
+- [ ] Export `getDestinationStates()` for API/UI consumption
+- [ ] Export `getCurrentDestination()` for status reporting
+
+### Phase 3: API Integration
+- [ ] `GET /v1/models` — include `_destinations` in response (name, status, toolCount)
+- [ ] `POST /v1/chat/completions` — read destination from `X-SAP-Destination` header or body extension
+- [ ] Pass destination to `getSmartAgent(model, destination)`
+- [ ] Return active destination in SSE response metadata
+
+### Phase 4: UI Destination Selector
+- [ ] Destination `<select>` dropdown in system bar (same style as model selector)
+- [ ] Populate from `/v1/models` `_destinations` field
+- [ ] Show status indicator: ready (green), vectorizing (yellow), error (red/disabled)
+- [ ] Send selected destination in `X-SAP-Destination` header on chat requests
+- [ ] Disable options that are not yet ready (status !== 'ready')
+
+### Phase 5: Testing & Polish
+- [ ] Test destination switch DEV → TST via UI
+- [ ] Test background vectorization completes without blocking primary
+- [ ] Test error handling: unreachable destination (QAS) shows error status
+- [ ] Test fallback: BTP API unavailable → only env var destination available
+- [ ] Verify Cline still works (X-SAP-Destination header passthrough)
