@@ -18,7 +18,13 @@ import {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig } from './agent-config';
-import { getSmartAgent, getCurrentModel, isAgentReady } from './agent-manager';
+import {
+  getCurrentDestination,
+  getCurrentModel,
+  getDestinationStates,
+  getSmartAgent,
+  isAgentReady,
+} from './agent-manager';
 import { getAvailableModels } from './lib/ai-core-models';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
@@ -370,11 +376,15 @@ export async function handleChatCompletions(
       .slice(0, 200),
   });
 
-  // Get SmartAgent handle (pass body.model to trigger model switch if needed)
-  const requestedModel = typeof body.model === 'string' ? body.model : undefined;
+  // Get SmartAgent handle (pass model/destination to trigger switch if needed)
+  const requestedModel =
+    typeof body.model === 'string' ? body.model : undefined;
+  const requestedDestination = req.headers['x-sap-destination'] as
+    | string
+    | undefined;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent(requestedModel);
+    handle = await getSmartAgent(requestedModel, requestedDestination);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
@@ -431,6 +441,7 @@ export async function handleChatCompletions(
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      'X-SAP-Active-Destination': getCurrentDestination(),
       ...invalidToolsHeader,
     });
 
@@ -721,14 +732,21 @@ export async function handleModels(
   const config = getAgentConfig();
   const activeModel = getCurrentModel();
 
-  let models: { id: string; object: string; created: number; owned_by: string }[];
+  let models: {
+    id: string;
+    object: string;
+    created: number;
+    owned_by: string;
+  }[];
   try {
     models = await getAvailableModels();
   } catch (err) {
     log.warn('Failed to fetch AI Core models, returning active model only', {
       error: err instanceof Error ? err.message : String(err),
     });
-    models = [{ id: activeModel, object: 'model', created: 0, owned_by: 'sap-ai-core' }];
+    models = [
+      { id: activeModel, object: 'model', created: 0, owned_by: 'sap-ai-core' },
+    ];
   }
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -738,6 +756,8 @@ export async function handleModels(
       data: models,
       // Extension: active model + agent meta for UI
       _active_model: activeModel,
+      _active_destination: getCurrentDestination(),
+      _destinations: getDestinationStates(),
       _meta: {
         temperature: config.llm.temperature,
         max_tokens: config.llm.maxTokens,

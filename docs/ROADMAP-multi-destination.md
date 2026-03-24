@@ -29,24 +29,25 @@ Map<destination, {
 - [x] Graceful fallback: if API fails, return only current destination from env
 - [x] Refactored `ai-core-models.ts` to use shared `btp-oauth.ts`
 
-### Phase 2: Multi-Destination Agent Manager
-- [ ] New type `DestinationState` — mcpAdapter, toolsRag, status, toolCount, error
-- [ ] `destinationStates: Map<string, DestinationState>` in agent-manager.ts
-- [ ] Extract `buildEmbeddedMcpAdapter()` to accept destination name parameter
-- [ ] Extract tool vectorization into reusable function
-- [ ] Primary destination: vectorize blocking (existing behavior)
-- [ ] Background vectorization: after agent ready, vectorize remaining destinations
-- [ ] Per-destination status tracking: ready / vectorizing / error
-- [ ] `getSmartAgent(model?, destination?)` — switch destination using pre-built state
-- [ ] On destination switch: rebuild SmartAgent with pre-built mcpAdapter + toolsRag
-- [ ] Export `getDestinationStates()` for API/UI consumption
-- [ ] Export `getCurrentDestination()` for status reporting
+### Phase 2: Multi-Destination Agent Manager ✅
+- [x] New type `DestinationState` — mcpAdapter, toolsRag, status, toolCount, error
+- [x] `destinationStates: Map<string, DestinationState>` in agent-manager.ts
+- [x] Extract `buildEmbeddedMcpAdapter()` to accept destination name parameter
+- [x] Extract tool vectorization into reusable `vectorizeTools()` function
+- [x] Shared embedder + RAG stores (facts, feedback, state) persist across destination switches
+- [x] Primary destination: vectorize blocking (existing behavior)
+- [x] Background vectorization: `initBackgroundDestinations()` after agent ready
+- [x] Per-destination status tracking: ready / vectorizing / error
+- [x] `getSmartAgent(model?, destination?)` — switch destination using pre-built state
+- [x] On destination switch: rebuild SmartAgent with pre-built mcpAdapter + toolsRag
+- [x] Export `getDestinationStates()` for API/UI consumption
+- [x] Export `getCurrentDestination()` for status reporting
 
-### Phase 3: API Integration
-- [ ] `GET /v1/models` — include `_destinations` in response (name, status, toolCount)
-- [ ] `POST /v1/chat/completions` — read destination from `X-SAP-Destination` header or body extension
-- [ ] Pass destination to `getSmartAgent(model, destination)`
-- [ ] Return active destination in SSE response metadata
+### Phase 3: API Integration ✅
+- [x] `GET /v1/models` — include `_destinations` + `_active_destination` in response
+- [x] `POST /v1/chat/completions` — read destination from `X-SAP-Destination` header
+- [x] Pass destination to `getSmartAgent(model, destination)`
+- [x] Return active destination in SSE response metadata (`X-SAP-Active-Destination` header)
 
 ### Phase 4: UI Destination Selector
 - [ ] Destination `<select>` dropdown in system bar (same style as model selector)

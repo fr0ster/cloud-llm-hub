@@ -43,6 +43,7 @@ import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
+import { getAvailableDestinations } from './lib/btp-destinations';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 
@@ -235,7 +236,8 @@ class CustomToolSelectHandler implements IStageHandler {
       // ctx.options contains ragFilter.namespace for per-user isolation,
       // but tool records were upserted without namespace metadata.
       // Passing ragFilter would filter out ALL tool records → 0 results → hallucination.
-      const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ?? {}) as Record<string, unknown>;
+      const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
+        {}) as Record<string, unknown>;
       const result = await toolsStore.query(queryText, k, toolQueryOpts);
       if (result.ok) {
         ragToolNames = new Set(
@@ -468,6 +470,310 @@ export function getAgentMetrics() {
   return metrics.snapshot();
 }
 
+// ---------------------------------------------------------------------------
+// Multi-destination state management
+// ---------------------------------------------------------------------------
+
+/** Per-destination pre-built state for fast switching */
+export interface DestinationState {
+  mcpAdapter: McpClientAdapter | null;
+  toolsRag: IRag;
+  toolCount: number;
+  status: 'ready' | 'vectorizing' | 'error';
+  error?: string;
+}
+
+/** Map of destination name → pre-built state */
+const destinationStates = new Map<string, DestinationState>();
+
+/** Currently active destination name */
+let currentDestination: string | null = null;
+
+/** Get current destination name */
+export function getCurrentDestination(): string {
+  return currentDestination || getAgentConfig().mcp.destination;
+}
+
+/** Get all destination states for API/UI consumption */
+export function getDestinationStates(): Array<{
+  name: string;
+  status: string;
+  toolCount: number;
+  error?: string;
+}> {
+  return [...destinationStates.entries()].map(([name, state]) => ({
+    name,
+    status: state.status,
+    toolCount: state.toolCount,
+    error: state.error,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Shared embedder + RAG stores (survive destination switches)
+// ---------------------------------------------------------------------------
+
+let sharedEmbedderBreaker: CircuitBreaker | null = null;
+let sharedEmbedder: CircuitBreakerEmbedder | null = null;
+let sharedRagStores: { facts: IRag; feedback: IRag; state: IRag } | null = null;
+
+/** Get or create shared embedder (singleton) */
+function getOrCreateEmbedder(resourceGroup?: string): {
+  embedder: CircuitBreakerEmbedder;
+  breaker: CircuitBreaker;
+} | null {
+  const config = getAgentConfig();
+  if (config.agent.ragType === 'in-memory') return null;
+
+  if (!sharedEmbedder) {
+    const embeddingModel =
+      process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
+    sharedEmbedderBreaker = new CircuitBreaker({
+      failureThreshold: 30,
+      recoveryWindowMs: 60_000,
+    });
+    const rawEmbedder = new SapAiCoreEmbedder({
+      model: embeddingModel,
+      resourceGroup,
+    });
+    sharedEmbedder = new CircuitBreakerEmbedder(
+      rawEmbedder,
+      sharedEmbedderBreaker,
+    );
+  }
+
+  return { embedder: sharedEmbedder, breaker: sharedEmbedderBreaker! };
+}
+
+/** Create a tools RAG store (one per destination) */
+function createToolsRagStore(resourceGroup?: string): IRag {
+  const embedding = getOrCreateEmbedder(resourceGroup);
+  if (!embedding) return new InMemoryRag();
+
+  const toolsVectorRag = new VectorRag(embedding.embedder, {
+    vectorWeight: 1.0,
+    keywordWeight: 0,
+  });
+  return new FallbackRag(toolsVectorRag, new InMemoryRag(), embedding.breaker);
+}
+
+/** Get or create shared RAG stores (facts, feedback, state — persist across destination switches) */
+function getOrCreateSharedRagStores(resourceGroup?: string): {
+  facts: IRag;
+  feedback: IRag;
+  state: IRag;
+} {
+  if (sharedRagStores) return sharedRagStores;
+
+  const embedding = getOrCreateEmbedder(resourceGroup);
+  const facts = embedding
+    ? new FallbackRag(
+        new VectorRag(embedding.embedder, {
+          vectorWeight: 0.7,
+          keywordWeight: 0.3,
+        }),
+        new InMemoryRag(),
+        embedding.breaker,
+      )
+    : new InMemoryRag();
+
+  sharedRagStores = {
+    facts,
+    feedback: new InMemoryRag(),
+    state: new InMemoryRag(),
+  };
+
+  return sharedRagStores;
+}
+
+// ---------------------------------------------------------------------------
+// Tool vectorization (extracted for reuse across destinations)
+// ---------------------------------------------------------------------------
+
+/** Vectorize MCP tools into a RAG store */
+async function vectorizeTools(
+  mcpAdapter: McpClientAdapter,
+  toolsStore: IRag,
+  embedderBreaker: CircuitBreaker | null,
+): Promise<{ ok: number; failed: number; total: number }> {
+  const log = cds.log('agent-manager');
+
+  const toolsResult = await mcpAdapter.listTools();
+  if (!toolsResult.ok) {
+    throw new Error('MCP listTools failed — cannot vectorize tools');
+  }
+
+  const tools = toolsResult.value;
+  const maxRetries = 3;
+  const throttleMs = 50;
+
+  const toolEntries = tools.map((t) => {
+    const paramNames = Object.keys(
+      (t.inputSchema as { properties?: Record<string, unknown> })?.properties ??
+        {},
+    ).join(', ');
+    return {
+      name: t.name,
+      text: [
+        `Tool: ${t.name}`,
+        `Description: ${t.description}`,
+        paramNames ? `Parameters: ${paramNames}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    };
+  });
+
+  let pending = toolEntries;
+  let totalOk = 0;
+
+  for (
+    let attempt = 0;
+    attempt <= maxRetries && pending.length > 0;
+    attempt++
+  ) {
+    if (attempt > 0) {
+      const waitMs = 65_000;
+      log.info(
+        `Vectorization retry ${attempt}/${maxRetries}: waiting ${waitMs}ms, ${pending.length} tools remaining`,
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      embedderBreaker?.recordSuccess();
+    }
+
+    const failed: typeof pending = [];
+    for (const t of pending) {
+      const res = await toolsStore.upsert(t.text, { id: `tool:${t.name}` });
+      if (res.ok) {
+        totalOk++;
+      } else {
+        failed.push(t);
+      }
+      if (throttleMs > 0) {
+        await new Promise((r) => setTimeout(r, throttleMs));
+      }
+    }
+    pending = failed;
+
+    if (pending.length > 0) {
+      log.warn(
+        `Vectorization attempt ${attempt}: ${failed.length} failed, ${totalOk} succeeded`,
+        { embedderBreakerState: embedderBreaker?.state ?? 'n/a' },
+      );
+    }
+  }
+
+  if (pending.length > 0) {
+    log.error('Tool vectorization incomplete', {
+      failedCount: pending.length,
+      failedTools: pending.map((t) => t.name).slice(0, 20),
+      totalTools: tools.length,
+      successCount: totalOk,
+    });
+  }
+
+  log.info('Vectorized MCP tools', {
+    toolCount: tools.length,
+    upsertOk: totalOk,
+    embedderBreakerState: embedderBreaker?.state ?? 'n/a',
+  });
+
+  return { ok: totalOk, failed: pending.length, total: tools.length };
+}
+
+// ---------------------------------------------------------------------------
+// Per-destination initialization
+// ---------------------------------------------------------------------------
+
+/**
+ * Initialize a single destination: build MCP adapter + vectorize tools.
+ * Updates destinationStates map.
+ */
+async function initDestination(
+  destinationName: string,
+): Promise<DestinationState> {
+  const log = cds.log('agent-manager');
+  const config = getAgentConfig();
+
+  log.info('Initializing destination', { destination: destinationName });
+
+  const state: DestinationState = {
+    mcpAdapter: null,
+    toolsRag: createToolsRagStore(config.llm.resourceGroup),
+    toolCount: 0,
+    status: 'vectorizing',
+  };
+  destinationStates.set(destinationName, state);
+
+  try {
+    state.mcpAdapter = await buildEmbeddedMcpAdapter(destinationName);
+
+    const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
+    const result = await vectorizeTools(
+      state.mcpAdapter,
+      state.toolsRag,
+      embedding?.breaker ?? null,
+    );
+
+    state.toolCount = result.ok;
+    state.status = 'ready';
+    log.info('Destination ready', {
+      destination: destinationName,
+      toolCount: state.toolCount,
+    });
+  } catch (err) {
+    state.status = 'error';
+    state.error = err instanceof Error ? err.message : String(err);
+    log.error('Destination initialization failed', {
+      destination: destinationName,
+      error: state.error,
+    });
+  }
+
+  return state;
+}
+
+/**
+ * Initialize remaining destinations in background (after primary is ready).
+ * Fetches available SAP destinations from BTP Destination Service and
+ * vectorizes each one's MCP tools into a separate RAG store.
+ */
+async function initBackgroundDestinations(): Promise<void> {
+  const log = cds.log('agent-manager');
+
+  try {
+    const destinations = await getAvailableDestinations();
+    const primaryDest = getCurrentDestination();
+    const others = destinations.filter((d) => d.name !== primaryDest);
+
+    if (others.length === 0) {
+      log.info('No additional destinations to initialize');
+      return;
+    }
+
+    log.info('Starting background destination initialization', {
+      destinations: others.map((d) => d.name),
+    });
+
+    // Sequential: each destination does embedding calls, avoid overwhelming API
+    for (const dest of others) {
+      if (destinationStates.has(dest.name)) continue;
+      await initDestination(dest.name);
+    }
+
+    const states = [...destinationStates.values()];
+    log.info('Background destination initialization complete', {
+      total: destinationStates.size,
+      ready: states.filter((s) => s.status === 'ready').length,
+      errors: states.filter((s) => s.status === 'error').length,
+    });
+  } catch (err) {
+    log.warn('Background destination initialization failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /**
  * Build embedded MCP client (in-process, no HTTP).
  *
@@ -476,12 +782,12 @@ export function getAgentMetrics() {
  * Connection is resolved from BTP Destination and injected as handler context.
  */
 async function buildEmbeddedMcpAdapter(
-  config: AgentConfig,
+  destinationName: string,
 ): Promise<McpClientAdapter> {
   const log = cds.log('agent-manager');
 
   // Resolve destination to get SAP connection config
-  const resolved = await resolveDestinationSapConfig(config.mcp.destination);
+  const resolved = await resolveDestinationSapConfig(destinationName);
   const connection = createConnection({
     sapConfig: resolved.sapConfig,
     destinationName: resolved.destinationName,
@@ -524,7 +830,7 @@ async function buildEmbeddedMcpAdapter(
   );
 
   log.info('Building embedded MCP client', {
-    destination: config.mcp.destination,
+    destination: destinationName,
     connectionType: connection.constructor.name,
     toolCount: entries.length,
     tools: exporter.getToolNames(),
@@ -591,29 +897,53 @@ async function buildEmbeddedMcpAdapter(
  */
 export async function getSmartAgent(
   requestedModel?: string,
+  requestedDestination?: string,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
 
-  // Check if model switch is requested
+  // Check if model or destination switch is requested
   const activeModel = getCurrentModel();
-  const needsRebuild =
+  const activeDestination = getCurrentDestination();
+  const needsModelRebuild =
     requestedModel && requestedModel !== activeModel && agentHandle;
+  const needsDestRebuild =
+    requestedDestination &&
+    requestedDestination !== activeDestination &&
+    agentHandle;
+  const needsRebuild = needsModelRebuild || needsDestRebuild;
 
   if (needsRebuild) {
-    log.info('Model switch requested', {
-      from: activeModel,
-      to: requestedModel,
+    log.info('Agent rebuild requested', {
+      modelSwitch: needsModelRebuild
+        ? { from: activeModel, to: requestedModel }
+        : undefined,
+      destSwitch: needsDestRebuild
+        ? { from: activeDestination, to: requestedDestination }
+        : undefined,
     });
 
-    // If already rebuilding, return old agent (serves with previous model)
+    // Check if requested destination is ready
+    if (needsDestRebuild && requestedDestination) {
+      const destState = destinationStates.get(requestedDestination);
+      if (!destState || destState.status !== 'ready') {
+        log.warn('Requested destination not ready, keeping current', {
+          destination: requestedDestination,
+          status: destState?.status ?? 'unknown',
+        });
+        return agentHandle!;
+      }
+    }
+
+    // If already rebuilding, return old agent (serves with previous model/destination)
     if (rebuildPromise) {
       log.info('Rebuild already in progress, using current agent');
       return agentHandle!;
     }
 
     // Start rebuild in background, return old agent for this request
-    currentModel = requestedModel!;
+    if (requestedModel) currentModel = requestedModel;
+    if (requestedDestination) currentDestination = requestedDestination;
     const oldHandle = agentHandle!;
     rebuildPromise = (async () => {
       try {
@@ -629,7 +959,10 @@ export async function getSmartAgent(
 
         // Recursive call will hit the normal build path (no cached handle)
         const handle = await getSmartAgent();
-        log.info('Model switch complete', { model: currentModel });
+        log.info('Agent rebuild complete', {
+          model: getCurrentModel(),
+          destination: getCurrentDestination(),
+        });
         return handle;
       } finally {
         rebuildPromise = null;
@@ -660,22 +993,20 @@ export async function getSmartAgent(
     agentHandle = null;
   }
 
-  // Embedding model for RAG semantic search
-  const embeddingModel =
-    process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
-
   // Classifier model: cheaper/faster model for classification, reranking, query expansion
   // Falls back to main model if not explicitly configured
   const classifierModel =
     process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
 
+  const destName = getCurrentDestination();
   log.info('Building SmartAgent', {
     model: getCurrentModel(),
     classifierModel,
-    embeddingModel,
+    embeddingModel:
+      process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
     mode: config.agent.mode,
     maxIterations: config.agent.maxIterations,
-    mcpDestination: config.mcp.destination,
+    destination: destName,
   });
 
   // Create main LLM via provider factory (uses @sap-ai-sdk/orchestration)
@@ -705,71 +1036,42 @@ export async function getSmartAgent(
     0.1,
   );
 
-  // Create embedded MCP client (in-process, no HTTP)
-  // MCP is non-blocking: if destination resolution fails, agent works without MCP tools
+  // Use pre-built destination state if available, otherwise build from scratch
+  let destState = destinationStates.get(destName);
   let mcpAdapter: McpClientAdapter | null = null;
-  try {
-    mcpAdapter = await buildEmbeddedMcpAdapter(config);
-  } catch (err) {
-    log.warn('MCP initialization failed, agent will work without MCP tools', {
-      error: err instanceof Error ? err.message : String(err),
+
+  if (destState?.status === 'ready' && destState.mcpAdapter) {
+    mcpAdapter = destState.mcpAdapter;
+    log.info('Using pre-built MCP adapter', {
+      destination: destName,
+      toolCount: destState.toolCount,
     });
+  } else {
+    // Create embedded MCP client (in-process, no HTTP)
+    try {
+      mcpAdapter = await buildEmbeddedMcpAdapter(destName);
+    } catch (err) {
+      log.warn('MCP initialization failed, agent will work without MCP tools', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
-  // RAG stores: 4 separate stores for complete isolation (v3.0.0 dynamic stores)
-  // - tools: MCP tool descriptions for semantic tool selection (custom handler only)
-  // - facts: user knowledge, domain facts (Known Facts in LLM context)
-  // - feedback: user feedback, corrections
-  // - state: session state
-  // Tool discovery uses its own store — never mixes with user knowledge
+  // RAG stores: shared (facts, feedback, state) + per-destination (tools)
+  const shared = getOrCreateSharedRagStores(config.llm.resourceGroup);
   const ragStores: Record<string, IRag> = {
-    tools: new InMemoryRag(),
-    facts: new InMemoryRag(),
-    feedback: new InMemoryRag(),
-    state: new InMemoryRag(),
+    tools:
+      destState?.status === 'ready'
+        ? destState.toolsRag
+        : createToolsRagStore(config.llm.resourceGroup),
+    facts: shared.facts,
+    feedback: shared.feedback,
+    state: shared.state,
   };
-
-  // Keep reference to embedder circuit breaker for diagnostics
-  let embedderBreaker: CircuitBreaker | null = null;
-
-  if (config.agent.ragType !== 'in-memory') {
-    embedderBreaker = new CircuitBreaker({
-      failureThreshold: 30,
-      recoveryWindowMs: 60_000,
-    });
-    const rawEmbedder = new SapAiCoreEmbedder({
-      model: embeddingModel,
-      resourceGroup: config.llm.resourceGroup,
-    });
-    const embedder = new CircuitBreakerEmbedder(rawEmbedder, embedderBreaker);
-
-    // Tools store: pure vector search (no BM25 keywords).
-    // Tool descriptions are English, queries may be any language.
-    // Multilingual embeddings handle cross-language; BM25 can't.
-    const toolsVectorRag = new VectorRag(embedder, {
-      vectorWeight: 1.0,
-      keywordWeight: 0,
-    });
-    ragStores.tools = new FallbackRag(
-      toolsVectorRag,
-      new InMemoryRag(),
-      embedderBreaker,
-    );
-
-    // Facts store: VectorRag for user knowledge/domain facts
-    const factsVectorRag = new VectorRag(embedder, {
-      vectorWeight: 0.7,
-      keywordWeight: 0.3,
-    });
-    ragStores.facts = new FallbackRag(
-      factsVectorRag,
-      new InMemoryRag(),
-      embedderBreaker,
-    );
-  }
 
   log.info('RAG configured', {
     ragType: config.agent.ragType,
+    destination: destName,
     storeKeys: Object.keys(ragStores),
     toolsRagType: ragStores.tools.constructor.name,
     factsRagType: ragStores.facts.constructor.name,
@@ -856,103 +1158,23 @@ export async function getSmartAgent(
     ragStoreKeys: Object.keys(handle.ragStores),
   });
 
-  // Vectorize MCP tools into the 'tools' RAG store (blocking).
-  // MCP is part of the service — vectorization MUST succeed for RAG to work.
-  // Sequential upserts with throttle prevent embedding API rate limits (429).
-  // If 429 trips the CircuitBreaker, we wait for recovery and retry.
-  if (mcpAdapter) {
-    const toolsResult = await mcpAdapter.listTools();
-    if (!toolsResult.ok) {
-      throw new Error('MCP listTools failed — cannot vectorize tools');
-    }
+  // Vectorize MCP tools for primary destination (blocking) if not pre-built
+  if (mcpAdapter && (!destState || destState.status !== 'ready')) {
+    const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
+    const result = await vectorizeTools(
+      mcpAdapter,
+      handle.ragStores.tools,
+      embedding?.breaker ?? null,
+    );
 
-    const toolsStore = handle.ragStores.tools;
-    const tools = toolsResult.value;
-    const maxRetries = 3;
-    const throttleMs = 50; // small delay between sequential calls to avoid bursts
-
-    // Build vectorization text for each tool
-    const toolEntries = tools.map((t) => {
-      const paramNames = Object.keys(
-        (t.inputSchema as { properties?: Record<string, unknown> })
-          ?.properties ?? {},
-      ).join(', ');
-      return {
-        name: t.name,
-        text: [
-          `Tool: ${t.name}`,
-          `Description: ${t.description}`,
-          paramNames ? `Parameters: ${paramNames}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      };
-    });
-
-    let pending = toolEntries;
-    let totalOk = 0;
-
-    for (
-      let attempt = 0;
-      attempt <= maxRetries && pending.length > 0;
-      attempt++
-    ) {
-      if (attempt > 0) {
-        // Wait for CircuitBreaker recovery window (60s) + margin
-        const waitMs = 65_000;
-        log.info(
-          `Vectorization retry ${attempt}/${maxRetries}: waiting ${waitMs}ms for circuit breaker recovery, ${pending.length} tools remaining`,
-        );
-        await new Promise((r) => setTimeout(r, waitMs));
-        // Close breaker so retries go through VectorRag, not InMemoryRag fallback
-        embedderBreaker?.recordSuccess();
-      }
-
-      const failed: typeof pending = [];
-      for (const t of pending) {
-        const res = await toolsStore.upsert(t.text, { id: `tool:${t.name}` });
-        if (res.ok) {
-          totalOk++;
-        } else {
-          failed.push(t);
-        }
-        if (throttleMs > 0) {
-          await new Promise((r) => setTimeout(r, throttleMs));
-        }
-      }
-      pending = failed;
-
-      if (pending.length > 0) {
-        log.warn(
-          `Vectorization attempt ${attempt}: ${failed.length} tools failed, ${totalOk} succeeded`,
-          {
-            embedderBreakerState: embedderBreaker?.state ?? 'n/a',
-          },
-        );
-      }
-    }
-
-    if (pending.length > 0) {
-      const failedNames = pending.map((t) => t.name);
-      log.error(
-        'Tool vectorization incomplete — some tools will not be found by RAG',
-        {
-          failedCount: pending.length,
-          failedTools: failedNames.slice(0, 20),
-          totalTools: tools.length,
-          successCount: totalOk,
-          embedderBreakerState: embedderBreaker?.state ?? 'n/a',
-        },
-      );
-      // Don't throw — partial vectorization is better than crash loop.
-      // Failed tools won't appear in RAG results but agent still works.
-    }
-
-    log.info('Vectorized MCP tools into tools RAG store', {
-      toolCount: tools.length,
-      upsertOk: totalOk,
-      embedderBreakerState: embedderBreaker?.state ?? 'n/a',
-    });
+    // Register destination state for future switches
+    destState = {
+      mcpAdapter,
+      toolsRag: handle.ragStores.tools,
+      toolCount: result.ok,
+      status: 'ready',
+    };
+    destinationStates.set(destName, destState);
   }
 
   // Run health check in background (includes streaming test)
@@ -986,7 +1208,20 @@ export async function getSmartAgent(
   })();
 
   agentReady = true;
-  log.info('SmartAgent built and ready');
+  currentDestination = destName;
+  log.info('SmartAgent built and ready', {
+    model: getCurrentModel(),
+    destination: destName,
+  });
+
+  // Background: initialize remaining SAP destinations (non-blocking)
+  // Each destination gets its own MCP adapter + tools RAG store
+  initBackgroundDestinations().catch((err) => {
+    log.warn('Background destination init error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
   return handle;
 }
 
