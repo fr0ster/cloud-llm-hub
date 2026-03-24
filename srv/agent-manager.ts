@@ -441,12 +441,23 @@ const pipelineDefinition: StructuredPipelineDefinition = {
 let agentHandle: SmartAgentHandle | null = null;
 let agentConfig: AgentConfig | null = null;
 
+/** Runtime model override (null = use config default) */
+let currentModel: string | null = null;
+
 /** Readiness flag — false until SmartAgent + vectorization complete */
 let agentReady = false;
+
+/** Promise for in-progress rebuild (prevents concurrent rebuilds) */
+let rebuildPromise: Promise<SmartAgentHandle> | null = null;
 
 /** Check if SmartAgent is initialized and ready to serve requests */
 export function isAgentReady(): boolean {
   return agentReady;
+}
+
+/** Get the model name currently used by the agent */
+export function getCurrentModel(): string {
+  return currentModel || getAgentConfig().llm.model;
 }
 
 /** Shared metrics instance (survives agent rebuilds) */
@@ -578,9 +589,61 @@ async function buildEmbeddedMcpAdapter(
  * - RAG: VectorRag with SAP AI Core embeddings (hybrid vector + keyword)
  * - Resilience: CircuitBreaker, ToolCache, SessionManager
  */
-export async function getSmartAgent(): Promise<SmartAgentHandle> {
+export async function getSmartAgent(
+  requestedModel?: string,
+): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
+
+  // Check if model switch is requested
+  const activeModel = getCurrentModel();
+  const needsRebuild =
+    requestedModel && requestedModel !== activeModel && agentHandle;
+
+  if (needsRebuild) {
+    log.info('Model switch requested', {
+      from: activeModel,
+      to: requestedModel,
+    });
+
+    // If already rebuilding, return old agent (serves with previous model)
+    if (rebuildPromise) {
+      log.info('Rebuild already in progress, using current agent');
+      return agentHandle!;
+    }
+
+    // Start rebuild in background, return old agent for this request
+    currentModel = requestedModel!;
+    const oldHandle = agentHandle!;
+    rebuildPromise = (async () => {
+      try {
+        // Close existing agent
+        await oldHandle.close().catch((err) => {
+          log.warn('Failed to close previous SmartAgent', {
+            error: String(err),
+          });
+        });
+        agentHandle = null;
+        agentConfig = null;
+        agentReady = false;
+
+        // Recursive call will hit the normal build path (no cached handle)
+        const handle = await getSmartAgent();
+        log.info('Model switch complete', { model: currentModel });
+        return handle;
+      } finally {
+        rebuildPromise = null;
+      }
+    })();
+
+    // Return old agent while rebuilding
+    return oldHandle;
+  }
+
+  // If rebuild is in progress and old agent was closed, await it
+  if (rebuildPromise && !agentHandle) {
+    return rebuildPromise;
+  }
 
   // Return cached handle if config hasn't changed
   if (agentHandle && agentConfig === config) {
@@ -607,7 +670,7 @@ export async function getSmartAgent(): Promise<SmartAgentHandle> {
     process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
 
   log.info('Building SmartAgent', {
-    model: config.llm.model,
+    model: getCurrentModel(),
     classifierModel,
     embeddingModel,
     mode: config.agent.mode,
@@ -616,11 +679,13 @@ export async function getSmartAgent(): Promise<SmartAgentHandle> {
   });
 
   // Create main LLM via provider factory (uses @sap-ai-sdk/orchestration)
+  // Use runtime model override if set (from UI model switch)
+  const mainModel = getCurrentModel();
   const rawMainLlm = makeLlm(
     {
       provider: 'sap-ai-sdk',
       apiKey: 'sap-ai-sdk-managed',
-      model: config.llm.model,
+      model: mainModel,
       temperature: config.llm.temperature,
       maxTokens: config.llm.maxTokens,
       resourceGroup: config.llm.resourceGroup,
