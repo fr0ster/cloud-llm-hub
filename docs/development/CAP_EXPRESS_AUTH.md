@@ -93,6 +93,37 @@ Auth middleware uses `@sap/xssec` to:
 - [XSUAA JWT Token Flow](https://help.sap.com/docs/btp/sap-business-technology-platform/security)
 - [@sap/xssec npm package](https://www.npmjs.com/package/@sap/xssec)
 
+### Service-to-Service Authentication (Basic with client credentials)
+
+For machine-to-machine communication, services can authenticate using XSUAA `client_id` and
+`client_secret` via HTTP Basic auth. The `wrappedAuth` middleware in `server.ts` transparently
+converts this to a Bearer JWT before passing to CAP auth:
+
+1. Client sends `Authorization: Basic base64(clientId:clientSecret)`
+2. Middleware detects XSUAA client ID (`sb-*` prefix)
+3. Exchanges credentials for JWT via XSUAA `/oauth/token` endpoint (client_credentials grant)
+4. Caches token in-memory (with 5 min margin before expiry)
+5. Replaces `Authorization` header with `Bearer <jwt>` and passes to CAP auth
+
+```bash
+# Service-to-service call with Basic auth (clientid:secret)
+curl -X POST https://<srv-url>/mcp/stream/http \
+  -u "sb-cloud-llm-hub-xxx!t123:client-secret-here" \
+  -H "Content-Type: application/json" \
+  -H "x-sap-destination: S4HANA_DEV" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize",...}'
+```
+
+**Important**: The JWT token from client_credentials grant contains scopes from
+`authorities` in `xs-security.json`, not user role collections. The `MCP_Reader`
+scope is granted by default.
+
+#### CDS Service Path Conflict
+
+Custom Express routes on `/mcp/stream/http` must not conflict with CDS service paths.
+`McpProxyService` uses `@path: 'mcp-proxy'` (not `'mcp'`) to avoid intercepting
+requests to `/mcp/stream/http` through CAP's per-service auth middleware.
+
 ## Previous Approach (Removed)
 
 Previously, we manually parsed the Authorization header and created `cds.User` objects
