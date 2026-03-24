@@ -16,6 +16,7 @@ import './env-setup';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
+
 import { getSmartAgent } from './agent-manager';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -250,10 +251,60 @@ cds.on('bootstrap', (app: Application) => {
   // so that cds.context.user is populated for both mocked (dev) and XSUAA JWT (prod).
   // See: docs/development/CAP_EXPRESS_AUTH.md
   const [context, , auth] = cds.middlewares.before;
+
+  // Wrap auth with Basic→Bearer exchange for XSUAA client_credentials
+  const basicToBearerCache = new Map<string, { token: string; expiresAt: number }>();
+  const wrappedAuth = (req: Request, res: Response, next: NextFunction) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Basic ')) {
+      const decoded = Buffer.from(authHeader.substring(6), 'base64').toString('utf-8');
+      const colonIdx = decoded.indexOf(':');
+      if (colonIdx >= 0) {
+        const clientId = decoded.substring(0, colonIdx);
+        const clientSecret = decoded.substring(colonIdx + 1);
+        if (clientId.startsWith('sb-')) {
+          const cached = basicToBearerCache.get(clientId);
+          if (cached && cached.expiresAt > Date.now()) {
+            req.headers.authorization = `Bearer ${cached.token}`;
+            log.info('Basic->Bearer from cache');
+            (auth as Function)(req, res, next);
+            return;
+          }
+          const vcap = process.env.VCAP_SERVICES ? JSON.parse(process.env.VCAP_SERVICES) : {};
+          const xsuaa = vcap.xsuaa?.[0]?.credentials;
+          if (xsuaa?.url) {
+            const params = new URLSearchParams({
+              grant_type: 'client_credentials',
+              client_id: clientId,
+              client_secret: clientSecret,
+            });
+            fetch(`${xsuaa.url}/oauth/token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: params.toString(),
+            })
+              .then((r) => {
+                if (!r.ok) { log.warn('XSUAA exchange failed', { status: r.status }); (auth as Function)(req, res, next); return; }
+                return r.json().then((d: { access_token: string; expires_in: number }) => {
+                  basicToBearerCache.set(clientId, { token: d.access_token, expiresAt: Date.now() + (d.expires_in - 300) * 1000 });
+                  req.headers.authorization = `Bearer ${d.access_token}`;
+                  log.info('Basic->Bearer exchange OK');
+                  (auth as Function)(req, res, next);
+                });
+              })
+              .catch((err) => { log.warn('Basic->Bearer error', { error: String(err) }); (auth as Function)(req, res, next); });
+            return;
+          }
+        }
+      }
+    }
+    (auth as Function)(req, res, next);
+  };
+
   app.use(
     '/mcp',
     context,
-    auth,
+    wrappedAuth,
     (_req: Request, res: Response, next: NextFunction) => {
       if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
         res.status(401).json({
@@ -326,7 +377,7 @@ cds.on('bootstrap', (app: Application) => {
   app.use(
     '/v1',
     context,
-    auth,
+    wrappedAuth,
     (_req: Request, res: Response, next: NextFunction) => {
       if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
         res.status(401).json({
@@ -385,7 +436,7 @@ cds.on('bootstrap', (app: Application) => {
     usage: 'GET /v1/usage',
     sessionClear: 'DELETE /v1/session',
     destinationProbe:
-      'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
+      'GET /mcp-proxy/ProbeDestination?destination=NAME (CAP function)',
   });
 });
 
