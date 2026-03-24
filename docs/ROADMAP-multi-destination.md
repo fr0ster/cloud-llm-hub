@@ -21,11 +21,13 @@ Map<destination, {
 
 ## Tasks
 
-### Phase 1: BTP Destinations Discovery
-- [ ] `srv/lib/btp-destinations.ts` — fetch subaccount destinations from BTP Destination Service REST API
-- [ ] Filter: OnPremise + BasicAuth with SAP-like URLs (heuristic)
-- [ ] Cache with TTL (5min, same as models)
-- [ ] Graceful fallback: if API fails, return only current destination from env
+### Phase 1: BTP Destinations Discovery ✅
+- [x] `srv/lib/btp-oauth.ts` — shared OAuth2 helper extracted from ai-core-models.ts
+- [x] `srv/lib/btp-destinations.ts` — fetch subaccount destinations from BTP Destination Service REST API
+- [x] Filter: OnPremise + BasicAuth with SAP-like URLs (heuristic)
+- [x] Cache with TTL (5min, same as models)
+- [x] Graceful fallback: if API fails, return only current destination from env
+- [x] Refactored `ai-core-models.ts` to use shared `btp-oauth.ts`
 
 ### Phase 2: Multi-Destination Agent Manager
 - [ ] New type `DestinationState` — mcpAdapter, toolsRag, status, toolCount, error

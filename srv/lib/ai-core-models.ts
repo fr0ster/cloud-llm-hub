@@ -4,11 +4,10 @@
  * Uses SAP AI Core REST API to list RUNNING deployments, filters to LLM-only
  * models (excludes embedding models and orchestration configs), and returns
  * them in OpenAI /v1/models format.
- *
- * Authentication: reads aicore binding from VCAP_SERVICES via @sap/xsenv.
  */
 
 import cds from '@sap/cds';
+import { getServiceCredentials, getToken } from './btp-oauth';
 
 interface AiCoreModelEntry {
   id: string;
@@ -46,71 +45,16 @@ let cacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Extract AI Core credentials from VCAP_SERVICES.
- */
-function getAiCoreCredentials(): {
-  tokenUrl: string;
-  clientId: string;
-  clientSecret: string;
-  apiUrl: string;
-} {
-  const vcap = process.env.VCAP_SERVICES;
-  if (!vcap) {
-    throw new Error('VCAP_SERVICES not available');
-  }
-
-  const services = JSON.parse(vcap);
-  const aicore = services.aicore?.[0] || services['ai-core']?.[0];
-  if (!aicore?.credentials) {
-    throw new Error('aicore service binding not found in VCAP_SERVICES');
-  }
-
-  const creds = aicore.credentials;
-  return {
-    tokenUrl: `${creds.url}/oauth/token`,
-    clientId: creds.clientid,
-    clientSecret: creds.clientsecret,
-    apiUrl: creds.serviceurls?.AI_API_URL || creds.url,
-  };
-}
-
-/**
- * Get OAuth2 client_credentials token from AI Core.
- */
-async function getToken(
-  tokenUrl: string,
-  clientId: string,
-  clientSecret: string,
-): Promise<string> {
-  const response = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Token request failed: ${response.status}`);
-  }
-
-  const data = (await response.json()) as { access_token: string };
-  return data.access_token;
-}
-
-/**
  * Fetch RUNNING deployments from AI Core and filter to LLM models.
  */
 async function fetchModels(): Promise<AiCoreModelEntry[]> {
   const log = cds.log('ai-core-models');
-  const creds = getAiCoreCredentials();
-  const token = await getToken(
-    creds.tokenUrl,
-    creds.clientId,
-    creds.clientSecret,
-  );
+  const creds = getServiceCredentials('aicore', 'ai-core');
+  const token = await getToken(creds);
 
   const resourceGroup = process.env.LLM_AGENT_RESOURCE_GROUP || 'default';
   const response = await fetch(
-    `${creds.apiUrl}/v2/lm/deployments?status=RUNNING`,
+    `${creds.uri}/v2/lm/deployments?status=RUNNING`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
