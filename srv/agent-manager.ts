@@ -103,7 +103,8 @@ class CustomClassifyHandler implements IStageHandler {
       classificationEnabled: ctx.config.classificationEnabled,
     });
     // Classify input into subprompts (same logic as built-in ClassifyHandler)
-    if (ctx.config.classificationEnabled === false) {
+    // Classification is opt-in: skip unless explicitly enabled
+    if (ctx.config.classificationEnabled !== true) {
       ctx.subprompts = [
         { type: 'action', text: ctx.inputText, dependency: 'independent' },
       ];
