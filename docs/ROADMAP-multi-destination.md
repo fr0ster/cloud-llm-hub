@@ -49,12 +49,13 @@ Map<destination, {
 - [x] Pass destination to `getSmartAgent(model, destination)`
 - [x] Return active destination in SSE response metadata (`X-SAP-Active-Destination` header)
 
-### Phase 4: UI Destination Selector
-- [ ] Destination `<select>` dropdown in system bar (same style as model selector)
-- [ ] Populate from `/v1/models` `_destinations` field
-- [ ] Show status indicator: ready (green), vectorizing (yellow), error (red/disabled)
-- [ ] Send selected destination in `X-SAP-Destination` header on chat requests
-- [ ] Disable options that are not yet ready (status !== 'ready')
+### Phase 4: UI Destination Selector ✅
+- [x] Destination `<select>` dropdown in system bar (same style as model selector)
+- [x] Populate from `/v1/models` `_destinations` field
+- [x] Show status indicator: ready (✓), vectorizing (⏳), error (✗) + tool count
+- [x] Send selected destination in `X-SAP-Destination` header on chat requests
+- [x] Disable options that are not yet ready (status !== 'ready')
+- [x] Periodic refresh (15s) for background vectorization status updates
 
 ### Phase 5: Testing & Polish
 - [ ] Test destination switch DEV → TST via UI
