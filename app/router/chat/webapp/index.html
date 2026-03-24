@@ -46,9 +46,13 @@
         <div class="system-bar">
             <span>LLM: <span id="llm-model">...</span></span>
             <span>MODE: <span id="agent-mode">...</span></span>
-            <span>RAG: <span id="rag-type">...</span></span>
             <span>MCP: <span id="mcp-dest">...</span></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
+        </div>
+        <div class="system-bar">
+            <span>CLASSIFIER: <span id="classifier-model">...</span></span>
+            <span>EMBEDDER: <span id="embedding-model">...</span></span>
+            <span>RAG: <span id="rag-type">...</span></span>
         </div>
         <div id="chat-window"></div>
         <div class="input-area">
@@ -113,6 +117,8 @@
                     document.getElementById('agent-mode').innerText = m.mode || '?';
                     document.getElementById('rag-type').innerText = m.rag_type || '?';
                     document.getElementById('mcp-dest').innerText = m.mcp_destination || '?';
+                    document.getElementById('classifier-model').innerText = m.classifier_model || '?';
+                    document.getElementById('embedding-model').innerText = m.embedding_model || '?';
                     ready = true;
                     setStatus('READY', 'status-ready');
                     setInputEnabled(true);
