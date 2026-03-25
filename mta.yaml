@@ -45,7 +45,7 @@ modules:
     build-parameters:
       builder: custom
       commands:
-        - npm ci --omit=dev
+        - npm ci --omit=dev --omit=optional
         - node -e "const fs=require('fs');for(const d of['tsx','@esbuild','esbuild']){fs.rmSync('node_modules/'+d,{recursive:true,force:true})};for(const f of['esbuild','tsx']){for(const ext of['','.cmd','.ps1']){fs.rmSync('node_modules/.bin/'+f+ext,{force:true})}}"
         - node -e "const fs=require('fs'),p=require('path');(function walk(dir){try{for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=p.join(dir,e.name);if(e.isDirectory()){if(e.name==='docs'){fs.rmSync(f,{recursive:true,force:true})}else{walk(f)}}else if(e.name.endsWith('.map')||e.name.endsWith('.md')){fs.rmSync(f,{force:true})}}}catch{}})('node_modules')"
     provides:
@@ -108,9 +108,8 @@ resources:
     parameters:
       service: connectivity
       service-plan: lite
-      config:
-        connectorId: AA45023094B911E8B0C6F0E30A06C478
   - name: cloud-llm-hub-ai-core
+    active: false
     type: org.cloudfoundry.managed-service
     parameters:
       service: aicore
