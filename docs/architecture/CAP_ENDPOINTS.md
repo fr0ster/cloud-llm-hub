@@ -1,18 +1,22 @@
 # CAP Endpoint Paths
 
-## McpProxyService (@path: 'mcp')
+## McpProxyService (@path: 'mcp-proxy')
 
 ⚠️ **IMPORTANT**: All McpProxyService endpoints require authorization with scope `MCP_Connector` (`@requires: 'MCP_Connector'`)
+
+> **Note**: The CDS service path was changed from `'mcp'` to `'mcp-proxy'` to avoid
+> conflicting with custom Express routes on `/mcp/stream/http`. See
+> [CAP_EXPRESS_AUTH.md](../development/CAP_EXPRESS_AUTH.md#cds-service-path-conflict).
 
 ### Health
 
 - **Method**: GET
-- **URL**: `/odata/v4/mcp/Health()`
+- **URL**: `/odata/v4/mcp-proxy/Health()`
 - **Parameters**: none
 - **Authorization**: ✅ Required - scope `MCP_Connector` needed
 - **Example**:
   ```bash
-  GET http://localhost:4004/odata/v4/mcp/Health()
+  GET http://localhost:4004/odata/v4/mcp-proxy/Health()
   Authorization: Basic YWxpY2U6  # for development (alice)
   # or
   Authorization: Bearer <JWT_TOKEN>  # for production
@@ -21,8 +25,8 @@
 ### ProbeDestination
 
 - **Method**: GET
-- **URL**: `/odata/v4/mcp/ProbeDestination?destination=NAME`
-- **Or via positional parameter**: `/odata/v4/mcp/ProbeDestination(destination='NAME')`
+- **URL**: `/odata/v4/mcp-proxy/ProbeDestination?destination=NAME`
+- **Or via positional parameter**: `/odata/v4/mcp-proxy/ProbeDestination(destination='NAME')`
 - **Parameters**:
   - `destination` (String, required) - destination name
 - **Authorization**: ✅ Required - scope `MCP_Connector` needed
@@ -31,20 +35,20 @@
 
   ```bash
   # Via query parameter (recommended)
-  GET http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=S4HANA
+  GET http://localhost:4004/odata/v4/mcp-proxy/ProbeDestination?destination=S4HANA
 
   # Via positional parameter
-  GET http://localhost:4004/odata/v4/mcp/ProbeDestination(destination='S4HANA')
+  GET http://localhost:4004/odata/v4/mcp-proxy/ProbeDestination(destination='S4HANA')
 
   # Production with Bearer token
-  GET https://<your-app>.cfapps.<region>.hana.ondemand.com/odata/v4/mcp/ProbeDestination?destination=S4HANA
+  GET https://<your-app>.cfapps.<region>.hana.ondemand.com/odata/v4/mcp-proxy/ProbeDestination?destination=S4HANA
   Authorization: Bearer <JWT_TOKEN>
   ```
 
 ### InvokeTool (Deprecated)
 
 - **Method**: POST
-- **URL**: `/odata/v4/mcp/InvokeTool`
+- **URL**: `/odata/v4/mcp-proxy/InvokeTool`
 - **Status**: ⚠️ Deprecated - use `/mcp/stream/http` instead
 
 ## Express Endpoints (Non-CAP)
@@ -84,9 +88,9 @@ These endpoints are registered directly in Express and bypass CAP's OData layer.
 
 CAP functions **always** require `()` at the end:
 
-- ✅ Correct: `/odata/v4/mcp/Health()`
+- ✅ Correct: `/odata/v4/mcp-proxy/Health()`
 - ✅ Correct: `/odata/v4/auth/CheckAuth()`
-- ❌ Incorrect: `/odata/v4/mcp/Health`
+- ❌ Incorrect: `/odata/v4/mcp-proxy/Health`
 - ❌ Incorrect: `/odata/v4/auth/CheckAuth`
 
 ### 2. Function Parameters
@@ -96,14 +100,14 @@ Two methods are available:
 **A) Query parameters (recommended for arrays and complex types)**
 
 ```
-GET /odata/v4/mcp/ProbeDestination?destination=S4HANA
+GET /odata/v4/mcp-proxy/ProbeDestination?destination=S4HANA
 GET /odata/v4/auth/CheckRoles?required=["MCP_Connector"]
 ```
 
 **B) Positional parameters in URL**
 
 ```
-GET /odata/v4/mcp/ProbeDestination(destination='S4HANA')
+GET /odata/v4/mcp-proxy/ProbeDestination(destination='S4HANA')
 GET /odata/v4/auth/CheckRoles(required=['MCP_Connector'])
 ```
 
@@ -141,7 +145,7 @@ The JWT token must contain scope `MCP_Connector` (or `MCP_Admin`).
 ### Health Check (only works with authorization!)
 
 ```
-GET http://localhost:4004/odata/v4/mcp/Health()
+GET http://localhost:4004/odata/v4/mcp-proxy/Health()
 
 Headers:
   Authorization: Basic YWxpY2U6  # alice: (empty password)
@@ -153,7 +157,7 @@ Or in production:
 ### ProbeDestination
 
 ```
-GET http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=ABAP_DEV
+GET http://localhost:4004/odata/v4/mcp-proxy/ProbeDestination?destination=ABAP_DEV
 
 Headers:
   Authorization: Basic YWxpY2U6  # alice
@@ -217,11 +221,11 @@ Body:
 ```bash
 # Health check (CAP function)
 curl -H "Authorization: Basic YWxpY2U6" \
-  http://localhost:4004/odata/v4/mcp/Health()
+  http://localhost:4004/odata/v4/mcp-proxy/Health()
 
 # Destination probe (CAP function)
 curl -H "Authorization: Basic YWxpY2U6" \
-  "http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=S4HANA"
+  "http://localhost:4004/odata/v4/mcp-proxy/ProbeDestination?destination=S4HANA"
 
 # Stream HTTP (Express endpoint)
 curl -X POST \
@@ -247,8 +251,8 @@ curl -X POST \
 
 ### Error: "Function not found" or 404
 
-- CAP functions require `()` at the end: `/odata/v4/mcp/Health()` not `/odata/v4/mcp/Health`
-- Express endpoints don't use `/odata/v4/` prefix: `/mcp/stream/http` not `/odata/v4/mcp/stream/http`
+- CAP functions require `()` at the end: `/odata/v4/mcp-proxy/Health()` not `/odata/v4/mcp-proxy/Health`
+- Express endpoints don't use `/odata/v4/` prefix: `/mcp/stream/http` not `/odata/v4/mcp-proxy/stream/http`
 
 ### Error: "Malformed parameters"
 
@@ -259,12 +263,12 @@ curl -X POST \
 
 | Endpoint Type      | Path Prefix       | Authorization | Purpose                                               |
 | ------------------ | ----------------- | ------------- | ----------------------------------------------------- |
-| **CAP Functions**  | `/odata/v4/mcp/*` | **Required**  | OData V4 service functions (Health, ProbeDestination) |
+| **CAP Functions**  | `/odata/v4/mcp-proxy/*` | **Required**  | OData V4 service functions (Health, ProbeDestination) |
 | **Express Routes** | `/mcp/*`          | **Required**  | Direct Express endpoints (stream/http)                |
 
 ### CAP Functions
 
-- Use OData V4 syntax: `/odata/v4/mcp/Health()`
+- Use OData V4 syntax: `/odata/v4/mcp-proxy/Health()`
 - Functions require `()` at the end
 - Parameters can be query params or positional: `?destination=NAME` or `(destination='NAME')`
 
