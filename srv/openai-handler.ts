@@ -44,6 +44,54 @@ function jsonError(message: string, type: string): string {
   return JSON.stringify({ error: { message, type } });
 }
 
+// ---------------------------------------------------------------------------
+// Rate-limit retry helpers
+// ---------------------------------------------------------------------------
+
+/** Max automatic retries for rate-limit (429) errors */
+const RATE_LIMIT_MAX_RETRIES = 2;
+
+/** Base delay in ms — actual delay is base * 2^attempt (1s, 2s) */
+const RATE_LIMIT_BASE_DELAY_MS = 1000;
+
+/**
+ * Detect rate-limit errors in the error cause chain.
+ * SAP AI Core / Anthropic API returns HTTP 429 or error messages containing "rate limit".
+ */
+function isRateLimitError(error: unknown): boolean {
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      const msg = current.message.toLowerCase();
+      if (
+        msg.includes('rate limit') ||
+        msg.includes('rate_limit') ||
+        msg.includes('429') ||
+        msg.includes('too many requests')
+      ) {
+        return true;
+      }
+      const httpErr = current as {
+        response?: { status?: number };
+        statusCode?: number;
+      };
+      if (httpErr.response?.status === 429 || httpErr.statusCode === 429) {
+        return true;
+      }
+      current = (current as { cause?: unknown }).cause;
+    } else {
+      const str = String(current).toLowerCase();
+      if (str.includes('rate limit') || str.includes('429')) return true;
+      break;
+    }
+  }
+  return false;
+}
+
+/** User-friendly message shown after all retries are exhausted */
+const RATE_LIMIT_USER_MESSAGE =
+  'The AI service is temporarily overloaded. Please wait a moment and try again.';
+
 /** Extract plain text from OpenAI content (string | content-block array) */
 function extractText(c: unknown): string {
   if (c === null || c === undefined) return '';
@@ -449,7 +497,6 @@ export async function handleChatCompletions(
 
     const id = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
-    const stream = handle.agent.streamProcess(normalizedMessages, opts);
 
     let firstChunk = true;
     let chunkCount = 0;
@@ -463,134 +510,185 @@ export async function handleChatCompletions(
 
     log.info('Starting streamProcess', { sessionId });
 
-    try {
-      for await (const chunk of stream) {
-        chunkCount++;
-        if (!chunk.ok) {
-          const err = chunk.error;
-          const causes: string[] = [];
-          let current: unknown = err;
-          while (current) {
-            if (current instanceof Error) {
-              causes.push(current.message);
-              current = (current as { cause?: unknown }).cause;
-            } else {
-              causes.push(String(current));
-              break;
+    // Retry loop: restart stream on rate-limit errors (only before first content chunk)
+    let rateLimitAttempt = 0;
+    streamRetry: while (rateLimitAttempt <= RATE_LIMIT_MAX_RETRIES) {
+      const stream = handle.agent.streamProcess(normalizedMessages, opts);
+
+      try {
+        for await (const chunk of stream) {
+          chunkCount++;
+          if (!chunk.ok) {
+            const err = chunk.error;
+
+            // Rate-limit retry: only if no content has been sent to the client yet
+            if (
+              isRateLimitError(err) &&
+              firstChunk &&
+              rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
+            ) {
+              const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
+              rateLimitAttempt++;
+              log.warn('Rate limit hit, retrying stream', {
+                attempt: rateLimitAttempt,
+                maxRetries: RATE_LIMIT_MAX_RETRIES,
+                delayMs: delay,
+              });
+              await new Promise((r) => setTimeout(r, delay));
+              // Reset counters for fresh stream attempt
+              chunkCount = 0;
+              continue streamRetry;
             }
-          }
-          log.error('Stream error chunk', {
-            chunkCount,
-            error: err.message,
-            causes,
-          });
-          res.write(`data: ${jsonError(err.message, 'server_error')}\n\n`);
-          break;
-        }
 
-        const v = chunk.value;
-
-        // Skip heartbeat and timing — internal diagnostics, not for client
-        if (v.heartbeat || v.timing) {
-          continue;
-        }
-
-        if (v.usage) {
-          lastUsage = {
-            prompt_tokens: v.usage.promptTokens,
-            completion_tokens: v.usage.completionTokens,
-            total_tokens: v.usage.totalTokens,
-          };
-        }
-
-        const baseResponse = {
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: getCurrentModel(),
-          usage: null,
-        };
-
-        // First chunk: role + initial content (matches SmartServer)
-        if (firstChunk) {
-          const initialContent = v.content || '';
-          if (initialContent) accumulatedContent += initialContent;
-          res.write(
-            `data: ${JSON.stringify({
-              ...baseResponse,
-              choices: [
-                {
-                  index: 0,
-                  delta: { role: 'assistant', content: initialContent },
-                  finish_reason: null,
-                },
-              ],
-            })}\n\n`,
-          );
-          firstChunk = false;
-          if (!v.finishReason && !v.toolCalls) continue;
-        }
-
-        // Content and/or tool_calls delta (matches SmartServer)
-        if (v.content || v.toolCalls) {
-          const delta: Record<string, unknown> = {};
-          if (v.content) {
-            accumulatedContent += v.content;
-            delta.content = v.content;
-          }
-          if (v.toolCalls) {
-            delta.tool_calls = v.toolCalls.map((call, index) => {
-              const tc = toToolCallDelta(call, index);
-              return {
-                index: tc.index,
-                id: tc.id,
-                type: 'function',
-                function: {
-                  name: tc.name,
-                  arguments: tc.arguments || '',
-                },
-              };
+            // Non-retryable or retries exhausted — send user-friendly message for rate limits
+            const causes: string[] = [];
+            let current: unknown = err;
+            while (current) {
+              if (current instanceof Error) {
+                causes.push(current.message);
+                current = (current as { cause?: unknown }).cause;
+              } else {
+                causes.push(String(current));
+                break;
+              }
+            }
+            log.error('Stream error chunk', {
+              chunkCount,
+              error: err.message,
+              causes,
             });
+            const userMessage = isRateLimitError(err)
+              ? RATE_LIMIT_USER_MESSAGE
+              : err.message;
+            res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
+            break;
           }
-          res.write(
-            `data: ${JSON.stringify({
-              ...baseResponse,
-              choices: [
-                {
-                  index: 0,
-                  delta,
-                  finish_reason: null,
-                },
-              ],
-            })}\n\n`,
-          );
+
+          const v = chunk.value;
+
+          // Skip heartbeat and timing — internal diagnostics, not for client
+          if (v.heartbeat || v.timing) {
+            continue;
+          }
+
+          if (v.usage) {
+            lastUsage = {
+              prompt_tokens: v.usage.promptTokens,
+              completion_tokens: v.usage.completionTokens,
+              total_tokens: v.usage.totalTokens,
+            };
+          }
+
+          const baseResponse = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: getCurrentModel(),
+            usage: null,
+          };
+
+          // First chunk: role + initial content (matches SmartServer)
+          if (firstChunk) {
+            const initialContent = v.content || '';
+            if (initialContent) accumulatedContent += initialContent;
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: { role: 'assistant', content: initialContent },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+            firstChunk = false;
+            if (!v.finishReason && !v.toolCalls) continue;
+          }
+
+          // Content and/or tool_calls delta (matches SmartServer)
+          if (v.content || v.toolCalls) {
+            const delta: Record<string, unknown> = {};
+            if (v.content) {
+              accumulatedContent += v.content;
+              delta.content = v.content;
+            }
+            if (v.toolCalls) {
+              delta.tool_calls = v.toolCalls.map((call, index) => {
+                const tc = toToolCallDelta(call, index);
+                return {
+                  index: tc.index,
+                  id: tc.id,
+                  type: 'function',
+                  function: {
+                    name: tc.name,
+                    arguments: tc.arguments || '',
+                  },
+                };
+              });
+            }
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta,
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n`,
+            );
+          }
+
+          if (v.finishReason) {
+            res.write(
+              `data: ${JSON.stringify({
+                ...baseResponse,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {},
+                    finish_reason: mapStopReason(v.finishReason),
+                  },
+                ],
+              })}\n\n`,
+            );
+            finishReasonSent = true;
+          }
+        }
+      } catch (streamErr) {
+        // Rate-limit retry on exception (only before first content chunk)
+        if (
+          isRateLimitError(streamErr) &&
+          firstChunk &&
+          rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
+        ) {
+          const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
+          rateLimitAttempt++;
+          log.warn('Rate limit exception, retrying stream', {
+            attempt: rateLimitAttempt,
+            delayMs: delay,
+          });
+          await new Promise((r) => setTimeout(r, delay));
+          chunkCount = 0;
+          continue streamRetry;
         }
 
-        if (v.finishReason) {
-          res.write(
-            `data: ${JSON.stringify({
-              ...baseResponse,
-              choices: [
-                {
-                  index: 0,
-                  delta: {},
-                  finish_reason: mapStopReason(v.finishReason),
-                },
-              ],
-            })}\n\n`,
-          );
-          finishReasonSent = true;
-        }
+        const errMsg =
+          streamErr instanceof Error ? streamErr.message : String(streamErr);
+        log.error('Stream exception', {
+          error: errMsg,
+          stack: streamErr instanceof Error ? streamErr.stack : undefined,
+        });
+        const userMessage = isRateLimitError(streamErr)
+          ? RATE_LIMIT_USER_MESSAGE
+          : errMsg;
+        res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
       }
-    } catch (streamErr) {
-      const errMsg =
-        streamErr instanceof Error ? streamErr.message : String(streamErr);
-      log.error('Stream exception', {
-        error: errMsg,
-        stack: streamErr instanceof Error ? streamErr.stack : undefined,
-      });
-      res.write(`data: ${jsonError(errMsg, 'server_error')}\n\n`);
-    }
+      break; // Normal exit — no more retries needed
+    } // end streamRetry while loop
 
     // Ensure finish_reason is always sent — clients require it to detect stream end
     if (!finishReasonSent) {
@@ -656,8 +754,23 @@ export async function handleChatCompletions(
     return;
   }
 
-  // --- Non-streaming ---
-  const result = await handle.agent.process(normalizedMessages, opts);
+  // --- Non-streaming (with rate-limit retry) ---
+  let result = await handle.agent.process(normalizedMessages, opts);
+
+  // Retry on rate-limit errors
+  if (!result.ok && isRateLimitError(result.error)) {
+    for (let attempt = 0; attempt < RATE_LIMIT_MAX_RETRIES; attempt++) {
+      const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt;
+      log.warn('Rate limit hit, retrying', {
+        attempt: attempt + 1,
+        maxRetries: RATE_LIMIT_MAX_RETRIES,
+        delayMs: delay,
+      });
+      await new Promise((r) => setTimeout(r, delay));
+      result = await handle.agent.process(normalizedMessages, opts);
+      if (result.ok || !isRateLimitError(result.error)) break;
+    }
+  }
 
   log.info('Chat completions done', {
     ok: result.ok,
@@ -666,7 +779,9 @@ export async function handleChatCompletions(
 
   const finalContent = result.ok
     ? result.value.content || '(no response)'
-    : `Error: ${result.error.message}`;
+    : isRateLimitError(result.error)
+      ? RATE_LIMIT_USER_MESSAGE
+      : `Error: ${result.error.message}`;
 
   const finalFinishReason = result.ok
     ? mapStopReason(result.value.stopReason)
@@ -757,6 +872,7 @@ export async function handleModels(
       object: 'list',
       data: models,
       // Extension: active model + agent meta for UI
+      _agent_ready: isAgentReady(),
       _active_model: activeModel,
       _active_destination: getCurrentDestination(),
       _destinations: getDestinationStates(),

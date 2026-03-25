@@ -204,6 +204,15 @@ class CustomToolSelectHandler implements IStageHandler {
               ctx.toolClientMap.set(t.name, entry.value.client);
             }
           }
+        } else {
+          // Explicit failure logging — helps diagnose "0 tools" issues
+          const reason =
+            entry.status === 'rejected'
+              ? String(entry.reason)
+              : !entry.value.result.ok
+                ? `listTools returned error: ${'error' in entry.value.result ? String(entry.value.result.error) : 'unknown'}`
+                : 'unknown';
+          log.error('MCP client listTools failed', { reason });
         }
       }
       log.info('MCP tools loaded', {
@@ -221,12 +230,12 @@ class CustomToolSelectHandler implements IStageHandler {
 
     // Query the dedicated 'tools' store from ctx.ragStores (registered via withRag)
     const toolsStore = ctx.ragStores.tools;
-    const k = (config.k as number) ?? ctx.config.ragQueryK ?? 20;
+    const k = (config.k as number) ?? ctx.config.ragQueryK ?? 15;
     const queryText = ctx.ragText || ctx.inputText;
     let ragToolNames = new Set<string>();
 
     if (!toolsStore) {
-      ctx.options?.sessionLogger?.logStep('custom_tool_select_no_store', {
+      log.warn('Tools RAG store not found', {
         availableStores: Object.keys(ctx.ragStores),
       });
     }
@@ -238,7 +247,17 @@ class CustomToolSelectHandler implements IStageHandler {
       // Passing ragFilter would filter out ALL tool records → 0 results → hallucination.
       const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
         {}) as Record<string, unknown>;
-      const result = await toolsStore.query(queryText, k, toolQueryOpts);
+
+      // Retry once on failure (covers transient 429 rate-limit from embedder)
+      let result = await toolsStore.query(queryText, k, toolQueryOpts);
+      if (!result.ok) {
+        log.warn('Tools RAG query failed, retrying in 1.5s', {
+          error: 'error' in result ? String(result.error) : 'unknown',
+        });
+        await new Promise((r) => setTimeout(r, 1500));
+        result = await toolsStore.query(queryText, k, toolQueryOpts);
+      }
+
       if (result.ok) {
         ragToolNames = new Set(
           result.value
@@ -257,16 +276,43 @@ class CustomToolSelectHandler implements IStageHandler {
             text: r.text.slice(0, 120),
           })),
         });
+      } else {
+        log.error('Tools RAG query failed after retry', {
+          query: queryText.slice(0, 200),
+          error: 'error' in result ? String(result.error) : 'unknown',
+          storeType: toolsStore.constructor.name,
+        });
       }
+    } else if (ctx.mcpTools.length === 0) {
+      log.warn(
+        'No MCP tools available for RAG query — LLM will have no tools',
+        {
+          mcpClientsCount: ctx.mcpClients.length,
+          toolsStoreType: toolsStore?.constructor.name ?? 'none',
+        },
+      );
     }
 
-    // Select tools based on RAG results
-    const selectedMcpTools =
-      ragToolNames.size > 0
-        ? ctx.mcpTools.filter((t) => ragToolNames.has(t.name))
-        : mode === 'hard'
-          ? ctx.mcpTools
-          : [];
+    // Select tools based on RAG results.
+    // If RAG returns 0 matches (language mismatch, embedder failure, etc.) but MCP tools
+    // ARE available, fall back to all tools. Zero tools = guaranteed hallucination.
+    let selectedMcpTools: typeof ctx.mcpTools;
+    if (ragToolNames.size > 0) {
+      selectedMcpTools = ctx.mcpTools.filter((t) => ragToolNames.has(t.name));
+    } else if (ctx.mcpTools.length > 0) {
+      // Fallback: RAG didn't match any tools — provide all MCP tools to prevent hallucination
+      selectedMcpTools = ctx.mcpTools;
+      log.warn(
+        'RAG tool query returned 0 matches — falling back to all MCP tools',
+        {
+          query: queryText.slice(0, 200),
+          mcpToolsCount: ctx.mcpTools.length,
+          mode,
+        },
+      );
+    } else {
+      selectedMcpTools = [];
+    }
 
     ctx.selectedTools =
       mode === 'hard'
