@@ -917,10 +917,26 @@ async function buildEmbeddedMcpAdapter(
         // - length === 1: (args) => ... (closure-based, uses group.context)
         // Match BaseMcpServer.registerHandlers() logic (line 283-301)
         // biome-ignore lint/suspicious/noExplicitAny: handler may be 1-arg closure or 2-arg direct
-        const result =
-          handler.length >= 2
-            ? await handler(context, args)
-            : await (handler as any)(args);
+        const toolCall =
+          handler.length >= 2 ? handler(context, args) : (handler as any)(args);
+
+        // Timeout: prevent hanging when SAP system doesn't respond (e.g. after destination switch)
+        const MCP_TOOL_TIMEOUT_MS = 60_000;
+        const result = await Promise.race([
+          toolCall,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `MCP tool "${name}" timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`,
+                  ),
+                ),
+              MCP_TOOL_TIMEOUT_MS,
+            ),
+          ),
+        ]);
+
         const resultStr = JSON.stringify(result).slice(0, 1000);
         log.info('MCP tool call', {
           tool: name,
@@ -1044,9 +1060,7 @@ export async function getSmartAgent(
 
   // If rebuild is in progress and old agent was closed, fail fast (don't block request)
   if (rebuildPromise && !agentHandle) {
-    throw new Error(
-      'Agent is rebuilding. Please wait a moment and try again.',
-    );
+    throw new Error('Agent is rebuilding. Please wait a moment and try again.');
   }
 
   // Return cached handle if config hasn't changed

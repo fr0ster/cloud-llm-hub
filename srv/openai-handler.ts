@@ -432,6 +432,10 @@ export async function handleChatCompletions(
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
+
+  // Track destination before/after to detect switches
+  const destBefore = getCurrentDestination();
+
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     handle = await getSmartAgent(requestedModel, requestedDestination);
@@ -443,6 +447,22 @@ export async function handleChatCompletions(
       jsonError(`Agent initialization failed: ${message}`, 'server_error'),
     );
     return;
+  }
+
+  // When destination changes, clear session history — old answers are from a different SAP system
+  const destAfter = getCurrentDestination();
+  if (destBefore !== destAfter && serverManaged) {
+    log.info('Destination switched, clearing session history', {
+      from: destBefore,
+      to: destAfter,
+      sessionId,
+    });
+    clearSession(sessionId);
+    // Re-build normalizedMessages with only the new user message (no stale history)
+    const lastUserContent = extractText(
+      userMessages[userMessages.length - 1].content,
+    );
+    normalizedMessages = [{ role: 'user', content: lastUserContent }];
   }
 
   const pipelineLog = cds.log('smart-pipeline');
@@ -673,7 +693,7 @@ export async function handleChatCompletions(
           });
           await new Promise((r) => setTimeout(r, delay));
           chunkCount = 0;
-          continue streamRetry;
+          continue;
         }
 
         const errMsg =
