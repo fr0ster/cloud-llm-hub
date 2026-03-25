@@ -41,6 +41,53 @@ import {
 import cds from '@sap/cds';
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
+
+// ---------------------------------------------------------------------------
+// NamespaceFilteredRag — wraps InMemoryRag with per-query namespace filtering
+// ---------------------------------------------------------------------------
+// InMemoryRag only filters by this.namespace (constructor-time). When used as
+// a shared store across destinations, this.namespace is undefined and ALL records
+// are returned. This wrapper reads options.ragFilter.namespace at query time
+// and filters results accordingly, matching VectorRag/QdrantRag behavior.
+// ---------------------------------------------------------------------------
+
+class NamespaceFilteredRag implements IRag {
+  private inner: InMemoryRag;
+
+  constructor(config?: { dedupThreshold?: number }) {
+    this.inner = new InMemoryRag(config);
+  }
+
+  async upsert(
+    text: string,
+    metadata: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
+  ) {
+    return this.inner.upsert(text, metadata, options);
+  }
+
+  async query(
+    text: string,
+    k: number,
+    options?: { signal?: AbortSignal; ragFilter?: { namespace?: string } },
+  ) {
+    const result = await this.inner.query(text, k, options);
+    if (!result.ok) return result;
+
+    const ns = options?.ragFilter?.namespace;
+    if (ns) {
+      result.value = result.value.filter(
+        (r: { metadata?: { namespace?: string } }) =>
+          r.metadata?.namespace === ns,
+      );
+    }
+    return result;
+  }
+
+  async healthCheck() {
+    return this.inner.healthCheck();
+  }
+}
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableDestinations } from './lib/btp-destinations';
@@ -641,8 +688,8 @@ function getOrCreateSharedRagStores(resourceGroup?: string): {
 
   sharedRagStores = {
     facts,
-    feedback: new InMemoryRag(),
-    state: new InMemoryRag(),
+    feedback: new NamespaceFilteredRag(),
+    state: new NamespaceFilteredRag(),
   };
 
   return sharedRagStores;
