@@ -187,3 +187,25 @@ export function getAgentConfig(): AgentConfig {
 export function clearAgentConfig(): void {
   cachedConfig = null;
 }
+
+/**
+ * Check whether SAP AI Core service binding is available.
+ *
+ * The sap-ai-sdk reads credentials from AICORE_SERVICE_KEY env var
+ * or from 'aicore' / 'ai-core' entries in VCAP_SERVICES.
+ * When AI Core resource is set to `active: false` in mta.yaml (no binding),
+ * none of these will be present and agent endpoints cannot function.
+ */
+export function isAiCoreConfigured(): boolean {
+  if (process.env.AICORE_SERVICE_KEY) return true;
+
+  const vcap = process.env.VCAP_SERVICES;
+  if (!vcap) return false;
+
+  try {
+    const services = JSON.parse(vcap);
+    return !!(services.aicore?.[0] || services['ai-core']?.[0]);
+  } catch {
+    return false;
+  }
+}
