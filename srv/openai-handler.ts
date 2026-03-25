@@ -24,6 +24,7 @@ import {
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
+  setSessionDestination,
 } from './agent-manager';
 import { getAvailableModels } from './lib/ai-core-models';
 
@@ -434,7 +435,8 @@ export async function handleChatCompletions(
     | undefined;
 
   // Track destination before/after to detect switches
-  const destBefore = getCurrentDestination();
+  const destBefore = getCurrentDestination(sessionId);
+  const destAfter = requestedDestination || destBefore;
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
@@ -449,8 +451,8 @@ export async function handleChatCompletions(
     return;
   }
 
-  // When destination changes, clear session history — old answers are from a different SAP system
-  const destAfter = getCurrentDestination();
+  // Track which destination this session is using
+  setSessionDestination(sessionId, destAfter);
   if (destBefore !== destAfter && serverManaged) {
     log.info('Destination switched, clearing session history', {
       from: destBefore,
@@ -510,7 +512,7 @@ export async function handleChatCompletions(
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
-      'X-SAP-Active-Destination': getCurrentDestination(),
+      'X-SAP-Active-Destination': destAfter,
       ...invalidToolsHeader,
     });
 

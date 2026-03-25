@@ -487,19 +487,19 @@ const pipelineDefinition: StructuredPipelineDefinition = {
   ],
 };
 
-/** Cached SmartAgent handle (singleton per configuration) */
-let agentHandle: SmartAgentHandle | null = null;
-let agentConfig: AgentConfig | null = null;
+/** Per-destination SmartAgent handles */
+const agentHandles = new Map<string, SmartAgentHandle>();
 
 /** Runtime model override (null = use config default) */
 let currentModel: string | null = null;
 
-/** Readiness flag — false until SmartAgent + vectorization complete */
-let agentReady = false;
+/** Shared LLM instances (updated on model switch) */
+let sharedMainLlm: ReturnType<typeof makeLlm> | null = null;
+let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
 
-/** Check if SmartAgent is initialized and ready to serve requests */
+/** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
-  return agentReady;
+  return agentHandles.size > 0;
 }
 
 /** Get the model name currently used by the agent */
@@ -531,12 +531,26 @@ export interface DestinationState {
 /** Map of destination name → pre-built state */
 const destinationStates = new Map<string, DestinationState>();
 
-/** Currently active destination name */
-let currentDestination: string | null = null;
+/** Last-used destination per session (for detecting switches in openai-handler) */
+const lastDestinationBySession = new Map<string, string>();
 
-/** Get current destination name */
-export function getCurrentDestination(): string {
-  return currentDestination || getAgentConfig().mcp.destination;
+/** Get last-used destination for a session, or config default */
+export function getCurrentDestination(sessionId?: string): string {
+  if (sessionId) {
+    return (
+      lastDestinationBySession.get(sessionId) ||
+      getAgentConfig().mcp.destination
+    );
+  }
+  return getAgentConfig().mcp.destination;
+}
+
+/** Track which destination was used for a session */
+export function setSessionDestination(
+  sessionId: string,
+  destination: string,
+): void {
+  lastDestinationBySession.set(sessionId, destination);
 }
 
 /** Get all destination states for API/UI consumption */
@@ -734,8 +748,8 @@ async function vectorizeTools(
 // ---------------------------------------------------------------------------
 
 /**
- * Initialize a single destination: build MCP adapter + vectorize tools.
- * Updates destinationStates map.
+ * Initialize a single destination: build MCP adapter, vectorize tools, build SmartAgent.
+ * Updates destinationStates map and agentHandles map.
  */
 async function initDestination(
   destinationName: string,
@@ -762,8 +776,16 @@ async function initDestination(
       state.toolsRag,
       embedding?.breaker ?? null,
     );
-
     state.toolCount = result.ok;
+
+    // Build a full SmartAgent for this destination
+    const handle = await buildAgentForDestination(
+      state.mcpAdapter,
+      state.toolsRag,
+      config,
+    );
+    agentHandles.set(destinationName, handle);
+
     state.status = 'ready';
     log.info('Destination ready', {
       destination: destinationName,
@@ -801,7 +823,7 @@ async function initBackgroundDestinations(): Promise<void> {
 
   try {
     const destinations = await getAvailableDestinations();
-    const primaryDest = getCurrentDestination();
+    const primaryDest = getAgentConfig().mcp.destination;
     const others = destinations.filter((d) => d.name !== primaryDest);
 
     if (others.length === 0) {
@@ -1040,195 +1062,66 @@ async function buildEmbeddedMcpAdapter(
   return new McpClientAdapter(mcpClient);
 }
 
-/**
- * Get or create SmartAgent handle.
- *
- * Lazy-initializes a singleton SmartAgent built via SmartAgentBuilder:
- * - LLM: sap-ai-sdk provider (wraps @sap-ai-sdk/orchestration)
- * - MCP: Embedded EmbeddableMcpServer (in-process, no HTTP overhead)
- * - RAG: VectorRag with SAP AI Core embeddings (hybrid vector + keyword)
- * - Resilience: CircuitBreaker, ToolCache, SessionManager
- */
-export async function getSmartAgent(
-  requestedModel?: string,
-  requestedDestination?: string,
-): Promise<SmartAgentHandle> {
-  const log = cds.log('agent-manager');
-  const config = getAgentConfig();
-
-  // Check if model or destination switch is requested
-  const activeModel = getCurrentModel();
-  const activeDestination = getCurrentDestination();
-  const needsModelRebuild =
-    requestedModel && requestedModel !== activeModel && agentHandle;
-  const needsDestRebuild =
-    requestedDestination &&
-    requestedDestination !== activeDestination &&
-    agentHandle;
-  // --- Destination hot-swap (no rebuild needed) ---
-  if (needsDestRebuild && requestedDestination) {
-    const destState = destinationStates.get(requestedDestination);
-    if (!destState || destState.status !== 'ready' || !destState.mcpAdapter) {
-      const status = destState?.status ?? 'unknown';
-      log.warn('Requested destination not ready', {
-        destination: requestedDestination,
-        status,
-      });
-      throw new Error(
-        `Destination "${requestedDestination}" is not ready (status: ${status}). Please wait for initialization to complete.`,
-      );
-    }
-
-    // Hot-swap: replace MCP client and tools RAG on existing agent
-    // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for hot-swap
-    const agentObj = agentHandle?.agent as any;
-    agentObj.deps.mcpClients = [destState.mcpAdapter];
-    if (agentHandle) agentHandle.ragStores.tools = destState.toolsRag;
-    currentDestination = requestedDestination;
-
-    log.info('Destination hot-swapped', {
-      from: activeDestination,
-      to: requestedDestination,
-      toolCount: destState.toolCount,
-    });
-
-    return agentHandle as NonNullable<typeof agentHandle>;
-  }
-
-  // --- Model hot-swap (no rebuild — tools and RAG stay the same) ---
-  if (needsModelRebuild && requestedModel) {
-    const config = getAgentConfig();
-    const newLlm = makeLlm(
+/** Create shared LLM instances (called once, reused across all agents) */
+function getOrCreateSharedLlms(config: AgentConfig): {
+  mainLlm: ReturnType<typeof makeLlm>;
+  classifierLlm: ReturnType<typeof makeLlm>;
+} {
+  if (!sharedMainLlm) {
+    const mainModel = getCurrentModel();
+    sharedMainLlm = makeLlm(
       {
         provider: 'sap-ai-sdk',
         apiKey: 'sap-ai-sdk-managed',
-        model: requestedModel,
+        model: mainModel,
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
       },
       config.llm.temperature,
     );
-
-    // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for hot-swap
-    const agentObj = agentHandle?.agent as any;
-    agentObj.deps.mainLlm = newLlm;
-    currentModel = requestedModel;
-
-    log.info('Model hot-swapped', {
-      from: activeModel,
-      to: requestedModel,
-    });
-
-    return agentHandle as NonNullable<typeof agentHandle>;
   }
-
-  // Return cached handle if config hasn't changed
-  if (agentHandle && agentConfig === config) {
-    log.debug('Using cached SmartAgent handle');
-    return agentHandle;
+  if (!sharedClassifierLlm) {
+    const classifierModel =
+      process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
+    sharedClassifierLlm = makeLlm(
+      {
+        provider: 'sap-ai-sdk',
+        apiKey: 'sap-ai-sdk-managed',
+        model: classifierModel,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+      },
+      0.1,
+    );
   }
+  return { mainLlm: sharedMainLlm, classifierLlm: sharedClassifierLlm };
+}
 
-  // Close existing agent if config changed
-  if (agentHandle) {
-    log.info('Config changed, closing existing SmartAgent');
-    await agentHandle.close().catch((err) => {
-      log.warn('Failed to close previous SmartAgent', { error: String(err) });
-    });
-    agentHandle = null;
-  }
-
-  // Classifier model: cheaper/faster model for classification, reranking, query expansion
-  // Falls back to main model if not explicitly configured
-  const classifierModel =
-    process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
-
-  const destName = getCurrentDestination();
-  log.info('Building SmartAgent', {
-    model: getCurrentModel(),
-    classifierModel,
-    embeddingModel:
-      process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
-    mode: config.agent.mode,
-    maxIterations: config.agent.maxIterations,
-    destination: destName,
-  });
-
-  // Create main LLM via provider factory (uses @sap-ai-sdk/orchestration)
-  // Use runtime model override if set (from UI model switch)
-  const mainModel = getCurrentModel();
-  const rawMainLlm = makeLlm(
-    {
-      provider: 'sap-ai-sdk',
-      apiKey: 'sap-ai-sdk-managed',
-      model: mainModel,
-      temperature: config.llm.temperature,
-      maxTokens: config.llm.maxTokens,
-      resourceGroup: config.llm.resourceGroup,
-    },
-    config.llm.temperature,
-  );
-
-  // Create classifier LLM (uses classifier model if available, falls back to main model)
-  const classifierLlm = makeLlm(
-    {
-      provider: 'sap-ai-sdk',
-      apiKey: 'sap-ai-sdk-managed',
-      model: classifierModel,
-      maxTokens: config.llm.maxTokens,
-      resourceGroup: config.llm.resourceGroup,
-    },
-    0.1,
-  );
-
-  // Use pre-built destination state if available, otherwise build from scratch
-  let destState = destinationStates.get(destName);
-  let mcpAdapter: McpClientAdapter | null = null;
-
-  if (destState?.status === 'ready' && destState.mcpAdapter) {
-    mcpAdapter = destState.mcpAdapter;
-    log.info('Using pre-built MCP adapter', {
-      destination: destName,
-      toolCount: destState.toolCount,
-    });
-  } else {
-    // Create embedded MCP client (in-process, no HTTP)
-    try {
-      mcpAdapter = await buildEmbeddedMcpAdapter(destName);
-    } catch (err) {
-      log.warn('MCP initialization failed, agent will work without MCP tools', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // RAG stores: shared (facts, feedback, state) + per-destination (tools)
+/**
+ * Build a SmartAgent for a specific destination.
+ * Shares LLM, embedder, facts/feedback/state RAG, metrics across all agents.
+ */
+async function buildAgentForDestination(
+  mcpAdapter: McpClientAdapter,
+  toolsRag: IRag,
+  config: AgentConfig,
+): Promise<SmartAgentHandle> {
+  const log = cds.log('agent-manager');
+  const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
   const shared = getOrCreateSharedRagStores(config.llm.resourceGroup);
+
   const ragStores: Record<string, IRag> = {
-    tools:
-      destState?.status === 'ready'
-        ? destState.toolsRag
-        : createToolsRagStore(config.llm.resourceGroup),
+    tools: toolsRag,
     facts: shared.facts,
     feedback: shared.feedback,
     state: shared.state,
   };
 
-  log.info('RAG configured', {
-    ragType: config.agent.ragType,
-    destination: destName,
-    storeKeys: Object.keys(ragStores),
-    toolsRagType: ragStores.tools.constructor.name,
-    factsRagType: ragStores.facts.constructor.name,
-  });
-
-  // Build SmartAgent
   const builder = new SmartAgentBuilder({
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
-      // Keep RAG-selected tools across iterations (don't reload all 259 MCP tools)
-      // RAG already selected the relevant tools; refreshing defeats RAG's purpose
       refreshToolsPerIteration: false,
     },
     prompts: {
@@ -1259,38 +1152,23 @@ export async function getSmartAgent(
       ].join('\n'),
     },
   })
-    .withMainLlm(rawMainLlm)
+    .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
-    .withMcpClients(mcpAdapter ? [mcpAdapter] : [])
-    // 4 RAG stores: tools (tool discovery), facts (user knowledge), feedback, state
-    // Custom tool-select handler queries 'tools' store directly via ctx.ragStores.tools
-    // Pipeline rag-query stages only query facts/feedback/state (no tools in assembler output)
+    .withMcpClients([mcpAdapter])
     .withRag(ragStores)
     .withRagTranslation(true)
     .withRagUpsert(true)
-    // Structured pipeline: same flow as default but with custom handlers
     .withPipeline(pipelineDefinition)
-    // Custom classify: wraps built-in + sets ctx.ragText from action subprompts
-    // (built-in ClassifyHandler doesn't set ragText, breaking translate/expand/rag-query)
     .withStageHandler('classify', new CustomClassifyHandler())
-    // Custom rag-upsert: stores fact/feedback/state with per-session namespace
     .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
-    // Custom tool-select: queries ctx.ragStores.tools, not ctx.ragResults
     .withStageHandler('tool-select', new CustomToolSelectHandler())
-    // Caching: avoid duplicate tool calls
     .withToolCache(new ToolCache())
-    // Metrics: request/tool/RAG/LLM counters and latencies
     .withMetrics(metrics)
-    // Session: token budget control
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
-    // History: compress long conversations
     .withHistorySummarization(20)
-    // Cline adapter: detect Cline by system prompt, wrap response in <attempt_completion> XML
     .withClientAdapter(new ClineClientAdapter());
 
   const handle = await builder.build();
-  agentHandle = handle;
-  agentConfig = config;
 
   // Diagnostic: confirm structured pipeline is active
   // biome-ignore lint/suspicious/noExplicitAny: diagnostic access to private fields
@@ -1303,26 +1181,101 @@ export async function getSmartAgent(
     ragStoreKeys: Object.keys(handle.ragStores),
   });
 
-  // Vectorize MCP tools for primary destination (blocking) if not pre-built
-  if (mcpAdapter && (!destState || destState.status !== 'ready')) {
-    const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
-    const result = await vectorizeTools(
-      mcpAdapter,
-      handle.ragStores.tools,
-      embedding?.breaker ?? null,
+  return handle;
+}
+
+/**
+ * Get SmartAgent handle for a destination.
+ *
+ * Each destination has its own SmartAgent with isolated MCP connection.
+ * Shared resources: LLM, embedder, facts/feedback/state RAG, metrics.
+ */
+export async function getSmartAgent(
+  requestedModel?: string,
+  requestedDestination?: string,
+): Promise<SmartAgentHandle> {
+  const log = cds.log('agent-manager');
+  const config = getAgentConfig();
+
+  // --- Model hot-swap (updates all agents — LLM is stateless) ---
+  const activeModel = getCurrentModel();
+  if (
+    requestedModel &&
+    requestedModel !== activeModel &&
+    agentHandles.size > 0
+  ) {
+    const newLlm = makeLlm(
+      {
+        provider: 'sap-ai-sdk',
+        apiKey: 'sap-ai-sdk-managed',
+        model: requestedModel,
+        temperature: config.llm.temperature,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+      },
+      config.llm.temperature,
     );
 
-    // Register destination state for future switches
-    destState = {
-      mcpAdapter,
-      toolsRag: handle.ragStores.tools,
-      toolCount: result.ok,
-      status: 'ready',
-    };
-    destinationStates.set(destName, destState);
+    for (const handle of agentHandles.values()) {
+      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
+      (handle.agent as any).deps.mainLlm = newLlm;
+    }
+    sharedMainLlm = newLlm;
+    currentModel = requestedModel;
+
+    log.info('Model hot-swapped across all agents', {
+      from: activeModel,
+      to: requestedModel,
+      agentCount: agentHandles.size,
+    });
   }
 
-  // Run health check in background (includes streaming test)
+  // --- Destination lookup (no hot-swap — each dest has its own agent) ---
+  const destName = requestedDestination || config.mcp.destination;
+  const handle = agentHandles.get(destName);
+
+  if (handle) {
+    return handle;
+  }
+
+  // Destination not ready — check why
+  const destState = destinationStates.get(destName);
+  const status = destState?.status ?? 'unknown';
+  log.warn('Requested destination has no agent', {
+    destination: destName,
+    status,
+  });
+  throw new Error(
+    `Destination "${destName}" is not ready (status: ${status}). Please wait for initialization to complete.`,
+  );
+}
+
+/**
+ * Initialize the primary destination and start background init for others.
+ * Called once from server.ts on startup.
+ */
+export async function initSmartAgents(): Promise<void> {
+  const log = cds.log('agent-manager');
+  const config = getAgentConfig();
+  const destName = config.mcp.destination;
+
+  log.info('Initializing primary destination', {
+    destination: destName,
+    model: getCurrentModel(),
+    embeddingModel:
+      process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
+    mode: config.agent.mode,
+  });
+
+  // Initialize primary destination (blocking — must be ready before serving)
+  await initDestination(destName);
+
+  const handle = agentHandles.get(destName);
+  if (!handle) {
+    throw new Error(`Primary destination "${destName}" failed to initialize`);
+  }
+
+  // Run health check in background
   (async () => {
     try {
       const res = await handle.agent.healthCheck();
@@ -1335,12 +1288,10 @@ export async function getSmartAgent(
               ? 'OK'
               : 'PARTIAL/FAIL';
         log.info('SmartAgent health check', {
+          destination: destName,
           llm: v.llm ? 'OK' : 'FAIL',
           rag: v.rag ? 'OK' : 'FAIL',
           mcp: mcpStatus,
-          mcpErrors: v.mcp
-            .filter((m) => !m.ok)
-            .map((m) => m.error || 'unknown'),
         });
       } else {
         log.warn('SmartAgent health check failed', {
@@ -1352,33 +1303,32 @@ export async function getSmartAgent(
     }
   })();
 
-  agentReady = true;
-  currentDestination = destName;
-  log.info('SmartAgent built and ready', {
-    model: getCurrentModel(),
+  log.info('SmartAgent ready', {
     destination: destName,
+    model: getCurrentModel(),
   });
 
   // Background: initialize remaining SAP destinations (non-blocking)
-  // Each destination gets its own MCP adapter + tools RAG store
   initBackgroundDestinations().catch((err) => {
     log.warn('Background destination init error', {
       error: err instanceof Error ? err.message : String(err),
     });
   });
-
-  return handle;
 }
 
 /**
- * Gracefully close the SmartAgent (call on shutdown)
+ * Gracefully close all SmartAgents (call on shutdown)
  */
 export async function closeSmartAgent(): Promise<void> {
-  if (agentHandle) {
-    const log = cds.log('agent-manager');
-    log.info('Closing SmartAgent');
-    await agentHandle.close();
-    agentHandle = null;
-    agentConfig = null;
+  const log = cds.log('agent-manager');
+  for (const [dest, handle] of agentHandles) {
+    log.info('Closing SmartAgent', { destination: dest });
+    await handle.close().catch((err) => {
+      log.warn('Failed to close SmartAgent', {
+        destination: dest,
+        error: String(err),
+      });
+    });
   }
+  agentHandles.clear();
 }

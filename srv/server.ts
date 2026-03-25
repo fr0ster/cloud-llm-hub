@@ -17,7 +17,7 @@ import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
-import { getSmartAgent } from './agent-manager';
+import { initSmartAgents } from './agent-manager';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -408,11 +408,11 @@ cds.on('served', () => {
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
-  getSmartAgent()
-    .then(() => log.info('SmartAgent pre-initialized and ready'))
+  initSmartAgents()
+    .then(() => log.info('SmartAgents initialized and ready'))
     .catch((err) => {
       log.warn(
-        'SmartAgent pre-initialization failed, will retry on first request',
+        'SmartAgent initialization failed, will retry on first request',
         {
           error: err instanceof Error ? err.message : String(err),
         },
