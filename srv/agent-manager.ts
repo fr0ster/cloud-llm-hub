@@ -95,7 +95,7 @@ function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
 class CustomClassifyHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
-    config: Record<string, unknown>,
+    _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
     const log = cds.log('agent-manager/classify');
@@ -363,7 +363,7 @@ class CustomToolSelectHandler implements IStageHandler {
 class CustomRagUpsertHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
-    config: Record<string, unknown>,
+    _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
     const log = cds.log('agent-manager/rag-upsert');
@@ -587,7 +587,10 @@ function getOrCreateEmbedder(resourceGroup?: string): {
     );
   }
 
-  return { embedder: sharedEmbedder, breaker: sharedEmbedderBreaker! };
+  return {
+    embedder: sharedEmbedder,
+    breaker: sharedEmbedderBreaker as NonNullable<typeof sharedEmbedderBreaker>,
+  };
 }
 
 /** Create a tools RAG store (one per destination) */
@@ -987,9 +990,10 @@ async function buildEmbeddedMcpAdapter(
         // - length >= 2: (context, args) => ... (direct handlers)
         // - length === 1: (args) => ... (closure-based, uses group.context)
         // Match BaseMcpServer.registerHandlers() logic (line 283-301)
-        // biome-ignore lint/suspicious/noExplicitAny: handler may be 1-arg closure or 2-arg direct
         const toolCall =
-          handler.length >= 2 ? handler(context, args) : (handler as any)(args);
+          handler.length >= 2
+            ? handler(context, args)
+            : (handler as unknown as (a: typeof args) => unknown)(args);
 
         // Timeout: prevent hanging when SAP system doesn't respond (e.g. after destination switch)
         const MCP_TOOL_TIMEOUT_MS = 60_000;
@@ -1075,9 +1079,9 @@ export async function getSmartAgent(
 
     // Hot-swap: replace MCP client and tools RAG on existing agent
     // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for hot-swap
-    const agentObj = agentHandle!.agent as any;
+    const agentObj = agentHandle?.agent as any;
     agentObj.deps.mcpClients = [destState.mcpAdapter];
-    agentHandle!.ragStores.tools = destState.toolsRag;
+    if (agentHandle) agentHandle.ragStores.tools = destState.toolsRag;
     currentDestination = requestedDestination;
 
     log.info('Destination hot-swapped', {
@@ -1086,7 +1090,7 @@ export async function getSmartAgent(
       toolCount: destState.toolCount,
     });
 
-    return agentHandle!;
+    return agentHandle as NonNullable<typeof agentHandle>;
   }
 
   // --- Model hot-swap (no rebuild — tools and RAG stay the same) ---
@@ -1105,7 +1109,7 @@ export async function getSmartAgent(
     );
 
     // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for hot-swap
-    const agentObj = agentHandle!.agent as any;
+    const agentObj = agentHandle?.agent as any;
     agentObj.deps.mainLlm = newLlm;
     currentModel = requestedModel;
 
@@ -1114,7 +1118,7 @@ export async function getSmartAgent(
       to: requestedModel,
     });
 
-    return agentHandle!;
+    return agentHandle as NonNullable<typeof agentHandle>;
   }
 
   // Return cached handle if config hasn't changed

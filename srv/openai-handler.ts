@@ -914,9 +914,8 @@ export async function handleModels(
 /**
  * GET /v1/usage
  */
-export async function handleUsage(req: Request, res: Response): Promise<void> {
+export async function handleUsage(_req: Request, res: Response): Promise<void> {
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: Express Request ≠ CAP Request
     const handle = await getSmartAgent();
     const usage = handle.getUsage();
     res.writeHead(200, { 'Content-Type': 'application/json' });

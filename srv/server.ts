@@ -223,7 +223,12 @@ cds.on('bootstrap', (app: Application) => {
   log.info('Registering /mcp endpoints');
 
   // Serve chat UI static files (app/chat/webapp is copied to gen/srv/app/chat/webapp during build)
-  const chatPath = require('path').join(__dirname, 'app', 'chat', 'webapp');
+  const chatPath = require('node:path').join(
+    __dirname,
+    'app',
+    'chat',
+    'webapp',
+  );
   app.use('/chat/webapp', express.static(chatPath));
 
   /**
