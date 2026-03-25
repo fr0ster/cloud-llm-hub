@@ -780,12 +780,12 @@ export async function handleChatCompletions(
       // Persist agent response in RAG state store for cross-session memory.
       // Even if session history gets summarized/trimmed, tool results remain
       // discoverable via semantic search (e.g. "read that program" finds previous results).
-      const lastUser = normalizedMessages
+      const stateStore = handle.ragStores.state;
+      const lastUserForState = normalizedMessages
         .filter((m) => m.role === 'user')
         .slice(-1)[0];
-      const stateStore = handle.ragStores.state;
-      if (stateStore && lastUser) {
-        const stateText = `Q: ${typeof lastUser.content === 'string' ? lastUser.content : ''}\nA: ${accumulatedContent.slice(0, 2000)}`;
+      if (stateStore && lastUserForState) {
+        const stateText = `Q: ${typeof lastUserForState.content === 'string' ? lastUserForState.content : ''}\nA: ${accumulatedContent.slice(0, 2000)}`;
         stateStore
           .upsert(stateText, {
             namespace: `${userId}:${destAfter}`,
