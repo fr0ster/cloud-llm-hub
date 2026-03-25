@@ -17,7 +17,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
-import { getAgentConfig } from './agent-config';
+import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   getCurrentDestination,
   getCurrentModel,
@@ -231,12 +231,14 @@ export async function handleChatCompletions(
 ): Promise<void> {
   const log = cds.log('openai-handler');
 
-  // Block requests until SmartAgent is fully initialized (MCP + vectorization)
+  // Block requests when agent is not available
   if (!isAgentReady()) {
+    const aiCoreAvailable = isAiCoreConfigured();
     res.status(503).json({
       error: {
-        message:
-          'SmartAgent is initializing (MCP connect + tool vectorization). Please retry in a moment.',
+        message: aiCoreAvailable
+          ? 'SmartAgent is initializing (MCP connect + tool vectorization). Please retry in a moment.'
+          : 'Agent endpoints require SAP AI Core service binding. Enable cloud-llm-hub-ai-core resource in your .mtaext deployment descriptor.',
         type: 'service_unavailable',
       },
     });
