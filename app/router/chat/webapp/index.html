@@ -115,7 +115,7 @@
             return html;
         }
 
-        // Check model availability and populate system bar
+        // Check model availability and agent readiness
         async function checkReady() {
             try {
                 const resp = await fetch('/v1/models');
@@ -123,6 +123,7 @@
                 if (data.data && data.data.length > 0) {
                     const meta = data._meta || {};
                     const activeModel = data._active_model || data.data[0].id;
+                    const agentReady = data._agent_ready === true;
 
                     // Populate model dropdown
                     modelSelect.innerHTML = '';
@@ -153,6 +154,14 @@
                         opt.selected = true;
                         destSelect.appendChild(opt);
                         destSelect.disabled = false;
+                    }
+
+                    if (!agentReady) {
+                        // Agent is initializing (vectorization in progress) — keep polling
+                        setStatus('INITIALIZING...', 'status-connecting');
+                        setInputEnabled(false);
+                        setTimeout(checkReady, 3000);
+                        return;
                     }
 
                     ready = true;
@@ -271,6 +280,15 @@
 
                 if (!response.ok) {
                     const errText = await response.text();
+                    // Parse JSON error for user-friendly message
+                    try {
+                        const errJson = JSON.parse(errText);
+                        if (errJson.error && errJson.error.message) {
+                            throw new Error(errJson.error.message);
+                        }
+                    } catch (parseErr) {
+                        if (parseErr.message && !parseErr.message.startsWith('HTTP')) throw parseErr;
+                    }
                     throw new Error('HTTP ' + response.status + ': ' + errText);
                 }
 
