@@ -497,9 +497,6 @@ let currentModel: string | null = null;
 /** Readiness flag — false until SmartAgent + vectorization complete */
 let agentReady = false;
 
-/** Promise for in-progress rebuild (prevents concurrent rebuilds) */
-let rebuildPromise: Promise<SmartAgentHandle> | null = null;
-
 /** Check if SmartAgent is initialized and ready to serve requests */
 export function isAgentReady(): boolean {
   return agentReady;
@@ -527,7 +524,7 @@ export interface DestinationState {
   mcpAdapter: McpClientAdapter | null;
   toolsRag: IRag;
   toolCount: number;
-  status: 'pending' | 'ready' | 'vectorizing' | 'error';
+  status: 'pending' | 'ready' | 'vectorizing' | 'error' | 'unreachable';
   error?: string;
 }
 
@@ -770,12 +767,22 @@ async function initDestination(
       toolCount: state.toolCount,
     });
   } catch (err) {
-    state.status = 'error';
-    state.error = err instanceof Error ? err.message : String(err);
-    log.error('Destination initialization failed', {
-      destination: destinationName,
-      error: state.error,
-    });
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    state.error = errorMsg;
+    // Distinguish unreachable (probe failed) from other init errors
+    if (errorMsg.includes('unreachable')) {
+      state.status = 'unreachable';
+      log.warn('Destination unreachable, skipping', {
+        destination: destinationName,
+        error: errorMsg,
+      });
+    } else {
+      state.status = 'error';
+      log.error('Destination initialization failed', {
+        destination: destinationName,
+        error: errorMsg,
+      });
+    }
   }
 
   return state;
@@ -819,7 +826,11 @@ async function initBackgroundDestinations(): Promise<void> {
     for (const dest of others) {
       const state = destinationStates.get(dest.name);
       if (state?.status === 'ready') continue;
-      await initDestination(dest.name);
+      const result = await initDestination(dest.name);
+      // Remove unreachable destinations from the list — don't show broken systems in UI
+      if (result.status === 'unreachable') {
+        destinationStates.delete(dest.name);
+      }
     }
 
     const states = [...destinationStates.values()];
@@ -853,6 +864,28 @@ async function buildEmbeddedMcpAdapter(
     sapConfig: resolved.sapConfig,
     destinationName: resolved.destinationName,
   });
+
+  // Probe: verify SAP system is reachable before building the full MCP adapter
+  const PROBE_TIMEOUT_MS = 15_000;
+  const abapConn =
+    connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection;
+  try {
+    const probeResult = await abapConn.makeAdtRequest({
+      url: '/sap/bc/adt/discovery',
+      method: 'GET',
+      timeout: PROBE_TIMEOUT_MS,
+    });
+    if (probeResult.status >= 500) {
+      throw new Error(`SAP system returned HTTP ${probeResult.status}`);
+    }
+    log.info('Destination probe OK', {
+      destination: destinationName,
+      status: probeResult.status,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Destination "${destinationName}" is unreachable: ${msg}`);
+  }
 
   // Get all MCP tool handlers via HandlerExporter
   const exporter = new HandlerExporter({
@@ -1018,49 +1051,32 @@ export async function getSmartAgent(
     return agentHandle!;
   }
 
-  // --- Model switch requires full rebuild ---
-  if (needsModelRebuild) {
-    log.info('Model switch requested', {
+  // --- Model hot-swap (no rebuild — tools and RAG stay the same) ---
+  if (needsModelRebuild && requestedModel) {
+    const config = getAgentConfig();
+    const newLlm = makeLlm(
+      {
+        provider: 'sap-ai-sdk',
+        apiKey: 'sap-ai-sdk-managed',
+        model: requestedModel,
+        temperature: config.llm.temperature,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+      },
+      config.llm.temperature,
+    );
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for hot-swap
+    const agentObj = agentHandle!.agent as any;
+    agentObj.deps.mainLlm = newLlm;
+    currentModel = requestedModel;
+
+    log.info('Model hot-swapped', {
       from: activeModel,
       to: requestedModel,
     });
 
-    if (rebuildPromise) {
-      log.info('Rebuild already in progress');
-      throw new Error(
-        'Agent is switching model. Please wait a moment and try again.',
-      );
-    }
-
-    if (requestedModel) currentModel = requestedModel;
-    const oldHandle = agentHandle!;
-    rebuildPromise = (async () => {
-      try {
-        await oldHandle.close().catch((err) => {
-          log.warn('Failed to close previous SmartAgent', {
-            error: String(err),
-          });
-        });
-        agentHandle = null;
-        agentConfig = null;
-        const handle = await getSmartAgent();
-        log.info('Agent rebuild complete (model switch)', {
-          model: getCurrentModel(),
-        });
-        return handle;
-      } finally {
-        rebuildPromise = null;
-      }
-    })();
-
-    throw new Error(
-      `Switching to model "${requestedModel}". Please wait a moment and try again.`,
-    );
-  }
-
-  // If rebuild is in progress and old agent was closed, fail fast (don't block request)
-  if (rebuildPromise && !agentHandle) {
-    throw new Error('Agent is rebuilding. Please wait a moment and try again.');
+    return agentHandle!;
   }
 
   // Return cached handle if config hasn't changed
