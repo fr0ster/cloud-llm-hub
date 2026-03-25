@@ -1014,7 +1014,9 @@ async function buildEmbeddedMcpAdapter(
 
         const resultStr = JSON.stringify(result).slice(0, 1000);
         log.info('MCP tool call', {
+          destination: destinationName,
           tool: name,
+          handlerType: handler.length >= 2 ? 'direct' : 'closure',
           argsKeys: Object.keys(args || {}),
           args: JSON.stringify(args).slice(0, 300),
           resultLength: resultStr.length,
