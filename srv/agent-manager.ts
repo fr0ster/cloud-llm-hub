@@ -1042,9 +1042,11 @@ export async function getSmartAgent(
     );
   }
 
-  // If rebuild is in progress and old agent was closed, await it
+  // If rebuild is in progress and old agent was closed, fail fast (don't block request)
   if (rebuildPromise && !agentHandle) {
-    return rebuildPromise;
+    throw new Error(
+      'Agent is rebuilding. Please wait a moment and try again.',
+    );
   }
 
   // Return cached handle if config hasn't changed
