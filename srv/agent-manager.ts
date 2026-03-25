@@ -230,7 +230,9 @@ class CustomToolSelectHandler implements IStageHandler {
 
     // Query the dedicated 'tools' store from ctx.ragStores (registered via withRag)
     const toolsStore = ctx.ragStores.tools;
-    const k = (config.k as number) ?? ctx.config.ragQueryK ?? 15;
+    // Use our own default (15) instead of ctx.config.ragQueryK (builder default is 10,
+    // too few for 259 MCP tools — SearchObject gets pushed below the cutoff)
+    const k = (config.k as number) || 15;
     const queryText = ctx.ragText || ctx.inputText;
     let ragToolNames = new Set<string>();
 
@@ -597,8 +599,8 @@ function createToolsRagStore(resourceGroup?: string): IRag {
   if (!embedding) return new InMemoryRag();
 
   const toolsVectorRag = new VectorRag(embedding.embedder, {
-    vectorWeight: 1.0,
-    keywordWeight: 0,
+    vectorWeight: 0.7,
+    keywordWeight: 0.3,
   });
   return new FallbackRag(toolsVectorRag, new InMemoryRag(), embedding.breaker);
 }
@@ -970,44 +972,54 @@ export async function getSmartAgent(
     requestedDestination &&
     requestedDestination !== activeDestination &&
     agentHandle;
-  const needsRebuild = needsModelRebuild || needsDestRebuild;
+  // --- Destination hot-swap (no rebuild needed) ---
+  if (needsDestRebuild && requestedDestination) {
+    const destState = destinationStates.get(requestedDestination);
+    if (!destState || destState.status !== 'ready' || !destState.mcpAdapter) {
+      const status = destState?.status ?? 'unknown';
+      log.warn('Requested destination not ready', {
+        destination: requestedDestination,
+        status,
+      });
+      throw new Error(
+        `Destination "${requestedDestination}" is not ready (status: ${status}). Please wait for initialization to complete.`,
+      );
+    }
 
-  if (needsRebuild) {
-    log.info('Agent rebuild requested', {
-      modelSwitch: needsModelRebuild
-        ? { from: activeModel, to: requestedModel }
-        : undefined,
-      destSwitch: needsDestRebuild
-        ? { from: activeDestination, to: requestedDestination }
-        : undefined,
+    // Hot-swap: replace MCP client and tools RAG on existing agent
+    // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for hot-swap
+    const agentObj = agentHandle!.agent as any;
+    agentObj.deps.mcpClients = [destState.mcpAdapter];
+    agentHandle!.ragStores.tools = destState.toolsRag;
+    currentDestination = requestedDestination;
+
+    log.info('Destination hot-swapped', {
+      from: activeDestination,
+      to: requestedDestination,
+      toolCount: destState.toolCount,
     });
 
-    // Check if requested destination is ready
-    if (needsDestRebuild && requestedDestination) {
-      const destState = destinationStates.get(requestedDestination);
-      if (!destState || destState.status !== 'ready') {
-        log.warn('Requested destination not ready, keeping current', {
-          destination: requestedDestination,
-          status: destState?.status ?? 'unknown',
-        });
-        return agentHandle!;
-      }
-    }
+    return agentHandle!;
+  }
 
-    // If already rebuilding, return old agent (serves with previous model/destination)
+  // --- Model switch requires full rebuild ---
+  if (needsModelRebuild) {
+    log.info('Model switch requested', {
+      from: activeModel,
+      to: requestedModel,
+    });
+
     if (rebuildPromise) {
-      log.info('Rebuild already in progress, using current agent');
-      return agentHandle!;
+      log.info('Rebuild already in progress');
+      throw new Error(
+        'Agent is switching model. Please wait a moment and try again.',
+      );
     }
 
-    // Start rebuild in background, return old agent for this request
     if (requestedModel) currentModel = requestedModel;
-    if (requestedDestination) currentDestination = requestedDestination;
     const oldHandle = agentHandle!;
     rebuildPromise = (async () => {
       try {
-        // Close existing agent — but keep agentReady=true so requests aren't 503'd
-        // New requests during rebuild get the old agent via rebuildPromise check
         await oldHandle.close().catch((err) => {
           log.warn('Failed to close previous SmartAgent', {
             error: String(err),
@@ -1015,12 +1027,9 @@ export async function getSmartAgent(
         });
         agentHandle = null;
         agentConfig = null;
-
-        // Recursive call will hit the normal build path (no cached handle)
         const handle = await getSmartAgent();
-        log.info('Agent rebuild complete', {
+        log.info('Agent rebuild complete (model switch)', {
           model: getCurrentModel(),
-          destination: getCurrentDestination(),
         });
         return handle;
       } finally {
@@ -1028,8 +1037,9 @@ export async function getSmartAgent(
       }
     })();
 
-    // Return old agent while rebuilding
-    return oldHandle;
+    throw new Error(
+      `Switching to model "${requestedModel}". Please wait a moment and try again.`,
+    );
   }
 
   // If rebuild is in progress and old agent was closed, await it
