@@ -473,9 +473,8 @@ export async function handleChatCompletions(
     // for ClineClientAdapter detection and external tool_call routing.
     externalTools,
     sessionId,
-    // RAG namespace isolation: each user sees only their own facts/feedback/state
-    // userId (not sessionId) — knowledge persists across sessions for the same user
-    ragFilter: { namespace: userId },
+    // RAG namespace isolation: user + destination — results from DEV don't leak into QAS
+    ragFilter: { namespace: `${userId}:${destAfter}` },
     trace: { traceId },
     sessionLogger: {
       logStep(name: string, data: unknown) {
@@ -769,7 +768,7 @@ export async function handleChatCompletions(
         const stateText = `Q: ${typeof lastUser.content === 'string' ? lastUser.content : ''}\nA: ${accumulatedContent.slice(0, 2000)}`;
         stateStore
           .upsert(stateText, {
-            namespace: userId,
+            namespace: `${userId}:${destAfter}`,
             ttl: Math.floor((Date.now() + 3600_000) / 1000),
           })
           .catch((err: unknown) => {
