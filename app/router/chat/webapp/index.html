@@ -37,12 +37,12 @@
         .status-error { color: #ff5555; }
         .status-streaming { color: #00bfff; animation: blink 1s infinite; }
 
-        #llm-model-select {
+        #llm-model-select, #dest-select {
             background: #111; color: #00ff00; border: 1px solid #333; font-family: 'Courier New', Courier, monospace;
             font-size: 13px; padding: 2px 4px; border-radius: 3px; outline: none; cursor: pointer;
         }
-        #llm-model-select:focus { border-color: #00ff00; }
-        #llm-model-select:disabled { opacity: 0.4; cursor: not-allowed; }
+        #llm-model-select:focus, #dest-select:focus { border-color: #00ff00; }
+        #llm-model-select:disabled, #dest-select:disabled { opacity: 0.4; cursor: not-allowed; }
 
         pre code { display: block; background: #2d2d2d; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; color: #e0e0e0; }
         code { background: #383838; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
@@ -53,7 +53,7 @@
         <div class="system-bar">
             <span>LLM: <select id="llm-model-select" disabled><option value="">...</option></select></span>
             <span>MODE: <span id="agent-mode">...</span></span>
-            <span>MCP: <span id="mcp-dest">...</span></span>
+            <span>DEST: <select id="dest-select" disabled><option value="">...</option></select></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
         </div>
         <div class="system-bar">
@@ -76,6 +76,7 @@
         const sendBtn = document.getElementById('send-btn');
         const statusText = document.getElementById('status-text');
         const modelSelect = document.getElementById('llm-model-select');
+        const destSelect = document.getElementById('dest-select');
         let conversationHistory = [];
         let ready = false;
         const sessionId = 'ui-' + crypto.randomUUID();
@@ -136,9 +137,24 @@
 
                     document.getElementById('agent-mode').innerText = meta.mode || '?';
                     document.getElementById('rag-type').innerText = meta.rag_type || '?';
-                    document.getElementById('mcp-dest').innerText = meta.mcp_destination || '?';
                     document.getElementById('classifier-model').innerText = meta.classifier_model || '?';
                     document.getElementById('embedding-model').innerText = meta.embedding_model || '?';
+
+                    // Populate destination dropdown
+                    const activeDest = data._active_destination || meta.mcp_destination || '';
+                    const destinations = data._destinations || [];
+                    if (destinations.length > 0) {
+                        renderDestinations(destinations, activeDest);
+                    } else {
+                        destSelect.innerHTML = '';
+                        const opt = document.createElement('option');
+                        opt.value = activeDest;
+                        opt.textContent = activeDest;
+                        opt.selected = true;
+                        destSelect.appendChild(opt);
+                        destSelect.disabled = false;
+                    }
+
                     ready = true;
                     setStatus('READY', 'status-ready');
                     setInputEnabled(true);
@@ -151,6 +167,20 @@
         }
         checkReady();
 
+        // Periodically refresh destination statuses (background vectorization updates)
+        setInterval(async () => {
+            if (!ready) return;
+            try {
+                const resp = await fetch('/v1/models');
+                const data = await resp.json();
+                const destinations = data._destinations || [];
+                const activeDest = data._active_destination || '';
+                if (destinations.length > 0) {
+                    renderDestinations(destinations, activeDest);
+                }
+            } catch (e) { /* ignore */ }
+        }, 15000);
+
         function clearChat() {
             conversationHistory = [];
             chatWindow.innerHTML = '';
@@ -158,6 +188,33 @@
 
         function getSelectedModel() {
             return modelSelect.value || undefined;
+        }
+
+        function getSelectedDestination() {
+            return destSelect.value || undefined;
+        }
+
+        function renderDestinations(destinations, activeDest) {
+            if (!destinations || destinations.length === 0) return;
+            const currentVal = destSelect.value || activeDest;
+            destSelect.innerHTML = '';
+            for (const d of destinations) {
+                const opt = document.createElement('option');
+                opt.value = d.name;
+                const icon = d.status === 'ready' ? '\u2713'
+                    : d.status === 'vectorizing' ? '\u23F3'
+                    : d.status === 'pending' ? '\u2022'
+                    : '\u2717';
+                const label = d.status === 'ready' ? `${d.toolCount}t`
+                    : d.status === 'vectorizing' ? 'vectorizing...'
+                    : d.status === 'pending' ? 'pending'
+                    : 'error';
+                opt.textContent = `${d.name} [${icon} ${label}]`;
+                if (d.name === currentVal) opt.selected = true;
+                if (d.status !== 'ready') opt.disabled = true;
+                destSelect.appendChild(opt);
+            }
+            destSelect.disabled = false;
         }
 
         async function sendMessage() {
@@ -202,9 +259,13 @@
                 if (selectedModel) reqBody.model = selectedModel;
 
                 // Send only current message — SmartAgent manages session history internally
+                const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId };
+                const selectedDest = getSelectedDestination();
+                if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
+
                 const response = await fetch('/v1/chat/completions', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId },
+                    headers,
                     body: JSON.stringify(reqBody)
                 });
 
