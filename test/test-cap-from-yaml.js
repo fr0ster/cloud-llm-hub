@@ -127,7 +127,8 @@ async function run() {
 
   // Health (CAP function)
   try {
-    const res = await fetchWithTimeout(`${baseUrl}/odata/v4/mcp-proxy/Health()`, {
+    const healthUrl = `${baseUrl}/odata/v4/mcp-proxy/Health()`;
+    const res = await fetchWithTimeout(healthUrl, {
       method: 'GET',
       headers,
     });
