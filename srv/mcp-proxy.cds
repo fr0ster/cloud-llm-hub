@@ -1,4 +1,4 @@
-@path: 'mcp'
+@path: 'mcp-proxy'
 service McpProxyService {
   function Health() returns HealthStatus;
   function ProbeDestination(destination: String) returns DestinationProbeResult;

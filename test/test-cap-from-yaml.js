@@ -127,7 +127,8 @@ async function run() {
 
   // Health (CAP function)
   try {
-    const res = await fetchWithTimeout(`${baseUrl}/odata/v4/mcp/Health()`, {
+    const healthUrl = `${baseUrl}/odata/v4/mcp-proxy/Health()`;
+    const res = await fetchWithTimeout(healthUrl, {
       method: 'GET',
       headers,
     });
@@ -172,7 +173,7 @@ async function run() {
   if (cfg?.sap?.destination?.name || cfg?.sap?.destinationName) {
     const name = cfg.sap.destination?.name || cfg.sap.destinationName;
     try {
-      const url = `${baseUrl}/odata/v4/mcp/ProbeDestination?destination=${encodeURIComponent(name)}`;
+      const url = `${baseUrl}/odata/v4/mcp-proxy/ProbeDestination?destination=${encodeURIComponent(name)}`;
       const res = await fetchWithTimeout(url, { method: 'GET', headers });
       const text = await res.text();
       logResult('ProbeDestination', res.ok, res.status, text);

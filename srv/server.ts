@@ -16,7 +16,9 @@ import './env-setup';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
+
 import { getSmartAgent } from './agent-manager';
+import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
@@ -250,10 +252,12 @@ cds.on('bootstrap', (app: Application) => {
   // so that cds.context.user is populated for both mocked (dev) and XSUAA JWT (prod).
   // See: docs/development/CAP_EXPRESS_AUTH.md
   const [context, , auth] = cds.middlewares.before;
+  const wrappedAuth = createBasicToBearerMiddleware(auth);
+
   app.use(
     '/mcp',
     context,
-    auth,
+    wrappedAuth,
     (_req: Request, res: Response, next: NextFunction) => {
       if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
         res.status(401).json({
@@ -326,7 +330,7 @@ cds.on('bootstrap', (app: Application) => {
   app.use(
     '/v1',
     context,
-    auth,
+    wrappedAuth,
     (_req: Request, res: Response, next: NextFunction) => {
       if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
         res.status(401).json({
@@ -385,7 +389,7 @@ cds.on('bootstrap', (app: Application) => {
     usage: 'GET /v1/usage',
     sessionClear: 'DELETE /v1/session',
     destinationProbe:
-      'GET /mcp/ProbeDestination?destination=NAME (CAP function)',
+      'GET /mcp-proxy/ProbeDestination?destination=NAME (CAP function)',
   });
 });
 
