@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
+    "ignoreDeprecations": "6.0",
     "moduleResolution": "node",
     "baseUrl": ".",
     "esModuleInterop": true,
@@ -28,7 +29,6 @@
   },
   "include": [
     "srv/**/*.ts",
-    "test/**/*.ts",
     "types/**/*.d.ts",
     "scripts/**/*.ts"
   ],
