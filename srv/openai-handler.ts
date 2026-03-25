@@ -412,6 +412,7 @@ export async function handleChatCompletions(
   }
 
   // Trim history to prevent context overflow
+  const rawHistorySize = normalizedMessages.length;
   normalizedMessages = trimHistoryForContext(normalizedMessages);
 
   log.info('Chat completions request', {
@@ -419,7 +420,9 @@ export async function handleChatCompletions(
     traceId,
     sessionId,
     mode: serverManaged ? 'server-session' : 'client-history',
+    rawHistorySize,
     historySize: normalizedMessages.length,
+    roles: normalizedMessages.map((m) => m.role).join(','),
     userMessage: normalizedMessages
       .filter((m) => m.role === 'user')
       .slice(-1)[0]
@@ -437,6 +440,12 @@ export async function handleChatCompletions(
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(sessionId);
   const destAfter = requestedDestination || destBefore;
+  log.debug('Destination tracking', {
+    sessionId,
+    destBefore,
+    destAfter,
+    requestedDestination: requestedDestination || '(none)',
+  });
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
@@ -760,6 +769,33 @@ export async function handleChatCompletions(
           role: 'assistant',
           content: accumulatedContent,
         } as Message);
+        const entry = sessionStore.get(sessionId);
+        log.debug('Session updated', {
+          sessionId,
+          storedMessages: entry?.messages.length ?? 0,
+          responseChars: accumulatedContent.length,
+        });
+      }
+
+      // Persist agent response in RAG state store for cross-session memory.
+      // Even if session history gets summarized/trimmed, tool results remain
+      // discoverable via semantic search (e.g. "read that program" finds previous results).
+      const lastUser = normalizedMessages
+        .filter((m) => m.role === 'user')
+        .slice(-1)[0];
+      const stateStore = handle.ragStores.state;
+      if (stateStore && lastUser) {
+        const stateText = `Q: ${typeof lastUser.content === 'string' ? lastUser.content : ''}\nA: ${accumulatedContent.slice(0, 2000)}`;
+        stateStore
+          .upsert(stateText, {
+            namespace: `${userId}:${destAfter}`,
+            ttl: Math.floor((Date.now() + 3600_000) / 1000),
+          })
+          .catch((err: unknown) => {
+            log.debug('RAG state upsert failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
       }
     }
 
@@ -827,6 +863,25 @@ export async function handleChatCompletions(
         role: 'assistant',
         content: finalContent,
       } as Message);
+    }
+
+    // Persist in RAG state store for cross-session memory
+    const stateStore = handle.ragStores.state;
+    const lastUserNonStream = normalizedMessages
+      .filter((m) => m.role === 'user')
+      .slice(-1)[0];
+    if (stateStore && lastUserNonStream) {
+      const stateText = `Q: ${typeof lastUserNonStream.content === 'string' ? lastUserNonStream.content : ''}\nA: ${finalContent.slice(0, 2000)}`;
+      stateStore
+        .upsert(stateText, {
+          namespace: `${userId}:${destAfter}`,
+          ttl: Math.floor((Date.now() + 3600_000) / 1000),
+        })
+        .catch((err: unknown) => {
+          log.debug('RAG state upsert failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     }
   }
 
