@@ -826,24 +826,62 @@ async function initBackgroundDestinations(): Promise<void> {
     for (const dest of others) {
       const state = destinationStates.get(dest.name);
       if (state?.status === 'ready') continue;
-      const result = await initDestination(dest.name);
-      // Remove unreachable destinations from the list — don't show broken systems in UI
-      if (result.status === 'unreachable') {
-        destinationStates.delete(dest.name);
-      }
+      await initDestination(dest.name);
     }
 
     const states = [...destinationStates.values()];
     log.info('Background destination initialization complete', {
       total: destinationStates.size,
       ready: states.filter((s) => s.status === 'ready').length,
+      unreachable: states.filter((s) => s.status === 'unreachable').length,
       errors: states.filter((s) => s.status === 'error').length,
     });
+
+    // Schedule periodic retry for unreachable destinations
+    scheduleUnreachableRetry();
   } catch (err) {
     log.warn('Background destination initialization failed', {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/** Periodically retry unreachable destinations (every 5 min) */
+const UNREACHABLE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
+let unreachableRetryTimer: ReturnType<typeof setInterval> | null = null;
+
+function scheduleUnreachableRetry(): void {
+  if (unreachableRetryTimer) return;
+  const log = cds.log('agent-manager');
+
+  unreachableRetryTimer = setInterval(async () => {
+    const unreachable = [...destinationStates.entries()].filter(
+      ([, s]) => s.status === 'unreachable',
+    );
+    if (unreachable.length === 0) {
+      // All destinations reachable — stop retrying
+      if (unreachableRetryTimer) {
+        clearInterval(unreachableRetryTimer);
+        unreachableRetryTimer = null;
+      }
+      return;
+    }
+
+    log.info('Retrying unreachable destinations', {
+      destinations: unreachable.map(([name]) => name),
+    });
+
+    for (const [name] of unreachable) {
+      await initDestination(name);
+      const state = destinationStates.get(name);
+      if (state?.status === 'ready') {
+        log.info('Previously unreachable destination is now ready', {
+          destination: name,
+          toolCount: state.toolCount,
+        });
+      }
+    }
+  }, UNREACHABLE_RETRY_INTERVAL_MS);
 }
 
 /**
