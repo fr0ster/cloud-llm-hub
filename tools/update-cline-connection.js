@@ -2047,12 +2047,7 @@ async function resolveString(spec, context, options = {}) {
       (!spec.auto &&
         spec.jsonPath &&
         spec.jsonPath.toLowerCase().includes('access_token'));
-    if (
-      wantsXsuaaToken &&
-      credentials &&
-      credentials.clientid &&
-      credentials.clientsecret
-    ) {
+    if (wantsXsuaaToken && credentials?.clientid && credentials.clientsecret) {
       try {
         resolved = await fetchXsuaaToken(credentials, spec.tokenOptions || {});
       } catch (error) {

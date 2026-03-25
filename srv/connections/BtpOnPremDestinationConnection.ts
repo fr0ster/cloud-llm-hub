@@ -105,7 +105,7 @@ export class BtpOnPremDestinationConnection
     return headers;
   }
 
-  async makeAdtRequest<T = any, D = any>(
+  async makeAdtRequest<T = unknown, D = unknown>(
     options: AbapRequestOptions,
   ): Promise<IAdtResponse<T, D>> {
     this.ensureAxiosInstance();

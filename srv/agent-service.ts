@@ -90,7 +90,7 @@ export default async function registerAgentServiceHandlers(
   /**
    * Health check - verifies SmartAgent subsystems (LLM, RAG, MCP)
    */
-  srv.on('Health', async (req: Request) => {
+  srv.on('Health', async (_req: Request) => {
     let config: AgentConfig | null = null;
     try {
       config = getAgentConfig();
