@@ -109,7 +109,6 @@ resources:
       service: connectivity
       service-plan: lite
   - name: cloud-llm-hub-ai-core
-    active: false
     type: org.cloudfoundry.managed-service
     parameters:
       service: aicore
