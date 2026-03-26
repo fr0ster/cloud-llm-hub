@@ -601,8 +601,13 @@ class CustomToolLoopHandler implements IStageHandler {
           const failedNames = toolCallNames.join(', ');
           reSelectQuery = `${failedNames} failed: ${toolError.slice(0, 150)}. Need alternative tool for: ${ctx.inputText.slice(0, 200)}`;
         } else if (toolCallNames.length > 0) {
-          // Successful tool calls — build query from tool names + original context for next step
-          reSelectQuery = `After ${toolCallNames.join(', ')}: ${ctx.inputText.slice(0, 300)}`;
+          // Successful tool calls — include tool result (often says "Use UpdateClass to set source code")
+          // This guides RAG toward the logical next tool in the workflow
+          const toolResult =
+            lastToolMsg?.content && typeof lastToolMsg.content === 'string'
+              ? lastToolMsg.content.slice(0, 300)
+              : '';
+          reSelectQuery = `After ${toolCallNames.join(', ')}: ${toolResult}\n${ctx.inputText.slice(0, 200)}`;
         } else if (
           lastAssistantMsg?.content &&
           typeof lastAssistantMsg.content === 'string'
