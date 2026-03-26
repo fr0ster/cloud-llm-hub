@@ -19,7 +19,7 @@ import { logger } from '../lib/logger';
  */
 export class CloudSdkAbapConnection implements AbapConnection {
   private csrfToken: string | null = null;
-  private cookies: string | null = null;
+  private cookieJar: Map<string, string> = new Map();
   private cachedBaseUrl: string | null = null;
   private sessionId: string = 'cloud-sdk-session';
   private sessionType: 'stateless' | 'stateful' = 'stateless';
@@ -54,8 +54,40 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
   reset(): void {
     this.csrfToken = null;
-    this.cookies = null;
+    this.cookieJar.clear();
     this.cachedBaseUrl = null;
+  }
+
+  /**
+   * Parse Set-Cookie headers and merge into the cookie jar.
+   * Extracts only name=value pairs, ignoring attributes (Path, Domain, HttpOnly, etc.).
+   */
+  private mergeSetCookies(
+    setCookie: string | string[] | undefined,
+  ): void {
+    if (!setCookie) return;
+    const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
+    for (const header of headers) {
+      // First segment before ';' is the name=value pair
+      const nameValue = header.split(';')[0]?.trim();
+      if (!nameValue || !nameValue.includes('=')) continue;
+      const eqIdx = nameValue.indexOf('=');
+      const name = nameValue.slice(0, eqIdx).trim();
+      const value = nameValue.slice(eqIdx + 1).trim();
+      if (name) {
+        this.cookieJar.set(name, value);
+      }
+    }
+  }
+
+  /**
+   * Build Cookie header string from the jar (name1=value1; name2=value2).
+   */
+  private getCookieHeader(): string | null {
+    if (this.cookieJar.size === 0) return null;
+    return [...this.cookieJar.entries()]
+      .map(([name, value]) => `${name}=${value}`)
+      .join('; ');
   }
 
   async getBaseUrl(): Promise<string> {
@@ -198,14 +230,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
           throw new Error(CSRF_ERROR_MESSAGES.NOT_IN_HEADERS);
         }
 
-        // Extract cookies from Set-Cookie header
-        const setCookie = response.headers?.['set-cookie'];
-        if (setCookie) {
-          this.cookies = Array.isArray(setCookie)
-            ? setCookie.join('; ')
-            : setCookie;
-          logger.csrfToken('success', 'Cookies extracted from response', {
-            cookieLength: this.cookies?.length ?? 0,
+        // Extract cookies from Set-Cookie header (name=value only, no attributes)
+        this.mergeSetCookies(
+          response.headers?.['set-cookie'] as string | string[] | undefined,
+        );
+        if (this.cookieJar.size > 0) {
+          logger.csrfToken('success', 'Cookies extracted from CSRF response', {
+            cookieCount: this.cookieJar.size,
+            cookieNames: [...this.cookieJar.keys()].join(', '),
           });
         }
 
@@ -332,8 +364,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
       requestHeaders['x-csrf-token'] = this.csrfToken;
     }
 
-    if (this.cookies) {
-      requestHeaders.Cookie = this.cookies;
+    const cookieHeader = this.getCookieHeader();
+    if (cookieHeader) {
+      requestHeaders.Cookie = cookieHeader;
     }
 
     if (!requestHeaders.Accept) {
@@ -394,12 +427,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
       // Capture cookies from response to maintain session affinity
       // Critical for stateful sessions: lock → update → unlock → activate chain
-      const respSetCookie = response.headers?.['set-cookie'];
-      if (respSetCookie) {
-        this.cookies = Array.isArray(respSetCookie)
-          ? respSetCookie.join('; ')
-          : (respSetCookie as string);
-      }
+      this.mergeSetCookies(
+        response.headers?.['set-cookie'] as string | string[] | undefined,
+      );
 
       // Convert Cloud SDK response to IAdtResponse format
       return this.convertToAdtResponse<T, D>(response, requestUrl);
