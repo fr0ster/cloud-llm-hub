@@ -595,19 +595,33 @@ class CustomToolLoopHandler implements IStageHandler {
           toolError.includes('already exist');
 
         let reSelectQuery: string;
+
+        // When Create* tools are involved, derive Update* counterparts for RAG hints
+        // CreateClass → UpdateClass, CreateFunctionGroup → UpdateFunctionGroup, etc.
+        const createToolNames = toolCallNames.filter((n) =>
+          n.startsWith('Create'),
+        );
+        const updateHints = createToolNames
+          .map((n) => n.replace(/^Create/, 'Update'))
+          .join(', ');
+
         if (toolCallNames.length > 0 && isError) {
-          // Failed tool calls — build query that steers RAG toward alternative tools
-          // e.g., "CreateClass failed: already exists. Need alternative: update, modify, read class"
+          // Failed tool calls — steer RAG toward alternative tools
           const failedNames = toolCallNames.join(', ');
-          reSelectQuery = `${failedNames} failed: ${toolError.slice(0, 150)}. Need alternative tool for: ${ctx.inputText.slice(0, 200)}`;
+          const hints = updateHints
+            ? ` Need ${updateHints} to modify existing object.`
+            : '';
+          reSelectQuery = `${failedNames} failed: ${toolError.slice(0, 150)}.${hints} Alternative tool for: ${ctx.inputText.slice(0, 200)}`;
         } else if (toolCallNames.length > 0) {
-          // Successful tool calls — include tool result (often says "Use UpdateClass to set source code")
-          // This guides RAG toward the logical next tool in the workflow
+          // Successful tool calls — include tool result + explicit Update* hint
           const toolResult =
             lastToolMsg?.content && typeof lastToolMsg.content === 'string'
               ? lastToolMsg.content.slice(0, 300)
               : '';
-          reSelectQuery = `After ${toolCallNames.join(', ')}: ${toolResult}\n${ctx.inputText.slice(0, 200)}`;
+          const hints = updateHints
+            ? ` Next step: ${updateHints} to set source code.`
+            : '';
+          reSelectQuery = `After ${toolCallNames.join(', ')}: ${toolResult}${hints}\n${ctx.inputText.slice(0, 200)}`;
         } else if (
           lastAssistantMsg?.content &&
           typeof lastAssistantMsg.content === 'string'
@@ -1799,6 +1813,14 @@ async function buildAgentForDestination(
         'You MUST use MCP tools to answer any questions about SAP objects, tables, packages, classes, programs, or system data.',
         'Never guess or provide generic answers when MCP tools are available — always query the SAP system.',
         'When the user asks about SAP objects (tables, packages, classes, function modules, etc.), use SearchObject or other relevant MCP tools to find them.',
+        '',
+        '## ABAP Object Creation Workflow',
+        'Creating an ABAP object is ALWAYS a two-step process:',
+        '1. Create* tool (e.g., CreateClass) — creates an empty shell with metadata only',
+        '2. Update* tool (e.g., UpdateClass) — sets the actual source code',
+        'You MUST call both steps. Never stop after Create* — the object is useless without source code from Update*.',
+        'If Create* fails with "already exists", use the corresponding Update* tool to modify the existing object.',
+        '',
         'Respond in the same language the user writes in.',
       ].join('\n'),
       classifier: [
