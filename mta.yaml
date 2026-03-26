@@ -15,6 +15,7 @@ parameters:
   LLM_AGENT_RESOURCE_GROUP: "default"
   LLM_AGENT_CLASSIFIER_MODEL:
   LLM_AGENT_EMBEDDING_MODEL:
+  LLM_AGENT_EXPOSITION: "readonly,high"
 build-parameters:
   before-all:
     - builder: custom
@@ -42,6 +43,7 @@ modules:
       LLM_AGENT_RESOURCE_GROUP: ${LLM_AGENT_RESOURCE_GROUP}
       LLM_AGENT_CLASSIFIER_MODEL: ${LLM_AGENT_CLASSIFIER_MODEL}
       LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
+      LLM_AGENT_EXPOSITION: ${LLM_AGENT_EXPOSITION}
     build-parameters:
       builder: custom
       commands:
