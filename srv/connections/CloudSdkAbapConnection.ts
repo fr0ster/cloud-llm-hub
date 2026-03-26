@@ -103,6 +103,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * via CSRF_CONFIG, but the HTTP client differs due to BTP Destination Service integration.
    */
   private async ensureFreshCsrfToken(requestUrl: string): Promise<void> {
+    // Reuse existing token if available — avoids breaking session affinity
+    // in stateful mode (lock → update → unlock → activate chain).
+    // Token is reset on connection.reset() or after 403 retry.
+    if (this.csrfToken) {
+      return;
+    }
     try {
       this.csrfToken = await this.fetchCsrfToken(requestUrl);
     } catch (error) {
@@ -385,6 +391,15 @@ export class CloudSdkAbapConnection implements AbapConnection {
           data: data as any,
         },
       );
+
+      // Capture cookies from response to maintain session affinity
+      // Critical for stateful sessions: lock → update → unlock → activate chain
+      const respSetCookie = response.headers?.['set-cookie'];
+      if (respSetCookie) {
+        this.cookies = Array.isArray(respSetCookie)
+          ? respSetCookie.join('; ')
+          : (respSetCookie as string);
+      }
 
       // Convert Cloud SDK response to IAdtResponse format
       return this.convertToAdtResponse<T, D>(response, requestUrl);
