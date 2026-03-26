@@ -22,6 +22,7 @@ import {
   CircuitBreakerEmbedder,
   ClineClientAdapter,
   FallbackRag,
+  getStreamToolCallName,
   InMemoryMetrics,
   InMemoryRag,
   type IRag,
@@ -36,9 +37,22 @@ import {
   type SmartAgentHandle,
   type StructuredPipelineDefinition,
   ToolCache,
+  toToolCallDelta,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+
+/** Inlined from llm-agent (not re-exported from package root) */
+function isToolContextUnavailableError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('not available') ||
+    normalized.includes('unavailable') ||
+    normalized.includes('not found') ||
+    normalized.includes('forbidden')
+  );
+}
+
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 
@@ -88,6 +102,7 @@ class NamespaceFilteredRag implements IRag {
     return this.inner.healthCheck();
   }
 }
+
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableDestinations } from './lib/btp-destinations';
@@ -470,6 +485,603 @@ class CustomRagUpsertHandler implements IStageHandler {
 
     span.setAttribute('stored_count', stored.length);
     return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CustomToolLoopHandler — per-iteration RAG tool re-selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Custom tool-loop handler with per-iteration RAG-based tool re-selection.
+ *
+ * Problem: The built-in ToolLoopHandler selects tools ONCE (via tool-select stage)
+ * before the loop starts. If iteration 1 uses CreateClass, iteration 2 won't have
+ * UpdateClass in its tool set because the initial query was about "creating".
+ *
+ * Solution: On each iteration > 0, re-query the tools RAG store using the latest
+ * context (last tool result + LLM response) to get fresh top-k tools. Also update
+ * the system message's "## Available Tools" section to match.
+ *
+ * Token cost: ~zero. RAG query = embedding + cosine (no LLM call).
+ * Tool count stays at k=15 per iteration (not 259).
+ */
+class CustomToolLoopHandler implements IStageHandler {
+  async execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    parentSpan: ISpan,
+  ): Promise<boolean> {
+    const log = cds.log('agent-manager/tool-loop');
+    const maxIterations =
+      (config.maxIterations as number) ?? ctx.config.maxIterations;
+    const maxToolCalls =
+      (config.maxToolCalls as number) ?? ctx.config.maxToolCalls;
+    const heartbeatMs =
+      (config.heartbeatIntervalMs as number) ??
+      ctx.config.heartbeatIntervalMs ??
+      5000;
+    const mode = ctx.config.mode || 'smart';
+    const externalTools = mode === 'hard' ? [] : ctx.externalTools;
+    const externalToolNames = new Set(externalTools.map((t) => t.name));
+    let toolCallCount = 0;
+    let messages = ctx.assembledMessages;
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const timingLog: Array<{ phase: string; duration: number }> = [];
+    const loopStart = Date.now();
+    let currentTools = ctx.activeTools;
+
+    // RAG re-selection config
+    const toolsStore = ctx.ragStores.tools;
+    const ragK = 15;
+
+    for (let iteration = 0; ; iteration++) {
+      if (ctx.options?.signal?.aborted) {
+        // biome-ignore lint/suspicious/noExplicitAny: matching library error type
+        ctx.yield({ ok: false, error: new Error('Aborted') } as any);
+        return false;
+      }
+
+      if (iteration >= maxIterations) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'length',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      // -- Per-iteration RAG tool re-selection (iteration > 0) ----------------
+      if (iteration > 0 && toolsStore) {
+        const reSelectStart = Date.now();
+
+        // Build query from failed tool names + error context + original input
+        // When assistant makes tool_calls, content is often empty — extract tool names instead
+        const lastToolMsg = [...messages]
+          .reverse()
+          .find((m) => m.role === 'tool');
+        const lastAssistantMsg = [...messages]
+          .reverse()
+          .find((m) => m.role === 'assistant');
+
+        // Extract tool call names from last assistant message (e.g., "CreateClass", "CreateBehaviorImplementation")
+        const toolCallNames: string[] = [];
+        if (lastAssistantMsg && 'tool_calls' in lastAssistantMsg) {
+          const toolCalls = (lastAssistantMsg as any).tool_calls;
+          if (Array.isArray(toolCalls)) {
+            for (const tc of toolCalls) {
+              const name = tc?.function?.name || tc?.name || '';
+              if (name) toolCallNames.push(name);
+            }
+          }
+        }
+
+        // Build re-select query with error context
+        // Key insight: when CreateClass fails with "already exists", query should guide RAG toward Update* tools
+        const toolError =
+          lastToolMsg?.content && typeof lastToolMsg.content === 'string'
+            ? lastToolMsg.content.slice(0, 200)
+            : '';
+        const isError =
+          toolError.includes('error') ||
+          toolError.includes('Error') ||
+          toolError.includes('failed') ||
+          toolError.includes('already exist');
+
+        let reSelectQuery: string;
+        if (toolCallNames.length > 0 && isError) {
+          // Failed tool calls — build query that steers RAG toward alternative tools
+          // e.g., "CreateClass failed: already exists. Need alternative: update, modify, read class"
+          const failedNames = toolCallNames.join(', ');
+          reSelectQuery = `${failedNames} failed: ${toolError.slice(0, 150)}. Need alternative tool for: ${ctx.inputText.slice(0, 200)}`;
+        } else if (toolCallNames.length > 0) {
+          // Successful tool calls — build query from tool names + original context for next step
+          reSelectQuery = `After ${toolCallNames.join(', ')}: ${ctx.inputText.slice(0, 300)}`;
+        } else if (
+          lastAssistantMsg?.content &&
+          typeof lastAssistantMsg.content === 'string'
+        ) {
+          reSelectQuery = lastAssistantMsg.content.slice(0, 300);
+          if (toolError) {
+            reSelectQuery = `${reSelectQuery}\n${toolError}`;
+          }
+        } else {
+          reSelectQuery = ctx.inputText;
+          if (toolError) {
+            reSelectQuery = `${reSelectQuery}\n${toolError}`;
+          }
+        }
+
+        // Query tools RAG (no namespace filter — tools are shared)
+        log.info('Tool re-selection query', {
+          iteration: iteration + 1,
+          query: reSelectQuery.slice(0, 300),
+          failedTools: toolCallNames,
+          isError,
+        });
+        const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
+          {}) as Record<string, unknown>;
+        const ragResult = await toolsStore.query(
+          reSelectQuery,
+          ragK,
+          toolQueryOpts,
+        );
+
+        if (ragResult.ok && ragResult.value.length > 0) {
+          const newToolNames = new Set(
+            ragResult.value
+              .map((r: { metadata: { id?: string } }) => r.metadata.id)
+              .filter((id): id is string => !!id?.startsWith('tool:'))
+              .map((id: string) => id.slice(5)),
+          );
+
+          // Filter MCP tools to RAG-selected ones
+          const newMcpTools = ctx.mcpTools.filter((t) =>
+            newToolNames.has(t.name),
+          );
+          currentTools = [...newMcpTools, ...externalTools];
+
+          // Apply availability filtering
+          const filtered = ctx.toolAvailabilityRegistry.filterTools(
+            ctx.sessionId,
+            currentTools,
+          );
+          currentTools = filtered.allowed;
+
+          // Update "## Available Tools" in system message
+          const sysMsg = messages.find((m) => m.role === 'system');
+          if (sysMsg && typeof sysMsg.content === 'string') {
+            const toolsSection = currentTools
+              .filter((t) => !externalToolNames.has(t.name))
+              .map((t) => `- ${t.name}: ${t.description}`)
+              .join('\n');
+            sysMsg.content = sysMsg.content.replace(
+              /## Available Tools\n[\s\S]*?(?=\n##|$)/,
+              `## Available Tools\n${toolsSection}`,
+            );
+          }
+
+          ctx.options?.sessionLogger?.logStep('tool_reselect', {
+            iteration: iteration + 1,
+            query: reSelectQuery.slice(0, 200),
+            matchedTools: [...newToolNames],
+            duration: Date.now() - reSelectStart,
+          });
+        } else {
+          log.warn('Tool re-selection failed, keeping previous tools', {
+            iteration: iteration + 1,
+            error:
+              !ragResult.ok && 'error' in ragResult
+                ? String(ragResult.error)
+                : 'no results',
+          });
+        }
+      }
+
+      // Filter tools per iteration (availability registry)
+      const filteredForIteration = ctx.toolAvailabilityRegistry.filterTools(
+        ctx.sessionId,
+        currentTools,
+      );
+      currentTools = filteredForIteration.allowed;
+
+      ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
+        messages,
+        tools: currentTools,
+      });
+
+      // -- LLM streaming call ------------------------------------------------
+      const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
+        parent: parentSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
+      ctx.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
+      const stream = ctx.mainLlm.streamChat(
+        messages,
+        currentTools,
+        ctx.options,
+      );
+      let content = '';
+      // biome-ignore lint/suspicious/noExplicitAny: library finish reason type
+      let finishReason: any;
+      const toolCallsMap = new Map<
+        number,
+        { id: string; name: string; arguments: string }
+      >();
+
+      for await (const chunkResult of stream) {
+        if (!chunkResult.ok) {
+          llmSpan.setStatus('error', chunkResult.error.message);
+          llmSpan.end();
+          // biome-ignore lint/suspicious/noExplicitAny: matching library error type
+          ctx.yield({
+            ok: false,
+            error: new Error(chunkResult.error.message),
+          } as any);
+          return false;
+        }
+        // biome-ignore lint/suspicious/noExplicitAny: library chunk type
+        const chunk = chunkResult.value as any;
+        if (chunk.content) {
+          content += chunk.content;
+          ctx.yield({ ok: true, value: { content: chunk.content } });
+        }
+        if (chunk.toolCalls) {
+          // biome-ignore lint/suspicious/noExplicitAny: library stream tool call types
+          const streamCalls = chunk.toolCalls as any[];
+          const externalDeltas = streamCalls.filter((tc) =>
+            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
+          );
+          if (externalDeltas.length > 0) {
+            ctx.yield({
+              ok: true,
+              value: { content: '', toolCalls: externalDeltas },
+            });
+          }
+          for (const [fallbackIndex, rawToolCall] of streamCalls.entries()) {
+            const tc = toToolCallDelta(rawToolCall, fallbackIndex);
+            if (!toolCallsMap.has(tc.index)) {
+              toolCallsMap.set(tc.index, {
+                id: tc.id || '',
+                name: tc.name || '',
+                arguments: tc.arguments || '',
+              });
+            } else {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) {
+                if (tc.id) ex.id = tc.id;
+                if (tc.name) ex.name = tc.name;
+                if (tc.arguments) ex.arguments += tc.arguments;
+              }
+            }
+          }
+        }
+        if (chunk.finishReason) finishReason = chunk.finishReason;
+        if (chunk.usage) {
+          usage.promptTokens += chunk.usage.promptTokens;
+          usage.completionTokens += chunk.usage.completionTokens;
+          usage.totalTokens += chunk.usage.totalTokens;
+          ctx.sessionManager.addTokens(chunk.usage.totalTokens);
+        }
+      }
+
+      llmSpan.setStatus('ok');
+      llmSpan.end();
+      const llmCallDuration = Date.now() - llmCallStart;
+      ctx.metrics.llmCallLatency.record(llmCallDuration);
+      timingLog.push({
+        phase: `llm_call_${iteration + 1}`,
+        duration: llmCallDuration,
+      });
+
+      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.arguments);
+        } catch {
+          args = {};
+        }
+        return { id: tc.id, name: tc.name, arguments: args };
+      });
+
+      ctx.options?.sessionLogger?.logStep(
+        `llm_response_iter_${iteration + 1}`,
+        {
+          content,
+          toolCalls,
+          finishReason,
+        },
+      );
+
+      // -- No tool calls: validate and finish --------------------------------
+      if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
+        const valResult = await ctx.outputValidator.validate(
+          content,
+          { messages, tools: currentTools },
+          ctx.options,
+        );
+        if (valResult.ok && !valResult.value.valid) {
+          const correction =
+            valResult.value.correctedContent ?? valResult.value.reason;
+          messages = [
+            ...messages,
+            { role: 'assistant', content },
+            {
+              role: 'user',
+              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
+            },
+          ];
+          continue;
+        }
+        ctx.options?.sessionLogger?.logStep('final_response', {
+          content,
+          usage,
+        });
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: finishReason || 'stop',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      // -- Classify tool calls -----------------------------------------------
+      const internalCalls = toolCalls.filter((tc) =>
+        ctx.toolClientMap.has(tc.name),
+      );
+      const validExternalCalls = toolCalls.filter((tc) =>
+        externalToolNames.has(tc.name),
+      );
+      const blockedToolNames = ctx.toolAvailabilityRegistry.getBlockedToolNames(
+        ctx.sessionId,
+      );
+      const blockedCalls = toolCalls.filter((tc) =>
+        blockedToolNames.has(tc.name),
+      );
+      const hallucinations = toolCalls.filter(
+        (tc) =>
+          !blockedToolNames.has(tc.name) &&
+          !ctx.toolClientMap.has(tc.name) &&
+          !externalToolNames.has(tc.name),
+      );
+
+      // -- Handle blocked tools ----------------------------------------------
+      if (blockedCalls.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: blockedCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+        for (const blocked of blockedCalls) {
+          messages = [
+            ...messages,
+            {
+              role: 'tool',
+              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
+              tool_call_id: blocked.id,
+            },
+          ];
+        }
+        continue;
+      }
+
+      // -- Handle hallucinated tools -----------------------------------------
+      if (hallucinations.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: toolCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+        for (const h of hallucinations) {
+          messages = [
+            ...messages,
+            {
+              role: 'tool',
+              content: `Error: Tool "${h.name}" not found.`,
+              tool_call_id: h.id,
+            },
+          ];
+        }
+        continue;
+      }
+
+      // -- Handle external tool calls ----------------------------------------
+      if (validExternalCalls.length > 0) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'tool_calls',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      // -- Execute internal MCP tool calls -----------------------------------
+      if (content || internalCalls.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: internalCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+      }
+
+      // Check tool call budget
+      const remaining =
+        maxToolCalls !== undefined
+          ? maxToolCalls - toolCallCount
+          : internalCalls.length;
+      if (remaining <= 0) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'length',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      const batch = internalCalls.slice(0, remaining);
+
+      // Yield progress messages
+      for (const tc of batch) {
+        ctx.yield({
+          ok: true,
+          value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` },
+        });
+      }
+
+      // Execute tool calls concurrently with heartbeat
+      const toolExecPromises = batch.map(async (tc) => {
+        const toolStart = Date.now();
+        ctx.options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
+          arguments: tc.arguments,
+        });
+        const client = ctx.toolClientMap.get(tc.name);
+        if (!client) return { tc, text: '', res: null, duration: 0 };
+
+        const toolSpan = ctx.tracer.startSpan('smart_agent.tool_call', {
+          parent: parentSpan,
+          attributes: { 'tool.name': tc.name },
+        });
+        const cached = ctx.toolCache.get(tc.name, tc.arguments);
+        const res = cached
+          ? (() => {
+              ctx.metrics.toolCacheHitCount.add();
+              toolSpan.setAttribute('cache', 'hit');
+              return { ok: true as const, value: cached };
+            })()
+          : await (async () => {
+              const r = await client.callTool(
+                tc.name,
+                tc.arguments,
+                ctx.options,
+              );
+              if (r.ok) ctx.toolCache.set(tc.name, tc.arguments, r.value);
+              return r;
+            })();
+
+        const text = !res.ok
+          ? res.error.message
+          : typeof res.value.content === 'string'
+            ? res.value.content
+            : JSON.stringify(res.value.content);
+        toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
+        toolSpan.end();
+        return { tc, text, res, duration: Date.now() - toolStart };
+      });
+
+      // Heartbeat while waiting for tools
+      const allDone = Promise.all(toolExecPromises);
+      const pendingTools = new Set(batch.map((tc) => tc.name));
+      const toolStartTime = Date.now();
+      // biome-ignore lint/suspicious/noExplicitAny: matches library types
+      let results: any[] = [];
+      let settled = false;
+      for (const [i, p] of toolExecPromises.entries()) {
+        p.then(() => pendingTools.delete(batch[i].name));
+      }
+      while (!settled) {
+        const winner = await Promise.race([
+          allDone.then((r) => ({ tag: 'done' as const, results: r })),
+          new Promise<{ tag: 'tick' }>((resolve) =>
+            setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
+          ),
+        ]);
+        if (winner.tag === 'done') {
+          results = winner.results;
+          settled = true;
+        } else {
+          for (const tool of pendingTools) {
+            ctx.yield({
+              ok: true,
+              value: {
+                content: '',
+                heartbeat: { tool, elapsed: Date.now() - toolStartTime },
+              },
+            });
+          }
+        }
+      }
+
+      // Collect timing and process results
+      for (const r of results) {
+        timingLog.push({ phase: `tool_${r.tc.name}`, duration: r.duration });
+      }
+
+      // biome-ignore lint/suspicious/noExplicitAny: matching library Message type
+      const toolMessages: any[] = [];
+      for (const { tc, text, res } of results) {
+        if (!res) continue;
+        if (!res.ok && isToolContextUnavailableError(text)) {
+          ctx.toolAvailabilityRegistry.block(ctx.sessionId, tc.name, text);
+          currentTools = currentTools.filter((t) => t.name !== tc.name);
+        }
+        ctx.options?.sessionLogger?.logStep(`mcp_result_${tc.name}`, {
+          result: text,
+        });
+        toolCallCount++;
+        ctx.metrics.toolCallCount.add();
+        toolMessages.push({
+          role: 'tool',
+          content: text,
+          tool_call_id: tc.id,
+        });
+      }
+      messages = [...messages, ...toolMessages];
+    }
   }
 }
 
@@ -1209,6 +1821,7 @@ async function buildAgentForDestination(
     .withStageHandler('classify', new CustomClassifyHandler())
     .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
     .withStageHandler('tool-select', new CustomToolSelectHandler())
+    .withStageHandler('tool-loop', new CustomToolLoopHandler())
     .withToolCache(new ToolCache())
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
