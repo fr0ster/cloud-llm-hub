@@ -582,6 +582,23 @@ class CustomToolLoopHandler implements IStageHandler {
           }
         }
 
+        // Skip re-selection when only read-only tools were called (Search*, Read*, Get*)
+        // Read-only tools are information gathering — they don't change the workflow,
+        // so the original tool set is still correct for the actual action.
+        const readOnlyPrefixes = ['Search', 'Read', 'Get', 'List'];
+        const allReadOnly =
+          toolCallNames.length > 0 &&
+          toolCallNames.every((n) =>
+            readOnlyPrefixes.some((p) => n.startsWith(p)),
+          );
+        if (allReadOnly) {
+          log.info('Skipping tool re-selection (read-only tools only)', {
+            iteration: iteration + 1,
+            tools: toolCallNames,
+          });
+          // Skip re-selection, keep current tools
+        } else {
+
         // Build re-select query with error context
         // Key insight: when CreateClass fails with "already exists", query should guide RAG toward Update* tools
         const toolError =
@@ -701,6 +718,7 @@ class CustomToolLoopHandler implements IStageHandler {
                 : 'no results',
           });
         }
+        } // end else (non-read-only re-selection)
       }
 
       // Filter tools per iteration (availability registry)
