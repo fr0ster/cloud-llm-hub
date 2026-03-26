@@ -272,7 +272,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
   async makeAdtRequest<T = any, D = any>(
     options: AbapRequestOptions,
   ): Promise<IAdtResponse<T, D>> {
-    const { url, method, timeout: _timeout, data, params } = options;
+    const {
+      url,
+      method,
+      timeout: _timeout,
+      data,
+      params,
+      headers: optionHeaders,
+    } = options;
     const normalizedMethod = method.toUpperCase();
 
     // Get base URL and build full URL from endpoint
@@ -294,8 +301,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
       await this.ensureFreshCsrfToken(url);
     }
 
+    // Merge headers: auth headers < library-provided headers (Content-Type, Accept, etc.)
     const requestHeaders: Record<string, string> = {
       ...(await this.getAuthHeaders()),
+      ...(optionHeaders || {}),
     };
 
     // ALWAYS add sap-adt-connection-id header (connectionId is sent for ALL session types)

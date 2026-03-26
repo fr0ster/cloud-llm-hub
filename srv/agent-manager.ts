@@ -1609,11 +1609,16 @@ async function buildEmbeddedMcpAdapter(
     throw new Error(`Destination "${destinationName}" is unreachable: ${msg}`);
   }
 
-  // Get all MCP tool handlers via HandlerExporter
+  // Get MCP tool handlers filtered by configured exposition (handler sets)
+  const config = getAgentConfig();
+  const expo = config.agent.exposition;
   const exporter = new HandlerExporter({
-    includeReadOnly: true,
-    includeHighLevel: true,
-    includeSearch: true,
+    includeReadOnly: expo.includes('readonly'),
+    includeHighLevel: expo.includes('high'),
+    includeLowLevel: expo.includes('low'),
+    includeCompact: expo.includes('compact'),
+    includeSystem: expo.includes('system'),
+    includeSearch: expo.includes('search'),
     logger: loggerAdapter,
   });
 
