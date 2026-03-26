@@ -369,8 +369,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
           headers: requestHeaders,
           // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
           params: params as Record<string, any> | undefined,
-          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type is not fully typed
-          data: data !== undefined ? (data as Record<string, any>) : undefined,
+          // Keep original data type (string for XML, object for JSON).
+          // Casting string→Record causes axios to serialize as JSON,
+          // ignoring Content-Type and triggering 415 on ADT endpoints.
+          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
+          data: data as any,
         },
       );
 
@@ -434,9 +437,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
               headers: retryHeaders,
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
               params: params as Record<string, any> | undefined,
-              data:
-                // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type is not fully typed
-                data !== undefined ? (data as Record<string, any>) : undefined,
+              // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
+              data: data as any,
             },
           );
 
