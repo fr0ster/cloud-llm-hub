@@ -17,7 +17,7 @@ import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
-import { initSmartAgents } from './agent-manager';
+import { clearSessionTopic, initSmartAgents } from './agent-manager';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -377,6 +377,7 @@ cds.on('bootstrap', (app: Application) => {
     const sessionId = req.headers['x-session-id'] as string | undefined;
     if (sessionId) {
       clearSession(sessionId);
+      clearSessionTopic(sessionId);
       res.writeHead(204);
       res.end();
     } else {

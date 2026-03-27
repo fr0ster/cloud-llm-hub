@@ -295,7 +295,30 @@ class CustomToolSelectHandler implements IStageHandler {
     // Use our own default (15) instead of ctx.config.ragQueryK (builder default is 10,
     // too few for 259 MCP tools — SearchObject gets pushed below the cutoff)
     const k = (config.k as number) || 15;
-    const queryText = ctx.ragText || ctx.inputText;
+    let queryText = ctx.ragText || ctx.inputText;
+
+    // Topic-aware query enrichment: when the current message is too short to carry
+    // semantic intent (e.g. just a class name "ZCL_DEMO_HELLO_AI1"), prepend the
+    // session topic — the classified ragText from the previous request.
+    // This costs zero extra LLM tokens; only the embedding query changes.
+    const SHORT_QUERY_THRESHOLD = 60;
+    const sessionTopic = sessionTopicMap.get(ctx.sessionId);
+    if (queryText.length < SHORT_QUERY_THRESHOLD && sessionTopic) {
+      queryText = `${sessionTopic} ${queryText}`;
+      log.info('Enriched tool-select query with session topic', {
+        topic: sessionTopic.slice(0, 200),
+        original: (ctx.ragText || ctx.inputText).slice(0, 100),
+        enriched: queryText.slice(0, 300),
+      });
+    }
+
+    // Update session topic with current ragText for future requests.
+    // Long messages (>= threshold) establish a new topic; short ones inherit it.
+    const currentRagText = ctx.ragText || ctx.inputText;
+    if (currentRagText.length >= SHORT_QUERY_THRESHOLD) {
+      sessionTopicMap.set(ctx.sessionId, currentRagText.slice(0, 300));
+    }
+
     let ragToolNames = new Set<string>();
 
     if (!toolsStore) {
@@ -323,15 +346,34 @@ class CustomToolSelectHandler implements IStageHandler {
       }
 
       if (result.ok) {
-        ragToolNames = new Set(
-          result.value
-            .map((r) => r.metadata.id)
-            .filter((id): id is string => !!id?.startsWith('tool:'))
-            .map((id) => id.slice(5)),
-        );
+        // Filter out low-confidence results: if the best score is below threshold,
+        // RAG has no meaningful match — treat as empty (triggers all-tools fallback).
+        // This prevents filling the tool set with irrelevant tools on ambiguous queries.
+        const MIN_SCORE_THRESHOLD = 0.25;
+        const bestScore = Math.max(...result.value.map((r) => r.score ?? 0), 0);
+
+        if (bestScore >= MIN_SCORE_THRESHOLD) {
+          ragToolNames = new Set(
+            result.value
+              .map((r) => r.metadata.id)
+              .filter((id): id is string => !!id?.startsWith('tool:'))
+              .map((id) => id.slice(5)),
+          );
+        } else {
+          log.warn(
+            'All RAG tool scores below threshold — treating as no match',
+            {
+              bestScore,
+              threshold: MIN_SCORE_THRESHOLD,
+              query: queryText.slice(0, 200),
+            },
+          );
+        }
+
         ctx.options?.sessionLogger?.logStep('custom_tool_select', {
           query: queryText.slice(0, 200),
           k,
+          bestScore,
           resultCount: result.value.length,
           matchedTools: [...ragToolNames],
           results: result.value.map((r) => ({
@@ -1230,6 +1272,15 @@ const destinationStates = new Map<string, DestinationState>();
 /** Last-used destination per session (for detecting switches in openai-handler) */
 const lastDestinationBySession = new Map<string, string>();
 
+/**
+ * Per-session conversation topic — the classified ragText from the previous request.
+ * Used by CustomToolSelectHandler to enrich short follow-up messages with topic context,
+ * so RAG tool selection stays relevant without extra LLM token cost.
+ * Example: "create hello world class" persists → next message "ZCL_DEMO_HELLO_AI1"
+ * gets enriched → CreateClass found by RAG.
+ */
+const sessionTopicMap = new Map<string, string>();
+
 /** Get last-used destination for a session, or config default */
 export function getCurrentDestination(sessionId?: string): string {
   if (sessionId) {
@@ -1239,6 +1290,11 @@ export function getCurrentDestination(sessionId?: string): string {
     );
   }
   return getAgentConfig().mcp.destination;
+}
+
+/** Clear session topic (call on destination switch alongside clearSession) */
+export function clearSessionTopic(sessionId: string): void {
+  sessionTopicMap.delete(sessionId);
 }
 
 /** Track which destination was used for a session */
