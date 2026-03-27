@@ -573,6 +573,7 @@ class CustomToolLoopHandler implements IStageHandler {
         // Extract tool call names from last assistant message (e.g., "CreateClass", "CreateBehaviorImplementation")
         const toolCallNames: string[] = [];
         if (lastAssistantMsg && 'tool_calls' in lastAssistantMsg) {
+          // biome-ignore lint/suspicious/noExplicitAny: OpenAI message type doesn't expose tool_calls
           const toolCalls = (lastAssistantMsg as any).tool_calls;
           if (Array.isArray(toolCalls)) {
             for (const tc of toolCalls) {
@@ -756,10 +757,10 @@ class CustomToolLoopHandler implements IStageHandler {
         if (!chunkResult.ok) {
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
-          // biome-ignore lint/suspicious/noExplicitAny: matching library error type
           ctx.yield({
             ok: false,
             error: new Error(chunkResult.error.message),
+            // biome-ignore lint/suspicious/noExplicitAny: matching library error type
           } as any);
           return false;
         }
