@@ -1199,9 +1199,12 @@ class CustomToolLoopHandler implements IStageHandler {
  * The 'tools' store is queried exclusively by CustomToolSelectHandler,
  * keeping tool descriptions out of assembler's Known Facts section.
  *
- * Flow: classify → [summarize] → [rag-upsert] → [translate] → [expand] →
- *       [parallel rag-queries] → [rerank] → tool-select → skill-select →
- *       assemble → tool-loop
+ * Flow: classify → [summarize] → [rag-upsert] → [translate] →
+ *       [parallel rag-queries] → tool-select → skill-select → assemble → tool-loop
+ *
+ * Removed stages (each was an LLM call adding ~5s latency):
+ * - expand: synonym expansion adds negligible value with sparse in-memory RAG
+ * - rerank: not worth the latency with few RAG results
  */
 const pipelineDefinition: StructuredPipelineDefinition = {
   version: '1',
@@ -1217,10 +1220,14 @@ const pipelineDefinition: StructuredPipelineDefinition = {
       type: 'rag-upsert',
       when: 'config.ragUpsertEnabled',
     },
-    // RAG retrieval: translate → expand → parallel queries → rerank
-    // translate and expand must be sequential (both read/write ctx.ragText)
+    // RAG retrieval: translate → parallel queries.
+    // translate kept: embedder may not be multilingual, translation ensures
+    // Ukrainian queries match English tool descriptions in RAG.
+    // expand (LLM call) removed: synonym expansion adds ~5s latency for
+    // negligible benefit with sparse in-memory RAG stores.
+    // rerank (LLM call) removed: not worth the latency with few RAG results.
+    // Net saving: ~8-10s per request (2 fewer LLM round-trips).
     { id: 'translate', type: 'translate', when: 'shouldRetrieve' },
-    { id: 'expand', type: 'expand', when: 'shouldRetrieve' },
     {
       id: 'rag-queries',
       type: 'parallel',
@@ -1243,7 +1250,6 @@ const pipelineDefinition: StructuredPipelineDefinition = {
         },
       ],
     },
-    { id: 'rerank', type: 'rerank', when: 'shouldRetrieve' },
     // Custom tool-select: uses its own RAG store, not ctx.ragResults.facts
     { id: 'tool-select', type: 'tool-select' },
     { id: 'skill-select', type: 'skill-select' },
