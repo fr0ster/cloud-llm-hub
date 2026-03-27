@@ -6,7 +6,8 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["**", "!!**/dist", "!!**/gen", "!!**/@cds-models", "!!**/node_modules", "!!**/submodules"]
+		"includes": ["**", "!!**/dist", "!!**/gen", "!!**/@cds-models", "!!**/node_modules", "!!**/submodules"],
+		"ignoreUnknown": true
 	},
 	"formatter": {
 		"enabled": true,
@@ -41,6 +42,11 @@
 		}
 	},
 	"overrides": [
+		{
+			"includes": ["**/*.md", "**/*.yaml", "**/*.yml", "**/*.json", "**/*.css", "**/*.html"],
+			"formatter": { "enabled": false },
+			"linter": { "enabled": false }
+		},
 		{
 			"includes": ["**/__tests__/**", "**/*.test.ts", "**/*.spec.ts", "**/*.test.js"],
 			"linter": {
