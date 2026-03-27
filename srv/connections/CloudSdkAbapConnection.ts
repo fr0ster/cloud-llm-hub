@@ -62,15 +62,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * Parse Set-Cookie headers and merge into the cookie jar.
    * Extracts only name=value pairs, ignoring attributes (Path, Domain, HttpOnly, etc.).
    */
-  private mergeSetCookies(
-    setCookie: string | string[] | undefined,
-  ): void {
+  private mergeSetCookies(setCookie: string | string[] | undefined): void {
     if (!setCookie) return;
     const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
     for (const header of headers) {
       // First segment before ';' is the name=value pair
       const nameValue = header.split(';')[0]?.trim();
-      if (!nameValue || !nameValue.includes('=')) continue;
+      if (!nameValue?.includes('=')) continue;
       const eqIdx = nameValue.indexOf('=');
       const name = nameValue.slice(0, eqIdx).trim();
       const value = nameValue.slice(eqIdx + 1).trim();

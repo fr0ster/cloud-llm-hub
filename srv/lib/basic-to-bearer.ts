@@ -58,7 +58,7 @@ export function createBasicToBearerMiddleware(
     if (!authHeader) return capAuth(req, res, next);
 
     const creds = decodeBasicAuth(authHeader);
-    if (!creds || !creds.clientId.startsWith(XSUAA_CLIENT_PREFIX)) {
+    if (!creds?.clientId.startsWith(XSUAA_CLIENT_PREFIX)) {
       return capAuth(req, res, next);
     }
 

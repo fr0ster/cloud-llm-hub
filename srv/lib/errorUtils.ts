@@ -109,7 +109,7 @@ export function logErrorSafely(
   error: any,
   context?: Record<string, unknown>,
 ): void {
-  if (!logger || !logger.error) {
+  if (!logger?.error) {
     return;
   }
 

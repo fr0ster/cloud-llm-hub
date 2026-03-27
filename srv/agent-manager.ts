@@ -598,126 +598,125 @@ class CustomToolLoopHandler implements IStageHandler {
           });
           // Skip re-selection, keep current tools
         } else {
-
-        // Build re-select query with error context
-        // Key insight: when CreateClass fails with "already exists", query should guide RAG toward Update* tools
-        const toolError =
-          lastToolMsg?.content && typeof lastToolMsg.content === 'string'
-            ? lastToolMsg.content.slice(0, 200)
-            : '';
-        const isError =
-          toolError.includes('error') ||
-          toolError.includes('Error') ||
-          toolError.includes('failed') ||
-          toolError.includes('already exist');
-
-        let reSelectQuery: string;
-
-        // When Create* tools are involved, derive Update* counterparts for RAG hints
-        // CreateClass → UpdateClass, CreateFunctionGroup → UpdateFunctionGroup, etc.
-        const createToolNames = toolCallNames.filter((n) =>
-          n.startsWith('Create'),
-        );
-        const updateHints = createToolNames
-          .map((n) => n.replace(/^Create/, 'Update'))
-          .join(', ');
-
-        if (toolCallNames.length > 0 && isError) {
-          // Failed tool calls — steer RAG toward alternative tools
-          const failedNames = toolCallNames.join(', ');
-          const hints = updateHints
-            ? ` Need ${updateHints} to modify existing object.`
-            : '';
-          reSelectQuery = `${failedNames} failed: ${toolError.slice(0, 150)}.${hints} Alternative tool for: ${ctx.inputText.slice(0, 200)}`;
-        } else if (toolCallNames.length > 0) {
-          // Successful tool calls — include tool result + explicit Update* hint
-          const toolResult =
+          // Build re-select query with error context
+          // Key insight: when CreateClass fails with "already exists", query should guide RAG toward Update* tools
+          const toolError =
             lastToolMsg?.content && typeof lastToolMsg.content === 'string'
-              ? lastToolMsg.content.slice(0, 300)
+              ? lastToolMsg.content.slice(0, 200)
               : '';
-          const hints = updateHints
-            ? ` Next step: ${updateHints} to set source code.`
-            : '';
-          reSelectQuery = `After ${toolCallNames.join(', ')}: ${toolResult}${hints}\n${ctx.inputText.slice(0, 200)}`;
-        } else if (
-          lastAssistantMsg?.content &&
-          typeof lastAssistantMsg.content === 'string'
-        ) {
-          reSelectQuery = lastAssistantMsg.content.slice(0, 300);
-          if (toolError) {
-            reSelectQuery = `${reSelectQuery}\n${toolError}`;
+          const isError =
+            toolError.includes('error') ||
+            toolError.includes('Error') ||
+            toolError.includes('failed') ||
+            toolError.includes('already exist');
+
+          let reSelectQuery: string;
+
+          // When Create* tools are involved, derive Update* counterparts for RAG hints
+          // CreateClass → UpdateClass, CreateFunctionGroup → UpdateFunctionGroup, etc.
+          const createToolNames = toolCallNames.filter((n) =>
+            n.startsWith('Create'),
+          );
+          const updateHints = createToolNames
+            .map((n) => n.replace(/^Create/, 'Update'))
+            .join(', ');
+
+          if (toolCallNames.length > 0 && isError) {
+            // Failed tool calls — steer RAG toward alternative tools
+            const failedNames = toolCallNames.join(', ');
+            const hints = updateHints
+              ? ` Need ${updateHints} to modify existing object.`
+              : '';
+            reSelectQuery = `${failedNames} failed: ${toolError.slice(0, 150)}.${hints} Alternative tool for: ${ctx.inputText.slice(0, 200)}`;
+          } else if (toolCallNames.length > 0) {
+            // Successful tool calls — include tool result + explicit Update* hint
+            const toolResult =
+              lastToolMsg?.content && typeof lastToolMsg.content === 'string'
+                ? lastToolMsg.content.slice(0, 300)
+                : '';
+            const hints = updateHints
+              ? ` Next step: ${updateHints} to set source code.`
+              : '';
+            reSelectQuery = `After ${toolCallNames.join(', ')}: ${toolResult}${hints}\n${ctx.inputText.slice(0, 200)}`;
+          } else if (
+            lastAssistantMsg?.content &&
+            typeof lastAssistantMsg.content === 'string'
+          ) {
+            reSelectQuery = lastAssistantMsg.content.slice(0, 300);
+            if (toolError) {
+              reSelectQuery = `${reSelectQuery}\n${toolError}`;
+            }
+          } else {
+            reSelectQuery = ctx.inputText;
+            if (toolError) {
+              reSelectQuery = `${reSelectQuery}\n${toolError}`;
+            }
           }
-        } else {
-          reSelectQuery = ctx.inputText;
-          if (toolError) {
-            reSelectQuery = `${reSelectQuery}\n${toolError}`;
-          }
-        }
 
-        // Query tools RAG (no namespace filter — tools are shared)
-        log.info('Tool re-selection query', {
-          iteration: iteration + 1,
-          query: reSelectQuery.slice(0, 300),
-          failedTools: toolCallNames,
-          isError,
-        });
-        const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
-          {}) as Record<string, unknown>;
-        const ragResult = await toolsStore.query(
-          reSelectQuery,
-          ragK,
-          toolQueryOpts,
-        );
-
-        if (ragResult.ok && ragResult.value.length > 0) {
-          const newToolNames = new Set(
-            ragResult.value
-              .map((r: { metadata: { id?: string } }) => r.metadata.id)
-              .filter((id): id is string => !!id?.startsWith('tool:'))
-              .map((id: string) => id.slice(5)),
+          // Query tools RAG (no namespace filter — tools are shared)
+          log.info('Tool re-selection query', {
+            iteration: iteration + 1,
+            query: reSelectQuery.slice(0, 300),
+            failedTools: toolCallNames,
+            isError,
+          });
+          const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
+            {}) as Record<string, unknown>;
+          const ragResult = await toolsStore.query(
+            reSelectQuery,
+            ragK,
+            toolQueryOpts,
           );
 
-          // Filter MCP tools to RAG-selected ones
-          const newMcpTools = ctx.mcpTools.filter((t) =>
-            newToolNames.has(t.name),
-          );
-          currentTools = [...newMcpTools, ...externalTools];
-
-          // Apply availability filtering
-          const filtered = ctx.toolAvailabilityRegistry.filterTools(
-            ctx.sessionId,
-            currentTools,
-          );
-          currentTools = filtered.allowed;
-
-          // Update "## Available Tools" in system message
-          const sysMsg = messages.find((m) => m.role === 'system');
-          if (sysMsg && typeof sysMsg.content === 'string') {
-            const toolsSection = currentTools
-              .filter((t) => !externalToolNames.has(t.name))
-              .map((t) => `- ${t.name}: ${t.description}`)
-              .join('\n');
-            sysMsg.content = sysMsg.content.replace(
-              /## Available Tools\n[\s\S]*?(?=\n##|$)/,
-              `## Available Tools\n${toolsSection}`,
+          if (ragResult.ok && ragResult.value.length > 0) {
+            const newToolNames = new Set(
+              ragResult.value
+                .map((r: { metadata: { id?: string } }) => r.metadata.id)
+                .filter((id): id is string => !!id?.startsWith('tool:'))
+                .map((id: string) => id.slice(5)),
             );
-          }
 
-          ctx.options?.sessionLogger?.logStep('tool_reselect', {
-            iteration: iteration + 1,
-            query: reSelectQuery.slice(0, 200),
-            matchedTools: [...newToolNames],
-            duration: Date.now() - reSelectStart,
-          });
-        } else {
-          log.warn('Tool re-selection failed, keeping previous tools', {
-            iteration: iteration + 1,
-            error:
-              !ragResult.ok && 'error' in ragResult
-                ? String(ragResult.error)
-                : 'no results',
-          });
-        }
+            // Filter MCP tools to RAG-selected ones
+            const newMcpTools = ctx.mcpTools.filter((t) =>
+              newToolNames.has(t.name),
+            );
+            currentTools = [...newMcpTools, ...externalTools];
+
+            // Apply availability filtering
+            const filtered = ctx.toolAvailabilityRegistry.filterTools(
+              ctx.sessionId,
+              currentTools,
+            );
+            currentTools = filtered.allowed;
+
+            // Update "## Available Tools" in system message
+            const sysMsg = messages.find((m) => m.role === 'system');
+            if (sysMsg && typeof sysMsg.content === 'string') {
+              const toolsSection = currentTools
+                .filter((t) => !externalToolNames.has(t.name))
+                .map((t) => `- ${t.name}: ${t.description}`)
+                .join('\n');
+              sysMsg.content = sysMsg.content.replace(
+                /## Available Tools\n[\s\S]*?(?=\n##|$)/,
+                `## Available Tools\n${toolsSection}`,
+              );
+            }
+
+            ctx.options?.sessionLogger?.logStep('tool_reselect', {
+              iteration: iteration + 1,
+              query: reSelectQuery.slice(0, 200),
+              matchedTools: [...newToolNames],
+              duration: Date.now() - reSelectStart,
+            });
+          } else {
+            log.warn('Tool re-selection failed, keeping previous tools', {
+              iteration: iteration + 1,
+              error:
+                !ragResult.ok && 'error' in ragResult
+                  ? String(ragResult.error)
+                  : 'no results',
+            });
+          }
         } // end else (non-read-only re-selection)
       }
 
