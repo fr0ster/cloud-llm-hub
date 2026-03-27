@@ -299,9 +299,9 @@ class CustomToolSelectHandler implements IStageHandler {
 
     // Query the dedicated 'tools' store from ctx.ragStores (registered via withRag)
     const toolsStore = ctx.ragStores.tools;
-    // Use our own default (15) instead of ctx.config.ragQueryK (builder default is 10,
-    // too few for 259 MCP tools — SearchObject gets pushed below the cutoff)
-    const k = (config.k as number) || 15;
+    // Use our own default (25) instead of ctx.config.ragQueryK (builder default is 10).
+    // With 146 MCP tools, k=15 misses Read*/Get* counterparts for Create*/Update* tools.
+    const k = (config.k as number) || 25;
     let queryText = ctx.ragText || ctx.inputText;
 
     // Topic-aware query enrichment: when the current message is too short to carry
@@ -397,6 +397,33 @@ class CustomToolSelectHandler implements IStageHandler {
           toolsStoreType: toolsStore?.constructor.name ?? 'none',
         },
       );
+    }
+
+    // Companion tools: if RAG selected Update*/Create*/Delete* for an object type,
+    // auto-include the corresponding Read*/Get* tools so the LLM can read before writing.
+    // Without this, "add comments to class" selects UpdateClass but not ReadClass.
+    if (ragToolNames.size > 0) {
+      const allToolNames = new Set(ctx.mcpTools.map((t) => t.name));
+      const companions = new Set<string>();
+      for (const name of ragToolNames) {
+        for (const prefix of ['Update', 'Create', 'Delete']) {
+          if (name.startsWith(prefix)) {
+            const base = name.slice(prefix.length);
+            for (const readPrefix of ['Read', 'Get']) {
+              const companion = `${readPrefix}${base}`;
+              if (allToolNames.has(companion) && !ragToolNames.has(companion)) {
+                companions.add(companion);
+              }
+            }
+          }
+        }
+      }
+      if (companions.size > 0) {
+        for (const c of companions) ragToolNames.add(c);
+        log.info('Added companion Read/Get tools', {
+          companions: [...companions],
+        });
+      }
     }
 
     // Select tools based on RAG results.
@@ -575,7 +602,7 @@ class CustomToolLoopHandler implements IStageHandler {
 
     // RAG re-selection config
     const toolsStore = ctx.ragStores.tools;
-    const ragK = 15;
+    const ragK = 25;
 
     for (let iteration = 0; ; iteration++) {
       if (ctx.options?.signal?.aborted) {
