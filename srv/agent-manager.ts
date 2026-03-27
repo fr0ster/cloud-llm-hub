@@ -211,6 +211,13 @@ class CustomClassifyHandler implements IStageHandler {
     ctx.ragText =
       actions.map((a: { text: string }) => a.text).join(' ') || ctx.inputText;
 
+    // Update session topic BEFORE translate/expand stages modify ragText.
+    // This preserves the original user intent for tool selection enrichment.
+    const classifiedText = ctx.ragText;
+    if (classifiedText.length >= 60) {
+      sessionTopicMap.set(ctx.sessionId, classifiedText.slice(0, 300));
+    }
+
     ctx.options?.sessionLogger?.logStep('custom_classify', {
       subpromptCount: ctx.subprompts.length,
       actionCount: actions.length,
@@ -310,13 +317,6 @@ class CustomToolSelectHandler implements IStageHandler {
         original: (ctx.ragText || ctx.inputText).slice(0, 100),
         enriched: queryText.slice(0, 300),
       });
-    }
-
-    // Update session topic with current ragText for future requests.
-    // Long messages (>= threshold) establish a new topic; short ones inherit it.
-    const currentRagText = ctx.ragText || ctx.inputText;
-    if (currentRagText.length >= SHORT_QUERY_THRESHOLD) {
-      sessionTopicMap.set(ctx.sessionId, currentRagText.slice(0, 300));
     }
 
     let ragToolNames = new Set<string>();
