@@ -505,6 +505,74 @@ export class CloudSdkAbapConnection implements AbapConnection {
         }
       }
 
+      // If session timed out (400), clear stale cookies/CSRF and retry once
+      const responseData = (error as { response?: { data?: string } })?.response
+        ?.data;
+      const isSessionTimeout =
+        (errorObj?.response?.status === 400 || errorObj?.statusCode === 400) &&
+        typeof responseData === 'string' &&
+        (responseData.includes('Session') || responseData.includes('session'));
+      if (isSessionTimeout) {
+        logger.info(
+          'Session timed out, clearing cookies/CSRF and retrying request',
+          { url: requestUrl },
+        );
+        this.cookieJar.clear();
+        this.csrfToken = null;
+
+        try {
+          // Re-fetch CSRF for mutation requests
+          const retryHeaders = { ...requestHeaders };
+          delete retryHeaders.Cookie;
+          if (normalizedMethod === 'POST' || normalizedMethod === 'PUT') {
+            this.csrfToken = await this.fetchCsrfToken(requestUrl);
+            retryHeaders['x-csrf-token'] = this.csrfToken;
+          }
+          const cookieAfterReset = this.getCookieHeader();
+          if (cookieAfterReset) {
+            retryHeaders.Cookie = cookieAfterReset;
+          }
+
+          const retryResponse = await executeHttpRequest(
+            { destinationName: this.destinationName },
+            {
+              method: normalizedMethod as
+                | 'GET'
+                | 'POST'
+                | 'PUT'
+                | 'DELETE'
+                | 'PATCH',
+              url: requestUrl,
+              headers: retryHeaders,
+              // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
+              params: params as Record<string, any> | undefined,
+              // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
+              data: data as any,
+            },
+          );
+
+          this.mergeSetCookies(
+            retryResponse.headers?.['set-cookie'] as
+              | string
+              | string[]
+              | undefined,
+          );
+          return this.convertToAdtResponse<T, D>(retryResponse, requestUrl);
+        } catch (retryError: unknown) {
+          logErrorSafely(
+            logger,
+            'ADT request retry (session reset)',
+            retryError,
+            {
+              url: requestUrl,
+              method: normalizedMethod,
+              destinationName: this.destinationName,
+            },
+          );
+          throw retryError;
+        }
+      }
+
       throw error;
     }
   }
