@@ -598,8 +598,15 @@ export async function handleChatCompletions(
 
           const v = chunk.value;
 
-          // Skip heartbeat and timing — internal diagnostics, not for client
-          if (v.heartbeat || v.timing) {
+          // Forward heartbeats as SSE comments to keep the connection alive.
+          // Without this, CF Router / Cloud Connector may close idle TCP
+          // connections before the tool loop finishes, causing the browser's
+          // reader.read() to hang forever (onDone never fires).
+          if (v.heartbeat) {
+            res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
+            continue;
+          }
+          if (v.timing) {
             continue;
           }
 
