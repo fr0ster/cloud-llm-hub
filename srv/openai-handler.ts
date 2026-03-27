@@ -19,6 +19,7 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
+  clearSessionTopic,
   getCurrentDestination,
   getCurrentModel,
   getDestinationStates,
@@ -469,6 +470,7 @@ export async function handleChatCompletions(
       sessionId,
     });
     clearSession(sessionId);
+    clearSessionTopic(sessionId);
     // Re-build normalizedMessages with only the new user message (no stale history)
     const lastUserContent = extractText(
       userMessages[userMessages.length - 1].content,
