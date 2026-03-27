@@ -1,31 +1,17 @@
 # Architecture Documentation
 
-System architecture, design decisions, and technical specifications for cloud-llm-hub.
+System architecture, APIs, and technical specifications.
 
 ## Documents
 
-### Core Architecture
-
-- [**API Reference**](API_REFERENCE.md) - Complete API documentation
-- [**CAP Endpoints**](CAP_ENDPOINTS.md) - SAP Cloud Application Programming Model endpoints
-- [**Features**](FEATURES.md) - System features and capabilities
-- [**Implementation Status**](IMPLEMENTATION_STATUS.md) - Current implementation progress
-
-### Integration & Performance
-
-- [**Integration Architecture**](INTEGRATION_ARCHITECTURE.md) - Overall integration architecture with mcp-abap-adt
-- [**Integrations**](INTEGRATIONS.md) - External system integrations
-- [**MCP Header Matrix**](MCP_HEADER_MATRIX.md) - MCP protocol header specifications
-- [**Performance**](PERFORMANCE.md) - Performance characteristics and optimization
-
-## Related Documentation
-
-- [Architecture Decision Records](../adrs/) - ADR documentation
-- [Architecture Overview](ARCHITECTURE.md) - Full architecture documentation
+- [**Architecture Overview**](ARCHITECTURE.md) — comprehensive system design (v2.2+)
+- [**Architecture Analysis**](ARCHITECTURE_ANALYSIS.md) — component relationships and analysis
+- [**API Reference**](API_REFERENCE.md) — complete endpoint documentation
+- [**CAP Endpoints**](CAP_ENDPOINTS.md) — OData and Express endpoints
+- [**Features**](FEATURES.md) — capabilities and feature matrix
+- [**Extension Guide**](EXTENSION_GUIDE.md) — adding new tools, agents, connections
+- [**MCP Header Matrix**](MCP_HEADER_MATRIX.md) — MCP protocol header specifications
 
 ## Quick Links
 
-- [← Back to Main Documentation](../README.md)
-- [Development Guides →](../development/)
-- [Deployment Guides →](../deployment/)
-- [Usage Guides →](../usage/)
+- [Back to Documentation Index](../README.md)

@@ -1,31 +1,15 @@
 # Development Documentation
 
-Developer guides, debugging tools, and testing resources for cloud-llm-hub development.
+Local setup, debugging, and testing resources.
 
 ## Documents
 
-### Debugging & Testing
-
-- [**Debugging Guide**](DEBUGGING.md) - Debugging tools and techniques
-- [**Debug Cline Requests**](DEBUG_CLINE_REQUESTS.md) - Debugging Cline/MCP requests
-- [**Testing Cheat Sheet**](TESTING_CHEAT_SHEET.md) - Quick reference for testing
-
-### Authentication & Security
-
-- [**JWT Token Refresh Guide**](../archive/JWT_TOKEN_REFRESH_GUIDE.md) - JWT token refresh implementation (deprecated)
-
-### Development Roadmaps
-
-- [**LLM Proxy Roadmap**](roadmaps/LLM_PROXY_ROADMAP.md) - Development roadmap for LLM Proxy feature
-
-## Related Documentation
-
-- [Contributors Guide](../contributors/) - Setup, workflow, and contribution guidelines
-- [Architecture Documentation](../architecture/) - System architecture details
+- [**CAP Express Auth**](CAP_EXPRESS_AUTH.md) — CAP + Express authentication patterns
+- [**Quick Hybrid Setup**](QUICK_HYBRID_SETUP.md) — local dev with cloud services
+- [**Agent Test Checklist**](AGENT_TEST_CHECKLIST.md) — SmartAgent testing checklist
+- [**Cross-Platform Guide**](CROSS_PLATFORM_GUIDE.md) — macOS, Linux, Windows compatibility
+- [**Windows Setup**](WINDOWS_SETUP.md) — Windows-specific setup
 
 ## Quick Links
 
-- [← Back to Main Documentation](../README.md)
-- [Architecture Guides →](../architecture/)
-- [Deployment Guides →](../deployment/)
-- [Usage Guides →](../usage/)
+- [Back to Documentation Index](../README.md)
