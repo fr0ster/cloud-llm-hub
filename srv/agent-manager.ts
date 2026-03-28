@@ -606,6 +606,11 @@ class CustomToolLoopHandler implements IStageHandler {
     const loopStart = Date.now();
     let currentTools = ctx.activeTools;
 
+    // Presentation LLM shortcut: when configured, buffer the final iteration's
+    // content and abort early — PresentHandler will generate through the fast model.
+    const hasPresentationLlm = !!ctx.presentationLlm;
+    const DRAFT_ABORT_CHARS = 200;
+
     // RAG re-selection config
     const toolsStore = ctx.ragStores.tools;
     const ragK = 25;
@@ -829,6 +834,7 @@ class CustomToolLoopHandler implements IStageHandler {
       >();
       let ttft: number | null = null; // time to first token
       let chunkCount = 0;
+      let abortedForPresentation = false;
 
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
@@ -849,7 +855,11 @@ class CustomToolLoopHandler implements IStageHandler {
         }
         if (chunk.content) {
           content += chunk.content;
-          ctx.yield({ ok: true, value: { content: chunk.content } });
+          // When presentationLlm will handle the final response, buffer content
+          // instead of streaming — avoids duplicate output and allows early abort
+          if (!hasPresentationLlm) {
+            ctx.yield({ ok: true, value: { content: chunk.content } });
+          }
         }
         if (chunk.toolCalls) {
           // biome-ignore lint/suspicious/noExplicitAny: library stream tool call types
@@ -888,6 +898,15 @@ class CustomToolLoopHandler implements IStageHandler {
           usage.totalTokens += chunk.usage.totalTokens;
           ctx.sessionManager.addTokens(chunk.usage.totalTokens);
         }
+        // Early exit: enough content with no tool calls → presentation LLM takes over
+        if (
+          hasPresentationLlm &&
+          toolCallsMap.size === 0 &&
+          content.length >= DRAFT_ABORT_CHARS
+        ) {
+          abortedForPresentation = true;
+          break;
+        }
       }
 
       llmSpan.setStatus('ok');
@@ -924,7 +943,36 @@ class CustomToolLoopHandler implements IStageHandler {
       );
 
       // -- No tool calls: validate and finish --------------------------------
-      if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
+      if (
+        abortedForPresentation ||
+        finishReason !== 'tool_calls' ||
+        toolCalls.length === 0
+      ) {
+        // Presentation LLM shortcut: hand off to PresentHandler
+        if (hasPresentationLlm) {
+          // Pass conversation context (including tool results) — no draft needed.
+          // PresentHandler generates the full response from toolLoopMessages.
+          ctx.toolLoopContent = '';
+          ctx.toolLoopMessages = [...messages];
+          log.info('Handing off to presentation LLM', {
+            iteration: iteration + 1,
+            aborted: abortedForPresentation,
+            draftChars: content.length,
+          });
+          timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+          ctx.timing.push(...timingLog);
+          ctx.yield({
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'stop',
+              usage,
+              timing: timingLog,
+            },
+          });
+          return true;
+        }
+
         const valResult = await ctx.outputValidator.validate(
           content,
           { messages, tools: currentTools },
