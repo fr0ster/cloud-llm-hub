@@ -607,6 +607,7 @@ export async function handleChatCompletions(
             continue;
           }
           if (v.timing) {
+            log.info('Pipeline stage timing', { timing: v.timing });
             continue;
           }
 
