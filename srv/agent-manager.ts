@@ -978,9 +978,9 @@ class CustomToolLoopHandler implements IStageHandler {
       ) {
         // Presentation LLM shortcut: hand off to PresentHandler
         if (hasPresentationLlm) {
-          // Pass conversation context (including tool results) — no draft needed.
-          // PresentHandler generates the full response from toolLoopMessages.
-          ctx.toolLoopContent = '';
+          // Pass buffered content as fallback — PresentHandler will re-generate
+          // through the fast model, but if it fails it falls back to this content.
+          ctx.toolLoopContent = content;
           ctx.toolLoopMessages = [...messages];
           log.info('Handing off to presentation LLM', {
             iteration: iteration + 1,
