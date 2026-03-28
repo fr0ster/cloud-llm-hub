@@ -161,6 +161,7 @@ class CustomClassifyHandler implements IStageHandler {
     span: ISpan,
   ): Promise<boolean> {
     const log = cds.log('agent-manager/classify');
+    const stageStart = Date.now();
     log.info('CustomClassifyHandler executing', {
       inputText: ctx.inputText?.slice(0, 100),
       classificationEnabled: ctx.config.classificationEnabled,
@@ -218,11 +219,13 @@ class CustomClassifyHandler implements IStageHandler {
       sessionTopicMap.set(ctx.sessionId, classifiedText.slice(0, 300));
     }
 
+    const classifyDuration = Date.now() - stageStart;
     ctx.options?.sessionLogger?.logStep('custom_classify', {
       subpromptCount: ctx.subprompts.length,
       actionCount: actions.length,
       shouldRetrieve: ctx.shouldRetrieve,
       ragText: ctx.ragText.slice(0, 200),
+      durationMs: classifyDuration,
     });
 
     return true;
@@ -248,6 +251,7 @@ class CustomToolSelectHandler implements IStageHandler {
     span: ISpan,
   ): Promise<boolean> {
     const log = cds.log('agent-manager/tool-select');
+    const stageStart = Date.now();
     log.info('CustomToolSelectHandler executing', {
       ragStoreKeys: Object.keys(ctx.ragStores),
       hasToolsStore: !!ctx.ragStores.tools,
@@ -468,12 +472,14 @@ class CustomToolSelectHandler implements IStageHandler {
     span.setAttribute('selected', ctx.selectedTools.length);
     span.setAttribute('active', ctx.activeTools.length);
 
+    const toolSelectDuration = Date.now() - stageStart;
     ctx.options?.sessionLogger?.logStep('tools_selected', {
       totalMcp: ctx.mcpTools.length,
       ragMatchedTools: [...ragToolNames],
       selectedCount: ctx.selectedTools.length,
       selectedNames: ctx.selectedTools.map((t) => t.name),
       activeCount: ctx.activeTools.length,
+      durationMs: toolSelectDuration,
     });
 
     return true;
@@ -821,6 +827,8 @@ class CustomToolLoopHandler implements IStageHandler {
         number,
         { id: string; name: string; arguments: string }
       >();
+      let ttft: number | null = null; // time to first token
+      let chunkCount = 0;
 
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
@@ -835,6 +843,10 @@ class CustomToolLoopHandler implements IStageHandler {
         }
         // biome-ignore lint/suspicious/noExplicitAny: library chunk type
         const chunk = chunkResult.value as any;
+        chunkCount++;
+        if (ttft === null) {
+          ttft = Date.now() - llmCallStart;
+        }
         if (chunk.content) {
           content += chunk.content;
           ctx.yield({ ok: true, value: { content: chunk.content } });
@@ -882,10 +894,15 @@ class CustomToolLoopHandler implements IStageHandler {
       llmSpan.end();
       const llmCallDuration = Date.now() - llmCallStart;
       ctx.metrics.llmCallLatency.record(llmCallDuration);
+      const generationMs = ttft !== null ? llmCallDuration - ttft : 0;
       timingLog.push({
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
-      });
+        ttft: ttft ?? llmCallDuration,
+        generation: generationMs,
+        chunks: chunkCount,
+        outputChars: content.length,
+      } as { phase: string; duration: number } & Record<string, unknown>);
 
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
         let args: Record<string, unknown> = {};
@@ -1927,6 +1944,15 @@ async function buildAgentForDestination(
         '2. Update* tool (e.g., UpdateClass) — sets the actual source code',
         'You MUST call both steps. Never stop after Create* — the object is useless without source code from Update*.',
         'If Create* fails with "already exists", use the corresponding Update* tool to modify the existing object.',
+        '',
+        '## Presenting Tool Results',
+        'When the user asks to read, show, or display data — show the ACTUAL data from the tool result. Do NOT summarize, abbreviate, or paraphrase unless the user explicitly asks for a summary.',
+        '',
+        '## Object Type Resolution',
+        'When the user asks to read, modify, or delete an object but does NOT specify its type:',
+        '1. Use SearchObject to find the object by name and determine its type (class, program, function module, etc.)',
+        '2. Then use the appropriate type-specific tool (ReadClass, ReadProgram, ReadFunctionModule, etc.)',
+        'Do NOT guess the object type — always confirm via SearchObject first.',
         '',
         '## ABAP Object Modification Workflow',
         'When modifying ANY existing ABAP object (class, program, function module, data element, etc.):',
