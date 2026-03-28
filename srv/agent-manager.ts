@@ -244,6 +244,14 @@ class CustomClassifyHandler implements IStageHandler {
  * first-class store, but only this handler queries it — no `rag-query`
  * stage in the pipeline for `tools`.
  */
+
+// Module-level MCP tools cache — embedded MCP tools don't change between requests.
+// Populated on first request, reused on subsequent ones (~10s → 0ms).
+let cachedMcpTools:
+  | { name: string; description?: string; inputSchema?: unknown }[]
+  | null = null;
+let cachedToolClientMap: Map<string, unknown> | null = null;
+
 class CustomToolSelectHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
@@ -261,44 +269,64 @@ class CustomToolSelectHandler implements IStageHandler {
     });
     const mode = ctx.config.mode || 'smart';
 
-    // List all MCP tools if not already done
+    // List all MCP tools — use module-level cache for embedded MCP servers
     if (ctx.mcpTools.length === 0 && ctx.mcpClients.length > 0) {
-      const settled = await Promise.allSettled(
-        ctx.mcpClients.map(async (client) => ({
-          client,
-          result: await client.listTools(ctx.options),
-        })),
-      );
-      for (const entry of settled) {
-        if (entry.status === 'fulfilled' && entry.value.result.ok) {
-          for (const t of entry.value.result.value) {
-            if (!ctx.toolClientMap.has(t.name)) {
-              ctx.mcpTools.push(t);
-              ctx.toolClientMap.set(t.name, entry.value.client);
-            }
-          }
-        } else {
-          // Explicit failure logging — helps diagnose "0 tools" issues
-          const reason =
-            entry.status === 'rejected'
-              ? String(entry.reason)
-              : !entry.value.result.ok
-                ? `listTools returned error: ${'error' in entry.value.result ? String(entry.value.result.error) : 'unknown'}`
-                : 'unknown';
-          log.error('MCP client listTools failed', { reason });
+      if (cachedMcpTools && cachedToolClientMap) {
+        // Restore from cache (~0ms vs ~10s)
+        for (const t of cachedMcpTools) {
+          ctx.mcpTools.push(t as (typeof ctx.mcpTools)[0]);
         }
-      }
-      log.info('MCP tools loaded', {
-        mcpToolsCount: ctx.mcpTools.length,
-        clientResults: settled.map((s) =>
-          s.status === 'fulfilled'
-            ? {
-                ok: s.value.result.ok,
-                count: s.value.result.ok ? s.value.result.value.length : 0,
+        for (const [name, client] of cachedToolClientMap) {
+          ctx.toolClientMap.set(name, client as (typeof ctx.mcpClients)[0]);
+        }
+        log.info('MCP tools restored from cache', {
+          mcpToolsCount: ctx.mcpTools.length,
+        });
+      } else {
+        // First request — load and cache
+        const settled = await Promise.allSettled(
+          ctx.mcpClients.map(async (client) => ({
+            client,
+            result: await client.listTools(ctx.options),
+          })),
+        );
+        for (const entry of settled) {
+          if (entry.status === 'fulfilled' && entry.value.result.ok) {
+            for (const t of entry.value.result.value) {
+              if (!ctx.toolClientMap.has(t.name)) {
+                ctx.mcpTools.push(t);
+                ctx.toolClientMap.set(t.name, entry.value.client);
               }
-            : { ok: false, error: String(s.reason) },
-        ),
-      });
+            }
+          } else {
+            const reason =
+              entry.status === 'rejected'
+                ? String(entry.reason)
+                : !entry.value.result.ok
+                  ? `listTools returned error: ${'error' in entry.value.result ? String(entry.value.result.error) : 'unknown'}`
+                  : 'unknown';
+            log.error('MCP client listTools failed', { reason });
+          }
+        }
+        // Populate cache
+        cachedMcpTools = ctx.mcpTools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }));
+        cachedToolClientMap = new Map(ctx.toolClientMap);
+        log.info('MCP tools loaded and cached', {
+          mcpToolsCount: ctx.mcpTools.length,
+          clientResults: settled.map((s) =>
+            s.status === 'fulfilled'
+              ? {
+                  ok: s.value.result.ok,
+                  count: s.value.result.ok ? s.value.result.value.length : 0,
+                }
+              : { ok: false, error: String(s.reason) },
+          ),
+        });
+      }
     }
 
     // Query the dedicated 'tools' store from ctx.ragStores (registered via withRag)
@@ -1336,8 +1364,10 @@ const pipelineDefinition: StructuredPipelineDefinition = {
 /** Per-destination SmartAgent handles */
 const agentHandles = new Map<string, SmartAgentHandle>();
 
-/** Runtime model override (null = use config default) */
+/** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
+let currentClassifierModel: string | null = null;
+let currentPresentationModel: string | null = null;
 
 /** Shared LLM instances (updated on model switch) */
 let sharedMainLlm: ReturnType<typeof makeLlm> | null = null;
@@ -1352,6 +1382,22 @@ export function isAgentReady(): boolean {
 /** Get the model name currently used by the agent */
 export function getCurrentModel(): string {
   return currentModel || getAgentConfig().llm.model;
+}
+
+export function getCurrentClassifierModel(): string {
+  return (
+    currentClassifierModel ||
+    process.env.LLM_AGENT_CLASSIFIER_MODEL ||
+    getAgentConfig().llm.model
+  );
+}
+
+export function getCurrentPresentationModel(): string {
+  return (
+    currentPresentationModel ||
+    process.env.LLM_AGENT_PRESENTATION_MODEL ||
+    'gemini-2.5-flash'
+  );
 }
 
 /** Shared metrics instance (survives agent rebuilds) */
@@ -1646,6 +1692,25 @@ async function initDestination(
       config,
     );
     agentHandles.set(destinationName, handle);
+
+    // Preload MCP tools cache so tool-select skips listTools on every request.
+    // listTools already ran during vectorizeTools — reuse the adapter.
+    if (!cachedMcpTools) {
+      const toolsResult = await state.mcpAdapter.listTools();
+      if (toolsResult.ok) {
+        cachedMcpTools = toolsResult.value.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }));
+        cachedToolClientMap = new Map(
+          toolsResult.value.map((t) => [t.name, state.mcpAdapter!]),
+        );
+        log.info('MCP tools preloaded at startup', {
+          toolCount: cachedMcpTools.length,
+        });
+      }
+    }
 
     state.status = 'ready';
     log.info('Destination ready', {
@@ -1964,7 +2029,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
   }
   if (!sharedPresentationLlm) {
     const presentationModel =
-      process.env.LLM_AGENT_PRESENTATION_MODEL || 'gpt-4.1-mini';
+      process.env.LLM_AGENT_PRESENTATION_MODEL || 'gemini-2.5-flash';
     sharedPresentationLlm = makeLlm(
       {
         provider: 'sap-ai-sdk',
@@ -2119,6 +2184,8 @@ async function buildAgentForDestination(
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
+  requestedClassifierModel?: string,
+  requestedPresentationModel?: string,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
@@ -2153,6 +2220,64 @@ export async function getSmartAgent(
       from: activeModel,
       to: requestedModel,
       agentCount: agentHandles.size,
+    });
+  }
+
+  // --- Classifier model hot-swap ---
+  if (
+    requestedClassifierModel &&
+    requestedClassifierModel !== getCurrentClassifierModel() &&
+    agentHandles.size > 0
+  ) {
+    const newClassifier = makeLlm(
+      {
+        provider: 'sap-ai-sdk',
+        apiKey: 'sap-ai-sdk-managed',
+        model: requestedClassifierModel,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+      },
+      0.3,
+    );
+    for (const handle of agentHandles.values()) {
+      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
+      (handle.agent as any).deps.classifierLlm = newClassifier;
+    }
+    sharedClassifierLlm = newClassifier;
+    const prev = getCurrentClassifierModel();
+    currentClassifierModel = requestedClassifierModel;
+    log.info('Classifier model hot-swapped', {
+      from: prev,
+      to: requestedClassifierModel,
+    });
+  }
+
+  // --- Presentation model hot-swap ---
+  if (
+    requestedPresentationModel &&
+    requestedPresentationModel !== getCurrentPresentationModel() &&
+    agentHandles.size > 0
+  ) {
+    const newPresentation = makeLlm(
+      {
+        provider: 'sap-ai-sdk',
+        apiKey: 'sap-ai-sdk-managed',
+        model: requestedPresentationModel,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+      },
+      0.3,
+    );
+    for (const handle of agentHandles.values()) {
+      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
+      (handle.agent as any).deps.presentationLlm = newPresentation;
+    }
+    sharedPresentationLlm = newPresentation;
+    const prev = getCurrentPresentationModel();
+    currentPresentationModel = requestedPresentationModel;
+    log.info('Presentation model hot-swapped', {
+      from: prev,
+      to: requestedPresentationModel,
     });
   }
 

@@ -20,8 +20,10 @@ import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   clearSessionTopic,
+  getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
+  getCurrentPresentationModel,
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
@@ -263,6 +265,8 @@ interface OpenAIChatRequest {
   stream_options?: { include_usage?: boolean };
   tools?: unknown[];
   model?: string;
+  classifier_model?: string;
+  presentation_model?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +438,14 @@ export async function handleChatCompletions(
   // Get SmartAgent handle (pass model/destination to trigger switch if needed)
   const requestedModel =
     typeof body.model === 'string' ? body.model : undefined;
+  const requestedClassifierModel =
+    typeof body.classifier_model === 'string'
+      ? body.classifier_model
+      : undefined;
+  const requestedPresentationModel =
+    typeof body.presentation_model === 'string'
+      ? body.presentation_model
+      : undefined;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
@@ -450,7 +462,12 @@ export async function handleChatCompletions(
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent(requestedModel, requestedDestination);
+    handle = await getSmartAgent(
+      requestedModel,
+      requestedDestination,
+      requestedClassifierModel,
+      requestedPresentationModel,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
@@ -969,8 +986,8 @@ export async function handleModels(
         max_iterations: config.agent.maxIterations,
         rag_type: config.agent.ragType,
         mcp_destination: config.mcp.destination,
-        classifier_model:
-          process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+        classifier_model: getCurrentClassifierModel(),
+        presentation_model: getCurrentPresentationModel(),
         embedding_model:
           process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
       },
