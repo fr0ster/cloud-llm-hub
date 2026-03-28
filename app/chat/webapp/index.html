@@ -37,12 +37,12 @@
         .status-error { color: #ff5555; }
         .status-streaming { color: #00bfff; animation: blink 1s infinite; }
 
-        #llm-model-select, #dest-select {
+        #llm-model-select, #dest-select, .aux-model-select {
             background: #111; color: #00ff00; border: 1px solid #333; font-family: 'Courier New', Courier, monospace;
             font-size: 13px; padding: 2px 4px; border-radius: 3px; outline: none; cursor: pointer;
         }
-        #llm-model-select:focus, #dest-select:focus { border-color: #00ff00; }
-        #llm-model-select:disabled, #dest-select:disabled { opacity: 0.4; cursor: not-allowed; }
+        #llm-model-select:focus, #dest-select:focus, .aux-model-select:focus { border-color: #00ff00; }
+        #llm-model-select:disabled, #dest-select:disabled, .aux-model-select:disabled { opacity: 0.4; cursor: not-allowed; }
 
         pre code { display: block; background: #2d2d2d; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; color: #e0e0e0; }
         code { background: #383838; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
@@ -57,7 +57,8 @@
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
         </div>
         <div class="system-bar">
-            <span>CLASSIFIER: <span id="classifier-model">...</span></span>
+            <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
+            <span>PRESENTATION: <select id="presentation-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
             <span>EMBEDDER: <span id="embedding-model">...</span></span>
             <span>RAG: <span id="rag-type">...</span></span>
         </div>
@@ -77,6 +78,8 @@
         const statusText = document.getElementById('status-text');
         const modelSelect = document.getElementById('llm-model-select');
         const destSelect = document.getElementById('dest-select');
+        const classifierSelect = document.getElementById('classifier-model-select');
+        const presentationSelect = document.getElementById('presentation-model-select');
         let conversationHistory = [];
         let ready = false;
         const sessionId = 'ui-' + crypto.randomUUID();
@@ -138,8 +141,11 @@
 
                     document.getElementById('agent-mode').innerText = meta.mode || '?';
                     document.getElementById('rag-type').innerText = meta.rag_type || '?';
-                    document.getElementById('classifier-model').innerText = meta.classifier_model || '?';
                     document.getElementById('embedding-model').innerText = meta.embedding_model || '?';
+
+                    // Populate auxiliary model dropdowns with all available models
+                    populateAuxSelect(classifierSelect, data.data, meta.classifier_model);
+                    populateAuxSelect(presentationSelect, data.data, meta.presentation_model);
 
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
@@ -189,6 +195,27 @@
                 }
             } catch (e) { /* ignore */ }
         }, 15000);
+
+        function populateAuxSelect(selectEl, models, activeValue) {
+            const currentVal = selectEl.value || activeValue;
+            selectEl.innerHTML = '';
+            for (const m of models) {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.id;
+                if (m.id === currentVal) opt.selected = true;
+                selectEl.appendChild(opt);
+            }
+            // If active value not in models list, add it
+            if (activeValue && !Array.from(selectEl.options).some(o => o.value === activeValue)) {
+                const opt = document.createElement('option');
+                opt.value = activeValue;
+                opt.textContent = activeValue;
+                opt.selected = true;
+                selectEl.prepend(opt);
+            }
+            selectEl.disabled = false;
+        }
 
         function clearChat() {
             conversationHistory = [];
@@ -266,6 +293,8 @@
                 };
                 const selectedModel = getSelectedModel();
                 if (selectedModel) reqBody.model = selectedModel;
+                if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
+                if (presentationSelect.value) reqBody.presentation_model = presentationSelect.value;
 
                 // Send only current message — SmartAgent manages session history internally
                 const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId };
