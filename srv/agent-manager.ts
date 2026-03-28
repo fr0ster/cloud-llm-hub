@@ -1216,12 +1216,16 @@ class CustomToolLoopHandler implements IStageHandler {
  * The 'tools' store is queried exclusively by CustomToolSelectHandler,
  * keeping tool descriptions out of assembler's Known Facts section.
  *
- * Flow: classify → [summarize] → [rag-upsert] → [translate] →
- *       [parallel rag-queries] → tool-select → skill-select → assemble → tool-loop
+ * Flow: classify → [summarize] → [rag-upsert] →
+ *       [parallel: translate + expand] → [parallel: rag-queries] → [rerank] →
+ *       tool-select → assemble → tool-loop → [present]
  *
- * Removed stages (each was an LLM call adding ~5s latency):
- * - expand: synonym expansion adds negligible value with sparse in-memory RAG
- * - rerank: not worth the latency with few RAG results
+ * v3.3.0 parallelization: translate and expand run concurrently,
+ * then rag-queries run concurrently, then rerank. This reduces the
+ * pre-tool-loop overhead from ~11s to ~5-6s.
+ *
+ * Presentation LLM (present stage): after tool-loop, a fast model
+ * formats the response instead of the main model re-generating it.
  */
 const pipelineDefinition: StructuredPipelineDefinition = {
   version: '1',
@@ -1237,41 +1241,47 @@ const pipelineDefinition: StructuredPipelineDefinition = {
       type: 'rag-upsert',
       when: 'config.ragUpsertEnabled',
     },
-    // RAG retrieval: translate → parallel queries.
-    // translate kept: embedder may not be multilingual, translation ensures
-    // Ukrainian queries match English tool descriptions in RAG.
-    // expand (LLM call) removed: synonym expansion adds ~5s latency for
-    // negligible benefit with sparse in-memory RAG stores.
-    // rerank (LLM call) removed: not worth the latency with few RAG results.
-    // Net saving: ~8-10s per request (2 fewer LLM round-trips).
-    { id: 'translate', type: 'translate', when: 'shouldRetrieve' },
+    // RAG retrieval: translate + expand in parallel, then queries + rerank.
+    // v3.3.0 parallel structure eliminates sequential overhead.
     {
-      id: 'rag-queries',
+      id: 'rag-retrieval',
       type: 'parallel',
       when: 'shouldRetrieve',
       stages: [
+        { id: 'translate', type: 'translate' },
+        { id: 'expand', type: 'expand' },
+      ],
+      after: [
         {
-          id: 'rag-facts',
-          type: 'rag-query',
-          config: { store: 'facts' },
+          id: 'rag-queries',
+          type: 'parallel',
+          stages: [
+            {
+              id: 'rag-facts',
+              type: 'rag-query',
+              config: { store: 'facts' },
+            },
+            {
+              id: 'rag-feedback',
+              type: 'rag-query',
+              config: { store: 'feedback' },
+            },
+            {
+              id: 'rag-state',
+              type: 'rag-query',
+              config: { store: 'state' },
+            },
+          ],
         },
-        {
-          id: 'rag-feedback',
-          type: 'rag-query',
-          config: { store: 'feedback' },
-        },
-        {
-          id: 'rag-state',
-          type: 'rag-query',
-          config: { store: 'state' },
-        },
+        { id: 'rerank', type: 'rerank' },
       ],
     },
     // Custom tool-select: uses its own RAG store, not ctx.ragResults.facts
     { id: 'tool-select', type: 'tool-select' },
-    { id: 'skill-select', type: 'skill-select' },
     { id: 'assemble', type: 'assemble' },
     { id: 'tool-loop', type: 'tool-loop' },
+    // Presentation: fast model formats final response (saves ~15-20s on large outputs)
+    { id: 'present', type: 'present' },
   ],
 };
 
@@ -1284,6 +1294,7 @@ let currentModel: string | null = null;
 /** Shared LLM instances (updated on model switch) */
 let sharedMainLlm: ReturnType<typeof makeLlm> | null = null;
 let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
+let sharedPresentationLlm: ReturnType<typeof makeLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
@@ -1873,6 +1884,7 @@ async function buildEmbeddedMcpAdapter(
 function getOrCreateSharedLlms(config: AgentConfig): {
   mainLlm: ReturnType<typeof makeLlm>;
   classifierLlm: ReturnType<typeof makeLlm>;
+  presentationLlm: ReturnType<typeof makeLlm>;
 } {
   if (!sharedMainLlm) {
     const mainModel = getCurrentModel();
@@ -1902,7 +1914,25 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       0.1,
     );
   }
-  return { mainLlm: sharedMainLlm, classifierLlm: sharedClassifierLlm };
+  if (!sharedPresentationLlm) {
+    const presentationModel =
+      process.env.LLM_AGENT_PRESENTATION_MODEL || 'gpt-4.1-mini';
+    sharedPresentationLlm = makeLlm(
+      {
+        provider: 'sap-ai-sdk',
+        apiKey: 'sap-ai-sdk-managed',
+        model: presentationModel,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+      },
+      0.3,
+    );
+  }
+  return {
+    mainLlm: sharedMainLlm,
+    classifierLlm: sharedClassifierLlm,
+    presentationLlm: sharedPresentationLlm,
+  };
 }
 
 /**
@@ -1915,7 +1945,8 @@ async function buildAgentForDestination(
   config: AgentConfig,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
-  const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
+  const { mainLlm, classifierLlm, presentationLlm } =
+    getOrCreateSharedLlms(config);
   const shared = getOrCreateSharedRagStores(config.llm.resourceGroup);
 
   const ragStores: Record<string, IRag> = {
@@ -1971,6 +2002,12 @@ async function buildAgentForDestination(
         '',
         'Respond in the same language the user writes in.',
       ].join('\n'),
+      presentation: [
+        'Format the tool results for the user.',
+        'Show source code in fenced ```abap blocks.',
+        'Show actual data from tools — do NOT summarize unless the user asked for a summary.',
+        'Respond in the same language the user writes in.',
+      ].join('\n'),
       classifier: [
         'You are a semantic intent classifier. Decompose the user message into logical tasks.',
         'Output ONLY a raw JSON array — no markdown fences, no explanation, no surrounding text.',
@@ -1993,6 +2030,7 @@ async function buildAgentForDestination(
   })
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
+    .withPresentationLlm(presentationLlm)
     .withMcpClients([mcpAdapter])
     .withRag(ragStores)
     .withRagTranslation(true)
