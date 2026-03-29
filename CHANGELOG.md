@@ -4,6 +4,77 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-03-29
+
+### Changed
+
+- **Upgrade `@mcp-abap-adt/llm-agent` to 3.4.0**: Parallel tool execution, native tool result caching, RAG query translation for non-ASCII input, and built-in SSE heartbeat monitoring during tool execution
+- **MCP tool timeout configurable**: Default increased from 60s to 120s; override with `LLM_AGENT_MCP_TOOL_TIMEOUT_MS` env variable for long-running operations (e.g. ABAP unit tests)
+
+### Removed
+
+- **Deprecated `refreshToolsPerIteration`**: No-op since llm-agent v2.15.0; custom RAG-based tool re-selection replaces it
+
+## [2.6.0] - 2026-03-29
+
+### Added
+
+- **Presentation LLM (early abort)**: When a presentation model is configured, the main LLM stream is aborted after detecting the final iteration (no tool calls); a faster/cheaper model re-generates the response, reducing end-to-end latency
+- **Auxiliary model switching in UI**: Dropdowns for classifier and presentation models with live hot-swap — changes take effect on the next request without restart
+- **Pipeline stage timing**: Each pipeline stage (classify, tool_select, tool_loop, present) reports duration in server logs for performance analysis
+- **MCP tools cache at startup**: Tool list loaded once during `initDestination` and reused across requests (~0ms vs ~10s per request)
+
+### Fixed
+
+- **Presentation LLM fallback**: When `PresentHandler` fails (SSE streaming error with certain SAP AI Core models), falls back to the main model's buffered content instead of returning an empty response
+- **SearchObject fallback**: Graceful degradation when SearchObject tool is unavailable
+
+### Changed
+
+- **Default presentation model**: Set to `gemini-2.5-flash` for fastest throughput on SAP AI Core
+- **`LLM_AGENT_PRESENTATION_MODEL`**: Added to `mta.yaml` and `.mtaext` deployment configuration
+
+## [2.5.0] - 2026-03-28
+
+### Added
+
+- **SSE heartbeat forwarding**: Forward heartbeat comments to keep CF Router / Cloud Connector connections alive during long tool loops
+- **Rate-limit auto-retry**: Automatic exponential backoff retry on 429 errors before first content chunk is sent
+- **Agent readiness tracking**: `agentReady` flag per destination prevents requests during agent rebuild
+
+### Fixed
+
+- **Request hang during concurrent model switch**: Fixed race condition where simultaneous model switch and request could deadlock
+- **Destination hot-swap**: Session history cleared on destination switch to prevent cross-system context leakage
+
+### Changed
+
+- **Hybrid RAG search**: Combined vector + BM25 scoring for tool selection with configurable weights
+- **Tool selection improvements**: RAG-based tool filtering with LLM reranking for better precision
+
+## [2.4.0] - 2026-03-27
+
+### Added
+
+- **Handler exposition configuration**: `LLM_AGENT_EXPOSITION` env variable controls which MCP handler sets are exposed (readonly, high, low, compact, search, system)
+- **Embedding model configuration**: `LLM_AGENT_EMBEDDING_MODEL` for RAG semantic search (default: `text-embedding-3-small`)
+- **Classifier model configuration**: `LLM_AGENT_CLASSIFIER_MODEL` for cheaper intent classification (default: `gpt-4o-mini`)
+
+### Changed
+
+- **AI Core resource binding**: Re-enabled by default for production deployments
+
+## [2.3.0] - 2026-03-26
+
+### Added
+
+- **Pipeline stage timing in responses**: Timing breakdown included in SSE stream for client-side performance display
+- **Tool result presentation**: Improved formatting of MCP tool results in agent responses
+
+### Fixed
+
+- **SSE heartbeat forwarding**: Removed expand/rerank pipeline stages that caused unnecessary latency
+
 ## [2.2.0] - 2026-03-25
 
 ### Added
