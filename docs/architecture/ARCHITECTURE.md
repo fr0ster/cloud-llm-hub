@@ -1,6 +1,6 @@
 # Cloud LLM Hub — Developer Architecture Guide
 
-> **Version:** 2.2.0 | **Stack:** SAP CAP (Node.js) + TypeScript + SAP BTP
+> **Version:** 2.8.0 | **Stack:** SAP CAP (Node.js) + TypeScript + SAP BTP
 > **Purpose:** This document gives a new developer everything needed to understand, navigate, and modify the codebase.
 
 ---
@@ -173,6 +173,8 @@ cloud-llm-hub/
 │       ├── btp-destinations.ts   # BTP Destination Service client
 │       └── ai-core-models.ts     # AI Core model list (cached)
 ├── app/
+│   ├── chat/webapp/              # Browser chat UI (vanilla HTML/JS)
+│   │   └── index.html            # Terminal-style chat, file artifact cards, streaming parser
 │   └── router/                   # SAP BTP Approuter (xs-app.json routes)
 ├── test/                         # Tests (YAML-driven integration, smoke, unit)
 ├── tools/                        # DevOps scripts (cline config sync, env setup, deploy)
@@ -1059,4 +1061,4 @@ graph LR
 
 ---
 
-> **Last updated:** March 2026 | **Source:** Auto-generated from codebase analysis
+> **Last updated:** 2026-03-29 | **Source:** Auto-generated from codebase analysis
