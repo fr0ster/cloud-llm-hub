@@ -25,6 +25,7 @@ import {
   getStreamToolCallName,
   InMemoryMetrics,
   InMemoryRag,
+  type IQueryEmbedding,
   type IRag,
   type ISpan,
   type IStageHandler,
@@ -32,10 +33,12 @@ import {
   McpClientAdapter,
   makeLlm,
   type PipelineContext,
+  QueryEmbedding,
   SessionManager,
   SmartAgentBuilder,
   type SmartAgentHandle,
   type StructuredPipelineDefinition,
+  TextOnlyEmbedding,
   ToolCache,
   toToolCallDelta,
   VectorRag,
@@ -81,11 +84,11 @@ class NamespaceFilteredRag implements IRag {
   }
 
   async query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: { signal?: AbortSignal; ragFilter?: { namespace?: string } },
   ) {
-    const result = await this.inner.query(text, k, options);
+    const result = await this.inner.query(embedding, k, options);
     if (!result.ok) return result;
 
     const ns = options?.ragFilter?.namespace;
@@ -368,13 +371,19 @@ class CustomToolSelectHandler implements IStageHandler {
         {}) as Record<string, unknown>;
 
       // Retry once on failure (covers transient 429 rate-limit from embedder)
-      let result = await toolsStore.query(queryText, k, toolQueryOpts);
+      const toolEmbedding = ctx.embedder
+        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
+        : new TextOnlyEmbedding(queryText);
+      let result = await toolsStore.query(toolEmbedding, k, toolQueryOpts);
       if (!result.ok) {
         log.warn('Tools RAG query failed, retrying in 1.5s', {
           error: 'error' in result ? String(result.error) : 'unknown',
         });
         await new Promise((r) => setTimeout(r, 1500));
-        result = await toolsStore.query(queryText, k, toolQueryOpts);
+        const retryEmbedding = ctx.embedder
+          ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
+          : new TextOnlyEmbedding(queryText);
+        result = await toolsStore.query(retryEmbedding, k, toolQueryOpts);
       }
 
       if (result.ok) {
@@ -771,8 +780,11 @@ class CustomToolLoopHandler implements IStageHandler {
           });
           const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
             {}) as Record<string, unknown>;
+          const reSelectEmbedding = ctx.embedder
+            ? new QueryEmbedding(reSelectQuery, ctx.embedder, ctx.options)
+            : new TextOnlyEmbedding(reSelectQuery);
           const ragResult = await toolsStore.query(
-            reSelectQuery,
+            reSelectEmbedding,
             ragK,
             toolQueryOpts,
           );
@@ -2161,7 +2173,12 @@ async function buildAgentForDestination(
     .withClassifierLlm(classifierLlm)
     .withPresentationLlm(presentationLlm)
     .withMcpClients([mcpAdapter])
-    .withRag(ragStores)
+    .withRag(ragStores);
+
+  // Share embedder across all RAG queries — single embed call reused by all stores via QueryEmbedding
+  if (sharedEmbedder) builder.withEmbedder(sharedEmbedder);
+
+  builder
     .withRagTranslation(true)
     .withRagUpsert(true)
     .withPipeline(pipelineDefinition)
