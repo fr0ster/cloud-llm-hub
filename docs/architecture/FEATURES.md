@@ -1,7 +1,7 @@
 # ✨ Features & Benefits
 
-**Version:** 2.2.0
-**Last Updated:** 2026-03-25
+**Version:** 2.8.0
+**Last Updated:** 2026-03-29
 
 **Why choose Cloud LLM Hub?** Here's what makes it the best choice for connecting SAP to modern AI and automation tools.
 
@@ -44,7 +44,25 @@ Automatic discovery and management of multiple SAP ABAP systems.
 - Switch between SAP systems mid-conversation
 - Non-blocking startup — primary destination ready first, others in background
 
-### 3. **One-Command Setup**
+### 3. **File Artifact Generation** *(v2.8+)*
+
+LLM generates downloadable file artifacts directly in the browser UI using `<file>` tags.
+
+**Features:**
+
+- Streaming parser (state machine) intercepts `<file>` tags during SSE without blocking text
+- Inline file cards with collapsible preview, COPY and DOWNLOAD buttons
+- Text/code preview (first 30 lines), SVG/HTML iframe preview (sandboxed), base64 image preview
+- Mermaid diagram rendering with SVG export (lazy-loaded CDN)
+- Client-side download via Blob — no server-side file system needed
+
+**Benefits:**
+
+- Generate reports, configs, diagrams, code files directly from chat
+- Zero server-side changes — everything runs in the browser
+- Works with any text format, SVG, HTML, Mermaid, and base64 images
+
+### 4. **One-Command Setup**
 
 Get started in 60 seconds with automated configuration tools.
 
