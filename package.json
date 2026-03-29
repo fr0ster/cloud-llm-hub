@@ -65,7 +65,7 @@
     "sync:version": "node tools/sync-version.js",
     "bump:version": "node tools/bump-version.js",
     "version": "node tools/sync-version.js && git add mta.yaml",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "license": "MIT",
   "private": true,
