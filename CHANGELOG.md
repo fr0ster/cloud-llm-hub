@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-03-30
+
+### Changed
+
+- **Upgrade `@mcp-abap-adt/llm-agent` to 4.0.2**: Parallel RAG queries with shared query embedding — single embed API call reused across all RAG stores (tools, facts, feedback, state) via `IQueryEmbedding`/`QueryEmbedding` memoization. Includes `withEmbedder()` wiring for shared embedder instance.
+
 ## [2.8.0] - 2026-03-29
 
 ### Added

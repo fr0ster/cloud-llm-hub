@@ -46,6 +46,23 @@
 
         pre code { display: block; background: #2d2d2d; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; color: #e0e0e0; }
         code { background: #383838; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
+
+        /* File artifact cards */
+        .file-card { margin: 12px 0; background: #0c0c0c; border: 1px solid #333; border-left: 4px solid #00bfff; border-radius: 4px; overflow: hidden; }
+        .file-card-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #111; border-bottom: 1px solid #222; }
+        .file-card-name { color: #00bfff; font-weight: bold; font-size: 13px; }
+        .file-card-actions { display: flex; gap: 6px; }
+        .file-card-btn { background: #1a1a1a; color: #00ff00; border: 1px solid #333; padding: 3px 10px; font-size: 11px; font-family: 'Courier New', monospace; cursor: pointer; border-radius: 3px; }
+        .file-card-btn:hover { background: #00ff00; color: #000; }
+        .file-card-preview { max-height: 200px; overflow: auto; padding: 10px 12px; font-size: 13px; color: #ccc; white-space: pre-wrap; font-family: 'Consolas', 'Courier New', monospace; }
+        .file-card-preview iframe { border: none; width: 100%; height: 180px; background: #fff; border-radius: 2px; }
+        .file-card-preview img { max-width: 100%; max-height: 180px; }
+        .file-card-toggle { padding: 4px 12px; font-size: 11px; color: #555; cursor: pointer; user-select: none; border-top: 1px solid #222; }
+        .file-card-toggle:hover { color: #888; }
+        .file-card-body { display: none; }
+        .file-card-body.open { display: block; }
+        .mermaid-render { background: #fff; padding: 10px; border-radius: 2px; text-align: center; }
+        .mermaid-render svg { max-width: 100%; height: auto; }
     </style>
 </head>
 <body>
@@ -83,6 +100,306 @@
         let conversationHistory = [];
         let ready = false;
         const sessionId = 'ui-' + crypto.randomUUID();
+
+        // ---------------------------------------------------------------
+        // File artifact helpers
+        // ---------------------------------------------------------------
+        const FILE_MIME_TYPES = {
+            md: 'text/markdown', json: 'application/json', yaml: 'text/yaml',
+            yml: 'text/yaml', xml: 'application/xml', csv: 'text/csv',
+            html: 'text/html', svg: 'image/svg+xml', txt: 'text/plain',
+            py: 'text/x-python', js: 'text/javascript', ts: 'text/typescript',
+            abap: 'text/plain', sh: 'text/x-shellscript', css: 'text/css',
+            png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+            gif: 'image/gif', mmd: 'text/plain',
+        };
+        const fileArtifacts = {};
+
+        function getFileExt(path) {
+            const dot = path.lastIndexOf('.');
+            return dot >= 0 ? path.slice(dot + 1).toLowerCase() : 'txt';
+        }
+
+        function getFileMime(path) {
+            return FILE_MIME_TYPES[getFileExt(path)] || 'text/plain';
+        }
+
+        function downloadBlob(filename, blob) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadArtifact(cardId) {
+            const art = fileArtifacts[cardId];
+            if (!art) return;
+            try {
+                if (art.encoding === 'base64') {
+                    const bin = atob(art.content.replace(/\s/g, ''));
+                    const bytes = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    downloadBlob(art.path, new Blob([bytes], { type: getFileMime(art.path) }));
+                } else {
+                    downloadBlob(art.path, new Blob([art.content], { type: getFileMime(art.path) }));
+                }
+            } catch (e) {
+                console.error('Download failed:', e);
+            }
+        }
+
+        function copyArtifact(cardId) {
+            const art = fileArtifacts[cardId];
+            if (art) navigator.clipboard.writeText(art.content);
+        }
+
+        function downloadMermaidSvg(renderId, filename) {
+            const el = document.getElementById(renderId);
+            const svg = el?.querySelector('svg');
+            if (svg) downloadBlob(filename, new Blob([svg.outerHTML], { type: 'image/svg+xml' }));
+        }
+
+        let mermaidPromise = null;
+        function ensureMermaid() {
+            if (mermaidPromise) return mermaidPromise;
+            mermaidPromise = new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js';
+                s.onload = () => { mermaid.initialize({ startOnLoad: false, theme: 'dark' }); resolve(); };
+                s.onerror = (e) => { mermaidPromise = null; reject(e); };
+                document.head.appendChild(s);
+            });
+            return mermaidPromise;
+        }
+
+        function buildFileCardHtml(attrs, content, cardId) {
+            const path = attrs.path || 'file.txt';
+            const encoding = attrs.encoding || '';
+            const render = attrs.render || '';
+            const ext = getFileExt(path);
+            const trimmed = content.trim();
+            let previewHtml = '';
+            let extraButtons = '';
+
+            if (encoding === 'base64') {
+                const mime = getFileMime(path);
+                if (mime.startsWith('image/')) {
+                    previewHtml = '<img src="data:' + mime + ';base64,' + trimmed.replace(/\s/g, '') + '" alt="' + escapeHtml(path) + '">';
+                } else {
+                    previewHtml = '<span style="color:#888">[Binary file — ' + trimmed.length + ' chars base64]</span>';
+                }
+            } else if (render === 'mermaid') {
+                previewHtml = '<div class="mermaid-render" id="mmd-' + cardId + '"><pre style="color:#888">Loading diagram...</pre></div>';
+                extraButtons = '<button class="file-card-btn" onclick="downloadMermaidSvg(\'mmd-' + cardId + '\', \'' + escapeHtml(path.replace(/\.mmd$/, '.svg')) + '\')">SVG</button>';
+            } else if (ext === 'svg' || ext === 'html') {
+                previewHtml = '<iframe sandbox="" srcdoc="' + escapeHtml(trimmed) + '"></iframe>';
+            } else {
+                const lines = trimmed.split('\n');
+                const preview = lines.slice(0, 30).join('\n');
+                const trunc = lines.length > 30 ? '\n...' : '';
+                previewHtml = escapeHtml(preview + trunc);
+            }
+
+            const bodyId = 'file-body-' + cardId;
+            const copyBtn = encoding !== 'base64' ? '<button class="file-card-btn" onclick="copyArtifact(\'' + cardId + '\')">COPY</button>' : '';
+            return '<div class="file-card">' +
+                '<div class="file-card-header">' +
+                    '<span class="file-card-name">' + escapeHtml(path) + '</span>' +
+                    '<div class="file-card-actions">' + copyBtn + extraButtons +
+                        '<button class="file-card-btn" onclick="downloadArtifact(\'' + cardId + '\')">DOWNLOAD</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="file-card-toggle" onclick="document.getElementById(\'' + bodyId + '\').classList.toggle(\'open\')">&#9654; Preview</div>' +
+                '<div class="file-card-body" id="' + bodyId + '">' +
+                    '<div class="file-card-preview">' + previewHtml + '</div>' +
+                '</div>' +
+            '</div>';
+        }
+
+        // ---------------------------------------------------------------
+        // Streaming file artifact parser (state machine)
+        // ---------------------------------------------------------------
+        function createFileParser() {
+            // States: 'passthrough' | 'buffering'
+            let state = 'passthrough';
+            let buf = '';        // accumulated buffer in BUFFERING state
+            let tail = '';       // partial match tail in PASSTHROUGH state
+            let cardCounter = 0;
+            const BUFFER_LIMIT = 102400; // 100KB flush limit
+            const TAG_START = '<file';
+            const TAG_END = '</file>';
+
+            // Segments: array of { type: 'text', value } | { type: 'card', cardId, attrs, content }
+            const segments = [];
+            let currentText = '';
+
+            function flushText() {
+                if (currentText) {
+                    segments.push({ type: 'text', value: currentText });
+                    currentText = '';
+                }
+            }
+
+            function process(chunk) {
+                const input = tail + chunk;
+                tail = '';
+
+                if (state === 'passthrough') {
+                    let i = 0;
+                    while (i < input.length) {
+                        const idx = input.indexOf('<', i);
+                        if (idx === -1) {
+                            // No '<' found — check if tail could start a partial match
+                            // Keep last 5 chars as potential partial '<file' start
+                            const safe = input.length - 5;
+                            if (safe > i) {
+                                currentText += input.slice(i, safe);
+                                tail = input.slice(safe);
+                            } else {
+                                tail = input.slice(i);
+                            }
+                            i = input.length;
+                        } else {
+                            // Output text before '<'
+                            currentText += input.slice(i, idx);
+                            const remaining = input.slice(idx);
+
+                            // Check if this is '<file' or a partial start
+                            if (remaining.length >= TAG_START.length) {
+                                if (remaining.startsWith(TAG_START) && (remaining.length === TAG_START.length || /[\s>]/.test(remaining[TAG_START.length]))) {
+                                    // Detected <file tag — check if inside code block
+                                    const fullText = segments.map(s => s.type === 'text' ? s.value : '').join('') + currentText;
+                                    const fenceCount = (fullText.match(/```/g) || []).length;
+                                    if (fenceCount % 2 === 1) {
+                                        // Inside code block — treat as literal
+                                        currentText += '<';
+                                        i = idx + 1;
+                                        continue;
+                                    }
+                                    // Start buffering
+                                    flushText();
+                                    state = 'buffering';
+                                    buf = remaining;
+                                    i = input.length; // consumed everything
+                                } else if (TAG_START.startsWith(remaining)) {
+                                    // Partial match — save as tail for next chunk
+                                    flushText();
+                                    tail = remaining;
+                                    i = input.length;
+                                } else {
+                                    // Not a file tag — output '<' and continue
+                                    currentText += '<';
+                                    i = idx + 1;
+                                }
+                            } else {
+                                // Remaining could be partial — save as tail
+                                if (TAG_START.startsWith(remaining)) {
+                                    flushText();
+                                    tail = remaining;
+                                    i = input.length;
+                                } else {
+                                    currentText += '<';
+                                    i = idx + 1;
+                                }
+                            }
+                        }
+                    }
+                } else if (state === 'buffering') {
+                    buf += input;
+
+                    // Check for closing tag
+                    const endIdx = buf.indexOf(TAG_END);
+                    if (endIdx !== -1) {
+                        const fileBlock = buf.slice(0, endIdx + TAG_END.length);
+                        const after = buf.slice(endIdx + TAG_END.length);
+
+                        // Parse the file block
+                        const attrMatch = fileBlock.match(/^<file\s+([^>]*)>([\s\S]*)<\/file>$/);
+                        if (attrMatch) {
+                            const attrStr = attrMatch[1];
+                            const content = attrMatch[2];
+                            const attrs = {};
+                            const attrRe = /(\w+)="([^"]*)"/g;
+                            let m;
+                            while ((m = attrRe.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+                            if (!attrs.path && attrs.name) attrs.path = attrs.name;
+
+                            if (attrs.path) {
+                                const cardId = 'art-' + Date.now() + '-' + (cardCounter++);
+                                fileArtifacts[cardId] = {
+                                    path: attrs.path,
+                                    content: content.trim(),
+                                    encoding: attrs.encoding || '',
+                                    render: attrs.render || '',
+                                };
+                                segments.push({ type: 'card', cardId, attrs, content: content.trim() });
+                            } else {
+                                // No path — flush as text
+                                currentText += escapeHtml(fileBlock);
+                            }
+                        } else {
+                            currentText += escapeHtml(fileBlock);
+                        }
+
+                        // Process remaining after </file>
+                        state = 'passthrough';
+                        buf = '';
+                        if (after) process(after);
+                        return;
+                    }
+
+                    // Flush if buffer too large
+                    if (buf.length > BUFFER_LIMIT) {
+                        currentText += escapeHtml(buf);
+                        buf = '';
+                        state = 'passthrough';
+                    }
+                }
+            }
+
+            function finish() {
+                // Flush any remaining state
+                if (tail) { currentText += tail; tail = ''; }
+                if (buf) { currentText += escapeHtml(buf); buf = ''; state = 'passthrough'; }
+                flushText();
+            }
+
+            function render() {
+                flushText();
+                let html = '';
+                const mermaidIds = [];
+                for (const seg of segments) {
+                    if (seg.type === 'text') {
+                        html += markdownToHtml(seg.value);
+                    } else {
+                        html += buildFileCardHtml(seg.attrs, seg.content, seg.cardId);
+                        if (seg.attrs.render === 'mermaid') {
+                            mermaidIds.push({ renderId: 'mmd-' + seg.cardId, content: seg.content });
+                        }
+                    }
+                }
+                return { html, mermaidIds };
+            }
+
+            return { process, finish, render };
+        }
+
+        async function renderMermaidDiagrams(mermaidIds) {
+            if (mermaidIds.length === 0) return;
+            await ensureMermaid();
+            for (const { renderId, content } of mermaidIds) {
+                try {
+                    const { svg } = await mermaid.render('mmd-svg-' + renderId, content);
+                    const el = document.getElementById(renderId);
+                    if (el) el.innerHTML = '<div class="mermaid-render">' + svg + '</div>';
+                } catch (e) {
+                    const el = document.getElementById(renderId);
+                    if (el) el.innerHTML = '<pre style="color:#ff4444">Mermaid error: ' + escapeHtml(e.message) + '</pre>';
+                }
+            }
+        }
 
         function setStatus(text, cls) {
             statusText.innerText = text;
@@ -218,6 +535,7 @@
         }
 
         function clearChat() {
+            Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];
             chatWindow.innerHTML = '';
         }
@@ -325,6 +643,7 @@
                 const decoder = new TextDecoder();
                 let buffer = '';
                 phase = 'STREAMING';
+                const fileParser = createFileParser();
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -352,7 +671,7 @@
 
                                 if (delta.content) {
                                     assistantContent += delta.content;
-                                    // Detect internal tool executions from content (deduplicate by name+count)
+                                    // Detect internal tool executions from content
                                     const execMatch = delta.content.match(/\[SmartAgent: Executing (\w+)\.\.\.\]/);
                                     if (execMatch) {
                                         const toolName = execMatch[1];
@@ -360,9 +679,11 @@
                                         toolCallNames.add(toolName);
                                         phase = 'TOOL: ' + toolName;
                                     }
+                                    fileParser.process(delta.content);
                                     const el = document.getElementById(thinkingId);
                                     if (el) {
-                                        el.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(assistantContent) + '</span>';
+                                        const { html } = fileParser.render();
+                                        el.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + html + '</span>';
                                         chatWindow.scrollTop = chatWindow.scrollHeight;
                                     }
                                 }
@@ -419,11 +740,14 @@
                 usageHtml += '</div>';
 
                 if (placeholder) {
+                    fileParser.finish();
+                    const { html: finalHtml, mermaidIds } = fileParser.render();
                     placeholder.innerHTML = `
-                        <span class="agent"><b>> AGENT:</b> ${markdownToHtml(assistantContent) || '<em style="color:#888">No response</em>'}</span>
+                        <span class="agent"><b>> AGENT:</b> ${finalHtml || '<em style="color:#888">No response</em>'}</span>
                         ${toolsHtml}${usageHtml}
                     `;
                     placeholder.className = 'message';
+                    if (mermaidIds.length > 0) renderMermaidDiagrams(mermaidIds);
                 }
 
             } catch (e) {

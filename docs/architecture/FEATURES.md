@@ -1,7 +1,7 @@
 # ✨ Features & Benefits
 
-**Version:** 2.8.0
-**Last Updated:** 2026-03-29
+**Version:** 2.9.0
+**Last Updated:** 2026-03-30
 
 **Why choose Cloud LLM Hub?** Here's what makes it the best choice for connecting SAP to modern AI and automation tools.
 
