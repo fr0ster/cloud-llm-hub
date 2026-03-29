@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-03-29
+
+### Added
+
+- **File artifact generation (#9)**: LLM can generate downloadable file artifacts using `<file>` tags — the browser UI renders inline file cards with preview, COPY, and DOWNLOAD buttons. Supports text/code (30-line preview), SVG/HTML (sandboxed iframe), base64 images, and Mermaid diagrams (lazy-loaded CDN rendering with SVG export). Streaming parser (state machine) intercepts tags during SSE without blocking regular text output.
+
+### Fixed
+
+- **Husky prepare script**: Tolerant of production installs where husky devDependency is absent (`husky || true`)
+
 ## [2.7.1] - 2026-03-29
 
 ### Added
