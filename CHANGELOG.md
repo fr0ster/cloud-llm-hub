@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-03-29
+
+### Added
+
+- **Husky pre-commit hook**: Runs `lint:check` and `test:check` before every commit for cross-platform code quality enforcement
+
 ## [2.7.0] - 2026-03-29
 
 ### Changed
