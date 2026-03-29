@@ -1949,7 +1949,8 @@ async function buildEmbeddedMcpAdapter(
             : (handler as unknown as (a: typeof args) => unknown)(args);
 
         // Timeout: prevent hanging when SAP system doesn't respond (e.g. after destination switch)
-        const MCP_TOOL_TIMEOUT_MS = Number(process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS) || 120_000;
+        const MCP_TOOL_TIMEOUT_MS =
+          Number(process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS) || 120_000;
         const result = await Promise.race([
           toolCall,
           new Promise<never>((_, reject) =>
