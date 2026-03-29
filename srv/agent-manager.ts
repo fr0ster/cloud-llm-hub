@@ -2073,7 +2073,6 @@ async function buildAgentForDestination(
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
-      refreshToolsPerIteration: false,
     },
     prompts: {
       system: [
