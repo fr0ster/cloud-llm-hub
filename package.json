@@ -9,7 +9,7 @@
     "@mcp-abap-adt/core": "^4.5.2",
     "@mcp-abap-adt/header-validator": "^0.1.8",
     "@mcp-abap-adt/interfaces": "^5.0.0",
-    "@mcp-abap-adt/llm-agent": "^4.0.2",
+    "@mcp-abap-adt/llm-agent": "^4.0.3",
     "@mcp-abap-adt/logger": "^0.1.4",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@sap-ai-sdk/orchestration": "^2.9.0",
