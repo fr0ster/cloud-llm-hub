@@ -136,13 +136,17 @@
         function downloadArtifact(cardId) {
             const art = fileArtifacts[cardId];
             if (!art) return;
-            if (art.encoding === 'base64') {
-                const bin = atob(art.content.replace(/\s/g, ''));
-                const bytes = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                downloadBlob(art.path, new Blob([bytes], { type: getFileMime(art.path) }));
-            } else {
-                downloadBlob(art.path, new Blob([art.content], { type: getFileMime(art.path) }));
+            try {
+                if (art.encoding === 'base64') {
+                    const bin = atob(art.content.replace(/\s/g, ''));
+                    const bytes = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    downloadBlob(art.path, new Blob([bytes], { type: getFileMime(art.path) }));
+                } else {
+                    downloadBlob(art.path, new Blob([art.content], { type: getFileMime(art.path) }));
+                }
+            } catch (e) {
+                console.error('Download failed:', e);
             }
         }
 
@@ -157,16 +161,17 @@
             if (svg) downloadBlob(filename, new Blob([svg.outerHTML], { type: 'image/svg+xml' }));
         }
 
-        let mermaidLoaded = false;
+        let mermaidPromise = null;
         function ensureMermaid() {
-            if (mermaidLoaded) return Promise.resolve();
-            return new Promise((resolve, reject) => {
+            if (mermaidPromise) return mermaidPromise;
+            mermaidPromise = new Promise((resolve, reject) => {
                 const s = document.createElement('script');
                 s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js';
-                s.onload = () => { mermaid.initialize({ startOnLoad: false, theme: 'dark' }); mermaidLoaded = true; resolve(); };
-                s.onerror = reject;
+                s.onload = () => { mermaid.initialize({ startOnLoad: false, theme: 'dark' }); resolve(); };
+                s.onerror = (e) => { mermaidPromise = null; reject(e); };
                 document.head.appendChild(s);
             });
+            return mermaidPromise;
         }
 
         function buildFileCardHtml(attrs, content, cardId) {

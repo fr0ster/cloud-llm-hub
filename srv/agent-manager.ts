@@ -2128,6 +2128,7 @@ async function buildAgentForDestination(
         '- Multiple <file> tags per response allowed',
         '- PDF not supported — offer markdown or HTML instead',
         '- For file creation requests, ALWAYS use <file> tags — do not just show code blocks',
+        '',
         'Respond in the same language the user writes in.',
       ].join('\n'),
       presentation: [
