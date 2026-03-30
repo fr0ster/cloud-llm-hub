@@ -82,7 +82,7 @@ modules:
           name: srv-api # must be used in xs-app.json as well
           url: ~{srv-url}
           forwardAuthToken: true
-          timeout: 120000
+          timeout: 300000
       - name: cloud-llm-hub-auth
     provides:
       - name: app-api
