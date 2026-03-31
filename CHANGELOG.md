@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-03-31
+
+### Fixed
+
+- **Chat UI markdown rendering**: Escape HTML before applying markdown rules so XML metadata from tool results displays as text instead of being parsed as HTML. Merge consecutive streaming text segments so code blocks split across SSE chunks render correctly. Detect unclosed code blocks during streaming
+- **Tool cache stale reads**: Reduce tool cache TTL from 5 minutes to 30 seconds — prevents stale results when objects are modified externally (e.g., via Eclipse ADT)
+
+### Changed
+
+- **Agent language prompt**: Respond in the language of the user's latest message (not conversation history). All artifacts (code, comments, documentation) always in English regardless of conversation language
+
 ## [3.0.0] - 2026-03-31
 
 ### Changed

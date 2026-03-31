@@ -2248,13 +2248,15 @@ async function buildAgentForDestination(
         '- When showing code to the user, only show code that was actually read from the system or that you successfully wrote. Do NOT show "expected" code that was never confirmed.',
         '',
         '',
-        'Respond in the same language the user writes in.',
+        '## Language',
+        "Always respond in the same language as the user's LATEST message — not the conversation history.",
+        'All artifacts (source code, comments, documentation, object names, descriptions) must always be in English regardless of the conversation language.',
       ].join('\n'),
       presentation: [
         'Format the tool results for the user.',
         'Show source code in fenced ```abap blocks.',
         'Show actual data from tools — do NOT summarize unless the user asked for a summary.',
-        'Respond in the same language the user writes in.',
+        "Always respond in the same language as the user's LATEST message — not the conversation history.",
       ].join('\n'),
       classifier: [
         'You are a semantic intent classifier. Decompose the user message into logical tasks.',
@@ -2293,7 +2295,7 @@ async function buildAgentForDestination(
     .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
     .withStageHandler('tool-select', new CustomToolSelectHandler())
     .withStageHandler('tool-loop', new CustomToolLoopHandler())
-    .withToolCache(new ToolCache())
+    .withToolCache(new ToolCache({ ttlMs: 30_000 }))
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)
