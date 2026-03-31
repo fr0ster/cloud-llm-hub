@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-03-31
+
+### Changed
+
+- **Upgrade `@mcp-abap-adt/llm-agent` to 5.0.0**: External tool call support, mixed tool call handling, tool priority instructions, pending tool results injection
+- **File artifacts via OpenAI-compatible external tool**: Replaced server-side `<file>` tag generation with client-provided `GenerateFile` tool. Each client (UI, Cline, Goose) brings its own file capabilities via the standard `tools` array — no server-side file instructions needed
+- **Mixed tool call support**: When LLM calls both internal MCP tools and external client tools in the same response, internal tools execute asynchronously and results are injected into the next request
+- **Tool priority instruction**: System prompt instructs LLM to prefer internal MCP tools over client-provided tools when both can accomplish the task
+- **Approuter destination timeout**: Increased from 120s to 300s for long-running requests
+
+### Removed
+
+- **`<file>` tag system prompt instructions**: No longer needed — file generation is handled by client-provided tools
+- **Presentation LLM bypass for file artifacts**: Removed `hasOpenFileTag`, `streamDirectly`, `hasFileArtifacts` hacks
+
 ## [2.9.0] - 2026-03-30
 
 ### Changed
