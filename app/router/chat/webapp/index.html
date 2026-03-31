@@ -589,6 +589,7 @@
 
             let assistantContent = '';
             let toolCalls = [];
+            let externalToolCalls = [];
             const toolCallNames = new Set();
             let usage = null;
             const t0 = Date.now();
@@ -608,7 +609,26 @@
                 const reqBody = {
                     messages: [{ role: 'user', content: text }],
                     stream: true,
-                    stream_options: { include_usage: true }
+                    stream_options: { include_usage: true },
+                    tools: [
+                        {
+                            type: 'function',
+                            function: {
+                                name: 'GenerateFile',
+                                description: 'Generate a file for the user to download. Use when the user asks to create, generate, export, or save content as a file. Supports text files (markdown, code, JSON, YAML, XML, CSV, etc.), SVG/HTML, Mermaid diagrams (use .mmd extension), and base64-encoded binary content.',
+                                parameters: {
+                                    type: 'object',
+                                    properties: {
+                                        path: { type: 'string', description: 'Filename with extension (e.g. "analysis.md", "diagram.mmd")' },
+                                        content: { type: 'string', description: 'File content as text, or base64 string for binary files' },
+                                        encoding: { type: 'string', enum: ['text', 'base64'], description: 'Content encoding. Default: text' },
+                                        render: { type: 'string', enum: ['mermaid'], description: 'Special rendering hint. Use "mermaid" for .mmd files' }
+                                    },
+                                    required: ['path', 'content']
+                                }
+                            }
+                        }
+                    ]
                 };
                 const selectedModel = getSelectedModel();
                 if (selectedModel) reqBody.model = selectedModel;
@@ -691,11 +711,11 @@
 
                                 if (delta.tool_calls && delta.tool_calls.length) {
                                     for (const tc of delta.tool_calls) {
-                                        const idx = tc.index != null ? tc.index : toolCalls.length;
-                                        if (!toolCalls[idx]) toolCalls[idx] = { name: '', arguments: '' };
+                                        const idx = tc.index != null ? tc.index : externalToolCalls.length;
+                                        if (!externalToolCalls[idx]) externalToolCalls[idx] = { name: '', arguments: '' };
                                         if (tc.function) {
-                                            if (tc.function.name) toolCalls[idx].name += tc.function.name;
-                                            if (tc.function.arguments) toolCalls[idx].arguments += tc.function.arguments;
+                                            if (tc.function.name) externalToolCalls[idx].name += tc.function.name;
+                                            if (tc.function.arguments) externalToolCalls[idx].arguments += tc.function.arguments;
                                         }
                                     }
                                     phase = 'TOOL CALL';
@@ -708,6 +728,26 @@
                 }
 
                 stopTimer();
+
+                // Process GenerateFile tool calls from external tool calls
+                const generateFileCalls = [];
+                for (const tc of externalToolCalls) {
+                    if (tc.name === 'GenerateFile') {
+                        try {
+                            const args = JSON.parse(tc.arguments);
+                            if (args.path && args.content) {
+                                const cardId = 'art-' + Date.now() + '-' + (generateFileCalls.length);
+                                fileArtifacts[cardId] = {
+                                    path: args.path,
+                                    content: args.content,
+                                    encoding: args.encoding || '',
+                                    render: args.render || '',
+                                };
+                                generateFileCalls.push({ cardId, attrs: args, content: args.content });
+                            }
+                        } catch (e) { /* ignore malformed args */ }
+                    }
+                }
 
                 if (assistantContent) {
                     conversationHistory.push({ role: 'assistant', content: assistantContent });
@@ -743,12 +783,24 @@
                 if (placeholder) {
                     fileParser.finish();
                     const { html: finalHtml, mermaidIds } = fileParser.render();
+
+                    // Build file artifact cards from GenerateFile tool calls
+                    let fileCardsHtml = '';
+                    const fileMermaidIds = [];
+                    for (const fc of generateFileCalls) {
+                        fileCardsHtml += buildFileCardHtml(fc.attrs, fc.content, fc.cardId);
+                        if (fc.attrs.render === 'mermaid') {
+                            fileMermaidIds.push({ renderId: 'mmd-' + fc.cardId, content: fc.content });
+                        }
+                    }
+
                     placeholder.innerHTML = `
                         <span class="agent"><b>> AGENT:</b> ${finalHtml || '<em style="color:#888">No response</em>'}</span>
-                        ${toolsHtml}${usageHtml}
+                        ${fileCardsHtml}${toolsHtml}${usageHtml}
                     `;
                     placeholder.className = 'message';
-                    if (mermaidIds.length > 0) renderMermaidDiagrams(mermaidIds);
+                    const allMermaidIds = [...mermaidIds, ...fileMermaidIds];
+                    if (allMermaidIds.length > 0) renderMermaidDiagrams(allMermaidIds);
                 }
 
             } catch (e) {

@@ -1,7 +1,7 @@
 # ✨ Features & Benefits
 
-**Version:** 2.9.0
-**Last Updated:** 2026-03-30
+**Version:** 3.0.0
+**Last Updated:** 2026-03-31
 
 **Why choose Cloud LLM Hub?** Here's what makes it the best choice for connecting SAP to modern AI and automation tools.
 
@@ -44,23 +44,25 @@ Automatic discovery and management of multiple SAP ABAP systems.
 - Switch between SAP systems mid-conversation
 - Non-blocking startup — primary destination ready first, others in background
 
-### 3. **File Artifact Generation** *(v2.8+)*
+### 3. **File Artifact Generation** *(v3.0+)*
 
-LLM generates downloadable file artifacts directly in the browser UI using `<file>` tags.
+File generation uses the OpenAI-compatible external tool pattern — the UI sends a `GenerateFile` tool definition in the request, and the LLM calls it via standard `tool_calls` when the user asks to create a file. No server-side file instructions needed.
 
 **Features:**
 
-- Streaming parser (state machine) intercepts `<file>` tags during SSE without blocking text
+- `GenerateFile` external tool with `path`, `content`, `encoding`, `render` parameters
 - Inline file cards with collapsible preview, COPY and DOWNLOAD buttons
 - Text/code preview (first 30 lines), SVG/HTML iframe preview (sandboxed), base64 image preview
 - Mermaid diagram rendering with SVG export (lazy-loaded CDN)
 - Client-side download via Blob — no server-side file system needed
+- Legacy `<file>` tag parser retained for backward compatibility
 
 **Benefits:**
 
-- Generate reports, configs, diagrams, code files directly from chat
-- Zero server-side changes — everything runs in the browser
-- Works with any text format, SVG, HTML, Mermaid, and base64 images
+- Fully OpenAI-compatible — works with any client that supports tool calls
+- Each client brings its own file capabilities (Cline has filesystem MCP, UI has GenerateFile)
+- Server stays clean — no file-specific logic in system prompt or pipeline
+- Mixed tool calls supported — LLM can call MCP tools and GenerateFile in the same response
 
 ### 4. **One-Command Setup**
 
