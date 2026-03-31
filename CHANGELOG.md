@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-03-31
+
+### Fixed
+
+- **Token usage not reported to clients**: Final SmartAgent stream chunk contains both `timing` and `usage` fields — `continue` on timing check skipped usage extraction. Reordered to capture usage before timing guard. Tokens now visible in UI, Cline and Goose
+
 ## [3.0.1] - 2026-03-31
 
 ### Fixed
