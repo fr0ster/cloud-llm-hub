@@ -1,6 +1,6 @@
 # Cloud LLM Hub — Developer Architecture Guide
 
-> **Version:** 2.9.0 | **Stack:** SAP CAP (Node.js) + TypeScript + SAP BTP
+> **Version:** 3.0.0 | **Stack:** SAP CAP (Node.js) + TypeScript + SAP BTP
 > **Purpose:** This document gives a new developer everything needed to understand, navigate, and modify the codebase.
 
 ---
