@@ -623,17 +623,16 @@ export async function handleChatCompletions(
             res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
             continue;
           }
-          if (v.timing) {
-            log.info('Pipeline stage timing', { timing: v.timing });
-            continue;
-          }
-
           if (v.usage) {
             lastUsage = {
               prompt_tokens: v.usage.promptTokens,
               completion_tokens: v.usage.completionTokens,
               total_tokens: v.usage.totalTokens,
             };
+          }
+          if (v.timing) {
+            log.info('Pipeline stage timing', { timing: v.timing });
+            continue;
           }
 
           const baseResponse = {
