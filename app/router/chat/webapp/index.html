@@ -371,7 +371,22 @@
                 flushText();
                 let html = '';
                 const mermaidIds = [];
+                // Merge consecutive text segments so code blocks split across
+                // streaming chunks are processed as a single markdown string.
+                const merged = [];
                 for (const seg of segments) {
+                    if (seg.type === 'text') {
+                        const last = merged.length ? merged[merged.length - 1] : null;
+                        if (last && last.type === 'text') {
+                            last.value += seg.value;
+                        } else {
+                            merged.push({ type: 'text', value: seg.value });
+                        }
+                    } else {
+                        merged.push(seg);
+                    }
+                }
+                for (const seg of merged) {
                     if (seg.type === 'text') {
                         html += markdownToHtml(seg.value);
                     } else {
@@ -418,21 +433,59 @@
 
         function markdownToHtml(text) {
             if (!text) return '';
-            let html = text;
-            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, _lang, code) =>
-                '<pre><code>' + escapeHtml(code.trim()) + '</code></pre>');
-            html = html.replace(/`([^`]+)`/g, (_, code) =>
-                '<code>' + escapeHtml(code) + '</code>');
-            html = html.replace(/^### (.+)$/gm, '<strong style="font-size:14px">$1</strong><br>');
-            html = html.replace(/^## (.+)$/gm, '<strong style="font-size:15px">$1</strong><br>');
-            html = html.replace(/^# (.+)$/gm, '<strong style="font-size:16px">$1</strong><br>');
-            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            html = html.replace(/^[\-\*] (.+)$/gm, '&bull; $1<br>');
-            html = html.replace(/^\d+\. (.+)$/gm, '&bull; $1<br>');
-            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#00bfff">$1</a>');
-            html = html.replace(/\n\n/g, '<br><br>');
-            html = html.replace(/\n/g, '<br>');
+
+            // Split into completed code blocks and non-code segments
+            const parts = [];
+            const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
+            let lastIdx = 0;
+            let match;
+            while ((match = codeBlockRe.exec(text)) !== null) {
+                if (match.index > lastIdx) {
+                    parts.push({ type: 'text', value: text.slice(lastIdx, match.index) });
+                }
+                parts.push({ type: 'code', lang: match[1], value: match[2].trim() });
+                lastIdx = match.index + match[0].length;
+            }
+            if (lastIdx < text.length) {
+                // Check for unclosed code block (streaming)
+                const remainder = text.slice(lastIdx);
+                const openFence = remainder.match(/```(\w*)\n([\s\S]*)$/);
+                if (openFence) {
+                    if (openFence.index > 0) {
+                        parts.push({ type: 'text', value: remainder.slice(0, openFence.index) });
+                    }
+                    parts.push({ type: 'code', lang: openFence[1], value: openFence[2] });
+                } else {
+                    parts.push({ type: 'text', value: remainder });
+                }
+            }
+
+            let html = '';
+            for (const part of parts) {
+                if (part.type === 'code') {
+                    html += '<pre><code>' + escapeHtml(part.value) + '</code></pre>';
+                } else {
+                    let t = escapeHtml(part.value);
+                    // Inline code
+                    t = t.replace(/`([^`]+)`/g, (_, code) => '<code>' + code + '</code>');
+                    // Headings
+                    t = t.replace(/^### (.+)$/gm, '<strong style="font-size:14px">$1</strong><br>');
+                    t = t.replace(/^## (.+)$/gm, '<strong style="font-size:15px">$1</strong><br>');
+                    t = t.replace(/^# (.+)$/gm, '<strong style="font-size:16px">$1</strong><br>');
+                    // Bold / italic
+                    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                    t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+                    // Lists
+                    t = t.replace(/^[\-\*] (.+)$/gm, '&bull; $1<br>');
+                    t = t.replace(/^\d+\. (.+)$/gm, '&bull; $1<br>');
+                    // Links
+                    t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#00bfff">$1</a>');
+                    // Line breaks
+                    t = t.replace(/\n\n/g, '<br><br>');
+                    t = t.replace(/\n/g, '<br>');
+                    html += t;
+                }
+            }
             return html;
         }
 
