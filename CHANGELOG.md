@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file. The format 
 
 - **Chat UI markdown rendering**: Escape HTML before applying markdown rules so XML metadata from tool results displays as text instead of being parsed as HTML. Merge consecutive streaming text segments so code blocks split across SSE chunks render correctly. Detect unclosed code blocks during streaming
 - **Tool cache stale reads**: Reduce tool cache TTL from 5 minutes to 30 seconds — prevents stale results when objects are modified externally (e.g., via Eclipse ADT)
+- **Token usage not reported**: Final SmartAgent chunk contains both `timing` and `usage`, but `continue` on timing skipped usage extraction — reorder to capture usage before timing check
 
 ### Changed
 
