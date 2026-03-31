@@ -56,6 +56,62 @@ function isToolContextUnavailableError(message: string): boolean {
   );
 }
 
+/** Inlined from llm-agent/policy/mixed-tool-call-handler (not exported) */
+function fireInternalToolsAsync(
+  content: string,
+  internalCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }>,
+  registry: PipelineContext['pendingToolResults'],
+  sessionId: string,
+  deps: {
+    toolClientMap: PipelineContext['toolClientMap'];
+    toolCache: PipelineContext['toolCache'];
+    metrics: PipelineContext['metrics'];
+    options?: PipelineContext['options'];
+  },
+): void {
+  const assistantMessage = {
+    role: 'assistant' as const,
+    content: content || null,
+    tool_calls: internalCalls.map((tc) => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+    })),
+  };
+  const internalPromise = Promise.all(
+    internalCalls.map(async (tc) => {
+      try {
+        const client = deps.toolClientMap.get(tc.name);
+        if (!client) return { toolCallId: tc.id, toolName: tc.name, text: '' };
+        const res = await client.callTool(tc.name, tc.arguments, deps.options);
+        const text = !res.ok
+          ? res.error.message
+          : typeof res.value.content === 'string'
+            ? res.value.content
+            : JSON.stringify(res.value.content);
+        if (res.ok) deps.toolCache.set(tc.name, tc.arguments, res.value);
+        deps.metrics.toolCallCount.add();
+        return { toolCallId: tc.id, toolName: tc.name, text };
+      } catch (err) {
+        return {
+          toolCallId: tc.id,
+          toolName: tc.name,
+          text: `Error: ${String(err)}`,
+        };
+      }
+    }),
+  );
+  registry.set(sessionId, {
+    assistantMessage,
+    promise: internalPromise,
+    createdAt: Date.now(),
+  });
+}
+
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 
@@ -618,6 +674,7 @@ class CustomRagUpsertHandler implements IStageHandler {
  * Token cost: ~zero. RAG query = embedding + cosine (no LLM call).
  * Tool count stays at k=15 per iteration (not 259).
  */
+
 class CustomToolLoopHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
@@ -636,12 +693,45 @@ class CustomToolLoopHandler implements IStageHandler {
     const mode = ctx.config.mode || 'smart';
     const externalTools = mode === 'hard' ? [] : ctx.externalTools;
     const externalToolNames = new Set(externalTools.map((t) => t.name));
+    const externalToolIndices = new Set<number>();
     let toolCallCount = 0;
     let messages = ctx.assembledMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const timingLog: Array<{ phase: string; duration: number }> = [];
     const loopStart = Date.now();
     let currentTools = ctx.activeTools;
+
+    // Inject tool priority instruction when external tools are present
+    if (externalTools.length > 0) {
+      const systemIdx = messages.findIndex((m) => m.role === 'system');
+      if (systemIdx >= 0) {
+        const sys = messages[systemIdx];
+        messages = [...messages];
+        messages[systemIdx] = {
+          ...sys,
+          content: `${sys.content}\n\nIMPORTANT: You have internal tools and client-provided tools (marked [client-provided] in their description). Always prefer internal tools when they can accomplish the task. Use client-provided tools only when no internal tool can do the job.`,
+        };
+      }
+    }
+
+    // Inject pending internal tool results from previous mixed-call request
+    if (ctx.pendingToolResults.has(ctx.sessionId)) {
+      const pending = await ctx.pendingToolResults.consume(ctx.sessionId);
+      if (pending) {
+        messages = [
+          ...messages,
+          pending.assistantMessage,
+          ...pending.results.map((r) => ({
+            role: 'tool' as const,
+            content: r.text,
+            tool_call_id: r.toolCallId,
+          })),
+        ];
+        ctx.options?.sessionLogger?.logStep('pending_tool_results_injected', {
+          toolNames: pending.results.map((r) => r.toolName),
+        });
+      }
+    }
 
     // Presentation LLM shortcut: when configured, buffer the final iteration's
     // content and abort early — PresentHandler will generate through the fast model.
@@ -896,21 +986,28 @@ class CustomToolLoopHandler implements IStageHandler {
         if (chunk.content) {
           content += chunk.content;
           // When presentationLlm will handle the final response, buffer content
-          // instead of streaming — avoids duplicate output and allows early abort.
-          // Exception: stream directly when content contains a <file> tag — file
-          // artifacts bypass the presentation model entirely.
-          const streamDirectly =
-            !hasPresentationLlm || content.includes('<file ');
-          if (streamDirectly) {
+          // instead of streaming — avoids duplicate output and allows early abort
+          if (!hasPresentationLlm) {
             ctx.yield({ ok: true, value: { content: chunk.content } });
           }
         }
         if (chunk.toolCalls) {
           // biome-ignore lint/suspicious/noExplicitAny: library stream tool call types
           const streamCalls = chunk.toolCalls as any[];
-          const externalDeltas = streamCalls.filter((tc) =>
-            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
-          );
+          // Track which tool call indices belong to external tools
+          for (const tc of streamCalls) {
+            const name = getStreamToolCallName(tc);
+            if (name && externalToolNames.has(name)) {
+              const idx = toToolCallDelta(tc, 0).index;
+              externalToolIndices.add(idx);
+            }
+          }
+          const externalDeltas = streamCalls.filter((tc) => {
+            const name = getStreamToolCallName(tc);
+            if (name && externalToolNames.has(name)) return true;
+            const idx = toToolCallDelta(tc, 0).index;
+            return externalToolIndices.has(idx);
+          });
           if (externalDeltas.length > 0) {
             ctx.yield({
               ok: true,
@@ -943,15 +1040,10 @@ class CustomToolLoopHandler implements IStageHandler {
           ctx.sessionManager.addTokens(chunk.usage.totalTokens);
         }
         // Early exit: enough content with no tool calls → presentation LLM takes over
-        // Do not abort when content contains an open <file> tag — the full artifact
-        // must be generated by the main model, not the presentation model.
-        const hasOpenFileTag =
-          content.includes('<file ') && !content.includes('</file>');
         if (
           hasPresentationLlm &&
           toolCallsMap.size === 0 &&
-          content.length >= DRAFT_ABORT_CHARS &&
-          !hasOpenFileTag
+          content.length >= DRAFT_ABORT_CHARS
         ) {
           abortedForPresentation = true;
           break;
@@ -998,11 +1090,7 @@ class CustomToolLoopHandler implements IStageHandler {
         toolCalls.length === 0
       ) {
         // Presentation LLM shortcut: hand off to PresentHandler
-        // Skip presentation if draft contains <file> tags — PresentHandler
-        // would lose or mangle the structured file artifact content.
-        const hasFileArtifacts =
-          content.includes('<file ') && content.includes('</file>');
-        if (hasPresentationLlm && !hasFileArtifacts) {
+        if (hasPresentationLlm) {
           // Pass buffered content as fallback — PresentHandler will re-generate
           // through the fast model, but if it fails it falls back to this content.
           ctx.toolLoopContent = content;
@@ -1144,6 +1232,27 @@ class CustomToolLoopHandler implements IStageHandler {
 
       // -- Handle external tool calls ----------------------------------------
       if (validExternalCalls.length > 0) {
+        // Mixed calls: fire internal tools asynchronously — results will be
+        // injected into the next request via pendingToolResults
+        if (internalCalls.length > 0) {
+          fireInternalToolsAsync(
+            content,
+            internalCalls,
+            ctx.pendingToolResults,
+            ctx.sessionId,
+            {
+              toolClientMap: ctx.toolClientMap,
+              toolCache: ctx.toolCache,
+              metrics: ctx.metrics,
+              options: ctx.options,
+            },
+          );
+          ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
+            internal: internalCalls.map((tc) => tc.name),
+            external: validExternalCalls.map((tc) => tc.name),
+          });
+        }
+
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
         ctx.yield({
@@ -2138,21 +2247,6 @@ async function buildAgentForDestination(
         '- NEVER fabricate tool output, code, table contents, or system data. If you do not have the data, say so.',
         '- When showing code to the user, only show code that was actually read from the system or that you successfully wrote. Do NOT show "expected" code that was never confirmed.',
         '',
-        '',
-        '## File Artifacts',
-        'When the user asks to create, generate, or export a file, wrap content in <file> tags:',
-        '<file path="filename.ext">content</file>',
-        '',
-        'Attributes:',
-        '- path (required): filename with extension',
-        '- encoding="base64": for binary content (images)',
-        '- render="mermaid": for Mermaid diagram syntax (rendered visually, downloadable as SVG)',
-        '',
-        'Rules:',
-        '- Place explanation text OUTSIDE <file> tags',
-        '- Multiple <file> tags per response allowed',
-        '- PDF not supported — offer markdown or HTML instead',
-        '- For file creation requests, ALWAYS use <file> tags — do not just show code blocks',
         '',
         'Respond in the same language the user writes in.',
       ].join('\n'),
