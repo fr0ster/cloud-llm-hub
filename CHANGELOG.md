@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-04-01
+
+### Added
+
+- **`tools/test-endpoints.sh`**: Endpoint test script covering MCP, OpenAI-compatible, and Anthropic Messages API protocols — verifies health, tool listing, chat completions, and `/v1/messages` against local and BTP deployments
+
+### Fixed
+
+- **Empty defaults for `AICORE_*` parameters in `mta.yaml`**: Parameters without defaults caused deployment failures when no `.mtaext` was provided — added empty string defaults so `cf deploy` succeeds without a mandatory extension file
+- **`mta.yaml` version sync to 3.1.0**: Version was not updated during the 3.1.0 release; `sync:version` now runs as part of the release flow
+
 ## [3.1.0] - 2026-04-01
 
 ### Added
