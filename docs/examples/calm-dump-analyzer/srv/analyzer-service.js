@@ -12,6 +12,25 @@ const cds = require('@sap/cds');
 const LLM_HUB_DESTINATION = 'CLOUD_LLM_HUB';
 const SAP_DESTINATION = process.env.SAP_DESTINATION || '';
 
+const DEFAULT_PROMPT = `Analyze ABAP dump in system {system}:
+- Program: {program}
+- Runtime Error: {error}
+- Exception: {exception}
+- Message: {message}
+- User: {user}
+- Timestamp: {timestamp}
+
+Use MCP tools to read the dump details and source code if available.
+
+IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,
+no markdown code blocks, no explanations, no tool execution logs.
+Just the raw JSON object with this exact structure:
+
+{"rootCause": "why this error happened (include the specific variable and code line if found)",
+"codeSection": "the exact ABAP code around the error with line numbers",
+"severity": "low|medium|high|critical",
+"recommendations": [{"type": "fix|investigate|oss_note", "description": "actionable advice"}]}`;
+
 module.exports = class AnalyzerService extends cds.ApplicationService {
   init() {
     const log = cds.log('analyzer');
@@ -114,28 +133,19 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
 
   /**
    * Build analysis prompt from parsed event.
+   * Uses ANALYSIS_PROMPT env var if set, otherwise default prompt.
+   * Prompt template supports placeholders: {system}, {program}, {error}, {exception}, {message}, {user}, {timestamp}
    */
   _buildPrompt(parsed) {
-    return [
-      `Analyze ABAP dump in system ${parsed.system}:`,
-      `- Program: ${parsed.program}`,
-      `- Runtime Error: ${parsed.error}`,
-      `- Exception: ${parsed.exception}`,
-      `- Message: ${parsed.message}`,
-      `- User: ${parsed.user}`,
-      `- Timestamp: ${parsed.timestamp}`,
-      '',
-      'Use MCP tools to read the dump details and source code if available.',
-      '',
-      'IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,',
-      'no markdown code blocks, no explanations, no tool execution logs.',
-      'Just the raw JSON object with this exact structure:',
-      '',
-      '{"rootCause": "why this error happened (include the specific variable and code line if found)",',
-      '"codeSection": "the exact ABAP code around the error with line numbers",',
-      '"severity": "low|medium|high|critical",',
-      '"recommendations": [{"type": "fix|investigate|oss_note", "description": "actionable advice"}]}',
-    ].join('\n');
+    const template = process.env.ANALYSIS_PROMPT || DEFAULT_PROMPT;
+    return template
+      .replace(/\{system\}/g, parsed.system)
+      .replace(/\{program\}/g, parsed.program)
+      .replace(/\{error\}/g, parsed.error)
+      .replace(/\{exception\}/g, parsed.exception)
+      .replace(/\{message\}/g, parsed.message)
+      .replace(/\{user\}/g, parsed.user)
+      .replace(/\{timestamp\}/g, parsed.timestamp);
   }
 
   /**
