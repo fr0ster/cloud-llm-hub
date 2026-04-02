@@ -17,6 +17,10 @@ parameters:
   LLM_AGENT_EMBEDDING_MODEL:
   LLM_AGENT_PRESENTATION_MODEL:
   LLM_AGENT_EXPOSITION: "readonly,high"
+  AICORE_AUTH_URL:
+  AICORE_CLIENT_ID:
+  AICORE_CLIENT_SECRET:
+  AICORE_BASE_URL:
 build-parameters:
   before-all:
     - builder: custom
@@ -46,6 +50,10 @@ modules:
       LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
       LLM_AGENT_PRESENTATION_MODEL: ${LLM_AGENT_PRESENTATION_MODEL}
       LLM_AGENT_EXPOSITION: ${LLM_AGENT_EXPOSITION}
+      AICORE_AUTH_URL: ${AICORE_AUTH_URL}
+      AICORE_CLIENT_ID: ${AICORE_CLIENT_ID}
+      AICORE_CLIENT_SECRET: ${AICORE_CLIENT_SECRET}
+      AICORE_BASE_URL: ${AICORE_BASE_URL}
     build-parameters:
       builder: custom
       commands:
@@ -114,6 +122,8 @@ resources:
       service-plan: lite
   - name: cloud-llm-hub-ai-core
     type: org.cloudfoundry.managed-service
+    active: false
+    optional: true
     parameters:
       service: aicore
       service-plan: extended

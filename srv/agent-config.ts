@@ -252,3 +252,26 @@ export function isAiCoreConfigured(): boolean {
     return false;
   }
 }
+
+/**
+ * Ensure AI Core credentials are available.
+ * Priority: VCAP_SERVICES > AICORE_SERVICE_KEY > individual AICORE_* env vars
+ */
+export function ensureAiCoreCredentials(): void {
+  if (isAiCoreConfigured()) return;
+
+  const authUrl = process.env.AICORE_AUTH_URL;
+  const clientId = process.env.AICORE_CLIENT_ID;
+  const clientSecret = process.env.AICORE_CLIENT_SECRET;
+  const baseUrl = process.env.AICORE_BASE_URL;
+
+  if (authUrl && clientId && clientSecret && baseUrl) {
+    process.env.AICORE_SERVICE_KEY = JSON.stringify({
+      clientid: clientId,
+      clientsecret: clientSecret,
+      url: authUrl,
+      serviceurls: { AI_API_URL: baseUrl },
+    });
+    cds.log('agent-config').info('AI Core credentials assembled from env vars');
+  }
+}
