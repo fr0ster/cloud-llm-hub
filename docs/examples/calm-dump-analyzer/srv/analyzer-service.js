@@ -79,7 +79,7 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
 
     this.on('Health', () => ({
       status: 'ok',
-      llmHubUrl: LLM_HUB_URL || `destination:${LLM_HUB_DESTINATION}`,
+      llmHub: `destination:${LLM_HUB_DESTINATION}`,
       timestamp: new Date().toISOString(),
     }));
 
