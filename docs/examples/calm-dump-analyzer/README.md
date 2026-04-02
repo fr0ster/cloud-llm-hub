@@ -1,126 +1,111 @@
 # CALM Dump Analyzer
 
-A lightweight BTP service that receives SAP Cloud ALM (CALM) Event Management alerts about ABAP runtime errors, sends them to cloud-llm-hub for analysis, and returns a structured diagnosis.
+SAP CAP service that receives SAP Cloud ALM (CALM) Event Management alerts about ABAP runtime errors, sends them to cloud-llm-hub for analysis, and returns structured diagnosis.
+
+Deploys as a standalone CF app on BTP. Connects to cloud-llm-hub via BTP Destination.
 
 ## Flow
 
 ```
-SAP Cloud ALM                    This Service                cloud-llm-hub
+SAP Cloud ALM                    This Service (CAP)           cloud-llm-hub
      │                                │                           │
-     │  POST /analyze                 │                           │
+     │  POST /analyzer/AnalyzeDump    │                           │
      │  (CALM event JSON)             │                           │
      ├───────────────────────────────►│                           │
      │                                │  Build prompt from event  │
      │                                │  POST /v1/chat/completions│
+     │                                │  (via BTP Destination)    │
      │                                ├──────────────────────────►│
-     │                                │                           │ SmartAgent pipeline:
+     │                                │                           │ SmartAgent:
      │                                │                           │ - ReadDump (MCP)
      │                                │                           │ - ReadClass (MCP)
-     │                                │                           │ - RAG (skills, facts)
+     │                                │                           │ - RAG knowledge
      │                                │                           │ - LLM analysis
      │                                │  JSON response            │
      │                                │◄──────────────────────────┤
-     │                                │  Parse → structured JSON  │
      │  { analysis, recommendations } │                           │
      │◄───────────────────────────────┤                           │
 ```
 
+## Local Development
+
+```bash
+npm install
+
+# Set cloud-llm-hub URL for local dev
+export CLOUD_LLM_HUB_URL=http://localhost:4004
+
+cds watch
+
+# Test
+curl -s -X POST http://localhost:4004/analyzer/AnalyzeDump \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Basic $(echo -n alice: | base64)" \
+  -d "{\"event\": $(cat test-payload.json | jq -c '.' | jq -Rs '.')}"
+```
+
+## Deploy to BTP
+
+```bash
+# 1. Create BTP Destination "CLOUD_LLM_HUB" pointing to cloud-llm-hub srv URL
+
+# 2. Copy and edit .mtaext
+cp .mtaext.example .mtaext
+# Edit: set CLOUD_LLM_HUB_DESTINATION and SAP_DESTINATION
+
+# 3. Build and deploy
+cds build --production
+npx mbt build
+cf deploy mta_archives/calm-dump-analyzer_1.0.0.mtar -e .mtaext
+```
+
 ## API
 
-### POST /analyze
+### POST /analyzer/AnalyzeDump
 
-**Request** — CALM Event Management payload:
+OData action. Accepts `event` parameter as JSON string (CALM event payload).
 
+**Request:**
 ```json
 {
-  "startEvent": {
-    "serviceType": "SAP S/4HANA",
-    "serviceName": "E19.100",
-    "eventName": "Erroneous ABAP Runtime",
-    "eventSubType": "NB_EXM_SAP_S4HANA_OP_ABAP_DUMP",
-    "subject": "Erroneous ABAP Runtime",
-    "rating": "ERROR",
-    "body": "1 exceptions collected from E19.100",
-    "timestamp": "2026-03-31T19:00:34Z",
-    "eventDetailsTable": {
-      "columns": ["Status", "Timestamp", "Message", "User", "Runtime Error~Exception", "Program"],
-      "rows": [
-        ["ERROR", "2026-03-31 18:53:47", "Access using a 'ZERO' object reference is not possible.", "RSEMENOV", "OBJECTS_OBJREF_NOT_ASSIGNED~CX_SY_REF_IS_INITIAL", "Z_RS_AI_TEST"]
-      ]
-    }
-  },
-  "custom": {}
+  "event": "{\"startEvent\":{\"serviceName\":\"E19.100\",\"eventDetailsTable\":{...}}}"
 }
 ```
 
 **Response:**
-
 ```json
 {
   "status": "analyzed",
-  "event": {
-    "system": "E19.100",
-    "program": "Z_RS_AI_TEST",
-    "error": "OBJECTS_OBJREF_NOT_ASSIGNED",
-    "exception": "CX_SY_REF_IS_INITIAL",
-    "user": "RSEMENOV",
-    "timestamp": "2026-03-31 18:53:47"
-  },
-  "analysis": {
-    "rootCause": "Object reference variable is not assigned (initial) when a method or attribute is accessed on it.",
-    "codeSection": "The error occurs in program Z_RS_AI_TEST where a reference variable is used before being assigned with CREATE OBJECT or by other means.",
-    "severity": "medium"
-  },
-  "recommendations": [
-    {
-      "type": "fix",
-      "description": "Add IF <ref> IS BOUND check before accessing the object reference"
-    },
-    {
-      "type": "fix",
-      "description": "Ensure CREATE OBJECT or factory method is called before the failing line"
-    },
-    {
-      "type": "investigate",
-      "description": "Check if the object creation is conditional and the condition was not met"
-    },
-    {
-      "type": "oss_note",
-      "description": "SAP Note 1517879 — Common causes of OBJECTS_OBJREF_NOT_ASSIGNED"
-    }
-  ]
+  "system": "E19.100",
+  "program": "Z_RS_AI_TEST",
+  "error": "OBJECTS_OBJREF_NOT_ASSIGNED",
+  "exception": "CX_SY_REF_IS_INITIAL",
+  "user": "RSEMENOV",
+  "rootCause": "Object reference variable is not assigned when accessed.",
+  "codeSection": "Program Z_RS_AI_TEST accesses a reference before CREATE OBJECT.",
+  "severity": "medium",
+  "recommendations": "[{\"type\":\"fix\",\"description\":\"Add IS BOUND check\"}]"
 }
 ```
 
 ## Configuration
 
-Environment variables:
+| Variable | Description | Where |
+|----------|-------------|-------|
+| `CLOUD_LLM_HUB_DESTINATION` | BTP Destination name for cloud-llm-hub | `.mtaext` |
+| `CLOUD_LLM_HUB_URL` | Direct URL (local dev only) | env var |
+| `SAP_DESTINATION` | ABAP system destination (passed to cloud-llm-hub) | `.mtaext` |
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `CLOUD_LLM_HUB_URL` | cloud-llm-hub srv URL | `https://srv.cfapps.eu10.hana.ondemand.com` |
-| `CLOUD_LLM_HUB_AUTH` | Auth method: `bearer` or `basic` | `bearer` |
-| `CLOUD_LLM_HUB_TOKEN` | JWT token for auth | `eyJ...` |
-| `SAP_DESTINATION` | BTP Destination for the ABAP system | `S4HANA_E19` |
-| `PORT` | Service port | `8080` |
+## Project Structure
 
-## How It Works
-
-1. Service receives CALM event JSON
-2. Extracts key fields: program, error type, exception, user, system
-3. Constructs a prompt:
-   ```
-   Analyze ABAP dump in system {system}:
-   - Program: {program}
-   - Runtime Error: {error}
-   - Exception: {exception}
-   - Message: {message}
-   - User: {user}
-
-   Use MCP tools to read the dump details and source code.
-   Return analysis as JSON with fields: rootCause, codeSection, severity, recommendations.
-   Each recommendation has type (fix|investigate|oss_note) and description.
-   ```
-4. Sends prompt to cloud-llm-hub `/v1/chat/completions`
-5. Parses LLM response (extracts JSON from markdown if needed)
-6. Returns structured response to CALM
+```
+calm-dump-analyzer/
+├── srv/
+│   ├── analyzer-service.cds    # OData service definition
+│   └── analyzer-service.js     # Service handler implementation
+├── mta.yaml                    # MTA deployment descriptor
+├── xs-security.json            # XSUAA config
+├── .mtaext.example             # Deployment parameters template
+├── test-payload.json           # Sample CALM event for testing
+└── package.json
+```

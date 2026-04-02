@@ -1,0 +1,14 @@
+_schema-version: '3.3.0'
+ID: calm-dump-analyzer-deploy
+extends: calm-dump-analyzer
+version: 1.0.0
+
+parameters:
+  # BTP Destination pointing to cloud-llm-hub srv
+  # Create this destination in BTP Cockpit → Destination service
+  # URL: https://<cloud-llm-hub-srv>.cfapps.<region>.hana.ondemand.com
+  # Auth: OAuth2JWTBearer or NoAuthentication (if same subaccount)
+  CLOUD_LLM_HUB_DESTINATION: "CLOUD_LLM_HUB"
+
+  # SAP system destination for MCP (passed to cloud-llm-hub in x-sap-destination header)
+  SAP_DESTINATION: "S4HANA_E19"
