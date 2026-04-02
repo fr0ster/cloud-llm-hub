@@ -77,6 +77,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 ## Streamable HTTP & Session Handling
 
 - The proxy exposes the Stream-HTTP endpoint (`POST /mcp/stream/http`) implemented in `srv/mcp-proxy.ts`.
+- An **OpenAI-compatible chat endpoint** (`POST /v1/chat/completions`) and an **Anthropic Messages API endpoint** (`POST /v1/messages`) are also available. The Anthropic endpoint enables Claude CLI connections via the `ANTHROPIC_BASE_URL` environment variable — it translates the Anthropic message format through the SmartAgent pipeline and streams back Anthropic-compatible SSE events.
 - Embedded MCP servers are created per request in `srv/mcp-manager.ts` (no server instance cache).
 - The first Streamable HTTP request **must** omit the `Mcp-Session-Id` header. The proxy returns a generated session ID which clients must echo in subsequent calls.
 - Dropping the header (or restarting the proxy) forces a clean re-initialization, which is useful after rotating SAP credentials or clearing stale state.
@@ -107,6 +108,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **Integration tests**: YAML-driven test runner via `npm test` (requires `test/integration.yaml` config).
   - Copy `test/integration.yaml.template` to `test/integration.yaml` and fill in your values.
   - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
+- **Endpoint test script**: `tools/test-endpoints.sh` covers MCP, OpenAI-compatible, and Anthropic Messages API protocols against local and BTP deployments.
 - Legacy smoke tests under `test/smoke/` (manual scripts for health and Stream-HTTP).
 - Run `npm exec -- tsc --noEmit` to type-check the project.
 - The `docs/development/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.

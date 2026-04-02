@@ -75,6 +75,8 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 - **Stream-HTTP**: `POST /mcp/stream/http` - request-response with session ID
   - First request must omit `Mcp-Session-Id` header; server returns generated ID
   - Subsequent requests include the session ID for server reuse
+- **OpenAI-compatible**: `POST /v1/chat/completions` - chat completions via SmartAgent pipeline
+- **Anthropic Messages API**: `POST /v1/messages` - translates Anthropic format to SmartAgent pipeline; enables Claude CLI via `ANTHROPIC_BASE_URL`
 
 ### Authentication
 
