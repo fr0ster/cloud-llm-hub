@@ -12,15 +12,14 @@ const cds = require('@sap/cds');
 const LLM_HUB_DESTINATION = 'CLOUD_LLM_HUB';
 const SAP_DESTINATION = process.env.SAP_DESTINATION || '';
 
-const DEFAULT_PROMPT = `Analyze ABAP dump in system {system}:
-- Program: {program}
-- Runtime Error: {error}
-- Exception: {exception}
-- Message: {message}
-- User: {user}
-- Timestamp: {timestamp}
+const DEFAULT_PROMPT = `Analyze ABAP dump for user {user} in system {system}.
+The dump occurred at {timestamp} with runtime error {error} ({exception}) in program {program}.
+Message: {message}
 
-Use MCP tools to read the dump details and source code if available.
+Steps:
+1. List dumps for user {user} and find the one matching timestamp {timestamp} and error {error}
+2. Read that specific dump by its ID
+3. Analyze the dump details and source code
 
 IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,
 no markdown code blocks, no explanations, no tool execution logs.
