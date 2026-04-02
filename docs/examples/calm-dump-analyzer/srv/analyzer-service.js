@@ -160,6 +160,8 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
         data: JSON.stringify({
           messages: [{ role: 'user', content: prompt }],
         }),
+        // Disable CSRF token fetch — cloud-llm-hub is a REST API, not OData
+        fetchCsrfToken: false,
       },
     );
 
