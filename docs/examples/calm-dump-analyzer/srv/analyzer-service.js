@@ -157,7 +157,13 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
         url: '/v1/chat/completions',
         headers,
         data: JSON.stringify({
-          messages: [{ role: 'user', content: prompt }],
+          messages: [
+            {
+              role: 'system',
+              content: 'You are an ABAP dump analysis service. You MUST respond with ONLY a raw JSON object. No markdown, no code blocks, no explanations, no text before or after the JSON. Your entire response must be parseable by JSON.parse().',
+            },
+            { role: 'user', content: prompt },
+          ],
         }),
       },
       // Third argument: disable CSRF token fetch — cloud-llm-hub is REST, not OData
