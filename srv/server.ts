@@ -17,6 +17,7 @@ import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
+import { ensureAiCoreCredentials } from './agent-config';
 import { clearSessionTopic, initSmartAgents } from './agent-manager';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
@@ -220,6 +221,8 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
  * by checking cds.context.user roles.
  */
 cds.on('bootstrap', (app: Application) => {
+  ensureAiCoreCredentials();
+
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Registering /mcp endpoints');
 
