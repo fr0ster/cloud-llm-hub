@@ -54,6 +54,8 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
         return { status: 'error', errorMessage: 'Invalid payload: missing startEvent' };
       }
 
+      const timing = { start: Date.now() };
+
       log.info('Analyzing dump', {
         system: parsed.system,
         program: parsed.program,
@@ -63,9 +65,12 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
       // Build prompt and call cloud-llm-hub
       try {
         const prompt = this._buildPrompt(parsed);
-        const analysis = await this._callLlmHub(prompt);
+        timing.promptBuilt = Date.now();
 
-        return {
+        const analysis = await this._callLlmHub(prompt);
+        timing.llmDone = Date.now();
+
+        const result = {
           status: 'analyzed',
           system: parsed.system,
           program: parsed.program,
@@ -78,6 +83,20 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
           recommendations: JSON.stringify(analysis.recommendations || []),
           errorMessage: '',
         };
+        timing.end = Date.now();
+
+        log.info('Analysis complete', {
+          program: parsed.program,
+          severity: result.severity,
+          timing: {
+            promptMs: timing.promptBuilt - timing.start,
+            llmMs: timing.llmDone - timing.promptBuilt,
+            parseMs: timing.end - timing.llmDone,
+            totalMs: timing.end - timing.start,
+          },
+        });
+
+        return result;
       } catch (err) {
         log.error('Analysis failed', { error: err.message });
         return {
