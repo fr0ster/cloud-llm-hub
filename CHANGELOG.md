@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-04-01
+
+### Added
+
+- **Anthropic Messages API endpoint** (`POST /v1/messages`): Enables Claude CLI connection via `ANTHROPIC_BASE_URL` environment variable — translates Anthropic message format to OpenAI-compatible pipeline and streams back Anthropic SSE events
+- **Optional AI Core binding**: Subaccounts without an `aicore` service instance can provide credentials via `.mtaext` environment variables — no hard dependency on the AI Core service binding
+- **`ensureAiCoreCredentials()`**: Assembles `AICORE_SERVICE_KEY` from individual `AICORE_*` environment variables (`AICORE_BASE_URL`, `AICORE_TOKEN_URL`, `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, `AICORE_RESOURCE_GROUP`) so BTP environment variable bindings work without the managed service
+- **`.mtaext.no-aicore.example`**: Example MTA extension file for deployments that supply AI Core credentials via environment variables instead of the service binding
+
+### Changed
+
+- **Upgrade `@mcp-abap-adt/llm-agent` to 5.1.2**: Adds `ILlmApiAdapter` interface and `AnthropicApiAdapter` implementation — pluggable adapter layer routes `/v1/messages` requests through the existing SmartAgent pipeline
+- **AI Core resource in `mta.yaml` now `active: false` by default**: Activate via `.mtaext` when the AI Core service binding is available in the subaccount
+
 ## [3.0.2] - 2026-03-31
 
 ### Fixed
