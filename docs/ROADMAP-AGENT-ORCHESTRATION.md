@@ -200,3 +200,102 @@ service AgentService {
 - RAG facts for common APIs: JIRA, Slack, ServiceNow, S/4HANA OData
 - Adding new destinations = upserting RAG facts, no code changes
 - No plugins needed — universal result_sender + RAG knowledge is sufficient on BTP
+
+## Skills via RAG
+
+On BTP there is no filesystem for skill files. Skills (reusable instructions, templates, workflows) are stored as RAG facts — same as destination knowledge.
+
+### How It Works
+
+A skill is a RAG entry with structured content that the agent retrieves when semantically relevant:
+
+```
+Skill: SAP Dump Analysis
+When asked to analyze an ABAP dump:
+1. Call ReadDump MCP tool with the dump ID or user name
+2. Parse the error type (ABAP runtime, update task, etc.)
+3. Check source code around the error line using ReadClass/ReadReport
+4. Analyze variable values from the dump context
+5. Provide root cause analysis with:
+   - Error type and description
+   - Relevant code section
+   - Suggested fix
+   - Related OSS notes if applicable
+```
+
+The agent's classifier identifies the intent, RAG retrieves matching skills, and the assembler includes them in the LLM context as instructions.
+
+### Skill Management
+
+- **Add skill**: upsert to RAG facts store (via API or admin UI)
+- **Update skill**: upsert with same ID — overwrites previous version
+- **Remove skill**: delete from RAG store
+- **No redeployment needed** — skills are data, not code
+
+### Skill Namespacing
+
+Skills can be scoped:
+- **Global**: available to all users/destinations (e.g., "how to analyze a dump")
+- **Per-destination**: specific to an ABAP system (e.g., "custom Z-tables in S4HANA_DEV")
+- **Per-user**: personal workflows (e.g., "my weekly report template")
+
+Namespacing reuses the existing RAG namespace mechanism (`userId:destination`).
+
+## External Vector DB (Configurable RAG Backend)
+
+In-memory RAG is sufficient for development and small deployments. Production deployments with persistent skills, large knowledge bases, and multi-instance scaling need an external vector database.
+
+### Current State
+
+llm-agent supports multiple RAG backends via `IRag` interface:
+- `InMemoryRag` — default, volatile, per-process
+- `VectorRag` — local vector store with cosine similarity
+- `QdrantRag` — persistent, scalable, supports filtering
+- Custom implementations via `IRag` interface
+
+### BTP Deployment Configuration
+
+RAG backend must be configurable at deploy time via `.mtaext` parameters:
+
+```yaml
+# .mtaext for production with Qdrant
+parameters:
+  LLM_AGENT_RAG_TYPE: "qdrant"
+  LLM_AGENT_RAG_URL: "https://qdrant.example.com:6333"
+  LLM_AGENT_RAG_COLLECTION_PREFIX: "cloud-llm-hub"
+```
+
+```yaml
+# .mtaext for simple deployment (in-memory, volatile)
+parameters:
+  LLM_AGENT_RAG_TYPE: "in-memory"
+```
+
+### What Needs to Change
+
+1. **`agent-config.ts`** — add RAG URL, collection prefix env vars
+2. **`agent-manager.ts`** — create RAG stores based on config (in-memory vs Qdrant)
+3. **`mta.yaml`** — add RAG parameters with defaults
+4. **Skills API** — OData endpoint or admin action to upsert/delete RAG facts
+
+### Architecture
+
+```
+                    ┌──────────────────┐
+                    │  Skills / Facts   │
+                    │  (RAG entries)    │
+                    └────────┬─────────┘
+                             │ upsert/query
+                    ┌────────▼─────────┐
+                    │   IRag interface  │
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+     ┌────────▼───┐  ┌──────▼─────┐  ┌─────▼──────┐
+     │ InMemoryRag│  │  VectorRag │  │  QdrantRag  │
+     │ (dev/test) │  │  (single)  │  │ (production)│
+     └────────────┘  └────────────┘  └─────────────┘
+```
+
+Configurable at deploy time. No code changes between environments — only `.mtaext` parameters.
