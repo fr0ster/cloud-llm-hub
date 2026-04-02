@@ -16,11 +16,10 @@ const DEFAULT_PROMPT = `Analyze ABAP dump for user {user} in system {system}.
 The dump occurred at {timestamp} with runtime error {error} ({exception}) in program {program}.
 Message: {message}
 
-Steps:
-1. Search for the dump using RuntimeListDumps with user="{user}" and from/to parameters around {timestamp} (±5 minutes in YYYYMMDDHHMMSS format). Find the dump matching error {error}.
-2. Read the found dump using RuntimeGetDumpById with the dump_id from step 1.
-3. Analyze the dump details, source code, and variable values.
-4. Determine root cause and provide actionable recommendations.
+Steps (exactly 2 tool calls, no more):
+1. RuntimeListDumps with user="{user}" and from/to ±5 minutes around {timestamp} in YYYYMMDDHHMMSS format. Pick the dump matching error {error}.
+2. RuntimeGetDumpById with dump_id from step 1. Do NOT call it again with different parameters.
+Then analyze and respond.
 
 IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,
 no markdown code blocks, no explanations, no tool execution logs.
