@@ -7,11 +7,9 @@
 
 const cds = require('@sap/cds');
 
-// Configuration from environment (set via mta.yaml / .mtaext)
-// Production: destination CLOUD_LLM_HUB created by mta.yaml init_data
-// Development: CLOUD_LLM_HUB_URL for direct connection
+// Destination CLOUD_LLM_HUB is created by mta.yaml init_data at deploy time.
+// SAP_DESTINATION is the ABAP system (passed to cloud-llm-hub in x-sap-destination header).
 const LLM_HUB_DESTINATION = 'CLOUD_LLM_HUB';
-const LLM_HUB_URL = process.env.CLOUD_LLM_HUB_URL || '';
 const SAP_DESTINATION = process.env.SAP_DESTINATION || '';
 
 module.exports = class AnalyzerService extends cds.ApplicationService {
@@ -46,7 +44,7 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
       // Build prompt and call cloud-llm-hub
       try {
         const prompt = this._buildPrompt(parsed);
-        const analysis = await this._callLlmHub(prompt, req);
+        const analysis = await this._callLlmHub(prompt);
 
         return {
           status: 'analyzed',
@@ -142,52 +140,30 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
   }
 
   /**
-   * Call cloud-llm-hub and extract JSON from LLM response.
-   *
-   * Production: BTP Destination CLOUD_LLM_HUB (created by mta.yaml init_data)
-   * Development: CLOUD_LLM_HUB_URL env var (direct HTTP)
+   * Call cloud-llm-hub via BTP Destination and extract JSON from LLM response.
+   * Destination CLOUD_LLM_HUB is created at deploy time by mta.yaml init_data.
    */
-  async _callLlmHub(prompt, req) {
+  async _callLlmHub(prompt) {
+    const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
+
     const headers = { 'Content-Type': 'application/json' };
     if (SAP_DESTINATION) {
       headers['x-sap-destination'] = SAP_DESTINATION;
     }
 
-    const payload = {
-      messages: [{ role: 'user', content: prompt }],
-    };
-
-    let responseData;
-
-    if (LLM_HUB_URL) {
-      // Development: direct URL
-      const reqHeaders = { ...headers };
-      const token = req.headers?.authorization || '';
-      if (token) reqHeaders['Authorization'] = token;
-
-      const response = await fetch(`${LLM_HUB_URL}/v1/chat/completions`, {
+    const response = await executeHttpRequest(
+      { destinationName: LLM_HUB_DESTINATION },
+      {
         method: 'POST',
-        headers: reqHeaders,
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        throw new Error(`cloud-llm-hub returned ${response.status}`);
-      }
-      responseData = await response.json();
-    } else {
-      // Production: BTP Destination (URL + auth resolved automatically)
-      const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
-      const response = await executeHttpRequest(
-        { destinationName: LLM_HUB_DESTINATION },
-        {
-          method: 'POST',
-          url: '/v1/chat/completions',
-          headers,
-          data: JSON.stringify(payload),
-        },
-      );
-      responseData = response.data;
-    }
+        url: '/v1/chat/completions',
+        headers,
+        data: JSON.stringify({
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      },
+    );
+
+    const responseData = response.data;
 
     const content = responseData.choices?.[0]?.message?.content || '';
 
