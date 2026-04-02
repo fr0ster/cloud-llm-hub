@@ -221,6 +221,107 @@ export default async function registerMcpProxyHandlers(
     }
   });
 
+  // List all SAP destinations with reachability status
+  srv.on('ListDestinations', async (_req: Request) => {
+    const { getAvailableDestinations } = await import('./lib/btp-destinations');
+
+    const destinations = await getAvailableDestinations();
+    const now = new Date().toISOString();
+
+    // Probe all destinations in parallel
+    const results = await Promise.all(
+      destinations.map(async (dest) => {
+        try {
+          const destConfig = await getDestination({
+            destinationName: dest.name,
+          });
+          if (!destConfig) {
+            return {
+              name: dest.name,
+              url: dest.url,
+              authentication: dest.authentication,
+              proxyType: dest.proxyType,
+              reachable: false,
+              error: 'Destination not found in Destination service',
+              probeStatus: 0,
+              probeStatusText: '',
+              timestamp: now,
+            };
+          }
+
+          const originalProps = destConfig.originalProperties as
+            | Record<string, unknown>
+            | undefined;
+          const sapClient =
+            (originalProps?.['sap-client'] as string) ||
+            (originalProps?.['SAP-Client'] as string) ||
+            '';
+
+          try {
+            const response = await executeHttpRequest(
+              { destinationName: dest.name },
+              {
+                method: 'GET',
+                url: '/',
+                headers: sapClient ? { 'X-SAP-Client': sapClient } : {},
+              },
+            );
+            return {
+              name: dest.name,
+              url: dest.url,
+              authentication: dest.authentication,
+              proxyType: dest.proxyType,
+              reachable: true,
+              error: '',
+              probeStatus: response.status || 200,
+              probeStatusText: response.statusText || 'OK',
+              timestamp: now,
+            };
+            // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK error type
+          } catch (probeErr: any) {
+            const status =
+              probeErr.response?.status || probeErr.statusCode || 0;
+            // HTTP 401/403/404 means destination is reachable but auth/path issue
+            const reachable = status >= 200 && status < 500;
+            return {
+              name: dest.name,
+              url: dest.url,
+              authentication: dest.authentication,
+              proxyType: dest.proxyType,
+              reachable,
+              error: reachable ? '' : probeErr.message || 'Connection failed',
+              probeStatus: status,
+              probeStatusText:
+                probeErr.response?.statusText || probeErr.message || 'Error',
+              timestamp: now,
+            };
+          }
+          // biome-ignore lint/suspicious/noExplicitAny: Error type
+        } catch (err: any) {
+          return {
+            name: dest.name,
+            url: dest.url,
+            authentication: dest.authentication,
+            proxyType: dest.proxyType,
+            reachable: false,
+            error: err.message || 'Unknown error',
+            probeStatus: 0,
+            probeStatusText: '',
+            timestamp: now,
+          };
+        }
+      }),
+    );
+
+    log.info('ListDestinations completed', {
+      total: results.length,
+      reachable: results.filter((r) => r.reachable).length,
+      unreachable: results.filter((r) => !r.reachable).length,
+    });
+
+    return results;
+  });
+
   // Legacy action for backward compatibility
   srv.on('InvokeTool', async (req: Request<ProxyInvocation>) => {
     const { toolId, mode = DEFAULT_MODE } = req.data;

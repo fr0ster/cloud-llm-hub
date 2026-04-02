@@ -2,6 +2,7 @@
 service McpProxyService {
   function Health() returns HealthStatus;
   function ProbeDestination(destination: String) returns DestinationProbeResult;
+  function ListDestinations() returns array of DestinationStatus;
   action InvokeTool(request: ProxyInvocation) returns ProxyResult;
 }
 
@@ -39,4 +40,16 @@ type DestinationProbe {
   status      : Integer;
   statusText  : String;
   contentType : String;
+}
+
+type DestinationStatus {
+  name           : String;
+  url            : String;
+  authentication : String;
+  proxyType      : String;
+  reachable      : Boolean;
+  error          : String;
+  probeStatus    : Integer;
+  probeStatusText: String;
+  timestamp      : DateTime;
 }
