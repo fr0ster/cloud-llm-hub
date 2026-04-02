@@ -21,6 +21,8 @@ parameters:
   AICORE_CLIENT_ID: ""
   AICORE_CLIENT_SECRET: ""
   AICORE_BASE_URL: ""
+  # CF landscape for approuter route (e.g., cfapps.eu10.hana.ondemand.com)
+  CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
 build-parameters:
   before-all:
     - builder: custom
@@ -77,7 +79,7 @@ modules:
       disk-quota: 256M
       memory: 256M
     properties:
-      TENANT_HOST_PATTERN: "^(.*)-cloud-llm-hub.cfapps.eu10.hana.ondemand.com"
+      TENANT_HOST_PATTERN: "^(.*)-cloud-llm-hub.${CF_LANDSCAPE}"
     build-parameters:
       builder: custom
       commands:
