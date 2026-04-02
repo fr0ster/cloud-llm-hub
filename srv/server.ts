@@ -18,6 +18,7 @@ import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
 import { clearSessionTopic, initSmartAgents } from './agent-manager';
+import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -366,6 +367,9 @@ cds.on('bootstrap', (app: Application) => {
   // POST /v1/chat/completions — main chat (streaming + non-streaming)
   app.post('/v1/chat/completions', handleChatCompletions as never);
 
+  // POST /v1/messages — Anthropic Messages API (streaming + non-streaming)
+  app.post('/v1/messages', handleAnthropicMessages as never);
+
   // GET /v1/models — model list (no auth required via /v1 middleware above)
   app.get('/v1/models', handleModels as never);
 
@@ -391,6 +395,7 @@ cds.on('bootstrap', (app: Application) => {
   log.info('Custom Express endpoints registered', {
     streamHttp: 'POST /mcp/stream/http',
     chatCompletions: 'POST /v1/chat/completions',
+    anthropicMessages: 'POST /v1/messages',
     models: 'GET /v1/models',
     usage: 'GET /v1/usage',
     sessionClear: 'DELETE /v1/session',
