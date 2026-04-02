@@ -109,26 +109,30 @@ All pre-analysis errors returned synchronously before any work starts:
 
 ## Open Design Questions
 
-### 1. result_sender: One Universal Tool or Per-Destination Tools?
+### 1. result_sender: Universal HTTP Tool (Decision: Option A)
 
-**Option A: Universal `result_sender`**
-- One tool handles all HTTP destinations
-- LLM constructs URL, method, headers, body
-- Pro: simple, one tool to maintain
-- Con: LLM must know each API's format (JIRA REST vs ServiceNow vs Slack webhooks)
+**Decision: Universal `result_sender`** — single MCP tool that handles any HTTP destination.
 
-**Option B: Per-destination tools**
-- `send_to_jira(issue, comment)` — knows JIRA API format
-- `send_to_slack(channel, message)` — knows Slack webhook format
-- `send_to_s4hana(entity, payload)` — knows OData format
-- Pro: LLM only needs to know the semantic intent, tool handles protocol
-- Con: need a new tool per destination type
+**Why not plugins/per-destination tools:**
+- BTP has no filesystem for runtime plugins — everything must be deployed as part of the app
+- Separate microservices per destination (JIRA service, Slack service) is massive overhead
+- Adding a new destination would require redeployment
 
-**Option C: Hybrid (recommended)**
-- Universal `result_sender` as base (any HTTP endpoint)
-- High-level wrappers as plugins for common destinations (JIRA, Slack, etc.)
-- RAG descriptions help LLM choose the right tool
-- Wrappers are optional — `result_sender` always available as fallback
+**How LLM knows API formats:**
+- RAG facts store contains examples for common APIs (JIRA REST, Slack webhook, OData, etc.)
+- New destinations are added by upserting RAG facts, not by deploying code
+- LLM reads the RAG-provided examples and constructs the correct request
+
+**Example RAG fact for JIRA:**
+```
+To post a comment to JIRA issue, use result_sender with:
+- url: https://{instance}.atlassian.net/rest/api/3/issue/{issueKey}/comment
+- method: POST
+- headers: {"Authorization": "Basic {base64(user:token)}", "Content-Type": "application/json"}
+- body: {"body": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "{comment}"}]}]}}
+```
+
+**Adding new destinations = adding RAG facts, not code.** This is the key advantage on BTP.
 
 ### 2. Background Task Lifecycle
 
@@ -152,10 +156,10 @@ All pre-analysis errors returned synchronously before any work starts:
 | Component | Location | Reason |
 |-----------|----------|--------|
 | `run_background` | cloud-llm-hub | Lifecycle management is deployment-specific |
-| `result_sender` | llm-agent plugin | Generic HTTP tool, reusable across deployments |
+| `result_sender` | cloud-llm-hub MCP tool | Universal HTTP tool, deployed with the app |
 | Pre-analysis pipeline stage | llm-agent | Extends classifier/assembler stages |
 | Task status store | cloud-llm-hub | Deployment-specific persistence |
-| Per-destination wrappers | llm-agent plugins | Optional, community-contributed |
+| Destination knowledge | RAG facts | API format examples, added without code changes |
 
 ### 5. OData Surface
 
@@ -192,7 +196,7 @@ service AgentService {
 - Security: URL allowlist, credential management
 - Audit logging
 
-### Phase 4: Destination Plugins
-- High-level wrappers: JIRA, Slack, S/4HANA
-- Plugin-based: community can add more
-- RAG descriptions for smart tool selection
+### Phase 4: Destination Knowledge Base
+- RAG facts for common APIs: JIRA, Slack, ServiceNow, S/4HANA OData
+- Adding new destinations = upserting RAG facts, no code changes
+- No plugins needed — universal result_sender + RAG knowledge is sufficient on BTP
