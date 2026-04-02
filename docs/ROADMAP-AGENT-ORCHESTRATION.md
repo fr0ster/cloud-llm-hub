@@ -142,14 +142,44 @@ To post a comment to JIRA issue, use result_sender with:
 - **Retry**: if result_sender fails, retry? How many times?
 - **Cleanup**: periodic sweep of expired tasks?
 
-### 3. Security
+### 3. Security: BTP Destinations as Allowlist (Decision)
 
-- **URL allowlist**: should result_sender be restricted to known domains?
-- **Credential forwarding**: how does background agent authenticate to external APIs?
-  - Consumer provides credentials in request?
-  - Pre-configured per destination in BTP Destination service?
-  - OAuth2 token exchange?
-- **Audit**: log all external calls for compliance?
+**`result_sender` can only call registered BTP Destinations.** No raw URLs.
+
+The consumer specifies a destination name, not a URL. `result_sender` resolves it via BTP Destination service — same mechanism cloud-llm-hub already uses for ABAP MCP connections.
+
+**Why this works:**
+- **Allowlist by default** — no destination registered → no access. Admin controls what external systems the agent can reach.
+- **Auth handled by BTP** — each destination has its own auth config (OAuth2, Basic, Principal Propagation, Client Cert). The agent never sees credentials.
+- **Audit trail** — BTP Destination service logs all access.
+- **Multi-tenant safe** — destinations are scoped to subaccount/service instance.
+- **Already implemented** — cloud-llm-hub uses `@sap-cloud-sdk/http-client` for destination resolution. `result_sender` reuses the same mechanism.
+
+**result_sender interface:**
+```
+result_sender({
+  destination: "JIRA_PROD",        // BTP destination name (required)
+  path: "/rest/api/3/issue/ABC-123/comment",  // path within destination
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: "..."
+})
+```
+
+The agent resolves `JIRA_PROD` → full URL + auth via Destination service. If `JIRA_PROD` is not registered — tool returns error, LLM reports to consumer.
+
+**Skills configure defaults:**
+A RAG skill can define which destinations are typically used for which purpose:
+```
+Skill: JIRA Integration
+When sending results to JIRA:
+- Use destination: JIRA_PROD
+- Path format: /rest/api/3/issue/{issueKey}/comment
+- Body format: Atlassian Document Format (ADF)
+- Always include issue key in the path
+```
+
+This way LLM knows to use `JIRA_PROD` destination without the consumer specifying it explicitly — if the consumer says "post to JIRA issue ABC-123", the skill provides the destination name and API format.
 
 ### 4. Where Does This Live?
 
@@ -224,6 +254,18 @@ When asked to analyze an ABAP dump:
 ```
 
 The agent's classifier identifies the intent, RAG retrieves matching skills, and the assembler includes them in the LLM context as instructions.
+
+### Skills as Behavior Configuration
+
+Skills are not just instructions — they configure the agent's default behavior without code changes:
+
+- **Default destinations**: "when sending to JIRA, use destination JIRA_PROD"
+- **Response templates**: "dump analysis reports must include OSS note references"
+- **Routing rules**: "requests about HR data go to destination S4_HR, not S4_FIN"
+- **Safety constraints**: "never modify production transports without explicit confirmation"
+- **Domain knowledge**: "in this system, Z-tables starting with ZFI_ belong to Finance module"
+
+This makes the agent configurable per deployment by editing RAG data, not code or config files.
 
 ### Skill Management
 
