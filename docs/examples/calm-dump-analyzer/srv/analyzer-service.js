@@ -127,15 +127,14 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
       '',
       'Use MCP tools to read the dump details and source code if available.',
       '',
-      'Return your analysis as a JSON object (no markdown, raw JSON only) with this structure:',
-      '{',
-      '  "rootCause": "explanation of why this error happened",',
-      '  "codeSection": "description of the relevant code area",',
-      '  "severity": "low|medium|high|critical",',
-      '  "recommendations": [',
-      '    { "type": "fix|investigate|oss_note", "description": "what to do" }',
-      '  ]',
-      '}',
+      'IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,',
+      'no markdown code blocks, no explanations, no tool execution logs.',
+      'Just the raw JSON object with this exact structure:',
+      '',
+      '{"rootCause": "why this error happened (include the specific variable and code line if found)",',
+      '"codeSection": "the exact ABAP code around the error with line numbers",',
+      '"severity": "low|medium|high|critical",',
+      '"recommendations": [{"type": "fix|investigate|oss_note", "description": "actionable advice"}]}',
     ].join('\n');
   }
 
@@ -160,26 +159,60 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
         data: JSON.stringify({
           messages: [{ role: 'user', content: prompt }],
         }),
-        // Disable CSRF token fetch — cloud-llm-hub is a REST API, not OData
-        fetchCsrfToken: false,
       },
+      // Third argument: disable CSRF token fetch — cloud-llm-hub is REST, not OData
+      { fetchCsrfToken: false },
     );
 
     const responseData = response.data;
 
     const content = responseData.choices?.[0]?.message?.content || '';
 
-    // Extract JSON from response (may be wrapped in markdown code block)
-    const jsonMatch = content.match(/```json?\s*([\s\S]*?)```/);
-    try {
-      return JSON.parse(jsonMatch ? jsonMatch[1].trim() : content.trim());
-    } catch {
-      return {
-        rootCause: content,
-        codeSection: '',
-        severity: 'unknown',
-        recommendations: [],
-      };
+    return this._extractJson(content);
+  }
+
+  /**
+   * Extract JSON from LLM response. Handles:
+   * - Raw JSON
+   * - JSON in markdown code block
+   * - JSON preceded by tool execution logs ([SmartAgent: ...])
+   * - JSON embedded in mixed text
+   */
+  _extractJson(content) {
+    const fallback = {
+      rootCause: content.replace(/\[SmartAgent:[^\]]*\]/g, '').trim(),
+      codeSection: '',
+      severity: 'unknown',
+      recommendations: [],
+    };
+
+    if (!content) return fallback;
+
+    // Try 1: markdown code block
+    const mdMatch = content.match(/```json?\s*([\s\S]*?)```/);
+    if (mdMatch) {
+      try { return JSON.parse(mdMatch[1].trim()); } catch { /* fall through */ }
     }
+
+    // Try 2: find first { ... } with matching braces
+    const braceStart = content.indexOf('{');
+    if (braceStart >= 0) {
+      let depth = 0;
+      for (let i = braceStart; i < content.length; i++) {
+        if (content[i] === '{') depth++;
+        if (content[i] === '}') depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(content.substring(braceStart, i + 1));
+          } catch { /* fall through */ }
+          break;
+        }
+      }
+    }
+
+    // Try 3: raw content as JSON
+    try { return JSON.parse(content.trim()); } catch { /* fall through */ }
+
+    return fallback;
   }
 };
