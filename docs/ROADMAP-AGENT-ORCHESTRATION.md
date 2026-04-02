@@ -211,6 +211,15 @@ service AgentService {
 
 ## Implementation Phases
 
+### Phase 0: Multi-Protocol Access (DONE)
+- Anthropic Messages API endpoint (`POST /v1/messages`) — deployed on BTP ✅
+- Claude CLI connects via `ANTHROPIC_BASE_URL` ✅
+- OpenAI endpoint (`POST /v1/chat/completions`) — existing ✅
+- MCP StreamableHTTP (`POST /mcp/stream/http`) — existing ✅
+- Optional AI Core binding with env var fallback ✅
+- `ILlmApiAdapter` in llm-agent v5.1.2 ✅
+- Endpoint test script (`tools/test-endpoints.sh`) ✅
+
 ### Phase 1: Synchronous OData Submit
 - `Submit` action with sync-only mode
 - Pre-analysis: capability check + info sufficiency
