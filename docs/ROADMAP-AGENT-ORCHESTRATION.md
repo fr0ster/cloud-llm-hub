@@ -231,6 +231,50 @@ service AgentService {
 - Adding new destinations = upserting RAG facts, no code changes
 - No plugins needed — universal result_sender + RAG knowledge is sufficient on BTP
 
+### Phase 5: LLM-Driven to Microservice Evolution
+
+The integration lifecycle: start flexible (LLM-driven), harden when needed (microservice).
+
+**Strategy: LLM-first, extract when proven.**
+
+1. Every new integration starts as LLM-driven (prompt + result_sender + destination)
+2. Agent tracks recurring patterns via RAG feedback store
+3. When a pattern repeats reliably — agent proposes extracting it into a deterministic microservice
+
+**Two consumer types use the same cloud-llm-hub API:**
+
+```
+Ad-hoc consumer (human):
+  "Analyze dump for user X, post to JIRA ABC-123"
+  → LLM-driven: flexible, interprets intent, uses result_sender
+
+Microservice consumer (code):
+  POST /v1/messages { prompt: "Analyze dump for user ${user},
+    post result to destination JIRA_PROD path /issue/${issue}/comment" }
+  → Same API, but deterministic prompt, always the same pattern
+```
+
+A microservice is just a consumer that sends a fixed prompt with fixed parameters. No special API needed.
+
+**Self-service microservice generation (future):**
+
+| Stage | What happens | Human role |
+|-------|-------------|------------|
+| Detection | Agent notices: "this exact integration ran 20 times this week" | Informed |
+| Proposal | Agent: "Should I create a dedicated service for dump→JIRA?" | Approves/rejects |
+| Generation | Agent generates microservice code (Node.js/CAP), creates PR to designated repo | Reviews PR |
+| Deployment | CI/CD pipeline deploys approved PR to subaccount | Merge approval |
+| Monitoring | Agent monitors the microservice, reports failures | Notified |
+| Rollback | If microservice fails repeatedly, agent falls back to LLM-driven mode | Informed |
+
+**Key principle: human-in-the-loop at every stage.** Agent proposes, human approves. No autonomous deployment.
+
+**Why this works on BTP:**
+- Generated microservices are standard CAP/Node.js apps — deploy via MTA like any other
+- Each gets its own service binding, destination config
+- Agent repo is just a git repo — PRs, reviews, CI/CD as usual
+- If microservice breaks — the LLM-driven fallback still works
+
 ## Skills via RAG
 
 On BTP there is no filesystem for skill files. Skills (reusable instructions, templates, workflows) are stored as RAG facts — same as destination knowledge.
