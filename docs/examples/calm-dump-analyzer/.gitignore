@@ -3,3 +3,4 @@ gen/
 mta_archives/
 .mtaext
 default-env.json
+test-payload.json
