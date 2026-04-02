@@ -17,9 +17,10 @@ The dump occurred at {timestamp} with runtime error {error} ({exception}) in pro
 Message: {message}
 
 Steps:
-1. Read the dump using RuntimeGetDumpById with datetime="{timestamp}" and user="{user}" — this will find and read the dump automatically
-2. Analyze the dump details, source code, and variable values
-3. Determine root cause and provide actionable recommendations
+1. First try RuntimeGetDumpById with datetime="{timestamp}" and user="{user}" to find and read the dump directly
+2. If not found, use RuntimeListDumps with user="{user}" and from/to parameters to search a wider time range, then read the matching dump by dump_id
+3. Analyze the dump details, source code, and variable values
+4. Determine root cause and provide actionable recommendations
 
 IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,
 no markdown code blocks, no explanations, no tool execution logs.
