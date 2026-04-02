@@ -76,7 +76,6 @@ modules:
     type: approuter.nodejs
     path: app/router
     parameters:
-      keep-existing-routes: true
       disk-quota: 256M
       memory: 256M
       routes:
