@@ -2,7 +2,27 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
-## [Unreleased]
+## [3.2.0] - 2026-04-03
+
+### Added
+
+- **CALM Dump Analyzer example** (`docs/examples/calm-dump-analyzer/`): Full SAP CAP service that receives Cloud ALM event payloads, analyzes ABAP dumps via cloud-llm-hub, and returns structured JSON diagnosis. Deploys to BTP with MTA, connects via BTP Destination.
+- **RAP BO creation tutorial** (`docs/tutorials/rap-bo-creation.md`): Step-by-step guide for creating a complete RAP Business Object using cloud-llm-hub chat UI, with mermaid diagrams and naming conventions.
+- **`ListDestinations` OData function**: Returns all SAP destinations with reachability status — identifies unreachable systems and connection issues.
+- **Configurable approuter route**: `APPROUTER_HOST` parameter in `.mtaext` ensures predictable UI route on any subaccount.
+- **Agent orchestration roadmap** (`docs/ROADMAP-AGENT-ORCHESTRATION.md`): Architecture vision for background tasks, result delivery via BTP Destinations, skills via RAG, and LLM-to-microservice evolution.
+
+### Changed
+
+- **`@mcp-abap-adt/core`** updated to 4.8.1 — new `RuntimeListDumps` date filtering (`from`/`to`), `RuntimeGetDumpById` lookup by `datetime` + `user`.
+- **CALM Dump Analyzer prompt** optimized: strict 2-tool-call approach (`RuntimeListDumps` → `RuntimeGetDumpById`), reduced analysis time from 88s to 27s.
+- **AI Core binding** now optional (`active: false` by default) — activated via `.mtaext` per subaccount.
+
+### Fixed
+
+- Approuter duplicate cryptographic route removed (`keep-existing-routes` replaced with explicit route).
+- CSRF token fetch disabled for REST-to-REST calls via BTP Destination (`fetchCsrfToken: false` in 3rd argument).
+- Empty defaults for `AICORE_*` parameters in `mta.yaml` prevent deployment resolution errors.
 
 ## [3.1.1] - 2026-04-01
 
