@@ -38,6 +38,12 @@ sk.json
 .env
 *.json
 !biome.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!xs-security.json
+!**/xs-security.json
+!**/package.json
 
 # Submodules (exclude from this branch, keep folder for other branches)
 submodules/llm-agent/
