@@ -31,21 +31,21 @@ If someone shares your initials — take the next number (`ZDEMO2_`, `ZDEMO3_`, 
 
 **Full naming table:**
 
-| Object | Max Length | Your Name |
-|--------|-----------|-----------|
-| Package | 30 | `Z##_MAT` |
-| Persistent table (root) | 30 | `Z##_MARA` |
-| Persistent table (child) | 30 | `Z##_MARC`, `Z##_MAKT`, `Z##_MVKE` |
-| Draft table | 30 | `Z##_MARA_D`, `Z##_MARC_D`, ... |
-| Interface CDS (root) | 30 | `Z##_R_MAT_ROOT` |
-| Interface CDS (child) | 30 | `Z##_R_MAT_PLANT`, `Z##_R_MAT_TEXT`, ... |
-| Projection CDS (root) | 30 | `Z##_C_MAT_ROOT` |
-| Projection CDS (child) | 30 | `Z##_C_MAT_PLANT`, `Z##_C_MAT_TEXT`, ... |
-| BIMP class | 30 | `ZBP_##_R_MAT_ROOT` |
-| Service Definition | 30 | `ZUI_##_MAT_O4` |
-| Service Binding | 26 | `ZUI_##_MAT_O4` |
-| Data Element | 30 | `Z##_E_MATNR`, `Z##_E_MTART`, ... |
-| Structure include | 30 | `Z##_S_RAP_CHNG_CTRL` |
+| Object | Max | Placeholder | Example (ZDEMO1_) |
+|--------|-----|-------------|-----------------|
+| Package | 30 | `Z##_MAT` | `ZDEMO1_MAT` |
+| Persistent table (root) | 30 | `Z##_MARA` | `ZDEMO1_MARA` |
+| Persistent table (child) | 30 | `Z##_MARC`, `Z##_MAKT`, `Z##_MVKE` | `ZDEMO1_MARC` |
+| Draft table | 30 | `Z##_MARA_D`, `Z##_MARC_D`, ... | `ZDEMO1_MARA_D` |
+| Interface CDS (root) | 30 | `Z##_R_MAT_ROOT` | `ZDEMO1_R_MAT_ROOT` |
+| Interface CDS (child) | 30 | `Z##_R_MAT_PLANT`, ... | `ZDEMO1_R_MAT_PLANT` |
+| Projection CDS (root) | 30 | `Z##_C_MAT_ROOT` | `ZDEMO1_C_MAT_ROOT` |
+| Projection CDS (child) | 30 | `Z##_C_MAT_PLANT`, ... | `ZDEMO1_C_MAT_PLANT` |
+| BIMP class | 30 | `ZBP_##_R_MAT_ROOT` | `ZBP_DEMO1_R_MAT_ROOT` |
+| Service Definition | 30 | `ZUI_##_MAT_O4` | `ZUI_DEMO1_MAT_O4` |
+| Service Binding | 26 | `ZUI_##_MAT_O4` | `ZUI_DEMO1_MAT_O4` |
+| Data Element | 30 | `Z##_E_MATNR`, ... | `ZDEMO1_E_MATNR` |
+| Structure include | 30 | `Z##_S_RAP_CHNG_CTRL` | `ZDEMO1_S_RAP_CHNG_CTRL` |
 
 > **Before you start:**
 > 1. Decide your prefix (e.g., `ZDEMO1_`)
