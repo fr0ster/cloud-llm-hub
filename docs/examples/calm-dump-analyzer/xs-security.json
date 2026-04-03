@@ -1,0 +1,10 @@
+{
+  "xsappname": "calm-dump-analyzer",
+  "tenant-mode": "shared",
+  "oauth2-configuration": {
+    "credential-types": ["binding-secret", "x509"]
+  },
+  "scopes": [],
+  "role-templates": [],
+  "role-collections": []
+}
