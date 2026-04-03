@@ -12,31 +12,48 @@ This tutorial walks through creating a complete RAP (RESTful Application Program
 
 ## Naming Convention
 
-All objects use prefix `Z<II><N>_` where:
-- `<II>` — your initials (2 characters)
-- `<N>` — version number (start with 1, increment if initials conflict)
+ABAP object names have length limits (30 characters for most, 26 for service binding). To avoid conflicts between participants and fit within limits, we use a personal prefix convention.
 
-Example for developer Oleksii Kyslytsia, first attempt: **`Z##_`**
+**Your prefix: `Z<II><N>_`**
 
-| Object | Max Length | Pattern | Example (Z##_) |
-|--------|-----------|---------|-----------------|
-| Package | 30 | `Z<II><N>_MAT` | `Z##_MAT` |
-| Persistent table | 30 | `Z<II><N>_MARA` | `Z##_MARA` |
-| Draft table | 30 | `Z<II><N>_MARA_D` | `Z##_MARA_D` |
-| Interface CDS (root) | 30 | `Z<II><N>_R_MAT_ROOT` | `Z##_R_MAT_ROOT` |
-| Interface CDS (child) | 30 | `Z<II><N>_R_MAT_PLANT` | `Z##_R_MAT_PLANT` |
-| Projection CDS (root) | 30 | `Z<II><N>_C_MAT_ROOT` | `Z##_C_MAT_ROOT` |
-| Projection CDS (child) | 30 | `Z<II><N>_C_MAT_PLANT` | `Z##_C_MAT_PLANT` |
-| BIMP class | 30 | `ZBP_<II><N>_R_MAT_ROOT` | `ZBP_##_R_MAT_ROOT` |
-| Service Definition | 30 | `ZUI_<II><N>_MAT_O4` | `ZUI_##_MAT_O4` |
-| Service Binding | 26 | `ZUI_<II><N>_MAT_O4` | `ZUI_##_MAT_O4` |
-| Data Element | 30 | `Z<II><N>_E_<name>` | `Z##_E_MATNR` |
+- `<II>` — your initials, 2 characters (e.g., `OK` for Oleksii Kyslytsia)
+- `<N>` — version number, start with `1`
 
-> **Before starting:** Choose your prefix. Check that your package doesn't already exist:
-> ask the agent *"Search for objects starting with Z&lt;II&gt;&lt;N&gt;_*"*
-> If objects found — increment the number.
+**Examples:**
 
-Throughout this tutorial we use **`Z##_`** as a placeholder prefix. Replace `##` with your initials + version number (e.g., `OK1`, `RS2`).
+| Developer | Prefix | Package | Root Table |
+|-----------|--------|---------|------------|
+| Oleksii Kyslytsia | `ZDEMO1_` | `ZDEMO1_MAT` | `ZDEMO1_MARA` |
+| Roman Semenov | `ZDEMO1_` | `ZDEMO1_MAT` | `ZDEMO1_MARA` |
+| Roman Semenov (2nd attempt) | `ZDEMO2_` | `ZDEMO2_MAT` | `ZDEMO2_MARA` |
+
+If someone shares your initials — take the next number (`ZDEMO2_`, `ZDEMO3_`, ...).
+
+**Full naming table:**
+
+| Object | Max Length | Your Name |
+|--------|-----------|-----------|
+| Package | 30 | `Z##_MAT` |
+| Persistent table (root) | 30 | `Z##_MARA` |
+| Persistent table (child) | 30 | `Z##_MARC`, `Z##_MAKT`, `Z##_MVKE` |
+| Draft table | 30 | `Z##_MARA_D`, `Z##_MARC_D`, ... |
+| Interface CDS (root) | 30 | `Z##_R_MAT_ROOT` |
+| Interface CDS (child) | 30 | `Z##_R_MAT_PLANT`, `Z##_R_MAT_TEXT`, ... |
+| Projection CDS (root) | 30 | `Z##_C_MAT_ROOT` |
+| Projection CDS (child) | 30 | `Z##_C_MAT_PLANT`, `Z##_C_MAT_TEXT`, ... |
+| BIMP class | 30 | `ZBP_##_R_MAT_ROOT` |
+| Service Definition | 30 | `ZUI_##_MAT_O4` |
+| Service Binding | 26 | `ZUI_##_MAT_O4` |
+| Data Element | 30 | `Z##_E_MATNR`, `Z##_E_MTART`, ... |
+| Structure include | 30 | `Z##_S_RAP_CHNG_CTRL` |
+
+> **Before you start:**
+> 1. Decide your prefix (e.g., `ZDEMO1_`)
+> 2. Ask the agent: *"Search for objects starting with ZDEMO1_*"*
+> 3. If objects found — increment: `ZDEMO2_`, `ZDEMO3_`, ...
+> 4. When objects are clean — you're ready
+
+**In all steps below, `Z##_` is a placeholder.** Mentally replace `##` with your chosen prefix (e.g., `OK1`). When typing prompts to the agent, use your actual prefix.
 
 ---
 
