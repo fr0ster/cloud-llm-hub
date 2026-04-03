@@ -77,6 +77,7 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
   - Subsequent requests include the session ID for server reuse
 - **OpenAI-compatible**: `POST /v1/chat/completions` - chat completions via SmartAgent pipeline
 - **Anthropic Messages API**: `POST /v1/messages` - translates Anthropic format to SmartAgent pipeline; enables Claude CLI via `ANTHROPIC_BASE_URL`
+- **Destination management**: `POST /v1/destinations/refresh` - re-init unreachable destinations on demand; `GET /odata/v4/mcp-proxy/ListDestinations()` - list all destinations with reachability status
 
 ### Authentication
 
