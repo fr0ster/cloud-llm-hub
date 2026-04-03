@@ -83,36 +83,36 @@ The Business Object we are creating follows the standard RAP managed scenario wi
 ```mermaid
 graph TB
     subgraph "Service Layer"
-        SD[Service Definition<br/>ZUI_##_MAT_O4]
-        SB[Service Binding<br/>ZUI_##_MAT_O4]
+        SD[Service Definition<br/>ZUI_xx_MAT_O4]
+        SB[Service Binding<br/>ZUI_xx_MAT_O4]
     end
 
     subgraph "Projection Layer (C-type)"
-        CP_ROOT[Z##_C_MAT_ROOT]
-        CP_PLANT[Z##_C_MAT_PLANT]
-        CP_TEXT[Z##_C_MAT_TEXT]
-        CP_SALES[Z##_C_MAT_SALES]
+        CP_ROOT[Zxx_C_MAT_ROOT]
+        CP_PLANT[Zxx_C_MAT_PLANT]
+        CP_TEXT[Zxx_C_MAT_TEXT]
+        CP_SALES[Zxx_C_MAT_SALES]
         BDEF_P[Projection BDEF]
     end
 
     subgraph "Interface Layer (R-type)"
-        CI_ROOT[Z##_R_MAT_ROOT]
-        CI_PLANT[Z##_R_MAT_PLANT]
-        CI_TEXT[Z##_R_MAT_TEXT]
-        CI_SALES[Z##_R_MAT_SALES]
+        CI_ROOT[Zxx_R_MAT_ROOT]
+        CI_PLANT[Zxx_R_MAT_PLANT]
+        CI_TEXT[Zxx_R_MAT_TEXT]
+        CI_SALES[Zxx_R_MAT_SALES]
         BDEF_I[Interface BDEF]
-        BIMP[BIMP Class<br/>ZBP_##_R_MAT_ROOT]
+        BIMP[BIMP Class<br/>ZBP_xx_R_MAT_ROOT]
     end
 
     subgraph "Database Layer"
-        T_MARA[Z##_MARA]
-        T_MARC[Z##_MARC]
-        T_MAKT[Z##_MAKT]
-        T_MVKE[Z##_MVKE]
-        T_MARA_D[Z##_MARA_D]
-        T_MARC_D[Z##_MARC_D]
-        T_MAKT_D[Z##_MAKT_D]
-        T_MVKE_D[Z##_MVKE_D]
+        T_MARA[Zxx_MARA]
+        T_MARC[Zxx_MARC]
+        T_MAKT[Zxx_MAKT]
+        T_MVKE[Zxx_MVKE]
+        T_MARA_D[Zxx_MARA_D]
+        T_MARC_D[Zxx_MARC_D]
+        T_MAKT_D[Zxx_MAKT_D]
+        T_MVKE_D[Zxx_MVKE_D]
     end
 
     SB --> SD
@@ -139,39 +139,39 @@ graph TB
 
 ```mermaid
 erDiagram
-    Z##_MARA ||--o{ Z##_MARC : "has plants"
-    Z##_MARA ||--o{ Z##_MAKT : "has texts"
-    Z##_MARA ||--o{ Z##_MVKE : "has sales data"
+    Zxx_MARA ||--o{ Zxx_MARC : "has plants"
+    Zxx_MARA ||--o{ Zxx_MAKT : "has texts"
+    Zxx_MARA ||--o{ Zxx_MVKE : "has sales data"
 
-    Z##_MARA {
+    Zxx_MARA {
         sysuuid_x16 uuid PK
-        z##_e_matnr matnr PK
-        z##_e_mtart mtart
-        z##_e_matkl matkl
-        z##_e_lvorm lvorm
-        z##_e_meins meins
+        zxx_e_matnr matnr PK
+        zxx_e_mtart mtart
+        zxx_e_matkl matkl
+        zxx_e_lvorm lvorm
+        zxx_e_meins meins
     }
 
-    Z##_MARC {
+    Zxx_MARC {
         sysuuid_x16 uuid PK
-        z##_e_matnr matnr PK
-        z##_e_werks werks PK
+        zxx_e_matnr matnr PK
+        zxx_e_werks werks PK
         sysuuid_x16 root_uuid FK
     }
 
-    Z##_MAKT {
+    Zxx_MAKT {
         sysuuid_x16 uuid PK
-        z##_e_matnr matnr PK
+        zxx_e_matnr matnr PK
         spras spras PK
         sysuuid_x16 root_uuid FK
-        z##_e_maktx maktx
+        zxx_e_maktx maktx
     }
 
-    Z##_MVKE {
+    Zxx_MVKE {
         sysuuid_x16 uuid PK
-        z##_e_matnr matnr PK
-        z##_e_vkorg vkorg PK
-        z##_e_vtweg vtweg PK
+        zxx_e_matnr matnr PK
+        zxx_e_vkorg vkorg PK
+        zxx_e_vtweg vtweg PK
         sysuuid_x16 root_uuid FK
     }
 ```
@@ -246,14 +246,14 @@ sequenceDiagram
     participant Agent
     participant SAP
 
-    You->>Agent: Create table Z##_MARA...
+    You->>Agent: Create table Zxx_MARA...
     Agent->>SAP: CreateTable (create empty shell)
     SAP-->>Agent: Created
     Agent->>SAP: UpdateTable (set DDL source)
     SAP-->>Agent: Updated
     Agent->>SAP: ActivateObject
     SAP-->>Agent: Activated
-    Agent-->>You: Table Z##_MARA created and activated
+    Agent-->>You: Table Zxx_MARA created and activated
 ```
 
 > **Key concept:** Creating an ABAP object is always a two-step process:
@@ -309,15 +309,15 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 
 ```mermaid
 graph LR
-    subgraph "Persistent Table Z##_MARA"
-        P1[mtart : z##_e_mtart]
-        P2[matkl : z##_e_matkl]
-        P3["include z##_s_rap_chng_ctrl"]
+    subgraph "Persistent Table Zxx_MARA"
+        P1[mtart : zxx_e_mtart]
+        P2[matkl : zxx_e_matkl]
+        P3["include zxx_s_rap_chng_ctrl"]
     end
 
-    subgraph "Draft Table Z##_MARA_D"
-        D1[materialtype : z##_e_mtart]
-        D2[materialgroup : z##_e_matkl]
+    subgraph "Draft Table Zxx_MARA_D"
+        D1[materialtype : zxx_e_mtart]
+        D2[materialgroup : zxx_e_matkl]
         D3[createdat : abp_creation_tstmpl]
         D4[createdby : abp_creation_user]
         D5["'%admin' : include sych_bdl_draft_admin_inc"]
@@ -351,10 +351,10 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 ```mermaid
 graph TD
-    ROOT[Z##_R_MAT_ROOT<br/>root view entity]
-    PLANT[Z##_R_MAT_PLANT]
-    TEXT[Z##_R_MAT_TEXT]
-    SALES[Z##_R_MAT_SALES]
+    ROOT[Zxx_R_MAT_ROOT<br/>root view entity]
+    PLANT[Zxx_R_MAT_PLANT]
+    TEXT[Zxx_R_MAT_TEXT]
+    SALES[Zxx_R_MAT_SALES]
 
     ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| PLANT
     ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| TEXT
@@ -405,13 +405,13 @@ Projections define what the service consumer sees. They reference the interface 
 ```mermaid
 graph LR
     subgraph "Projection (C-type)"
-        C_ROOT[Z##_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
-        C_PLANT[Z##_C_MAT_PLANT]
+        C_ROOT[Zxx_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
+        C_PLANT[Zxx_C_MAT_PLANT]
     end
 
     subgraph "Interface (R-type)"
-        R_ROOT[Z##_R_MAT_ROOT]
-        R_PLANT[Z##_R_MAT_PLANT]
+        R_ROOT[Zxx_R_MAT_ROOT]
+        R_PLANT[Zxx_R_MAT_PLANT]
     end
 
     C_ROOT -->|"as projection on"| R_ROOT
