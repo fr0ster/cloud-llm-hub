@@ -1609,6 +1609,42 @@ export function getDestinationStates(): Array<{
   }));
 }
 
+/**
+ * Refresh unreachable destinations on demand (called from API endpoint).
+ * Re-runs initDestination for all unreachable destinations.
+ * Returns updated destination states.
+ */
+export async function refreshDestinations(): Promise<
+  Array<{ name: string; status: string; toolCount: number; error?: string }>
+> {
+  const log = cds.log('agent-manager');
+  const unreachable = [...destinationStates.entries()].filter(
+    ([, s]) => s.status === 'unreachable',
+  );
+
+  if (unreachable.length === 0) {
+    log.info('All destinations already reachable, nothing to refresh');
+    return getDestinationStates();
+  }
+
+  log.info('Manual destination refresh triggered', {
+    destinations: unreachable.map(([name]) => name),
+  });
+
+  for (const [name] of unreachable) {
+    await initDestination(name);
+    const state = destinationStates.get(name);
+    if (state?.status === 'ready') {
+      log.info('Destination recovered after manual refresh', {
+        destination: name,
+        toolCount: state.toolCount,
+      });
+    }
+  }
+
+  return getDestinationStates();
+}
+
 // ---------------------------------------------------------------------------
 // Shared embedder + RAG stores (survive destination switches)
 // ---------------------------------------------------------------------------
