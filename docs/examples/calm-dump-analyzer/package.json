@@ -1,0 +1,25 @@
+{
+  "name": "calm-dump-analyzer",
+  "version": "1.0.0",
+  "description": "SAP CAP service that analyzes ABAP dumps via cloud-llm-hub",
+  "dependencies": {
+    "@sap/cds": "^9",
+    "@sap-cloud-sdk/http-client": "^3",
+    "express": "^4"
+  },
+  "devDependencies": {
+    "@sap/cds-dk": "^9"
+  },
+  "scripts": {
+    "start": "cds-serve",
+    "build": "cds build --production"
+  },
+  "cds": {
+    "requires": {
+      "auth": {
+        "[production]": { "kind": "xsuaa" },
+        "[development]": { "kind": "mocked", "users": { "alice": { "roles": ["admin"] } } }
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+name: Kyma Info
+
+description: "Prints post-deployment information for Kyma applications"
+
+inputs:
+  app:
+    description: App Name
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get Events
+      shell: bash
+      run: kubectl get events --sort-by='.lastTimestamp' | tail -n 20
+    - name: Get Pods
+      shell: bash
+      run: kubectl get pods
+    - name: Get Secrets
+      shell: bash
+      run: kubectl get secrets
+    - name: Get Service Instances
+      shell: bash
+      run: kubectl get serviceinstances
+    - name: Get Service Bindings
+      shell: bash
+      run: kubectl get servicebindings
+    - shell: bash
+      run: |
+        echo "::group::Kyma Logs for ${{ inputs.app }}-srv"
+        kubectl get pods --no-headers | awk '{print $1}' | grep "${{ inputs.app }}.*-srv" | xargs -r -I % kubectl logs % --since=10m
+        echo "::endgroup::"
+    - shell: bash
+      run: |
+        echo "::group::Kyma Logs for ${{ inputs.app }}-approuter"
+        kubectl get pods --no-headers | awk '{print $1}' | grep "${{ inputs.app }}.*-approuter" | xargs -r -I % kubectl logs % --since=10m
+        echo "::endgroup::"

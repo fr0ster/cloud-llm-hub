@@ -2,7 +2,8 @@
   "xsappname": "calm-dump-analyzer",
   "tenant-mode": "shared",
   "oauth2-configuration": {
-    "credential-types": ["binding-secret", "x509"]
+    "credential-types": ["binding-secret", "x509"],
+    "grant-types": ["authorization_code", "client_credentials"]
   },
   "scopes": [],
   "role-templates": [],

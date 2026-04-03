@@ -1,0 +1,60 @@
+_schema-version: 3.3.0
+ID: calm-dump-analyzer
+version: 1.0.0
+description: "CALM Dump Analyzer — analyzes ABAP dumps via cloud-llm-hub"
+parameters:
+  enable-parallel-deployments: true
+  # Provide via .mtaext
+  SAP_DESTINATION: ""
+  # Optional: override default analysis prompt (supports {system}, {program}, {error}, {exception}, {message}, {user}, {timestamp} placeholders)
+  ANALYSIS_PROMPT: ""
+  # cloud-llm-hub connection
+  CLOUD_LLM_HUB_URL: ""
+  CLOUD_LLM_HUB_CLIENT_ID: ""
+  CLOUD_LLM_HUB_CLIENT_SECRET: ""
+  CLOUD_LLM_HUB_TOKEN_URL: ""
+
+modules:
+  - name: calm-dump-analyzer-srv
+    type: nodejs
+    path: gen/srv
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 128M
+    properties:
+      SAP_DESTINATION: ${SAP_DESTINATION}
+      ANALYSIS_PROMPT: ${ANALYSIS_PROMPT}
+    build-parameters:
+      builder: custom
+      commands:
+        - npm ci --omit=dev
+    requires:
+      - name: calm-dump-analyzer-auth
+      - name: calm-dump-analyzer-destination
+
+resources:
+  - name: calm-dump-analyzer-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+
+  - name: calm-dump-analyzer-destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        init_data:
+          instance:
+            existing_destinations_policy: update
+            destinations:
+              - Name: CLOUD_LLM_HUB
+                Type: HTTP
+                URL: ${CLOUD_LLM_HUB_URL}
+                ProxyType: Internet
+                Authentication: OAuth2ClientCredentials
+                clientId: ${CLOUD_LLM_HUB_CLIENT_ID}
+                clientSecret: ${CLOUD_LLM_HUB_CLIENT_SECRET}
+                tokenServiceURL: ${CLOUD_LLM_HUB_TOKEN_URL}

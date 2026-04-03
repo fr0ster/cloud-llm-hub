@@ -1,0 +1,47 @@
+{
+  "startEvent": {
+    "serviceType": "SAP S/4HANA",
+    "lmsLogonUrl": "https://epbyminsd0654.epam.com:44300/",
+    "lmsMainUrl": "https://epbyminsd0654.epam.com:44300/",
+    "eventDetailsTable": {
+      "rowsCount": 1,
+      "columns": [
+        "Status",
+        "Timestamp",
+        "Message",
+        "User",
+        "Runtime Error~Exception",
+        "Program"
+      ],
+      "rowFormat": "array",
+      "rowsTotalCount": 1,
+      "columnsCount": 6,
+      "rows": [
+        [
+          "ERROR",
+          "2026-04-02 09:49:37",
+          "The current program has intentionally triggered a termination with ashort dump.",
+          "ARAZINKIN",
+          "RAISE_SHORTDUMP~LCX_APPLICATION_ERROR",
+          "CX_AIC_RUNTIME_ERROR==========CP"
+        ]
+      ]
+    },
+    "lmsObjectType": "LogicalSystem",
+    "subject": "Erroneous ABAP Runtime",
+    "rating": "ERROR",
+    "body": "1 exceptions collected from E19.100",
+    "lmsServiceTypeId": "SAP_S4HANA_OP",
+    "eventName": "Erroneous ABAP Runtime",
+    "id": "d1cf6bbe-051a-4b2f-abce-012fc3e0e97d",
+    "serviceId": "bc6c21e9-f673-4917-b2ad-6618b8e75be9",
+    "timestamp": "2026-04-02T09:55:34Z",
+    "eventSubType": "NB_EXM_SAP_S4HANA_OP_ABAP_DUMP",
+    "eventType": "CALM.EXM",
+    "serviceName": "E19.100",
+    "lmsSystemType": "ABAP",
+    "lmsRole": "TEST",
+    "lmsServiceTypeLabel": "SAP S/4HANA"
+  },
+  "custom": {}
+}

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:Reference Uri="https://sap.github.io/odata-vocabularies/vocabularies/Common.xml">
+    <edmx:Include Alias="Common" Namespace="com.sap.vocabularies.Common.v1"/>
+  </edmx:Reference>
+  <edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml">
+    <edmx:Include Alias="Core" Namespace="Org.OData.Core.V1"/>
+  </edmx:Reference>
+  <edmx:DataServices>
+    <Schema Namespace="AnalyzerService" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <Annotation Term="Core.Links">
+        <Collection>
+          <Record>
+            <PropertyValue Property="rel" String="author"/>
+            <PropertyValue Property="href" String="https://cap.cloud.sap"/>
+          </Record>
+        </Collection>
+      </Annotation>
+      <EntityContainer Name="EntityContainer">
+        <ActionImport Name="AnalyzeDump" Action="AnalyzerService.AnalyzeDump"/>
+        <FunctionImport Name="Health" Function="AnalyzerService.Health"/>
+      </EntityContainer>
+      <ComplexType Name="AnalysisResult">
+        <Property Name="status" Type="Edm.String"/>
+        <Property Name="system" Type="Edm.String"/>
+        <Property Name="program" Type="Edm.String"/>
+        <Property Name="error" Type="Edm.String"/>
+        <Property Name="exception" Type="Edm.String"/>
+        <Property Name="user" Type="Edm.String"/>
+        <Property Name="rootCause" Type="Edm.String"/>
+        <Property Name="codeSection" Type="Edm.String"/>
+        <Property Name="severity" Type="Edm.String"/>
+        <Property Name="recommendations" Type="Edm.String"/>
+        <Property Name="errorMessage" Type="Edm.String"/>
+      </ComplexType>
+      <ComplexType Name="HealthStatus">
+        <Property Name="status" Type="Edm.String"/>
+        <Property Name="llmHubUrl" Type="Edm.String"/>
+        <Property Name="timestamp" Type="Edm.DateTimeOffset"/>
+      </ComplexType>
+      <Action Name="AnalyzeDump" IsBound="false">
+        <Parameter Name="event" Type="Edm.String"/>
+        <ReturnType Type="AnalyzerService.AnalysisResult"/>
+      </Action>
+      <Function Name="Health" IsBound="false" IsComposable="false">
+        <ReturnType Type="AnalyzerService.HealthStatus"/>
+      </Function>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
