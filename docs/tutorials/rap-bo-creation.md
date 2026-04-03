@@ -55,6 +55,8 @@ If someone shares your initials — take the next number (`ZDEMO2_`, `ZDEMO3_`, 
 
 **In all steps below, `Z##_` is a placeholder.** Mentally replace `##` with your chosen prefix (e.g., `OK1`). When typing prompts to the agent, use your actual prefix.
 
+> **Can I use different names?** Yes — the naming above is a convention, not a hard rule. You can rename tables, CDS views, classes, and services as you wish. However, RAP BO is a complex multi-layered system where objects reference each other: CDS views depend on table names, BDEFs reference CDS views and draft tables, projections redirect to interface views, and service definitions expose projections. If you change one name, you must update all objects that reference it. For this tutorial, we recommend following the convention exactly — you can always rename later when you understand the full dependency chain.
+
 ---
 
 ## Architecture Overview
