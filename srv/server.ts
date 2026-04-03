@@ -18,7 +18,11 @@ import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
 import { ensureAiCoreCredentials } from './agent-config';
-import { clearSessionTopic, initSmartAgents } from './agent-manager';
+import {
+  clearSessionTopic,
+  initSmartAgents,
+  refreshDestinations,
+} from './agent-manager';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
@@ -378,6 +382,21 @@ cds.on('bootstrap', (app: Application) => {
 
   // GET /v1/usage — token usage
   app.get('/v1/usage', handleUsage as never);
+
+  // POST /v1/destinations/refresh — re-init unreachable destinations
+  app.post('/v1/destinations/refresh', (async (
+    _req: Request,
+    res: Response,
+  ) => {
+    try {
+      const states = await refreshDestinations();
+      res.json({ destinations: states });
+    } catch (err) {
+      res.status(500).json({
+        error: { message: (err as Error).message },
+      });
+    }
+  }) as never);
 
   // DELETE /v1/session — clear server-side conversation history
   app.delete('/v1/session', ((req: Request, res: Response) => {
