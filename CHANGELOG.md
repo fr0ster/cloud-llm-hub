@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [3.2.1] - 2026-04-03
+
+### Added
+- **Destination refresh button** in UI — ↻ button next to destination dropdown triggers immediate recheck of unreachable destinations
+- **`POST /v1/destinations/refresh`** endpoint — re-initializes unreachable destinations on demand, returns updated states
+- **`refreshDestinations()`** exported from agent-manager for programmatic refresh
+
+### Fixed
+- Stale destination states in UI after system recovery (previously required server restart or 5-min retry cycle)
+
 ## [3.2.0] - 2026-04-03
 
 ### Added
