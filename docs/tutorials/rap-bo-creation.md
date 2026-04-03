@@ -16,27 +16,27 @@ All objects use prefix `Z<II><N>_` where:
 - `<II>` — your initials (2 characters)
 - `<N>` — version number (start with 1, increment if initials conflict)
 
-Example for developer Oleksii Kyslytsia, first attempt: **`ZDEMO1_`**
+Example for developer Oleksii Kyslytsia, first attempt: **`Z##_`**
 
-| Object | Max Length | Pattern | Example (ZDEMO1_) |
+| Object | Max Length | Pattern | Example (Z##_) |
 |--------|-----------|---------|-----------------|
-| Package | 30 | `Z<II><N>_MAT` | `ZDEMO1_MAT` |
-| Persistent table | 30 | `Z<II><N>_MARA` | `ZDEMO1_MARA` |
-| Draft table | 30 | `Z<II><N>_MARA_D` | `ZDEMO1_MARA_D` |
-| Interface CDS (root) | 30 | `Z<II><N>_R_MAT_ROOT` | `ZDEMO1_R_MAT_ROOT` |
-| Interface CDS (child) | 30 | `Z<II><N>_R_MAT_PLANT` | `ZDEMO1_R_MAT_PLANT` |
-| Projection CDS (root) | 30 | `Z<II><N>_C_MAT_ROOT` | `ZDEMO1_C_MAT_ROOT` |
-| Projection CDS (child) | 30 | `Z<II><N>_C_MAT_PLANT` | `ZDEMO1_C_MAT_PLANT` |
-| BIMP class | 30 | `ZBP_<II><N>_R_MAT_ROOT` | `ZBP_DEMO1_R_MAT_ROOT` |
-| Service Definition | 30 | `ZUI_<II><N>_MAT_O4` | `ZUI_DEMO1_MAT_O4` |
-| Service Binding | 26 | `ZUI_<II><N>_MAT_O4` | `ZUI_DEMO1_MAT_O4` |
-| Data Element | 30 | `Z<II><N>_E_<name>` | `ZDEMO1_E_MATNR` |
+| Package | 30 | `Z<II><N>_MAT` | `Z##_MAT` |
+| Persistent table | 30 | `Z<II><N>_MARA` | `Z##_MARA` |
+| Draft table | 30 | `Z<II><N>_MARA_D` | `Z##_MARA_D` |
+| Interface CDS (root) | 30 | `Z<II><N>_R_MAT_ROOT` | `Z##_R_MAT_ROOT` |
+| Interface CDS (child) | 30 | `Z<II><N>_R_MAT_PLANT` | `Z##_R_MAT_PLANT` |
+| Projection CDS (root) | 30 | `Z<II><N>_C_MAT_ROOT` | `Z##_C_MAT_ROOT` |
+| Projection CDS (child) | 30 | `Z<II><N>_C_MAT_PLANT` | `Z##_C_MAT_PLANT` |
+| BIMP class | 30 | `ZBP_<II><N>_R_MAT_ROOT` | `ZBP_##_R_MAT_ROOT` |
+| Service Definition | 30 | `ZUI_<II><N>_MAT_O4` | `ZUI_##_MAT_O4` |
+| Service Binding | 26 | `ZUI_<II><N>_MAT_O4` | `ZUI_##_MAT_O4` |
+| Data Element | 30 | `Z<II><N>_E_<name>` | `Z##_E_MATNR` |
 
 > **Before starting:** Choose your prefix. Check that your package doesn't already exist:
-> ask the agent "Search for objects starting with ZDEMO1_*"
-> If objects found — increment the number: `ZDEMO2_`, `ZDEMO3_`, etc.
+> ask the agent *"Search for objects starting with Z&lt;II&gt;&lt;N&gt;_*"*
+> If objects found — increment the number.
 
-Throughout this tutorial we use **`ZDEMO1_`** as the example prefix. **Replace it with your own.**
+Throughout this tutorial we use **`Z##_`** as a placeholder prefix. Replace `##` with your initials + version number (e.g., `OK1`, `RS2`).
 
 ---
 
@@ -64,36 +64,36 @@ The Business Object we are creating follows the standard RAP managed scenario wi
 ```mermaid
 graph TB
     subgraph "Service Layer"
-        SD[Service Definition<br/>ZUI_DEMO1_MAT_O4]
-        SB[Service Binding<br/>ZUI_DEMO1_MAT_O4]
+        SD[Service Definition<br/>ZUI_##_MAT_O4]
+        SB[Service Binding<br/>ZUI_##_MAT_O4]
     end
 
     subgraph "Projection Layer (C-type)"
-        CP_ROOT[ZDEMO1_C_MAT_ROOT]
-        CP_PLANT[ZDEMO1_C_MAT_PLANT]
-        CP_TEXT[ZDEMO1_C_MAT_TEXT]
-        CP_SALES[ZDEMO1_C_MAT_SALES]
+        CP_ROOT[Z##_C_MAT_ROOT]
+        CP_PLANT[Z##_C_MAT_PLANT]
+        CP_TEXT[Z##_C_MAT_TEXT]
+        CP_SALES[Z##_C_MAT_SALES]
         BDEF_P[Projection BDEF]
     end
 
     subgraph "Interface Layer (R-type)"
-        CI_ROOT[ZDEMO1_R_MAT_ROOT]
-        CI_PLANT[ZDEMO1_R_MAT_PLANT]
-        CI_TEXT[ZDEMO1_R_MAT_TEXT]
-        CI_SALES[ZDEMO1_R_MAT_SALES]
+        CI_ROOT[Z##_R_MAT_ROOT]
+        CI_PLANT[Z##_R_MAT_PLANT]
+        CI_TEXT[Z##_R_MAT_TEXT]
+        CI_SALES[Z##_R_MAT_SALES]
         BDEF_I[Interface BDEF]
-        BIMP[BIMP Class<br/>ZBP_DEMO1_R_MAT_ROOT]
+        BIMP[BIMP Class<br/>ZBP_##_R_MAT_ROOT]
     end
 
     subgraph "Database Layer"
-        T_MARA[ZDEMO1_MARA]
-        T_MARC[ZDEMO1_MARC]
-        T_MAKT[ZDEMO1_MAKT]
-        T_MVKE[ZDEMO1_MVKE]
-        T_MARA_D[ZDEMO1_MARA_D]
-        T_MARC_D[ZDEMO1_MARC_D]
-        T_MAKT_D[ZDEMO1_MAKT_D]
-        T_MVKE_D[ZDEMO1_MVKE_D]
+        T_MARA[Z##_MARA]
+        T_MARC[Z##_MARC]
+        T_MAKT[Z##_MAKT]
+        T_MVKE[Z##_MVKE]
+        T_MARA_D[Z##_MARA_D]
+        T_MARC_D[Z##_MARC_D]
+        T_MAKT_D[Z##_MAKT_D]
+        T_MVKE_D[Z##_MVKE_D]
     end
 
     SB --> SD
@@ -120,39 +120,39 @@ graph TB
 
 ```mermaid
 erDiagram
-    ZDEMO1_MARA ||--o{ ZDEMO1_MARC : "has plants"
-    ZDEMO1_MARA ||--o{ ZDEMO1_MAKT : "has texts"
-    ZDEMO1_MARA ||--o{ ZDEMO1_MVKE : "has sales data"
+    Z##_MARA ||--o{ Z##_MARC : "has plants"
+    Z##_MARA ||--o{ Z##_MAKT : "has texts"
+    Z##_MARA ||--o{ Z##_MVKE : "has sales data"
 
-    ZDEMO1_MARA {
+    Z##_MARA {
         sysuuid_x16 uuid PK
-        zdemo1_e_matnr matnr PK
-        zdemo1_e_mtart mtart
-        zdemo1_e_matkl matkl
-        zdemo1_e_lvorm lvorm
-        zdemo1_e_meins meins
+        z##_e_matnr matnr PK
+        z##_e_mtart mtart
+        z##_e_matkl matkl
+        z##_e_lvorm lvorm
+        z##_e_meins meins
     }
 
-    ZDEMO1_MARC {
+    Z##_MARC {
         sysuuid_x16 uuid PK
-        zdemo1_e_matnr matnr PK
-        zdemo1_e_werks werks PK
+        z##_e_matnr matnr PK
+        z##_e_werks werks PK
         sysuuid_x16 root_uuid FK
     }
 
-    ZDEMO1_MAKT {
+    Z##_MAKT {
         sysuuid_x16 uuid PK
-        zdemo1_e_matnr matnr PK
+        z##_e_matnr matnr PK
         spras spras PK
         sysuuid_x16 root_uuid FK
-        zdemo1_e_maktx maktx
+        z##_e_maktx maktx
     }
 
-    ZDEMO1_MVKE {
+    Z##_MVKE {
         sysuuid_x16 uuid PK
-        zdemo1_e_matnr matnr PK
-        zdemo1_e_vkorg vkorg PK
-        zdemo1_e_vtweg vtweg PK
+        z##_e_matnr matnr PK
+        z##_e_vkorg vkorg PK
+        z##_e_vtweg vtweg PK
         sysuuid_x16 root_uuid FK
     }
 ```
@@ -191,7 +191,7 @@ Before starting, verify that the agent can connect to your SAP system.
 
 **You type in chat:**
 
-> Check if you can connect to the SAP system. List available objects in package ZDEMO1_MAT.
+> Check if you can connect to the SAP system. List available objects in package Z##_MAT.
 
 **What happens:** The agent uses `SearchObject` MCP tool to query the SAP system. You should see the package contents (or an empty package if it's new).
 
@@ -203,21 +203,21 @@ Before starting, verify that the agent can connect to your SAP system.
 
 The foundation of any RAP BO is the database tables. We need 4 persistent tables.
 
-### 2.1 Root Table — ZDEMO1_MARA
+### 2.1 Root Table — Z##_MARA
 
 **You type in chat:**
 
-> Create table ZDEMO1_MARA in package ZDEMO1_MAT with transport $TMP.
+> Create table Z##_MARA in package Z##_MAT with transport $TMP.
 > Label: 'General Material Data'
 > Fields:
 > - key client : abap.clnt not null
 > - key uuid : sysuuid_x16 not null
-> - key matnr : zdemo1_e_matnr not null
-> - mtart : zdemo1_e_mtart
-> - matkl : zdemo1_e_matkl
-> - lvorm : zdemo1_e_lvorm
-> - meins : zdemo1_e_meins
-> - include zdemo1_s_rap_chng_ctrl
+> - key matnr : z##_e_matnr not null
+> - mtart : z##_e_mtart
+> - matkl : z##_e_matkl
+> - lvorm : z##_e_lvorm
+> - meins : z##_e_meins
+> - include z##_s_rap_chng_ctrl
 
 **What happens:**
 
@@ -227,14 +227,14 @@ sequenceDiagram
     participant Agent
     participant SAP
 
-    You->>Agent: Create table ZDEMO1_MARA...
+    You->>Agent: Create table Z##_MARA...
     Agent->>SAP: CreateTable (create empty shell)
     SAP-->>Agent: Created
     Agent->>SAP: UpdateTable (set DDL source)
     SAP-->>Agent: Updated
     Agent->>SAP: ActivateObject
     SAP-->>Agent: Activated
-    Agent-->>You: Table ZDEMO1_MARA created and activated
+    Agent-->>You: Table Z##_MARA created and activated
 ```
 
 > **Key concept:** Creating an ABAP object is always a two-step process:
@@ -243,27 +243,27 @@ sequenceDiagram
 >
 > The agent handles both steps automatically.
 
-### 2.2 Child Tables — ZDEMO1_MARC, ZDEMO1_MAKT, ZDEMO1_MVKE
+### 2.2 Child Tables — Z##_MARC, Z##_MAKT, Z##_MVKE
 
 **You type in chat:**
 
 > Now create the child tables in the same package and transport:
 >
-> 1. ZDEMO1_MARC — 'Plant Data for Material'
->    - key client, key uuid, key matnr (zdemo1_e_matnr), key werks (zdemo1_e_werks)
+> 1. Z##_MARC — 'Plant Data for Material'
+>    - key client, key uuid, key matnr (z##_e_matnr), key werks (z##_e_werks)
 >    - root_uuid : sysuuid_x16
->    - include zdemo1_s_rap_chng_ctrl
+>    - include z##_s_rap_chng_ctrl
 >
-> 2. ZDEMO1_MAKT — 'Material Descriptions'
->    - key client, key uuid, key matnr (zdemo1_e_matnr), key spras : spras
+> 2. Z##_MAKT — 'Material Descriptions'
+>    - key client, key uuid, key matnr (z##_e_matnr), key spras : spras
 >    - root_uuid : sysuuid_x16
->    - maktx : zdemo1_e_maktx
->    - include zdemo1_s_rap_chng_ctrl
+>    - maktx : z##_e_maktx
+>    - include z##_s_rap_chng_ctrl
 >
-> 3. ZDEMO1_MVKE — 'Sales Data for Material'
->    - key client, key uuid, key matnr (zdemo1_e_matnr), key vkorg (zdemo1_e_vkorg), key vtweg (zdemo1_e_vtweg)
+> 3. Z##_MVKE — 'Sales Data for Material'
+>    - key client, key uuid, key matnr (z##_e_matnr), key vkorg (z##_e_vkorg), key vtweg (z##_e_vtweg)
 >    - root_uuid : sysuuid_x16
->    - include zdemo1_s_rap_chng_ctrl
+>    - include z##_s_rap_chng_ctrl
 
 **Expected result:** All 3 child tables created and activated. Each has `root_uuid` field linking back to the root.
 
@@ -277,7 +277,7 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 
 **You type in chat:**
 
-> Create draft tables for all 4 persistent tables. Draft table naming: add _D suffix (e.g., ZDEMO1_MARA_D).
+> Create draft tables for all 4 persistent tables. Draft table naming: add _D suffix (e.g., Z##_MARA_D).
 > Rules for draft tables:
 > - key mandt : mandt not null (not abap.clnt!)
 > - key uuid : sysuuid_x16 not null
@@ -290,15 +290,15 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 
 ```mermaid
 graph LR
-    subgraph "Persistent Table ZDEMO1_MARA"
-        P1[mtart : zdemo1_e_mtart]
-        P2[matkl : zdemo1_e_matkl]
-        P3["include zdemo1_s_rap_chng_ctrl"]
+    subgraph "Persistent Table Z##_MARA"
+        P1[mtart : z##_e_mtart]
+        P2[matkl : z##_e_matkl]
+        P3["include z##_s_rap_chng_ctrl"]
     end
 
-    subgraph "Draft Table ZDEMO1_MARA_D"
-        D1[materialtype : zdemo1_e_mtart]
-        D2[materialgroup : zdemo1_e_matkl]
+    subgraph "Draft Table Z##_MARA_D"
+        D1[materialtype : z##_e_mtart]
+        D2[materialgroup : z##_e_matkl]
         D3[createdat : abp_creation_tstmpl]
         D4[createdby : abp_creation_user]
         D5["'%admin' : include sych_bdl_draft_admin_inc"]
@@ -317,13 +317,13 @@ graph LR
 
 Interface CDS views define the BO's data model. The root view has compositions to children.
 
-### 4.1 Root CDS — ZDEMO1_R_MAT_ROOT
+### 4.1 Root CDS — Z##_R_MAT_ROOT
 
 **You type in chat:**
 
-> Create interface CDS view entity ZDEMO1_R_MAT_ROOT in package ZDEMO1_MAT, transport $TMP.
+> Create interface CDS view entity Z##_R_MAT_ROOT in package Z##_MAT, transport $TMP.
 > Source table: zmd_mara
-> This is the root view with compositions to children: _Plant (ZDEMO1_R_MAT_PLANT), _Text (ZDEMO1_R_MAT_TEXT), _Sales (ZDEMO1_R_MAT_SALES).
+> This is the root view with compositions to children: _Plant (Z##_R_MAT_PLANT), _Text (Z##_R_MAT_TEXT), _Sales (Z##_R_MAT_SALES).
 > Map all fields from table to PascalCase aliases (matnr as Matnr, mtart as MaterialType, etc.)
 > Include audit fields (created_at as CreatedAt, etc.)
 > Expose compositions in the field list.
@@ -332,10 +332,10 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 ```mermaid
 graph TD
-    ROOT[ZDEMO1_R_MAT_ROOT<br/>root view entity]
-    PLANT[ZDEMO1_R_MAT_PLANT]
-    TEXT[ZDEMO1_R_MAT_TEXT]
-    SALES[ZDEMO1_R_MAT_SALES]
+    ROOT[Z##_R_MAT_ROOT<br/>root view entity]
+    PLANT[Z##_R_MAT_PLANT]
+    TEXT[Z##_R_MAT_TEXT]
+    SALES[Z##_R_MAT_SALES]
 
     ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| PLANT
     ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| TEXT
@@ -353,9 +353,9 @@ graph TD
 **You type in chat:**
 
 > Create child interface CDS views:
-> 1. ZDEMO1_R_MAT_PLANT — select from zmd_marc, association to parent ZDEMO1_R_MAT_ROOT
-> 2. ZDEMO1_R_MAT_TEXT — select from zmd_makt, association to parent ZDEMO1_R_MAT_ROOT
-> 3. ZDEMO1_R_MAT_SALES — select from zmd_mvke, association to parent ZDEMO1_R_MAT_ROOT
+> 1. Z##_R_MAT_PLANT — select from zmd_marc, association to parent Z##_R_MAT_ROOT
+> 2. Z##_R_MAT_TEXT — select from zmd_makt, association to parent Z##_R_MAT_ROOT
+> 3. Z##_R_MAT_SALES — select from zmd_mvke, association to parent Z##_R_MAT_ROOT
 >
 > Each child must have: root_uuid as RootUuid field, association to parent through Matnr + RootUuid = Uuid
 
@@ -372,11 +372,11 @@ Projections define what the service consumer sees. They reference the interface 
 **You type in chat:**
 
 > Create projection CDS views for all 4 entities:
-> 1. ZDEMO1_C_MAT_ROOT — root projection on ZDEMO1_R_MAT_ROOT, provider contract transactional_query
->    - Redirect compositions: _Plant to ZDEMO1_C_MAT_PLANT, _Text to ZDEMO1_C_MAT_TEXT, _Sales to ZDEMO1_C_MAT_SALES
-> 2. ZDEMO1_C_MAT_PLANT — projection on ZDEMO1_R_MAT_PLANT, redirect _Root to parent ZDEMO1_C_MAT_ROOT
-> 3. ZDEMO1_C_MAT_TEXT — projection on ZDEMO1_R_MAT_TEXT, redirect _Root to parent ZDEMO1_C_MAT_ROOT
-> 4. ZDEMO1_C_MAT_SALES — projection on ZDEMO1_R_MAT_SALES, redirect _Root to parent ZDEMO1_C_MAT_ROOT
+> 1. Z##_C_MAT_ROOT — root projection on Z##_R_MAT_ROOT, provider contract transactional_query
+>    - Redirect compositions: _Plant to Z##_C_MAT_PLANT, _Text to Z##_C_MAT_TEXT, _Sales to Z##_C_MAT_SALES
+> 2. Z##_C_MAT_PLANT — projection on Z##_R_MAT_PLANT, redirect _Root to parent Z##_C_MAT_ROOT
+> 3. Z##_C_MAT_TEXT — projection on Z##_R_MAT_TEXT, redirect _Root to parent Z##_C_MAT_ROOT
+> 4. Z##_C_MAT_SALES — projection on Z##_R_MAT_SALES, redirect _Root to parent Z##_C_MAT_ROOT
 >
 > Add @Search.searchable and @Search.defaultSearchElement on Matnr in root projection.
 > Add @Metadata.allowExtensions: true on all projections.
@@ -386,13 +386,13 @@ Projections define what the service consumer sees. They reference the interface 
 ```mermaid
 graph LR
     subgraph "Projection (C-type)"
-        C_ROOT[ZDEMO1_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
-        C_PLANT[ZDEMO1_C_MAT_PLANT]
+        C_ROOT[Z##_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
+        C_PLANT[Z##_C_MAT_PLANT]
     end
 
     subgraph "Interface (R-type)"
-        R_ROOT[ZDEMO1_R_MAT_ROOT]
-        R_PLANT[ZDEMO1_R_MAT_PLANT]
+        R_ROOT[Z##_R_MAT_ROOT]
+        R_PLANT[Z##_R_MAT_PLANT]
     end
 
     C_ROOT -->|"as projection on"| R_ROOT
@@ -411,9 +411,9 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 
 **You type in chat:**
 
-> Create interface behavior definition for ZDEMO1_R_MAT_ROOT.
+> Create interface behavior definition for Z##_R_MAT_ROOT.
 > Settings:
-> - managed implementation in class ZBP_DEMO1_R_MAT_ROOT unique
+> - managed implementation in class ZBP_##_R_MAT_ROOT unique
 > - strict ( 2 ), with draft
 >
 > Root entity (alias MaterialRoot):
@@ -462,7 +462,7 @@ graph TD
 
 **You type in chat:**
 
-> Create the behavior implementation class ZBP_DEMO1_R_MAT_ROOT for behavior of ZDEMO1_R_MAT_ROOT.
+> Create the behavior implementation class ZBP_##_R_MAT_ROOT for behavior of Z##_R_MAT_ROOT.
 > The class should be PUBLIC ABSTRACT FINAL.
 > For now, create a minimal implementation — just the class shell. The managed scenario handles most operations automatically.
 
@@ -474,7 +474,7 @@ graph TD
 
 **You type in chat:**
 
-> Create projection behavior definition for ZDEMO1_C_MAT_ROOT.
+> Create projection behavior definition for Z##_C_MAT_ROOT.
 > Settings: projection, strict ( 2 ), use draft
 >
 > For each entity:
@@ -488,13 +488,13 @@ graph TD
 
 **You type in chat:**
 
-> Create service definition ZUI_DEMO1_MAT_O4 in package ZDEMO1_MAT.
+> Create service definition ZUI_##_MAT_O4 in package Z##_MAT.
 > Label: 'Service for Material'
 > Expose:
-> - ZDEMO1_C_MAT_ROOT as Material
-> - ZDEMO1_C_MAT_PLANT as MaterialPlant
-> - ZDEMO1_C_MAT_TEXT as MaterialText
-> - ZDEMO1_C_MAT_SALES as MaterialSales
+> - Z##_C_MAT_ROOT as Material
+> - Z##_C_MAT_PLANT as MaterialPlant
+> - Z##_C_MAT_TEXT as MaterialText
+> - Z##_C_MAT_SALES as MaterialSales
 
 ---
 
@@ -502,7 +502,7 @@ graph TD
 
 **You type in chat:**
 
-> Create OData V4 UI service binding ZUI_DEMO1_MAT_O4 for service definition ZUI_DEMO1_MAT_O4.
+> Create OData V4 UI service binding ZUI_##_MAT_O4 for service definition ZUI_##_MAT_O4.
 > After creation, publish it.
 
 > **Note:** Service Binding publishing may not be available via MCP tools. If so, the agent will tell you — publish manually in ADT (Eclipse) or Fiori Launchpad.
@@ -515,13 +515,13 @@ Metadata extensions add UI annotations for the Fiori Elements app.
 
 **You type in chat:**
 
-> Create metadata extension for ZDEMO1_C_MAT_ROOT with:
+> Create metadata extension for Z##_C_MAT_ROOT with:
 > - headerInfo: typeName 'Material', title field Matnr
 > - facets: General Data (identification), Plant Data (lineitem for _Plant), Texts (lineitem for _Text), Sales (lineitem for _Sales)
 > - Hide Uuid field
 > - Show Matnr, MaterialType, MaterialGroup in list and detail with selection fields
 >
-> Also create metadata extension for ZDEMO1_C_MAT_PLANT:
+> Also create metadata extension for Z##_C_MAT_PLANT:
 > - headerInfo: typeName 'Plant Data', title field Plant
 > - Hide Uuid and RootUuid
 > - Show Plant, Quantity in list and detail
@@ -534,7 +534,7 @@ After all steps, verify the BO works:
 
 **You type in chat:**
 
-> Check the current state of all objects in package ZDEMO1_MAT. List any inactive objects.
+> Check the current state of all objects in package Z##_MAT. List any inactive objects.
 
 The agent will use `GetInactiveObjects` to find anything that needs activation.
 
@@ -555,7 +555,7 @@ Activate tables before creating CDS views. Objects must be activated in dependen
 Add `"%admin" : include sych_bdl_draft_admin_inc;` to the draft table.
 
 ### Agent creates but doesn't activate
-After each creation step, you can ask: "Activate all inactive objects" or "Activate ZDEMO1_R_MAT_ROOT".
+After each creation step, you can ask: "Activate all inactive objects" or "Activate Z##_R_MAT_ROOT".
 
 ---
 
