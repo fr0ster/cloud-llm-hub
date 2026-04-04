@@ -231,8 +231,12 @@ Receives JIRA webhooks and triggers appropriate actions:
    - Compile check before review (run syntax check via MCP)
 
 5. **Naming convention for generated tests?**
-   - `ZCL_TEST_<original_class>` for unit tests
-   - Same Z##_ prefix convention as RAP BO tutorial
+   - Follow SAP standard conventions — not custom naming
+   - Local test classes: `LTCL_<name>` inside production class (preferred for unit tests)
+   - Global test classes: per customer namespace rules
+   - Test methods: SAP naming (`test_<scenario>`)
+   - Use ABAP Test Cockpit (ATC) and standard test infrastructure
+   - Integration tests: eCATT / CBTA framework or external runners
 
 ## Technology Stack
 
