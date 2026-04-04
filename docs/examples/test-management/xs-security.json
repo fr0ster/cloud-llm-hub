@@ -1,0 +1,11 @@
+{
+  "xsappname": "abap-test-service",
+  "tenant-mode": "shared",
+  "oauth2-configuration": {
+    "credential-types": ["binding-secret", "x509"],
+    "grant-types": ["authorization_code", "client_credentials"]
+  },
+  "scopes": [],
+  "role-templates": [],
+  "role-collections": []
+}
