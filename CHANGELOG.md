@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [3.2.2] - 2026-04-04
+
+### Changed
+- Updated `@mcp-abap-adt/llm-agent` to 5.2.x — includes per-iteration RAG tool re-selection
+- Fixed `https-proxy-agent` type resolution for `moduleResolution: node`
+
 ## [3.2.1] - 2026-04-03
 
 ### Added
