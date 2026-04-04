@@ -1,166 +1,157 @@
-# Test Management Service — Design Document
+# ABAP Unit Test Service — Design Document
 
 **Status:** Draft
-**Date:** 2026-04-04
+**Date:** 2026-04-05
 
-## Vision
+## Overview
 
-A unified test management API that covers the full test lifecycle for SAP systems — from test creation through execution to result analysis. Orchestrated from JIRA, powered by cloud-llm-hub for intelligent test generation and analysis.
+Stateless proxy service for ABAP unit test lifecycle — check, generate (AI), deploy, run, results. Tests and run results live in the SAP system. Service stores only mappings (JIRA issue ↔ SAP test object ↔ destination) in SQLite.
 
-## Test Lifecycle
+## Entities
 
-```mermaid
-stateDiagram-v2
-    [*] --> Planned: JIRA task created
-    Planned --> Generated: AI generates test
-    Generated --> ReviewPending: Test review task in JIRA
-    ReviewPending --> Approved: Reviewer approves
-    ReviewPending --> Generated: Reviewer requests changes
-    Approved --> Running: Test execution triggered
-    Running --> Passed: All assertions pass
-    Running --> Failed: Assertions fail
-    Passed --> [*]
-    Failed --> Analyzed: AI analyzes failure
-    Analyzed --> Planned: New fix task in JIRA
+### Test (in SAP system)
+
+ABAP unit test is a dictionary object in the SAP system. The service doesn't own it — it reads/writes via MCP tools.
+
+- `objectName` — ABAP object under test (Z_MY_CLASS)
+- `objectType` — CLAS | PROG | FUGR
+- `testClassName` — local test class (LTCL_TEST_...)
+- `destination` — SAP system (S4HANA_E19)
+- `source` — ABAP source code
+
+### TestRun (in SAP system)
+
+Run results are in the SAP system. Service reads them via MCP.
+
+- `runId` — SAP run identifier
+- `status` — running | passed | failed | error
+- `duration`
+- `passed` / `failed` / `skipped`
+- `failures` — assertion details
+
+### TestMapping (in SQLite — service owns this)
+
+Links external references to SAP objects:
+
+```sql
+CREATE TABLE test_mapping (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  jira_issue TEXT,
+  object_name TEXT NOT NULL,
+  object_type TEXT NOT NULL DEFAULT 'CLAS',
+  destination TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'unknown',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX idx_mapping_object ON test_mapping(object_name, destination);
+CREATE INDEX idx_mapping_jira ON test_mapping(jira_issue);
 ```
 
-## Four Test Directions
+## API
 
-```mermaid
-graph TB
-    subgraph "Test Management Service"
-        API[Unified API]
-    end
+### Deterministic (direct MCP proxy)
 
-    subgraph "Direction 1: ABAP Unit Tests"
-        UT_CREATE[Create test class]
-        UT_RUN[Run via MCP]
-        UT_RESULT[Parse results]
-    end
+| Method | Path | Description | MCP Tool |
+|--------|------|-------------|----------|
+| POST | `/tests/check` | Does test exist for object? | GetUnitTest |
+| POST | `/tests/deploy` | Write approved test to SAP | CreateUnitTest / UpdateUnitTest |
+| POST | `/tests/run` | Execute test | RunUnitTest |
+| GET | `/tests/status` | Run status (polling) | GetUnitTestStatus |
+| GET | `/tests/results` | Run results | GetUnitTestResult |
 
-    subgraph "Direction 2: Integration Tests"
-        IT_CREATE[Generate test spec]
-        IT_RUN[Run via Jenkins/Pipeline]
-        IT_RESULT[Collect results]
-    end
-
-    subgraph "Direction 3: Test Management"
-        TM_CASES[Test cases CRUD]
-        TM_PLANS[Test plans]
-        TM_COVERAGE[Coverage tracking]
-    end
-
-    subgraph "Direction 4: Regression Testing"
-        RT_SUITE[Test suite management]
-        RT_TRIGGER[Post-transport trigger]
-        RT_HISTORY[Run history & trends]
-    end
-
-    API --> UT_CREATE
-    API --> IT_CREATE
-    API --> TM_CASES
-    API --> RT_SUITE
-
-    JIRA[JIRA] -->|webhook| API
-    API -->|status update| JIRA
-    API -->|cloud-llm-hub| LLM[AI Analysis]
-    API -->|MCP| SAP[SAP System]
-    API -->|Jenkins API| CI[Jenkins/Pipeline]
-```
-
-## JIRA Integration Flow
-
-```mermaid
-sequenceDiagram
-    participant JIRA
-    participant TMS as Test Management Service
-    participant LLM as cloud-llm-hub
-    participant SAP
-    participant Jenkins
-
-    Note over JIRA: Developer creates task "Add unit test for Z_CLASS"
-    JIRA->>TMS: Webhook: task created (type=unit-test)
-    TMS->>LLM: "Generate ABAP unit test for Z_CLASS"
-    LLM->>SAP: ReadClass(Z_CLASS) via MCP
-    SAP-->>LLM: Class source code
-    LLM-->>TMS: Generated test class source
-    TMS->>SAP: CreateClass(test class) via MCP
-    TMS->>JIRA: Create subtask "Review test for Z_CLASS"
-
-    Note over JIRA: Reviewer approves test
-    JIRA->>TMS: Webhook: subtask status=Approved
-    TMS->>SAP: RunUnitTest(test class) via MCP
-    SAP-->>TMS: Test results
-    TMS->>JIRA: Update task with results
-
-    alt Test Failed
-        TMS->>LLM: "Analyze test failure for Z_CLASS"
-        LLM-->>TMS: Failure analysis + fix recommendations
-        TMS->>JIRA: Create subtask "Fix: test failure in Z_CLASS"
-    end
-```
-
-## API Design
-
-### Endpoints
+### AI-assisted (via cloud-llm-hub)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/tests/generate` | AI-generate test for a given object |
-| POST | `/tests/run` | Execute a test (unit or integration) |
-| GET | `/tests/{id}/results` | Get test execution results |
-| GET | `/tests/{id}/history` | Get execution history |
-| POST | `/tests/analyze-failure` | AI-analyze a test failure |
+| POST | `/tests/generate` | AI generates test draft (not deployed) |
+| POST | `/tests/analyze` | AI analyzes test failure |
+
+### Orchestration
+
+| Method | Path | Description |
+|--------|------|-------------|
 | POST | `/webhook/jira` | JIRA webhook receiver |
+| GET | `/mappings` | List all test mappings |
 | GET | `/health` | Health check |
+
+## Request/Response Examples
+
+### POST /tests/check
+
+```json
+// Request
+{ "objectName": "Z_MY_CLASS", "destination": "S4HANA_E19" }
+
+// Response — test exists
+{
+  "exists": true,
+  "objectName": "Z_MY_CLASS",
+  "objectType": "CLAS",
+  "testClasses": ["LTCL_MY_CLASS_TEST"],
+  "destination": "S4HANA_E19"
+}
+
+// Response — no test
+{ "exists": false, "objectName": "Z_MY_CLASS", "destination": "S4HANA_E19" }
+```
 
 ### POST /tests/generate
 
-Request:
 ```json
+// Request
 {
   "objectName": "Z_MY_CLASS",
-  "objectType": "CLAS",
-  "testType": "unit",
   "destination": "S4HANA_E19",
-  "jiraIssue": "PROJ-123",
-  "requirements": "Test all public methods, cover edge cases for empty input"
+  "requirements": "Test all public methods, cover edge cases",
+  "jiraIssue": "PROJ-123"
+}
+
+// Response — draft (NOT deployed to SAP)
+{
+  "status": "draft",
+  "objectName": "Z_MY_CLASS",
+  "testClassName": "LTCL_MY_CLASS_TEST",
+  "source": "CLASS ltcl_my_class_test DEFINITION FOR TESTING...",
+  "mappingId": 42
 }
 ```
 
-Response:
+### POST /tests/deploy
+
 ```json
-{
-  "status": "generated",
-  "testClass": "ZCL_TEST_MY_CLASS",
-  "source": "CLASS zcl_test_my_class DEFINITION...",
-  "createdOnSystem": true,
-  "jiraSubtask": "PROJ-124"
-}
+// Request
+{ "objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "source": "CLASS ltcl_..." }
+
+// Response
+{ "status": "deployed", "objectName": "Z_MY_CLASS", "testClassName": "LTCL_MY_CLASS_TEST" }
 ```
 
 ### POST /tests/run
 
-Request:
 ```json
-{
-  "testClass": "ZCL_TEST_MY_CLASS",
-  "destination": "S4HANA_E19",
-  "testType": "unit",
-  "jiraIssue": "PROJ-123"
-}
+// Request
+{ "objectName": "Z_MY_CLASS", "destination": "S4HANA_E19" }
+
+// Response
+{ "runId": "abc-123", "status": "running" }
 ```
 
-Response:
+### GET /tests/results?objectName=Z_MY_CLASS&destination=S4HANA_E19
+
 ```json
 {
-  "status": "completed",
-  "passed": 5,
+  "objectName": "Z_MY_CLASS",
+  "runId": "abc-123",
+  "status": "failed",
+  "duration": 1200,
+  "passed": 4,
   "failed": 1,
   "skipped": 0,
-  "duration": 3200,
   "failures": [
     {
+      "testClass": "LTCL_MY_CLASS_TEST",
       "method": "test_empty_input",
       "message": "Expected CX_INVALID_INPUT but no exception raised",
       "line": 42
@@ -171,78 +162,112 @@ Response:
 
 ### POST /webhook/jira
 
-Receives JIRA webhooks and triggers appropriate actions:
+JIRA sends task status changes. Service reacts:
 
-| JIRA Event | Action |
-|------------|--------|
-| Issue created (type=unit-test) | Generate test via cloud-llm-hub |
-| Issue created (type=integration-test) | Generate test spec, create Jenkins job |
-| Subtask status → Approved | Run test |
-| Subtask status → Rejected | Re-generate with reviewer comments |
-| Issue linked to transport | Trigger regression suite |
+| JIRA Event | Service Action |
+|------------|----------------|
+| Task created (label=unit-test) | Store mapping, optionally generate |
+| Subtask status → Approved | Mark mapping as approved |
+| Subtask status → Rejected | Mark mapping, notify |
 
-## Architecture Decisions
+## Architecture
 
-### Phase 1: ABAP Unit Tests (MVP)
-- Generate test class via cloud-llm-hub + MCP
-- Run via MCP `RunUnitTest` tool
-- Parse results, update JIRA
-- Store run history
+```mermaid
+graph LR
+    JIRA[JIRA] -->|webhook| SVC[Test Service]
+    Jenkins[Jenkins] -->|REST API| SVC
+    Manual[Manual/CLI] -->|REST API| SVC
 
-### Phase 2: Test Management
-- Test case CRUD (stored in service DB or JIRA)
-- Test plans with grouping
-- Coverage tracking per object
+    SVC -->|AI tasks| LLM[cloud-llm-hub]
+    SVC -->|test ops| LLM
+    LLM -->|MCP| SAP[SAP System]
 
-### Phase 3: Integration Tests
-- Generate test spec (not code — spec for Jenkins pipeline)
-- Jenkins API integration to create/trigger pipeline
-- Collect results from Jenkins
-- This is a separate service or plugin
+    SVC -->|mappings| DB[(SQLite)]
 
-### Phase 4: Regression Testing
-- Test suite = collection of test cases
-- Post-transport trigger (webhook from CTS or CALM)
-- Run suite, compare with previous run
-- Trend analysis via AI
+    SVC -->|callback| JIRA
+    SVC -->|callback| Jenkins
+```
 
-## Open Questions
+## Data Flow
 
-1. **Where to store test metadata?**
-   - Option A: JIRA (test cases as issues, custom fields)
-   - Option B: Own DB (HANA Cloud or PostgreSQL)
-   - Option C: SAP system itself (test class = test case)
-   - Recommendation: Phase 1 — SAP system + JIRA. Phase 2+ — own DB
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant S as Test Service
+    participant DB as SQLite
+    participant LLM as cloud-llm-hub
+    participant SAP as SAP (MCP)
 
-2. **Integration tests outside ABAP — how?**
-   - Jenkins pipelines with SAP-specific plugins
-   - GitHub Actions with SAP Cloud SDK tests
-   - Custom test runner on BTP
-   - This is a separate service scope
+    Note over C,SAP: Check if test exists
+    C->>S: POST /tests/check {objectName, destination}
+    S->>LLM: "Check unit test for Z_MY_CLASS"
+    LLM->>SAP: GetUnitTest(Z_MY_CLASS)
+    SAP-->>LLM: test source or not found
+    LLM-->>S: result
+    S-->>C: {exists: true/false, testClasses: [...]}
 
-3. **JIRA auth — OAuth or API token?**
-   - BTP Destination to JIRA instance
-   - OAuth 2.0 for cloud JIRA
-   - API token for server JIRA
+    Note over C,SAP: Generate test (AI)
+    C->>S: POST /tests/generate {objectName, destination}
+    S->>DB: Save mapping (status=draft)
+    S->>LLM: "Generate unit test for Z_MY_CLASS"
+    LLM->>SAP: ReadClass(Z_MY_CLASS) via MCP
+    SAP-->>LLM: class source
+    LLM-->>S: generated test source
+    S-->>C: {status: draft, source: "..."}
 
-4. **Test generation quality — how to validate?**
-   - Always require human review (JIRA subtask)
-   - AI self-review before creating review task
-   - Compile check before review (run syntax check via MCP)
+    Note over C,SAP: Deploy approved test
+    C->>S: POST /tests/deploy {objectName, source}
+    S->>LLM: "Create/update test for Z_MY_CLASS"
+    LLM->>SAP: CreateUnitTest / UpdateUnitTest
+    SAP-->>LLM: created
+    LLM-->>S: success
+    S->>DB: Update mapping (status=deployed)
+    S-->>C: {status: deployed}
 
-5. **Naming convention for generated tests?**
-   - Follow SAP standard conventions — not custom naming
-   - Local test classes: `LTCL_<name>` inside production class (preferred for unit tests)
-   - Global test classes: per customer namespace rules
-   - Test methods: SAP naming (`test_<scenario>`)
-   - Use ABAP Test Cockpit (ATC) and standard test infrastructure
-   - Integration tests: eCATT / CBTA framework or external runners
+    Note over C,SAP: Run test
+    C->>S: POST /tests/run {objectName, destination}
+    S->>LLM: "Run unit test for Z_MY_CLASS"
+    LLM->>SAP: RunUnitTest(Z_MY_CLASS)
+    SAP-->>LLM: runId
+    LLM-->>S: runId
+    S-->>C: {runId, status: running}
+```
 
-## Technology Stack
+## Technology
 
-- **Service**: SAP CAP (Node.js), deployed to BTP CF
-- **AI**: cloud-llm-hub (SmartAgent + MCP for SAP interaction)
-- **Test execution**: MCP tools (RunUnitTest, ReadClass, CreateClass)
-- **External integration**: JIRA REST API via BTP Destination
-- **CI/CD**: Jenkins API (Phase 3)
-- **Storage**: JIRA + SAP system (Phase 1), own DB (Phase 2+)
+- **Runtime**: Node.js, Express (standalone, no CAP — lightweight)
+- **Storage**: SQLite via `better-sqlite3`
+- **AI/MCP**: cloud-llm-hub `/v1/chat/completions`
+- **Auth**: Basic→Bearer middleware (same as calm-dump-analyzer)
+- **Deployment**: BTP CF via MTA
+
+## File Structure
+
+```
+test-management/
+├── server.js              — Express app, routes, middleware
+├── lib/
+│   ├── db.js              — SQLite schema, queries
+│   ├── sap-client.js      — cloud-llm-hub API calls
+│   └── jira-webhook.js    — JIRA webhook handler
+├── package.json
+├── mta.yaml
+├── xs-security.json
+├── .mtaext.example
+└── README.md
+```
+
+## Phase 1 Scope
+
+- `/tests/check` — deterministic
+- `/tests/generate` — AI via cloud-llm-hub
+- `/tests/deploy` — deterministic
+- `/tests/run` — deterministic
+- `/tests/status` — deterministic
+- `/tests/results` — deterministic
+- `/health`
+- SQLite mappings
+- Basic→Bearer auth
+
+Phase 2: JIRA webhook, callbacks, `/tests/analyze`
+Phase 3: Jenkins integration, pipeline builder
