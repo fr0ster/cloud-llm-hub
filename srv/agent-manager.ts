@@ -2229,8 +2229,7 @@ async function buildAgentForDestination(
   config: AgentConfig,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
-  const { mainLlm, classifierLlm, presentationLlm } =
-    getOrCreateSharedLlms(config);
+  const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
   const shared = getOrCreateSharedRagStores(config.llm.resourceGroup);
 
   const ragStores: Record<string, IRag> = {
