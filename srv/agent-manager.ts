@@ -321,9 +321,9 @@ class CustomToolSelectHandler implements IStageHandler {
 
     // Query the dedicated 'tools' store from ctx.ragStores (registered via withRag)
     const toolsStore = ctx.ragStores.tools;
-    // Use our own default (25) instead of ctx.config.ragQueryK (builder default is 10).
-    // With 146 MCP tools, k=15 misses Read*/Get* counterparts for Create*/Update* tools.
-    const k = (config.k as number) || 25;
+    // Default k=10. Per-iteration tool re-selection (withToolReselection)
+    // picks up companion tools on subsequent iterations if needed.
+    const k = (config.k as number) || ctx.config.ragQueryK || 10;
     let queryText = ctx.ragText || ctx.inputText;
 
     // Topic-aware query enrichment: when the current message is too short to carry
