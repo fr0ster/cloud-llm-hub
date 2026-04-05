@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [3.3.0] - 2026-04-06
+
+### Changed
+- **Migrated to `@mcp-abap-adt/llm-agent` 5.7.1** — major API changes
+- **Removed `CustomToolLoopHandler`** (-830 lines) — replaced by built-in `withToolReselection(true)` from llm-agent
+- **Removed presentation LLM** — `withPresentationLlm()` removed in llm-agent 5.3.0+
+- **Usage tracking** via `requestLogger.getSummary()` instead of `getUsage()`
+- **Classifier model** updated to `gpt-4.1-mini` (was `gpt-4o-mini` — no longer deployed in SAP AI Core)
+
+### Fixed
+- Token usage now correctly reported (72K+ for full tool context vs 0 previously)
+
 ## [3.2.3] - 2026-04-05
 
 ### Fixed
