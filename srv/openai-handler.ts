@@ -1004,9 +1004,9 @@ export async function handleModels(
 export async function handleUsage(_req: Request, res: Response): Promise<void> {
   try {
     const handle = await getSmartAgent();
-    const usage = handle.getUsage();
+    const summary = handle.requestLogger?.getSummary?.() ?? {};
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(usage));
+    res.end(JSON.stringify(summary));
   } catch (err: unknown) {
     const error = err instanceof Error ? err : new Error(String(err));
     res.writeHead(500, { 'Content-Type': 'application/json' });
