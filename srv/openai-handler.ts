@@ -765,7 +765,11 @@ export async function handleChatCompletions(
       );
     }
 
-    if (body.stream_options?.include_usage && lastUsage) {
+    // Always send usage chunk — clients need it for token tracking.
+    // OpenAI spec gates this behind stream_options.include_usage, but in practice
+    // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
+    // clients that don't need it simply ignore the extra chunk.
+    if (lastUsage) {
       res.write(
         `data: ${JSON.stringify({
           id,
