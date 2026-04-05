@@ -22,7 +22,6 @@ import {
   CircuitBreakerEmbedder,
   ClineClientAdapter,
   FallbackRag,
-  getStreamToolCallName,
   InMemoryMetrics,
   InMemoryRag,
   type IQueryEmbedding,
@@ -40,77 +39,9 @@ import {
   type StructuredPipelineDefinition,
   TextOnlyEmbedding,
   ToolCache,
-  toToolCallDelta,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-
-/** Inlined from llm-agent (not re-exported from package root) */
-function isToolContextUnavailableError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('not available') ||
-    normalized.includes('unavailable') ||
-    normalized.includes('not found') ||
-    normalized.includes('forbidden')
-  );
-}
-
-/** Inlined from llm-agent/policy/mixed-tool-call-handler (not exported) */
-function fireInternalToolsAsync(
-  content: string,
-  internalCalls: Array<{
-    id: string;
-    name: string;
-    arguments: Record<string, unknown>;
-  }>,
-  registry: PipelineContext['pendingToolResults'],
-  sessionId: string,
-  deps: {
-    toolClientMap: PipelineContext['toolClientMap'];
-    toolCache: PipelineContext['toolCache'];
-    metrics: PipelineContext['metrics'];
-    options?: PipelineContext['options'];
-  },
-): void {
-  const assistantMessage = {
-    role: 'assistant' as const,
-    content: content || null,
-    tool_calls: internalCalls.map((tc) => ({
-      id: tc.id,
-      type: 'function' as const,
-      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-    })),
-  };
-  const internalPromise = Promise.all(
-    internalCalls.map(async (tc) => {
-      try {
-        const client = deps.toolClientMap.get(tc.name);
-        if (!client) return { toolCallId: tc.id, toolName: tc.name, text: '' };
-        const res = await client.callTool(tc.name, tc.arguments, deps.options);
-        const text = !res.ok
-          ? res.error.message
-          : typeof res.value.content === 'string'
-            ? res.value.content
-            : JSON.stringify(res.value.content);
-        if (res.ok) deps.toolCache.set(tc.name, tc.arguments, res.value);
-        deps.metrics.toolCallCount.add();
-        return { toolCallId: tc.id, toolName: tc.name, text };
-      } catch (err) {
-        return {
-          toolCallId: tc.id,
-          toolName: tc.name,
-          text: `Error: ${String(err)}`,
-        };
-      }
-    }),
-  );
-  registry.set(sessionId, {
-    assistantMessage,
-    promise: internalPromise,
-    createdAt: Date.now(),
-  });
-}
 
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
