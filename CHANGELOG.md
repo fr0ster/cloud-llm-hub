@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [3.2.3] - 2026-04-05
+
+### Fixed
+- **Token usage always sent in SSE stream** — removed `stream_options.include_usage` gate. Fixes undercounted tokens in Goose and other clients (#13)
+
+### Changed
+- Updated `@mcp-abap-adt/llm-agent` to 5.2.2 (streaming token usage fix)
+- Updated `@mcp-abap-adt/core` to 4.8.5
+
 ## [3.2.2] - 2026-04-04
 
 ### Changed
