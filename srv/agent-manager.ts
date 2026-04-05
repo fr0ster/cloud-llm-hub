@@ -733,9 +733,9 @@ class CustomToolLoopHandler implements IStageHandler {
       }
     }
 
-    // Presentation LLM shortcut: when configured, buffer the final iteration's
-    // content and abort early — PresentHandler will generate through the fast model.
-    const hasPresentationLlm = !!ctx.presentationLlm;
+    // Presentation LLM shortcut: when configured via onBeforeStream hook,
+    // buffer the final iteration's content and abort early.
+    const hasPresentationLlm = !!ctx.config.onBeforeStream;
     const DRAFT_ABORT_CHARS = 200;
 
     // RAG re-selection config
@@ -1093,8 +1093,9 @@ class CustomToolLoopHandler implements IStageHandler {
         if (hasPresentationLlm) {
           // Pass buffered content as fallback — PresentHandler will re-generate
           // through the fast model, but if it fails it falls back to this content.
-          ctx.toolLoopContent = content;
-          ctx.toolLoopMessages = [...messages];
+          // Store in context for downstream use (runtime properties, not typed)
+          (ctx as any).toolLoopContent = content;
+          (ctx as any).toolLoopMessages = [...messages];
           log.info('Handing off to presentation LLM', {
             iteration: iteration + 1,
             aborted: abortedForPresentation,
@@ -1490,8 +1491,7 @@ const pipelineDefinition: StructuredPipelineDefinition = {
     { id: 'tool-select', type: 'tool-select' },
     { id: 'assemble', type: 'assemble' },
     { id: 'tool-loop', type: 'tool-loop' },
-    // Presentation: fast model formats final response (saves ~15-20s on large outputs)
-    { id: 'present', type: 'present' },
+    // Presentation stage removed in 5.3.0 — use onBeforeStream hook instead
   ],
 };
 
@@ -2288,12 +2288,6 @@ async function buildAgentForDestination(
         "Always respond in the same language as the user's LATEST message — not the conversation history.",
         'All artifacts (source code, comments, documentation, object names, descriptions) must always be in English regardless of the conversation language.',
       ].join('\n'),
-      presentation: [
-        'Format the tool results for the user.',
-        'Show source code in fenced ```abap blocks.',
-        'Show actual data from tools — do NOT summarize unless the user asked for a summary.',
-        "Always respond in the same language as the user's LATEST message — not the conversation history.",
-      ].join('\n'),
       classifier: [
         'You are a semantic intent classifier. Decompose the user message into logical tasks.',
         'Output ONLY a raw JSON array — no markdown fences, no explanation, no surrounding text.',
@@ -2316,7 +2310,6 @@ async function buildAgentForDestination(
   })
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
-    .withPresentationLlm(presentationLlm)
     .withMcpClients([mcpAdapter])
     .withRag(ragStores);
 
