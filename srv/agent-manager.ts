@@ -39,6 +39,7 @@ import {
   type StructuredPipelineDefinition,
   TextOnlyEmbedding,
   ToolCache,
+  TruncatingToolResultCompactor,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -1493,6 +1494,7 @@ async function buildAgentForDestination(
     .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
     .withStageHandler('tool-select', new CustomToolSelectHandler())
     .withToolReselection(true)
+    .withToolResultCompactor(new TruncatingToolResultCompactor())
     .withToolCache(new ToolCache({ ttlMs: 30_000 }))
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
