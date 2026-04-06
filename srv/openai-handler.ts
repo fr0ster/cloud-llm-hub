@@ -535,7 +535,10 @@ export async function handleChatCompletions(
       : {};
 
   // --- Streaming ---
-  if (body.stream) {
+  // FORCE_NON_STREAMING disables streaming even when client requests it.
+  // Workaround for SAP AI Core Orchestration API 500 errors in streaming mode.
+  const forceNonStreaming = process.env.FORCE_NON_STREAMING === 'true';
+  if (body.stream && !forceNonStreaming) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
