@@ -1441,19 +1441,16 @@ async function buildAgentForDestination(
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
 
-  // Pipeline mode: "pipeline" = structured pipeline with custom stages (more features, more tokens)
-  //                "default"  = hardcoded flow (leaner, matches PoC — ~2x fewer tokens)
-  const pipelineMode = process.env.LLM_AGENT_PIPELINE_MODE || 'default';
-  if (pipelineMode === 'pipeline') {
-    builder
-      .withPipeline(pipelineDefinition)
-      .withStageHandler('classify', new CustomClassifyHandler())
-      .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
-      .withStageHandler('tool-select', new CustomToolSelectHandler());
-    log.info('Using structured pipeline mode');
-  } else {
-    log.info('Using default (hardcoded) flow mode');
-  }
+  // Structured pipeline required: CustomToolSelectHandler strips ragFilter for tools store.
+  // Default hardcoded flow applies ragFilter to ALL stores → tools store returns 0 results
+  // because tools are vectorized without namespace. PoC doesn't have this issue because
+  // it's single-user (no ragFilter). Multi-user cloud-llm-hub needs namespace isolation
+  // for facts/feedback/state, which conflicts with namespace-free tools store.
+  builder
+    .withPipeline(pipelineDefinition)
+    .withStageHandler('classify', new CustomClassifyHandler())
+    .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
+    .withStageHandler('tool-select', new CustomToolSelectHandler());
 
   const handle = await builder.build();
 
