@@ -21,6 +21,7 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   ClineClientAdapter,
+  FallbackLlmCallStrategy,
   FallbackRag,
   InMemoryMetrics,
   InMemoryRag,
@@ -31,7 +32,6 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
   makeLlm,
-  NonStreamingLlmCallStrategy,
   type PipelineContext,
   QueryEmbedding,
   SessionManager,
@@ -1462,7 +1462,7 @@ async function buildAgentForDestination(
     .withRagTranslation(true)
     .withRagUpsert(true)
     .withPipeline(pipelineDefinition)
-    .withLlmCallStrategy(new NonStreamingLlmCallStrategy())
+    .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withStageHandler('classify', new CustomClassifyHandler())
     .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
     .withStageHandler('tool-select', new CustomToolSelectHandler())
