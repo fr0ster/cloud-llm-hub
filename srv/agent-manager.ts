@@ -1397,10 +1397,9 @@ async function buildAgentForDestination(
     },
     prompts: {
       system: [
-        'Use MCP tools to interact with the SAP system. Do not guess — always query.',
-        'Show actual tool results. Do not fabricate data.',
-        'If a tool fails twice, stop and ask the user.',
-        "Respond in the user's language. Code and object names in English.",
+        'Use MCP tools when they can accomplish the task. Answer or fulfill requests when possible.',
+        'When an action is impossible with available tools — say so and do not attempt it.',
+        "Respond in the user's language. Code and object names always in English.",
       ].join('\n'),
       classifier: [
         'You are a semantic intent classifier. Decompose the user message into logical tasks.',
