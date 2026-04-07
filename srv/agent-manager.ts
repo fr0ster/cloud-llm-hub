@@ -1390,6 +1390,10 @@ async function buildAgentForDestination(
       // Disable deprecated tool refresh — it resets selected tools to ALL MCP tools (147+)
       // on each iteration, inflating token count 10x. Tool reselection handles this instead.
       refreshToolsPerIteration: false,
+      // Re-select tools via RAG on error iterations for context-aware tool discovery
+      toolReselectPerIteration: true,
+      // Fewer tools per selection = less token overhead from tool definitions
+      ragQueryK: 5,
     },
     prompts: {
       system: [
@@ -1488,6 +1492,9 @@ async function buildAgentForDestination(
     stageCount: agentObj.pipelineStages?.length ?? 0,
     stageIds: agentObj.pipelineStages?.map((s: { id: string }) => s.id) ?? [],
     ragStoreKeys: Object.keys(handle.ragStores),
+    refreshToolsPerIteration: agentObj.config?.refreshToolsPerIteration,
+    toolReselectPerIteration: agentObj.config?.toolReselectPerIteration,
+    ragQueryK: agentObj.config?.ragQueryK,
   });
 
   return handle;
