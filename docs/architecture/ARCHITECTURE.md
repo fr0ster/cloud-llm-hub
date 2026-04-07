@@ -859,6 +859,7 @@ graph TB
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | Primary BTP Destination name for ABAP system (blocks at startup) |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | MCP proxy URL (optional, auto-detected) |
 | `LLM_AGENT_RESOURCE_GROUP` | `ai-core-models.ts` | AI Core resource group (default: `default`) |
+| `LLM_AGENT_HISTORY_RECENCY_WINDOW` | `agent-config.ts` | Max recent messages to LLM (older excluded, available via RAG) |
 | `VCAP_SERVICES` | `agent-config.ts`, `destinationResolver.ts` | Service bindings (AI Core, Destination, Connectivity) |
 | `MCP_SKIP_AUTO_START` | `env-setup.ts` | Prevents mcp-abap-adt auto-start |
 | `MCP_SKIP_ENV_LOAD` | `env-setup.ts` | Prevents mcp-abap-adt .env loading |

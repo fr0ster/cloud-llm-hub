@@ -64,11 +64,14 @@ cf deploy mta_archives/calm-dump-analyzer_1.0.0.mtar -e .mtaext
 ### POST /analyzer/AnalyzeDump
 
 OData action. Accepts `event` parameter as JSON string (CALM event payload).
+Optional `model` and `temperature` override the LLM used by cloud-llm-hub for this request.
 
 **Request:**
 ```json
 {
-  "event": "{\"startEvent\":{\"serviceName\":\"E19.100\",\"eventDetailsTable\":{...}}}"
+  "event": "{\"startEvent\":{\"serviceName\":\"E19.100\",\"eventDetailsTable\":{...}}}",
+  "model": "gpt-4.1-mini",
+  "temperature": 0.3
 }
 ```
 
@@ -96,13 +99,26 @@ OData action. Accepts `event` parameter as JSON string (CALM event payload).
 | `CLOUD_LLM_HUB_URL` | Direct URL (local dev only) | env var |
 | `SAP_DESTINATION` | ABAP system destination (passed to cloud-llm-hub) | `.mtaext` |
 
+### Per-Request LLM Overrides
+
+Both `/analyzer/AnalyzeDump` (OData) and `/analyze` (REST) accept optional LLM parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `model` | string | Override LLM model (e.g., `gpt-4.1-mini`, `anthropic--claude-4.5-sonnet`) |
+| `temperature` | number | Override temperature (0.0–2.0) |
+
+When omitted, cloud-llm-hub uses its configured default model.
+
 ## Project Structure
 
 ```
 calm-dump-analyzer/
+├── server.js                   # REST /analyze endpoint + Basic→Bearer auth
 ├── srv/
+│   ├── analyze.js              # Core analysis logic (prompt, LLM call, JSON extraction)
 │   ├── analyzer-service.cds    # OData service definition
-│   └── analyzer-service.js     # Service handler implementation
+│   └── analyzer-service.js     # OData action handler
 ├── mta.yaml                    # MTA deployment descriptor
 ├── xs-security.json            # XSUAA config
 ├── .mtaext.example             # Deployment parameters template

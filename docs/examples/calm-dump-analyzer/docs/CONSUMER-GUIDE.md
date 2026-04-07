@@ -15,11 +15,15 @@ The `event` parameter is a JSON string containing the CALM event payload.
 
 ```json
 {
-  "event": "<CALM event JSON as escaped string>"
+  "event": "<CALM event JSON as escaped string>",
+  "model": "gpt-4.1-mini",
+  "temperature": 0.3
 }
 ```
 
 The `event` value must be a JSON-encoded string (escaped). This is required by OData action parameter typing.
+
+The `model` and `temperature` parameters are **optional** — they override the LLM model and temperature used by cloud-llm-hub for this specific request. When omitted, the service uses the default model configured in cloud-llm-hub.
 
 ### Building the Request
 

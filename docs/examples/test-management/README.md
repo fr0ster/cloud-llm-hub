@@ -27,16 +27,18 @@ npm start
 
 ## Usage
 
+All endpoints accept optional `model` and `temperature` to override the LLM used by cloud-llm-hub:
+
 ```bash
 # Check if test exists
 curl -X POST http://localhost:8080/tests/check \
   -H "Content-Type: application/json" \
   -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19"}'
 
-# Generate test (AI)
+# Generate test (AI) — with model override
 curl -X POST http://localhost:8080/tests/generate \
   -H "Content-Type: application/json" \
-  -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "requirements": "Test all public methods"}'
+  -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "requirements": "Test all public methods", "model": "anthropic--claude-4.5-sonnet"}'
 
 # Deploy approved test
 curl -X POST http://localhost:8080/tests/deploy \
@@ -48,10 +50,10 @@ curl -X POST http://localhost:8080/tests/run \
   -H "Content-Type: application/json" \
   -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19"}'
 
-# Analyze failures
+# Analyze failures — with cheaper model
 curl -X POST http://localhost:8080/tests/analyze \
   -H "Content-Type: application/json" \
-  -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "failures": [{"method": "test_empty", "message": "assertion failed"}]}'
+  -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "model": "gpt-4.1-mini", "failures": [{"method": "test_empty", "message": "assertion failed"}]}'
 ```
 
 ## Architecture
