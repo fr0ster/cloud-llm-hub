@@ -1387,6 +1387,9 @@ async function buildAgentForDestination(
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
       historyRecencyWindow: config.agent.historyRecencyWindow,
+      // Disable deprecated tool refresh — it resets selected tools to ALL MCP tools (147+)
+      // on each iteration, inflating token count 10x. Tool reselection handles this instead.
+      refreshToolsPerIteration: false,
     },
     prompts: {
       system: [
