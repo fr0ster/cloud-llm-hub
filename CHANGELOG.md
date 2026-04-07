@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [3.4.0] - 2026-04-07
+
+### Added
+- **`GET /mcp/health`** endpoint for lightweight MCP availability checks
+
+### Changed
+- **Upgraded `@mcp-abap-adt/llm-agent` to 5.15.0** across the post-3.3.0 update train (5.8.0, 5.8.1, 5.9.0, 5.13.0, 5.14.0, 5.14.2, 5.15.0)
+- **Upgraded `@mcp-abap-adt/core` to 4.8.8** and aligned declared dependency ranges with the tested runtime stack
+- **Tool-loop payloads now use `TruncatingToolResultCompactor`** to prevent oversized iteration context
+- **Tool selection RAG `k` reduced from 25 to 10** to cut prompt overhead while relying on llm-agent tool re-selection for companion tools
+- **Presentation-model hot-swap/UI controls removed** because llm-agent 5.15 no longer uses a presentation LLM stage
+
+### Fixed
+- **FORCE_NON_STREAMING mode now emulates SSE chunks** so the web UI keeps working when SAP AI Core streaming must be disabled
+- **`FORCE_NON_STREAMING` deployment toggle added** as a workaround for SAP AI Core streaming 500 responses
+- **SSE streaming stability improved** via llm-agent updates, including the 5.9.0 stream disconnection fix
+- **`SearchObject` integration updated for `@mcp-abap-adt/core` 4.8.8** where results are returned as JSON only, without raw XML
+- **Declared dependency versions now match the actually tested package-lock versions** for `@mcp-abap-adt/core`, `@mcp-abap-adt/connection`, and `@mcp-abap-adt/llm-agent`
+
 ## [3.3.0] - 2026-04-06
 
 ### Changed

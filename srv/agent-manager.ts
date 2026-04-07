@@ -600,14 +600,13 @@ class CustomRagUpsertHandler implements IStageHandler {
  *
  * Flow: classify → [summarize] → [rag-upsert] →
  *       [parallel: translate + expand] → [parallel: rag-queries] → [rerank] →
- *       tool-select → assemble → tool-loop → [present]
+ *       tool-select → assemble → tool-loop
  *
  * v3.3.0 parallelization: translate and expand run concurrently,
  * then rag-queries run concurrently, then rerank. This reduces the
  * pre-tool-loop overhead from ~11s to ~5-6s.
  *
- * Presentation LLM (present stage): after tool-loop, a fast model
- * formats the response instead of the main model re-generating it.
+ * Presentation stage was removed in llm-agent 5.3.0+.
  */
 const pipelineDefinition: StructuredPipelineDefinition = {
   version: '1',
@@ -672,12 +671,9 @@ const agentHandles = new Map<string, SmartAgentHandle>();
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
 let currentClassifierModel: string | null = null;
-let currentPresentationModel: string | null = null;
-
 /** Shared LLM instances (updated on model switch) */
 let sharedMainLlm: ReturnType<typeof makeLlm> | null = null;
 let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
-let sharedPresentationLlm: ReturnType<typeof makeLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
@@ -694,14 +690,6 @@ export function getCurrentClassifierModel(): string {
     currentClassifierModel ||
     process.env.LLM_AGENT_CLASSIFIER_MODEL ||
     getAgentConfig().llm.model
-  );
-}
-
-export function getCurrentPresentationModel(): string {
-  return (
-    currentPresentationModel ||
-    process.env.LLM_AGENT_PRESENTATION_MODEL ||
-    'gemini-2.5-flash'
   );
 }
 
@@ -1339,7 +1327,6 @@ async function buildEmbeddedMcpAdapter(
 function getOrCreateSharedLlms(config: AgentConfig): {
   mainLlm: ReturnType<typeof makeLlm>;
   classifierLlm: ReturnType<typeof makeLlm>;
-  presentationLlm: ReturnType<typeof makeLlm>;
 } {
   if (!sharedMainLlm) {
     const mainModel = getCurrentModel();
@@ -1369,24 +1356,9 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       0.1,
     );
   }
-  if (!sharedPresentationLlm) {
-    const presentationModel =
-      process.env.LLM_AGENT_PRESENTATION_MODEL || 'gemini-2.5-flash';
-    sharedPresentationLlm = makeLlm(
-      {
-        provider: 'sap-ai-sdk',
-        apiKey: 'sap-ai-sdk-managed',
-        model: presentationModel,
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-      },
-      0.3,
-    );
-  }
   return {
     mainLlm: sharedMainLlm,
     classifierLlm: sharedClassifierLlm,
-    presentationLlm: sharedPresentationLlm,
   };
 }
 
@@ -1527,7 +1499,6 @@ export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
   requestedClassifierModel?: string,
-  requestedPresentationModel?: string,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
@@ -1591,35 +1562,6 @@ export async function getSmartAgent(
     log.info('Classifier model hot-swapped', {
       from: prev,
       to: requestedClassifierModel,
-    });
-  }
-
-  // --- Presentation model hot-swap ---
-  if (
-    requestedPresentationModel &&
-    requestedPresentationModel !== getCurrentPresentationModel() &&
-    agentHandles.size > 0
-  ) {
-    const newPresentation = makeLlm(
-      {
-        provider: 'sap-ai-sdk',
-        apiKey: 'sap-ai-sdk-managed',
-        model: requestedPresentationModel,
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-      },
-      0.3,
-    );
-    for (const handle of agentHandles.values()) {
-      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
-      (handle.agent as any).deps.presentationLlm = newPresentation;
-    }
-    sharedPresentationLlm = newPresentation;
-    const prev = getCurrentPresentationModel();
-    currentPresentationModel = requestedPresentationModel;
-    log.info('Presentation model hot-swapped', {
-      from: prev,
-      to: requestedPresentationModel,
     });
   }
 

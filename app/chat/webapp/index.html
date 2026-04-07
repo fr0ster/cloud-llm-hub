@@ -75,7 +75,6 @@
         </div>
         <div class="system-bar">
             <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
-            <span>PRESENTATION: <select id="presentation-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
             <span>EMBEDDER: <span id="embedding-model">...</span></span>
             <span>RAG: <span id="rag-type">...</span></span>
         </div>
@@ -97,7 +96,6 @@
         const destSelect = document.getElementById('dest-select');
         const destRefreshBtn = document.getElementById('dest-refresh');
         const classifierSelect = document.getElementById('classifier-model-select');
-        const presentationSelect = document.getElementById('presentation-model-select');
         let conversationHistory = [];
         let ready = false;
         const sessionId = 'ui-' + crypto.randomUUID();
@@ -517,7 +515,6 @@
 
                     // Populate auxiliary model dropdowns with all available models
                     populateAuxSelect(classifierSelect, data.data, meta.classifier_model);
-                    populateAuxSelect(presentationSelect, data.data, meta.presentation_model);
 
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
@@ -705,8 +702,6 @@
                 const selectedModel = getSelectedModel();
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
-                if (presentationSelect.value) reqBody.presentation_model = presentationSelect.value;
-
                 // Send only current message — SmartAgent manages session history internally
                 const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId };
                 const selectedDest = getSelectedDestination();
