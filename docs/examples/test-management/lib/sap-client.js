@@ -10,7 +10,7 @@ const LLM_HUB_DESTINATION = 'CLOUD_LLM_HUB';
  * Call cloud-llm-hub with prompt + external tool for structured response.
  * LLM uses MCP tools internally, then calls our external tool with the result.
  */
-async function callWithTool(prompt, systemMessage, resultTool, destination) {
+async function callWithTool(prompt, systemMessage, resultTool, destination, llmOptions) {
   const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
 
   const headers = { 'Content-Type': 'application/json' };
@@ -27,6 +27,8 @@ async function callWithTool(prompt, systemMessage, resultTool, destination) {
       url: '/v1/chat/completions',
       headers,
       data: JSON.stringify({
+        ...(llmOptions?.model ? { model: llmOptions.model } : {}),
+        ...(llmOptions?.temperature != null ? { temperature: llmOptions.temperature } : {}),
         messages,
         tools: [resultTool],
       }),
@@ -189,12 +191,12 @@ const TOOL_ANALYZE = {
 
 const SYSTEM_MSG = 'You are an ABAP unit test service. Use MCP tools to interact with the SAP system. When done, call the return_* tool with your structured result. Do NOT return text — always use the tool.';
 
-async function checkTest(objectName, destination) {
+async function checkTest(objectName, destination, llmOptions) {
   const prompt = `Check if ABAP object "${objectName}" has unit tests. Use MCP tools (GetUnitTest or SearchObject) to find local test classes (LTCL_...).`;
-  return await callWithTool(prompt, SYSTEM_MSG, TOOL_CHECK, destination) || { exists: false, objectType: 'CLAS', testClasses: [] };
+  return await callWithTool(prompt, SYSTEM_MSG, TOOL_CHECK, destination, llmOptions) || { exists: false, objectType: 'CLAS', testClasses: [] };
 }
 
-async function generateTest(objectName, destination, requirements) {
+async function generateTest(objectName, destination, requirements, llmOptions) {
   const prompt = `Generate ABAP unit test for object "${objectName}".
 ${requirements ? `Requirements: ${requirements}` : ''}
 
@@ -204,10 +206,10 @@ Steps:
 3. Generate a local test class (LTCL_...) following SAP best practices (GIVEN-WHEN-THEN, cl_abap_unit_assert)
 4. Call return_generated_test with the result`;
 
-  return await callWithTool(prompt, SYSTEM_MSG, TOOL_GENERATE, destination);
+  return await callWithTool(prompt, SYSTEM_MSG, TOOL_GENERATE, destination, llmOptions);
 }
 
-async function deployTest(objectName, source, destination) {
+async function deployTest(objectName, source, destination, llmOptions) {
   const prompt = `Deploy unit test for "${objectName}" to the SAP system.
 Test source:
 ${source}
@@ -218,10 +220,10 @@ Steps:
 3. Activate the object
 4. Call return_deploy_result with the result`;
 
-  return await callWithTool(prompt, SYSTEM_MSG, TOOL_DEPLOY, destination);
+  return await callWithTool(prompt, SYSTEM_MSG, TOOL_DEPLOY, destination, llmOptions);
 }
 
-async function runTest(objectName, destination) {
+async function runTest(objectName, destination, llmOptions) {
   const prompt = `Run unit tests for ABAP object "${objectName}".
 
 Steps:
@@ -230,10 +232,10 @@ Steps:
 3. Get results (GetUnitTestResult)
 4. Call return_test_results with passed/failed/failures`;
 
-  return await callWithTool(prompt, SYSTEM_MSG, TOOL_RUN, destination);
+  return await callWithTool(prompt, SYSTEM_MSG, TOOL_RUN, destination, llmOptions);
 }
 
-async function analyzeFailure(objectName, failures, destination) {
+async function analyzeFailure(objectName, failures, destination, llmOptions) {
   const prompt = `Analyze unit test failures for "${objectName}":
 ${JSON.stringify(failures, null, 2)}
 
@@ -243,7 +245,7 @@ Steps:
 3. Suggest fixes
 4. Call return_failure_analysis with the analysis`;
 
-  return await callWithTool(prompt, SYSTEM_MSG, TOOL_ANALYZE, destination);
+  return await callWithTool(prompt, SYSTEM_MSG, TOOL_ANALYZE, destination, llmOptions);
 }
 
 module.exports = { checkTest, generateTest, deployTest, runTest, analyzeFailure };

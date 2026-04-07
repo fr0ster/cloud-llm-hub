@@ -24,7 +24,8 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
       }
 
       try {
-        const result = await analyze(body);
+        const llmOptions = { model: req.data.model, temperature: req.data.temperature };
+        const result = await analyze(body, llmOptions);
         // OData needs recommendations as string
         result.recommendations = JSON.stringify(result.recommendations);
         return result;

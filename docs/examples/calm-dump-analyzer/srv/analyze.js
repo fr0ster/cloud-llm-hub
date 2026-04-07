@@ -61,7 +61,11 @@ function buildPrompt(parsed) {
     .replace(/\{timestamp\}/g, parsed.timestamp);
 }
 
-async function callLlmHub(prompt) {
+/**
+ * @param {string} prompt
+ * @param {{ model?: string, temperature?: number }} [llmOptions]
+ */
+async function callLlmHub(prompt, llmOptions) {
   const headers = { 'Content-Type': 'application/json' };
   if (SAP_DESTINATION) headers['x-sap-destination'] = SAP_DESTINATION;
 
@@ -72,6 +76,8 @@ async function callLlmHub(prompt) {
       url: '/v1/chat/completions',
       headers,
       data: JSON.stringify({
+        ...(llmOptions?.model ? { model: llmOptions.model } : {}),
+        ...(llmOptions?.temperature != null ? { temperature: llmOptions.temperature } : {}),
         messages: [
           { role: 'system', content: 'You are an ABAP dump analysis service that outputs JSON.\nRules:\n- Your ENTIRE response is fed directly into JSON.parse(). Any non-JSON text will crash the caller.\n- Do NOT wrap output in ```json``` or any markdown.\n- Do NOT add explanations, preamble, or trailing text.\n- Output exactly one JSON object matching the schema the user provides.' },
           { role: 'user', content: prompt },
@@ -119,19 +125,19 @@ function extractJson(content) {
 /**
  * Run full analysis: parse CALM event → build prompt → call LLM → return result.
  */
-async function analyze(body) {
+async function analyze(body, llmOptions) {
   const log = cds.log('analyzer');
   const parsed = parseEvent(body);
   if (!parsed) throw new Error('Invalid CALM payload: missing startEvent or eventDetailsTable');
 
   const timing = { start: Date.now() };
 
-  log.info('Analyzing dump', { system: parsed.system, program: parsed.program, error: parsed.error });
+  log.info('Analyzing dump', { system: parsed.system, program: parsed.program, error: parsed.error, model: llmOptions?.model });
 
   const prompt = buildPrompt(parsed);
   timing.promptBuilt = Date.now();
 
-  const analysis = await callLlmHub(prompt);
+  const analysis = await callLlmHub(prompt, llmOptions);
   timing.llmDone = Date.now();
 
   const result = {

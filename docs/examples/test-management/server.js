@@ -45,13 +45,13 @@ app.get('/mappings', (_req, res) => {
  * → { exists, testClasses, objectType }
  */
 app.post('/tests/check', async (req, res) => {
-  const { objectName, destination } = req.body;
+  const { objectName, destination, model, temperature } = req.body;
   if (!objectName || !destination) {
     return res.status(400).json({ error: 'objectName and destination required' });
   }
 
   try {
-    const result = await sap.checkTest(objectName, destination);
+    const result = await sap.checkTest(objectName, destination, { model, temperature });
 
     // Update mapping
     db.upsert({
@@ -73,13 +73,13 @@ app.post('/tests/check', async (req, res) => {
  * → { status: "draft", testClassName, source, testMethods }
  */
 app.post('/tests/generate', async (req, res) => {
-  const { objectName, destination, requirements, jiraIssue } = req.body;
+  const { objectName, destination, requirements, jiraIssue, model, temperature } = req.body;
   if (!objectName || !destination) {
     return res.status(400).json({ error: 'objectName and destination required' });
   }
 
   try {
-    const result = await sap.generateTest(objectName, destination, requirements);
+    const result = await sap.generateTest(objectName, destination, requirements, { model, temperature });
     if (!result || !result.source) {
       return res.status(500).json({ error: 'Failed to generate test', details: result });
     }
@@ -116,7 +116,7 @@ app.post('/tests/generate', async (req, res) => {
  * If source not provided, uses draft from mapping.
  */
 app.post('/tests/deploy', async (req, res) => {
-  const { objectName, destination } = req.body;
+  const { objectName, destination, model, temperature } = req.body;
   let { source } = req.body;
 
   if (!objectName || !destination) {
@@ -133,7 +133,7 @@ app.post('/tests/deploy', async (req, res) => {
   }
 
   try {
-    const result = await sap.deployTest(objectName, source, destination);
+    const result = await sap.deployTest(objectName, source, destination, { model, temperature });
 
     db.upsert({
       objectName,
@@ -153,13 +153,13 @@ app.post('/tests/deploy', async (req, res) => {
  * → { status, passed, failed, skipped, duration, failures }
  */
 app.post('/tests/run', async (req, res) => {
-  const { objectName, destination } = req.body;
+  const { objectName, destination, model, temperature } = req.body;
   if (!objectName || !destination) {
     return res.status(400).json({ error: 'objectName and destination required' });
   }
 
   try {
-    const result = await sap.runTest(objectName, destination);
+    const result = await sap.runTest(objectName, destination, { model, temperature });
 
     db.updateStatus(objectName, destination,
       result.status === 'passed' ? 'passed' : result.status === 'failed' ? 'failed' : 'error');
@@ -176,13 +176,13 @@ app.post('/tests/run', async (req, res) => {
  * → { analysis: [{ method, rootCause, suggestedFix }] }
  */
 app.post('/tests/analyze', async (req, res) => {
-  const { objectName, destination, failures } = req.body;
+  const { objectName, destination, failures, model, temperature } = req.body;
   if (!objectName || !failures) {
     return res.status(400).json({ error: 'objectName and failures required' });
   }
 
   try {
-    const result = await sap.analyzeFailure(objectName, failures, destination);
+    const result = await sap.analyzeFailure(objectName, failures, destination, { model, temperature });
     res.json({ objectName, destination, ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });

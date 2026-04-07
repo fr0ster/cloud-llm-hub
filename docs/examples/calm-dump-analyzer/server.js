@@ -19,7 +19,8 @@ cds.on('bootstrap', (app) => {
   app.use('/analyze', context, wrappedAuth, express.json({ limit: '1mb' }));
   app.post('/analyze', async (req, res) => {
     try {
-      const result = await analyze(req.body);
+      const llmOptions = { model: req.body.model, temperature: req.body.temperature };
+      const result = await analyze(req.body, llmOptions);
       res.json(result);
     } catch (err) {
       const status = err.message.includes('Invalid CALM') ? 400 : 500;
