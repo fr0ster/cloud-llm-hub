@@ -1,6 +1,6 @@
 _schema-version: 3.3.0
 ID: cloud-llm-hub
-version: 3.4.0
+version: 3.4.1
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
@@ -17,8 +17,6 @@ parameters:
   LLM_AGENT_EMBEDDING_MODEL:
   LLM_AGENT_PRESENTATION_MODEL:
   LLM_AGENT_EXPOSITION: "readonly,high"
-  # Force non-streaming mode (workaround for SAP AI Core streaming issues)
-  FORCE_NON_STREAMING: "false"
   AICORE_AUTH_URL: ""
   AICORE_CLIENT_ID: ""
   AICORE_CLIENT_SECRET: ""
@@ -55,7 +53,6 @@ modules:
       LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
       LLM_AGENT_PRESENTATION_MODEL: ${LLM_AGENT_PRESENTATION_MODEL}
       LLM_AGENT_EXPOSITION: ${LLM_AGENT_EXPOSITION}
-      FORCE_NON_STREAMING: ${FORCE_NON_STREAMING}
       AICORE_AUTH_URL: ${AICORE_AUTH_URL}
       AICORE_CLIENT_ID: ${AICORE_CLIENT_ID}
       AICORE_CLIENT_SECRET: ${AICORE_CLIENT_SECRET}

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [3.4.1] - 2026-04-07
+
+### Changed
+- **Upgraded `@mcp-abap-adt/llm-agent` to 5.17.0** to pick up the newer SAP AI Core default non-streaming client behavior
+
+### Fixed
+- **Redeploy prepared around the SAP AI Core non-streaming path** after renewed SSE failures in deployed requests
+- **Removed legacy `FORCE_NON_STREAMING` switch** so agent-level non-streaming is the only active path
 ## [3.4.0] - 2026-04-07
 
 ### Added
