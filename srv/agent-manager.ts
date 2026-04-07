@@ -1386,6 +1386,7 @@ async function buildAgentForDestination(
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
+      historyRecencyWindow: config.agent.historyRecencyWindow,
     },
     prompts: {
       system: [

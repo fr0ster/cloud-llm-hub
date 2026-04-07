@@ -104,6 +104,9 @@ export interface AgentConfig {
 
     /** Handler sets to expose (filters which MCP tools are available to the agent) */
     exposition: HandlerSet[];
+
+    /** Max recent messages to include from client history (older excluded, available via RAG) */
+    historyRecencyWindow?: number;
   };
 }
 
@@ -179,6 +182,12 @@ export function loadAgentConfig(): AgentConfig {
     if (!exposition.includes('system')) exposition.push('system');
   }
 
+  // History recency window (max recent messages from client history)
+  const historyRecencyWindowRaw = process.env.LLM_AGENT_HISTORY_RECENCY_WINDOW;
+  const historyRecencyWindow = historyRecencyWindowRaw
+    ? Number.parseInt(historyRecencyWindowRaw, 10)
+    : undefined;
+
   const config: AgentConfig = {
     llm: {
       model,
@@ -195,6 +204,7 @@ export function loadAgentConfig(): AgentConfig {
       maxIterations,
       ragType,
       exposition,
+      historyRecencyWindow,
     },
   };
 
@@ -206,6 +216,7 @@ export function loadAgentConfig(): AgentConfig {
     maxIterations: config.agent.maxIterations,
     ragType: config.agent.ragType,
     exposition: config.agent.exposition,
+    historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
   });
 
   return config;
