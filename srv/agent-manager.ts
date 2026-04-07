@@ -1469,17 +1469,27 @@ async function buildAgentForDestination(
   builder
     .withRagTranslation(true)
     .withRagUpsert(true)
-    .withPipeline(pipelineDefinition)
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
-    .withStageHandler('classify', new CustomClassifyHandler())
-    .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
-    .withStageHandler('tool-select', new CustomToolSelectHandler())
     .withToolReselection(true)
     .withToolCache(new ToolCache({ ttlMs: 30_000 }))
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
+
+  // Pipeline mode: "pipeline" = structured pipeline with custom stages (more features, more tokens)
+  //                "default"  = hardcoded flow (leaner, matches PoC — ~2x fewer tokens)
+  const pipelineMode = process.env.LLM_AGENT_PIPELINE_MODE || 'default';
+  if (pipelineMode === 'pipeline') {
+    builder
+      .withPipeline(pipelineDefinition)
+      .withStageHandler('classify', new CustomClassifyHandler())
+      .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
+      .withStageHandler('tool-select', new CustomToolSelectHandler());
+    log.info('Using structured pipeline mode');
+  } else {
+    log.info('Using default (hardcoded) flow mode');
+  }
 
   const handle = await builder.build();
 
