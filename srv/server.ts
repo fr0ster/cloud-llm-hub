@@ -314,6 +314,16 @@ cds.on('bootstrap', (app: Application) => {
     }
   });
 
+  // MCP health check
+  app.get('/mcp/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'ok',
+      transport: 'StreamableHTTP',
+      endpoint: '/mcp/stream/http',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // Handle GET requests to /mcp/stream/http (should be POST)
   app.get('/mcp/stream/http', (_req: Request, res: Response) => {
     res.status(405).json({
