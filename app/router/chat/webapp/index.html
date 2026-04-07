@@ -70,12 +70,11 @@
         <div class="system-bar">
             <span>LLM: <select id="llm-model-select" disabled><option value="">...</option></select></span>
             <span>MODE: <span id="agent-mode">...</span></span>
-            <span>DEST: <select id="dest-select" disabled><option value="">...</option></select></span>
+            <span>DEST: <select id="dest-select" disabled><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="margin-left:4px;padding:1px 6px;font-size:12px;cursor:pointer" disabled>&#x21bb;</button></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
         </div>
         <div class="system-bar">
             <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
-            <span>PRESENTATION: <select id="presentation-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
             <span>EMBEDDER: <span id="embedding-model">...</span></span>
             <span>RAG: <span id="rag-type">...</span></span>
         </div>
@@ -95,8 +94,8 @@
         const statusText = document.getElementById('status-text');
         const modelSelect = document.getElementById('llm-model-select');
         const destSelect = document.getElementById('dest-select');
+        const destRefreshBtn = document.getElementById('dest-refresh');
         const classifierSelect = document.getElementById('classifier-model-select');
-        const presentationSelect = document.getElementById('presentation-model-select');
         let conversationHistory = [];
         let ready = false;
         const sessionId = 'ui-' + crypto.randomUUID();
@@ -516,7 +515,6 @@
 
                     // Populate auxiliary model dropdowns with all available models
                     populateAuxSelect(classifierSelect, data.data, meta.classifier_model);
-                    populateAuxSelect(presentationSelect, data.data, meta.presentation_model);
 
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
@@ -544,6 +542,7 @@
                     ready = true;
                     setStatus('READY', 'status-ready');
                     setInputEnabled(true);
+                    destRefreshBtn.disabled = false;
                     userInput.focus();
                     return;
                 }
@@ -566,6 +565,23 @@
                 }
             } catch (e) { /* ignore */ }
         }, 15000);
+
+        // Manual destination refresh button
+        destRefreshBtn.addEventListener('click', async () => {
+            destRefreshBtn.disabled = true;
+            destRefreshBtn.textContent = '...';
+            try {
+                const resp = await fetch('/v1/destinations/refresh', { method: 'POST' });
+                const data = await resp.json();
+                const destinations = data.destinations || [];
+                if (destinations.length > 0) {
+                    const activeDest = destSelect.value || '';
+                    renderDestinations(destinations, activeDest);
+                }
+            } catch (e) { /* ignore */ }
+            destRefreshBtn.textContent = '\u21bb';
+            destRefreshBtn.disabled = false;
+        });
 
         function populateAuxSelect(selectEl, models, activeValue) {
             const currentVal = selectEl.value || activeValue;
@@ -686,8 +702,6 @@
                 const selectedModel = getSelectedModel();
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
-                if (presentationSelect.value) reqBody.presentation_model = presentationSelect.value;
-
                 // Send only current message — SmartAgent manages session history internally
                 const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId };
                 const selectedDest = getSelectedDestination();

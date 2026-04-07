@@ -23,7 +23,6 @@ import {
   getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
-  getCurrentPresentationModel,
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
@@ -266,6 +265,7 @@ interface OpenAIChatRequest {
   tools?: unknown[];
   model?: string;
   classifier_model?: string;
+  // Backward-compatible no-op: llm-agent 5.15 no longer exposes a presentation stage.
   presentation_model?: string;
 }
 
@@ -442,10 +442,6 @@ export async function handleChatCompletions(
     typeof body.classifier_model === 'string'
       ? body.classifier_model
       : undefined;
-  const requestedPresentationModel =
-    typeof body.presentation_model === 'string'
-      ? body.presentation_model
-      : undefined;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
@@ -466,7 +462,6 @@ export async function handleChatCompletions(
       requestedModel,
       requestedDestination,
       requestedClassifierModel,
-      requestedPresentationModel,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1115,7 +1110,6 @@ export async function handleModels(
         rag_type: config.agent.ragType,
         mcp_destination: config.mcp.destination,
         classifier_model: getCurrentClassifierModel(),
-        presentation_model: getCurrentPresentationModel(),
         embedding_model:
           process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
       },
