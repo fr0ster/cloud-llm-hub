@@ -73,7 +73,7 @@ async function callLlmHub(prompt) {
       headers,
       data: JSON.stringify({
         messages: [
-          { role: 'system', content: 'You are an ABAP dump analysis service. You MUST respond with ONLY a raw JSON object. No markdown, no code blocks, no explanations, no text before or after the JSON. Your entire response must be parseable by JSON.parse().' },
+          { role: 'system', content: 'You are an ABAP dump analysis service that outputs JSON.\nRules:\n- Your ENTIRE response is fed directly into JSON.parse(). Any non-JSON text will crash the caller.\n- Do NOT wrap output in ```json``` or any markdown.\n- Do NOT add explanations, preamble, or trailing text.\n- Output exactly one JSON object matching the schema the user provides.' },
           { role: 'user', content: prompt },
         ],
       }),
