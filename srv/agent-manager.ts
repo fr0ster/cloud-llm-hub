@@ -94,6 +94,40 @@ class NamespaceFilteredRag implements IRag {
   }
 }
 
+// ---------------------------------------------------------------------------
+// NamespaceIgnoringRag — wraps tools store to strip ragFilter on query
+// ---------------------------------------------------------------------------
+// Tools are vectorized without namespace. When opts include ragFilter (for
+// user/destination isolation), the inner store would filter out all tool records.
+// This wrapper strips ragFilter before querying, so tools always return results.
+// ---------------------------------------------------------------------------
+
+class NamespaceIgnoringRag implements IRag {
+  constructor(private inner: IRag) {}
+
+  async upsert(
+    text: string,
+    metadata: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
+  ) {
+    return this.inner.upsert(text, metadata, options);
+  }
+
+  async query(
+    embedding: IQueryEmbedding,
+    k: number,
+    options?: { signal?: AbortSignal; ragFilter?: { namespace?: string } },
+  ) {
+    // Strip ragFilter — tools have no namespace
+    const { ragFilter: _unused, ...cleanOpts } = options ?? {};
+    return this.inner.query(embedding, k, cleanOpts);
+  }
+
+  async healthCheck() {
+    return this.inner.healthCheck();
+  }
+}
+
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableDestinations } from './lib/btp-destinations';
@@ -843,16 +877,21 @@ function getOrCreateEmbedder(resourceGroup?: string): {
   };
 }
 
-/** Create a tools RAG store (one per destination) */
+/** Create a tools RAG store (one per destination), wrapped to ignore ragFilter */
 function createToolsRagStore(resourceGroup?: string): IRag {
   const embedding = getOrCreateEmbedder(resourceGroup);
-  if (!embedding) return new InMemoryRag();
+  if (!embedding) return new NamespaceIgnoringRag(new InMemoryRag());
 
   const toolsVectorRag = new VectorRag(embedding.embedder, {
     vectorWeight: 0.7,
     keywordWeight: 0.3,
   });
-  return new FallbackRag(toolsVectorRag, new InMemoryRag(), embedding.breaker);
+  const fallback = new FallbackRag(
+    toolsVectorRag,
+    new InMemoryRag(),
+    embedding.breaker,
+  );
+  return new NamespaceIgnoringRag(fallback);
 }
 
 /** Get or create shared RAG stores (facts, feedback, state — persist across destination switches) */
@@ -1441,16 +1480,9 @@ async function buildAgentForDestination(
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
 
-  // Structured pipeline required: CustomToolSelectHandler strips ragFilter for tools store.
-  // Default hardcoded flow applies ragFilter to ALL stores → tools store returns 0 results
-  // because tools are vectorized without namespace. PoC doesn't have this issue because
-  // it's single-user (no ragFilter). Multi-user cloud-llm-hub needs namespace isolation
-  // for facts/feedback/state, which conflicts with namespace-free tools store.
-  builder
-    .withPipeline(pipelineDefinition)
-    .withStageHandler('classify', new CustomClassifyHandler())
-    .withStageHandler('rag-upsert', new CustomRagUpsertHandler())
-    .withStageHandler('tool-select', new CustomToolSelectHandler());
+  // Default hardcoded flow — matches PoC for minimal token overhead.
+  // Tools store wrapped with NamespaceIgnoringRag to strip ragFilter
+  // (tools have no namespace, but opts carry ragFilter for user isolation).
 
   const handle = await builder.build();
 

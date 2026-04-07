@@ -499,6 +499,7 @@ export async function handleChatCompletions(
     externalTools,
     sessionId,
     // RAG namespace isolation: user + destination — results from DEV don't leak into QAS
+    // Tools store wrapped with NamespaceIgnoringRag to skip this filter.
     ragFilter: { namespace: `${userId}:${destAfter}` },
     trace: { traceId },
     sessionLogger: {
