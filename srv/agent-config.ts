@@ -44,30 +44,32 @@ export type HandlerSet =
   | 'search'
   | 'system';
 
+export type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
+
 export interface AgentConfig {
   /**
    * LLM Configuration
    */
   llm: {
-    /**
-     * Model name (determines which LLM provider SAP AI Core routes to)
-     * Examples: 'gpt-4o-mini' (OpenAI), 'claude-3-5-sonnet' (Anthropic)
-     */
+    /** LLM provider: 'sap-ai-sdk' (default), 'openai', 'anthropic', 'deepseek' */
+    provider: LlmProvider;
+
+    /** Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet') */
     model: string;
 
-    /**
-     * Temperature (0.0 - 2.0)
-     */
+    /** Temperature (0.0 - 2.0) */
     temperature: number;
 
-    /**
-     * Maximum tokens in response
-     */
+    /** Maximum tokens in response */
     maxTokens: number;
 
-    /**
-     * SAP AI Core resource group (optional)
-     */
+    /** API key for openai/anthropic/deepseek providers */
+    apiKey?: string;
+
+    /** Base URL for openai-compatible providers (e.g., https://api.openai.com/v1) */
+    baseUrl?: string;
+
+    /** SAP AI Core resource group (sap-ai-sdk only) */
     resourceGroup?: string;
   };
 
@@ -123,6 +125,8 @@ export function loadAgentConfig(): AgentConfig {
   const log = cds.log('agent-config');
 
   // LLM Configuration
+  const provider = (process.env.LLM_AGENT_PROVIDER ||
+    'sap-ai-sdk') as LlmProvider;
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
@@ -139,6 +143,8 @@ export function loadAgentConfig(): AgentConfig {
     10,
   );
   const resourceGroup = process.env.LLM_AGENT_RESOURCE_GROUP;
+  const apiKey = process.env.LLM_AGENT_API_KEY || '';
+  const baseUrl = process.env.LLM_AGENT_BASE_URL || '';
 
   // MCP Configuration
   const mcpDestination = process.env.LLM_AGENT_MCP_DESTINATION;
@@ -190,9 +196,12 @@ export function loadAgentConfig(): AgentConfig {
 
   const config: AgentConfig = {
     llm: {
+      provider,
       model,
       temperature,
       maxTokens,
+      apiKey: apiKey || undefined,
+      baseUrl: baseUrl || undefined,
       resourceGroup,
     },
     mcp: {
@@ -209,6 +218,7 @@ export function loadAgentConfig(): AgentConfig {
   };
 
   log.info('Agent configuration loaded', {
+    provider: config.llm.provider,
     model: config.llm.model,
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',
