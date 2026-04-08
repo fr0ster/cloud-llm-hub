@@ -4,8 +4,6 @@ version: 1.0.0
 description: "CALM Dump Analyzer — analyzes ABAP dumps via cloud-llm-hub"
 parameters:
   enable-parallel-deployments: true
-  # Provide via .mtaext
-  SAP_DESTINATION: ""
   # Optional: override default analysis prompt (supports {system}, {program}, {error}, {exception}, {message}, {user}, {timestamp} placeholders)
   ANALYSIS_PROMPT: ""
   # cloud-llm-hub connection
@@ -22,7 +20,6 @@ modules:
       buildpack: nodejs_buildpack
       memory: 128M
     properties:
-      SAP_DESTINATION: ${SAP_DESTINATION}
       ANALYSIS_PROMPT: ${ANALYSIS_PROMPT}
     build-parameters:
       builder: custom

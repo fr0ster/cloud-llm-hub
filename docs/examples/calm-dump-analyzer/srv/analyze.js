@@ -6,7 +6,6 @@ const cds = require('@sap/cds');
 const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
 
 const LLM_HUB_DESTINATION = 'CLOUD_LLM_HUB';
-const SAP_DESTINATION = process.env.SAP_DESTINATION || '';
 
 const DEFAULT_PROMPT = `Analyze ABAP dump for user {user} in system {system}.
 The dump occurred at {timestamp} with runtime error {error} ({exception}) in program {program}.
@@ -66,8 +65,7 @@ function buildPrompt(parsed) {
  */
 async function callLlmHub(prompt, llmOptions, destination) {
   const headers = { 'Content-Type': 'application/json' };
-  const dest = destination || SAP_DESTINATION;
-  if (dest) headers['x-sap-destination'] = dest;
+  if (destination) headers['x-sap-destination'] = destination;
 
   const response = await executeHttpRequest(
     { destinationName: LLM_HUB_DESTINATION },
@@ -131,8 +129,7 @@ function extractJson(content) {
  * Falls back to SAP_DESTINATION env var if resolve fails or is unavailable.
  */
 async function resolveDestination(systemCode) {
-  if (SAP_DESTINATION) return SAP_DESTINATION;
-  if (!systemCode) return '';
+  if (!systemCode) throw new Error('System code is empty — cannot resolve destination');
 
   try {
     const response = await executeHttpRequest(
