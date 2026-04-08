@@ -1387,6 +1387,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       {
         provider: config.llm.provider,
         apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        baseURL: config.llm.baseUrl,
         model: mainModel,
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
@@ -1402,6 +1403,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       {
         provider: config.llm.provider,
         apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        baseURL: config.llm.baseUrl,
         model: classifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -1542,6 +1544,7 @@ export async function getSmartAgent(
       {
         provider: config.llm.provider,
         apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        baseURL: config.llm.baseUrl,
         model: requestedModel,
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
@@ -1574,6 +1577,7 @@ export async function getSmartAgent(
       {
         provider: config.llm.provider,
         apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        baseURL: config.llm.baseUrl,
         model: requestedClassifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
