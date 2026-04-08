@@ -27,10 +27,12 @@ The following entitlements must be available in the subaccount:
 
 ### SAP AI Core Setup
 
-- [ ] SAP AI Core instance provisioned
+- [ ] SAP AI Core instance provisioned and service key created
 - [ ] At least one LLM model deployed (e.g., `anthropic--claude-4.5-sonnet`, `gpt-4.1-mini`)
 - [ ] Embedding model deployed (`text-embedding-3-small`)
 - [ ] Resource group configured (default: `default`)
+
+> **No AI Core?** The service can start without AI Core binding (`active: false` in `.mtaext`). MCP proxy endpoints will work, but `/v1/chat/completions` and agent features will be unavailable. Useful for testing MCP connectivity first.
 
 ### SAP ABAP System
 
@@ -38,6 +40,8 @@ The following entitlements must be available in the subaccount:
 - [ ] BTP Destination configured pointing to the SAP system
 - [ ] System user or communication arrangement for RFC/ADT access
 - [ ] ICF services activated: `/sap/bc/adt` (ADT), `/sap/bc/http` (HTTP)
+
+> **No SAP system yet?** You can deploy without a SAP destination. The service starts, Chat UI loads, LLM responds — but MCP tools won't be available. Add `LLM_AGENT_MCP_DESTINATION` later and redeploy.
 
 ### Local Tools
 
@@ -94,7 +98,7 @@ resources:
     active: true
 ```
 
-### Step 3: Configure BTP Destination (10 min)
+### Step 3: Configure BTP Destination (10 min) — *optional, can add later*
 
 In BTP Cockpit → Subaccount → Destinations:
 
@@ -105,9 +109,11 @@ In BTP Cockpit → Subaccount → Destinations:
    - **Authentication**: BasicAuthentication or PrincipalPropagation
    - **ProxyType**: OnPremise (via Cloud Connector) or Internet
 
-2. For on-premise systems — ensure Cloud Connector is configured:
+2. For on-premise systems — ensure Cloud Connector is configured (*optional, only for on-prem*):
    - Virtual host mapped to the SAP system
    - Access control for `/sap/bc/adt/**` and `/sap/bc/http/**`
+
+> **Minimal deploy**: skip this step entirely. Service starts without SAP destinations — LLM chat works, MCP tools unavailable until destination added.
 
 ### Step 4: Build MTA Archive (2 min)
 
@@ -190,6 +196,116 @@ Read table T000
 ```
 
 Expected: agent calls MCP tools → reads SAP table → returns result.
+
+---
+
+## Optional Steps
+
+### Connect Claude CLI via ANTHROPIC_BASE_URL (5 min)
+
+Cloud LLM Hub exposes an Anthropic-compatible endpoint at `/v1/messages`. To use Claude CLI:
+
+```bash
+export ANTHROPIC_BASE_URL=https://<SRV_URL>
+export ANTHROPIC_API_KEY=<your-xsuaa-jwt-token>
+claude  # connects to your SAP system via cloud-llm-hub
+```
+
+### Connect Cline / Goose / other AI tools (5 min)
+
+Use the OpenAI-compatible endpoint `/v1/chat/completions` with any tool that supports custom base URL:
+
+```
+Base URL: https://<SRV_URL>/v1
+API Key: <your-xsuaa-jwt-token>
+```
+
+### Connect MCP clients (Cline, Claude Desktop) (5 min)
+
+Use the MCP endpoint directly:
+
+```
+POST https://<SRV_URL>/mcp/stream/http
+Header: X-SAP-Destination: <destination-name>
+```
+
+### Deploy without AI Core (LLM-less mode)
+
+Set `active: false` for AI Core in `.mtaext`:
+
+```yaml
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: false
+```
+
+MCP proxy works. Agent endpoints return 503.
+
+### Add additional SAP destinations
+
+Additional SAP systems are auto-discovered from BTP Destination service. Create a new destination in BTP Cockpit — it appears in the UI destination selector after restart or `POST /v1/destinations/refresh`.
+
+### Set up Approuter custom domain
+
+Override `APPROUTER_HOST` in `.mtaext` to use a meaningful subdomain instead of the auto-generated one.
+
+---
+
+## Known Issues and Force-Majeure
+
+### Entitlements not available
+
+**Symptom**: Cannot find the required service plan in BTP Cockpit.
+
+**Resolution**: Contact your BTP Global Account admin to assign entitlements to your subaccount. Common missing entitlements:
+- AI Core `extended` plan — requires AI Foundation booster or manual assignment
+- Connectivity `lite` — not available in trial accounts
+
+**Workaround**: Deploy without AI Core (`active: false`) or without Connectivity (skip on-prem SAP).
+
+### Cloud Connector not registered for subaccount
+
+**Symptom**: Destination shows "reachable" in BTP Cockpit but MCP tools fail with connection errors.
+
+**Resolution**: Cloud Connector admin must register the subaccount in Cloud Connector admin UI. Each subaccount needs a separate registration.
+
+**Impact**: On-premise SAP systems are unreachable. Cloud systems work fine.
+
+### AI Core model deployment quota exceeded
+
+**Symptom**: `cf deploy` succeeds but agent fails with "model not found" or "quota exceeded".
+
+**Resolution**: Check AI Launchpad → ML Operations → Deployments. Free tier allows limited concurrent deployments. Stop unused deployments to free capacity.
+
+### CF deploy fails with "Service broker error"
+
+**Symptom**: `cf deploy` fails during service creation with broker errors.
+
+**Resolution**:
+- Check if service instances already exist from a previous deployment: `cf services`
+- If corrupted, delete manually: `cf delete-service <name> -f`
+- Retry deploy
+
+### Approuter returns 502 Bad Gateway
+
+**Symptom**: UI loads but shows 502 errors on API calls.
+
+**Resolution**: Approuter can't reach the backend. Check:
+- `cf app cloud-llm-hub-srv` — is the backend running?
+- Check if `srv-api` route is bound correctly: `cf routes`
+- Restart approuter: `cf restart cloud-llm-hub`
+
+### SAP AI Core streaming errors (500 on 2nd+ tool iteration)
+
+**Symptom**: First tool call works, subsequent iterations fail with `code: 500, location: "LLM Module"`.
+
+**Resolution**: This is a known SAP AI Core Orchestration issue with streaming + Anthropic models + tool use. The service uses `FallbackLlmCallStrategy` — it automatically falls back to non-streaming on failure. If persistent, set `LLM_AGENT_PIPELINE_MODE: "default"` which uses non-streaming by default.
+
+### Token usage unexpectedly high
+
+**Symptom**: Simple requests consume 50K+ input tokens.
+
+**Resolution**: Check `LLM_AGENT_PIPELINE_MODE`. Structured pipeline mode adds overhead from reranker and custom handlers. Default mode matches PoC (~17K tokens). Also verify `ragQueryK` (default: 5) and `refreshToolsPerIteration: false`.
 
 ---
 
