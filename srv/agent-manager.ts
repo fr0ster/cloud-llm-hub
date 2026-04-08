@@ -752,6 +752,71 @@ export interface DestinationState {
 /** Map of destination name → pre-built state */
 const destinationStates = new Map<string, DestinationState>();
 
+// ---------------------------------------------------------------------------
+// System-to-destination mapping (e.g., "DEV.100" → "S4HANA_DEV")
+// ---------------------------------------------------------------------------
+// Configured via DESTINATION_MAPPING env var: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"
+
+const systemDestinationMap = new Map<string, string>();
+
+/** Parse DESTINATION_MAPPING env var at startup */
+function initDestinationMapping(): void {
+  const raw = process.env.DESTINATION_MAPPING || '';
+  if (!raw) return;
+  const log = cds.log('agent-manager');
+  for (const pair of raw.split(',')) {
+    const [system, dest] = pair.split('=').map((s) => s.trim());
+    if (system && dest) {
+      systemDestinationMap.set(system, dest);
+    }
+  }
+  if (systemDestinationMap.size > 0) {
+    log.info('Destination mapping loaded', {
+      mappings: Object.fromEntries(systemDestinationMap),
+    });
+  }
+}
+
+/**
+ * Resolve a SAP system code (e.g., "DEV.100") to a BTP destination name.
+ * Returns the destination name if found and active, or an error.
+ */
+export function resolveSystemDestination(systemCode: string): {
+  ok: boolean;
+  destination?: string;
+  error?: string;
+} {
+  const dest = systemDestinationMap.get(systemCode);
+  if (!dest) {
+    return {
+      ok: false,
+      error: `No destination mapping for system "${systemCode}". Configure DESTINATION_MAPPING env var.`,
+    };
+  }
+
+  // Check destination state
+  const state = destinationStates.get(dest);
+  if (!state) {
+    return {
+      ok: false,
+      error: `Destination "${dest}" (mapped from "${systemCode}") is not initialized.`,
+    };
+  }
+  if (state.status === 'unreachable' || state.status === 'error') {
+    return {
+      ok: false,
+      error: `Destination "${dest}" (mapped from "${systemCode}") is ${state.status}: ${state.error || 'unavailable'}`,
+    };
+  }
+
+  return { ok: true, destination: dest };
+}
+
+/** Get all configured system-to-destination mappings */
+export function getDestinationMappings(): Record<string, string> {
+  return Object.fromEntries(systemDestinationMap);
+}
+
 /** Last-used destination per session (for detecting switches in openai-handler) */
 const lastDestinationBySession = new Map<string, string>();
 
@@ -1623,6 +1688,7 @@ export async function getSmartAgent(
  */
 export async function initSmartAgents(): Promise<void> {
   const log = cds.log('agent-manager');
+  initDestinationMapping();
   const config = getAgentConfig();
   const destName = config.mcp.destination;
 

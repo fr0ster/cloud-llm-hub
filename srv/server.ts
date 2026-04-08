@@ -20,8 +20,10 @@ import express from 'express';
 import { ensureAiCoreCredentials } from './agent-config';
 import {
   clearSessionTopic,
+  getDestinationMappings,
   initSmartAgents,
   refreshDestinations,
+  resolveSystemDestination,
 } from './agent-manager';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
@@ -406,6 +408,30 @@ cds.on('bootstrap', (app: Application) => {
         error: { message: (err as Error).message },
       });
     }
+  }) as never);
+
+  // GET /v1/destinations/resolve?system=DEV.100 — resolve system code to BTP destination
+  app.get('/v1/destinations/resolve', ((req: Request, res: Response) => {
+    const system = req.query.system as string;
+    if (!system) {
+      res.status(400).json({
+        error: {
+          message: 'system query parameter required (e.g., ?system=DEV.100)',
+        },
+      });
+      return;
+    }
+    const result = resolveSystemDestination(system);
+    if (!result.ok) {
+      res.status(404).json({ error: { message: result.error } });
+      return;
+    }
+    res.json({ system, destination: result.destination });
+  }) as never);
+
+  // GET /v1/destinations/mappings — list all system-to-destination mappings
+  app.get('/v1/destinations/mappings', ((_req: Request, res: Response) => {
+    res.json({ mappings: getDestinationMappings() });
   }) as never);
 
   // DELETE /v1/session — clear server-side conversation history
