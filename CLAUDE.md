@@ -65,7 +65,11 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 
 ### Core Components
 
-- **srv/server.ts** - CAP bootstrap, Express route for `/mcp/stream/http`
+- **srv/server.ts** - CAP bootstrap, Express routes for `/mcp/stream/http` and `/v1/*`
+- **srv/agent-manager.ts** - SmartAgent lifecycle, LLM/RAG/MCP wiring, tool vectorization
+- **srv/agent-config.ts** - Configuration from env vars (LLM provider, model, RAG, MCP)
+- **srv/openai-handler.ts** - OpenAI-compatible chat endpoint (streaming + non-streaming)
+- **srv/anthropic-handler.ts** - Anthropic Messages API handler
 - **srv/mcp-manager.ts** - MCP server lifecycle, SAP context extraction from headers, per-request servers
 - **srv/mcp-proxy.ts** - CAP service handlers, health check, ProbeDestination diagnostics
 - **srv/connections/** - Connection factory pattern for BTP destinations and direct connections
@@ -91,11 +95,21 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 - Supports on-premise systems via Cloud Connector (Connectivity service)
 - Connection types: BTP Destination (CloudSdkAbapConnection) and Direct (createAbapConnection)
 
+### LLM Provider
+
+Configurable via `LLM_AGENT_PROVIDER` env var:
+- **`sap-ai-sdk`** (default) — SAP AI Core Orchestration, models deployed in AI Launchpad
+- **`openai`** — any OpenAI-compatible API (OpenAI, Azure OpenAI, Ollama, vLLM)
+- **`anthropic`** / **`deepseek`** — direct provider APIs
+
+For non-SAP providers: set `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL`.
+
 ## Key Dependencies
 
 - `@sap/cds` ^9 - CAP framework
 - `@modelcontextprotocol/sdk` ^1.23.0 - MCP protocol
-- `@mcp-abap-adt/core` ^1.4.3 - ABAP MCP server implementation
+- `@mcp-abap-adt/core` ^4.9.0 - ABAP MCP server implementation
+- `@mcp-abap-adt/llm-agent` ^5.18.3 - SmartAgent pipeline, RAG, tool selection
 - `@sap-cloud-sdk/*` - Destination resolution, HTTP client
 
 ## Code Style
