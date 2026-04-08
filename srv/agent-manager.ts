@@ -32,6 +32,7 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
   makeLlm,
+  OpenAiEmbedder,
   type PipelineContext,
   QueryEmbedding,
   SessionManager,
@@ -861,10 +862,23 @@ function getOrCreateEmbedder(resourceGroup?: string): {
       failureThreshold: 30,
       recoveryWindowMs: 60_000,
     });
-    const rawEmbedder = new SapAiCoreEmbedder({
-      model: embeddingModel,
-      resourceGroup,
-    });
+
+    // Create embedder based on LLM provider
+    let rawEmbedder: SapAiCoreEmbedder | OpenAiEmbedder;
+    if (config.llm.provider === 'sap-ai-sdk') {
+      rawEmbedder = new SapAiCoreEmbedder({
+        model: embeddingModel,
+        resourceGroup,
+      });
+    } else {
+      // OpenAI-compatible embedder for openai/anthropic/deepseek providers
+      rawEmbedder = new OpenAiEmbedder({
+        apiKey: config.llm.apiKey || '',
+        baseURL: config.llm.baseUrl,
+        model: embeddingModel,
+      });
+    }
+
     sharedEmbedder = new CircuitBreakerEmbedder(
       rawEmbedder,
       sharedEmbedderBreaker,
@@ -1371,8 +1385,8 @@ function getOrCreateSharedLlms(config: AgentConfig): {
     const mainModel = getCurrentModel();
     sharedMainLlm = makeLlm(
       {
-        provider: 'sap-ai-sdk',
-        apiKey: 'sap-ai-sdk-managed',
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
         model: mainModel,
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
@@ -1386,8 +1400,8 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
     sharedClassifierLlm = makeLlm(
       {
-        provider: 'sap-ai-sdk',
-        apiKey: 'sap-ai-sdk-managed',
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
         model: classifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -1526,8 +1540,8 @@ export async function getSmartAgent(
   ) {
     const newLlm = makeLlm(
       {
-        provider: 'sap-ai-sdk',
-        apiKey: 'sap-ai-sdk-managed',
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
         model: requestedModel,
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
@@ -1558,8 +1572,8 @@ export async function getSmartAgent(
   ) {
     const newClassifier = makeLlm(
       {
-        provider: 'sap-ai-sdk',
-        apiKey: 'sap-ai-sdk-managed',
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
         model: requestedClassifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
