@@ -12,10 +12,9 @@ const DEFAULT_PROMPT = `Analyze ABAP dump for user {user} in system {system}.
 The dump occurred at {timestamp} with runtime error {error} ({exception}) in program {program}.
 Message: {message}
 
-Steps (exactly 2 tool calls, no more):
-1. RuntimeListDumps with user="{user}" and from/to ±5 minutes around {timestamp} in YYYYMMDDHHMMSS format. Pick the dump matching error {error}.
-2. RuntimeGetDumpById with dump_id from step 1. Do NOT call it again with different parameters.
-Then analyze and respond.
+You already have the exact datetime and user from the CALM event — do NOT search for the dump.
+Call RuntimeGetDumpById once with datetime="{timestamp}" and user="{user}".
+Then analyze the dump and respond.
 
 IMPORTANT: Your final response must contain ONLY a valid JSON object — no text before or after it,
 no markdown code blocks, no explanations, no tool execution logs.
@@ -65,9 +64,10 @@ function buildPrompt(parsed) {
  * @param {string} prompt
  * @param {{ model?: string, temperature?: number }} [llmOptions]
  */
-async function callLlmHub(prompt, llmOptions) {
+async function callLlmHub(prompt, llmOptions, destination) {
   const headers = { 'Content-Type': 'application/json' };
-  if (SAP_DESTINATION) headers['x-sap-destination'] = SAP_DESTINATION;
+  const dest = destination || SAP_DESTINATION;
+  if (dest) headers['x-sap-destination'] = dest;
 
   const response = await executeHttpRequest(
     { destinationName: LLM_HUB_DESTINATION },
@@ -125,6 +125,28 @@ function extractJson(content) {
 /**
  * Run full analysis: parse CALM event → build prompt → call LLM → return result.
  */
+/**
+ * Resolve SAP destination from system code (e.g., "E19.100" → "S4HANA_E19").
+ * Uses cloud-llm-hub /v1/destinations/resolve endpoint.
+ * Falls back to SAP_DESTINATION env var if resolve fails or is unavailable.
+ */
+async function resolveDestination(systemCode) {
+  if (SAP_DESTINATION) return SAP_DESTINATION;
+  if (!systemCode) return '';
+
+  try {
+    const response = await executeHttpRequest(
+      { destinationName: LLM_HUB_DESTINATION },
+      { method: 'GET', url: `/v1/destinations/resolve?system=${encodeURIComponent(systemCode)}` },
+      { fetchCsrfToken: false },
+    );
+    return response.data.destination || '';
+  } catch (err) {
+    const msg = err?.response?.data?.error?.message || err.message;
+    throw new Error(`Cannot resolve destination for system "${systemCode}": ${msg}`);
+  }
+}
+
 async function analyze(body, llmOptions) {
   const log = cds.log('analyzer');
   const parsed = parseEvent(body);
@@ -132,12 +154,20 @@ async function analyze(body, llmOptions) {
 
   const timing = { start: Date.now() };
 
-  log.info('Analyzing dump', { system: parsed.system, program: parsed.program, error: parsed.error, model: llmOptions?.model });
+  // Resolve SAP destination from system code in CALM event
+  const destination = await resolveDestination(parsed.system);
+  log.info('Analyzing dump', {
+    system: parsed.system,
+    destination: destination || '(default)',
+    program: parsed.program,
+    error: parsed.error,
+    model: llmOptions?.model,
+  });
 
   const prompt = buildPrompt(parsed);
   timing.promptBuilt = Date.now();
 
-  const analysis = await callLlmHub(prompt, llmOptions);
+  const analysis = await callLlmHub(prompt, llmOptions, destination);
   timing.llmDone = Date.now();
 
   const result = {
