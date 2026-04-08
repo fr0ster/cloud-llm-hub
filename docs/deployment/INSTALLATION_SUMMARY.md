@@ -15,6 +15,8 @@ Quick reference for effort estimation. Full details in [INSTALLATION_PLAN.md](IN
 
 > Lead times assume approvals are in place. In enterprise environments, procurement, security review, and change management processes can add days or weeks.
 
+> **Important:** All prerequisites must be fulfilled before starting the installation. If a missing prerequisite is discovered mid-installation (e.g., entitlement not assigned, ICF service not activated, Cloud Connector path not whitelisted), the installation must be paused. After the prerequisite is resolved — often by a different team (Basis, BTP Admin) — the installation process restarts from the beginning, including a clean rebuild and redeploy. This can turn a 2-hour installation into a multi-day process if prerequisites are not validated upfront.
+
 ## Installation Steps
 
 | # | Step | Time | Who |
