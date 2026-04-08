@@ -80,11 +80,27 @@ No SAP AI Core needed. Works with any OpenAI-compatible API.
 
 ---
 
-## Common to Both Scenarios
+## Scenario C: Custom LLM Provider (optional, advanced)
+
+If the customer has a proprietary or non-standard LLM API, a custom provider can be implemented in llm-agent as a plugin. This is a development task, not a configuration change.
+
+| Step | Effort | Who |
+|------|--------|-----|
+| Implement `ILlm` adapter for customer's API | 2-5 days | Developer |
+| Implement `IEmbedder` adapter (if custom embedding API) | 1-2 days | Developer |
+| Register provider in `makeLlm()` or inject via builder | 0.5 day | Developer |
+| Test and deploy | 1 day | Developer |
+| **Total** | **4-8 days** | |
+
+> This scenario requires code changes in llm-agent. Discuss with the team before committing to a customer.
+
+---
+
+## Common to All Scenarios
 
 > **All prerequisites must be validated before starting.** A missing prerequisite discovered mid-installation forces a pause (often waiting for another team), then restart from rebuild + redeploy. This can turn a 2-hour job into a multi-day effort.
 
-### Compatible OpenAI Providers
+### Compatible OpenAI Providers (Scenario B)
 
 | Provider | Base URL | Notes |
 |----------|----------|-------|
