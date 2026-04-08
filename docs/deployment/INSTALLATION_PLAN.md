@@ -98,9 +98,9 @@ resources:
     active: true
 ```
 
-### Step 3: Configure BTP Destination (10 min) — *optional, can add later*
+### Step 3: Configure BTP Destination (10 min)
 
-In BTP Cockpit → Subaccount → Destinations:
+In BTP Cockpit → Subaccount → Destinations, manually create the destination:
 
 1. Create destination pointing to your SAP system:
    - **Name**: must match `LLM_AGENT_MCP_DESTINATION` (e.g., `S4HANA_DEV`)
@@ -109,11 +109,11 @@ In BTP Cockpit → Subaccount → Destinations:
    - **Authentication**: BasicAuthentication or PrincipalPropagation
    - **ProxyType**: OnPremise (via Cloud Connector) or Internet
 
-2. For on-premise systems — ensure Cloud Connector is configured (*optional, only for on-prem*):
+2. For on-premise systems — ensure Cloud Connector is configured:
    - Virtual host mapped to the SAP system
    - Access control for `/sap/bc/adt/**` and `/sap/bc/http/**`
 
-> **Minimal deploy**: skip this step entirely. Service starts without SAP destinations — LLM chat works, MCP tools unavailable until destination added.
+> This step is mandatory — without a destination the agent has no SAP system to connect to and MCP tools will not load.
 
 ### Step 4: Build MTA Archive (2 min)
 
