@@ -4,6 +4,8 @@ Step-by-step guide to deploy Cloud LLM Hub from scratch on a new BTP subaccount.
 
 ## Prerequisites
 
+> **Validate all prerequisites before starting.** If a missing prerequisite is discovered during installation (e.g., entitlement not assigned, ICF service not activated, Cloud Connector path not whitelisted), the process must be paused until the responsible team resolves it. After the fix, the installation restarts from Step 4 (rebuild + redeploy). When multiple teams are involved (Basis, BTP Admin, Security), this can turn a 2-hour installation into a multi-day effort. Completing the checklist below upfront avoids this.
+
 Before starting, ensure the following are in place:
 
 ### BTP Subaccount
@@ -313,18 +315,16 @@ Override `APPROUTER_HOST` in `.mtaext` to use a meaningful subdomain instead of 
 
 | Step | Description | Time |
 |------|-------------|------|
-| 1 | Clone and install | 5 min |
-| 2 | Create .mtaext | 10 min |
-| 3 | Configure BTP Destination | 10 min |
-| 4 | Build MTA | 2 min |
-| 5 | Deploy to CF | 5 min |
-| 6 | Assign roles | 5 min |
-| 7 | Verify deployment | 5 min |
-| 8 | Access UI | 2 min |
-| 9 | Test chat | 2 min |
-| | **Total** | **~45 min** |
+| 1 | Clone and install | 10 min |
+| 2 | Create .mtaext | 15 min |
+| 3 | Configure BTP Destination | 15-30 min |
+| 4 | Build MTA | 5 min |
+| 5 | Deploy to CF | 10 min |
+| 6 | Assign roles | 10 min |
+| 7-9 | Verify, access UI, test chat | 30 min |
+| | **Total (happy path)** | **~2 hours** |
 
-> Prerequisites (AI Core setup, Cloud Connector, Destination) may take additional 30-60 min if not already configured.
+> Prerequisites (AI Core setup, Cloud Connector, Destination) may take additional hours or days depending on organization. Budget at least 1 extra day for first deployment at a new customer.
 
 ---
 
