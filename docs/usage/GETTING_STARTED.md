@@ -28,7 +28,13 @@ npm run deploy  # or follow docs/DEPLOYMENT_CHECKLIST.md
 
 **Already have a deployment?** Just note your app URL: `https://your-app.cfapps.eu10.hana.ondemand.com`
 
-### Step 2: Get Your Connection Configuration
+**Configure the LLM provider** by setting the `LLM_AGENT_PROVIDER` environment variable. Supported values: `sap-ai-sdk` (default, SAP AI Core), `openai` (any OpenAI-compatible API), `anthropic`, `deepseek`. For non-SAP providers, also set `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL`.
+
+### Step 2: Get Your API Key
+
+Open the **Token page** at `https://your-app.cfapps.eu10.hana.ondemand.com/chat/webapp/token.html` to generate a personal JWT token (valid for 7 days). Use this token as the `Authorization: Bearer <token>` header in all API calls.
+
+### Step 3: Get Your Connection Configuration
 
 Choose your integration method:
 
@@ -50,7 +56,7 @@ node update-cline-connection.js --template cloud-destination \
 
 Copy the template from `docs/templates/mcp-config/` and fill in your values.
 
-### Step 3: Connect Your Client
+### Step 4: Connect Your Client
 
 **For Cline (VS Code):**
 
@@ -351,6 +357,10 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ```
 
 The response includes `_destinations` array with status and tool counts for each SAP system.
+
+### Destination Mapping
+
+You can map short system codes to BTP destination names so clients use a friendly alias instead of the full destination name. Configure destination mapping in your deployment settings so that `X-SAP-Destination: dev` resolves to the actual BTP destination (e.g., `S4HANA_DEV`).
 
 ---
 

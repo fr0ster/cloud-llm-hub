@@ -69,3 +69,87 @@ ABAP Unit Test Service
 ```
 
 See [DESIGN.md](DESIGN.md) for full design document.
+
+## Authentication
+
+The service uses XSUAA (OAuth 2.0) with Basic-to-Bearer middleware. Two authentication methods are available.
+
+### What you receive from the admin
+
+The admin creates a service key and gives you these values:
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `clientid` | `sb-test-management!t12345` | OAuth client ID |
+| `clientsecret` | `abc123...` | OAuth client secret |
+| `url` | `https://mysubaccount.authentication.eu10.hana.ondemand.com` | Token endpoint base URL |
+| `service_url` | `https://myapp.cfapps.eu10-004.hana.ondemand.com` | Service endpoint |
+
+### Method 1: Bearer JWT (recommended)
+
+Obtain a token via `client_credentials` grant, then pass it as a Bearer header.
+
+**Step 1 — Get a token:**
+
+```bash
+CLIENT_ID="sb-test-management!t12345"
+CLIENT_SECRET="abc123..."
+TOKEN_URL="https://mysubaccount.authentication.eu10.hana.ondemand.com"
+
+TOKEN=$(curl -s -X POST "$TOKEN_URL/oauth/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d "grant_type=client_credentials" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+echo "$TOKEN"
+```
+
+The token is valid for **7 days**. After expiry, repeat this step.
+
+**Step 2 — Call the service:**
+
+```bash
+SERVICE_URL="https://myapp.cfapps.eu10-004.hana.ondemand.com"
+
+curl -X POST "$SERVICE_URL/tests/generate" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "requirements": "Test all public methods"}'
+```
+
+### Method 2: Basic Auth (shortcut)
+
+The service accepts `clientid:clientsecret` directly — the Basic-to-Bearer middleware exchanges them for a JWT automatically:
+
+```bash
+curl -X POST "$SERVICE_URL/tests/generate" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"objectName": "Z_MY_CLASS", "destination": "S4HANA_E19", "requirements": "Test all public methods"}'
+```
+
+### Optional parameters
+
+All endpoints accept optional `model` and `temperature` fields in the request body to override the LLM used by cloud-llm-hub for that specific request. When omitted, the service uses the default model configured in cloud-llm-hub.
+
+```json
+{
+  "objectName": "Z_MY_CLASS",
+  "destination": "S4HANA_E19",
+  "model": "anthropic--claude-4.5-sonnet",
+  "temperature": 0.3
+}
+```
+
+### For admins: how to create credentials
+
+```bash
+# Create service key
+cf create-service-key test-management-auth consumer-key
+
+# View credentials to share with consumer
+cf service-key test-management-auth consumer-key
+```
+
+Share the `clientid`, `clientsecret`, `url`, and service URL with the consumer.

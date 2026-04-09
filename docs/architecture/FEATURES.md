@@ -13,6 +13,7 @@ SmartAgent powered by SAP AI Core with intelligent tool selection via vector sim
 
 **Features:**
 
+- Configurable LLM provider via `LLM_AGENT_PROVIDER` env var: SAP AI Core (`sap-ai-sdk`), OpenAI-compatible (`openai`), Anthropic (`anthropic`), DeepSeek (`deepseek`)
 - RAG-based tool selection — only relevant tools sent to LLM context
 - Dynamic model switching at runtime (UI dropdown or API)
 - OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`)
@@ -35,6 +36,7 @@ Automatic discovery and management of multiple SAP ABAP systems.
 - Per-destination tool vectorization with background processing
 - Live destination status in UI (ready/vectorizing/pending/error)
 - Per-request destination switching via `X-SAP-Destination` header
+- Destination mapping — map a short system code to a BTP destination name for cleaner client configuration
 - No page refresh needed — 15s polling for status updates
 
 **Benefits:**
@@ -88,6 +90,7 @@ Built on SAP CAP with enterprise-grade security.
 
 - XSUAA authentication
 - OAuth2 token management
+- API Key page (`/chat/webapp/token.html`) — generate a personal JWT token valid for 7 days
 - Role-based access control
 - Secure credential handling
 
