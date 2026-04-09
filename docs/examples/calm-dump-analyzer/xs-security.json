@@ -4,7 +4,7 @@
   "oauth2-configuration": {
     "credential-types": ["binding-secret", "x509"],
     "grant-types": ["authorization_code", "client_credentials"],
-    "token-validity": 604800,
+    "token-validity": 86400,
     "refresh-token-validity": 2592000
   },
   "scopes": [],
