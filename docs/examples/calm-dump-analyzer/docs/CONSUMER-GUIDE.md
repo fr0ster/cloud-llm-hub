@@ -141,46 +141,75 @@ Even on error, the parsed event fields are still populated so the consumer can i
 
 ## Authentication
 
-The service uses XSUAA. Two authentication methods are supported:
+The service uses XSUAA (OAuth 2.0). You need credentials from the service admin to authenticate.
 
-### Method 1: Basic Auth (clientid:clientsecret)
+### What you receive from the admin
 
-The service has a Basic-to-Bearer middleware — pass `clientid:clientsecret` as HTTP Basic credentials and the server exchanges them for a JWT automatically.
+The admin creates a service key and gives you these values:
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `clientid` | `sb-calm-dump-analyzer!t12345` | OAuth client ID |
+| `clientsecret` | `abc123...` | OAuth client secret |
+| `url` | `https://mysubaccount.authentication.eu10.hana.ondemand.com` | Token endpoint base URL |
+| `service_url` | `https://myapp.cfapps.eu10-004.hana.ondemand.com` | Service endpoint |
+
+### Step 1: Get an API token
+
+Exchange your credentials for a JWT token:
 
 ```bash
-curl -X POST https://<service>/odata/v4/analyzer/AnalyzeDump \
-  -u "<clientid>:<clientsecret>" \
-  -H "Content-Type: application/json" \
-  -d '{"event": "..."}'
-```
+# Set your credentials (from the admin)
+CLIENT_ID="sb-calm-dump-analyzer!t12345"
+CLIENT_SECRET="abc123..."
+TOKEN_URL="https://mysubaccount.authentication.eu10.hana.ondemand.com"
 
-### Method 2: Bearer JWT
-
-Obtain a JWT via client_credentials grant and pass it as Bearer token.
-
-```bash
-# 1. Create service key (once)
-cf create-service-key calm-dump-analyzer-auth api-key
-
-# 2. Get credentials
-cf service-key calm-dump-analyzer-auth api-key
-# Copy clientid, clientsecret, and url from the output
-
-# 3. Get JWT token
-TOKEN=$(curl -s -X POST "<url>/oauth/token" \
+# Get token
+TOKEN=$(curl -s -X POST "$TOKEN_URL/oauth/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -u "<clientid>:<clientsecret>" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
   -d "grant_type=client_credentials" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-# 4. Use the token
-curl -X POST https://<service>/odata/v4/analyzer/AnalyzeDump \
+echo "$TOKEN"
+```
+
+The token is valid for **7 days**. After expiry, repeat this step.
+
+### Step 2: Call the service
+
+**With Bearer token (recommended):**
+```bash
+SERVICE_URL="https://myapp.cfapps.eu10-004.hana.ondemand.com"
+
+curl -X POST "$SERVICE_URL/odata/v4/analyzer/AnalyzeDump" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"event": "..."}'
 ```
 
-> Token validity: 7 days. After expiry, repeat step 3.
+**With Basic Auth (shortcut):**
+
+The service also accepts `clientid:clientsecret` directly — it exchanges them for a JWT automatically:
+
+```bash
+curl -X POST "$SERVICE_URL/odata/v4/analyzer/AnalyzeDump" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"event": "..."}'
+```
+
+### For admins: how to create credentials
+
+```bash
+# Create service key
+cf create-service-key calm-dump-analyzer-auth consumer-key
+
+# View credentials to share with consumer
+cf service-key calm-dump-analyzer-auth consumer-key
+```
+
+Share the `clientid`, `clientsecret`, `url`, and service URL with the consumer.
 
 ## Health Check
 
