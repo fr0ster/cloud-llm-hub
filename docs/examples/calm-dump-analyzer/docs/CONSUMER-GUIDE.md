@@ -141,12 +141,46 @@ Even on error, the parsed event fields are still populated so the consumer can i
 
 ## Authentication
 
-The service uses XSUAA. Consumers need a JWT token from the service's XSUAA instance.
+The service uses XSUAA. Two authentication methods are supported:
 
-For machine-to-machine (M2M) communication (Integration Suite, CALM webhooks):
-1. Create a service key for `calm-dump-analyzer-auth` XSUAA instance
-2. Use client credentials grant to obtain a token
-3. Pass the token as `Authorization: Bearer <token>`
+### Method 1: Basic Auth (clientid:clientsecret)
+
+The service has a Basic-to-Bearer middleware — pass `clientid:clientsecret` as HTTP Basic credentials and the server exchanges them for a JWT automatically.
+
+```bash
+curl -X POST https://<service>/odata/v4/analyzer/AnalyzeDump \
+  -u "<clientid>:<clientsecret>" \
+  -H "Content-Type: application/json" \
+  -d '{"event": "..."}'
+```
+
+### Method 2: Bearer JWT
+
+Obtain a JWT via client_credentials grant and pass it as Bearer token.
+
+```bash
+# 1. Create service key (once)
+cf create-service-key calm-dump-analyzer-auth api-key
+
+# 2. Get credentials
+cf service-key calm-dump-analyzer-auth api-key
+# Copy clientid, clientsecret, and url from the output
+
+# 3. Get JWT token
+TOKEN=$(curl -s -X POST "<url>/oauth/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -u "<clientid>:<clientsecret>" \
+  -d "grant_type=client_credentials" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 4. Use the token
+curl -X POST https://<service>/odata/v4/analyzer/AnalyzeDump \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"event": "..."}'
+```
+
+> Token validity: 7 days. After expiry, repeat step 3.
 
 ## Health Check
 
