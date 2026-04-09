@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cloud LLM Hub - JWT Token</title>
+    <title>Cloud LLM Hub - API Key</title>
     <style>
         body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #00ff00; margin: 0; padding: 40px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -30,13 +30,13 @@
 </head>
 <body>
     <div class="container">
-        <h1>JWT Token</h1>
+        <h1>API Key</h1>
         <div class="info">
-            Your XSUAA JWT token for API access to Cloud LLM Hub.<br>
-            Use as <code>Authorization: Bearer &lt;token&gt;</code> header.
+            Your personal API key for Cloud LLM Hub.<br>
+            Use as <code>Authorization: Bearer &lt;key&gt;</code> header or as API key in Cline, Claude CLI, and other tools.
         </div>
 
-        <button id="btn-get" onclick="getToken()">Get My JWT</button>
+        <button id="btn-get" onclick="getToken()">Get My API Key</button>
 
         <div id="token-section" style="display:none">
             <div class="token-box">
@@ -83,12 +83,12 @@
                 document.getElementById('token-section').style.display = 'block';
                 renderToken();
                 renderMeta();
-                setStatus('Token retrieved successfully', 'status-ok');
+                setStatus('API key retrieved successfully', 'status-ok');
             } catch (err) {
                 setStatus(`Error: ${err.message}`, 'status-err');
                 document.getElementById('token-section').style.display = 'none';
             } finally {
-                btn.textContent = 'Get My JWT';
+                btn.textContent = 'Get My API Key';
                 btn.disabled = false;
             }
         }
@@ -113,7 +113,7 @@
         async function copyToken() {
             try {
                 await navigator.clipboard.writeText(token);
-                setStatus('Copied to clipboard', 'status-ok');
+                setStatus('API key copied to clipboard', 'status-ok');
             } catch {
                 // Fallback
                 const ta = document.createElement('textarea');
@@ -122,7 +122,7 @@
                 ta.select();
                 document.execCommand('copy');
                 document.body.removeChild(ta);
-                setStatus('Copied to clipboard', 'status-ok');
+                setStatus('API key copied to clipboard', 'status-ok');
             }
         }
 
