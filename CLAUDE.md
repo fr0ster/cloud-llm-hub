@@ -82,11 +82,13 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 - **OpenAI-compatible**: `POST /v1/chat/completions` - chat completions via SmartAgent pipeline
 - **Anthropic Messages API**: `POST /v1/messages` - translates Anthropic format to SmartAgent pipeline; enables Claude CLI via `ANTHROPIC_BASE_URL`
 - **Destination management**: `POST /v1/destinations/refresh` - re-init unreachable destinations on demand; `GET /odata/v4/mcp-proxy/ListDestinations()` - list all destinations with reachability status
+- **Destination mapping**: `GET /v1/destinations/resolve?system=E19.100` - resolve SAP system code to BTP destination name; configured via `DESTINATION_MAPPING` env var
+- **Token**: `GET /v1/token` - return caller's JWT token; UI page at `/chat/webapp/token.html`
 
 ### Authentication
 
 - **Development**: Mocked auth (`alice` has MCP_Connector + MCP_Admin roles, `bob` has MCP_Connector only)
-- **Production**: XSUAA (OAuth 2.0) via SAP BTP
+- **Production**: XSUAA (OAuth 2.0) via SAP BTP, token validity 7 days
 - Roles defined in `xs-security.json`
 
 ### SAP Connectivity
