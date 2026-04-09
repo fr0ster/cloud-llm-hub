@@ -2,6 +2,8 @@
 
 Step-by-step guide to deploy Cloud LLM Hub from scratch on a new BTP subaccount.
 
+For the short reminder version of the MCP + external OpenAI-compatible provider scenario, see [MCP_OPENAI_COMPAT_MEMO.md](MCP_OPENAI_COMPAT_MEMO.md).
+
 ## Prerequisites
 
 > **Validate all prerequisites before starting.** If a missing prerequisite is discovered during installation (e.g., entitlement not assigned, ICF service not activated, Cloud Connector path not whitelisted), the process must be paused until the responsible team resolves it. After the fix, the installation restarts from Step 4 (rebuild + redeploy). When multiple teams are involved (Basis, BTP Admin, Security), this can turn a 2-hour installation into a multi-day effort. Completing the checklist below upfront avoids this.
@@ -91,6 +93,9 @@ parameters:
   # RAG type: "vector" (semantic search) or "in-memory" (keyword only)
   LLM_AGENT_RAG_TYPE: "vector"
 
+  # System-to-destination mapping for CALM/external service routing
+  DESTINATION_MAPPING: "DEV.100=S4HANA_DEV"
+
   # Approuter host (subdomain for UI access)
   APPROUTER_HOST: "<your-subdomain>-cloud-llm-hub"
 
@@ -162,8 +167,10 @@ cf apps | grep cloud-llm-hub
 SRV_URL=$(cf app cloud-llm-hub-srv | grep routes | awk '{print $2}')
 curl -s "https://$SRV_URL/mcp/health" | python3 -m json.tool
 
-# Check models endpoint (requires auth)
-# Get a JWT token first, then:
+# Get your JWT token from the UI (or use the token page):
+# https://<APPROUTER_HOST>.cfapps.<landscape>.hana.ondemand.com/chat/webapp/token.html
+
+# Check models endpoint
 curl -s "https://$SRV_URL/v1/models" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
