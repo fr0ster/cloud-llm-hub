@@ -99,9 +99,9 @@ flowchart LR
 
 | Package | Role | Where used |
 |---------|------|------------|
-| **`core`** | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
+| **`core`** (`^4.9.0`) | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
-| **`llm-agent`** | `SmartAgent`, `SmartAgentBuilder`, `McpClientAdapter`, `IRag` — LLM agent with RAG pipeline | `agent-manager.ts` |
+| **`llm-agent`** (`^5.19.1`) | `SmartAgent`, `SmartAgentBuilder`, `McpClientAdapter`, `IRag` — LLM agent with RAG pipeline | `agent-manager.ts` |
 | **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
 | **`interfaces`** | Shared types: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
 | **`logger`** | Base logging implementation | `lib/logger.ts` |
@@ -283,7 +283,7 @@ graph TD
 | **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service at path `/mcp`. Exposes `Health()`, `ProbeDestination(destination)`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
 | **MCP Manager** | `mcp-manager.ts` | Core factory. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
 | **Agent Service** | `agent-service.ts` + `.cds` | CAP service at path `/agent`. Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Delegates to `agent-manager.ts`. |
-| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background vectorization for non-primary destinations. |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background vectorization for non-primary destinations. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. |
 | **OpenAI Handler** | `openai-handler.ts` | OpenAI-compatible HTTP handlers: `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (with destination metadata), `GET /v1/usage`. Reads `X-SAP-Destination` header for per-request destination switching. |
 | **Agent Config** | `agent-config.ts` | Reads `LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`, `LLM_AGENT_MCP_DESTINATION` from env vars. Reads AI Core service binding from `VCAP_SERVICES`. Singleton pattern. |
 | **Auth Service** | `auth.ts` + `.cds` | CAP service at path `/auth`. `CheckAuth()` validates user identity. `CheckRoles(required)` checks specific roles. Used by `server.ts` middleware for `/mcp/*` routes. |
@@ -859,7 +859,12 @@ graph TB
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | Primary BTP Destination name for ABAP system (blocks at startup) |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | MCP proxy URL (optional, auto-detected) |
 | `LLM_AGENT_RESOURCE_GROUP` | `ai-core-models.ts` | AI Core resource group (default: `default`) |
+| `LLM_AGENT_PROVIDER` | `agent-config.ts` | LLM provider (`sap-ai-sdk` \| `openai` \| `anthropic` \| `deepseek`, default: `sap-ai-sdk`) |
+| `LLM_AGENT_API_KEY` | `agent-config.ts` | API key for non-SAP LLM providers (OpenAI, Anthropic, DeepSeek) |
+| `LLM_AGENT_BASE_URL` | `agent-config.ts` | Base URL for LLM provider API (required for OpenAI-compatible endpoints) |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | `agent-config.ts` | Max recent messages to LLM (older excluded, available via RAG) |
+| `LLM_AGENT_PIPELINE_MODE` | `agent-config.ts` | Agent pipeline mode (`default` \| `pipeline`, default: `default`) |
+| `DESTINATION_MAPPING` | `agent-config.ts` | JSON mapping of destination names to display labels or aliases |
 | `VCAP_SERVICES` | `agent-config.ts`, `destinationResolver.ts` | Service bindings (AI Core, Destination, Connectivity) |
 | `MCP_SKIP_AUTO_START` | `env-setup.ts` | Prevents mcp-abap-adt auto-start |
 | `MCP_SKIP_ENV_LOAD` | `env-setup.ts` | Prevents mcp-abap-adt .env loading |
@@ -875,6 +880,7 @@ graph TB
 | `X-SAP-Login` / `X-SAP-Password` | Override destination auth with Basic |
 | `X-SAP-Connectivity-Mode` | `onprem` to route through Cloud Connector |
 | `X-SAP-Connectivity-Location-ID` | Cloud Connector location ID |
+| `X-Rag-Collections` | Comma-separated RAG collection names to include in agent context |
 
 ---
 
@@ -999,6 +1005,8 @@ graph TB
 
 Each destination has its own `McpClientAdapter` (MCP connection) and `Tools RAG Store` (vectorized tool descriptions). The embedder and facts/feedback/state RAG stores are shared.
 
+**Note:** The tools RAG store uses a `NamespaceIgnoringRag` wrapper that strips `ragFilter` before querying. This is because tools have no namespace — unlike domain RAG stores which use `ragFilter.namespace` to separate collections.
+
 ### Startup & Background Vectorization
 
 1. **Primary destination** (from `LLM_AGENT_MCP_DESTINATION` env var) blocks at startup — agent not ready until complete
@@ -1062,4 +1070,4 @@ graph LR
 
 ---
 
-> **Last updated:** 2026-03-29 | **Source:** Auto-generated from codebase analysis
+> **Last updated:** 2026-04-08 | **Source:** Auto-generated from codebase analysis

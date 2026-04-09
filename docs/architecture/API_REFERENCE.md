@@ -1,7 +1,7 @@
 # API Reference
 
-**Version:** 2.2.0
-**Last Updated:** 2026-03-25
+**Version:** 2.3.0
+**Last Updated:** 2026-04-08
 
 Complete API specification for Cloud LLM Hub endpoints.
 
@@ -115,7 +115,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 **Endpoint:** `POST /v1/chat/completions`
 
-**Description:** OpenAI-compatible chat endpoint powered by SmartAgent with RAG-based tool selection.
+**Description:** OpenAI-compatible chat endpoint powered by SmartAgent with RAG-based tool selection. LLM provider is configurable via `LLM_AGENT_PROVIDER` env var (`sap-ai-sdk`, `openai`, `anthropic`, `deepseek`).
 
 **Authentication:** Required
 
@@ -124,6 +124,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `Authorization` (required) - Basic or Bearer token
 - `Content-Type: application/json` (required)
 - `X-SAP-Destination` (optional) - Override active SAP destination for this request
+- `X-Rag-Collections` (optional) - Comma-separated list of RAG collection names to query
 
 **Request Body:**
 
@@ -134,7 +135,8 @@ curl -H "Authorization: Basic YWxpY2U6" \
     { "role": "user", "content": "List all classes in package Z_MY_PKG" }
   ],
   "stream": true,
-  "tools": []
+  "tools": [],
+  "rag_collections": ["my-collection"]
 }
 ```
 
@@ -142,6 +144,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `messages` (required) — OpenAI-format message array
 - `stream` (optional, default: `true`) — SSE streaming or JSON response
 - `tools` (optional) — external tool definitions to pass alongside MCP tools
+- `rag_collections` (optional) — array of RAG collection names to include in context (alternative to `X-Rag-Collections` header)
 
 **Response (streaming):** Server-Sent Events with OpenAI delta format.
 
@@ -174,7 +177,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 **Endpoint:** `GET /v1/models`
 
-**Description:** Returns available LLM models from SAP AI Core, plus destination status information.
+**Description:** Returns available LLM models from the configured provider (SAP AI Core, OpenAI, Anthropic, DeepSeek — see `LLM_AGENT_PROVIDER`), plus destination status information.
 
 **Authentication:** Required
 
@@ -215,7 +218,150 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-### 6. SSE Stream (disabled)
+### 6. Get Token
+
+**Endpoint:** `GET /v1/token`
+
+**Description:** Returns the caller's JWT token from the `Authorization: Bearer` header. Useful for extracting and reusing the token in external tools or scripts.
+
+**Authentication:** Required (Bearer token only)
+
+**Response:**
+
+```json
+{
+  "token": "<jwt-token>"
+}
+```
+
+**Status Codes:**
+
+- `200 OK` - Token returned
+- `401 Unauthorized` - No Bearer token found in request
+
+**Example:**
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+     http://localhost:4004/v1/token
+```
+
+---
+
+### 7. Resolve System Destination
+
+**Endpoint:** `GET /v1/destinations/resolve`
+
+**Description:** Resolves a system code (e.g., `DEV.100`) to the corresponding BTP destination name using configured mappings.
+
+**Authentication:** Required
+
+**Query Parameters:**
+
+- `system` (required) - System code in format `<SID>.<client>` (e.g., `DEV.100`)
+
+**Response:**
+
+```json
+{
+  "system": "DEV.100",
+  "destination": "S4HANA_DEV"
+}
+```
+
+**Status Codes:**
+
+- `200 OK` - Destination resolved
+- `400 Bad Request` - Missing `system` query parameter
+- `404 Not Found` - No mapping found for the given system code
+
+**Example:**
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+     "http://localhost:4004/v1/destinations/resolve?system=DEV.100"
+```
+
+---
+
+### 8. List Destination Mappings
+
+**Endpoint:** `GET /v1/destinations/mappings`
+
+**Description:** Lists all configured system-to-destination mappings.
+
+**Authentication:** Required
+
+**Response:**
+
+```json
+{
+  "mappings": {
+    "DEV.100": "S4HANA_DEV",
+    "TST.100": "S4HANA_TST"
+  }
+}
+```
+
+**Status Codes:**
+
+- `200 OK` - Mappings returned
+
+**Example:**
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+     http://localhost:4004/v1/destinations/mappings
+```
+
+---
+
+### 9. Refresh Destinations
+
+**Endpoint:** `POST /v1/destinations/refresh`
+
+**Description:** Re-initializes unreachable destinations. Triggers reconnection for destinations that failed initial setup or became unavailable.
+
+**Authentication:** Required
+
+**Response:**
+
+```json
+{
+  "destinations": [
+    { "name": "S4HANA_DEV", "status": "ready" },
+    { "name": "S4HANA_TST", "status": "error" }
+  ]
+}
+```
+
+**Status Codes:**
+
+- `200 OK` - Refresh completed
+- `500 Internal Server Error` - Refresh operation failed
+
+**Example:**
+
+```bash
+curl -X POST -H "Authorization: Bearer <token>" \
+     http://localhost:4004/v1/destinations/refresh
+```
+
+---
+
+### 10. List RAG Backends (Planned)
+
+**Endpoint:** `GET /v1/rag/backends`
+
+**Description:** Lists available RAG backend types and their configuration status.
+
+> **Note:** This endpoint is planned and available on a feature branch. Not yet in production.
+
+**Authentication:** Required
+
+---
+
+### 11. SSE Stream (disabled)
 
 **Endpoint:** `GET /mcp/stream/sse`
 
@@ -223,7 +369,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 ---
 
-### 7. Stream-HTTP
+### 12. Stream-HTTP
 
 **Endpoint:** `POST /mcp/stream/http`
 
@@ -496,5 +642,5 @@ For the full list of available tools, see the ABAP ADT MCP server documentation 
 
 ---
 
-**Last Updated:** 2026-03-25
-**API Version:** 2.2
+**Last Updated:** 2026-04-08
+**API Version:** 2.3
