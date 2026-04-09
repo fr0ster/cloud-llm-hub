@@ -167,8 +167,20 @@ cf apps | grep cloud-llm-hub
 SRV_URL=$(cf app cloud-llm-hub-srv | grep routes | awk '{print $2}')
 curl -s "https://$SRV_URL/mcp/health" | python3 -m json.tool
 
-# Get your JWT token from the UI (or use the token page):
-# https://<APPROUTER_HOST>.cfapps.<landscape>.hana.ondemand.com/chat/webapp/token.html
+# Get your API key — two options:
+# Option A: Open the token page in browser (requires approuter login):
+#   https://<APPROUTER_HOST>.cfapps.<landscape>.hana.ondemand.com/chat/webapp/token.html
+#
+# Option B: Via CF CLI (service key + client_credentials grant):
+cf create-service-key cloud-llm-hub-auth api-key
+CREDS=$(cf service-key cloud-llm-hub-auth api-key 2>/dev/null | tail -n +2)
+CLIENT_ID=$(echo "$CREDS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read(),strict=False); c=d.get('credentials',d); print(c['clientid'])")
+CLIENT_SECRET=$(echo "$CREDS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read(),strict=False); c=d.get('credentials',d); print(c['clientsecret'])")
+TOKEN_URL=$(echo "$CREDS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read(),strict=False); c=d.get('credentials',d); print(c['url'])")
+TOKEN=$(curl -s -X POST "$TOKEN_URL/oauth/token" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d "grant_type=client_credentials" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 # Check models endpoint
 curl -s "https://$SRV_URL/v1/models" \
