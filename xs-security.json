@@ -106,7 +106,7 @@
       "client_credentials",
       "refresh_token"
     ],
-    "token-validity": 604800,
+    "token-validity": 86400,
     "refresh-token-validity": 2592000
   }
 }
