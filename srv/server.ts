@@ -434,6 +434,18 @@ cds.on('bootstrap', (app: Application) => {
     res.json({ mappings: getDestinationMappings() });
   }) as never);
 
+  // GET /v1/token — return the caller's JWT token (for API access from external tools)
+  app.get('/v1/token', ((req: Request, res: Response) => {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) {
+      res.json({ token: auth.slice(7) });
+    } else {
+      res
+        .status(401)
+        .json({ error: { message: 'No Bearer token found in request' } });
+    }
+  }) as never);
+
   // DELETE /v1/session — clear server-side conversation history
   app.delete('/v1/session', ((req: Request, res: Response) => {
     const sessionId = req.headers['x-session-id'] as string | undefined;
