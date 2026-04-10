@@ -27,16 +27,13 @@ import {
   InMemoryRag,
   type IQueryEmbedding,
   type IRag,
-  type ISpan,
   MCPClientWrapper,
   McpClientAdapter,
   makeLlm,
   OpenAiEmbedder,
-  QueryEmbedding,
   SessionManager,
   SmartAgentBuilder,
   type SmartAgentHandle,
-  TextOnlyEmbedding,
   ToolCache,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
@@ -44,53 +41,6 @@ import cds from '@sap/cds';
 
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
-
-// ---------------------------------------------------------------------------
-// NamespaceFilteredRag — wraps InMemoryRag with per-query namespace filtering
-// ---------------------------------------------------------------------------
-// InMemoryRag only filters by this.namespace (constructor-time). When used as
-// a shared store across destinations, this.namespace is undefined and ALL records
-// are returned. This wrapper reads options.ragFilter.namespace at query time
-// and filters results accordingly, matching VectorRag/QdrantRag behavior.
-// ---------------------------------------------------------------------------
-
-class NamespaceFilteredRag implements IRag {
-  private inner: InMemoryRag;
-
-  constructor(config?: { dedupThreshold?: number }) {
-    this.inner = new InMemoryRag(config);
-  }
-
-  async upsert(
-    text: string,
-    metadata: Record<string, unknown>,
-    options?: { signal?: AbortSignal },
-  ) {
-    return this.inner.upsert(text, metadata, options);
-  }
-
-  async query(
-    embedding: IQueryEmbedding,
-    k: number,
-    options?: { signal?: AbortSignal; ragFilter?: { namespace?: string } },
-  ) {
-    const result = await this.inner.query(embedding, k, options);
-    if (!result.ok) return result;
-
-    const ns = options?.ragFilter?.namespace;
-    if (ns) {
-      result.value = result.value.filter(
-        (r: { metadata?: { namespace?: string } }) =>
-          r.metadata?.namespace === ns,
-      );
-    }
-    return result;
-  }
-
-  async healthCheck() {
-    return this.inner.healthCheck();
-  }
-}
 
 // ---------------------------------------------------------------------------
 // NamespaceIgnoringRag — wraps tools store to strip ragFilter on query
@@ -381,7 +331,6 @@ export async function refreshDestinations(): Promise<
 
 let sharedEmbedderBreaker: CircuitBreaker | null = null;
 let sharedEmbedder: CircuitBreakerEmbedder | null = null;
-let sharedRagStores: { facts: IRag; feedback: IRag; state: IRag } | null = null;
 
 /** Get or create shared embedder (singleton) */
 function getOrCreateEmbedder(resourceGroup?: string): {
@@ -445,33 +394,6 @@ function createToolsRagStore(resourceGroup?: string): IRag {
 }
 
 /** Get or create shared RAG stores (facts, feedback, state — persist across destination switches) */
-function getOrCreateSharedRagStores(resourceGroup?: string): {
-  facts: IRag;
-  feedback: IRag;
-  state: IRag;
-} {
-  if (sharedRagStores) return sharedRagStores;
-
-  const embedding = getOrCreateEmbedder(resourceGroup);
-  const facts = embedding
-    ? new FallbackRag(
-        new VectorRag(embedding.embedder, {
-          vectorWeight: 0.7,
-          keywordWeight: 0.3,
-        }),
-        new InMemoryRag(),
-        embedding.breaker,
-      )
-    : new InMemoryRag();
-
-  sharedRagStores = {
-    facts,
-    feedback: new NamespaceFilteredRag(),
-    state: new NamespaceFilteredRag(),
-  };
-
-  return sharedRagStores;
-}
 
 // ---------------------------------------------------------------------------
 // Tool vectorization (extracted for reuse across destinations)
