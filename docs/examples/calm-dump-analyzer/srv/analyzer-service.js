@@ -11,6 +11,13 @@ const { analyze } = require('./analyze');
 module.exports = class AnalyzerService extends cds.ApplicationService {
   init() {
     this.on('AnalyzeDump', async (req) => {
+      const log = cds.log('analyzer');
+      log.info('OData AnalyzeDump received', {
+        dataKeys: Object.keys(req.data || {}),
+        eventType: typeof req.data?.event,
+        eventPreview: typeof req.data?.event === 'string' ? req.data.event.slice(0, 200) : String(req.data?.event),
+        model: req.data?.model,
+      });
       const rawEvent = req.data.event;
       if (!rawEvent) {
         return { status: 'error', errorMessage: 'Missing event payload' };
