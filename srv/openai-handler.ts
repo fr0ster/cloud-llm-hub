@@ -803,26 +803,8 @@ export async function handleChatCompletions(
         });
       }
 
-      // Persist agent response in RAG state store for cross-session memory.
-      // Even if session history gets summarized/trimmed, tool results remain
-      // discoverable via semantic search (e.g. "read that program" finds previous results).
-      const stateStore = handle.ragStores.state;
-      const lastUserForState = normalizedMessages
-        .filter((m) => m.role === 'user')
-        .slice(-1)[0];
-      if (stateStore && lastUserForState) {
-        const stateText = `Q: ${typeof lastUserForState.content === 'string' ? lastUserForState.content : ''}\nA: ${accumulatedContent.slice(0, 2000)}`;
-        stateStore
-          .upsert(stateText, {
-            namespace: `${userId}:${destAfter}`,
-            ttl: Math.floor((Date.now() + 3600_000) / 1000),
-          })
-          .catch((err: unknown) => {
-            log.debug('RAG state upsert failed', {
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
-      }
+      // NOTE: state store upsert removed — llm-agent 6.0 has no default state store.
+      // Session history managed by SessionManager + history RAG (session-scoped).
     }
 
     if (chunkCount === 0) {
@@ -891,24 +873,7 @@ export async function handleChatCompletions(
       } as Message);
     }
 
-    // Persist in RAG state store for cross-session memory
-    const stateStore = handle.ragStores.state;
-    const lastUserNonStream = normalizedMessages
-      .filter((m) => m.role === 'user')
-      .slice(-1)[0];
-    if (stateStore && lastUserNonStream) {
-      const stateText = `Q: ${typeof lastUserNonStream.content === 'string' ? lastUserNonStream.content : ''}\nA: ${finalContent.slice(0, 2000)}`;
-      stateStore
-        .upsert(stateText, {
-          namespace: `${userId}:${destAfter}`,
-          ttl: Math.floor((Date.now() + 3600_000) / 1000),
-        })
-        .catch((err: unknown) => {
-          log.debug('RAG state upsert failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-    }
+    // NOTE: state store upsert removed (non-streaming path) — same as streaming.
   }
 
   res.writeHead(200, {
