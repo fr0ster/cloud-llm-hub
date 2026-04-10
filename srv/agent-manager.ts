@@ -28,17 +28,14 @@ import {
   type IQueryEmbedding,
   type IRag,
   type ISpan,
-  type IStageHandler,
   MCPClientWrapper,
   McpClientAdapter,
   makeLlm,
   OpenAiEmbedder,
-  type PipelineContext,
   QueryEmbedding,
   SessionManager,
   SmartAgentBuilder,
   type SmartAgentHandle,
-  type StructuredPipelineDefinition,
   TextOnlyEmbedding,
   ToolCache,
   VectorRag,
@@ -171,536 +168,10 @@ function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
   }
 }
 
-/**
- * Custom classify handler — extends the built-in classify logic and sets
- * `ctx.ragText` from action subprompts.
- *
- * In the default (hardcoded) flow, ragText is computed inline after classification.
- * The structured pipeline expects ragText to be set by the classify stage,
- * but the built-in ClassifyHandler doesn't do this. Without ragText, the
- * translate/expand/rag-query stages all operate on an empty string.
- */
-class CustomClassifyHandler implements IStageHandler {
-  async execute(
-    ctx: PipelineContext,
-    _config: Record<string, unknown>,
-    span: ISpan,
-  ): Promise<boolean> {
-    const log = cds.log('agent-manager/classify');
-    const stageStart = Date.now();
-    log.info('CustomClassifyHandler executing', {
-      inputText: ctx.inputText?.slice(0, 100),
-      classificationEnabled: ctx.config.classificationEnabled,
-    });
-    // Classify input into subprompts (same logic as built-in ClassifyHandler)
-    if (ctx.config.classificationEnabled === false) {
-      ctx.subprompts = [
-        { type: 'action', text: ctx.inputText, dependency: 'independent' },
-      ];
-      span.setAttribute('skipped', true);
-    } else {
-      const result = await ctx.classifier.classify(ctx.inputText, ctx.options);
-      if (!result.ok) {
-        // Classification failed — log error but fallback to action, don't kill pipeline
-        log.error('Classifier failed, falling back to action subprompt', {
-          error: result.error.message,
-        });
-        ctx.subprompts = [
-          {
-            type: 'action',
-            text: ctx.inputText,
-            context: 'sap-abap',
-            dependency: 'independent',
-          },
-        ];
-      } else {
-        ctx.subprompts = result.value;
-        ctx.options?.sessionLogger?.logStep('classifier_response', {
-          subprompts: result.value,
-        });
-      }
-    }
+// NOTE: Custom stage handlers (CustomClassifyHandler, CustomToolSelectHandler,
+// CustomRagUpsertHandler) and StructuredPipelineDefinition removed in 6.0.0.
+// llm-agent now uses DefaultPipeline with consumer-defined RAG stores only.
 
-    // Update control flags (same logic as built-in ClassifyHandler._updateControlFlags)
-    const actions = ctx.subprompts.filter(
-      (sp: { type: string }) => sp.type === 'action',
-    );
-    const mode = ctx.config.mode || 'smart';
-    ctx.isSapRequired =
-      actions.some((a: { context?: string }) => a.context === 'sap-abap') ||
-      mode === 'hard';
-    const ragMode = ctx.config.ragRetrievalMode ?? 'auto';
-    ctx.shouldRetrieve =
-      ragMode === 'always' || (ragMode === 'auto' && ctx.isSapRequired);
-
-    // Set ragText from action subprompts (NOT done by built-in ClassifyHandler).
-    // Without this, translate/expand/rag-query all operate on empty string.
-    ctx.ragText =
-      actions.map((a: { text: string }) => a.text).join(' ') || ctx.inputText;
-
-    // Update session topic BEFORE translate/expand stages modify ragText.
-    // This preserves the original user intent for tool selection enrichment.
-    const classifiedText = ctx.ragText;
-    if (classifiedText.length >= 60) {
-      sessionTopicMap.set(ctx.sessionId, classifiedText.slice(0, 300));
-    }
-
-    const classifyDuration = Date.now() - stageStart;
-    ctx.options?.sessionLogger?.logStep('custom_classify', {
-      subpromptCount: ctx.subprompts.length,
-      actionCount: actions.length,
-      shouldRetrieve: ctx.shouldRetrieve,
-      ragText: ctx.ragText.slice(0, 200),
-      durationMs: classifyDuration,
-    });
-
-    return true;
-  }
-}
-
-/**
- * Custom tool-select stage handler using the dedicated 'tools' RAG store.
- *
- * Replaces the built-in ToolSelectHandler which scans ALL ragResults for
- * `tool:*` entries (mixing tool descriptions into assembler output).
- * This handler queries only `ctx.ragStores.tools` and does NOT write to
- * `ctx.ragResults`, keeping tool discovery isolated from user knowledge.
- *
- * v3.0.0 dynamic stores: `tools` is registered via `.withRag()` as a
- * first-class store, but only this handler queries it — no `rag-query`
- * stage in the pipeline for `tools`.
- */
-
-// Module-level MCP tools cache — embedded MCP tools don't change between requests.
-// Populated on first request, reused on subsequent ones (~10s → 0ms).
-let cachedMcpTools:
-  | { name: string; description?: string; inputSchema?: unknown }[]
-  | null = null;
-let cachedToolClientMap: Map<string, unknown> | null = null;
-
-class CustomToolSelectHandler implements IStageHandler {
-  async execute(
-    ctx: PipelineContext,
-    config: Record<string, unknown>,
-    span: ISpan,
-  ): Promise<boolean> {
-    const log = cds.log('agent-manager/tool-select');
-    const stageStart = Date.now();
-    log.info('CustomToolSelectHandler executing', {
-      ragStoreKeys: Object.keys(ctx.ragStores),
-      hasToolsStore: !!ctx.ragStores.tools,
-      mcpToolsCount: ctx.mcpTools.length,
-      mcpClientsCount: ctx.mcpClients.length,
-      inputText: ctx.inputText?.slice(0, 100),
-    });
-    const mode = ctx.config.mode || 'smart';
-
-    // List all MCP tools — use module-level cache for embedded MCP servers
-    if (ctx.mcpTools.length === 0 && ctx.mcpClients.length > 0) {
-      if (cachedMcpTools && cachedToolClientMap) {
-        // Restore from cache (~0ms vs ~10s)
-        for (const t of cachedMcpTools) {
-          ctx.mcpTools.push(t as (typeof ctx.mcpTools)[0]);
-        }
-        for (const [name, client] of cachedToolClientMap) {
-          ctx.toolClientMap.set(name, client as (typeof ctx.mcpClients)[0]);
-        }
-        log.info('MCP tools restored from cache', {
-          mcpToolsCount: ctx.mcpTools.length,
-        });
-      } else {
-        // First request — load and cache
-        const settled = await Promise.allSettled(
-          ctx.mcpClients.map(async (client) => ({
-            client,
-            result: await client.listTools(ctx.options),
-          })),
-        );
-        for (const entry of settled) {
-          if (entry.status === 'fulfilled' && entry.value.result.ok) {
-            for (const t of entry.value.result.value) {
-              if (!ctx.toolClientMap.has(t.name)) {
-                ctx.mcpTools.push(t);
-                ctx.toolClientMap.set(t.name, entry.value.client);
-              }
-            }
-          } else {
-            const reason =
-              entry.status === 'rejected'
-                ? String(entry.reason)
-                : !entry.value.result.ok
-                  ? `listTools returned error: ${'error' in entry.value.result ? String(entry.value.result.error) : 'unknown'}`
-                  : 'unknown';
-            log.error('MCP client listTools failed', { reason });
-          }
-        }
-        // Populate cache
-        cachedMcpTools = ctx.mcpTools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-        }));
-        cachedToolClientMap = new Map(ctx.toolClientMap);
-        log.info('MCP tools loaded and cached', {
-          mcpToolsCount: ctx.mcpTools.length,
-          clientResults: settled.map((s) =>
-            s.status === 'fulfilled'
-              ? {
-                  ok: s.value.result.ok,
-                  count: s.value.result.ok ? s.value.result.value.length : 0,
-                }
-              : { ok: false, error: String(s.reason) },
-          ),
-        });
-      }
-    }
-
-    // Query the dedicated 'tools' store from ctx.ragStores (registered via withRag)
-    const toolsStore = ctx.ragStores.tools;
-    // Default k=10. Per-iteration tool re-selection (withToolReselection)
-    // picks up companion tools on subsequent iterations if needed.
-    const k = (config.k as number) || ctx.config.ragQueryK || 10;
-    let queryText = ctx.ragText || ctx.inputText;
-
-    // Topic-aware query enrichment: when the current message is too short to carry
-    // semantic intent (e.g. just a class name "ZCL_DEMO_HELLO_AI1"), prepend the
-    // session topic — the classified ragText from the previous request.
-    // This costs zero extra LLM tokens; only the embedding query changes.
-    const SHORT_QUERY_THRESHOLD = 60;
-    const sessionTopic = sessionTopicMap.get(ctx.sessionId);
-    if (queryText.length < SHORT_QUERY_THRESHOLD && sessionTopic) {
-      queryText = `${sessionTopic} ${queryText}`;
-      log.info('Enriched tool-select query with session topic', {
-        topic: sessionTopic.slice(0, 200),
-        original: (ctx.ragText || ctx.inputText).slice(0, 100),
-        enriched: queryText.slice(0, 300),
-      });
-    }
-
-    let ragToolNames = new Set<string>();
-
-    if (!toolsStore) {
-      log.warn('Tools RAG store not found', {
-        availableStores: Object.keys(ctx.ragStores),
-      });
-    }
-
-    if (toolsStore && ctx.mcpTools.length > 0) {
-      // Query tools store WITHOUT ragFilter — tools are shared (no namespace).
-      // ctx.options contains ragFilter.namespace for per-user isolation,
-      // but tool records were upserted without namespace metadata.
-      // Passing ragFilter would filter out ALL tool records → 0 results → hallucination.
-      const { ragFilter: _unused, ...toolQueryOpts } = (ctx.options ??
-        {}) as Record<string, unknown>;
-
-      // Retry once on failure (covers transient 429 rate-limit from embedder)
-      const toolEmbedding = ctx.embedder
-        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
-        : new TextOnlyEmbedding(queryText);
-      let result = await toolsStore.query(toolEmbedding, k, toolQueryOpts);
-      if (!result.ok) {
-        log.warn('Tools RAG query failed, retrying in 1.5s', {
-          error: 'error' in result ? String(result.error) : 'unknown',
-        });
-        await new Promise((r) => setTimeout(r, 1500));
-        const retryEmbedding = ctx.embedder
-          ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
-          : new TextOnlyEmbedding(queryText);
-        result = await toolsStore.query(retryEmbedding, k, toolQueryOpts);
-      }
-
-      if (result.ok) {
-        // Filter out low-confidence results: if the best score is below threshold,
-        // RAG has no meaningful match — treat as empty (triggers all-tools fallback).
-        // This prevents filling the tool set with irrelevant tools on ambiguous queries.
-        const MIN_SCORE_THRESHOLD = 0.25;
-        const bestScore = Math.max(...result.value.map((r) => r.score ?? 0), 0);
-
-        if (bestScore >= MIN_SCORE_THRESHOLD) {
-          ragToolNames = new Set(
-            result.value
-              .map((r) => r.metadata.id)
-              .filter((id): id is string => !!id?.startsWith('tool:'))
-              .map((id) => id.slice(5)),
-          );
-        } else {
-          log.warn(
-            'All RAG tool scores below threshold — treating as no match',
-            {
-              bestScore,
-              threshold: MIN_SCORE_THRESHOLD,
-              query: queryText.slice(0, 200),
-            },
-          );
-        }
-
-        ctx.options?.sessionLogger?.logStep('custom_tool_select', {
-          query: queryText.slice(0, 200),
-          k,
-          bestScore,
-          resultCount: result.value.length,
-          matchedTools: [...ragToolNames],
-          results: result.value.map((r) => ({
-            id: r.metadata.id,
-            score: r.score,
-            text: r.text.slice(0, 120),
-          })),
-        });
-      } else {
-        log.error('Tools RAG query failed after retry', {
-          query: queryText.slice(0, 200),
-          error: 'error' in result ? String(result.error) : 'unknown',
-          storeType: toolsStore.constructor.name,
-        });
-      }
-    } else if (ctx.mcpTools.length === 0) {
-      log.warn(
-        'No MCP tools available for RAG query — LLM will have no tools',
-        {
-          mcpClientsCount: ctx.mcpClients.length,
-          toolsStoreType: toolsStore?.constructor.name ?? 'none',
-        },
-      );
-    }
-
-    // Companion tools: if RAG selected Update*/Create*/Delete* for an object type,
-    // auto-include the corresponding Read*/Get* tools so the LLM can read before writing.
-    // Without this, "add comments to class" selects UpdateClass but not ReadClass.
-    if (ragToolNames.size > 0) {
-      const allToolNames = new Set(ctx.mcpTools.map((t) => t.name));
-      const companions = new Set<string>();
-      for (const name of ragToolNames) {
-        for (const prefix of ['Update', 'Create', 'Delete']) {
-          if (name.startsWith(prefix)) {
-            const base = name.slice(prefix.length);
-            for (const readPrefix of ['Read', 'Get']) {
-              const companion = `${readPrefix}${base}`;
-              if (allToolNames.has(companion) && !ragToolNames.has(companion)) {
-                companions.add(companion);
-              }
-            }
-          }
-        }
-      }
-      if (companions.size > 0) {
-        for (const c of companions) ragToolNames.add(c);
-        log.info('Added companion Read/Get tools', {
-          companions: [...companions],
-        });
-      }
-    }
-
-    // Select tools based on RAG results.
-    // If RAG returns 0 matches (language mismatch, embedder failure, etc.) but MCP tools
-    // ARE available, fall back to all tools. Zero tools = guaranteed hallucination.
-    let selectedMcpTools: typeof ctx.mcpTools;
-    if (ragToolNames.size > 0) {
-      selectedMcpTools = ctx.mcpTools.filter((t) => ragToolNames.has(t.name));
-    } else if (ctx.mcpTools.length > 0) {
-      // Fallback: RAG didn't match any tools — provide all MCP tools to prevent hallucination
-      selectedMcpTools = ctx.mcpTools;
-      log.warn(
-        'RAG tool query returned 0 matches — falling back to all MCP tools',
-        {
-          query: queryText.slice(0, 200),
-          mcpToolsCount: ctx.mcpTools.length,
-          mode,
-        },
-      );
-    } else {
-      selectedMcpTools = [];
-    }
-
-    ctx.selectedTools =
-      mode === 'hard'
-        ? selectedMcpTools
-        : [...selectedMcpTools, ...ctx.externalTools];
-
-    // Apply availability filtering
-    const filtered = ctx.toolAvailabilityRegistry.filterTools(
-      ctx.sessionId,
-      ctx.selectedTools,
-    );
-    ctx.activeTools = filtered.allowed;
-    if (filtered.blocked.length > 0) {
-      ctx.options?.sessionLogger?.logStep('active_tools_filtered_by_registry', {
-        blocked: filtered.blocked,
-      });
-    }
-
-    span.setAttribute('mcp_tools', ctx.mcpTools.length);
-    span.setAttribute('selected', ctx.selectedTools.length);
-    span.setAttribute('active', ctx.activeTools.length);
-
-    const toolSelectDuration = Date.now() - stageStart;
-    ctx.options?.sessionLogger?.logStep('tools_selected', {
-      totalMcp: ctx.mcpTools.length,
-      ragMatchedTools: [...ragToolNames],
-      selectedCount: ctx.selectedTools.length,
-      selectedNames: ctx.selectedTools.map((t) => t.name),
-      activeCount: ctx.activeTools.length,
-      durationMs: toolSelectDuration,
-    });
-
-    return true;
-  }
-}
-
-/**
- * Custom rag-upsert handler — stores classified subprompts (fact, feedback, state)
- * with per-session namespace for user isolation.
- *
- * The built-in RagUpsertHandler reads namespace from static `ctx.config.sessionPolicy`,
- * but our singleton SmartAgent serves all users. This handler reads the sessionId
- * from `ctx.options` (passed per-request) and uses it as the namespace.
- *
- * This ensures each user's facts/feedback/state are isolated in RAG queries.
- * The 'tools' store is shared — it has no namespace and is NOT written here.
- */
-class CustomRagUpsertHandler implements IStageHandler {
-  async execute(
-    ctx: PipelineContext,
-    _config: Record<string, unknown>,
-    span: ISpan,
-  ): Promise<boolean> {
-    const log = cds.log('agent-manager/rag-upsert');
-
-    // Use ragFilter.namespace (= userId) for per-user isolation.
-    // Set in openai-handler.ts from cds.context.user.id (XSUAA/mocked auth).
-    // biome-ignore lint/suspicious/noExplicitAny: ragFilter not in CallOptions type
-    const namespace = (ctx.options as any)?.ragFilter?.namespace as
-      | string
-      | undefined;
-    const metadata: Record<string, unknown> = {};
-    if (namespace) {
-      metadata.namespace = namespace;
-    }
-    // TTL: 1 hour
-    metadata.ttl = Math.floor((Date.now() + 3600_000) / 1000);
-
-    // Resolve store by subprompt type (fact→facts, feedback→feedback, state→state)
-    const resolveStore = (type: string) =>
-      ctx.ragStores[type] ?? ctx.ragStores[`${type}s`];
-
-    // Filter: skip actions and chat, only upsert fact/feedback/state
-    const toStore = ctx.subprompts.filter(
-      (sp: { type: string }) =>
-        sp.type !== 'action' && sp.type !== 'chat' && resolveStore(sp.type),
-    );
-
-    if (toStore.length === 0) {
-      span.setAttribute('skipped', true);
-      return true;
-    }
-
-    const results = await Promise.allSettled(
-      toStore.map(async (sp: { type: string; text: string }) => {
-        const store = resolveStore(sp.type);
-        if (!store) return;
-        const res = await store.upsert(sp.text, metadata, ctx.options);
-        if (!res.ok) {
-          log.warn('RAG upsert failed', {
-            type: sp.type,
-            error: 'error' in res ? String(res.error) : 'unknown',
-          });
-        }
-        return { type: sp.type, ok: res.ok };
-      }),
-    );
-
-    const stored = results
-      .filter((r) => r.status === 'fulfilled' && r.value?.ok)
-      .map((r) => (r as PromiseFulfilledResult<{ type: string }>).value.type);
-
-    log.info('RAG upsert completed', {
-      namespace: namespace ?? 'none',
-      subpromptTypes: toStore.map((sp: { type: string }) => sp.type),
-      storedTypes: stored,
-    });
-
-    span.setAttribute('stored_count', stored.length);
-    return true;
-  }
-}
-
-// CustomToolLoopHandler removed — replaced by built-in withToolReselection(true) in llm-agent 5.6+
-
-/**
- * Structured pipeline definition — mirrors the default flow but uses
- * our custom tool-select handler with a dedicated 'tools' RAG store.
- *
- * Key difference from default: rag-query only queries facts/feedback/state.
- * The 'tools' store is queried exclusively by CustomToolSelectHandler,
- * keeping tool descriptions out of assembler's Known Facts section.
- *
- * Flow: classify → [summarize] → [rag-upsert] →
- *       [parallel: translate + expand] → [parallel: rag-queries] → [rerank] →
- *       tool-select → assemble → tool-loop
- *
- * v3.3.0 parallelization: translate and expand run concurrently,
- * then rag-queries run concurrently, then rerank. This reduces the
- * pre-tool-loop overhead from ~11s to ~5-6s.
- *
- * Presentation stage was removed in llm-agent 5.3.0+.
- */
-const pipelineDefinition: StructuredPipelineDefinition = {
-  version: '1',
-  stages: [
-    { id: 'classify', type: 'classify' },
-    {
-      id: 'summarize',
-      type: 'summarize',
-      when: 'config.historySummarizationLimit',
-    },
-    {
-      id: 'rag-upsert',
-      type: 'rag-upsert',
-      when: 'config.ragUpsertEnabled',
-    },
-    // RAG retrieval: translate + expand in parallel, then queries + rerank.
-    // v3.3.0 parallel structure eliminates sequential overhead.
-    {
-      id: 'rag-retrieval',
-      type: 'parallel',
-      when: 'shouldRetrieve',
-      stages: [
-        { id: 'translate', type: 'translate' },
-        { id: 'expand', type: 'expand' },
-      ],
-      after: [
-        {
-          id: 'rag-queries',
-          type: 'parallel',
-          stages: [
-            {
-              id: 'rag-facts',
-              type: 'rag-query',
-              config: { store: 'facts' },
-            },
-            {
-              id: 'rag-feedback',
-              type: 'rag-query',
-              config: { store: 'feedback' },
-            },
-            {
-              id: 'rag-state',
-              type: 'rag-query',
-              config: { store: 'state' },
-            },
-          ],
-        },
-        { id: 'rerank', type: 'rerank' },
-      ],
-    },
-    // Custom tool-select: uses its own RAG store, not ctx.ragResults.facts
-    { id: 'tool-select', type: 'tool-select' },
-    { id: 'assemble', type: 'assemble' },
-    { id: 'tool-loop', type: 'tool-loop' },
-    // Presentation stage removed in 5.3.0 — use onBeforeStream hook instead
-  ],
-};
-
-/** Per-destination SmartAgent handles */
 const agentHandles = new Map<string, SmartAgentHandle>();
 
 /** Runtime model overrides (null = use config/env default) */
@@ -1139,26 +610,6 @@ async function initDestination(
       config,
     );
     agentHandles.set(destinationName, handle);
-
-    // Preload MCP tools cache so tool-select skips listTools on every request.
-    // listTools already ran during vectorizeTools — reuse the adapter.
-    if (!cachedMcpTools) {
-      const toolsResult = await state.mcpAdapter.listTools();
-      if (toolsResult.ok) {
-        cachedMcpTools = toolsResult.value.map((t) => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-        }));
-        cachedToolClientMap = new Map(
-          toolsResult.value.map((t) => [t.name, state.mcpAdapter!]),
-        );
-        log.info('MCP tools preloaded at startup', {
-          toolCount: cachedMcpTools.length,
-        });
-      }
-    }
-
     state.status = 'ready';
     log.info('Destination ready', {
       destination: destinationName,
@@ -1493,14 +944,6 @@ async function buildAgentForDestination(
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
-  const shared = getOrCreateSharedRagStores(config.llm.resourceGroup);
-
-  const ragStores: Record<string, IRag> = {
-    tools: toolsRag,
-    facts: shared.facts,
-    feedback: shared.feedback,
-    state: shared.state,
-  };
 
   const builder = new SmartAgentBuilder({
     agent: {
@@ -1514,8 +957,6 @@ async function buildAgentForDestination(
       toolReselectPerIteration: true,
       // Fewer tools per selection = less token overhead from tool definitions
       ragQueryK: 5,
-      // Always run RAG retrieval (not just for "action" type subprompts)
-      ragRetrievalMode: 'always' as const,
     },
     prompts: {
       system: [
@@ -1526,17 +967,15 @@ async function buildAgentForDestination(
       classifier: [
         'You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.',
         'For each task, identify:',
-        '  - "type": chat (greetings/math), action (tasks AND knowledge/fact questions), state (context), feedback.',
+        '  - "type": action (tasks, knowledge questions, SAP operations) or chat (greetings, math, jokes).',
         '  - "text": the actual task description.',
-        '  - "context": the domain of the task (e.g., "sap-abap", "math", "general").',
-        '  - "dependency": "independent", "sequential" (must run after previous action), or an ID of a subprompt this one depends on.',
+        '  - "context": "sap-abap" if SAP terms present, otherwise "general".',
+        '  - "dependency": "independent" or "sequential".',
         '',
-        'CRITICAL RULES:',
-        '1. If a message contains multiple sequential steps (e.g., "Do A and then check B"), SPLIT them into separate "action" subprompts with "dependency": "sequential" on the later steps.',
-        '2. If tasks are independent (e.g., "Check weather AND add 5+5"), SPLIT them with "dependency": "independent".',
-        '3. If a task is an atomic operation with a conditional fallback (e.g., "Do A, if it fails do B"), keep it as a SINGLE subprompt — the fallback is part of the same instruction.',
-        '4. Be strictly neutral. Only assign "sap-abap" context if SAP terms are present.',
-        '5. IMPORTANT: Knowledge/factual questions (who, what, when, where, why, how) MUST be classified as "action" — NOT "fact". This ensures the RAG pipeline retrieves relevant context.',
+        'Rules:',
+        '- Multi-step requests: split into separate "action" subprompts with "sequential" dependency.',
+        '- Independent tasks: separate subprompts with "independent" dependency.',
+        '- Knowledge/factual questions MUST be "action" — NOT "chat".',
         '',
         'Return ONLY a JSON array.',
       ].join('\n'),
@@ -1544,15 +983,15 @@ async function buildAgentForDestination(
   })
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
-    .withMcpClients([mcpAdapter])
-    .withRag(ragStores);
+    .withMcpClients([mcpAdapter]);
 
-  // Share embedder across all RAG queries — single embed call reused by all stores via QueryEmbedding
+  // Tools RAG store for MCP tool selection (auto-vectorized)
+  builder.setToolsRag(toolsRag);
+
+  // Share embedder across all RAG queries
   if (sharedEmbedder) builder.withEmbedder(sharedEmbedder);
 
   builder
-    .withRagTranslation(true)
-    .withRagUpsert(true)
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withToolReselection(true)
     .withToolCache(new ToolCache({ ttlMs: 30_000 }))
