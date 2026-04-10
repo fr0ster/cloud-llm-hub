@@ -146,7 +146,9 @@ async function resolveDestination(systemCode) {
 
 async function analyze(body, llmOptions) {
   const log = cds.log('analyzer');
+  log.info('Received body keys', { keys: Object.keys(body || {}), hasStartEvent: !!body?.startEvent });
   const parsed = parseEvent(body);
+  log.info('Parsed event', parsed);
   if (!parsed) throw new Error('Invalid CALM payload: missing startEvent or eventDetailsTable');
 
   const timing = { start: Date.now() };
