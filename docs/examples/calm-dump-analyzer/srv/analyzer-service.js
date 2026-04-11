@@ -12,7 +12,7 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
   init() {
     this.on('AnalyzeDump', async (req) => {
       const log = cds.log('analyzer');
-      log.info('OData AnalyzeDump received', {
+      log.warn('OData AnalyzeDump received', {
         dataKeys: Object.keys(req.data || {}),
         eventType: typeof req.data?.event,
         eventPreview: typeof req.data?.event === 'string' ? req.data.event.slice(0, 200) : String(req.data?.event),

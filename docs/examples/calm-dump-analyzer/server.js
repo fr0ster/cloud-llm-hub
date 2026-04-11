@@ -16,25 +16,10 @@ cds.on('bootstrap', (app) => {
   cds.middlewares.before = [context, wrappedAuth];
 
   // POST /analyze — raw CALM JSON, no OData wrapping
-  // Capture raw body for diagnostics before JSON parsing
-  app.use('/analyze', context, wrappedAuth, (req, _res, next) => {
-    let rawChunks = [];
-    req.on('data', (chunk) => rawChunks.push(chunk));
-    req.on('end', () => { req._rawBody = Buffer.concat(rawChunks).toString('utf-8'); });
-    next();
-  }, express.json({ limit: '1mb' }));
+  app.use('/analyze', context, wrappedAuth, express.json({ limit: '1mb' }));
   app.post('/analyze', async (req, res) => {
     const log = cds.log('analyzer');
-    log.info('POST /analyze received', {
-      contentType: req.headers['content-type'],
-      contentLength: req.headers['content-length'],
-      bodyType: typeof req.body,
-      bodyKeys: req.body ? Object.keys(req.body) : [],
-      hasStartEvent: !!req.body?.startEvent,
-      rawBodyLength: req._rawBody?.length || 0,
-      rawBodyPreview: (req._rawBody || '').slice(0, 500),
-      parsedBodyPreview: req.body ? JSON.stringify(req.body).slice(0, 500) : 'null',
-    });
+    log.warn('REST /analyze body', JSON.stringify(req.body).slice(0, 500));
     try {
       const llmOptions = { model: req.body.model, temperature: req.body.temperature };
       const result = await analyze(req.body, llmOptions);
