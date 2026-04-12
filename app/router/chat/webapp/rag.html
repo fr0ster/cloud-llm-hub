@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud LLM Hub - RAG Manager</title>
+    <style>
+        body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #00ff00; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { font-size: 20px; margin-bottom: 5px; }
+        .subtitle { color: #888; font-size: 13px; margin-bottom: 20px; }
+        a { color: #00bfff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .section { background: #111; border: 1px solid #333; border-radius: 4px; padding: 15px; margin-bottom: 15px; }
+        .section-title { color: #ffcc00; font-size: 13px; font-weight: bold; margin-bottom: 10px; }
+
+        input, select, textarea { background: #1a1a1a; color: #00ff00; border: 1px solid #333; padding: 6px 10px; font-family: 'Courier New', monospace; font-size: 13px; border-radius: 3px; }
+        input:focus, textarea:focus { border-color: #00ff00; outline: none; }
+        textarea { resize: vertical; }
+
+        button { background: #1a1a1a; color: #00ff00; border: 1px solid #333; cursor: pointer; padding: 6px 14px; font-family: 'Courier New', monospace; font-size: 13px; border-radius: 3px; }
+        button:hover { background: #00ff00; color: #000; }
+        .btn-danger { color: #ff5555; border-color: #552222; }
+        .btn-danger:hover { background: #ff5555; color: #000; }
+        .btn-blue { color: #00bfff; border-color: #003355; }
+        .btn-blue:hover { background: #00bfff; color: #000; }
+
+        .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+
+        .collection { background: #0c0c0c; border: 1px solid #222; padding: 10px 12px; margin-bottom: 6px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .collection.active { border-left: 3px solid #00bfff; }
+        .collection.inactive { border-left: 3px solid #555; opacity: 0.7; }
+
+        .doc { background: #0c0c0c; border: 1px solid #222; padding: 8px 12px; margin-bottom: 4px; border-radius: 4px; }
+        .doc-text { color: #aaa; font-size: 12px; white-space: pre-wrap; max-height: 80px; overflow: hidden; margin-top: 4px; }
+        .doc-meta { color: #555; font-size: 11px; margin-top: 2px; }
+
+        .search-result { border-left: 3px solid #ffcc00; }
+        .score { color: #ff00ff; font-size: 12px; }
+
+        .status { color: #888; font-size: 13px; padding: 10px 0; }
+        .status-ok { color: #00ff00; }
+        .status-err { color: #ff5555; }
+
+        .nav { display: flex; gap: 15px; margin-bottom: 20px; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RAG Manager</h1>
+        <div class="subtitle">Manage knowledge collections for Cloud LLM Hub</div>
+        <div class="nav">
+            <a href="index.html">Chat</a>
+            <a href="token.html">API Key</a>
+        </div>
+
+        <!-- Create collection -->
+        <div class="section">
+            <div class="section-title">NEW COLLECTION</div>
+            <div class="row">
+                <input id="new-id" placeholder="collection-id" style="width:140px">
+                <input id="new-name" placeholder="Display Name" style="width:170px">
+                <input id="new-desc" placeholder="Description (for LLM context)" style="flex:1;min-width:200px">
+            </div>
+            <div class="row">
+                <select id="new-scope"><option value="user">user</option><option value="global">global</option></select>
+                <select id="new-backend"><option value="">default</option></select>
+                <input id="new-tags" placeholder="tags (comma-separated)" style="width:180px">
+                <button onclick="createCollection()">CREATE</button>
+            </div>
+        </div>
+
+        <!-- Collections list -->
+        <div id="collections-list"><div class="status">Loading...</div></div>
+
+        <!-- Document panel (shown when collection selected) -->
+        <div id="doc-panel" style="display:none">
+            <div class="section">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div class="section-title">Documents in: <span id="doc-collection-name" style="color:#00bfff"></span></div>
+                    <div class="row">
+                        <button class="btn-blue" onclick="showPanel('upload')">UPLOAD FILE</button>
+                        <button onclick="showPanel('add')">+ ADD</button>
+                        <button onclick="closeDocPanel()" style="color:#888">BACK</button>
+                    </div>
+                </div>
+
+                <!-- Upload form -->
+                <div id="upload-panel" style="display:none;margin-top:10px">
+                    <input id="file-desc" placeholder="File description for search (e.g., 'ABAP dump from DEV.100', 'SAP FI configuration guide')" style="width:100%;margin-bottom:6px;box-sizing:border-box">
+                    <div class="row">
+                        <input type="file" id="file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="color:#888;font-size:12px">
+                        <label style="color:#888;font-size:12px">Chunk size:</label>
+                        <input id="chunk-size" type="number" value="2000" min="200" max="10000" style="width:70px">
+                        <button class="btn-blue" onclick="uploadFile()">UPLOAD</button>
+                    </div>
+                    <div id="upload-status" class="status"></div>
+                </div>
+
+                <!-- Add document form -->
+                <div id="add-panel" style="display:none;margin-top:10px">
+                    <textarea id="doc-text" placeholder="Document text..." rows="4" style="width:100%;box-sizing:border-box"></textarea>
+                    <div class="row" style="margin-top:6px">
+                        <input id="doc-id" placeholder="doc-id (optional)" style="width:160px">
+                        <input id="doc-tags" placeholder="tags (comma-separated)" style="width:180px">
+                        <button onclick="addDocument()">ADD</button>
+                    </div>
+                </div>
+
+                <!-- Search -->
+                <div class="row" style="margin-top:10px">
+                    <input id="search-text" placeholder="Search in collection..." style="flex:1" onkeydown="if(event.key==='Enter')searchDocs()">
+                    <button class="btn-blue" onclick="searchDocs()">SEARCH</button>
+                    <button onclick="loadDocuments()" style="color:#888;font-size:11px">ALL</button>
+                </div>
+
+                <!-- Document list -->
+                <div id="doc-list" style="margin-top:10px"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentCollection = null;
+
+        function api(url, opts = {}) {
+            return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
+        }
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        // --- Collections ---
+        async function loadCollections() {
+            const el = document.getElementById('collections-list');
+            try {
+                const res = await api('/v1/rag/collections');
+                const data = await res.json();
+                if (!data.collections?.length) { el.innerHTML = '<div class="status">No collections. Create one above.</div>'; return; }
+                el.innerHTML = data.collections.map(c => `
+                    <div class="collection active">
+                        <div>
+                            <span style="color:#fff;font-weight:bold">${esc(c.displayName)}</span>
+                            <span style="color:#555;margin-left:6px">(${esc(c.id)})</span>
+                            <span style="color:#888;margin-left:6px;font-size:12px">${c.scope} · ${c.backend||'default'} · ${c.documentCount} docs</span>
+                            ${c.description ? `<div style="color:#666;font-size:12px;margin-top:2px">${esc(c.description)}</div>` : ''}
+                        </div>
+                        <div class="row">
+                            <button class="btn-blue" onclick="openDocs('${esc(c.id)}','${esc(c.displayName)}')">DOCS</button>
+                            ${c.id!=='facts' ? `<button class="btn-danger" onclick="delCollection('${esc(c.id)}')">DEL</button>` : ''}
+                        </div>
+                    </div>`).join('');
+            } catch(e) { el.innerHTML = `<div class="status status-err">Error: ${esc(e.message)}</div>`; }
+        }
+
+        async function createCollection() {
+            const id = document.getElementById('new-id').value.trim();
+            const displayName = document.getElementById('new-name').value.trim();
+            if (!id || !displayName) { alert('ID and Name required'); return; }
+            const body = {
+                id, displayName,
+                scope: document.getElementById('new-scope').value,
+                backend: document.getElementById('new-backend').value || undefined,
+                description: document.getElementById('new-desc').value.trim() || undefined,
+                tags: document.getElementById('new-tags').value.trim() || undefined,
+            };
+            const res = await api('/v1/rag/collections', { method: 'POST', body: JSON.stringify(body) });
+            if (!res.ok) { const e = await res.json(); alert(e.error?.message||'Error'); return; }
+            ['new-id','new-name','new-desc','new-tags'].forEach(id => document.getElementById(id).value = '');
+            loadCollections();
+        }
+
+        async function delCollection(id) {
+            if (!confirm(`Delete "${id}" and all documents?`)) return;
+            await api(`/v1/rag/collections/${id}`, { method: 'DELETE' });
+            loadCollections();
+        }
+
+        // --- Documents ---
+        function openDocs(id, name) {
+            currentCollection = id;
+            document.getElementById('doc-collection-name').textContent = name;
+            document.getElementById('doc-panel').style.display = 'block';
+            hideAllPanels();
+            loadDocuments();
+        }
+        function closeDocPanel() { document.getElementById('doc-panel').style.display = 'none'; currentCollection = null; }
+        function showPanel(p) {
+            hideAllPanels();
+            document.getElementById(p+'-panel').style.display = 'block';
+        }
+        function hideAllPanels() { ['upload-panel','add-panel'].forEach(id => document.getElementById(id).style.display = 'none'); }
+
+        async function loadDocuments() {
+            const el = document.getElementById('doc-list');
+            el.innerHTML = '<div class="status">Loading...</div>';
+            try {
+                const res = await api(`/v1/rag/collections/${currentCollection}/documents?limit=100`);
+                const data = await res.json();
+                if (!data.documents?.length) { el.innerHTML = '<div class="status">No documents.</div>'; return; }
+                el.innerHTML = data.documents.map(d => `
+                    <div class="doc">
+                        <div style="display:flex;justify-content:space-between">
+                            <span style="color:#00bfff;font-size:12px;font-weight:bold">${esc(d.id)}</span>
+                            ${d.metadata?.tags ? `<span style="color:#888;font-size:11px">${d.metadata.tags.map(t=>'#'+esc(t)).join(' ')}</span>` : ''}
+                            <button class="btn-danger" onclick="delDoc('${esc(d.id)}')" style="padding:1px 6px;font-size:10px">DEL</button>
+                        </div>
+                        <div class="doc-text">${esc(d.text.length>300 ? d.text.slice(0,300)+'...' : d.text)}</div>
+                        <div class="doc-meta">${d.createdAt}${d.metadata?.source ? ' · '+esc(String(d.metadata.source)) : ''}</div>
+                    </div>`).join('');
+            } catch(e) { el.innerHTML = `<div class="status status-err">${esc(e.message)}</div>`; }
+        }
+
+        async function addDocument() {
+            const text = document.getElementById('doc-text').value.trim();
+            if (!text) { alert('Text required'); return; }
+            const id = document.getElementById('doc-id').value.trim() || undefined;
+            const tagsRaw = document.getElementById('doc-tags').value.trim();
+            const metadata = tagsRaw ? { tags: tagsRaw.split(',').map(t=>t.trim()).filter(Boolean) } : undefined;
+            const res = await api(`/v1/rag/collections/${currentCollection}/documents`, {
+                method: 'POST', body: JSON.stringify({ id, text, metadata })
+            });
+            if (!res.ok) { const e = await res.json(); alert(e.error?.message||'Error'); return; }
+            ['doc-text','doc-id','doc-tags'].forEach(id => document.getElementById(id).value = '');
+            loadDocuments(); loadCollections();
+        }
+
+        async function delDoc(id) {
+            if (!confirm(`Delete "${id}"?`)) return;
+            await api(`/v1/rag/collections/${currentCollection}/documents/${id}`, { method: 'DELETE' });
+            loadDocuments(); loadCollections();
+        }
+
+        async function uploadFile() {
+            const file = document.getElementById('file-input').files?.[0];
+            const st = document.getElementById('upload-status');
+            if (!file) { st.textContent = 'Select a file'; st.className = 'status status-err'; return; }
+            st.textContent = 'Reading...'; st.className = 'status';
+            const content = await file.text();
+            st.textContent = `Uploading ${(content.length/1024).toFixed(1)} KB...`;
+            const res = await api(`/v1/rag/collections/${currentCollection}/upload`, {
+                method: 'POST', body: JSON.stringify({ filename: file.name, content, chunkSize: Number(document.getElementById('chunk-size').value)||2000, description: document.getElementById('file-desc').value.trim() || undefined })
+            });
+            const data = await res.json();
+            if (!res.ok) { st.textContent = data.error?.message||'Failed'; st.className = 'status status-err'; return; }
+            st.textContent = `${data.chunks} chunks, ${data.added} added`; st.className = 'status status-ok';
+            document.getElementById('file-input').value = '';
+            loadDocuments(); loadCollections();
+        }
+
+        async function searchDocs() {
+            const text = document.getElementById('search-text').value.trim();
+            if (!text) return;
+            const el = document.getElementById('doc-list');
+            el.innerHTML = '<div class="status">Searching...</div>';
+            const res = await api(`/v1/rag/collections/${currentCollection}/query`, {
+                method: 'POST', body: JSON.stringify({ text, k: 10 })
+            });
+            const data = await res.json();
+            if (!data.results?.length) { el.innerHTML = '<div class="status">No results.</div>'; return; }
+            el.innerHTML = '<div style="color:#ffcc00;font-size:12px;margin-bottom:6px;font-weight:bold">SEARCH RESULTS</div>' +
+                data.results.map((r,i) => `
+                    <div class="doc search-result">
+                        <div style="display:flex;justify-content:space-between">
+                            <span style="color:#00bfff;font-size:12px">#${i+1}</span>
+                            <span class="score">score: ${r.score.toFixed(4)}</span>
+                        </div>
+                        <div class="doc-text">${esc(r.text.length>300 ? r.text.slice(0,300)+'...' : r.text)}</div>
+                    </div>`).join('');
+        }
+
+        // --- Init ---
+        async function loadBackends() {
+            try {
+                const res = await api('/v1/rag/backends');
+                const data = await res.json();
+                const sel = document.getElementById('new-backend');
+                sel.innerHTML = '<option value="">default</option>' + (data.backends||[]).map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
+            } catch {}
+        }
+        loadCollections();
+        loadBackends();
+    </script>
+</body>
+</html>

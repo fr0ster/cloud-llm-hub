@@ -2,6 +2,76 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [4.0.4] - 2026-04-13
+
+### Fixed
+- **GenerateFile tool now works from UI** — llm-agent 8.0.4 fixes `DefaultPipeline.buildContext()` that hardcoded `externalTools: []` instead of reading from options (fr0ster/llm-agent#91)
+- **external_tools diagnostics** — added `external_tools_normalized` log step for troubleshooting
+
+### Dependencies
+- `@mcp-abap-adt/llm-agent`: 8.0.0 → 8.0.4
+
+## [4.0.1] - 2026-04-12
+
+### Fixed
+- **CreatePackage on on-premise** — core 5.0.3 fixes `$TMP` URL encoding in `AdtPackage.validate()` (fr0ster/mcp-abap-adt-clients#14)
+
+### Dependencies
+- `@mcp-abap-adt/core`: 5.0.2 → 5.0.3
+- `@mcp-abap-adt/llm-agent`: 8.0.0 → 8.0.1
+
+## [4.0.0] - 2026-04-12
+
+### Added
+- **RAG Management API** — REST endpoints for collection CRUD, document upload with chunking, semantic search (`/v1/rag/*`)
+- **Semantic tool search** — VectorRag with TranslatePreprocessor + IntentEnricher for 148 MCP tools
+- **RAG collections UI** — MANAGE panel in chat UI with collection toggles, file attach with description
+- **Standalone RAG manager** — dedicated page at `/chat/webapp/rag.html`
+- **RAG CLI** — cross-platform Node.js CLI (`tools/rag-cli.js`) for collection management
+- **Per-request RAG injection** — user collections queried and injected into conversation context
+- **Score threshold** — configurable via `RAG_SCORE_THRESHOLD` env var (default 0.15)
+- **GenerateFile tool** — UI sends external tool for LLM to generate downloadable files (COPY/DOWNLOAD/preview)
+- **Token page** — `/chat/webapp/token.html` for API key retrieval
+- **Destination mapping** — `DESTINATION_MAPPING` env var maps system codes to BTP destinations, `/v1/destinations/resolve` endpoint
+- **Session cleanup** — CLR button sends `DELETE /v1/session` to clear server-side history
+- **History recency window** — `LLM_AGENT_HISTORY_RECENCY_WINDOW` for sliding context window
+
+### Changed
+- **llm-agent 8.0.0** — DefaultPipeline with consumer-defined RAG, built-in TranslatePreprocessor + IntentEnricher
+- **Classifier disabled** — `classificationEnabled: false` treats all input as action, ensures tool search always runs
+- **Token optimization** — from ~250K to ~34K tokens per request via `refreshToolsPerIteration: false`
+
+### Removed
+- Presentation layer (replaced by GenerateFile external tool)
+- Auto-upsert to state RAG store (caused Q&A pollution)
+- Dead code: CustomClassifyHandler, CustomToolSelectHandler, CustomRagUpsertHandler, NamespaceFilteredRag
+
+### Fixed
+- RAG namespace mismatch — NamespaceIgnoringRag wrapper for tools store
+- HTTP headers non-ASCII crash — moved `rag_collections` from header to body
+- XSUAA token-validity max 86400 (was incorrectly set to 604800)
+
+## [3.8.0] - 2026-04-08
+
+### Changed
+- Documentation rewrite — auth section with step-by-step API key retrieval
+- `@mcp-abap-adt/llm-agent` 6.0.2 with consumer-defined RAG
+
+### Fixed
+- XSUAA token-validity 86400 (XSUAA max is 24h, not 7 days)
+
+## [3.7.0] - 2026-04-07
+
+### Added
+- **JWT token page** at `/chat/webapp/token.html` for API key retrieval
+- **Destination mapping service** — `DESTINATION_MAPPING` env var, `/v1/destinations/resolve` endpoint
+- calm-dump-analyzer destination resolution via cloud-llm-hub
+
+## [3.6.0] - 2026-04-03
+
+### Changed
+- `@mcp-abap-adt/core` 4.9.0, `@mcp-abap-adt/llm-agent` 5.18.3
+
 ## [3.4.1] - 2026-04-07
 
 ### Changed

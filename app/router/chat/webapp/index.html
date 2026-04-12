@@ -76,15 +76,97 @@
         <div class="system-bar">
             <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
             <span>EMBEDDER: <span id="embedding-model">...</span></span>
-            <span>RAG: <span id="rag-type">...</span></span>
+            <span>RAG: <span id="rag-type">...</span> <button id="rag-manage-btn" onclick="openRagPanel()" title="Manage RAG Collections" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">MANAGE</button></span>
+        </div>
+
+        <!-- RAG Management Modal -->
+        <div id="rag-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;overflow:auto">
+          <div style="max-width:900px;margin:30px auto;background:#111;border:1px solid #333;border-radius:6px;padding:20px;color:#e0e0e0;font-size:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+              <span style="color:#00ff00;font-size:18px;font-weight:bold">RAG Collections</span>
+              <button onclick="closeRagPanel()" style="background:none;border:1px solid #555;color:#ff5555;cursor:pointer;padding:4px 12px;font-family:'Courier New',monospace;border-radius:3px">CLOSE</button>
+            </div>
+
+            <!-- Create collection -->
+            <div style="background:#0a0a0a;border:1px solid #222;padding:12px;border-radius:4px;margin-bottom:15px">
+              <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">NEW COLLECTION</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <input id="rag-new-id" placeholder="collection-id" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 10px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;width:150px">
+                <input id="rag-new-name" placeholder="Display Name" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 10px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;width:180px">
+                <select id="rag-new-scope" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">
+                  <option value="user">user</option>
+                  <option value="global">global</option>
+                </select>
+                <select id="rag-new-backend" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">
+                  <option value="">default</option>
+                </select>
+                <button onclick="createCollection()" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">CREATE</button>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+                <input id="rag-new-desc" placeholder="Description for LLM (e.g., 'Company knowledge base', 'SAP Notes')" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 10px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;flex:1;min-width:300px">
+                <input id="rag-new-tags" placeholder="Tags (comma-separated)" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 10px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;width:200px">
+              </div>
+            </div>
+
+            <!-- Collections list -->
+            <div id="rag-collections-list" style="margin-bottom:15px"></div>
+
+            <!-- Document viewer (shown when a collection is selected) -->
+            <div id="rag-doc-panel" style="display:none">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <span style="color:#00bfff;font-weight:bold">Documents in: <span id="rag-doc-collection-name"></span></span>
+                <div style="display:flex;gap:8px">
+                  <button onclick="showUploadForm()" style="background:#1a1a1a;color:#ffcc00;border:1px solid #333;padding:4px 12px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">UPLOAD FILE</button>
+                  <button onclick="showAddDocForm()" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 12px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">+ ADD</button>
+                  <button onclick="closeDocPanel()" style="background:none;border:1px solid #555;color:#888;cursor:pointer;padding:4px 12px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">BACK</button>
+                </div>
+              </div>
+
+              <!-- File upload form -->
+              <div id="rag-upload-form" style="display:none;background:#0a0a0a;border:1px solid #222;padding:12px;border-radius:4px;margin-bottom:10px">
+                <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">UPLOAD TEXT FILE</div>
+                <input type="file" id="rag-file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="color:#888;font-size:12px;margin-bottom:8px;display:block">
+                <input id="rag-file-desc" placeholder="File description (e.g., 'ABAP dump from DEV', 'SAP Notes for FI module')" style="width:100%;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px;margin-bottom:8px;box-sizing:border-box">
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="color:#888;font-size:12px">Chunk size:</label>
+                  <input id="rag-chunk-size" type="number" value="2000" min="200" max="10000" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px;width:80px">
+                  <button onclick="uploadFile()" style="background:#1a1a1a;color:#ffcc00;border:1px solid #333;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">UPLOAD</button>
+                </div>
+                <div id="rag-upload-status" style="color:#888;font-size:12px;margin-top:6px"></div>
+              </div>
+
+              <!-- Add document form -->
+              <div id="rag-add-doc-form" style="display:none;background:#0a0a0a;border:1px solid #222;padding:12px;border-radius:4px;margin-bottom:10px">
+                <div style="color:#00ff00;font-size:12px;font-weight:bold;margin-bottom:8px">ADD DOCUMENT</div>
+                <textarea id="rag-doc-text" placeholder="Document text..." rows="4" style="width:100%;background:#1a1a1a;color:#e0e0e0;border:1px solid #333;padding:8px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;resize:vertical;box-sizing:border-box"></textarea>
+                <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+                  <input id="rag-doc-id" placeholder="doc-id (optional)" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px;width:160px">
+                  <input id="rag-doc-tags" placeholder="tags (comma-separated)" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px;width:200px">
+                  <button onclick="addDocument()" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">ADD</button>
+                </div>
+              </div>
+
+              <!-- Search -->
+              <div style="display:flex;gap:8px;margin-bottom:10px">
+                <input id="rag-search-text" placeholder="Search in collection..." style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 10px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px" onkeydown="if(event.key==='Enter')searchCollection()">
+                <button onclick="searchCollection()" style="background:#1a1a1a;color:#00bfff;border:1px solid #333;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">SEARCH</button>
+              </div>
+
+              <!-- Document list -->
+              <div id="rag-doc-list"></div>
+            </div>
+          </div>
         </div>
         <div id="chat-window"></div>
         <div class="input-area">
             <input type="text" id="user-input" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
                    onkeydown="if(event.key === 'Enter') sendMessage()">
+            <input type="file" id="quick-file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="display:none" onchange="handleQuickFileAttach(this)">
+            <button id="attach-btn" onclick="document.getElementById('quick-file-input').click()" title="Attach file to RAG" style="padding:0 12px;font-size:16px">&#x1F4CE;</button>
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
         </div>
+        <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
     </div>
 
     <script>
@@ -543,6 +625,7 @@
                     setStatus('READY', 'status-ready');
                     setInputEnabled(true);
                     destRefreshBtn.disabled = false;
+                    refreshActiveCollections();
                     userInput.focus();
                     return;
                 }
@@ -605,10 +688,13 @@
         }
 
         function clearChat() {
+            // Clear server-side session history
+            fetch('/v1/session', { method: 'DELETE', headers: { 'X-Session-Id': sessionId } }).catch(() => {});
             Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];
             chatWindow.innerHTML = '';
         }
+
 
         function getSelectedModel() {
             return modelSelect.value || undefined;
@@ -706,6 +792,12 @@
                 const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId };
                 const selectedDest = getSelectedDestination();
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
+
+                // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)
+                const activeRagCollections = getActiveRagCollections();
+                if (activeRagCollections.length > 0) {
+                    reqBody.rag_collections = activeRagCollections;
+                }
 
                 const response = await fetch('/v1/chat/completions', {
                     method: 'POST',
@@ -841,6 +933,16 @@
                 if (usage) {
                     const total = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
                     usageHtml += `<span>TOKENS: <span class="val">${total}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>`;
+                    // Per-model breakdown (classifier, embedder, main)
+                    if (usage.models && typeof usage.models === 'object') {
+                        const parts = Object.entries(usage.models).map(([model, u]) => {
+                            const short = model.replace(/^anthropic--/, '').replace(/^.*--/, '');
+                            return `${short}: ${u.promptTokens || 0}+${u.completionTokens || 0}`;
+                        });
+                        if (parts.length > 1) {
+                            usageHtml += `<span style="color:#666;font-size:11px">[${parts.join(' | ')}]</span>`;
+                        }
+                    }
                 }
                 if (namedTools.length > 0) {
                     usageHtml += `<span>TOOLS: <span class="val">${toolCallNames.size} unique / ${namedTools.length} calls</span></span>`;
@@ -890,6 +992,337 @@
             setInputEnabled(true);
             userInput.focus();
             chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+        // ---------------------------------------------------------------
+        // Quick file attach (from input area)
+        // ---------------------------------------------------------------
+        const attachedFiles = [];
+
+        async function handleQuickFileAttach(input) {
+            const file = input.files?.[0];
+            if (!file) return;
+            input.value = '';
+
+            // Ask for description — critical for semantic search relevance
+            const description = prompt(`Describe this file for search (e.g., "ABAP dump analysis", "SAP Notes for FI module").\n\nFile: ${file.name}`);
+            if (description === null) return; // cancelled
+
+            const bar = document.getElementById('attached-files');
+            bar.style.display = 'block';
+            bar.innerHTML = `<span style="color:#ffcc00">Uploading ${escapeHtml(file.name)}...</span>`;
+
+            try {
+                const content = await file.text();
+                // Ensure "uploads" collection exists
+                const check = await ragFetch('/v1/rag/collections/uploads');
+                if (check.status === 404) {
+                    await ragFetch('/v1/rag/collections', {
+                        method: 'POST',
+                        body: JSON.stringify({ id: 'uploads', displayName: 'Uploads', description: 'Files uploaded via chat UI', scope: 'user' }),
+                    });
+                }
+                // Upload file with description
+                const res = await ragFetch('/v1/rag/collections/uploads/upload', {
+                    method: 'POST',
+                    body: JSON.stringify({ filename: file.name, content, chunkSize: 2000, description: description.trim() || undefined }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error?.message || 'Upload failed');
+
+                attachedFiles.push({ name: file.name, chunks: data.chunks });
+                renderAttachedFiles();
+            } catch (err) {
+                bar.innerHTML = `<span style="color:#ff5555">Failed: ${escapeHtml(err.message)}</span>`;
+                setTimeout(() => { if (!attachedFiles.length) bar.style.display = 'none'; }, 3000);
+            }
+        }
+
+        function renderAttachedFiles() {
+            const bar = document.getElementById('attached-files');
+            if (!attachedFiles.length) { bar.style.display = 'none'; return; }
+            bar.style.display = 'block';
+            bar.innerHTML = attachedFiles.map((f, i) =>
+                `<span style="color:#00bfff">&#x1F4CE; ${escapeHtml(f.name)}</span> <span style="color:#555">(${f.chunks} chunks)</span> <button onclick="removeAttachedFile(${i})" style="background:none;border:none;color:#ff5555;cursor:pointer;font-size:11px;font-family:'Courier New',monospace">[x]</button>`
+            ).join(' &nbsp; ');
+        }
+
+        function removeAttachedFile(index) {
+            attachedFiles.splice(index, 1);
+            renderAttachedFiles();
+        }
+
+        /** Active RAG collections — toggled on/off in MANAGE panel. */
+        const activeCollections = new Set();
+        const knownCollections = new Set(); // tracks which collections we've seen
+
+        async function refreshActiveCollections() {
+            try {
+                const res = await ragFetch('/v1/rag/collections');
+                const data = await res.json();
+                for (const c of (data.collections || [])) {
+                    if (!knownCollections.has(c.id)) {
+                        // New collection — auto-enable
+                        knownCollections.add(c.id);
+                        activeCollections.add(c.id);
+                    }
+                }
+            } catch { /* keep previous state */ }
+        }
+
+        function toggleCollection(id) {
+            if (activeCollections.has(id)) activeCollections.delete(id);
+            else activeCollections.add(id);
+            loadCollections(); // re-render to update checkbox state
+        }
+
+        function getActiveRagCollections() {
+            const ids = [...activeCollections];
+            if (attachedFiles.length > 0 && !ids.includes('uploads')) ids.push('uploads');
+            return ids;
+        }
+
+        // ---------------------------------------------------------------
+        // RAG Management Panel
+        // ---------------------------------------------------------------
+        let ragCurrentCollection = null;
+
+        function ragFetch(url, opts = {}) {
+            return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
+        }
+
+        function openRagPanel() {
+            document.getElementById('rag-modal').style.display = 'block';
+            document.getElementById('rag-doc-panel').style.display = 'none';
+            loadCollections();
+            loadBackends();
+        }
+
+        async function loadBackends() {
+            try {
+                const res = await ragFetch('/v1/rag/backends');
+                const data = await res.json();
+                const sel = document.getElementById('rag-new-backend');
+                sel.innerHTML = '<option value="">default</option>' +
+                    (data.backends || []).map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
+            } catch { /* ignore */ }
+        }
+
+        function closeRagPanel() {
+            document.getElementById('rag-modal').style.display = 'none';
+        }
+
+        async function loadCollections() {
+            const list = document.getElementById('rag-collections-list');
+            list.innerHTML = '<span style="color:#888">Loading...</span>';
+            try {
+                const res = await ragFetch('/v1/rag/collections');
+                const data = await res.json();
+                if (!data.collections || data.collections.length === 0) {
+                    list.innerHTML = '<div style="color:#555;padding:10px">No collections yet. Create one above.</div>';
+                    return;
+                }
+                // Auto-enable only NEW collections (not seen before)
+                for (const c of data.collections) {
+                    if (!knownCollections.has(c.id)) {
+                        knownCollections.add(c.id);
+                        activeCollections.add(c.id);
+                    }
+                }
+                list.innerHTML = data.collections.map(c => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:6px;border-radius:4px;border-left:3px solid ${activeCollections.has(c.id) ? (c.scope === 'global' ? '#ffcc00' : '#00bfff') : '#555'}">
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <input type="checkbox" ${activeCollections.has(c.id) ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
+                            <span style="color:#fff;font-weight:bold">${escapeHtml(c.displayName)}</span>
+                            <span style="color:#555;margin-left:8px">(${escapeHtml(c.id)})</span>
+                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope} · ${c.backend || 'default'} · ${c.documentCount} docs</span>
+                            ${c.description ? `<div style="color:#666;font-size:12px;margin-top:2px">${escapeHtml(c.description)}</div>` : ''}
+                        </div>
+                        <div style="display:flex;gap:6px">
+                            <button onclick="openDocPanel('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #333;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DOCS</button>
+                            ${c.id !== 'facts' ? `<button onclick="deleteCollection('${escapeHtml(c.id)}')" style="background:#1a1a1a;color:#ff5555;border:1px solid #552222;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                list.innerHTML = `<span style="color:#ff5555">Error: ${escapeHtml(err.message)}</span>`;
+            }
+        }
+
+        async function createCollection() {
+            const id = document.getElementById('rag-new-id').value.trim();
+            const displayName = document.getElementById('rag-new-name').value.trim();
+            const scope = document.getElementById('rag-new-scope').value;
+            const backend = document.getElementById('rag-new-backend').value || undefined;
+            const description = document.getElementById('rag-new-desc').value.trim();
+            const tags = document.getElementById('rag-new-tags').value.trim();
+            if (!id || !displayName) { alert('ID and Name are required'); return; }
+            try {
+                const res = await ragFetch('/v1/rag/collections', {
+                    method: 'POST',
+                    body: JSON.stringify({ id, displayName, scope, backend, description: description || undefined, tags: tags || undefined }),
+                });
+                if (!res.ok) { const e = await res.json(); alert(e.error?.message || 'Error'); return; }
+                document.getElementById('rag-new-id').value = '';
+                document.getElementById('rag-new-name').value = '';
+                document.getElementById('rag-new-desc').value = '';
+                document.getElementById('rag-new-tags').value = '';
+                loadCollections();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function deleteCollection(id) {
+            if (!confirm(`Delete collection "${id}" and all its documents?`)) return;
+            try {
+                await ragFetch(`/v1/rag/collections/${id}`, { method: 'DELETE' });
+                loadCollections();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function openDocPanel(collectionId, name) {
+            ragCurrentCollection = collectionId;
+            document.getElementById('rag-doc-collection-name').textContent = name;
+            document.getElementById('rag-doc-panel').style.display = 'block';
+            document.getElementById('rag-upload-form').style.display = 'none';
+            document.getElementById('rag-add-doc-form').style.display = 'none';
+            loadDocuments();
+        }
+
+        function closeDocPanel() {
+            document.getElementById('rag-doc-panel').style.display = 'none';
+            ragCurrentCollection = null;
+        }
+
+        async function loadDocuments() {
+            const list = document.getElementById('rag-doc-list');
+            list.innerHTML = '<span style="color:#888">Loading...</span>';
+            try {
+                const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents?limit=100`);
+                const data = await res.json();
+                if (!data.documents || data.documents.length === 0) {
+                    list.innerHTML = '<div style="color:#555;padding:10px">No documents. Add one or upload a file.</div>';
+                    return;
+                }
+                list.innerHTML = data.documents.map(d => {
+                    const preview = d.text.length > 200 ? d.text.slice(0, 200) + '...' : d.text;
+                    const source = d.metadata?.source ? ` · <span style="color:#888">${escapeHtml(String(d.metadata.source))}</span>` : '';
+                    return `
+                        <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
+                            <div style="display:flex;justify-content:space-between;align-items:center">
+                                <span style="color:#00bfff;font-size:12px;font-weight:bold">${escapeHtml(d.id)}</span>${source}
+                                <button onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
+                            </div>
+                            <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
+                            <div style="color:#555;font-size:11px;margin-top:2px">${d.createdAt}</div>
+                        </div>`;
+                }).join('');
+            } catch (err) {
+                list.innerHTML = `<span style="color:#ff5555">Error: ${escapeHtml(err.message)}</span>`;
+            }
+        }
+
+        function showUploadForm() {
+            document.getElementById('rag-upload-form').style.display = 'block';
+            document.getElementById('rag-add-doc-form').style.display = 'none';
+        }
+
+        function showAddDocForm() {
+            document.getElementById('rag-add-doc-form').style.display = 'block';
+            document.getElementById('rag-upload-form').style.display = 'none';
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('rag-file-input');
+            const statusEl = document.getElementById('rag-upload-status');
+            const file = fileInput.files?.[0];
+            if (!file) { statusEl.textContent = 'Select a file first'; statusEl.style.color = '#ff5555'; return; }
+
+            statusEl.textContent = 'Reading file...';
+            statusEl.style.color = '#ffcc00';
+            try {
+                const content = await file.text();
+                const chunkSize = Number(document.getElementById('rag-chunk-size').value) || 2000;
+                statusEl.textContent = `Uploading ${(content.length / 1024).toFixed(1)} KB...`;
+
+                const description = document.getElementById('rag-file-desc').value.trim();
+                const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/upload`, {
+                    method: 'POST',
+                    body: JSON.stringify({ filename: file.name, content, chunkSize, description }),
+                });
+                const data = await res.json();
+                if (!res.ok) { statusEl.textContent = data.error?.message || 'Upload failed'; statusEl.style.color = '#ff5555'; return; }
+
+                statusEl.textContent = `Uploaded: ${data.chunks} chunks, ${data.added} added`;
+                statusEl.style.color = '#00ff00';
+                fileInput.value = '';
+                loadDocuments();
+                loadCollections(); // refresh doc count
+            } catch (err) {
+                statusEl.textContent = err.message;
+                statusEl.style.color = '#ff5555';
+            }
+        }
+
+        async function addDocument() {
+            const text = document.getElementById('rag-doc-text').value.trim();
+            if (!text) { alert('Text is required'); return; }
+            const id = document.getElementById('rag-doc-id').value.trim() || undefined;
+            const tagsRaw = document.getElementById('rag-doc-tags').value.trim();
+            const metadata = {};
+            if (tagsRaw) metadata.tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
+            try {
+                const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents`, {
+                    method: 'POST',
+                    body: JSON.stringify({ id, text, metadata: Object.keys(metadata).length > 0 ? metadata : undefined }),
+                });
+                if (!res.ok) { const e = await res.json(); alert(e.error?.message || 'Error'); return; }
+                document.getElementById('rag-doc-text').value = '';
+                document.getElementById('rag-doc-id').value = '';
+                document.getElementById('rag-doc-tags').value = '';
+                loadDocuments();
+                loadCollections();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function deleteDocument(docId) {
+            if (!confirm(`Delete document "${docId}"?`)) return;
+            try {
+                await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents/${docId}`, { method: 'DELETE' });
+                loadDocuments();
+                loadCollections();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function searchCollection() {
+            const text = document.getElementById('rag-search-text').value.trim();
+            if (!text) return;
+            const list = document.getElementById('rag-doc-list');
+            list.innerHTML = '<span style="color:#888">Searching...</span>';
+            try {
+                const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/query`, {
+                    method: 'POST',
+                    body: JSON.stringify({ text, k: 10 }),
+                });
+                const data = await res.json();
+                if (!data.results || data.results.length === 0) {
+                    list.innerHTML = '<div style="color:#555;padding:10px">No results found.</div>';
+                    return;
+                }
+                list.innerHTML = '<div style="color:#ffcc00;font-size:12px;margin-bottom:8px;font-weight:bold">SEARCH RESULTS</div>' +
+                    data.results.map((r, i) => {
+                        const preview = r.text.length > 300 ? r.text.slice(0, 300) + '...' : r.text;
+                        return `
+                            <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px;border-left:3px solid #ffcc00">
+                                <div style="display:flex;justify-content:space-between">
+                                    <span style="color:#00bfff;font-size:12px">#${i + 1}</span>
+                                    <span style="color:#ff00ff;font-size:12px">score: ${r.score.toFixed(4)}</span>
+                                </div>
+                                <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap">${escapeHtml(preview)}</div>
+                            </div>`;
+                    }).join('') +
+                    '<button onclick="loadDocuments()" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:4px 12px;cursor:pointer;font-family:\'Courier New\',monospace;font-size:11px;border-radius:3px;margin-top:8px">SHOW ALL</button>';
+            } catch (err) {
+                list.innerHTML = `<span style="color:#ff5555">Error: ${escapeHtml(err.message)}</span>`;
+            }
         }
     </script>
 </body>
