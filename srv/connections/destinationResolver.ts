@@ -82,6 +82,8 @@ export interface DestinationResolution {
   cloudConnectorLocationId?: string;
   authenticationType?: string;
   tokenExpiresAt?: number;
+  /** Destination auth user (e.g. MCPDEV01 for BasicAuthentication) */
+  username?: string;
 }
 
 /**
@@ -211,12 +213,16 @@ async function buildSapConfigFromDestination(
       ? Date.now() + 45 * 60 * 1000 // 45 minutes
       : undefined;
 
+  // Extract destination auth user (for BasicAuthentication, User property contains the service user)
+  const destinationUser = getCaseInsensitive(destination, 'User');
+
   return {
     destinationName,
     sapConfig,
     proxyType: proxyType || undefined,
     cloudConnectorLocationId,
     authenticationType: authentication,
+    username: destinationUser,
     tokenExpiresAt,
   };
 }
