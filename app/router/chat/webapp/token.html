@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud LLM Hub - API Key</title>
+    <style>
+        body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #00ff00; margin: 0; padding: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { font-size: 20px; margin-bottom: 20px; }
+        .info { color: #888; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+        .token-box { background: #111; border: 1px solid #333; border-radius: 4px; padding: 15px; margin: 15px 0; position: relative; }
+        .token-display { font-size: 13px; color: #555; word-break: break-all; max-height: 60px; overflow: hidden; user-select: none; }
+        .token-display.revealed { color: #e0e0e0; max-height: none; user-select: text; }
+        .btn-row { display: flex; gap: 10px; margin-top: 15px; }
+        button { background: #1a1a1a; color: #00ff00; border: 2px solid #333; cursor: pointer; padding: 10px 20px; font-family: 'Courier New', monospace; font-size: 14px; border-radius: 4px; }
+        button:hover { background: #00ff00; color: #000; }
+        .btn-copy { color: #00bfff; border-color: #003355; }
+        .btn-copy:hover { background: #00bfff; color: #000; }
+        .btn-reveal { color: #ffcc00; border-color: #554400; }
+        .btn-reveal:hover { background: #ffcc00; color: #000; }
+        .status { margin-top: 10px; font-size: 13px; min-height: 20px; }
+        .status-ok { color: #00ff00; }
+        .status-err { color: #ff5555; }
+        .meta { margin-top: 15px; font-size: 12px; color: #666; }
+        .meta span { color: #888; }
+        a { color: #00bfff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>API Key</h1>
+        <div class="info">
+            Your personal API key for Cloud LLM Hub.<br>
+            Use as <code>Authorization: Bearer &lt;key&gt;</code> header or as API key in Cline, Claude CLI, and other tools.
+        </div>
+
+        <button id="btn-get" onclick="getToken()">Get My API Key</button>
+
+        <div id="token-section" style="display:none">
+            <div class="token-box">
+                <div id="token-display" class="token-display"></div>
+            </div>
+            <div class="btn-row">
+                <button class="btn-copy" onclick="copyToken()">Copy to Clipboard</button>
+                <button class="btn-reveal" id="btn-reveal" onclick="toggleReveal()">Reveal</button>
+            </div>
+            <div id="status" class="status"></div>
+            <div id="meta" class="meta"></div>
+        </div>
+
+        <div style="margin-top: 30px; font-size: 12px; color: #555;">
+            <a href="index.html">Back to Chat</a>
+        </div>
+    </div>
+
+    <script>
+        let token = '';
+        let revealed = false;
+
+        async function getToken() {
+            const btn = document.getElementById('btn-get');
+            btn.textContent = 'Loading...';
+            btn.disabled = true;
+
+            try {
+                // Fetch any authenticated endpoint to get the JWT from the response
+                // The approuter injects the JWT — we read it from the cookie or use a token endpoint
+                const res = await fetch('/v1/models');
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+
+                // Extract token from Authorization header that was sent
+                // Since we're behind approuter, the JWT is in the session cookie
+                // We need a dedicated endpoint to return it
+                const tokenRes = await fetch('/v1/token');
+                if (!tokenRes.ok) throw new Error(`HTTP ${tokenRes.status}: ${tokenRes.statusText}`);
+                const data = await tokenRes.json();
+                token = data.token;
+
+                if (!token) throw new Error('No token received');
+
+                document.getElementById('token-section').style.display = 'block';
+                renderToken();
+                renderMeta();
+                setStatus('API key retrieved successfully', 'status-ok');
+            } catch (err) {
+                setStatus(`Error: ${err.message}`, 'status-err');
+                document.getElementById('token-section').style.display = 'none';
+            } finally {
+                btn.textContent = 'Get My API Key';
+                btn.disabled = false;
+            }
+        }
+
+        function renderToken() {
+            const el = document.getElementById('token-display');
+            if (revealed) {
+                el.textContent = token;
+                el.className = 'token-display revealed';
+            } else {
+                el.textContent = token.slice(0, 20) + '...' + token.slice(-10);
+                el.className = 'token-display';
+            }
+        }
+
+        function toggleReveal() {
+            revealed = !revealed;
+            document.getElementById('btn-reveal').textContent = revealed ? 'Hide' : 'Reveal';
+            renderToken();
+        }
+
+        async function copyToken() {
+            try {
+                await navigator.clipboard.writeText(token);
+                setStatus('API key copied to clipboard', 'status-ok');
+            } catch {
+                // Fallback
+                const ta = document.createElement('textarea');
+                ta.value = token;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                setStatus('API key copied to clipboard', 'status-ok');
+            }
+        }
+
+        function setStatus(msg, cls) {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = `status ${cls}`;
+        }
+
+        function renderMeta() {
+            try {
+                const parts = token.split('.');
+                if (parts.length !== 3) return;
+                const payload = JSON.parse(atob(parts[1]));
+                const exp = payload.exp ? new Date(payload.exp * 1000) : null;
+                const iat = payload.iat ? new Date(payload.iat * 1000) : null;
+                const sub = payload.user_name || payload.sub || '?';
+                const meta = document.getElementById('meta');
+                meta.innerHTML = [
+                    `User: <span>${sub}</span>`,
+                    iat ? `Issued: <span>${iat.toLocaleString()}</span>` : '',
+                    exp ? `Expires: <span>${exp.toLocaleString()}</span>` : '',
+                    exp ? `Valid for: <span>${Math.round((exp - Date.now()) / 3600000)} hours</span>` : '',
+                ].filter(Boolean).join(' &nbsp;|&nbsp; ');
+            } catch { /* ignore parse errors */ }
+        }
+    </script>
+</body>
+</html>
