@@ -17,6 +17,7 @@
 
 import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
 import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
+import { resolveSystemContext } from '@mcp-abap-adt/core/utils';
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
@@ -740,6 +741,20 @@ async function buildEmbeddedMcpAdapter(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Destination "${destinationName}" is unreachable: ${msg}`);
+  }
+
+  // Resolve system context: responsible person + master system.
+  // On-premise via BTP Destination: user from destination auth (e.g. MCPDEV01).
+  // Cloud: /systeminformation endpoint (called automatically as fallback).
+  const destinationUser = resolved.username || resolved.sapConfig.username;
+  if (destinationUser) {
+    await resolveSystemContext(abapConn, { responsible: destinationUser });
+    log.info('System context resolved from destination user', {
+      destination: destinationName,
+      responsible: destinationUser,
+    });
+  } else {
+    await resolveSystemContext(abapConn);
   }
 
   // Get MCP tool handlers filtered by configured exposition (handler sets)
