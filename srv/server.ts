@@ -20,6 +20,7 @@ import express from 'express';
 import { ensureAiCoreCredentials } from './agent-config';
 import {
   clearSessionTopic,
+  getCollectionRegistry,
   getDestinationMappings,
   initSmartAgents,
   refreshDestinations,
@@ -35,6 +36,7 @@ import {
   handleModels,
   handleUsage,
 } from './openai-handler';
+import { registerRagRoutes } from './rag-handler';
 
 /**
  * Type guard for MCP request body
@@ -374,7 +376,7 @@ cds.on('bootstrap', (app: Application) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Session-Id',
+      'Content-Type, Authorization, X-Session-Id, X-Rag-Collections',
     );
     res.writeHead(204);
     res.end();
@@ -382,6 +384,11 @@ cds.on('bootstrap', (app: Application) => {
 
   // Parse JSON body for /v1/* routes
   app.use('/v1', express.json({ limit: '10mb' }));
+
+  // RAG collection management routes (/v1/rag/*)
+  const ragRouter = express.Router();
+  registerRagRoutes(ragRouter, getCollectionRegistry());
+  app.use('/v1', ragRouter);
 
   // POST /v1/chat/completions — main chat (streaming + non-streaming)
   app.post('/v1/chat/completions', handleChatCompletions as never);
@@ -469,6 +476,7 @@ cds.on('bootstrap', (app: Application) => {
     models: 'GET /v1/models',
     usage: 'GET /v1/usage',
     sessionClear: 'DELETE /v1/session',
+    ragCollections: '/v1/rag/collections (CRUD + upload + query)',
     destinationProbe:
       'GET /mcp-proxy/ProbeDestination?destination=NAME (CAP function)',
   });
@@ -485,7 +493,17 @@ cds.on('served', () => {
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
   initSmartAgents()
-    .then(() => log.info('SmartAgents initialized and ready'))
+    .then(async () => {
+      log.info('SmartAgents initialized and ready');
+      // Load persisted RAG collections in background
+      try {
+        await getCollectionRegistry().loadFromDisk();
+      } catch (err) {
+        log.warn('RAG collection load failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })
     .catch((err) => {
       log.warn(
         'SmartAgent initialization failed, will retry on first request',
