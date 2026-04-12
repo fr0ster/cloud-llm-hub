@@ -20,12 +20,14 @@ import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   clearSessionTopic,
+  getCollectionRegistry,
   getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
+  NamespaceIgnoringRag,
   setSessionDestination,
 } from './agent-manager';
 import { getAvailableModels } from './lib/ai-core-models';
@@ -490,416 +492,551 @@ export async function handleChatCompletions(
     normalizedMessages = [{ role: 'user', content: lastUserContent }];
   }
 
-  const pipelineLog = cds.log('smart-pipeline');
-  const userId = getUserId();
-  const opts = {
-    stream: body.stream,
-    // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
-    // for ClineClientAdapter detection and external tool_call routing.
-    externalTools,
-    sessionId,
-    // RAG namespace isolation: user + destination — results from DEV don't leak into QAS
-    // Tools store wrapped with NamespaceIgnoringRag to skip this filter.
-    ragFilter: { namespace: `${userId}:${destAfter}` },
-    trace: { traceId },
-    sessionLogger: {
-      logStep(name: string, data: unknown) {
-        if (
-          name === 'tools_selected' ||
-          name === 'rag_query_facts' ||
-          name === 'classification_skipped' ||
-          name === 'tool_select_rag_fallback' ||
-          name.startsWith('custom_classify') ||
-          name.startsWith('custom_tool_select') ||
-          name.startsWith('final_context') ||
-          name.startsWith('llm_request') ||
-          name.startsWith('llm_response')
-        ) {
-          pipelineLog.info(name, data);
-        }
-      },
-    },
+  // Inject dynamic RAG collections from X-Rag-Collections header or body
+  const ragCollectionIds: string[] = (() => {
+    const header = req.headers['x-rag-collections'] as string | undefined;
+    if (header)
+      return header
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    // biome-ignore lint/suspicious/noExplicitAny: rag_collections is an extension field not in OpenAI spec
+    const bodyCollections = (body as any).rag_collections;
+    if (Array.isArray(bodyCollections)) return bodyCollections;
+    return [];
+  })();
+
+  // Inject dynamic RAG collections per-request (save/restore pattern).
+  // Wrapped with NamespaceIgnoringRag because ragFilter namespace won't match.
+  // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
+  const deps = (handle.agent as any).deps;
+  const originalRagStores = deps.ragStores;
+  if (ragCollectionIds.length > 0) {
+    const registry = getCollectionRegistry();
+    const dynamicStores = registry.getRagStores(ragCollectionIds);
+    const injected = Object.keys(dynamicStores);
+    if (injected.length > 0) {
+      const mergedStores = { ...originalRagStores };
+      for (const [key, store] of Object.entries(dynamicStores)) {
+        mergedStores[key] = new NamespaceIgnoringRag(store);
+      }
+      deps.ragStores = mergedStores;
+      log.info('Dynamic RAG collections injected', {
+        requested: ragCollectionIds,
+        injected,
+      });
+    }
+  }
+
+  // Restore original ragStores after request completes (finally block at end of function)
+  const restoreRagStores = () => {
+    if (deps.ragStores !== originalRagStores)
+      deps.ragStores = originalRagStores;
   };
 
-  const invalidToolsHeader: Record<string, string> =
-    externalToolsValidation.errors.length > 0
-      ? {
-          'x-smartagent-invalid-tools': String(
-            externalToolsValidation.errors.length,
-          ),
-        }
-      : {};
+  // Semantic search across active RAG collections and inject relevant results.
+  // llm-agent hardcoded flow only queries RAG for "action" subprompts —
+  // chat questions classified as "chat" → RAG skipped. We do our own search.
+  if (ragCollectionIds.length > 0) {
+    const registry = getCollectionRegistry();
+    const userMessage = normalizedMessages
+      .filter((m) => m.role === 'user')
+      .slice(-1)[0];
+    const queryText =
+      typeof userMessage?.content === 'string' ? userMessage.content : '';
 
-  // --- Streaming ---
-  if (body.stream) {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-SAP-Active-Destination': destAfter,
-      ...invalidToolsHeader,
-    });
+    if (queryText) {
+      // Search user collections in the ORIGINAL language (no translation).
+      // User content may be in any language — translating the query would
+      // break matching (e.g., Ukrainian query → English translation won't
+      // match Ukrainian anecdote in vector space).
+      // Tool selection has its own _toEnglishForRag() in llm-agent.
+      const { QueryEmbedding, TextOnlyEmbedding } = await import(
+        '@mcp-abap-adt/llm-agent'
+      );
+      const embedding = deps.embedder
+        ? new QueryEmbedding(queryText, deps.embedder)
+        : new TextOnlyEmbedding(queryText);
 
-    const id = `chatcmpl-${randomUUID()}`;
-    const created = Math.floor(Date.now() / 1000);
-
-    let firstChunk = true;
-    let chunkCount = 0;
-    let finishReasonSent = false;
-    let accumulatedContent = ''; // Accumulate full response for session history
-    let lastUsage: {
-      prompt_tokens: number;
-      completion_tokens: number;
-      total_tokens: number;
-    } | null = null;
-
-    log.info('Starting streamProcess', { sessionId });
-
-    // Retry loop: restart stream on rate-limit errors (only before first content chunk)
-    let rateLimitAttempt = 0;
-    streamRetry: while (rateLimitAttempt <= RATE_LIMIT_MAX_RETRIES) {
-      const stream = handle.agent.streamProcess(normalizedMessages, opts);
-
-      try {
-        for await (const chunk of stream) {
-          chunkCount++;
-          if (!chunk.ok) {
-            const err = chunk.error;
-
-            // Rate-limit retry: only if no content has been sent to the client yet
-            if (
-              isRateLimitError(err) &&
-              firstChunk &&
-              rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
-            ) {
-              const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
-              rateLimitAttempt++;
-              log.warn('Rate limit hit, retrying stream', {
-                attempt: rateLimitAttempt,
-                maxRetries: RATE_LIMIT_MAX_RETRIES,
-                delayMs: delay,
-              });
-              await new Promise((r) => setTimeout(r, delay));
-              // Reset counters for fresh stream attempt
-              chunkCount = 0;
-              continue streamRetry;
-            }
-
-            // Non-retryable or retries exhausted — send user-friendly message for rate limits
-            const causes: string[] = [];
-            let current: unknown = err;
-            while (current) {
-              if (current instanceof Error) {
-                causes.push(current.message);
-                current = (current as { cause?: unknown }).cause;
-              } else {
-                causes.push(String(current));
-                break;
-              }
-            }
-            log.error('Stream error chunk', {
-              chunkCount,
-              error: err.message,
-              causes,
+      const relevantTexts: string[] = [];
+      for (const colId of ragCollectionIds) {
+        const store = registry.getRagStore(colId);
+        if (!store) continue;
+        const result = await new NamespaceIgnoringRag(store).query(
+          embedding,
+          3,
+        );
+        if (result.ok) {
+          for (const r of result.value) {
+            log.info('RAG search result', {
+              collection: colId,
+              score: r.score.toFixed(4),
+              preview: r.text.slice(0, 80),
             });
-            const userMessage = isRateLimitError(err)
-              ? RATE_LIMIT_USER_MESSAGE
-              : err.message;
-            res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
+            const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
+            if (r.score >= threshold) {
+              relevantTexts.push(r.text);
+            }
+          }
+        }
+      }
+
+      if (relevantTexts.length > 0) {
+        const ragContext = relevantTexts.join('\n---\n');
+        let lastUserIdx = -1;
+        for (let i = normalizedMessages.length - 1; i >= 0; i--) {
+          if (normalizedMessages[i].role === 'user') {
+            lastUserIdx = i;
             break;
           }
+        }
+        if (lastUserIdx >= 0) {
+          const original = normalizedMessages[lastUserIdx];
+          const originalContent =
+            typeof original.content === 'string' ? original.content : '';
+          normalizedMessages = [...normalizedMessages];
+          normalizedMessages[lastUserIdx] = {
+            ...original,
+            content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
+          };
+        }
+        log.info('RAG semantic search results injected', {
+          collections: ragCollectionIds,
+          resultCount: relevantTexts.length,
+          contextChars: ragContext.length,
+        });
+      }
+    }
+  }
 
-          const v = chunk.value;
-
-          // Forward heartbeats as SSE comments to keep the connection alive.
-          // Without this, CF Router / Cloud Connector may close idle TCP
-          // connections before the tool loop finishes, causing the browser's
-          // reader.read() to hang forever (onDone never fires).
-          if (v.heartbeat) {
-            res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
-            continue;
+  try {
+    const pipelineLog = cds.log('smart-pipeline');
+    const userId = getUserId();
+    const opts = {
+      stream: body.stream,
+      // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
+      // for ClineClientAdapter detection and external tool_call routing.
+      externalTools,
+      sessionId,
+      // RAG namespace isolation: user + destination — results from DEV don't leak into QAS
+      // Tools store wrapped with NamespaceIgnoringRag to skip this filter.
+      ragFilter: { namespace: `${userId}:${destAfter}` },
+      trace: { traceId },
+      sessionLogger: {
+        logStep(name: string, data: unknown) {
+          if (
+            name === 'tools_selected' ||
+            name.startsWith('rag_query') ||
+            name === 'classification_skipped' ||
+            name === 'tool_select_rag_fallback' ||
+            name.startsWith('custom_classify') ||
+            name.startsWith('custom_tool_select') ||
+            name.startsWith('final_context') ||
+            name.startsWith('llm_request') ||
+            name.startsWith('llm_response')
+          ) {
+            pipelineLog.info(name, data);
           }
-          if (v.usage) {
-            lastUsage = {
-              prompt_tokens: v.usage.promptTokens,
-              completion_tokens: v.usage.completionTokens,
-              total_tokens: v.usage.totalTokens,
+        },
+      },
+    };
+
+    const invalidToolsHeader: Record<string, string> =
+      externalToolsValidation.errors.length > 0
+        ? {
+            'x-smartagent-invalid-tools': String(
+              externalToolsValidation.errors.length,
+            ),
+          }
+        : {};
+
+    // --- Streaming ---
+    if (body.stream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-SAP-Active-Destination': destAfter,
+        ...invalidToolsHeader,
+      });
+
+      const id = `chatcmpl-${randomUUID()}`;
+      const created = Math.floor(Date.now() / 1000);
+
+      let firstChunk = true;
+      let chunkCount = 0;
+      let finishReasonSent = false;
+      let accumulatedContent = ''; // Accumulate full response for session history
+      let lastUsage: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+      } | null = null;
+
+      log.info('Starting streamProcess', { sessionId });
+
+      // Retry loop: restart stream on rate-limit errors (only before first content chunk)
+      let rateLimitAttempt = 0;
+      streamRetry: while (rateLimitAttempt <= RATE_LIMIT_MAX_RETRIES) {
+        const stream = handle.agent.streamProcess(normalizedMessages, opts);
+
+        try {
+          for await (const chunk of stream) {
+            chunkCount++;
+            if (!chunk.ok) {
+              const err = chunk.error;
+
+              // Rate-limit retry: only if no content has been sent to the client yet
+              if (
+                isRateLimitError(err) &&
+                firstChunk &&
+                rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
+              ) {
+                const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
+                rateLimitAttempt++;
+                log.warn('Rate limit hit, retrying stream', {
+                  attempt: rateLimitAttempt,
+                  maxRetries: RATE_LIMIT_MAX_RETRIES,
+                  delayMs: delay,
+                });
+                await new Promise((r) => setTimeout(r, delay));
+                // Reset counters for fresh stream attempt
+                chunkCount = 0;
+                continue streamRetry;
+              }
+
+              // Non-retryable or retries exhausted — send user-friendly message for rate limits
+              const causes: string[] = [];
+              let current: unknown = err;
+              while (current) {
+                if (current instanceof Error) {
+                  causes.push(current.message);
+                  current = (current as { cause?: unknown }).cause;
+                } else {
+                  causes.push(String(current));
+                  break;
+                }
+              }
+              log.error('Stream error chunk', {
+                chunkCount,
+                error: err.message,
+                causes,
+              });
+              const userMessage = isRateLimitError(err)
+                ? RATE_LIMIT_USER_MESSAGE
+                : err.message;
+              res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
+              break;
+            }
+
+            const v = chunk.value;
+
+            // Forward heartbeats as SSE comments to keep the connection alive.
+            // Without this, CF Router / Cloud Connector may close idle TCP
+            // connections before the tool loop finishes, causing the browser's
+            // reader.read() to hang forever (onDone never fires).
+            if (v.heartbeat) {
+              res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
+              continue;
+            }
+            if (v.usage) {
+              lastUsage = {
+                prompt_tokens: v.usage.promptTokens,
+                completion_tokens: v.usage.completionTokens,
+                total_tokens: v.usage.totalTokens,
+                // biome-ignore lint/suspicious/noExplicitAny: extended usage with per-model breakdown
+                ...(v.usage.models ? { models: v.usage.models } : {}),
+              } as any;
+            }
+            if (v.timing) {
+              log.info('Pipeline stage timing', { timing: v.timing });
+              continue;
+            }
+
+            const baseResponse = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model: getCurrentModel(),
+              usage: null,
             };
+
+            // First chunk: role + initial content (matches SmartServer)
+            if (firstChunk) {
+              const initialContent = v.content || '';
+              if (initialContent) accumulatedContent += initialContent;
+              res.write(
+                `data: ${JSON.stringify({
+                  ...baseResponse,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { role: 'assistant', content: initialContent },
+                      finish_reason: null,
+                    },
+                  ],
+                })}\n\n`,
+              );
+              firstChunk = false;
+              if (!v.finishReason && !v.toolCalls) continue;
+            }
+
+            // Content and/or tool_calls delta (matches SmartServer)
+            if (v.content || v.toolCalls) {
+              const delta: Record<string, unknown> = {};
+              if (v.content) {
+                accumulatedContent += v.content;
+                delta.content = v.content;
+              }
+              if (v.toolCalls) {
+                delta.tool_calls = v.toolCalls.map((call, index) => {
+                  const tc = toToolCallDelta(call, index);
+                  return {
+                    index: tc.index,
+                    id: tc.id,
+                    type: 'function',
+                    function: {
+                      name: tc.name,
+                      arguments: tc.arguments || '',
+                    },
+                  };
+                });
+              }
+              res.write(
+                `data: ${JSON.stringify({
+                  ...baseResponse,
+                  choices: [
+                    {
+                      index: 0,
+                      delta,
+                      finish_reason: null,
+                    },
+                  ],
+                })}\n\n`,
+              );
+            }
+
+            if (v.finishReason) {
+              res.write(
+                `data: ${JSON.stringify({
+                  ...baseResponse,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {},
+                      finish_reason: mapStopReason(v.finishReason),
+                    },
+                  ],
+                })}\n\n`,
+              );
+              finishReasonSent = true;
+            }
           }
-          if (v.timing) {
-            log.info('Pipeline stage timing', { timing: v.timing });
+        } catch (streamErr) {
+          // Rate-limit retry on exception (only before first content chunk)
+          if (
+            isRateLimitError(streamErr) &&
+            firstChunk &&
+            rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
+          ) {
+            const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
+            rateLimitAttempt++;
+            log.warn('Rate limit exception, retrying stream', {
+              attempt: rateLimitAttempt,
+              delayMs: delay,
+            });
+            await new Promise((r) => setTimeout(r, delay));
+            chunkCount = 0;
             continue;
           }
 
-          const baseResponse = {
+          const errMsg =
+            streamErr instanceof Error ? streamErr.message : String(streamErr);
+          log.error('Stream exception', {
+            error: errMsg,
+            stack: streamErr instanceof Error ? streamErr.stack : undefined,
+          });
+          const userMessage = isRateLimitError(streamErr)
+            ? RATE_LIMIT_USER_MESSAGE
+            : errMsg;
+          res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
+        }
+        break; // Normal exit — no more retries needed
+      } // end streamRetry while loop
+
+      // Ensure finish_reason is always sent — clients require it to detect stream end
+      if (!finishReasonSent) {
+        res.write(
+          `data: ${JSON.stringify({
             id,
             object: 'chat.completion.chunk',
             created,
             model: getCurrentModel(),
-            usage: null,
-          };
-
-          // First chunk: role + initial content (matches SmartServer)
-          if (firstChunk) {
-            const initialContent = v.content || '';
-            if (initialContent) accumulatedContent += initialContent;
-            res.write(
-              `data: ${JSON.stringify({
-                ...baseResponse,
-                choices: [
-                  {
-                    index: 0,
-                    delta: { role: 'assistant', content: initialContent },
-                    finish_reason: null,
-                  },
-                ],
-              })}\n\n`,
-            );
-            firstChunk = false;
-            if (!v.finishReason && !v.toolCalls) continue;
-          }
-
-          // Content and/or tool_calls delta (matches SmartServer)
-          if (v.content || v.toolCalls) {
-            const delta: Record<string, unknown> = {};
-            if (v.content) {
-              accumulatedContent += v.content;
-              delta.content = v.content;
-            }
-            if (v.toolCalls) {
-              delta.tool_calls = v.toolCalls.map((call, index) => {
-                const tc = toToolCallDelta(call, index);
-                return {
-                  index: tc.index,
-                  id: tc.id,
-                  type: 'function',
-                  function: {
-                    name: tc.name,
-                    arguments: tc.arguments || '',
-                  },
-                };
-              });
-            }
-            res.write(
-              `data: ${JSON.stringify({
-                ...baseResponse,
-                choices: [
-                  {
-                    index: 0,
-                    delta,
-                    finish_reason: null,
-                  },
-                ],
-              })}\n\n`,
-            );
-          }
-
-          if (v.finishReason) {
-            res.write(
-              `data: ${JSON.stringify({
-                ...baseResponse,
-                choices: [
-                  {
-                    index: 0,
-                    delta: {},
-                    finish_reason: mapStopReason(v.finishReason),
-                  },
-                ],
-              })}\n\n`,
-            );
-            finishReasonSent = true;
-          }
-        }
-      } catch (streamErr) {
-        // Rate-limit retry on exception (only before first content chunk)
-        if (
-          isRateLimitError(streamErr) &&
-          firstChunk &&
-          rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
-        ) {
-          const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
-          rateLimitAttempt++;
-          log.warn('Rate limit exception, retrying stream', {
-            attempt: rateLimitAttempt,
-            delayMs: delay,
-          });
-          await new Promise((r) => setTimeout(r, delay));
-          chunkCount = 0;
-          continue;
-        }
-
-        const errMsg =
-          streamErr instanceof Error ? streamErr.message : String(streamErr);
-        log.error('Stream exception', {
-          error: errMsg,
-          stack: streamErr instanceof Error ? streamErr.stack : undefined,
-        });
-        const userMessage = isRateLimitError(streamErr)
-          ? RATE_LIMIT_USER_MESSAGE
-          : errMsg;
-        res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: 'stop',
+              },
+            ],
+          })}\n\n`,
+        );
       }
-      break; // Normal exit — no more retries needed
-    } // end streamRetry while loop
 
-    // Ensure finish_reason is always sent — clients require it to detect stream end
-    if (!finishReasonSent) {
-      res.write(
-        `data: ${JSON.stringify({
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: getCurrentModel(),
-          choices: [
-            {
-              index: 0,
-              delta: {},
-              finish_reason: 'stop',
-            },
-          ],
-        })}\n\n`,
-      );
+      // Always send usage chunk — clients need it for token tracking.
+      // OpenAI spec gates this behind stream_options.include_usage, but in practice
+      // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
+      // clients that don't need it simply ignore the extra chunk.
+      if (lastUsage) {
+        res.write(
+          `data: ${JSON.stringify({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: getCurrentModel(),
+            choices: [],
+            usage: lastUsage,
+          })}\n\n`,
+        );
+      }
+
+      // Log per-model token breakdown if available
+      if (lastUsage && (lastUsage as any).models) {
+        log.info('Token usage by model', (lastUsage as any).models);
+      }
+
+      log.info('Stream completed', {
+        chunkCount,
+        hasUsage: !!lastUsage,
+        durationMs: Date.now() - t0,
+        responseLength: accumulatedContent.length,
+      });
+
+      // Save conversation turn to server session
+      if (accumulatedContent) {
+        const lastUser = normalizedMessages
+          .filter((m) => m.role === 'user')
+          .slice(-1)[0];
+        if (lastUser) {
+          appendToSession(sessionId, lastUser, {
+            role: 'assistant',
+            content: accumulatedContent,
+          } as Message);
+          const entry = sessionStore.get(sessionId);
+          log.debug('Session updated', {
+            sessionId,
+            storedMessages: entry?.messages.length ?? 0,
+            responseChars: accumulatedContent.length,
+          });
+        }
+
+        // NOTE: state store upsert removed — llm-agent 6.0 has no default state store.
+        // Session history managed by SessionManager + history RAG (session-scoped).
+      }
+
+      if (chunkCount === 0) {
+        log.warn(
+          'Stream produced 0 chunks — pipeline may have failed silently',
+          {
+            messageCount: normalizedMessages.length,
+            sessionId,
+          },
+        );
+      }
+
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
     }
 
-    // Always send usage chunk — clients need it for token tracking.
-    // OpenAI spec gates this behind stream_options.include_usage, but in practice
-    // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
-    // clients that don't need it simply ignore the extra chunk.
-    if (lastUsage) {
-      res.write(
-        `data: ${JSON.stringify({
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: getCurrentModel(),
-          choices: [],
-          usage: lastUsage,
-        })}\n\n`,
-      );
+    // --- Non-streaming (with rate-limit retry) ---
+    let result = await handle.agent.process(normalizedMessages, opts);
+
+    // Retry on rate-limit errors
+    if (!result.ok && isRateLimitError(result.error)) {
+      for (let attempt = 0; attempt < RATE_LIMIT_MAX_RETRIES; attempt++) {
+        const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt;
+        log.warn('Rate limit hit, retrying', {
+          attempt: attempt + 1,
+          maxRetries: RATE_LIMIT_MAX_RETRIES,
+          delayMs: delay,
+        });
+        await new Promise((r) => setTimeout(r, delay));
+        result = await handle.agent.process(normalizedMessages, opts);
+        if (result.ok || !isRateLimitError(result.error)) break;
+      }
     }
 
-    log.info('Stream completed', {
-      chunkCount,
-      hasUsage: !!lastUsage,
+    log.info('Chat completions done', {
+      ok: result.ok,
       durationMs: Date.now() - t0,
-      responseLength: accumulatedContent.length,
     });
 
+    const finalContent = result.ok
+      ? result.value.content || '(no response)'
+      : isRateLimitError(result.error)
+        ? RATE_LIMIT_USER_MESSAGE
+        : `Error: ${result.error.message}`;
+
+    const finalFinishReason = result.ok
+      ? mapStopReason(result.value.stopReason)
+      : 'stop';
+
+    let finalUsage = null;
+    if (result.ok && result.value.usage) {
+      finalUsage = {
+        prompt_tokens: result.value.usage.promptTokens,
+        completion_tokens: result.value.usage.completionTokens,
+        total_tokens: result.value.usage.totalTokens,
+        // biome-ignore lint/suspicious/noExplicitAny: extended usage with per-model breakdown
+        ...(result.value.usage.models
+          ? { models: result.value.usage.models }
+          : {}),
+      } as any;
+    }
+
     // Save conversation turn to server session
-    if (accumulatedContent) {
+    if (result.ok && finalContent !== '(no response)') {
       const lastUser = normalizedMessages
         .filter((m) => m.role === 'user')
         .slice(-1)[0];
       if (lastUser) {
         appendToSession(sessionId, lastUser, {
           role: 'assistant',
-          content: accumulatedContent,
+          content: finalContent,
         } as Message);
-        const entry = sessionStore.get(sessionId);
-        log.debug('Session updated', {
-          sessionId,
-          storedMessages: entry?.messages.length ?? 0,
-          responseChars: accumulatedContent.length,
-        });
       }
 
-      // NOTE: state store upsert removed — llm-agent 6.0 has no default state store.
-      // Session history managed by SessionManager + history RAG (session-scoped).
+      // NOTE: state store upsert removed (non-streaming path) — same as streaming.
     }
 
-    if (chunkCount === 0) {
-      log.warn('Stream produced 0 chunks — pipeline may have failed silently', {
-        messageCount: normalizedMessages.length,
-        sessionId,
-      });
-    }
-
-    res.write('data: [DONE]\n\n');
-    res.end();
-    return;
-  }
-
-  // --- Non-streaming (with rate-limit retry) ---
-  let result = await handle.agent.process(normalizedMessages, opts);
-
-  // Retry on rate-limit errors
-  if (!result.ok && isRateLimitError(result.error)) {
-    for (let attempt = 0; attempt < RATE_LIMIT_MAX_RETRIES; attempt++) {
-      const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt;
-      log.warn('Rate limit hit, retrying', {
-        attempt: attempt + 1,
-        maxRetries: RATE_LIMIT_MAX_RETRIES,
-        delayMs: delay,
-      });
-      await new Promise((r) => setTimeout(r, delay));
-      result = await handle.agent.process(normalizedMessages, opts);
-      if (result.ok || !isRateLimitError(result.error)) break;
-    }
-  }
-
-  log.info('Chat completions done', {
-    ok: result.ok,
-    durationMs: Date.now() - t0,
-  });
-
-  const finalContent = result.ok
-    ? result.value.content || '(no response)'
-    : isRateLimitError(result.error)
-      ? RATE_LIMIT_USER_MESSAGE
-      : `Error: ${result.error.message}`;
-
-  const finalFinishReason = result.ok
-    ? mapStopReason(result.value.stopReason)
-    : 'stop';
-
-  let finalUsage = null;
-  if (result.ok && result.value.usage) {
-    finalUsage = {
-      prompt_tokens: result.value.usage.promptTokens,
-      completion_tokens: result.value.usage.completionTokens,
-      total_tokens: result.value.usage.totalTokens,
-    };
-  }
-
-  // Save conversation turn to server session
-  if (result.ok && finalContent !== '(no response)') {
-    const lastUser = normalizedMessages
-      .filter((m) => m.role === 'user')
-      .slice(-1)[0];
-    if (lastUser) {
-      appendToSession(sessionId, lastUser, {
-        role: 'assistant',
-        content: finalContent,
-      } as Message);
-    }
-
-    // NOTE: state store upsert removed (non-streaming path) — same as streaming.
-  }
-
-  res.writeHead(200, {
-    'Content-Type': 'application/json',
-    ...invalidToolsHeader,
-  });
-  res.end(
-    JSON.stringify({
-      id: `chatcmpl-${randomUUID()}`,
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
-      model: getCurrentModel(),
-      choices: [
-        {
-          index: 0,
-          message: { role: 'assistant', content: finalContent },
-          finish_reason: finalFinishReason,
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      ...invalidToolsHeader,
+    });
+    res.end(
+      JSON.stringify({
+        id: `chatcmpl-${randomUUID()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: getCurrentModel(),
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: finalContent },
+            finish_reason: finalFinishReason,
+          },
+        ],
+        usage: finalUsage || {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
         },
-      ],
-      usage: finalUsage || {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-      },
-    }),
-  );
+      }),
+    );
+  } finally {
+    restoreRagStores();
+  }
 }
 
 /**

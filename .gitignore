@@ -40,6 +40,7 @@ sk.json
 *.json
 !biome.json
 !package.json
+!xs-security*.json
 !package-lock.json
 !tsconfig.json
 !xs-security.json
@@ -52,6 +53,7 @@ submodules/llm-agent/
 *.yaml
 !**/*.yaml.template
 !**/*.template.yaml
+!mta-staging.yaml
 mdd.env
 *.env
 !.env.example

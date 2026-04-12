@@ -25,6 +25,7 @@ import {
   FallbackRag,
   InMemoryMetrics,
   InMemoryRag,
+  IntentEnricher,
   type IQueryEmbedding,
   type IRag,
   MCPClientWrapper,
@@ -35,6 +36,7 @@ import {
   SmartAgentBuilder,
   type SmartAgentHandle,
   ToolCache,
+  TranslatePreprocessor,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -50,7 +52,7 @@ import { type AgentConfig, getAgentConfig } from './agent-config';
 // This wrapper strips ragFilter before querying, so tools always return results.
 // ---------------------------------------------------------------------------
 
-class NamespaceIgnoringRag implements IRag {
+export class NamespaceIgnoringRag implements IRag {
   constructor(private inner: IRag) {}
 
   async upsert(
@@ -81,6 +83,7 @@ import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableDestinations } from './lib/btp-destinations';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
+import { CollectionRegistry } from './rag-collections';
 
 /**
  * Convert inputSchema from HandlerExporter to JSON Schema.
@@ -332,6 +335,25 @@ export async function refreshDestinations(): Promise<
 let sharedEmbedderBreaker: CircuitBreaker | null = null;
 let sharedEmbedder: CircuitBreakerEmbedder | null = null;
 
+// ---------------------------------------------------------------------------
+// Collection Registry (singleton — manages dynamic RAG collections)
+// ---------------------------------------------------------------------------
+
+let collectionRegistryInstance: CollectionRegistry | null = null;
+
+/** Get or create the shared CollectionRegistry. */
+export function getCollectionRegistry(): CollectionRegistry {
+  if (!collectionRegistryInstance) {
+    const embedding = getOrCreateEmbedder(getAgentConfig().llm.resourceGroup);
+    collectionRegistryInstance = new CollectionRegistry({
+      storagePath: process.env.RAG_STORAGE_PATH || undefined,
+      embedder: embedding?.embedder ?? null,
+      breaker: embedding?.breaker ?? null,
+    });
+  }
+  return collectionRegistryInstance;
+}
+
 /** Get or create shared embedder (singleton) */
 function getOrCreateEmbedder(resourceGroup?: string): {
   embedder: CircuitBreakerEmbedder;
@@ -381,9 +403,25 @@ function createToolsRagStore(resourceGroup?: string): IRag {
   const embedding = getOrCreateEmbedder(resourceGroup);
   if (!embedding) return new NamespaceIgnoringRag(new InMemoryRag());
 
+  const config = getAgentConfig();
+  const helperLlm = makeLlm(
+    {
+      provider: config.llm.provider,
+      apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+      baseURL: config.llm.baseUrl,
+      model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+      resourceGroup: config.llm.resourceGroup,
+    },
+    0.1,
+  );
+
   const toolsVectorRag = new VectorRag(embedding.embedder, {
     vectorWeight: 0.7,
     keywordWeight: 0.3,
+    // Translate non-English queries to English before vector search (tool descriptions are English)
+    queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
+    // Enrich tool descriptions with intent/synonyms at indexing time
+    documentEnrichers: [new IntentEnricher(helperLlm)],
   });
   const fallback = new FallbackRag(
     toolsVectorRag,
@@ -392,8 +430,6 @@ function createToolsRagStore(resourceGroup?: string): IRag {
   );
   return new NamespaceIgnoringRag(fallback);
 }
-
-/** Get or create shared RAG stores (facts, feedback, state — persist across destination switches) */
 
 // ---------------------------------------------------------------------------
 // Tool vectorization (extracted for reuse across destinations)
@@ -416,13 +452,16 @@ async function vectorizeTools(
   const maxRetries = 3;
   const throttleMs = 50;
 
-  const toolEntries = tools.map((t) => {
+  // Build basic tool entries
+  const basicEntries = tools.map((t) => {
     const paramNames = Object.keys(
       (t.inputSchema as { properties?: Record<string, unknown> })?.properties ??
         {},
     ).join(', ');
     return {
       name: t.name,
+      description: t.description || '',
+      paramNames,
       text: [
         `Tool: ${t.name}`,
         `Description: ${t.description}`,
@@ -432,6 +471,13 @@ async function vectorizeTools(
         .join('\n'),
     };
   });
+
+  // NOTE: LLM enrichment now handled by IntentEnricher in VectorRag (llm-agent 8.0.0).
+  // TranslatePreprocessor handles query translation for non-English searches.
+  const toolEntries = basicEntries.map((t) => ({
+    name: t.name,
+    text: t.text,
+  }));
 
   let pending = toolEntries;
   let totalOk = 0;
@@ -872,13 +918,11 @@ async function buildAgentForDestination(
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
       historyRecencyWindow: config.agent.historyRecencyWindow,
-      // Disable deprecated tool refresh — it resets selected tools to ALL MCP tools (147+)
-      // on each iteration, inflating token count 10x. Tool reselection handles this instead.
       refreshToolsPerIteration: false,
-      // Re-select tools via RAG on error iterations for context-aware tool discovery
       toolReselectPerIteration: true,
-      // Fewer tools per selection = less token overhead from tool definitions
       ragQueryK: 5,
+      // Disable classifier — all input treated as action. Ensures tool search always runs.
+      classificationEnabled: false,
     },
     prompts: {
       system: [
@@ -898,6 +942,8 @@ async function buildAgentForDestination(
         '- Multi-step requests: split into separate "action" subprompts with "sequential" dependency.',
         '- Independent tasks: separate subprompts with "independent" dependency.',
         '- Knowledge/factual questions MUST be "action" — NOT "chat".',
+        '- Requests to read, list, show, check, analyze, or get any data = "action".',
+        '- Only greetings ("hi", "hello"), pure math, and jokes without data requests = "chat".',
         '',
         'Return ONLY a JSON array.',
       ].join('\n'),
@@ -914,6 +960,9 @@ async function buildAgentForDestination(
   if (sharedEmbedder) builder.withEmbedder(sharedEmbedder);
 
   builder
+    .withClassification(false) // Disable classifier — treat all input as action.
+    // Classifier caused tool selection to be skipped for "chat" queries.
+    // Without classifier, RAG query + tool selection always runs.
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withToolReselection(true)
     .withToolCache(new ToolCache({ ttlMs: 30_000 }))

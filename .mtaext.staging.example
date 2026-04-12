@@ -1,0 +1,24 @@
+_schema-version: '3.3.0'
+ID: cloud-llm-hub-staging-deploy
+extends: cloud-llm-hub-staging
+version: 1.0.0
+
+parameters:
+  LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"
+  LLM_AGENT_TEMPERATURE: "0.7"
+  LLM_AGENT_MAX_TOKENS: "32000"
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
+  LLM_AGENT_MODE: "smart"
+  LLM_AGENT_MAX_ITERATIONS: "10"
+  LLM_AGENT_RAG_TYPE: "vector"
+  LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
+  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
+  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
+  LLM_AGENT_EXPOSITION: "readonly,high"
+  LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
+  DESTINATION_MAPPING: "DEV.100=S4HANA_DEV"
+  APPROUTER_HOST: "<your-subdomain>-cloud-llm-hub-staging"
+
+resources:
+  - name: cloud-llm-hub-staging-ai-core
+    active: true

@@ -27,7 +27,13 @@ export class SapAiCoreEmbedder implements IEmbedder {
     this.resourceGroup = config.resourceGroup;
   }
 
-  async embed(text: string, _options?: CallOptions): Promise<number[]> {
+  async embed(
+    text: string,
+    _options?: CallOptions,
+  ): Promise<{
+    vector: number[];
+    usage?: { promptTokens: number; totalTokens: number };
+  }> {
     const client = new OrchestrationEmbeddingClient(
       { embeddings: { model: { name: this.model as EmbeddingModel } } },
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
@@ -50,9 +56,9 @@ export class SapAiCoreEmbedder implements IEmbedder {
         buffer.byteOffset,
         buffer.length / 4,
       );
-      return Array.from(float32);
+      return { vector: Array.from(float32) };
     }
 
-    return embedding;
+    return { vector: embedding };
   }
 }
