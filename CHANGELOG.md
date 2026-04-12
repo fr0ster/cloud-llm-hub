@@ -72,6 +72,18 @@ All notable changes to this project will be documented in this file. The format 
 ### Changed
 - `@mcp-abap-adt/core` 4.9.0, `@mcp-abap-adt/llm-agent` 5.18.3
 
+## [3.5.0] - 2026-04-07
+
+### Added
+- **historyRecencyWindow** config — only last N messages sent to LLM, older via RAG
+- Model/temperature as API params in example services
+
+### Changed
+- `@mcp-abap-adt/llm-agent` 5.18.0, `@mcp-abap-adt/core` 4.8.9
+
+### Fixed
+- Removed legacy force non-streaming toggle
+
 ## [3.4.1] - 2026-04-07
 
 ### Changed
