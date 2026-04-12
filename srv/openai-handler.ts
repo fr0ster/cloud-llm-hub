@@ -633,7 +633,8 @@ export async function handleChatCompletions(
             name.startsWith('custom_tool_select') ||
             name.startsWith('final_context') ||
             name.startsWith('llm_request') ||
-            name.startsWith('llm_response')
+            name.startsWith('llm_response') ||
+            name.startsWith('external_tools')
           ) {
             pipelineLog.info(name, data);
           }
