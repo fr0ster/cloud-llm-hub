@@ -746,6 +746,8 @@ async function buildEmbeddedMcpAdapter(
   // Resolve system context: responsible person + master system.
   // On-premise via BTP Destination: user from destination auth (e.g. MCPDEV01).
   // Cloud: /systeminformation endpoint (called automatically as fallback).
+  // NOTE: Only call with explicit overrides — fallback to /systeminformation
+  // can interfere with CSRF token management on on-premise systems.
   const destinationUser = resolved.username || resolved.sapConfig.username;
   if (destinationUser) {
     await resolveSystemContext(abapConn, { responsible: destinationUser });
@@ -753,8 +755,6 @@ async function buildEmbeddedMcpAdapter(
       destination: destinationName,
       responsible: destinationUser,
     });
-  } else {
-    await resolveSystemContext(abapConn);
   }
 
   // Get MCP tool handlers filtered by configured exposition (handler sets)
