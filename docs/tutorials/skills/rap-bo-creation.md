@@ -1,0 +1,162 @@
+---
+name: RAP Business Object Creation
+description: Rules and constraints for creating SAP RAP managed Business Objects with draft support on on-premise S/4HANA systems via MCP tools
+version: 1.0.0
+tags: [sap, rap, abap, cds, bdef, draft, fiori]
+---
+
+# RAP Business Object Creation — Skill Reference
+
+## Scope
+
+This skill covers creating a RAP managed BO with draft support on SAP S/4HANA on-premise systems. It documents constraints, common mistakes, and correct patterns discovered through testing.
+
+## Object Creation Order
+
+Objects must be created and activated in this exact dependency order:
+
+1. Package
+2. Domains → Data Elements
+3. Persistent Tables
+4. Draft Tables
+5. Interface CDS Views (R-type) — create all, activate together
+6. Projection CDS Views (C-type) — create all, activate together
+7. Metadata Extensions
+8. Interface Behavior Definition (BDEF) — do NOT activate without BIMP
+9. Behavior Implementation Class (BIMP) — activate together with BDEF
+10. Projection Behavior Definition
+11. Service Definition
+12. Service Binding — activate and publish
+
+## Package
+
+- On on-premise systems, local packages must start with `TEST_` or `$` to use the `LOCAL` software component.
+- Always specify `software component LOCAL` explicitly — the LLM often omits it.
+- If MCP cannot create the package, the user must create it manually in ADT/SE80.
+
+## Domains
+
+- Each domain defines a single ABAP type (CHAR, UNIT, etc.) with length.
+- Domains may not activate automatically after creation. Always verify and activate if needed: "Activate all inactive domains starting with Z##_D_".
+
+## Data Elements
+
+- Each data element references a domain OR a predefined ABAP type.
+- **Do NOT use `abap_boolean`** — the MCP handler produces a data element without a data type. Use `type CHAR length 1` instead.
+- All domains must be **active** before creating data elements that reference them. If creation fails with "domain not active", activate domains first.
+
+## Persistent Tables
+
+- Root table: `key client : abap.clnt`, `key uuid : sysuuid_x16`, `key matnr : z##_e_matnr`, business fields, audit fields.
+- Child tables: same keys + `root_uuid : sysuuid_x16` linking to parent.
+- Audit fields: `created_by : abp_creation_user`, `created_at : abp_creation_tstmpl`, `last_changed_by : abp_locinst_lastchange_user`, `last_changed_at : abp_locinst_lastchange_tstmpl`, `local_last_changed_at : abp_lastchange_tstmpl`.
+
+## Draft Tables
+
+**Critical rules:**
+
+1. **Key fields must match persistent table keys.** If persistent table has `key client, key uuid, key matnr`, draft table must also have `key mandt, key uuid, key matnr`. Omitting business keys causes BDEF activation error: "Field MATNR is required but not a key".
+2. **Use `mandt` not `abap.clnt`** for the client key field.
+3. **Non-key field names use CDS aliases** (PascalCase): `materialtype` instead of `mtart`, `materialgroup` instead of `matkl`.
+4. **Key field names keep original table names**: `matnr`, `werks`, `spras` — NOT PascalCase.
+5. **No structure includes** — spell out audit fields individually: `createdby`, `createdat`, `lastchangedby`, `lastchangedat`, `locallastchangedat`.
+6. **Always add `"%admin" : include sych_bdl_draft_admin_inc`** at the end.
+
+## CDS Views — Interface (R-type)
+
+- Root: `define root view entity` with `composition [0..*]` to children.
+- Children: `define view entity` with `association to parent` on `$projection.RootUuid = _Root.Uuid`.
+- All fields mapped to PascalCase aliases: `uuid as Uuid`, `matnr as Matnr`, `mtart as MaterialType`.
+- **Circular dependency:** root references children, children reference root. Create all views first (syntax errors are expected), then activate all together in one call.
+- **Always provide exact DDL source code** in the prompt — without it, the agent may create empty view shells that fail activation with "DDIC source code does not contain a valid definition".
+- After activation, run syntax check: "Check CDS view Z##_R_MAT_ROOT for syntax errors".
+
+## CDS Views — Projection (C-type)
+
+- Root projection: `provider contract transactional_query`, `@Search.searchable: true`, `@Metadata.allowExtensions: true`.
+- Redirect compositions: `_Plant : redirected to composition child Z##_C_MAT_PLANT`.
+- Children: redirect `_Root : redirected to parent Z##_C_MAT_ROOT`.
+- Same circular dependency pattern — create all, activate together.
+
+## Metadata Extensions
+
+- Require `@Metadata.allowExtensions: true` on projection views.
+- Use `@Metadata.layer: #CUSTOMER`.
+- Define `@UI.facet` for object page layout, `@UI.lineItem` for list columns, `@UI.identification` for detail fields, `@UI.selectionField` for filter bar.
+- Hide technical fields: `@UI.hidden: true` on Uuid, RootUuid.
+
+## Behavior Definition (BDEF)
+
+**Critical rules for `strict ( 2 )` with `with draft`:**
+
+1. **`authorization master ( instance )`** on root entity — required by strict mode. Without it: "every entity must be flagged as authorization master or dependent".
+2. **`authorization dependent by _Root`** on all child entities.
+3. **`lock master total etag LocalLastChangedAt`** on root entity.
+4. **`lock dependent by _Root`** on all child entities.
+5. **`draft table`** on ALL entities (root and children) — not just root. Without it: "There is no draft persistency specified".
+6. **Draft actions on root entity** — all five are required:
+   ```
+   draft action Edit;
+   draft action Resume;
+   draft action Activate optimized;
+   draft action Discard;
+   draft determine action Prepare;
+   ```
+   Missing `Discard` causes: "there must be an explicit definition of the draft action Discard".
+7. **Explicit field mapping** — do NOT use `mapping for z##_mara corresponding`. CDS aliases (PascalCase) don't match table field names (lowercase), causing 41+ mapping warnings and broken field persistence. Always use explicit mapping:
+   ```
+   mapping for z##_mara
+   {
+     Uuid = uuid;
+     Matnr = matnr;
+     MaterialType = mtart;
+     MaterialGroup = matkl;
+     ...
+   }
+   ```
+8. **No mapping for draft tables** — `mapping for` is only for persistent tables. Draft table is declared in the entity header only.
+
+## Behavior Implementation (BIMP)
+
+- Class: `PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT`.
+- For managed scenario — class body is empty. Framework handles CRUD automatically.
+- BDEF and BIMP have circular dependency. Create both, then activate together.
+
+## Projection BDEF
+
+- `projection; strict ( 2 ); use draft;`
+- Root: `use create; use update; use delete;` + `use association _Plant { create; with draft; }`.
+- Children: `use update; use delete;` + `use association _Root { with draft; }`.
+
+## Service Definition
+
+- `define service` with `expose` for each projection view.
+- Entity aliases: `expose Z##_C_MAT_ROOT as Material`.
+
+## Service Binding
+
+- OData V4 UI binding.
+- Must be activated AND published separately.
+- Publishing may require a separate "Publish service binding" prompt.
+
+## Activation Rules
+
+- **Never say "Activate all inactive objects"** on shared systems — this activates other users' objects. Always filter by prefix: "Activate all inactive objects starting with Z##_".
+- CDS views with circular references must be activated together in one call.
+- BDEF + BIMP must be activated together.
+- Always run syntax check after activation for CDS views and BDEF.
+
+## Common Error Messages and Fixes
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "Field MATNR is required but not a key" | Draft table missing business key | Add `key matnr` to draft table |
+| "every entity must be flagged as authorization master or dependent" | Missing `authorization` on entity | Add `authorization master ( instance )` on root, `authorization dependent by _Root` on children |
+| "every entity must be flagged either as lock master or lock dependent" | Missing `lock` on child entity | Add `lock dependent by _Root` on children |
+| "There is no draft persistency specified" | Missing `draft table` on child entity | Add `draft table z##_xxx_d` to each child entity header |
+| "there must be an explicit definition of the draft action Discard" | Missing draft action | Add `draft action Discard;` to root entity |
+| "DDIC source code does not contain a valid definition" | CDS view created without DDL source | Provide exact DDL in prompt, update view, then activate |
+| "No domain or data type was defined" | Data element with `abap_boolean` | Use `type CHAR length 1` instead |
+| "domain not active" | Data element references inactive domain | Activate domains first |
+| "association target not found" | CDS views not activated together | Activate all R-type or C-type views in one call |
+| Mapping warnings (41+) | Using `corresponding` with PascalCase aliases | Use explicit `mapping for table { CdsAlias = table_field; }` |
