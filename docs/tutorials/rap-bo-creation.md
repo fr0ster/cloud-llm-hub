@@ -392,7 +392,7 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 
 **You type in chat:**
 
-> Create draft tables for all 4 persistent tables in package Z##_MAT. Draft table naming: add _D suffix.
+> Create draft tables for all 4 persistent tables in package TEST_##_MAT. Draft table naming: add _D suffix.
 >
 > Rules for draft tables:
 > - key mandt : mandt not null (not abap.clnt!)
@@ -452,7 +452,7 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 **You type in chat:**
 
-> Create interface CDS view entity Z##_R_MAT_ROOT in package Z##_MAT.
+> Create interface CDS view entity Z##_R_MAT_ROOT in package TEST_##_MAT.
 > Source table: z##_mara
 > This is the root view with compositions to children:
 > - composition [0..*] of Z##_R_MAT_PLANT as _Plant
@@ -528,7 +528,7 @@ Projections define what the service consumer sees. They reference the interface 
 
 **You type in chat:**
 
-> Create projection CDS views for all 4 entities in package Z##_MAT:
+> Create projection CDS views for all 4 entities in package TEST_##_MAT:
 >
 > 1. Z##_C_MAT_ROOT — root projection on Z##_R_MAT_ROOT
 >    - provider contract transactional_query
@@ -579,13 +579,50 @@ graph LR
 
 ---
 
-## Step 8: Create Interface Behavior Definition (BDEF)
+## Step 8: Create Metadata Extensions
+
+Metadata extensions add UI annotations for the Fiori Elements app. They depend on projection views (`@Metadata.allowExtensions: true` from Step 7).
+
+**You type in chat:**
+
+> Create metadata extension for Z##_C_MAT_ROOT in package TEST_##_MAT with this source:
+>
+> ```
+> @Metadata.layer: #CUSTOMER
+> annotate entity Z##_C_MAT_ROOT with
+> {
+>   @UI.facet: [
+>     { id: 'General', purpose: #STANDARD, type: #IDENTIFICATION_REFERENCE, label: 'General Data', position: 10 },
+>     { id: 'Plant', purpose: #STANDARD, type: #LINEITEM_REFERENCE, label: 'Plant Data', position: 20, targetElement: '_Plant' },
+>     { id: 'Text', purpose: #STANDARD, type: #LINEITEM_REFERENCE, label: 'Texts', position: 30, targetElement: '_Text' },
+>     { id: 'Sales', purpose: #STANDARD, type: #LINEITEM_REFERENCE, label: 'Sales Data', position: 40, targetElement: '_Sales' }
+>   ]
+>   @UI.hidden: true
+>   Uuid;
+>   @UI: { lineItem: [{ position: 10 }], identification: [{ position: 10 }], selectionField: [{ position: 10 }] }
+>   Matnr;
+>   @UI: { lineItem: [{ position: 20 }], identification: [{ position: 20 }], selectionField: [{ position: 20 }] }
+>   MaterialType;
+>   @UI: { lineItem: [{ position: 30 }], identification: [{ position: 30 }], selectionField: [{ position: 30 }] }
+>   MaterialGroup;
+>   @UI: { lineItem: [{ position: 40 }], identification: [{ position: 40 }] }
+>   BaseUnitOfMeasure;
+> }
+> ```
+>
+> Activate.
+
+**Expected result:** Metadata extension created and activated. The Fiori preview will show proper list/detail pages with field labels and facets.
+
+---
+
+## Step 9: Create Interface Behavior Definition (BDEF)
 
 The BDEF defines the transactional behavior — CRUD operations, draft support, field control, and mappings.
 
 **You type in chat:**
 
-> Create interface behavior definition for Z##_R_MAT_ROOT in package Z##_MAT.
+> Create interface behavior definition for Z##_R_MAT_ROOT in package TEST_##_MAT.
 > Settings:
 > - managed implementation in class ZBP_##_R_MAT_ROOT unique
 > - strict ( 2 ), with draft
@@ -638,11 +675,11 @@ graph TD
 
 ---
 
-## Step 9: Create Behavior Implementation (BIMP)
+## Step 10: Create Behavior Implementation (BIMP)
 
 **You type in chat:**
 
-> Create the behavior implementation class ZBP_##_R_MAT_ROOT in package Z##_MAT for behavior of Z##_R_MAT_ROOT.
+> Create the behavior implementation class ZBP_##_R_MAT_ROOT in package TEST_##_MAT for behavior of Z##_R_MAT_ROOT.
 > The class should be PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT.
 > For now, create a minimal implementation — just the class shell. The managed scenario handles most operations automatically.
 > Activate it.
@@ -653,11 +690,11 @@ graph TD
 
 ---
 
-## Step 10: Create Projection Behavior Definition
+## Step 11: Create Projection Behavior Definition
 
 **You type in chat:**
 
-> Create projection behavior definition for Z##_C_MAT_ROOT in package Z##_MAT.
+> Create projection behavior definition for Z##_C_MAT_ROOT in package TEST_##_MAT.
 > Settings: projection, strict ( 2 ), use draft
 >
 > Root entity Z##_C_MAT_ROOT (alias Material):
@@ -678,11 +715,11 @@ graph TD
 
 ---
 
-## Step 11: Create Service Definition
+## Step 12: Create Service Definition
 
 **You type in chat:**
 
-> Create service definition ZUI_##_MAT_O4 in package Z##_MAT.
+> Create service definition ZUI_##_MAT_O4 in package TEST_##_MAT.
 > Label: 'Service for Material'
 > Expose:
 > - Z##_C_MAT_ROOT as Material
@@ -696,11 +733,11 @@ graph TD
 
 ---
 
-## Step 12: Create Service Binding and Publish
+## Step 13: Create Service Binding and Publish
 
 **You type in chat:**
 
-> Create OData V4 UI service binding ZUI_##_MAT_O4 in package Z##_MAT for service definition ZUI_##_MAT_O4.
+> Create OData V4 UI service binding ZUI_##_MAT_O4 in package TEST_##_MAT for service definition ZUI_##_MAT_O4.
 > After creation, publish it.
 
 **Expected result:** Service binding created, activated, and published. You get a service URL for testing.
@@ -709,36 +746,13 @@ graph TD
 
 ---
 
-## Step 13: Create Metadata Extensions (Optional)
-
-Metadata extensions add UI annotations for the Fiori Elements app.
-
-**You type in chat:**
-
-> Create metadata extension for Z##_C_MAT_ROOT in package Z##_MAT with:
-> - @UI.headerInfo: typeName 'Material', typeNamePlural 'Materials', title field Matnr
-> - @UI.facet: identification facet for General Data, lineItem facets for _Plant, _Text, _Sales
-> - @UI.hidden on Uuid
-> - @UI.lineItem + @UI.identification + @UI.selectionField on Matnr, MaterialType, MaterialGroup
->
-> Also create metadata extension for Z##_C_MAT_PLANT in same package:
-> - @UI.headerInfo: typeName 'Plant Data', title field Plant
-> - @UI.hidden on Uuid and RootUuid
-> - @UI.lineItem + @UI.identification on Plant
->
-> Activate both.
-
-**Expected result:** Metadata extensions created. The Fiori preview will now show proper list/detail pages with field labels and facets.
-
----
-
-## Verification
+## Step 14: Verification
 
 After all steps, verify the BO works:
 
 **You type in chat:**
 
-> Check the current state of all objects in package Z##_MAT. List any inactive objects and activate them.
+> Check the current state of all objects in package TEST_##_MAT. List any inactive objects and activate them.
 
 **Expected result:** The agent lists all ~20 objects and confirms they are all active. If any are inactive, it activates them.
 
