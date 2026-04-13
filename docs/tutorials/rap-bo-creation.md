@@ -409,16 +409,16 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 > Rules for draft tables:
 > - key mandt : mandt not null (not abap.clnt!)
 > - key uuid : sysuuid_x16 not null
-> - All non-key fields use CDS-like PascalCase names (materialtype instead of mtart, materialgroup instead of matkl)
+> - **Key fields from persistent table must also be key in draft table** — but use CDS alias names
+> - Non-key fields use CDS-like PascalCase names (materialtype instead of mtart)
 > - Spell out audit fields individually using lowercase names: createdby, createdat, lastchangedby, lastchangedat, locallastchangedat
 > - Add "%admin" : include sych_bdl_draft_admin_inc at the end
-> - Non-key business keys (matnr, werks, etc.) are NOT key fields in draft table
 >
 > Draft tables:
-> 1. Z##_MARA_D — root draft: matnr, materialtype, materialgroup, markedfordeletion, baseunitofmeasure + audit + admin
-> 2. Z##_MARC_D — plant draft: matnr, plant, rootuuid + audit + admin
-> 3. Z##_MAKT_D — text draft: matnr, language (spras type), materialdescription, rootuuid + audit + admin
-> 4. Z##_MVKE_D — sales draft: matnr, salesorganization, distributionchannel, rootuuid + audit + admin
+> 1. Z##_MARA_D — root draft: key mandt, key uuid, **key matnr**, materialtype, materialgroup, markedfordeletion, baseunitofmeasure + audit + admin
+> 2. Z##_MARC_D — plant draft: key mandt, key uuid, **key matnr**, **key plant**(werks), rootuuid + audit + admin
+> 3. Z##_MAKT_D — text draft: key mandt, key uuid, **key matnr**, **key language**(spras), materialdescription, rootuuid + audit + admin
+> 4. Z##_MVKE_D — sales draft: key mandt, key uuid, **key matnr**, **key salesorganization**(vkorg), **key distributionchannel**(vtweg), rootuuid + audit + admin
 >
 > Activate all after creation.
 
@@ -444,9 +444,13 @@ graph LR
     P3 -.->|"lowercase PascalCase"| D3
 ```
 
-**Expected result:** All 4 draft tables created and activated. Each has only `mandt` + `uuid` as key fields, PascalCase field names, and the `%admin` include.
+**Expected result:** All 4 draft tables created and activated. Key fields match persistent tables (mandt + uuid + business keys), non-key fields use PascalCase CDS alias names, and the `%admin` include is present.
 
-> **Common mistake:** Using persistent table field names (mtart) instead of CDS aliases (materialtype) in draft tables. This causes BDEF mapping errors.
+> **Critical rule:** Draft table key fields must match persistent table key fields. If persistent table has `key matnr`, draft table must also have `key matnr`. The field names in draft table must use CDS alias names (PascalCase for non-key fields), but key fields keep their original names.
+>
+> **Known LLM mistake:** The LLM often generates draft tables with only `mandt` + `uuid` as keys, omitting business keys like `matnr`, `werks`, `spras`. This causes BDEF activation error: "Field MATNR is required but not a key". **Fix:** Ensure all key fields from the persistent table are also key fields in the draft table.
+>
+> **Common mistake:** Using persistent table field names (mtart) instead of CDS aliases (materialtype) for non-key fields in draft tables. This causes BDEF mapping errors.
 
 ---
 
@@ -660,6 +664,7 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 >   draft action Edit;
 >   draft action Resume;
 >   draft action Activate optimized;
+>   draft action Discard;
 >   draft determine action Prepare;
 >
 >   field ( numbering : managed, readonly ) Uuid;
