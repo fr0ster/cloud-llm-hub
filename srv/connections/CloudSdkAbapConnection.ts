@@ -24,6 +24,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private sessionId: string = 'cloud-sdk-session';
   private sessionType: 'stateless' | 'stateful' = 'stateless';
   private readonly destinationName: string;
+  /** Shared promise for CSRF refresh — ensures only one fetch at a time */
+  private csrfRefreshing: Promise<string> | null = null;
 
   constructor(
     private readonly config: SapConfig,
@@ -48,10 +50,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   async connect(): Promise<void> {
-    // Pre-fetch CSRF token during connect so it's available for all
-    // subsequent write requests. Without this, the first POST fetches
-    // the token lazily, which can fail with parallel tool calls or
-    // when Cloud Connector session affinity is required.
+    // Pre-fetch CSRF token so the first POST doesn't need to fetch lazily.
+    // Optional — refreshCsrf handles on-demand fetch if token is missing.
     await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
   }
 
@@ -135,25 +135,34 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * The retry logic and parameters are synchronized with @mcp-abap-adt/connection
    * via CSRF_CONFIG, but the HTTP client differs due to BTP Destination Service integration.
    */
+  /**
+   * Ensure CSRF token is available. Reuses cached token or fetches a new one.
+   * Safe for parallel calls — only one fetch runs at a time.
+   */
   private async ensureFreshCsrfToken(requestUrl: string): Promise<void> {
-    // Reuse existing token if available — avoids breaking session affinity
-    // in stateful mode (lock → update → unlock → activate chain).
-    // Token is reset on connection.reset() or after 403 retry.
     if (this.csrfToken) {
       return;
     }
-    try {
-      this.csrfToken = await this.fetchCsrfToken(requestUrl);
-    } catch (error) {
-      const errorMsg = CSRF_ERROR_MESSAGES.REQUIRED_FOR_MUTATION;
+    await this.refreshCsrf(requestUrl);
+  }
 
-      logger.error(errorMsg, {
-        type: 'CSRF_FETCH_ERROR',
-        cause: error instanceof Error ? error.message : String(error),
-      });
-
-      throw new Error(errorMsg);
+  /**
+   * Refresh CSRF token. Clears stale cookies, fetches new token.
+   * Uses shared promise so parallel callers wait for the same fetch.
+   */
+  private async refreshCsrf(requestUrl: string): Promise<void> {
+    if (!this.csrfRefreshing) {
+      this.csrfRefreshing = (async () => {
+        this.cookieJar.clear();
+        this.csrfToken = null;
+        try {
+          return await this.fetchCsrfToken(requestUrl);
+        } finally {
+          this.csrfRefreshing = null;
+        }
+      })();
     }
+    this.csrfToken = await this.csrfRefreshing;
   }
 
   /**
@@ -463,26 +472,20 @@ export class CloudSdkAbapConnection implements AbapConnection {
         (errorObj?.response?.status === 403 || errorObj?.statusCode === 403) &&
         (normalizedMethod === 'POST' || normalizedMethod === 'PUT')
       ) {
-        // Clear cookies before CSRF retry — SAP binds CSRF tokens to session cookies.
-        // Without this, the new token may be invalid for the old session.
-        this.cookieJar.clear();
-        this.csrfToken = null;
         logger.info(
-          'CSRF token validation failed, clearing cookies and fetching new token',
-          {
-            url: requestUrl,
-          },
+          'CSRF token validation failed, refreshing token and retrying',
+          { url: requestUrl },
         );
-        this.csrfToken = await this.fetchCsrfToken(requestUrl);
+        // Shared refresh — if another parallel call is already refreshing, wait for it
+        await this.refreshCsrf(requestUrl);
 
-        // Retry the request with fresh cookies from CSRF fetch
+        // Retry the request with fresh CSRF token + cookies
         try {
           const retryHeaders = { ...requestHeaders };
           if (!this.csrfToken) {
             throw new Error('CSRF token is required for retry');
           }
           retryHeaders['x-csrf-token'] = this.csrfToken;
-          // Update cookies — fetchCsrfToken populated cookieJar with fresh session
           const retryCookie = this.getCookieHeader();
           if (retryCookie) {
             retryHeaders.Cookie = retryCookie;
