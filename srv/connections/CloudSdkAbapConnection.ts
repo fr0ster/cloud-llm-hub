@@ -463,21 +463,32 @@ export class CloudSdkAbapConnection implements AbapConnection {
         (errorObj?.response?.status === 403 || errorObj?.statusCode === 403) &&
         (normalizedMethod === 'POST' || normalizedMethod === 'PUT')
       ) {
+        // Clear cookies before CSRF retry — SAP binds CSRF tokens to session cookies.
+        // Without this, the new token may be invalid for the old session.
+        this.cookieJar.clear();
+        this.csrfToken = null;
         logger.info(
-          'CSRF token validation failed, fetching new token and retrying request',
+          'CSRF token validation failed, clearing cookies and fetching new token',
           {
             url: requestUrl,
           },
         );
         this.csrfToken = await this.fetchCsrfToken(requestUrl);
 
-        // Retry the request
+        // Retry the request with fresh cookies from CSRF fetch
         try {
           const retryHeaders = { ...requestHeaders };
           if (!this.csrfToken) {
             throw new Error('CSRF token is required for retry');
           }
           retryHeaders['x-csrf-token'] = this.csrfToken;
+          // Update cookies — fetchCsrfToken populated cookieJar with fresh session
+          const retryCookie = this.getCookieHeader();
+          if (retryCookie) {
+            retryHeaders.Cookie = retryCookie;
+          } else {
+            delete retryHeaders.Cookie;
+          }
 
           const retryResponse = await executeHttpRequest(
             { destinationName: this.destinationName },
