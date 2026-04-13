@@ -743,6 +743,12 @@ async function buildEmbeddedMcpAdapter(
     throw new Error(`Destination "${destinationName}" is unreachable: ${msg}`);
   }
 
+  // Pre-fetch CSRF token so it's ready for all tool calls.
+  // Without this, parallel tool calls race for CSRF and most fail with 403.
+  if ('connect' in connection) {
+    await (connection as { connect: () => Promise<void> }).connect();
+  }
+
   // Resolve system context: responsible person + master system.
   // On-premise via BTP Destination: user from destination auth (e.g. MCPDEV01).
   // Cloud: /systeminformation endpoint (called automatically as fallback).
