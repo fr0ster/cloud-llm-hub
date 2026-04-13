@@ -231,9 +231,11 @@ All objects need a development package. On most on-premise systems, local packag
 
 **You type in chat:**
 
-> Create package TEST_##_MAT as a local $TMP package with description 'Material Master RAP BO'.
+> Create package TEST_##_MAT as a local $TMP package with software component LOCAL and description 'Material Master RAP BO'.
 
 **Expected result:** Package TEST_##_MAT created under $TMP with software component LOCAL.
+
+> **Tip:** The agent may need two attempts — the first may fail if it omits the software component. If so, repeat the prompt and explicitly mention `software component LOCAL`.
 
 > **Note:** If the agent cannot create the package via MCP, create it manually in ADT (Eclipse) via `File → New → ABAP Package` (select "Local Object" when prompted for transport). Then tell the agent: "Use package TEST_##_MAT for all objects."
 
@@ -260,7 +262,15 @@ Before creating tables, we define custom domains and data elements. This provide
 
 **Expected result:** 8 domains created and activated.
 
+> **If domains are not activated:** The agent may create domains without activating them (they will have status "new"). If this happens, type:
+> "Activate all inactive domains starting with Z##_D_"
+> or: "Check inactive objects and activate all of them."
+
+**Checkpoint:** Ask the agent: "Read domain Z##_D_MATNR" — verify it shows the correct type (CHAR, length 40) and is active.
+
 ### 3.2 Data Elements
+
+> **Important:** All domains must be active before creating data elements. If data element creation fails with "domain not active", activate the domains first (see note above).
 
 **You type in chat:**
 
@@ -280,7 +290,9 @@ Before creating tables, we define custom domains and data elements. This provide
 
 > **Why domains and data elements?** Domains define value ranges and formatting. Data elements add labels and F4 help. Without them, Fiori UI shows raw field names instead of proper labels, and there's no input validation or search help.
 
-**Checkpoint:** Ask the agent: "List all objects in package TEST_##_MAT" — you should see 8 domains + 9 data elements.
+> **If data elements are not activated:** Type: "Activate all inactive data elements starting with Z##_E_" or "Check inactive objects and activate all."
+
+**Checkpoint:** Ask the agent: "List all objects in package TEST_##_MAT" — you should see 8 domains + 9 data elements, all active.
 
 ---
 
