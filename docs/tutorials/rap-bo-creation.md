@@ -14,47 +14,47 @@ This tutorial walks through creating a complete RAP (RESTful Application Program
 
 ABAP object names have length limits (30 characters for most, 26 for service binding). To avoid conflicts between participants and fit within limits, we use a personal prefix convention.
 
-**Your prefix: `Z<II><N>_`**
+**Your prefix: `Z<II><NN>_`**
 
 - `<II>` — your initials, 2 characters (e.g., `OK` for Oleksii Kyslytsia)
-- `<N>` — version number, start with `1`
+- `<NN>` — version number, 2 digits, start with `01`
 
 **Examples:**
 
 | Developer | Prefix | Package | Root Table |
 |-----------|--------|---------|------------|
-| Oleksii Kyslytsia | `ZOK1_` | `ZOK1_MAT` | `ZOK1_MARA` |
-| Roman Semenov | `ZRS1_` | `ZRS1_MAT` | `ZRS1_MARA` |
-| Roman Semenov (2nd attempt) | `ZRS2_` | `ZRS2_MAT` | `ZRS2_MARA` |
+| Oleksii Kyslytsia | `ZOK01_` | `TEST_OK01_MAT` | `ZOK01_MARA` |
+| Roman Semenov | `ZRS01_` | `TEST_RS01_MAT` | `ZRS01_MARA` |
+| Roman Semenov (2nd attempt) | `ZRS02_` | `TEST_RS02_MAT` | `ZRS02_MARA` |
 
-If someone shares your initials — take the next number (`ZOK2_`, `ZOK3_`, ...).
+If someone shares your initials — take the next number (`ZOK02_`, `ZOK03_`, ...).
 
 **Full naming table:**
 
-| Object | Max | Placeholder | Example (ZOK1_) |
-|--------|-----|-------------|-----------------|
-| Package | 30 | `TEST_##_MAT` | `TEST_OK1_MAT` |
-| Domain | 30 | `Z##_D_MATNR`, ... | `ZOK1_D_MATNR` |
-| Data Element | 30 | `Z##_E_MATNR`, ... | `ZOK1_E_MATNR` |
-| Persistent table (root) | 30 | `Z##_MARA` | `ZOK1_MARA` |
-| Persistent table (child) | 30 | `Z##_MARC`, `Z##_MAKT`, `Z##_MVKE` | `ZOK1_MARC` |
-| Draft table | 30 | `Z##_MARA_D`, `Z##_MARC_D`, ... | `ZOK1_MARA_D` |
-| Interface CDS (root) | 30 | `Z##_R_MAT_ROOT` | `ZOK1_R_MAT_ROOT` |
-| Interface CDS (child) | 30 | `Z##_R_MAT_PLANT`, ... | `ZOK1_R_MAT_PLANT` |
-| Projection CDS (root) | 30 | `Z##_C_MAT_ROOT` | `ZOK1_C_MAT_ROOT` |
-| Projection CDS (child) | 30 | `Z##_C_MAT_PLANT`, ... | `ZOK1_C_MAT_PLANT` |
-| BIMP class | 30 | `ZBP_##_R_MAT_ROOT` | `ZBP_OK1_R_MAT_ROOT` |
-| Service Definition | 30 | `ZUI_##_MAT_O4` | `ZUI_OK1_MAT_O4` |
-| Service Binding | 26 | `ZUI_##_MAT_O4` | `ZUI_OK1_MAT_O4` |
-| Metadata Extension | 30 | `Z##_C_MAT_ROOT` | `ZOK1_C_MAT_ROOT` |
+| Object | Max | Placeholder | Example (ZOK01_) |
+|--------|-----|-------------|------------------|
+| Package | 30 | `TEST_##_MAT` | `TEST_OK01_MAT` |
+| Domain | 30 | `Z##_D_MATNR`, ... | `ZOK01_D_MATNR` |
+| Data Element | 30 | `Z##_E_MATNR`, ... | `ZOK01_E_MATNR` |
+| Persistent table (root) | 30 | `Z##_MARA` | `ZOK01_MARA` |
+| Persistent table (child) | 30 | `Z##_MARC`, `Z##_MAKT`, `Z##_MVKE` | `ZOK01_MARC` |
+| Draft table | 30 | `Z##_MARA_D`, `Z##_MARC_D`, ... | `ZOK01_MARA_D` |
+| Interface CDS (root) | 30 | `Z##_R_MAT_ROOT` | `ZOK01_R_MAT_ROOT` |
+| Interface CDS (child) | 30 | `Z##_R_MAT_PLANT`, ... | `ZOK01_R_MAT_PLANT` |
+| Projection CDS (root) | 30 | `Z##_C_MAT_ROOT` | `ZOK01_C_MAT_ROOT` |
+| Projection CDS (child) | 30 | `Z##_C_MAT_PLANT`, ... | `ZOK01_C_MAT_PLANT` |
+| BIMP class | 30 | `ZBP_##_R_MAT_ROOT` | `ZBP_OK01_R_MAT_ROOT` |
+| Service Definition | 30 | `ZUI_##_MAT_O4` | `ZUI_OK01_MAT_O4` |
+| Service Binding | 26 | `ZUI_##_MAT_O4` | `ZUI_OK01_MAT_O4` |
+| Metadata Extension | 30 | `Z##_C_MAT_ROOT` | `ZOK01_C_MAT_ROOT` |
 
 > **Before you start:**
-> 1. Decide your prefix (e.g., `ZOK1_`)
-> 2. Ask the agent: *"Search for objects starting with ZOK1_*"*
-> 3. If objects found — increment: `ZOK2_`, `ZOK3_`, ...
+> 1. Decide your prefix (e.g., `ZOK01_`)
+> 2. Ask the agent: *"Search for objects starting with ZOK01_"*
+> 3. If objects found — increment: `ZOK02_`, `ZOK03_`, ...
 > 4. When objects are clean — you're ready
 
-**In all steps below, `Z##_` is a placeholder.** Mentally replace `##` with your chosen prefix (e.g., `OK1`). When typing prompts to the agent, use your actual prefix.
+**In all steps below, `Z##_` is a placeholder.** Replace `##` with your chosen prefix (e.g., `OK01`). When typing prompts to the agent, use your actual prefix.
 
 > **Can I use different names?** Yes — the naming above is a convention, not a hard rule. You can rename tables, CDS views, classes, and services as you wish. However, RAP BO is a complex multi-layered system where objects reference each other: CDS views depend on table names, BDEFs reference CDS views and draft tables, projections redirect to interface views, and service definitions expose projections. If you change one name, you must update all objects that reference it. For this tutorial, we recommend following the convention exactly — you can always rename later when you understand the full dependency chain.
 
