@@ -147,6 +147,92 @@ Objects must be created and activated in this exact dependency order:
 - BDEF + BIMP must be activated together.
 - After activation, run syntax check again to catch warnings (missing access control, key mismatches).
 
+## UI Annotations and Fiori UX
+
+### Text Associations (show text instead of key)
+
+When a field stores a key (e.g. AuthorUuid), show a human-readable text (e.g. author name) in the UI:
+
+1. In the **interface CDS view**, add an association to the text source and annotate the key field:
+   ```
+   association [0..1] to Z##_R_AUTHOR as _Author on $projection.AuthorUuid = _Author.Uuid
+   ```
+2. In the **projection CDS view**, expose the association and annotate:
+   ```
+   @ObjectModel.text.association: '_Author'
+   AuthorUuid,
+   _Author
+   ```
+3. The text entity must have a field annotated with `@Semantics.text: true` (e.g. the name field).
+
+### Value Help (F4 search help)
+
+Add `@Consumption.valueHelpDefinition` on projection fields that reference other entities:
+```
+@Consumption.valueHelpDefinition: [{ entity: { name: 'Z##_C_AUTHOR', element: 'Uuid' } }]
+AuthorUuid,
+```
+
+### Search
+
+- `@Search.searchable: true` on the root projection view.
+- `@Search.defaultSearchElement: true` on fields that should be searchable (name, title, etc.).
+- `@Search.fuzzinessThreshold: 0.7` for fuzzy search support.
+
+### Selection Fields (filter bar)
+
+`@UI.selectionField: [{ position: 10 }]` on fields to show in the filter bar above the list.
+
+### Header Info
+
+Annotate the projection view for list/detail page titles:
+```
+@UI.headerInfo: {
+  typeName: 'Book',
+  typeNamePlural: 'Books',
+  title: { type: #STANDARD, value: 'Title' },
+  description: { type: #STANDARD, value: 'AuthorName' }
+}
+```
+
+### Facets (object page sections)
+
+Define in metadata extension using `@UI.facet`:
+- `#IDENTIFICATION_REFERENCE` — general info section
+- `#LINEITEM_REFERENCE` with `targetElement` — child entity table (e.g. editions, ratings)
+
+### Field Labels
+
+Data elements provide automatic field labels in Fiori UI. Without custom data elements, annotate directly:
+```
+@EndUserText.label: 'Book Title'
+Title,
+```
+
+### Rating / Numeric Fields
+
+For rating fields (1-5 stars), use `@UI.dataPoint` with `visualization: #RATING`:
+```
+@UI.dataPoint: { visualization: #RATING, targetValue: 5 }
+Rating,
+```
+
+## Data Modeling Patterns
+
+### Multi-entity BO with ratings
+
+For a BO with independent root entities that reference each other (e.g. Author, Book, Edition, Rating):
+- Each root entity is a separate RAP BO with its own BDEF, projections, and service
+- OR: use one root entity (e.g. Book) with compositions to children (Edition, Rating) and an association (not composition) to Author
+- Composition = lifecycle ownership (parent creates/deletes children)
+- Association = reference (no lifecycle dependency)
+
+### UUID vs Business Key
+
+- `uuid : sysuuid_x16` — technical key, managed numbering, hidden from UI
+- Business keys (ISBN, author name) — visible, searchable, may be mandatory but not the primary key
+- Always use UUID as the primary key for managed RAP
+
 ## Common Error Messages and Fixes
 
 | Error | Cause | Fix |
