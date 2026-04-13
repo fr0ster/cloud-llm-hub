@@ -61,13 +61,15 @@ The agent will use this skill automatically when answering RAP-related prompts.
 
 ### Step 2: Choose your prefix
 
-Pick a unique prefix (e.g., `ZDEMO1_`) and verify it's available:
+Pick a unique prefix using your initials + version number: `Z<II><N>_` (e.g., `ZDEMO1_` for Oleksii Kyslytsia, first attempt). Verify it's available:
 
-> Search for objects starting with ZDEMO1_ to verify the prefix is available.
+> Search for objects starting with Z##_ to verify the prefix is available.
+
+If objects found — increment: `Z##2_`, `Z##3_`, etc.
 
 ### Step 3: Create the package
 
-> Create package TEST_##_BOOKS as a local $TMP package with software component LOCAL and description 'Book Catalog RAP Application'.
+> Create package TEST_##_BOOK as a local $TMP package with software component LOCAL and description 'Book Catalog RAP Application'.
 
 ### Step 4: Describe the application
 
@@ -84,7 +86,7 @@ Give the agent the full application description. The agent will use the RAP skil
 > **Rating** (child of Book, composition): Score (int1, 1-5), ReviewText (char 500), ReviewerName (char 100), ReviewDate (dats).
 >
 > Requirements:
-> - Use package TEST_##_BOOKS for all objects
+> - Use package TEST_##_BOOK for all objects
 > - Prefix all objects with Z##_
 > - Create domains and data elements for all business fields
 > - Create persistent tables, draft tables, interface CDS, projection CDS, metadata extensions, BDEFs, service definitions, service bindings
