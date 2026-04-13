@@ -140,30 +140,30 @@ graph TB
 
 ```mermaid
 erDiagram
-    Z##_MARA ||--o{ Z##_MARC : "has plants"
-    Z##_MARA ||--o{ Z##_MAKT : "has texts"
-    Z##_MARA ||--o{ Z##_MVKE : "has sales data"
+    MARA ||--o{ MARC : "has plants"
+    MARA ||--o{ MAKT : "has texts"
+    MARA ||--o{ MVKE : "has sales data"
 
-    Z##_MARA {
-        abap_clnt client PK
+    MARA {
+        clnt client PK
         sysuuid_x16 uuid PK
         char40 matnr PK
         char4 mtart
         char9 matkl
-        abap_boolean lvorm
+        char1 lvorm
         unit3 meins
     }
 
-    Z##_MARC {
-        abap_clnt client PK
+    MARC {
+        clnt client PK
         sysuuid_x16 uuid PK
         char40 matnr PK
         char4 werks PK
         sysuuid_x16 root_uuid FK
     }
 
-    Z##_MAKT {
-        abap_clnt client PK
+    MAKT {
+        clnt client PK
         sysuuid_x16 uuid PK
         char40 matnr PK
         spras spras PK
@@ -171,8 +171,8 @@ erDiagram
         char40 maktx
     }
 
-    Z##_MVKE {
-        abap_clnt client PK
+    MVKE {
+        clnt client PK
         sysuuid_x16 uuid PK
         char40 matnr PK
         char4 vkorg PK
