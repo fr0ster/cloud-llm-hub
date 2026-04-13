@@ -61,11 +61,19 @@ The agent will use this skill automatically when answering RAP-related prompts.
 
 ### Step 2: Choose your prefix
 
-Pick a unique prefix using your initials + version number: `Z<II><N>_` (e.g., `ZDEMO1_` for Oleksii Kyslytsia, first attempt). Verify it's available:
+Pick a unique prefix: `Z<II><NN>_` — your initials (2 chars) + number (2 digits):
+
+| Developer | Prefix | Package |
+|-----------|--------|---------|
+| Oleksii Kyslytsia, 1st attempt | `ZDEMO01_` | `TEST_DEMO1_BOOK` |
+| Oleksii Kyslytsia, 2nd attempt | `ZDEMO02_` | `TEST_OK02_BOOK` |
+| Roman Semenov, 1st attempt | `ZDEMO01_` | `TEST_RS01_BOOK` |
+
+Verify it's available:
 
 > Search for objects starting with Z##_ to verify the prefix is available.
 
-If objects found — increment: `Z##2_`, `Z##3_`, etc.
+If objects found — increment the number.
 
 ### Step 3: Create the package
 
