@@ -33,7 +33,9 @@ If someone shares your initials — take the next number (`ZDEMO2_`, `ZDEMO3_`, 
 
 | Object | Max | Placeholder | Example (ZDEMO1_) |
 |--------|-----|-------------|-----------------|
-| Package | 30 | `Z##_MAT` | `ZDEMO1_MAT` |
+| Package | 30 | `TEST_##_MAT` | `TEST_DEMO1_MAT` |
+| Domain | 30 | `Z##_D_MATNR`, ... | `ZDEMO1_D_MATNR` |
+| Data Element | 30 | `Z##_E_MATNR`, ... | `ZDEMO1_E_MATNR` |
 | Persistent table (root) | 30 | `Z##_MARA` | `ZDEMO1_MARA` |
 | Persistent table (child) | 30 | `Z##_MARC`, `Z##_MAKT`, `Z##_MVKE` | `ZDEMO1_MARC` |
 | Draft table | 30 | `Z##_MARA_D`, `Z##_MARC_D`, ... | `ZDEMO1_MARA_D` |
@@ -44,8 +46,7 @@ If someone shares your initials — take the next number (`ZDEMO2_`, `ZDEMO3_`, 
 | BIMP class | 30 | `ZBP_##_R_MAT_ROOT` | `ZBP_DEMO1_R_MAT_ROOT` |
 | Service Definition | 30 | `ZUI_##_MAT_O4` | `ZUI_DEMO1_MAT_O4` |
 | Service Binding | 26 | `ZUI_##_MAT_O4` | `ZUI_DEMO1_MAT_O4` |
-| Data Element | 30 | `Z##_E_MATNR`, ... | `ZDEMO1_E_MATNR` |
-| Structure include | 30 | `Z##_S_RAP_CHNG_CTRL` | `ZDEMO1_S_RAP_CHNG_CTRL` |
+| Metadata Extension | 30 | `Z##_C_MAT_ROOT` | `ZDEMO1_C_MAT_ROOT` |
 
 > **Before you start:**
 > 1. Decide your prefix (e.g., `ZDEMO1_`)
@@ -139,39 +140,43 @@ graph TB
 
 ```mermaid
 erDiagram
-    Zxx_MARA ||--o{ Zxx_MARC : "has plants"
-    Zxx_MARA ||--o{ Zxx_MAKT : "has texts"
-    Zxx_MARA ||--o{ Zxx_MVKE : "has sales data"
+    Z##_MARA ||--o{ Z##_MARC : "has plants"
+    Z##_MARA ||--o{ Z##_MAKT : "has texts"
+    Z##_MARA ||--o{ Z##_MVKE : "has sales data"
 
-    Zxx_MARA {
+    Z##_MARA {
+        abap_clnt client PK
         sysuuid_x16 uuid PK
-        zxx_e_matnr matnr PK
-        zxx_e_mtart mtart
-        zxx_e_matkl matkl
-        zxx_e_lvorm lvorm
-        zxx_e_meins meins
+        char40 matnr PK
+        char4 mtart
+        char9 matkl
+        abap_boolean lvorm
+        unit3 meins
     }
 
-    Zxx_MARC {
+    Z##_MARC {
+        abap_clnt client PK
         sysuuid_x16 uuid PK
-        zxx_e_matnr matnr PK
-        zxx_e_werks werks PK
+        char40 matnr PK
+        char4 werks PK
         sysuuid_x16 root_uuid FK
     }
 
-    Zxx_MAKT {
+    Z##_MAKT {
+        abap_clnt client PK
         sysuuid_x16 uuid PK
-        zxx_e_matnr matnr PK
+        char40 matnr PK
         spras spras PK
         sysuuid_x16 root_uuid FK
-        zxx_e_maktx maktx
+        char40 maktx
     }
 
-    Zxx_MVKE {
+    Z##_MVKE {
+        abap_clnt client PK
         sysuuid_x16 uuid PK
-        zxx_e_matnr matnr PK
-        zxx_e_vkorg vkorg PK
-        zxx_e_vtweg vtweg PK
+        char40 matnr PK
+        char4 vkorg PK
+        char2 vtweg PK
         sysuuid_x16 root_uuid FK
     }
 ```
@@ -182,15 +187,17 @@ RAP objects must be created and activated in a specific order due to dependencie
 
 ```mermaid
 flowchart LR
-    A[1. Tables<br/>persistent + draft] --> B[2. Interface CDS<br/>R-type views]
-    B --> C[3. Projection CDS<br/>C-type views]
-    C --> D[4. Interface BDEF]
-    D --> E[5. BIMP Class]
-    E --> F[6. Projection BDEF]
-    F --> G[7. Service Definition]
-    G --> H[8. Service Binding<br/>+ Publish]
-    H --> I[9. Metadata Extensions<br/>UI annotations]
+    P[1. Package] --> A[2. Tables<br/>persistent + draft]
+    A --> B[3. Interface CDS<br/>R-type views]
+    B --> C[4. Projection CDS<br/>C-type views]
+    C --> D[5. Interface BDEF]
+    D --> E[6. BIMP Class]
+    E --> F[7. Projection BDEF]
+    F --> G[8. Service Definition]
+    G --> H[9. Service Binding<br/>+ Publish]
+    H --> I[10. Metadata Extensions<br/>UI annotations]
 
+    style P fill:#f5f5f5
     style A fill:#e8f5e9
     style B fill:#e8f5e9
     style C fill:#e1f5fe
@@ -206,27 +213,86 @@ flowchart LR
 
 ## Step 1: Verify System Connection
 
-Before starting, verify that the agent can connect to your SAP system.
+Before starting, verify that the agent can connect to your SAP system and that your prefix is available.
 
 **You type in chat:**
 
-> Check if you can connect to the SAP system. List available objects in package Z##_MAT.
+> Check if you can connect to the SAP system. Search for objects starting with Z##_ to verify my prefix is available.
 
-**What happens:** The agent uses `SearchObject` MCP tool to query the SAP system. You should see the package contents (or an empty package if it's new).
+**What happens:** The agent uses `SearchObject` MCP tool to query the SAP system.
 
-**Expected result:** The agent confirms connection and shows the package contents.
+**Expected result:** The agent confirms connection. If objects with your prefix already exist — increment the version number (`Z##2_`, `Z##3_`).
 
 ---
 
-## Step 2: Create Persistent Tables
+## Step 2: Create Package
 
-The foundation of any RAP BO is the database tables. We need 4 persistent tables.
-
-### 2.1 Root Table — Z##_MARA
+All objects need a development package. On most on-premise systems, local packages must start with `TEST_` or `$` to use the `LOCAL` software component.
 
 **You type in chat:**
 
-> Create table Z##_MARA in package Z##_MAT with transport $TMP.
+> Create package TEST_##_MAT as a local $TMP package with description 'Material Master RAP BO'.
+
+**Expected result:** Package TEST_##_MAT created under $TMP with software component LOCAL.
+
+> **Note:** If the agent cannot create the package via MCP, create it manually in ADT (Eclipse) via `File → New → ABAP Package` (select "Local Object" when prompted for transport). Then tell the agent: "Use package TEST_##_MAT for all objects."
+
+---
+
+## Step 3: Create Domains and Data Elements
+
+Before creating tables, we define custom domains and data elements. This provides proper semantics, labels, and F4 help for Fiori UI fields.
+
+### 3.1 Domains
+
+**You type in chat:**
+
+> Create the following domains in package TEST_##_MAT. Activate each after creation.
+>
+> 1. Z##_D_MATNR — 'Material Number', type abap.char(40)
+> 2. Z##_D_MTART — 'Material Type', type abap.char(4)
+> 3. Z##_D_MATKL — 'Material Group', type abap.char(9)
+> 4. Z##_D_MEINS — 'Base Unit of Measure', type abap.unit(3)
+> 5. Z##_D_WERKS — 'Plant', type abap.char(4)
+> 6. Z##_D_MAKTX — 'Material Description', type abap.char(40)
+> 7. Z##_D_VKORG — 'Sales Organization', type abap.char(4)
+> 8. Z##_D_VTWEG — 'Distribution Channel', type abap.char(2)
+
+**Expected result:** 8 domains created and activated.
+
+### 3.2 Data Elements
+
+**You type in chat:**
+
+> Create the following data elements in package TEST_##_MAT. Each references the corresponding domain. Activate each after creation.
+>
+> 1. Z##_E_MATNR — 'Material Number', domain Z##_D_MATNR
+> 2. Z##_E_MTART — 'Material Type', domain Z##_D_MTART
+> 3. Z##_E_MATKL — 'Material Group', domain Z##_D_MATKL
+> 4. Z##_E_MEINS — 'Base Unit of Measure', domain Z##_D_MEINS
+> 5. Z##_E_WERKS — 'Plant', domain Z##_D_WERKS
+> 6. Z##_E_MAKTX — 'Material Description', domain Z##_D_MAKTX
+> 7. Z##_E_VKORG — 'Sales Organization', domain Z##_D_VKORG
+> 8. Z##_E_VTWEG — 'Distribution Channel', domain Z##_D_VTWEG
+> 9. Z##_E_LVORM — 'Marked for Deletion', type abap_boolean (no domain needed)
+
+**Expected result:** 9 data elements created and activated.
+
+> **Why domains and data elements?** Domains define value ranges and formatting. Data elements add labels and F4 help. Without them, Fiori UI shows raw field names instead of proper labels, and there's no input validation or search help.
+
+**Checkpoint:** Ask the agent: "List all objects in package TEST_##_MAT" — you should see 8 domains + 9 data elements.
+
+---
+
+## Step 4: Create Persistent Tables
+
+The foundation of any RAP BO is the database tables. We need 4 persistent tables. Tables reference the data elements created in Step 3.
+
+### 4.1 Root Table — Z##_MARA
+
+**You type in chat:**
+
+> Create table Z##_MARA in package TEST_##_MAT.
 > Label: 'General Material Data'
 > Fields:
 > - key client : abap.clnt not null
@@ -236,7 +302,13 @@ The foundation of any RAP BO is the database tables. We need 4 persistent tables
 > - matkl : z##_e_matkl
 > - lvorm : z##_e_lvorm
 > - meins : z##_e_meins
-> - include z##_s_rap_chng_ctrl
+> - created_by : abp_creation_user
+> - created_at : abp_creation_tstmpl
+> - last_changed_by : abp_locinst_lastchange_user
+> - last_changed_at : abp_locinst_lastchange_tstmpl
+> - local_last_changed_at : abp_lastchange_tstmpl
+>
+> Activate after creation.
 
 **What happens:**
 
@@ -246,14 +318,14 @@ sequenceDiagram
     participant Agent
     participant SAP
 
-    You->>Agent: Create table Zxx_MARA...
+    You->>Agent: Create table Z##_MARA...
     Agent->>SAP: CreateTable (create empty shell)
     SAP-->>Agent: Created
     Agent->>SAP: UpdateTable (set DDL source)
     SAP-->>Agent: Updated
     Agent->>SAP: ActivateObject
     SAP-->>Agent: Activated
-    Agent-->>You: Table Zxx_MARA created and activated
+    Agent-->>You: Table Z##_MARA created and activated
 ```
 
 > **Key concept:** Creating an ABAP object is always a two-step process:
@@ -262,27 +334,39 @@ sequenceDiagram
 >
 > The agent handles both steps automatically.
 
-### 2.2 Child Tables — Z##_MARC, Z##_MAKT, Z##_MVKE
+**Expected result:** Table Z##_MARA created and activated with 12 fields.
+
+### 4.2 Child Tables — Z##_MARC, Z##_MAKT, Z##_MVKE
 
 **You type in chat:**
 
-> Now create the child tables in the same package and transport:
+> Now create the 3 child tables in package TEST_##_MAT. Use the data elements from Step 3. Include the same audit fields as the root table. Activate all after creation.
 >
 > 1. Z##_MARC — 'Plant Data for Material'
->    - key client, key uuid, key matnr (z##_e_matnr), key werks (z##_e_werks)
+>    - key client : abap.clnt not null
+>    - key uuid : sysuuid_x16 not null
+>    - key matnr : z##_e_matnr not null
+>    - key werks : z##_e_werks not null
 >    - root_uuid : sysuuid_x16
->    - include z##_s_rap_chng_ctrl
+>    - audit fields (created_by, created_at, last_changed_by, last_changed_at, local_last_changed_at)
 >
 > 2. Z##_MAKT — 'Material Descriptions'
->    - key client, key uuid, key matnr (z##_e_matnr), key spras : spras
+>    - key client : abap.clnt not null
+>    - key uuid : sysuuid_x16 not null
+>    - key matnr : z##_e_matnr not null
+>    - key spras : spras not null
 >    - root_uuid : sysuuid_x16
 >    - maktx : z##_e_maktx
->    - include z##_s_rap_chng_ctrl
+>    - audit fields
 >
 > 3. Z##_MVKE — 'Sales Data for Material'
->    - key client, key uuid, key matnr (z##_e_matnr), key vkorg (z##_e_vkorg), key vtweg (z##_e_vtweg)
+>    - key client : abap.clnt not null
+>    - key uuid : sysuuid_x16 not null
+>    - key matnr : z##_e_matnr not null
+>    - key vkorg : z##_e_vkorg not null
+>    - key vtweg : z##_e_vtweg not null
 >    - root_uuid : sysuuid_x16
->    - include z##_s_rap_chng_ctrl
+>    - audit fields
 
 **Expected result:** All 3 child tables created and activated. Each has `root_uuid` field linking back to the root.
 
@@ -290,75 +374,101 @@ sequenceDiagram
 
 ---
 
-## Step 3: Create Draft Tables
+## Step 5: Create Draft Tables
 
 Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts before the user presses "Save".
 
 **You type in chat:**
 
-> Create draft tables for all 4 persistent tables. Draft table naming: add _D suffix (e.g., Z##_MARA_D).
+> Create draft tables for all 4 persistent tables in package Z##_MAT. Draft table naming: add _D suffix.
+>
 > Rules for draft tables:
 > - key mandt : mandt not null (not abap.clnt!)
 > - key uuid : sysuuid_x16 not null
-> - All non-key fields use CDS-like PascalCase names (MaterialType instead of mtart)
-> - No include for audit fields — spell them out individually
+> - All non-key fields use CDS-like PascalCase names (materialtype instead of mtart, materialgroup instead of matkl)
+> - Spell out audit fields individually using lowercase names: createdby, createdat, lastchangedby, lastchangedat, locallastchangedat
 > - Add "%admin" : include sych_bdl_draft_admin_inc at the end
 > - Non-key business keys (matnr, werks, etc.) are NOT key fields in draft table
+>
+> Draft tables:
+> 1. Z##_MARA_D — root draft: matnr, materialtype, materialgroup, markedfordeletion, baseunitofmeasure + audit + admin
+> 2. Z##_MARC_D — plant draft: matnr, plant, rootuuid + audit + admin
+> 3. Z##_MAKT_D — text draft: matnr, language (spras type), materialdescription, rootuuid + audit + admin
+> 4. Z##_MVKE_D — sales draft: matnr, salesorganization, distributionchannel, rootuuid + audit + admin
+>
+> Activate all after creation.
 
 **What happens:** The agent creates 4 draft tables. The naming convention difference between persistent and draft tables is critical:
 
 ```mermaid
 graph LR
-    subgraph "Persistent Table Zxx_MARA"
-        P1[mtart : zxx_e_mtart]
-        P2[matkl : zxx_e_matkl]
-        P3["include zxx_s_rap_chng_ctrl"]
+    subgraph "Persistent Table Z##_MARA"
+        P1[mtart : abap.char 4]
+        P2[matkl : abap.char 9]
+        P3[created_by : abp_creation_user]
     end
 
-    subgraph "Draft Table Zxx_MARA_D"
-        D1[materialtype : zxx_e_mtart]
-        D2[materialgroup : zxx_e_matkl]
-        D3[createdat : abp_creation_tstmpl]
-        D4[createdby : abp_creation_user]
-        D5["'%admin' : include sych_bdl_draft_admin_inc"]
+    subgraph "Draft Table Z##_MARA_D"
+        D1[materialtype : abap.char 4]
+        D2[materialgroup : abap.char 9]
+        D3[createdby : abp_creation_user]
+        D4["'%admin' : include sych_bdl_draft_admin_inc"]
     end
 
     P1 -.->|"CDS alias"| D1
     P2 -.->|"CDS alias"| D2
-    P3 -.->|"expanded"| D3
+    P3 -.->|"lowercase PascalCase"| D3
 ```
+
+**Expected result:** All 4 draft tables created and activated. Each has only `mandt` + `uuid` as key fields, PascalCase field names, and the `%admin` include.
 
 > **Common mistake:** Using persistent table field names (mtart) instead of CDS aliases (materialtype) in draft tables. This causes BDEF mapping errors.
 
 ---
 
-## Step 4: Create Interface CDS Views (R-type)
+## Step 6: Create Interface CDS Views (R-type)
 
 Interface CDS views define the BO's data model. The root view has compositions to children.
 
-### 4.1 Root CDS — Z##_R_MAT_ROOT
+> **Important — activation strategy:** Root and child CDS views reference each other (root has compositions to children, children have association to parent). This creates a circular dependency. The agent needs to:
+> 1. Create all 4 views first (they will have syntax errors — this is expected)
+> 2. Activate all 4 together in one activation call
+>
+> If the agent struggles with circular dependencies, tell it explicitly: "Create all views without activating, then activate all 4 together."
+
+### 6.1 Root CDS — Z##_R_MAT_ROOT
 
 **You type in chat:**
 
-> Create interface CDS view entity Z##_R_MAT_ROOT in package Z##_MAT, transport $TMP.
-> Source table: zmd_mara
-> This is the root view with compositions to children: _Plant (Z##_R_MAT_PLANT), _Text (Z##_R_MAT_TEXT), _Sales (Z##_R_MAT_SALES).
-> Map all fields from table to PascalCase aliases (matnr as Matnr, mtart as MaterialType, etc.)
-> Include audit fields (created_at as CreatedAt, etc.)
-> Expose compositions in the field list.
+> Create interface CDS view entity Z##_R_MAT_ROOT in package Z##_MAT.
+> Source table: z##_mara
+> This is the root view with compositions to children:
+> - composition [0..*] of Z##_R_MAT_PLANT as _Plant
+> - composition [0..*] of Z##_R_MAT_TEXT as _Text
+> - composition [0..*] of Z##_R_MAT_SALES as _Sales
+>
+> Map fields to PascalCase aliases:
+> - uuid as Uuid, matnr as Matnr, mtart as MaterialType, matkl as MaterialGroup
+> - lvorm as MarkedForDeletion, meins as BaseUnitOfMeasure
+> - created_by as CreatedBy, created_at as CreatedAt
+> - last_changed_by as LastChangedBy, last_changed_at as LastChangedAt
+> - local_last_changed_at as LocalLastChangedAt
+>
+> Expose compositions _Plant, _Text, _Sales in the field list.
+> Do NOT activate yet — we need to create child views first.
 
-**What happens:** The agent creates a `define root view entity` with compositions:
+**What happens:** The agent creates a `define root view entity` with compositions. Syntax errors are expected at this point because child views don't exist yet.
 
 ```mermaid
 graph TD
-    ROOT[Zxx_R_MAT_ROOT<br/>root view entity]
-    PLANT[Zxx_R_MAT_PLANT]
-    TEXT[Zxx_R_MAT_TEXT]
-    SALES[Zxx_R_MAT_SALES]
+    ROOT[Z##_R_MAT_ROOT<br/>root view entity]
+    PLANT[Z##_R_MAT_PLANT]
+    TEXT[Z##_R_MAT_TEXT]
+    SALES[Z##_R_MAT_SALES]
 
-    ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| PLANT
-    ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| TEXT
-    ROOT -->|"composition [0..*]<br/>on Matnr + RootUuid"| SALES
+    ROOT -->|"composition [0..*]"| PLANT
+    ROOT -->|"composition [0..*]"| TEXT
+    ROOT -->|"composition [0..*]"| SALES
 
     PLANT -->|"association to parent<br/>on Matnr + RootUuid = Uuid"| ROOT
     TEXT -->|"association to parent<br/>on Matnr + RootUuid = Uuid"| ROOT
@@ -367,51 +477,80 @@ graph TD
 
 > **Key concept:** Composition on-conditions must include ALL keys: both the business key (Matnr) and the technical key (RootUuid = parent Uuid).
 
-### 4.2 Child CDS Views
+### 6.2 Child CDS Views + Activate All
 
 **You type in chat:**
 
-> Create child interface CDS views:
-> 1. Z##_R_MAT_PLANT — select from zmd_marc, association to parent Z##_R_MAT_ROOT
-> 2. Z##_R_MAT_TEXT — select from zmd_makt, association to parent Z##_R_MAT_ROOT
-> 3. Z##_R_MAT_SALES — select from zmd_mvke, association to parent Z##_R_MAT_ROOT
+> Create 3 child interface CDS view entities in the same package:
 >
-> Each child must have: root_uuid as RootUuid field, association to parent through Matnr + RootUuid = Uuid
+> 1. Z##_R_MAT_PLANT — select from z##_marc
+>    - association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
+>    - Fields: uuid as Uuid, matnr as Matnr, werks as Plant, root_uuid as RootUuid + audit fields in PascalCase
+>    - Expose _Root
+>
+> 2. Z##_R_MAT_TEXT — select from z##_makt
+>    - association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
+>    - Fields: uuid as Uuid, matnr as Matnr, spras as Language, maktx as MaterialDescription, root_uuid as RootUuid + audit fields
+>    - Expose _Root
+>
+> 3. Z##_R_MAT_SALES — select from z##_mvke
+>    - association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
+>    - Fields: uuid as Uuid, matnr as Matnr, vkorg as SalesOrganization, vtweg as DistributionChannel, root_uuid as RootUuid + audit fields
+>    - Expose _Root
+>
+> After creating all 3, activate ALL 4 interface CDS views together (Z##_R_MAT_ROOT + 3 children).
 
-**Expected result:** All 4 CDS views created. Activate them together (group activation).
+**Expected result:** All 4 CDS views created and activated. The agent confirms all views are active.
 
-> **Tip:** After creating all interface CDS views, ask the agent to activate them all at once. CDS views with cross-references must be activated together.
+**Checkpoint:** Ask the agent to verify: "List all objects starting with Z##_ and confirm all interface CDS views are active."
+
+> **Tip:** If activation fails with "association target not found", it means not all views were activated together. Ask the agent: "Activate Z##_R_MAT_ROOT, Z##_R_MAT_PLANT, Z##_R_MAT_TEXT, Z##_R_MAT_SALES together in one activation call."
 
 ---
 
-## Step 5: Create Projection CDS Views (C-type)
+## Step 7: Create Projection CDS Views (C-type)
 
 Projections define what the service consumer sees. They reference the interface CDS views.
 
+> **Same activation strategy as Step 5:** Projections have the same circular dependency pattern (root redirects to child projections, children redirect to parent). Create all 4, then activate together.
+
 **You type in chat:**
 
-> Create projection CDS views for all 4 entities:
-> 1. Z##_C_MAT_ROOT — root projection on Z##_R_MAT_ROOT, provider contract transactional_query
->    - Redirect compositions: _Plant to Z##_C_MAT_PLANT, _Text to Z##_C_MAT_TEXT, _Sales to Z##_C_MAT_SALES
-> 2. Z##_C_MAT_PLANT — projection on Z##_R_MAT_PLANT, redirect _Root to parent Z##_C_MAT_ROOT
-> 3. Z##_C_MAT_TEXT — projection on Z##_R_MAT_TEXT, redirect _Root to parent Z##_C_MAT_ROOT
-> 4. Z##_C_MAT_SALES — projection on Z##_R_MAT_SALES, redirect _Root to parent Z##_C_MAT_ROOT
+> Create projection CDS views for all 4 entities in package Z##_MAT:
 >
-> Add @Search.searchable and @Search.defaultSearchElement on Matnr in root projection.
-> Add @Metadata.allowExtensions: true on all projections.
+> 1. Z##_C_MAT_ROOT — root projection on Z##_R_MAT_ROOT
+>    - provider contract transactional_query
+>    - All fields from interface view
+>    - Redirect compositions: _Plant : redirected to Z##_C_MAT_PLANT, _Text : redirected to Z##_C_MAT_TEXT, _Sales : redirected to Z##_C_MAT_SALES
+>    - @Search.searchable: true on view, @Search.defaultSearchElement on Matnr
+>    - @Metadata.allowExtensions: true
+>
+> 2. Z##_C_MAT_PLANT — projection on Z##_R_MAT_PLANT
+>    - All fields, redirect _Root : redirected to Z##_C_MAT_ROOT
+>    - @Metadata.allowExtensions: true
+>
+> 3. Z##_C_MAT_TEXT — projection on Z##_R_MAT_TEXT
+>    - All fields, redirect _Root : redirected to Z##_C_MAT_ROOT
+>    - @Metadata.allowExtensions: true
+>
+> 4. Z##_C_MAT_SALES — projection on Z##_R_MAT_SALES
+>    - All fields, redirect _Root : redirected to Z##_C_MAT_ROOT
+>    - @Metadata.allowExtensions: true
+>
+> Create all 4 without activating, then activate all 4 together.
 
 **What happens:**
 
 ```mermaid
 graph LR
     subgraph "Projection (C-type)"
-        C_ROOT[Zxx_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
-        C_PLANT[Zxx_C_MAT_PLANT]
+        C_ROOT[Z##_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
+        C_PLANT[Z##_C_MAT_PLANT]
     end
 
     subgraph "Interface (R-type)"
-        R_ROOT[Zxx_R_MAT_ROOT]
-        R_PLANT[Zxx_R_MAT_PLANT]
+        R_ROOT[Z##_R_MAT_ROOT]
+        R_PLANT[Z##_R_MAT_PLANT]
     end
 
     C_ROOT -->|"as projection on"| R_ROOT
@@ -420,37 +559,45 @@ graph LR
     C_PLANT -->|"redirected to<br/>parent"| C_ROOT
 ```
 
+**Expected result:** All 4 projection CDS views created and activated.
+
 > **Important:** The `provider contract transactional_query` is required on the root projection for RAP managed BO with draft.
+
+**Checkpoint:** Ask the agent: "List all CDS views starting with Z##_ and confirm they are all active."
 
 ---
 
-## Step 6: Create Interface Behavior Definition (BDEF)
+## Step 8: Create Interface Behavior Definition (BDEF)
 
 The BDEF defines the transactional behavior — CRUD operations, draft support, field control, and mappings.
 
 **You type in chat:**
 
-> Create interface behavior definition for Z##_R_MAT_ROOT.
+> Create interface behavior definition for Z##_R_MAT_ROOT in package Z##_MAT.
 > Settings:
 > - managed implementation in class ZBP_##_R_MAT_ROOT unique
 > - strict ( 2 ), with draft
 >
 > Root entity (alias MaterialRoot):
-> - persistent table zmd_mara, draft table zmd_mara_d
+> - persistent table z##_mara, draft table z##_mara_d
 > - lock master total etag LocalLastChangedAt
 > - create, update, delete
 > - field ( numbering : managed, readonly ) Uuid
-> - field ( readonly ) CreatedAt, CreatedBy, LastChangedAt, LastChangedBy
+> - field ( readonly ) CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt
 > - field ( mandatory ) Matnr, MaterialType
-> - mapping for persistent table and draft table
+> - mapping for z##_mara corresponding; mapping for z##_mara_d corresponding
 > - associations to _Plant, _Text, _Sales with { create; with draft; }
 >
 > Child entities (alias MaterialPlant, MaterialText, MaterialSales):
+> - persistent table z##_marc/z##_makt/z##_mvke, draft table z##_marc_d/z##_makt_d/z##_mvke_d
 > - lock dependent by _Root, authorization dependent by _Root
 > - update, delete (no create — created via association from root)
-> - field ( readonly ) Matnr, RootUuid + audit fields
-> - mapping for persistent + draft tables
+> - field ( numbering : managed, readonly ) Uuid
+> - field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt
+> - mapping for persistent and draft tables corresponding
 > - association _Root { with draft; }
+>
+> Activate.
 
 **What happens:**
 
@@ -473,37 +620,53 @@ graph TD
     ROOT -->|"association { create; with draft; }"| SALES
 ```
 
+**Expected result:** BDEF created and activated. The agent may need to create the BIMP class first if activation requires it.
+
 > **Common mistake:** Forgetting `mapping for <draft_table> corresponding;` — this is required for draft to work correctly.
 
 ---
 
-## Step 7: Create Behavior Implementation (BIMP)
+## Step 9: Create Behavior Implementation (BIMP)
 
 **You type in chat:**
 
-> Create the behavior implementation class ZBP_##_R_MAT_ROOT for behavior of Z##_R_MAT_ROOT.
-> The class should be PUBLIC ABSTRACT FINAL.
+> Create the behavior implementation class ZBP_##_R_MAT_ROOT in package Z##_MAT for behavior of Z##_R_MAT_ROOT.
+> The class should be PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT.
 > For now, create a minimal implementation — just the class shell. The managed scenario handles most operations automatically.
+> Activate it.
 
-**Expected result:** A minimal BIMP class with authorization handler.
+**Expected result:** A minimal BIMP class created and activated. After BIMP exists, the BDEF from Step 7 can be activated (if it wasn't already).
+
+> **Note:** Steps 7 and 8 have a circular dependency: BDEF references the BIMP class, but the class is "for behavior of" the BDEF. The agent may need to create both and then activate them together.
 
 ---
 
-## Step 8: Create Projection Behavior Definition
+## Step 10: Create Projection Behavior Definition
 
 **You type in chat:**
 
-> Create projection behavior definition for Z##_C_MAT_ROOT.
+> Create projection behavior definition for Z##_C_MAT_ROOT in package Z##_MAT.
 > Settings: projection, strict ( 2 ), use draft
 >
-> For each entity:
+> Root entity Z##_C_MAT_ROOT (alias Material):
 > - use etag
-> - use create/update/delete (root) or use update/delete (children)
-> - use associations with draft
+> - use create, update, delete
+> - use association _Plant { create; with draft; }
+> - use association _Text { create; with draft; }
+> - use association _Sales { create; with draft; }
+>
+> Child entities Z##_C_MAT_PLANT, Z##_C_MAT_TEXT, Z##_C_MAT_SALES:
+> - use etag
+> - use update, delete
+> - use association _Root { with draft; }
+>
+> Activate.
+
+**Expected result:** Projection BDEF created and activated.
 
 ---
 
-## Step 9: Create Service Definition
+## Step 11: Create Service Definition
 
 **You type in chat:**
 
@@ -514,36 +677,46 @@ graph TD
 > - Z##_C_MAT_PLANT as MaterialPlant
 > - Z##_C_MAT_TEXT as MaterialText
 > - Z##_C_MAT_SALES as MaterialSales
+>
+> Activate.
+
+**Expected result:** Service definition created and activated.
 
 ---
 
-## Step 10: Create Service Binding and Publish
+## Step 12: Create Service Binding and Publish
 
 **You type in chat:**
 
-> Create OData V4 UI service binding ZUI_##_MAT_O4 for service definition ZUI_##_MAT_O4.
+> Create OData V4 UI service binding ZUI_##_MAT_O4 in package Z##_MAT for service definition ZUI_##_MAT_O4.
 > After creation, publish it.
+
+**Expected result:** Service binding created, activated, and published. You get a service URL for testing.
 
 > **Note:** Service Binding publishing may not be available via MCP tools. If so, the agent will tell you — publish manually in ADT (Eclipse) or Fiori Launchpad.
 
 ---
 
-## Step 11: Create Metadata Extensions (Optional)
+## Step 13: Create Metadata Extensions (Optional)
 
 Metadata extensions add UI annotations for the Fiori Elements app.
 
 **You type in chat:**
 
-> Create metadata extension for Z##_C_MAT_ROOT with:
-> - headerInfo: typeName 'Material', title field Matnr
-> - facets: General Data (identification), Plant Data (lineitem for _Plant), Texts (lineitem for _Text), Sales (lineitem for _Sales)
-> - Hide Uuid field
-> - Show Matnr, MaterialType, MaterialGroup in list and detail with selection fields
+> Create metadata extension for Z##_C_MAT_ROOT in package Z##_MAT with:
+> - @UI.headerInfo: typeName 'Material', typeNamePlural 'Materials', title field Matnr
+> - @UI.facet: identification facet for General Data, lineItem facets for _Plant, _Text, _Sales
+> - @UI.hidden on Uuid
+> - @UI.lineItem + @UI.identification + @UI.selectionField on Matnr, MaterialType, MaterialGroup
 >
-> Also create metadata extension for Z##_C_MAT_PLANT:
-> - headerInfo: typeName 'Plant Data', title field Plant
-> - Hide Uuid and RootUuid
-> - Show Plant, Quantity in list and detail
+> Also create metadata extension for Z##_C_MAT_PLANT in same package:
+> - @UI.headerInfo: typeName 'Plant Data', title field Plant
+> - @UI.hidden on Uuid and RootUuid
+> - @UI.lineItem + @UI.identification on Plant
+>
+> Activate both.
+
+**Expected result:** Metadata extensions created. The Fiori preview will now show proper list/detail pages with field labels and facets.
 
 ---
 
@@ -553,9 +726,11 @@ After all steps, verify the BO works:
 
 **You type in chat:**
 
-> Check the current state of all objects in package Z##_MAT. List any inactive objects.
+> Check the current state of all objects in package Z##_MAT. List any inactive objects and activate them.
 
-The agent will use `GetInactiveObjects` to find anything that needs activation.
+**Expected result:** The agent lists all ~20 objects and confirms they are all active. If any are inactive, it activates them.
+
+> **Final test:** Open the service binding in ADT and use "Preview" to launch the Fiori Elements app. You should be able to create, edit, and delete materials with plant data, texts, and sales data.
 
 ---
 
@@ -582,41 +757,50 @@ After each creation step, you can ask: "Activate all inactive objects" or "Activ
 
 ```mermaid
 flowchart TB
-    START([Start]) --> TABLES
+    START([Start]) --> SETUP
 
-    subgraph TABLES[Step 2-3: Database Layer]
+    subgraph SETUP[Step 1-2: Setup]
+        S0[Verify System Connection] --> S1[Create Package]
+    end
+
+    SETUP --> TABLES
+
+    subgraph TABLES[Step 3-4: Database Layer]
         T1[Persistent Tables x4] --> T2[Draft Tables x4]
     end
 
     TABLES --> CDS
 
-    subgraph CDS[Step 4-5: CDS Layer]
+    subgraph CDS[Step 5-6: CDS Layer]
         C1[Interface CDS x4] --> C2[Projection CDS x4]
     end
 
     CDS --> BEHAVIOR
 
-    subgraph BEHAVIOR[Step 6-8: Behavior Layer]
+    subgraph BEHAVIOR[Step 7-9: Behavior Layer]
         B1[Interface BDEF] --> B2[BIMP Class]
         B2 --> B3[Projection BDEF]
     end
 
     BEHAVIOR --> SERVICE
 
-    subgraph SERVICE[Step 9-11: Service Layer]
-        S1[Service Definition] --> S2[Service Binding + Publish]
+    subgraph SERVICE[Step 10-12: Service Layer]
+        S1a[Service Definition] --> S2[Service Binding + Publish]
         S2 --> S3[Metadata Extensions]
     end
 
     SERVICE --> DONE([Fiori App Ready])
 ```
 
-**Total objects created:** ~20 (4 persistent tables + 4 draft tables + 4 interface CDS + 4 projection CDS + 2 BDEFs + 1 BIMP + 1 Service Definition + 1 Service Binding + metadata extensions)
+**Total objects created:** ~21 (1 package + 4 persistent tables + 4 draft tables + 4 interface CDS + 4 projection CDS + 2 BDEFs + 1 BIMP + 1 Service Definition + 1 Service Binding + metadata extensions)
 
 **Key takeaways:**
-1. Always create objects in dependency order (tables → CDS → BDEF → service)
-2. Activate related objects together (all CDS at once, etc.)
-3. Draft tables use CDS alias names, not table field names
-4. Compositions need ALL keys in on-conditions (business key + UUID)
-5. The agent handles Create + Update two-step process automatically
-6. When in doubt, ask the agent to check inactive objects or read existing ones
+1. Determine system type first (Cloud vs On-Premise) — it affects package handling
+2. Create the package before any objects
+3. Use basic ABAP types in tables — avoids creating prerequisite data elements
+4. Always create objects in dependency order (tables → CDS → BDEF → service)
+5. CDS views with circular references (root ↔ children) must be activated together
+6. Draft tables use CDS alias names (PascalCase), not persistent table field names
+7. Compositions need ALL keys in on-conditions (business key + UUID)
+8. The agent handles Create + Update two-step process automatically
+9. Use checkpoints between layers to verify everything is active before proceeding
