@@ -540,6 +540,10 @@ graph TD
 > 1. **DDL source not uploaded.** The LLM may create the view object shell but fail to upload the DDL source (circular dependency blocks syntax check). Error on activation: "DDIC source code does not contain a valid definition". **Fix:** Provide the exact DDL source code in the prompt. Ask the agent to update each view with the DDL, then activate all together.
 >
 > 2. **Views created then deleted during retries.** The LLM may delete and recreate views multiple times trying to resolve circular dependencies, accidentally deleting previously working views. **Fix:** After this step, always verify with a checkpoint that all 4 views exist and are active before proceeding.
+>
+> **Important — run syntax check after activation:** CDS views are created without syntax check and activated as a group. After activation, verify each view has no errors:
+> "Check CDS view Z##_R_MAT_ROOT for syntax errors" (repeat for each view).
+> The check may show warnings about key definition mismatches and missing access control — these are non-blocking for the tutorial but should be addressed in production.
 
 ---
 
@@ -672,7 +676,20 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 >   field ( readonly ) CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
 >   field ( mandatory ) Matnr, MaterialType;
 >
->   mapping for z##_mara corresponding;
+>   mapping for z##_mara
+>   {
+>     Uuid = uuid;
+>     Matnr = matnr;
+>     MaterialType = mtart;
+>     MaterialGroup = matkl;
+>     MarkedForDeletion = lvorm;
+>     BaseUnitOfMeasure = meins;
+>     CreatedBy = created_by;
+>     CreatedAt = created_at;
+>     LastChangedBy = last_changed_by;
+>     LastChangedAt = last_changed_at;
+>     LocalLastChangedAt = local_last_changed_at;
+>   }
 >
 >   association _Plant { create; with draft; }
 >   association _Text { create; with draft; }
@@ -691,7 +708,18 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 >   field ( numbering : managed, readonly ) Uuid;
 >   field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
 >
->   mapping for z##_marc corresponding;
+>   mapping for z##_marc
+>   {
+>     Uuid = uuid;
+>     Matnr = matnr;
+>     Plant = werks;
+>     RootUuid = root_uuid;
+>     CreatedBy = created_by;
+>     CreatedAt = created_at;
+>     LastChangedBy = last_changed_by;
+>     LastChangedAt = last_changed_at;
+>     LocalLastChangedAt = local_last_changed_at;
+>   }
 >
 >   association _Root { with draft; }
 > }
@@ -708,7 +736,19 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 >   field ( numbering : managed, readonly ) Uuid;
 >   field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
 >
->   mapping for z##_makt corresponding;
+>   mapping for z##_makt
+>   {
+>     Uuid = uuid;
+>     Matnr = matnr;
+>     Language = spras;
+>     MaterialDescription = maktx;
+>     RootUuid = root_uuid;
+>     CreatedBy = created_by;
+>     CreatedAt = created_at;
+>     LastChangedBy = last_changed_by;
+>     LastChangedAt = last_changed_at;
+>     LocalLastChangedAt = local_last_changed_at;
+>   }
 >
 >   association _Root { with draft; }
 > }
@@ -725,7 +765,19 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 >   field ( numbering : managed, readonly ) Uuid;
 >   field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
 >
->   mapping for z##_mvke corresponding;
+>   mapping for z##_mvke
+>   {
+>     Uuid = uuid;
+>     Matnr = matnr;
+>     SalesOrganization = vkorg;
+>     DistributionChannel = vtweg;
+>     RootUuid = root_uuid;
+>     CreatedBy = created_by;
+>     CreatedAt = created_at;
+>     LastChangedBy = last_changed_by;
+>     LastChangedAt = last_changed_at;
+>     LocalLastChangedAt = local_last_changed_at;
+>   }
 >
 >   association _Root { with draft; }
 > }
@@ -756,6 +808,10 @@ graph TD
 
 **Expected result:** BDEF created (inactive until BIMP class exists). Do NOT activate yet — proceed to Step 10.
 
+> **Run check before activation:** After creating the BDEF, verify it has no errors:
+> "Check behavior definition Z##_R_MAT_ROOT for syntax errors"
+> This catches mapping errors, missing draft actions, and authorization issues before attempting activation — saving time on expensive retry loops.
+
 > **Known LLM mistakes in BDEF generation:**
 >
 > 1. **Draft table mapping added incorrectly.** The LLM may generate `mapping for z##_mara_d corresponding;` for draft tables. This is wrong — `mapping for` is only for persistent tables. Draft table is specified in the entity header (`draft table z##_mara_d`) and does NOT need a mapping line. If you see this error: remove the draft mapping lines.
@@ -766,7 +822,9 @@ graph TD
 >
 > 4. **Missing `lock dependent by _Root` on child entities.** `strict ( 2 )` requires every entity to have lock master or dependent. Error: "every entity must be flagged either as lock master or lock dependent".
 >
-> 5. **Missing draft actions.** When `with draft` is enabled, the root entity must explicitly declare draft actions: `draft action Edit;`, `draft action Resume;`, `draft action Activate optimized;`, `draft determine action Prepare;`. Without them, the Fiori UI draft flow (Edit → change → Save) will not work.
+> 5. **Missing draft actions.** When `with draft` is enabled, the root entity must explicitly declare draft actions: `draft action Edit;`, `draft action Resume;`, `draft action Activate optimized;`, `draft action Discard;`, `draft determine action Prepare;`. Without them, the Fiori UI draft flow (Edit → change → Save) will not work.
+>
+> 6. **Using `mapping for ... corresponding` instead of explicit mapping.** `corresponding` matches by field name, but CDS aliases (PascalCase like `MaterialType`) don't match table field names (lowercase like `mtart`). This causes 41+ mapping warnings at activation and broken field persistence. **Fix:** Always use explicit mapping with `CdsAlias = table_field;` syntax as shown above.
 >
 > **How to fix:** Ask the agent to update the BDEF with the corrected source code from above, then activate.
 
