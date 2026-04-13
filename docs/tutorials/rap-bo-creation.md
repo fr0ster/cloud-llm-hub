@@ -978,12 +978,12 @@ flowchart TB
 **Total objects created:** ~21 (1 package + 4 persistent tables + 4 draft tables + 4 interface CDS + 4 projection CDS + 2 BDEFs + 1 BIMP + 1 Service Definition + 1 Service Binding + metadata extensions)
 
 **Key takeaways:**
-1. Determine system type first (Cloud vs On-Premise) — it affects package handling
-2. Create the package before any objects
-3. Use basic ABAP types in tables — avoids creating prerequisite data elements
-4. Always create objects in dependency order (tables → CDS → BDEF → service)
+1. Always create objects in dependency order (package → domains → data elements → tables → CDS → BDEF → service)
+2. On on-premise, local packages must start with `TEST_` or `$` (software component LOCAL)
+3. Draft table keys must match persistent table keys — business keys included
+4. Draft table non-key fields use CDS alias names (PascalCase), key fields keep original names
 5. CDS views with circular references (root ↔ children) must be activated together
-6. Draft tables use CDS alias names (PascalCase), not persistent table field names
-7. Compositions need ALL keys in on-conditions (business key + UUID)
-8. The agent handles Create + Update two-step process automatically
-9. Use checkpoints between layers to verify everything is active before proceeding
+6. **Before group activation — run syntax check on each object and fix errors until clean.** This prevents costly activation failures and retry loops
+7. BDEF strict(2) requires: authorization master/dependent, lock master/dependent, all 5 draft actions (Edit, Resume, Activate, Discard, Prepare), explicit field mapping (not `corresponding`)
+8. Never use "Activate all inactive objects" on shared systems — always filter by your prefix
+9. The agent handles Create + Update two-step process automatically but may not check syntax — always verify
