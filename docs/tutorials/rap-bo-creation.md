@@ -622,31 +622,87 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 
 **You type in chat:**
 
-> Create interface behavior definition for Z##_R_MAT_ROOT in package TEST_##_MAT.
-> Settings:
-> - managed implementation in class ZBP_##_R_MAT_ROOT unique
-> - strict ( 2 ), with draft
+> Create interface behavior definition for Z##_R_MAT_ROOT in package TEST_##_MAT. Use this exact BDEF source:
 >
-> Root entity (alias MaterialRoot):
-> - persistent table z##_mara, draft table z##_mara_d
-> - lock master total etag LocalLastChangedAt
-> - create, update, delete
-> - field ( numbering : managed, readonly ) Uuid
-> - field ( readonly ) CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt
-> - field ( mandatory ) Matnr, MaterialType
-> - mapping for z##_mara corresponding; mapping for z##_mara_d corresponding
-> - associations to _Plant, _Text, _Sales with { create; with draft; }
+> ```
+> managed implementation in class ZBP_##_R_MAT_ROOT unique;
+> strict ( 2 );
+> with draft;
 >
-> Child entities (alias MaterialPlant, MaterialText, MaterialSales):
-> - persistent table z##_marc/z##_makt/z##_mvke, draft table z##_marc_d/z##_makt_d/z##_mvke_d
-> - lock dependent by _Root, authorization dependent by _Root
-> - update, delete (no create — created via association from root)
-> - field ( numbering : managed, readonly ) Uuid
-> - field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt
-> - mapping for persistent and draft tables corresponding
-> - association _Root { with draft; }
+> define behavior for Z##_R_MAT_ROOT alias MaterialRoot
+> persistent table z##_mara
+> draft table z##_mara_d
+> lock master total etag LocalLastChangedAt
+> authorization master ( instance )
+> {
+>   create;
+>   update;
+>   delete;
 >
-> Activate.
+>   field ( numbering : managed, readonly ) Uuid;
+>   field ( readonly ) CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
+>   field ( mandatory ) Matnr, MaterialType;
+>
+>   mapping for z##_mara corresponding;
+>
+>   association _Plant { create; with draft; }
+>   association _Text { create; with draft; }
+>   association _Sales { create; with draft; }
+> }
+>
+> define behavior for Z##_R_MAT_PLANT alias MaterialPlant
+> persistent table z##_marc
+> draft table z##_marc_d
+> lock dependent by _Root
+> authorization dependent by _Root
+> {
+>   update;
+>   delete;
+>
+>   field ( numbering : managed, readonly ) Uuid;
+>   field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
+>
+>   mapping for z##_marc corresponding;
+>
+>   association _Root { with draft; }
+> }
+>
+> define behavior for Z##_R_MAT_TEXT alias MaterialText
+> persistent table z##_makt
+> draft table z##_makt_d
+> lock dependent by _Root
+> authorization dependent by _Root
+> {
+>   update;
+>   delete;
+>
+>   field ( numbering : managed, readonly ) Uuid;
+>   field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
+>
+>   mapping for z##_makt corresponding;
+>
+>   association _Root { with draft; }
+> }
+>
+> define behavior for Z##_R_MAT_SALES alias MaterialSales
+> persistent table z##_mvke
+> draft table z##_mvke_d
+> lock dependent by _Root
+> authorization dependent by _Root
+> {
+>   update;
+>   delete;
+>
+>   field ( numbering : managed, readonly ) Uuid;
+>   field ( readonly ) Matnr, RootUuid, CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
+>
+>   mapping for z##_mvke corresponding;
+>
+>   association _Root { with draft; }
+> }
+> ```
+>
+> Do NOT activate yet — BIMP class must be created first.
 
 **What happens:**
 
@@ -671,7 +727,7 @@ graph TD
 
 **Expected result:** BDEF created and activated. The agent may need to create the BIMP class first if activation requires it.
 
-> **Common mistake:** Forgetting `mapping for <draft_table> corresponding;` — this is required for draft to work correctly.
+> **Common mistake:** `mapping for` is only for the **persistent table**, not the draft table. Draft table is specified in the entity header (`draft table z##_mara_d`) but does NOT need a separate mapping line.
 
 ---
 
