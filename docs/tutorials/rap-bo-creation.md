@@ -657,6 +657,11 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 >   update;
 >   delete;
 >
+>   draft action Edit;
+>   draft action Resume;
+>   draft action Activate optimized;
+>   draft determine action Prepare;
+>
 >   field ( numbering : managed, readonly ) Uuid;
 >   field ( readonly ) CreatedAt, CreatedBy, LastChangedAt, LastChangedBy, LocalLastChangedAt;
 >   field ( mandatory ) Matnr, MaterialType;
@@ -754,6 +759,8 @@ graph TD
 > 3. **Missing `draft table` on child entities.** The LLM may only add `draft table` to the root but not children. All entities need `draft table` when `with draft` is enabled. Error: "There is no draft persistency specified for Z##_R_MAT_PLANT".
 >
 > 4. **Missing `lock dependent by _Root` on child entities.** `strict ( 2 )` requires every entity to have lock master or dependent. Error: "every entity must be flagged either as lock master or lock dependent".
+>
+> 5. **Missing draft actions.** When `with draft` is enabled, the root entity must explicitly declare draft actions: `draft action Edit;`, `draft action Resume;`, `draft action Activate optimized;`, `draft determine action Prepare;`. Without them, the Fiori UI draft flow (Edit → change → Save) will not work.
 >
 > **How to fix:** Ask the agent to update the BDEF with the corrected source code from above, then activate.
 
