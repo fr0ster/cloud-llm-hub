@@ -48,8 +48,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   async connect(): Promise<void> {
-    // Cloud SDK handles connection automatically via destination
-    // This is a no-op for Cloud SDK implementation
+    // Pre-fetch CSRF token during connect so it's available for all
+    // subsequent write requests. Without this, the first POST fetches
+    // the token lazily, which can fail with parallel tool calls or
+    // when Cloud Connector session affinity is required.
+    await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
   }
 
   reset(): void {
