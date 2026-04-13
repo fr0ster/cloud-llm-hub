@@ -745,9 +745,7 @@ async function buildEmbeddedMcpAdapter(
 
   // Pre-fetch CSRF token so it's ready for all tool calls.
   // Without this, parallel tool calls race for CSRF and most fail with 403.
-  if ('connect' in connection) {
-    await (connection as { connect: () => Promise<void> }).connect();
-  }
+  await connection.connect();
 
   // Resolve system context: responsible person + master system.
   // On-premise via BTP Destination: user from destination auth (e.g. MCPDEV01).
