@@ -284,7 +284,7 @@ Before creating tables, we define custom domains and data elements. This provide
 > 6. Z##_E_MAKTX — 'Material Description', domain Z##_D_MAKTX
 > 7. Z##_E_VKORG — 'Sales Organization', domain Z##_D_VKORG
 > 8. Z##_E_VTWEG — 'Distribution Channel', domain Z##_D_VTWEG
-> 9. Z##_E_LVORM — 'Marked for Deletion', type abap_boolean (no domain needed)
+> 9. Z##_E_LVORM — 'Marked for Deletion', type CHAR length 1 (no domain needed)
 
 **Expected result:** 9 data elements created and activated.
 
