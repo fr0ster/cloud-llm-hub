@@ -17,7 +17,7 @@
 
 import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
 import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
-import { resolveSystemContext } from '@mcp-abap-adt/core/utils';
+import { setSystemContext } from '@mcp-abap-adt/core/utils';
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
@@ -750,8 +750,8 @@ async function buildEmbeddedMcpAdapter(
   // can interfere with CSRF token management on on-premise systems.
   const destinationUser = resolved.username || resolved.sapConfig.username;
   if (destinationUser) {
-    await resolveSystemContext(abapConn, { responsible: destinationUser });
-    log.info('System context resolved from destination user', {
+    setSystemContext({ responsible: destinationUser });
+    log.info('System context set from destination user', {
       destination: destinationName,
       responsible: destinationUser,
     });
