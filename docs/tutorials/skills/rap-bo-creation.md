@@ -141,10 +141,11 @@ Objects must be created and activated in this exact dependency order:
 
 ## Activation Rules
 
+- **Before group activation — check each object for syntax errors and fix all issues first.** Group activation is expensive (locks objects, may fail midway leaving inconsistent state). Run "Check CDS view Z##_R_MAT_ROOT for syntax errors" on each created object. Fix errors iteratively until clean. Only then activate.
 - **Never say "Activate all inactive objects"** on shared systems — this activates other users' objects. Always filter by prefix: "Activate all inactive objects starting with Z##_".
 - CDS views with circular references must be activated together in one call.
 - BDEF + BIMP must be activated together.
-- Always run syntax check after activation for CDS views and BDEF.
+- After activation, run syntax check again to catch warnings (missing access control, key mismatches).
 
 ## Common Error Messages and Fixes
 
