@@ -270,7 +270,8 @@ Before creating tables, we define custom domains and data elements. This provide
 
 > **If domains are not activated:** The agent may create domains without activating them (they will have status "new"). If this happens, type:
 > "Activate all inactive domains starting with Z##_D_"
-> or: "Check inactive objects and activate all of them."
+>
+> **Never say "Activate all inactive objects"** — on a shared system other users may have their own inactive objects. Always activate only your own objects by prefix: "Activate all inactive objects starting with Z##_".
 
 **Checkpoint:** Ask the agent: "Read domain Z##_D_MATNR" — verify it shows the correct type (CHAR, length 40) and is active.
 
@@ -296,13 +297,13 @@ Before creating tables, we define custom domains and data elements. This provide
 
 > **Why domains and data elements?** Domains define value ranges and formatting. Data elements add labels and F4 help. Without them, Fiori UI shows raw field names instead of proper labels, and there's no input validation or search help.
 
-> **If data elements are not activated:** Type: "Activate all inactive data elements starting with Z##_E_" or "Check inactive objects and activate all."
+> **If data elements are not activated:** Type: "Activate all inactive data elements starting with Z##_E_".
 >
 > **Known LLM mistakes in data element generation:**
 >
 > 1. **`abap_boolean` type not handled correctly.** The LLM may create Z##_E_LVORM with `type abap_boolean` but the MCP handler produces a data element without a data type definition. Error: "No domain or data type was defined". **Fix:** Use `type CHAR length 1` instead of `abap_boolean`.
 >
-> 2. **Data elements created but not activated.** Domains must be active before data elements can be created. If data element creation fails with "domain not active" — first activate all domains: "Activate all inactive domains starting with Z##_D_".
+> 2. **Data elements created but not activated.** Domains must be active before data elements can be created. If data element creation fails with "domain not active" — first activate domains: "Activate all inactive domains starting with Z##_D_".
 
 **Checkpoint:** Ask the agent: "List all objects in package TEST_##_MAT" — you should see 8 domains + 9 data elements, all active.
 
@@ -871,7 +872,9 @@ Activate tables before creating CDS views. Objects must be activated in dependen
 Add `"%admin" : include sych_bdl_draft_admin_inc;` to the draft table.
 
 ### Agent creates but doesn't activate
-After each creation step, you can ask: "Activate all inactive objects" or "Activate Z##_R_MAT_ROOT".
+After each creation step, you can ask: "Activate all inactive objects starting with Z##_" or "Activate Z##_R_MAT_ROOT".
+
+> **Important:** Never ask the agent to "activate all inactive objects" without a prefix filter. On shared systems, other users may have inactive objects that will conflict with yours. Always specify your prefix.
 
 ---
 
