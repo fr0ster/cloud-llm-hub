@@ -238,6 +238,12 @@ All objects need a development package. On most on-premise systems, local packag
 > **Tip:** The agent may need two attempts — the first may fail if it omits the software component. If so, repeat the prompt and explicitly mention `software component LOCAL`.
 
 > **Note:** If the agent cannot create the package via MCP, create it manually in ADT (Eclipse) via `File → New → ABAP Package` (select "Local Object" when prompted for transport). Then tell the agent: "Use package TEST_##_MAT for all objects."
+>
+> **Known LLM mistakes in package creation:**
+>
+> 1. **Package name must start with `TEST_` or `$` on on-premise.** Z-prefixed packages cannot use LOCAL software component. Error: "Package names starting with Z cannot be assigned to software component LOCAL". **Fix:** Use `TEST_` prefix for package name.
+>
+> 2. **Software component omitted.** The LLM may not pass `software_component: LOCAL` — the system rejects the package. **Fix:** Explicitly state "software component LOCAL" in the prompt.
 
 ---
 
@@ -291,6 +297,12 @@ Before creating tables, we define custom domains and data elements. This provide
 > **Why domains and data elements?** Domains define value ranges and formatting. Data elements add labels and F4 help. Without them, Fiori UI shows raw field names instead of proper labels, and there's no input validation or search help.
 
 > **If data elements are not activated:** Type: "Activate all inactive data elements starting with Z##_E_" or "Check inactive objects and activate all."
+>
+> **Known LLM mistakes in data element generation:**
+>
+> 1. **`abap_boolean` type not handled correctly.** The LLM may create Z##_E_LVORM with `type abap_boolean` but the MCP handler produces a data element without a data type definition. Error: "No domain or data type was defined". **Fix:** Use `type CHAR length 1` instead of `abap_boolean`.
+>
+> 2. **Data elements created but not activated.** Domains must be active before data elements can be created. If data element creation fails with "domain not active" — first activate all domains: "Activate all inactive domains starting with Z##_D_".
 
 **Checkpoint:** Ask the agent: "List all objects in package TEST_##_MAT" — you should see 8 domains + 9 data elements, all active.
 
@@ -517,6 +529,12 @@ graph TD
 **Checkpoint:** Ask the agent to verify: "List all objects starting with Z##_ and confirm all interface CDS views are active."
 
 > **Tip:** If activation fails with "association target not found", it means not all views were activated together. Ask the agent: "Activate Z##_R_MAT_ROOT, Z##_R_MAT_PLANT, Z##_R_MAT_TEXT, Z##_R_MAT_SALES together in one activation call."
+>
+> **Known LLM mistakes in CDS view generation:**
+>
+> 1. **DDL source not uploaded.** The LLM may create the view object shell but fail to upload the DDL source (circular dependency blocks syntax check). Error on activation: "DDIC source code does not contain a valid definition". **Fix:** Provide the exact DDL source code in the prompt. Ask the agent to update each view with the DDL, then activate all together.
+>
+> 2. **Views created then deleted during retries.** The LLM may delete and recreate views multiple times trying to resolve circular dependencies, accidentally deleting previously working views. **Fix:** After this step, always verify with a checkpoint that all 4 views exist and are active before proceeding.
 
 ---
 
@@ -725,9 +743,19 @@ graph TD
     ROOT -->|"association { create; with draft; }"| SALES
 ```
 
-**Expected result:** BDEF created and activated. The agent may need to create the BIMP class first if activation requires it.
+**Expected result:** BDEF created (inactive until BIMP class exists). Do NOT activate yet — proceed to Step 10.
 
-> **Common mistake:** `mapping for` is only for the **persistent table**, not the draft table. Draft table is specified in the entity header (`draft table z##_mara_d`) but does NOT need a separate mapping line.
+> **Known LLM mistakes in BDEF generation:**
+>
+> 1. **Draft table mapping added incorrectly.** The LLM may generate `mapping for z##_mara_d corresponding;` for draft tables. This is wrong — `mapping for` is only for persistent tables. Draft table is specified in the entity header (`draft table z##_mara_d`) and does NOT need a mapping line. If you see this error: remove the draft mapping lines.
+>
+> 2. **Missing `authorization master ( instance )` on root entity.** `strict ( 2 )` requires every entity to declare authorization. Root must have `authorization master ( instance )`. If you see error "every entity must be flagged as authorization master or dependent" — add this line to root entity.
+>
+> 3. **Missing `draft table` on child entities.** The LLM may only add `draft table` to the root but not children. All entities need `draft table` when `with draft` is enabled. Error: "There is no draft persistency specified for Z##_R_MAT_PLANT".
+>
+> 4. **Missing `lock dependent by _Root` on child entities.** `strict ( 2 )` requires every entity to have lock master or dependent. Error: "every entity must be flagged either as lock master or lock dependent".
+>
+> **How to fix:** Ask the agent to update the BDEF with the corrected source code from above, then activate.
 
 ---
 
