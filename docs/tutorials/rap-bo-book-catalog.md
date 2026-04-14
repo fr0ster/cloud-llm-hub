@@ -72,7 +72,7 @@ Repeat until you're satisfied. Then:
 
 **Goal:** Transform business requirements into a **draft** technical specification — ABAP object types, field definitions, relationships, UI annotations.
 
-> **This is a draft, not a final document.** During Phase 4 (implementation), you will discover issues — wrong field types, missing keys, incorrect mappings. That's expected. The specification will be refined as you build. Don't aim for perfection here — aim for a solid starting point.
+> **This is a draft, not a final document.** During Phase 4 (implementation), you will discover issues — wrong field types, missing keys, incorrect mappings. That's expected. The specification will be refined as you build. However, **the more accurate the draft, the fewer corrections later** — so invest effort here. A well-thought-out draft with correct field types, key structures, and mappings will save significant time during implementation.
 
 ### Set the technology and constraints
 
@@ -116,7 +116,7 @@ Repeat until the specification is clean. Then:
 
 > The draft specification looks good enough to start. Let's create an implementation plan.
 
-> **Note:** Don't spend too long perfecting the specification. Real errors will surface during implementation (Phase 4) when SAP validates the actual DDL. You'll come back and update the specification as needed.
+> **Note:** Some errors will only surface during implementation when SAP validates the actual DDL. You'll come back and update the specification as needed. But the more thorough you are here — checking draft table keys, BDEF mappings, authorization declarations — the smoother Phase 4 will be.
 
 ---
 

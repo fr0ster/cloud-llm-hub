@@ -36,9 +36,9 @@ Every AI-assisted development tutorial follows 4 iterative phases. Each phase ha
 4. AI adjusts the specification
 5. Repeat until user says "specification is ready"
 
-**Exit criteria:** **Draft** technical specification with a list of all objects, DDL, and dependencies. This is a starting point, not a final document — it will be refined during Phase 4.
+**Exit criteria:** **Draft** technical specification with a list of all objects, DDL, and dependencies. This is a starting point that will be refined during Phase 4 — but the more accurate the draft, the fewer corrections later.
 
-**What the user learns:** How to guide AI's technical decisions. How to set constraints (no SQL injection, no expensive LLM calls, no heavy DB operations). How to evaluate whether AI's technical choices are sound. That specifications are drafts until validated by the real system.
+**What the user learns:** How to guide AI's technical decisions. How to set constraints (no SQL injection, no expensive LLM calls, no heavy DB operations). How to evaluate whether AI's technical choices are sound. That specifications are drafts until validated by the real system — but investing effort in accuracy here pays off during implementation.
 
 ### Phase 3: Implementation Plan
 
