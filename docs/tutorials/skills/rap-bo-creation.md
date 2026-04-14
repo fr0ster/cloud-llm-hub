@@ -118,7 +118,7 @@ Objects must be created and activated in this exact dependency order:
 
 ## Behavior Implementation (BIMP)
 
-- Global class: `PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT` — **empty body**.
+- Global class: `PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT` — contains only the standard generated definition and empty implementation.
 - The actual handler logic goes into **local types** (CCIMP include), not the global class.
 - For managed scenario with `authorization master ( instance )`, the local types must contain:
   ```
