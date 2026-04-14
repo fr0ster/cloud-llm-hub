@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Tutorial step tester — sends a prompt to cloud-llm-hub staging and shows the response.
+# Tutorial step tester — sends a prompt to cloud-llm-hub and shows the response.
 # Usage: ./tools/tutorial-test.sh "Your prompt here"
+#        ./tools/tutorial-test.sh --save output.md "Generate business requirements"
 # Env: STAGING_TOKEN (OAuth token), STAGING_URL (API base URL)
 
 set -euo pipefail
 
 STAGING_URL="${STAGING_URL:-https://acme-subaccount-cloud-llm-hub.cfapps.eu10.hana.ondemand.com}"
 SESSION_FILE="/tmp/tutorial-test-session.json"
+SAVE_FILE=""
 
 if [ -z "${STAGING_TOKEN:-}" ]; then
   echo "Error: STAGING_TOKEN not set. Get it with:"
@@ -14,8 +16,14 @@ if [ -z "${STAGING_TOKEN:-}" ]; then
   exit 1
 fi
 
+# Parse --save option
+if [ "${1:-}" = "--save" ]; then
+  SAVE_FILE="$2"
+  shift 2
+fi
+
 if [ $# -lt 1 ]; then
-  echo "Usage: $0 \"prompt text\""
+  echo "Usage: $0 [--save filename.md] \"prompt text\""
   exit 1
 fi
 
@@ -42,8 +50,26 @@ BODY=$(jq -n \
   '{
     model: "anthropic--claude-4.5-sonnet",
     messages: $messages,
-    max_tokens: 16000,
-    stream: false
+    max_tokens: 32000,
+    stream: false,
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "GenerateFile",
+          description: "Generate a file for the user to download. Use when the user asks to create, generate, export, or save content as a file.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Filename with extension (e.g. report.md, spec.json)" },
+              content: { type: "string", description: "File content as text" },
+              encoding: { type: "string", enum: ["text", "base64"], description: "Content encoding. Default: text" }
+            },
+            required: ["path", "content"]
+          }
+        }
+      }
+    ]
   }')
 
 # Send request
@@ -62,9 +88,25 @@ if [ "$HTTP_CODE" != "200" ]; then
   exit 1
 fi
 
-# Extract assistant message
+# Extract assistant message and tool calls
 ASSISTANT_MSG=$(echo "$BODY_RESPONSE" | jq -r '.choices[0].message.content // "No content"')
 USAGE=$(echo "$BODY_RESPONSE" | jq '.usage // {}')
+
+# Handle GenerateFile tool calls — save files locally
+TOOL_CALLS=$(echo "$BODY_RESPONSE" | jq -r '.choices[0].message.tool_calls // []')
+FILE_COUNT=$(echo "$TOOL_CALLS" | jq 'map(select(.function.name == "GenerateFile")) | length')
+if [ "$FILE_COUNT" -gt 0 ]; then
+  echo ""
+  echo "FILES GENERATED: $FILE_COUNT"
+  echo "$TOOL_CALLS" | jq -r '.[] | select(.function.name == "GenerateFile") | .function.arguments' | while read -r ARGS; do
+    FILE_PATH=$(echo "$ARGS" | jq -r '.path // "unnamed.txt"')
+    FILE_CONTENT=$(echo "$ARGS" | jq -r '.content // ""')
+    OUTPUT_DIR="/tmp/tutorial-files"
+    mkdir -p "$OUTPUT_DIR"
+    echo "$FILE_CONTENT" > "$OUTPUT_DIR/$FILE_PATH"
+    echo "  -> $OUTPUT_DIR/$FILE_PATH ($(echo "$FILE_CONTENT" | wc -c) bytes)"
+  done
+fi
 
 echo "RESPONSE:"
 echo "--------------------------------------------"
@@ -76,6 +118,14 @@ echo "USAGE: $(echo "$USAGE" | jq -c '{prompt: .prompt_tokens, completion: .comp
 # Save assistant message to session
 MESSAGES=$(echo "$MESSAGES" | jq --arg m "$ASSISTANT_MSG" '. + [{"role": "assistant", "content": $m}]')
 echo "$MESSAGES" > "$SESSION_FILE"
+
+# Save response content to file if --save was specified
+if [ -n "$SAVE_FILE" ]; then
+  OUTPUT_DIR="/tmp/tutorial-files"
+  mkdir -p "$OUTPUT_DIR"
+  echo "$ASSISTANT_MSG" > "$OUTPUT_DIR/$SAVE_FILE"
+  echo "SAVED: $OUTPUT_DIR/$SAVE_FILE ($(echo "$ASSISTANT_MSG" | wc -c) bytes)"
+fi
 
 echo ""
 echo "Session saved ($SESSION_FILE) — $(echo "$MESSAGES" | jq length) messages"
