@@ -36,9 +36,9 @@ Every AI-assisted development tutorial follows 4 iterative phases. Each phase ha
 4. AI adjusts the specification
 5. Repeat until user says "specification is ready"
 
-**Exit criteria:** Complete technical specification with a list of all objects, DDL, and dependencies.
+**Exit criteria:** **Draft** technical specification with a list of all objects, DDL, and dependencies. This is a starting point, not a final document — it will be refined during Phase 4.
 
-**What the user learns:** How to guide AI's technical decisions. How to set constraints (no SQL injection, no expensive LLM calls, no heavy DB operations). How to evaluate whether AI's technical choices are sound.
+**What the user learns:** How to guide AI's technical decisions. How to set constraints (no SQL injection, no expensive LLM calls, no heavy DB operations). How to evaluate whether AI's technical choices are sound. That specifications are drafts until validated by the real system.
 
 ### Phase 3: Implementation Plan
 
@@ -74,9 +74,9 @@ Every AI-assisted development tutorial follows 4 iterative phases. Each phase ha
 
 **Checkpoint between layers:** After each layer (tables -> CDS -> BDEF -> service) — full verification that all objects are active and error-free.
 
-**Exit criteria:** Working application with UI.
+**Exit criteria:** Working application with UI. Updated specification that reflects reality.
 
-**What the user learns:** The create-check-fix-activate cycle. That complex objects rarely work on the first attempt. That syntax check before activation saves time. That AI can diagnose errors but the user decides how to fix them.
+**What the user learns:** The create-check-fix-activate cycle. That complex objects rarely work on the first attempt. That syntax check before activation saves time. That AI can diagnose errors but the user decides how to fix them. That specifications evolve during implementation — the draft from Phase 2 becomes the final spec by the end of Phase 4.
 
 ## Key Principles
 
