@@ -18,7 +18,7 @@
     "@sap/cds": "^9.8.4",
     "@sap/xsenv": "^6.1.0",
     "@sap/xssec": "^4.13.0",
-    "axios": "^1.14.0",
+    "axios": "^1.15.0",
     "dotenv": "^17.4.0",
     "express": "^4",
     "https-proxy-agent": "^9.0.0",
