@@ -21,7 +21,7 @@ Every AI-assisted development tutorial follows 4 iterative phases. Each phase ha
 4. AI reformulates with corrections
 5. Repeat until user says "business description is ready"
 
-**Exit criteria:** Formal business description that fully covers the idea, without technical details.
+**Exit criteria:** Formal business description saved as a **markdown file**. Fully covers the idea, without technical details.
 
 **What the user learns:** How to articulate requirements clearly enough for AI to understand. How to review AI's interpretation and catch misunderstandings early.
 
@@ -36,7 +36,7 @@ Every AI-assisted development tutorial follows 4 iterative phases. Each phase ha
 4. AI adjusts the specification
 5. Repeat until user says "specification is ready"
 
-**Exit criteria:** **Draft** technical specification with a list of all objects, DDL, and dependencies. This is a starting point that will be refined during Phase 4 — but the more accurate the draft, the fewer corrections later.
+**Exit criteria:** **Draft** technical specification saved as a **markdown file** — all objects, DDL, and dependencies. This is a starting point that will be refined during Phase 4 — but the more accurate the draft, the fewer corrections later.
 
 **What the user learns:** How to guide AI's technical decisions. How to set constraints (no SQL injection, no expensive LLM calls, no heavy DB operations). How to evaluate whether AI's technical choices are sound. That specifications are drafts until validated by the real system — but investing effort in accuracy here pays off during implementation.
 
@@ -50,7 +50,7 @@ Every AI-assisted development tutorial follows 4 iterative phases. Each phase ha
 3. AI refines the plan
 4. Repeat until user says "plan is ready"
 
-**Exit criteria:** Numbered plan where each step has: what to create, DDL/source code, how to verify, how to activate.
+**Exit criteria:** Numbered plan saved as a **markdown file** — each step has: what to create, DDL/source code, how to verify, how to activate.
 
 **What the user learns:** Why order matters. Why checkpoints between layers prevent cascading failures. How to structure work for AI execution.
 
