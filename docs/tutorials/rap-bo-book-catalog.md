@@ -62,7 +62,11 @@ If something is missing or wrong:
 
 Repeat until you're satisfied. Then:
 
-> The business requirements look complete. Let's move to the technical specification.
+> The business requirements look complete. Generate a markdown file with the final business requirements document.
+
+Save the generated file — you'll reference it in the next phases.
+
+> Let's move to the technical specification.
 
 ---
 
@@ -114,9 +118,13 @@ If something is wrong:
 
 Repeat until the specification is clean. Then:
 
-> The draft specification looks good enough to start. Let's create an implementation plan.
+> The draft specification looks good enough to start. Generate a markdown file with the complete technical specification — all objects, DDL definitions, field mappings, and UI annotations.
+
+Save the generated file — this is your working document for Phase 4. You'll update it when implementation reveals issues.
 
 > **Note:** Some errors will only surface during implementation when SAP validates the actual DDL. You'll come back and update the specification as needed. But the more thorough you are here — checking draft table keys, BDEF mappings, authorization declarations — the smoother Phase 4 will be.
+
+> Let's create an implementation plan.
 
 ---
 
@@ -157,7 +165,11 @@ Check that:
 
 Repeat until the plan is solid. Then:
 
-> The plan looks good. Let's start implementation.
+> The plan looks good. Generate a markdown file with the numbered implementation plan — each step with what to create, DDL source where applicable, how to verify, and how to activate.
+
+Save the plan file — you'll follow it step by step in Phase 4.
+
+> Let's start implementation.
 
 ---
 
