@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [4.0.11] - 2026-04-14
+
+### Added
+- **RAP BO creation skill file** (`docs/tutorials/skills/rap-bo-creation.md`) — rules, constraints, error→fix table for LLM
+- **Smart tutorial: Book Catalog** (`docs/tutorials/rap-bo-book-catalog.md`) — describe the app, LLM builds it
+- **CheckView, CheckBehaviorDefinition tools** — syntax check before activation
+- **UI annotations in skill** — text associations, value help, search, filters, star ratings
+
+### Changed
+- **Tutorial rewrite** — 14 steps, domains + data elements, explicit BDEF mapping, draft table key rules
+- **2-digit prefix** `Z<II><NN>_` for better uniqueness on shared systems
+- **Package prefix** `TEST_` required for on-premise `$TMP` LOCAL packages
+- **MAX_ITERATIONS** 10 → 20 in deployment configs
+
+### Fixed
+- **CSRF parallel-safe refresh** — shared promise ensures only one token fetch at a time, cookies cleared before retry
+- **CSRF pre-fetch in connect()** — fixes 403 on ActivateObjects and BDEF LOCK endpoints
+- **Destination user as responsible** — `setSystemContext` passes BTP Destination auth user for CreatePackage
+- **No /systeminformation on on-premise** — avoids CSRF session interference via Cloud Connector
+
+### Dependencies
+- `@mcp-abap-adt/core`: 5.0.4 → 5.1.1
+- `@mcp-abap-adt/connection`: 1.5.3 → 1.6.1
+- `@mcp-abap-adt/interfaces`: 5.0.0 → 6.1.0
+
 ## [4.0.4] - 2026-04-13
 
 ### Fixed
