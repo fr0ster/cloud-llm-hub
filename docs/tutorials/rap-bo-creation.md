@@ -836,12 +836,29 @@ graph TD
 
 > Create the behavior implementation class ZBP_##_R_MAT_ROOT in package TEST_##_MAT for behavior of Z##_R_MAT_ROOT.
 > The class should be PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT.
-> For now, create a minimal implementation — just the class shell. The managed scenario handles most operations automatically.
+> The global class is empty — the actual handler logic goes into local types.
+> The local types (CCIMP) must contain a handler class for authorization:
+>
+> ```
+> CLASS lhc_MaterialRoot DEFINITION INHERITING FROM cl_abap_behavior_handler.
+>   PRIVATE SECTION.
+>     METHODS get_instance_authorizations FOR INSTANCE AUTHORIZATION
+>       IMPORTING keys REQUEST requested_authorizations FOR MaterialRoot RESULT result.
+> ENDCLASS.
+>
+> CLASS lhc_MaterialRoot IMPLEMENTATION.
+>   METHOD get_instance_authorizations.
+>   ENDMETHOD.
+> ENDCLASS.
+> ```
+>
 > Activate it.
 
-**Expected result:** A minimal BIMP class created and activated. After BIMP exists, the BDEF from Step 7 can be activated (if it wasn't already).
+**Expected result:** A BIMP class with empty global class and a local handler class `lhc_MaterialRoot` implementing `get_instance_authorizations`. After BIMP exists, the BDEF from Step 9 can be activated.
 
-> **Note:** Steps 7 and 8 have a circular dependency: BDEF references the BIMP class, but the class is "for behavior of" the BDEF. The agent may need to create both and then activate them together.
+> **Note:** Steps 9 and 10 have a circular dependency: BDEF references the BIMP class, but the class is "for behavior of" the BDEF. The agent may need to create both and then activate them together.
+>
+> **Known LLM mistake:** The agent may create the BIMP as a plain empty class without local types. The correct BIMP has: empty global class + local handler class inheriting from `cl_abap_behavior_handler` with authorization method. If the BDEF has `authorization master ( instance )`, the handler class **must** implement `get_instance_authorizations`. Without it, activation fails.
 
 ---
 

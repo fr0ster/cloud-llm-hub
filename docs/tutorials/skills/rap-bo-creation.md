@@ -118,8 +118,23 @@ Objects must be created and activated in this exact dependency order:
 
 ## Behavior Implementation (BIMP)
 
-- Class: `PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT`.
-- For managed scenario — class body is empty. Framework handles CRUD automatically.
+- Global class: `PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT` — **empty body**.
+- The actual handler logic goes into **local types** (CCIMP include), not the global class.
+- For managed scenario with `authorization master ( instance )`, the local types must contain:
+  ```
+  CLASS lhc_<RootAlias> DEFINITION INHERITING FROM cl_abap_behavior_handler.
+    PRIVATE SECTION.
+      METHODS get_instance_authorizations FOR INSTANCE AUTHORIZATION
+        IMPORTING keys REQUEST requested_authorizations FOR <RootAlias> RESULT result.
+  ENDCLASS.
+
+  CLASS lhc_<RootAlias> IMPLEMENTATION.
+    METHOD get_instance_authorizations.
+    ENDMETHOD.
+  ENDCLASS.
+  ```
+- Replace `<RootAlias>` with the BDEF root entity alias (e.g. `MaterialRoot`).
+- The method body can be empty for initial setup — framework handles CRUD automatically.
 - BDEF and BIMP have circular dependency. Create both, then activate together.
 
 ## Projection BDEF
