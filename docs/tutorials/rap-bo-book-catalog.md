@@ -66,11 +66,13 @@ Repeat until you're satisfied. Then:
 
 ---
 
-## Phase 2: Technical Specification
+## Phase 2: Technical Specification (Draft)
 
 **Your role:** architect. **AI's role:** technical writer.
 
-**Goal:** Transform business requirements into a complete technical specification — ABAP object types, field definitions, relationships, UI annotations.
+**Goal:** Transform business requirements into a **draft** technical specification — ABAP object types, field definitions, relationships, UI annotations.
+
+> **This is a draft, not a final document.** During Phase 4 (implementation), you will discover issues — wrong field types, missing keys, incorrect mappings. That's expected. The specification will be refined as you build. Don't aim for perfection here — aim for a solid starting point.
 
 ### Set the technology and constraints
 
@@ -112,7 +114,9 @@ If something is wrong:
 
 Repeat until the specification is clean. Then:
 
-> The technical specification is complete. Let's create an implementation plan.
+> The draft specification looks good enough to start. Let's create an implementation plan.
+
+> **Note:** Don't spend too long perfecting the specification. Real errors will surface during implementation (Phase 4) when SAP validates the actual DDL. You'll come back and update the specification as needed.
 
 ---
 
@@ -161,7 +165,9 @@ Repeat until the plan is solid. Then:
 
 **Your role:** reviewer and tester. **AI's role:** developer.
 
-**Goal:** Execute the plan, one step at a time, with verification.
+**Goal:** Execute the plan, one step at a time, with verification. Use the draft specification from Phase 2 as input for each step — DDL, field definitions, mappings come from there.
+
+> **The specification is a living document.** When SAP rejects something during implementation (wrong key, missing mapping, incorrect type), fix it in the specification first, then in the code. This keeps the spec and reality in sync. By the end, your draft specification will have evolved into an accurate final specification.
 
 ### Simple objects: create and verify
 
