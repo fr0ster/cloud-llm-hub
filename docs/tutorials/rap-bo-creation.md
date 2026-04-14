@@ -187,26 +187,28 @@ RAP objects must be created and activated in a specific order due to dependencie
 
 ```mermaid
 flowchart LR
-    P[1. Package] --> A[2. Tables<br/>persistent + draft]
-    A --> B[3. Interface CDS<br/>R-type views]
-    B --> C[4. Projection CDS<br/>C-type views]
-    C --> D[5. Interface BDEF]
-    D --> E[6. BIMP Class]
-    E --> F[7. Projection BDEF]
-    F --> G[8. Service Definition]
-    G --> H[9. Service Binding<br/>+ Publish]
-    H --> I[10. Metadata Extensions<br/>UI annotations]
+    P[1. Package] --> DD[2. Domains +<br/>Data Elements]
+    DD --> A[3-4. Tables<br/>persistent + draft]
+    A --> B[5. Interface CDS]
+    B --> C[6. Projection CDS]
+    C --> MDE[7. Metadata Ext.]
+    MDE --> D[8. Interface BDEF]
+    D --> E[9. BIMP Class]
+    E --> F[10. Projection BDEF]
+    F --> G[11. Service Def.]
+    G --> H[12. Service Binding]
 
     style P fill:#f5f5f5
+    style DD fill:#e8f5e9
     style A fill:#e8f5e9
-    style B fill:#e8f5e9
+    style B fill:#e1f5fe
     style C fill:#e1f5fe
+    style MDE fill:#e1f5fe
     style D fill:#fff3e0
     style E fill:#fff3e0
     style F fill:#f3e5f5
     style G fill:#fce4ec
     style H fill:#fce4ec
-    style I fill:#f5f5f5
 ```
 
 ---
@@ -959,40 +961,46 @@ After each creation step, you can ask: "Activate all inactive objects starting w
 flowchart TB
     START([Start]) --> SETUP
 
-    subgraph SETUP[Step 1-2: Setup]
-        S0[Verify System Connection] --> S1[Create Package]
+    subgraph SETUP["Step 1-2: Setup"]
+        S0[Verify Connection] --> S1[Create Package]
     end
 
-    SETUP --> TABLES
+    SETUP --> DICT
 
-    subgraph TABLES[Step 3-4: Database Layer]
+    subgraph DICT["Step 3: Dictionary"]
+        D1[Domains x8] --> D2[Data Elements x9]
+    end
+
+    DICT --> TABLES
+
+    subgraph TABLES["Step 4-5: Database Layer"]
         T1[Persistent Tables x4] --> T2[Draft Tables x4]
     end
 
     TABLES --> CDS
 
-    subgraph CDS[Step 5-6: CDS Layer]
+    subgraph CDS["Step 6-8: CDS + UI Layer"]
         C1[Interface CDS x4] --> C2[Projection CDS x4]
+        C2 --> C3[Metadata Extensions]
     end
 
     CDS --> BEHAVIOR
 
-    subgraph BEHAVIOR[Step 7-9: Behavior Layer]
+    subgraph BEHAVIOR["Step 9-11: Behavior Layer"]
         B1[Interface BDEF] --> B2[BIMP Class]
         B2 --> B3[Projection BDEF]
     end
 
     BEHAVIOR --> SERVICE
 
-    subgraph SERVICE[Step 10-12: Service Layer]
+    subgraph SERVICE["Step 12-13: Service Layer"]
         S1a[Service Definition] --> S2[Service Binding + Publish]
-        S2 --> S3[Metadata Extensions]
     end
 
-    SERVICE --> DONE([Fiori App Ready])
+    SERVICE --> DONE([Step 14: Verification])
 ```
 
-**Total objects created:** ~21 (1 package + 4 persistent tables + 4 draft tables + 4 interface CDS + 4 projection CDS + 2 BDEFs + 1 BIMP + 1 Service Definition + 1 Service Binding + metadata extensions)
+**Total objects created:** ~38 (1 package + 8 domains + 9 data elements + 4 persistent tables + 4 draft tables + 4 interface CDS + 4 projection CDS + metadata extensions + 2 BDEFs + 1 BIMP + 1 Service Definition + 1 Service Binding)
 
 **Key takeaways:**
 1. Always create objects in dependency order (package → domains → data elements → tables → CDS → BDEF → service)
