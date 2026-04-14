@@ -836,7 +836,7 @@ graph TD
 
 > Create the behavior implementation class ZBP_##_R_MAT_ROOT in package TEST_##_MAT for behavior of Z##_R_MAT_ROOT.
 > The class should be PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF Z##_R_MAT_ROOT.
-> The global class is empty — the actual handler logic goes into local types.
+> The global class contains the standard generated definition and empty implementation — the actual handler logic goes into local types.
 > The local types (CCIMP) must contain a handler class for authorization:
 >
 > ```
