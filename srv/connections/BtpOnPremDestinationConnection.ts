@@ -6,7 +6,8 @@ import type {
 import { OnPremAbapConnection as OnPremAbapConnectionImpl } from '@mcp-abap-adt/connection';
 import type { IAdtResponse } from '@mcp-abap-adt/interfaces';
 import axios, { type AxiosInstance } from 'axios';
-// @ts-expect-error — https-proxy-agent v7 exports not resolved under moduleResolution: node
+// biome-ignore lint/suspicious/noTsIgnore: https-proxy-agent v7 exports not resolved under moduleResolution: node on Node 22
+// @ts-ignore
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // Logger adapter for OnPremAbapConnection
