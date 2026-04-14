@@ -1,7 +1,7 @@
 ---
 name: RAP Business Object Creation
 description: Rules and constraints for creating SAP RAP managed Business Objects with draft support on on-premise S/4HANA systems via MCP tools
-version: 1.0.0
+version: 2.0.0
 tags: [sap, rap, abap, cds, bdef, draft, fiori]
 ---
 
@@ -10,6 +10,24 @@ tags: [sap, rap, abap, cds, bdef, draft, fiori]
 ## Scope
 
 This skill covers creating a RAP managed BO with draft support on SAP S/4HANA on-premise systems. It documents constraints, common mistakes, and correct patterns discovered through testing.
+
+## Hallucination Detection
+
+The LLM may fabricate successful results without actually executing MCP tools. Indicators:
+
+- **Low prompt token count** — a real tool call uses 40K–100K+ prompt tokens. A response with ~4K tokens likely had no tool execution.
+- **Missing execution traces** — real tool calls produce `[SmartAgent: Executing ToolName...]` lines in the response. No trace = no execution.
+- **Long conversation context** — after 10–12 messages in a session, the LLM tends to "pattern-match" earlier successful responses instead of calling tools.
+
+**Triggers:**
+- **Too many parallel tasks in one prompt** — asking to create 5+ objects at once increases hallucination risk. The LLM sees the pattern from the first 2–3 successful creations and fabricates the rest.
+- **Long conversation context** — accumulated history from prior steps competes with tool execution. The LLM "remembers" the answer format and skips calling tools entirely.
+
+**Rules:**
+- Create objects in batches of 3–4 per prompt, not more.
+- After batch creation, always verify by reading each object back (preferably in a fresh session).
+- If prompt token count is suspiciously low, treat the response as fake and redo the step.
+- Start a fresh conversation session after each layer or every ~10 messages.
 
 ## Object Creation Order
 
@@ -55,12 +73,12 @@ Objects must be created and activated in this exact dependency order:
 
 **Critical rules:**
 
-1. **Key fields must match persistent table keys.** If persistent table has `key client, key uuid, key matnr`, draft table must also have `key mandt, key uuid, key matnr`. Omitting business keys causes BDEF activation error: "Field MATNR is required but not a key".
-2. **Use `mandt` not `abap.clnt`** for the client key field.
-3. **Non-key field names use CDS aliases** (PascalCase): `materialtype` instead of `mtart`, `materialgroup` instead of `matkl`.
-4. **Key field names keep original table names**: `matnr`, `werks`, `spras` — NOT PascalCase.
-5. **No structure includes** — spell out audit fields individually: `createdby`, `createdat`, `lastchangedby`, `lastchangedat`, `locallastchangedat`.
-6. **Always add `"%admin" : include sych_bdl_draft_admin_inc`** at the end.
+1. **Key fields must match persistent table keys — but NO `draftuuid` key.** The draft UUID is managed by the `sych_bdl_draft_admin_inc` include. Adding `key draftuuid : sysuuid_x16` causes BDEF activation error: "cannot have a key field DRAFTUUID".
+2. **All field names must use CDS view alias names** (lowercased PascalCase without underscores). Draft tables store CDS alias values, not persistent table field names. Example: `authorname` (not `author_name`), `publicationyear` (not `publication_year`), `createdby` (not `created_by`). Using snake_case causes BDEF activation error: "Missing fields (CamelCase expected)".
+3. **Use `mandt` not `abap.clnt`** for the client key field.
+4. **Use `include sych_bdl_draft_admin_inc;`** — not `"%_DIFFINCL" : sych_bdl_draft_admin_inc` (the `%` syntax fails in CDS table definitions). The include should ideally use group name `"%admin"` to avoid warnings.
+5. **No `parentuuid` field** in child draft tables — the draft framework manages parent-child relationships via the include structure. Adding `parentuuid` produces warning: "does not expect the field PARENTUUID".
+6. **Reserved ABAP keywords** cannot be field names — e.g., `format` → `editionformat`. Causes "Statements could not be generated" error.
 
 ## CDS Views — Interface (R-type)
 
@@ -68,6 +86,7 @@ Objects must be created and activated in this exact dependency order:
 - Children: `define view entity` with `association to parent` on `$projection.RootUuid = _Root.Uuid`.
 - All fields mapped to PascalCase aliases: `uuid as Uuid`, `matnr as Matnr`, `mtart as MaterialType`.
 - **Circular dependency:** root references children, children reference root. Create all views first (syntax errors are expected), then activate all together in one call.
+- **Syntax check before activation will show errors — this is normal.** Errors like "data source X does not exist or is not active" are expected because the views reference each other. These errors disappear after group activation. Only non-circular errors (wrong field names, missing tables) need fixing before activation.
 - **Always provide exact DDL source code** in the prompt — without it, the agent may create empty view shells that fail activation with "DDIC source code does not contain a valid definition".
 - After activation, run syntax check: "Check CDS view Z##_R_MAT_ROOT for syntax errors".
 
@@ -115,6 +134,9 @@ Objects must be created and activated in this exact dependency order:
    }
    ```
 8. **No mapping for draft tables** — `mapping for` is only for persistent tables. Draft table is declared in the entity header only.
+9. **UUID key fields should use `numbering:managed`** — without it, the system warns: "should be flagged as numbering:managed to give it a UUID automatically". Add `field ( numbering : managed, readonly ) AuthorId;` instead of just `field ( readonly ) AuthorId;`.
+10. **Cross-BO associations** use `with cross associations;` in the header — without it, warning: "uses an obsolete implementation". For example, Book referencing Author (separate BO) requires this syntax.
+11. **Child entities (lock/authorization dependent)** do NOT need their own handler classes — they inherit authorization from the master entity.
 
 ## Behavior Implementation (BIMP)
 
@@ -153,6 +175,7 @@ Objects must be created and activated in this exact dependency order:
 - OData V4 UI binding.
 - Must be activated AND published separately.
 - Publishing may require a separate "Publish service binding" prompt.
+- **MCP limitation:** `CreateServiceBinding` always creates **OData V4 - Web API** (category 1), not **OData V4 - UI** (category 0). To get a UI binding for Fiori Elements, the user must change the binding type manually in ADT after creation.
 
 ## Activation Rules
 
@@ -262,3 +285,44 @@ For a BO with independent root entities that reference each other (e.g. Author, 
 | "domain not active" | Data element references inactive domain | Activate domains first |
 | "association target not found" | CDS views not activated together | Activate all R-type or C-type views in one call |
 | Mapping warnings (41+) | Using `corresponding` with PascalCase aliases | Use explicit `mapping for table { CdsAlias = table_field; }` |
+| "cannot have a key field DRAFTUUID" | Draft table has `key draftuuid` | Remove `draftuuid` from keys — framework manages it via include |
+| "Missing fields (CamelCase expected)" | Draft table uses snake_case fields | Rename all fields to CDS alias names (lowercased PascalCase) |
+| "Statements could not be generated" | Reserved ABAP keyword as field name | Rename field (e.g. `format` → `editionformat`) |
+| "does not expect the field PARENTUUID" | Extra field in child draft table | Remove `parentuuid` — framework handles parent-child relationships |
+| Field `%_DIFFINCL` invalid | Wrong include syntax in CDS table | Use `include sych_bdl_draft_admin_inc;` (no quotes, no field name) |
+
+## Token Waste Analysis
+
+Based on Phase 4 testing of Book Catalog (72 objects, ~6.1M tokens, ~$19):
+
+### Waste categories (18% = ~1.1M tokens = ~$3.47)
+
+| Category | Waste | Root Cause | Prevention |
+|----------|-------|------------|------------|
+| Draft table iterations | ~670K (11%) | Wrong field names + wrong key structure | Follow Draft Tables rules in this skill exactly |
+| Hallucinations | ~310K (5%) | Long sessions + large batches | Fresh session every layer; max 3-4 objects per prompt |
+| BDEF activation retries | ~98K (2%) | ActivateObjects tool can't find BDEFs | Use ActivateBehaviorDefinition, not ActivateObjects |
+
+### Cost-saving rules
+
+1. **Draft tables are the #1 waste source.** Get them right on the first attempt using the rules in this skill. Wrong draft tables cascade into BDEF activation failures → re-fix draft tables → re-activate BDEFs = 3× cost.
+2. **Fresh session per layer.** Never accumulate 10+ messages. Session history competes with tool execution context.
+3. **Max 3-4 objects per prompt.** More than 4 triggers hallucination — LLM pattern-matches earlier successes instead of calling tools.
+4. **Always verify after batch creation.** Read each object in a fresh session. If prompt tokens < 10K, the response was fabricated.
+5. **Provide exact DDL source** for CDS views, BDEFs, MDEs. Without it, agent creates empty shells that fail activation = wasted creation + fix + re-activation.
+6. **Activate BDEFs individually** via ActivateBehaviorDefinition, not via ActivateObjects group.
+
+### Optimal token budget per object type (single object, no errors)
+
+| Object Type | ~Prompt Tokens | Notes |
+|-------------|---------------|-------|
+| Domain | 80-90K | Create + Read confirmation |
+| Data Element | 80-95K | Create + Read confirmation |
+| Table | 115-155K | Create + Update DDL + Read (higher for complex tables) |
+| CDS View | 77K | Create + Update DDL (no activation) |
+| CDS Group Activate | 39K | ActivateObjects for 4 views |
+| Metadata Extension | 77-78K | Create + Update DDL + auto-activate |
+| BDEF | 77-80K | Create + Update source |
+| BIMP Class | 77-240K | Simple: 77K; Complex (multi-entity): up to 240K |
+| Service Definition | 85-152K | Varies; may need retry if object exists |
+| Service Binding | 86K | Create + Publish |
