@@ -113,8 +113,3 @@ Open-source components used in this project:
 - [mcp-abap-adt](https://github.com/fr0ster/mcp-abap-adt) — MCP server for SAP ABAP Development Tools (ADT). Provides MCP tools for creating, reading, updating, and activating ABAP objects (domains, data elements, tables, CDS views, BDEFs, classes, services) on SAP systems.
 - [llm-agent](https://github.com/fr0ster/llm-agent) — SmartAgent pipeline for LLM orchestration with RAG, tool selection, and MCP integration. Powers the AI side of the pair programming workflow.
 - [mcp-abap-adt-clients](https://github.com/fr0ster/mcp-abap-adt-clients) — ADT HTTP clients library. Low-level ABAP Development Tools REST API integration used by mcp-abap-adt.
-
-Tutorial materials (prompts, specification, implementation log, skill file):
-
-- [Book Catalog tutorial examples](https://github.com/fr0ster/cloud-llm-hub/tree/main/docs/tutorials/examples/book-catalog) — all Phase 1-4 outputs
-- [RAP BO Creation skill v2.0](https://github.com/fr0ster/cloud-llm-hub/tree/main/docs/tutorials/skills/rap-bo-creation.md) — reusable rules for AI-assisted RAP development
