@@ -31,8 +31,6 @@ CLIENT_ID=$(echo "$CREDS" | python3 -c "import sys,json; d=json.loads(sys.stdin.
 CLIENT_SECRET=$(echo "$CREDS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read(),strict=False); c=d.get('credentials',d); print(c['clientsecret'])")
 TOKEN_URL=$(echo "$CREDS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read(),strict=False); c=d.get('credentials',d); print(c['url'])")
 
-EVENT_JSON=$(cat "$SCRIPT_DIR/test-payload.json" | python3 -c "import sys,json; print(json.dumps(json.dumps(json.load(sys.stdin))))")
-
 echo ""
 echo "=========================================="
 echo "Test 1: Basic Auth (clientid:clientsecret)"
@@ -61,20 +59,20 @@ curl -s -w "\nHTTP %{http_code}\n" "$APP_URL/odata/v4/analyzer/Health()" \
 
 echo ""
 echo "=========================================="
-echo "Test 3: Analyze Dump (Basic Auth)"
+echo "Test 3: AnalyzeDump POST (Basic Auth)"
 echo "=========================================="
 curl -s -X POST "$APP_URL/odata/v4/analyzer/AnalyzeDump" \
   -u "$CLIENT_ID:$CLIENT_SECRET" \
   -H "Content-Type: application/json" \
-  -d "{\"event\": $EVENT_JSON}" | python3 -m json.tool 2>/dev/null || true
+  -d '{"user":"ARAZINKIN","system":"E19.100","timestamp":"2026-04-02 09:49:37"}' | python3 -m json.tool 2>/dev/null || true
 
 echo ""
 echo "=========================================="
 echo "Test 4: AnalyzeByParams (GET, Basic Auth)"
 echo "=========================================="
-echo "Usage: AnalyzeByParams(user='USER',system='SYS.CLI',timestamp='YYYYMMDDHHMMSS')"
-echo "Skipping live call (requires real dump). Example URL:"
-echo "  $APP_URL/odata/v4/analyzer/AnalyzeByParams(user='DEVELOPER',system='E19.100',timestamp='20260415120000')"
+curl -s -w "\nHTTP %{http_code}\n" \
+  "$APP_URL/odata/v4/analyzer/AnalyzeByParams(user='ARAZINKIN',system='E19.100',timestamp='2026-04-02%2009%3A49%3A37')" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" | python3 -m json.tool 2>/dev/null || true
 
 echo ""
 echo "=========================================="

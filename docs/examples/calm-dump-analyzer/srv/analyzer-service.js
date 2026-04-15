@@ -29,28 +29,14 @@ module.exports = class AnalyzerService extends cds.ApplicationService {
 
     this.on('AnalyzeDump', async (req) => {
       const log = cds.log('analyzer');
-      log.warn('OData AnalyzeDump received', {
-        dataKeys: Object.keys(req.data || {}),
-        eventType: typeof req.data?.event,
-        eventPreview: typeof req.data?.event === 'string' ? req.data.event.slice(0, 200) : String(req.data?.event),
-        model: req.data?.model,
-      });
-      const rawEvent = req.data.event;
-      if (!rawEvent) {
-        return { status: 'error', errorMessage: 'Missing event payload' };
+      const { user, system, timestamp, model, temperature } = req.data;
+      if (!user || !system || !timestamp) {
+        return { status: 'error', errorMessage: 'Missing required parameters: user, system, timestamp' };
       }
-
-      let body;
+      log.info('AnalyzeDump', { user, system, timestamp, model });
       try {
-        body = JSON.parse(rawEvent);
-      } catch {
-        return { status: 'error', errorMessage: 'Invalid JSON in event payload' };
-      }
-
-      try {
-        const llmOptions = { model: req.data.model, temperature: req.data.temperature };
-        const result = await analyze(body, llmOptions);
-        // OData needs recommendations as string
+        const llmOptions = { model, temperature };
+        const result = await analyzeByParams({ user, system, timestamp }, llmOptions);
         result.recommendations = JSON.stringify(result.recommendations);
         return result;
       } catch (err) {

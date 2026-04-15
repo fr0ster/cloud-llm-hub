@@ -4,7 +4,7 @@ service AnalyzerService {
    * Analyze an ABAP dump from SAP Cloud ALM event payload.
    * Sends the event to cloud-llm-hub for analysis via SmartAgent pipeline.
    */
-  action AnalyzeDump(event: LargeString, model: String, temperature: Double) returns AnalysisResult;
+  action AnalyzeDump(user: String, system: String, timestamp: String, model: String, temperature: Double) returns AnalysisResult;
 
   /**
    * Analyze a dump by user, system, and timestamp — without CALM event payload.
