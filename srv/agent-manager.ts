@@ -958,7 +958,7 @@ async function buildAgentForDestination(
       historyRecencyWindow: config.agent.historyRecencyWindow,
       refreshToolsPerIteration: false,
       toolReselectPerIteration: true,
-      ragQueryK: 5,
+      ragQueryK: config.agent.ragQueryK,
       // Disable classifier — all input treated as action. Ensures tool search always runs.
       classificationEnabled: false,
     },

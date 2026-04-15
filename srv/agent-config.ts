@@ -109,6 +109,9 @@ export interface AgentConfig {
 
     /** Max recent messages to include from client history (older excluded, available via RAG) */
     historyRecencyWindow?: number;
+
+    /** Number of tools selected by RAG per query (default: 5) */
+    ragQueryK: number;
   };
 }
 
@@ -186,6 +189,12 @@ export function loadAgentConfig(): AgentConfig {
     ? Number.parseInt(historyRecencyWindowRaw, 10)
     : undefined;
 
+  // RAG query K — number of tools selected per query
+  const ragQueryK = Number.parseInt(
+    process.env.LLM_AGENT_RAG_QUERY_K || '5',
+    10,
+  );
+
   const config: AgentConfig = {
     llm: {
       provider,
@@ -206,6 +215,7 @@ export function loadAgentConfig(): AgentConfig {
       ragType,
       exposition,
       historyRecencyWindow,
+      ragQueryK,
     },
   };
 
