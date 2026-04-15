@@ -97,6 +97,18 @@ async function fetchDestinations(): Promise<SapDestination[]> {
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  const excluded = raw.filter((d) => !isSapAbapDestination(d));
+  if (excluded.length > 0) {
+    log.info('Excluded non-ABAP destinations', {
+      excluded: excluded.map((d) => ({
+        name: d.Name,
+        auth: d.Authentication,
+        proxy: d.ProxyType,
+        url: (d.URL ?? '').substring(0, 60),
+      })),
+    });
+  }
+
   log.info('Fetched SAP destinations', {
     total: raw.length,
     sapDestinations: destinations.length,
@@ -104,6 +116,12 @@ async function fetchDestinations(): Promise<SapDestination[]> {
   });
 
   return destinations;
+}
+
+/** Clear destination list cache — forces re-fetch from BTP on next call. */
+export function clearDestinationsCache(): void {
+  cachedDestinations = null;
+  cacheTimestamp = 0;
 }
 
 /**
