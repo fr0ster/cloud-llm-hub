@@ -146,16 +146,8 @@ export function loadAgentConfig(): AgentConfig {
   const apiKey = process.env.LLM_AGENT_API_KEY || '';
   const baseUrl = process.env.LLM_AGENT_BASE_URL || '';
 
-  // MCP Configuration
-  const mcpDestination = process.env.LLM_AGENT_MCP_DESTINATION;
-
-  if (!mcpDestination) {
-    throw new Error(
-      'LLM_AGENT_MCP_DESTINATION environment variable is required.\n' +
-        'This destination must be configured in Destination service (BTP Cockpit).\n' +
-        'The destination should point to your ABAP system (same as MCP proxy uses).',
-    );
-  }
+  // MCP Configuration (optional — empty = LLM-only mode without MCP tools)
+  const mcpDestination = process.env.LLM_AGENT_MCP_DESTINATION || '';
 
   const mcpEndpoint =
     process.env.LLM_AGENT_MCP_ENDPOINT || process.env.MCP_ENDPOINT;

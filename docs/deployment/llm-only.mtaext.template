@@ -19,12 +19,17 @@ parameters:
   LLM_AGENT_MAX_TOKENS: "32000"
 
   # No MCP destination — LLM-only mode
-  # LLM_AGENT_MCP_DESTINATION: ""
+  LLM_AGENT_MCP_DESTINATION: ""
 
   # SmartAgent Configuration
   LLM_AGENT_MODE: "smart"
   LLM_AGENT_MAX_ITERATIONS: "1"
   LLM_AGENT_RAG_TYPE: "vector"
+  LLM_AGENT_RESOURCE_GROUP: "default"
+  LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
+  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
+  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
+  LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
   # Approuter route host (unique for parallel deploy)
   APPROUTER_HOST: "cloud-llm-hub-llm"
