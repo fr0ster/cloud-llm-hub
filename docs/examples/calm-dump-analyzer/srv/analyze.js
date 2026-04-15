@@ -195,4 +195,64 @@ async function analyze(body, llmOptions) {
   return result;
 }
 
-module.exports = { parseEvent, buildPrompt, callLlmHub, extractJson, analyze };
+/**
+ * Analyze dump by parameters (user, system, timestamp) — no CALM event needed.
+ */
+async function analyzeByParams(params, llmOptions) {
+  const log = cds.log('analyzer');
+  const { user, system, timestamp } = params;
+
+  const timing = { start: Date.now() };
+
+  const destination = await resolveDestination(system);
+  log.info('AnalyzeByParams', {
+    system,
+    destination: destination || '(default)',
+    user,
+    timestamp,
+    model: llmOptions?.model,
+  });
+
+  const parsed = {
+    system,
+    program: '',
+    error: '',
+    exception: '',
+    message: '',
+    user,
+    timestamp,
+  };
+
+  const prompt = buildPrompt(parsed);
+  timing.promptBuilt = Date.now();
+
+  const analysis = await callLlmHub(prompt, llmOptions, destination);
+  timing.llmDone = Date.now();
+
+  const result = {
+    status: 'analyzed',
+    system,
+    program: analysis.program || '',
+    error: analysis.error || '',
+    exception: analysis.exception || '',
+    user,
+    rootCause: analysis.rootCause || '',
+    codeSection: analysis.codeSection || '',
+    severity: analysis.severity || 'unknown',
+    recommendations: analysis.recommendations || [],
+    errorMessage: '',
+  };
+
+  log.info('AnalyzeByParams complete', {
+    severity: result.severity,
+    timing: {
+      promptMs: timing.promptBuilt - timing.start,
+      llmMs: timing.llmDone - timing.promptBuilt,
+      totalMs: Date.now() - timing.start,
+    },
+  });
+
+  return result;
+}
+
+module.exports = { parseEvent, buildPrompt, callLlmHub, extractJson, analyze, analyzeByParams };

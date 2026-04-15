@@ -6,6 +6,18 @@ service AnalyzerService {
    */
   action AnalyzeDump(event: LargeString, model: String, temperature: Double) returns AnalysisResult;
 
+  /**
+   * Analyze a dump by user, system, and timestamp — without CALM event payload.
+   * The service builds the prompt and calls cloud-llm-hub directly.
+   */
+  function AnalyzeByParams(
+    user      : String,
+    system    : String,
+    timestamp : String,
+    model     : String,
+    temperature : Double
+  ) returns AnalysisResult;
+
   /** Health check */
   function Health() returns HealthStatus;
 }
