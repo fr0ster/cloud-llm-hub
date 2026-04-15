@@ -175,7 +175,7 @@ Objects must be created and activated in this exact dependency order:
 - OData V4 UI binding.
 - Must be activated AND published separately.
 - Publishing may require a separate "Publish service binding" prompt.
-- **MCP limitation:** `CreateServiceBinding` always creates **OData V4 - Web API** (category 1), not **OData V4 - UI** (category 0). To get a UI binding for Fiori Elements, the user must change the binding type manually in ADT after creation.
+- Since `core@5.2.0` + `adt-clients@5.0.0`, use `binding_variant` parameter: `ODATA_V4_UI` (Fiori Elements), `ODATA_V4_WEB_API`, `ODATA_V2_UI`, `ODATA_V2_WEB_API`. Default is `ODATA_V4_UI`. Earlier versions always created Web API (category 1).
 
 ## Activation Rules
 
