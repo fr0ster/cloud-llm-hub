@@ -3,6 +3,7 @@ _out
 *.db
 *.sqlite
 *.mtar
+*.pdf
 connection.properties
 default-*.json
 .cdsrc-private.json
