@@ -448,6 +448,18 @@ Create table Z##_T_EDITION with fields from technical specification Section 3.1.
 - page_count (Z##_E_PAGE_COUNT)
 - created_by, created_at, last_changed_by, last_changed_at, local_last_changed_at
 
+**Corrected Field List (discovered during testing):**
+
+Draft version (fails activation):
+```
+- format (Z##_E_FORMAT)
+```
+Final version (works):
+```
+- edition_format (Z##_E_FORMAT)
+```
+`FORMAT` is a reserved ABAP keyword — field names starting with reserved words cause "Statements could not be generated" activation error. Rename to `edition_format`.
+
 ### Step 41: Create Rating Table
 **Object:** `Z##_T_RATING` (Table)  
 **Prompt:**
@@ -488,6 +500,19 @@ Create draft table Z##_D_AUTHOR with same key fields as Z##_T_AUTHOR plus draft 
 - All non-key fields from Z##_T_AUTHOR
 - Draft admin fields: DraftEntityCreationDateTime, DraftEntityLastChangeDateTime, DraftAdministrativeData (include structure), DraftIsCreatedByMe, DraftIsProcessedByMe, DraftIsKeptByUser
 
+**Corrected Field List (discovered during testing):**
+
+Draft version (fails activation):
+```
+- Draft admin fields: DraftEntityCreationDateTime, DraftEntityLastChangeDateTime, DraftAdministrativeData (include structure), ...
+- or: "%_DIFFINCL" : sych_bdl_draft_admin_inc
+```
+Final version (works):
+```
+- include sych_bdl_draft_admin_inc;
+```
+The `"%_DIFFINCL" : sych_bdl_draft_admin_inc` syntax fails — field name with `%` is invalid in CDS table definition. Listing individual draft admin fields also fails. The correct CDS table syntax is simply `include sych_bdl_draft_admin_inc;` which expands to all required draft admin fields.
+
 ### Step 43: Create Book Draft Table
 **Object:** `Z##_D_BOOK` (Table)  
 **Prompt:**
@@ -521,6 +546,20 @@ Create draft table Z##_D_EDITION with same key fields as Z##_T_EDITION plus Pare
 - All non-key fields from Z##_T_EDITION
 - Draft admin fields (same as Step 42)
 
+**Corrected Field List (discovered during testing):**
+
+Draft version (fails activation):
+```
+- format (Z##_E_FORMAT)
+- "%_DIFFINCL" : sych_bdl_draft_admin_inc
+```
+Final version (works):
+```
+- edition_format (Z##_E_FORMAT)
+- include sych_bdl_draft_admin_inc;
+```
+Same corrections as Step 40 (reserved keyword) and Step 42 (include syntax).
+
 ### Step 45: Create Rating Draft Table
 **Object:** `Z##_D_RATING` (Table)  
 **Prompt:**
@@ -537,6 +576,18 @@ Create draft table Z##_D_RATING with same key fields as Z##_T_RATING plus Parent
 - ParentUUID (SYSUUID_X16)
 - All non-key fields from Z##_T_RATING
 - Draft admin fields (same as Step 42)
+
+**Corrected Field List (discovered during testing):**
+
+Draft version (fails activation):
+```
+- "%_DIFFINCL" : sych_bdl_draft_admin_inc
+```
+Final version (works):
+```
+- include sych_bdl_draft_admin_inc;
+```
+Same correction as Step 42 (include syntax).
 
 ---
 
@@ -823,6 +874,11 @@ Create interface behavior definition for Z##_I_AUTHOR (managed, draft enabled, s
 - draft actions: Edit, Resume, Activate, Discard, Prepare
 - determination setInitialValues on modify { create; }
 
+**Corrected (discovered during testing):**
+- `ActivateObjects` tool doesn't reliably find BDEFs — use `ActivateBehaviorDefinition` instead
+- UUID key fields should use `field ( numbering : managed, readonly ) AuthorId;` — without it, warning about missing UUID auto-generation
+- `association _Book { create; }` removed from Author BDEF — Author is a standalone BO, Book references Author (not the other way)
+
 ### Step 63: Create Book Interface BDEF
 **Object:** `Z##_I_BOOK` (Behavior Definition)  
 **Prompt:**
@@ -949,6 +1005,11 @@ Create behavior implementation class Z##_BP_I_BOOK for Book/Edition/Rating BOs w
 - Local handler class lcl_rating for Z##_I_RATING entity
   - Methods: get_instance_authorizations, setInitialValues, validateScore
 
+**Corrected (discovered during testing):**
+- Child entities with `authorization dependent by _Book` do NOT need their own handler classes — they inherit authorization from the master entity
+- Only `lhc_book` handler is needed in ZOK9_BP_I_BOOK; `lhc_edition` and `lhc_rating` are unnecessary
+- Agent auto-corrected this when given all 3 handler classes — it removed Edition/Rating handlers
+
 ### Step 70: Implement Book BIMP Methods
 **Prompt:**
 ```
@@ -975,6 +1036,15 @@ Activate all interface behavior definitions and implementation classes together:
 **Expected Result:** All BDEFs and classes activated successfully  
 **Verification:** Check activation log; verify in ADT  
 **Notes:** Mass activation required due to dependencies
+
+**Corrected (discovered during testing):**
+- `ActivateObjects` tool fails to find BDEF type — activate BDEFs individually via `ActivateBehaviorDefinition`
+- Activate BDEFs first, then BIMP classes separately
+- Expected warnings after activation:
+  - `numbering:managed` should be added to UUID key fields
+  - `with cross associations;` needed for cross-BO associations (Book → Author)
+  - `"%ADMIN"` group name for draft include
+  - `PARENTUUID` field in child draft tables is unexpected — remove it
 
 ---
 
@@ -1104,6 +1174,18 @@ Activate and publish service binding Z##_SB_BOOK_CATALOG. Generate OData service
 **Expected Result:** Service binding published, OData endpoint available  
 **Verification:** Check service URL in binding editor, test in browser or Fiori preview  
 **Notes:** Service is now consumable
+
+**Corrected (discovered during testing):**
+
+Draft version (wrong binding type):
+```
+CreateServiceBinding always creates OData V4 - Web API (category 1)
+```
+Final version (manual fix required):
+```
+User must change binding type from "Web API" to "UI" in ADT after creation
+```
+ADT REST API does not expose the `category` parameter. `ListServiceBindingTypes` returns both OData V4 variants (category 0 = UI, category 1 = Web API), but `CreateServiceBinding` always creates category 1. See fr0ster/mcp-abap-adt#59.
 
 ---
 
