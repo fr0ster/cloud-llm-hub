@@ -70,6 +70,14 @@ curl -s -X POST "$APP_URL/odata/v4/analyzer/AnalyzeDump" \
 
 echo ""
 echo "=========================================="
-echo "Test 4: No Auth (should be 401)"
+echo "Test 4: AnalyzeByParams (GET, Basic Auth)"
+echo "=========================================="
+echo "Usage: AnalyzeByParams(user='USER',system='SYS.CLI',timestamp='YYYYMMDDHHMMSS')"
+echo "Skipping live call (requires real dump). Example URL:"
+echo "  $APP_URL/odata/v4/analyzer/AnalyzeByParams(user='DEVELOPER',system='E19.100',timestamp='20260415120000')"
+
+echo ""
+echo "=========================================="
+echo "Test 5: No Auth (should be 401)"
 echo "=========================================="
 curl -s -w "HTTP %{http_code}\n" "$APP_URL/odata/v4/analyzer/Health()" | tail -1
