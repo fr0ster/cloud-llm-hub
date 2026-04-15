@@ -1,0 +1,34 @@
+# LLM Only — no MCP, no SAP destinations, pure LLM chat
+# Use case: AI chatbot without SAP connectivity, general-purpose assistant
+# Requires: SAP AI Core or external LLM API key
+#
+# Usage:
+#   cp docs/deployment/llm-only.mtaext.template .mtaext
+#   # Edit values below
+#   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
+
+_schema-version: '3.3.0'
+ID: cloud-llm-hub-deploy
+extends: cloud-llm-hub
+version: 1.0.0
+
+parameters:
+  # LLM Model Configuration
+  LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"
+  LLM_AGENT_TEMPERATURE: "0.7"
+  LLM_AGENT_MAX_TOKENS: "32000"
+
+  # No MCP destination — LLM-only mode
+  # LLM_AGENT_MCP_DESTINATION: ""
+
+  # SmartAgent Configuration
+  LLM_AGENT_MODE: "smart"
+  LLM_AGENT_MAX_ITERATIONS: "1"
+  LLM_AGENT_RAG_TYPE: "vector"
+
+  # Approuter route host
+  APPROUTER_HOST: "cloud-llm-hub"
+
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: true

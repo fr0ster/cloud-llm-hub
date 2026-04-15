@@ -81,7 +81,10 @@ export class NamespaceIgnoringRag implements IRag {
 
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
-import { getAvailableDestinations } from './lib/btp-destinations';
+import {
+  clearDestinationsCache,
+  getAvailableDestinations,
+} from './lib/btp-destinations';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 import { CollectionRegistry } from './rag-collections';
@@ -128,6 +131,12 @@ function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
 
 const agentHandles = new Map<string, SmartAgentHandle>();
 
+/** Set to true after initSmartAgents() completes, regardless of destination success */
+let initializationDone = false;
+
+/** Fallback agent without MCP tools — used when no destinations are available */
+let llmOnlyHandle: SmartAgentHandle | null = null;
+
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
 let currentClassifierModel: string | null = null;
@@ -137,7 +146,7 @@ let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
-  return agentHandles.size > 0;
+  return initializationDone || agentHandles.size > 0;
 }
 
 /** Get the model name currently used by the agent */
@@ -302,20 +311,30 @@ export async function refreshDestinations(): Promise<
   Array<{ name: string; status: string; toolCount: number; error?: string }>
 > {
   const log = cds.log('agent-manager');
-  const unreachable = [...destinationStates.entries()].filter(
-    ([, s]) => s.status === 'unreachable',
-  );
 
-  if (unreachable.length === 0) {
-    log.info('All destinations already reachable, nothing to refresh');
-    return getDestinationStates();
-  }
+  // Force re-fetch from BTP (clear 5-min cache)
+  clearDestinationsCache();
+  const available = await getAvailableDestinations();
+
+  // New destinations not yet in state map
+  const newDests = available.filter((d) => !destinationStates.has(d.name));
+
+  // Already known unreachable destinations
+  const unreachable = [...destinationStates.entries()]
+    .filter(([, s]) => s.status === 'unreachable')
+    .map(([name]) => name);
 
   log.info('Manual destination refresh triggered', {
-    destinations: unreachable.map(([name]) => name),
+    fetched: available.map((d) => d.name),
+    new: newDests.map((d) => d.name),
+    unreachable,
   });
 
-  for (const [name] of unreachable) {
+  for (const d of newDests) {
+    await initDestination(d.name);
+  }
+
+  for (const name of unreachable) {
     await initDestination(name);
     const state = destinationStates.get(name);
     if (state?.status === 'ready') {
@@ -1014,6 +1033,50 @@ async function buildAgentForDestination(
 }
 
 /**
+ * Build a SmartAgent without MCP tools — LLM-only mode.
+ * Used as fallback when no SAP destinations are available.
+ */
+async function buildLlmOnlyAgent(
+  config: AgentConfig,
+): Promise<SmartAgentHandle> {
+  const log = cds.log('agent-manager');
+  const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
+
+  const builder = new SmartAgentBuilder({
+    agent: {
+      maxIterations: 1,
+      mode: config.agent.mode,
+      historyRecencyWindow: config.agent.historyRecencyWindow,
+      refreshToolsPerIteration: false,
+      toolReselectPerIteration: false,
+      ragQueryK: 0,
+      classificationEnabled: false,
+    },
+    prompts: {
+      system: [
+        'You are a helpful AI assistant. No MCP tools are available — SAP system destinations are not configured or unreachable.',
+        'Answer questions using your knowledge. If the user asks to perform SAP operations, explain that SAP connectivity is not available.',
+        "Respond in the user's language. Code and object names always in English.",
+      ].join('\n'),
+    },
+  })
+    .withMainLlm(mainLlm)
+    .withClassifierLlm(classifierLlm)
+    .withClassification(false)
+    .withLlmCallStrategy(new FallbackLlmCallStrategy())
+    .withMetrics(metrics)
+    .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
+    .withHistorySummarization(20)
+    .withClientAdapter(new ClineClientAdapter());
+
+  if (sharedEmbedder) builder.withEmbedder(sharedEmbedder);
+
+  const handle = await builder.build();
+  log.info('LLM-only agent built (no MCP tools)');
+  return handle;
+}
+
+/**
  * Get SmartAgent handle for a destination.
  *
  * Each destination has its own SmartAgent with isolated MCP connection.
@@ -1099,16 +1162,18 @@ export async function getSmartAgent(
     return handle;
   }
 
-  // Destination not ready — check why
+  // Destination not ready — fall back to LLM-only agent
   const destState = destinationStates.get(destName);
   const status = destState?.status ?? 'unknown';
-  log.warn('Requested destination has no agent', {
+  log.warn('Requested destination has no agent — using LLM-only fallback', {
     destination: destName,
     status,
   });
-  throw new Error(
-    `Destination "${destName}" is not ready (status: ${status}). Please wait for initialization to complete.`,
-  );
+
+  if (!llmOnlyHandle) {
+    llmOnlyHandle = await buildLlmOnlyAgent(config);
+  }
+  return llmOnlyHandle;
 }
 
 /**
@@ -1120,6 +1185,17 @@ export async function initSmartAgents(): Promise<void> {
   initDestinationMapping();
   const config = getAgentConfig();
   const destName = config.mcp.destination;
+
+  // LLM-only mode: no MCP destination configured
+  if (!destName) {
+    log.info('No MCP destination configured — starting in LLM-only mode', {
+      model: getCurrentModel(),
+      mode: config.agent.mode,
+    });
+    llmOnlyHandle = await buildLlmOnlyAgent(config);
+    initializationDone = true;
+    return;
+  }
 
   log.info('Initializing primary destination', {
     destination: destName,
@@ -1134,41 +1210,56 @@ export async function initSmartAgents(): Promise<void> {
 
   const handle = agentHandles.get(destName);
   if (!handle) {
-    throw new Error(`Primary destination "${destName}" failed to initialize`);
+    log.warn(
+      'Primary destination failed to initialize — building LLM-only fallback',
+      {
+        destination: destName,
+      },
+    );
+    llmOnlyHandle = await buildLlmOnlyAgent(config);
   }
 
-  // Run health check in background
-  (async () => {
-    try {
-      const res = await handle.agent.healthCheck();
-      if (res.ok) {
-        const v = res.value;
-        const mcpStatus =
-          v.mcp.length === 0
-            ? 'NONE'
-            : v.mcp.every((m) => m.ok)
-              ? 'OK'
-              : 'PARTIAL/FAIL';
-        log.info('SmartAgent health check', {
-          destination: destName,
-          llm: v.llm ? 'OK' : 'FAIL',
-          rag: v.rag ? 'OK' : 'FAIL',
-          mcp: mcpStatus,
-        });
-      } else {
-        log.warn('SmartAgent health check failed', {
-          error: res.error.message,
-        });
+  // Run health check in background (only if primary destination initialized)
+  if (handle) {
+    (async () => {
+      try {
+        const res = await handle.agent.healthCheck();
+        if (res.ok) {
+          const v = res.value;
+          const mcpStatus =
+            v.mcp.length === 0
+              ? 'NONE'
+              : v.mcp.every((m) => m.ok)
+                ? 'OK'
+                : 'PARTIAL/FAIL';
+          log.info('SmartAgent health check', {
+            destination: destName,
+            llm: v.llm ? 'OK' : 'FAIL',
+            rag: v.rag ? 'OK' : 'FAIL',
+            mcp: mcpStatus,
+          });
+        } else {
+          log.warn('SmartAgent health check failed', {
+            error: res.error.message,
+          });
+        }
+      } catch (e) {
+        log.warn('SmartAgent health check error', { error: String(e) });
       }
-    } catch (e) {
-      log.warn('SmartAgent health check error', { error: String(e) });
-    }
-  })();
+    })();
+  }
 
-  log.info('SmartAgent ready', {
-    destination: destName,
-    model: getCurrentModel(),
-  });
+  initializationDone = true;
+
+  log.info(
+    handle
+      ? 'SmartAgent ready'
+      : 'SmartAgent initialized (degraded — no MCP destinations)',
+    {
+      destination: destName,
+      model: getCurrentModel(),
+    },
+  );
 
   // Background: initialize remaining SAP destinations (non-blocking)
   initBackgroundDestinations().catch((err) => {
