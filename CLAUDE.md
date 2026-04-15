@@ -59,6 +59,11 @@ mbt build
 
 # Deploy to Cloud Foundry
 cf deploy mta_archives/cloud-llm-hub_<version>.mtar
+
+# IMPORTANT: For CAP sub-projects (docs/examples/*), run `cds build` before `mbt build`.
+# MTA builder runs `npm ci` but does NOT run `cds build` — if the CDS model changed,
+# the gen/ folder will contain stale compiled output and new entities/functions won't appear.
+# Sequence: npx cds build && npx mbt build && cf deploy ...
 ```
 
 ## Architecture
