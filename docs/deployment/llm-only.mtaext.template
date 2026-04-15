@@ -8,7 +8,7 @@
 #   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 
 _schema-version: '3.3.0'
-ID: cloud-llm-hub-deploy
+ID: cloud-llm-hub-llm-only                           # Different ID for parallel deploy
 extends: cloud-llm-hub
 version: 1.0.0
 
@@ -26,8 +26,8 @@ parameters:
   LLM_AGENT_MAX_ITERATIONS: "1"
   LLM_AGENT_RAG_TYPE: "vector"
 
-  # Approuter route host
-  APPROUTER_HOST: "cloud-llm-hub"
+  # Approuter route host (unique for parallel deploy)
+  APPROUTER_HOST: "cloud-llm-hub-llm"
 
 resources:
   - name: cloud-llm-hub-ai-core
