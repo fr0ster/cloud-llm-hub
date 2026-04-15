@@ -1159,7 +1159,7 @@ export async function initSmartAgents(): Promise<void> {
   }
 
   // Run health check in background (only if primary destination initialized)
-  if (handle)
+  if (handle) {
     (async () => {
       try {
         const res = await handle.agent.healthCheck();
@@ -1186,13 +1186,19 @@ export async function initSmartAgents(): Promise<void> {
         log.warn('SmartAgent health check error', { error: String(e) });
       }
     })();
+  }
 
   initializationDone = true;
 
-  log.info('SmartAgent ready', {
-    destination: destName,
-    model: getCurrentModel(),
-  });
+  log.info(
+    handle
+      ? 'SmartAgent ready'
+      : 'SmartAgent initialized (degraded — no MCP destinations)',
+    {
+      destination: destName,
+      model: getCurrentModel(),
+    },
+  );
 
   // Background: initialize remaining SAP destinations (non-blocking)
   initBackgroundDestinations().catch((err) => {
