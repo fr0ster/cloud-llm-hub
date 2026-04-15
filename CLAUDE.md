@@ -120,6 +120,10 @@ For non-SAP providers: set `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL`.
 - Single quotes, 2-space indents, 100-char line width
 - TypeScript strict mode enabled
 
+## npm Package Verification
+
+When checking whether an installed npm package contains specific code, always search inside `node_modules/` directly (e.g., `grep -r "pattern" node_modules/@scope/package/`). VS Code search and ripgrep skip `node_modules` by default due to `.gitignore`, which leads to false "not found" conclusions. The code may be there — you're just not looking in the right place.
+
 ## Git Workflow
 
 - Branch from `main`, create PRs targeting `main`
