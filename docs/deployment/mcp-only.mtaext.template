@@ -1,0 +1,30 @@
+# MCP Only — no LLM agent, pure MCP proxy to SAP systems
+# Use case: Connect Cline/Claude Desktop directly to SAP via MCP protocol
+#
+# Usage:
+#   cp docs/deployment/mcp-only.mtaext.template .mtaext
+#   # Edit values below
+#   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
+
+_schema-version: '3.3.0'
+ID: cloud-llm-hub-deploy
+extends: cloud-llm-hub
+version: 1.0.0
+
+parameters:
+  # MCP Configuration — SAP system destination(s)
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"        # BTP destination name
+
+  # Handler sets to expose (readonly, high, low, compact, search, system)
+  LLM_AGENT_EXPOSITION: "readonly,high"
+
+  # System-to-destination mapping (optional, for multi-system routing)
+  # DESTINATION_MAPPING: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"
+
+  # Approuter route host (unique subdomain for this deployment)
+  APPROUTER_HOST: "cloud-llm-hub"
+  # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
+
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: false

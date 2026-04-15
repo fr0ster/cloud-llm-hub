@@ -1,0 +1,47 @@
+# Staging Deployment — parallel instance with separate URL
+# Use case: Test new versions alongside production, separate hostname
+# Note: Change the ID to avoid conflicts with production deployment
+#
+# Usage:
+#   cp docs/deployment/staging.mtaext.template .mtaext
+#   # Edit values below (especially ID and APPROUTER_HOST)
+#   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
+#
+# This creates a separate app with its own URL:
+#   https://<APPROUTER_HOST>.<CF_LANDSCAPE>/
+
+_schema-version: '3.3.0'
+ID: cloud-llm-hub-staging                            # Different ID = parallel deploy
+extends: cloud-llm-hub
+version: 1.0.0
+
+parameters:
+  # LLM Model Configuration
+  LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"
+  LLM_AGENT_TEMPERATURE: "0.7"
+  LLM_AGENT_MAX_TOKENS: "32000"
+
+  # MCP Configuration
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
+
+  # SmartAgent Configuration
+  LLM_AGENT_MODE: "smart"
+  LLM_AGENT_MAX_ITERATIONS: "20"
+  LLM_AGENT_RAG_TYPE: "vector"
+
+  # Classifier, embedding, presentation models
+  LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
+  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
+  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
+
+  # Handler sets
+  LLM_AGENT_EXPOSITION: "readonly,high"
+  LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
+
+  # IMPORTANT: Unique hostname for staging (different from production!)
+  APPROUTER_HOST: "cloud-llm-hub-staging"
+  # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
+
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: true

@@ -1,0 +1,45 @@
+# MCP + Anthropic API — direct Claude API without SAP AI Core
+# Use case: SmartAgent with Anthropic API key, Claude CLI via ANTHROPIC_BASE_URL
+# Requires: Anthropic API key
+#
+# Usage:
+#   cp docs/deployment/mcp-anthropic.mtaext.template .mtaext
+#   # Edit values below (API key)
+#   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
+
+_schema-version: '3.3.0'
+ID: cloud-llm-hub-deploy
+extends: cloud-llm-hub
+version: 1.0.0
+
+parameters:
+  # LLM Provider
+  LLM_AGENT_PROVIDER: "anthropic"
+  LLM_AGENT_API_KEY: "<your-anthropic-api-key>"
+  # LLM_AGENT_BASE_URL: "https://api.anthropic.com"  # default, override if needed
+
+  # LLM Model Configuration
+  LLM_AGENT_MODEL: "claude-sonnet-4-20250514"
+  LLM_AGENT_TEMPERATURE: "0.7"
+  LLM_AGENT_MAX_TOKENS: "32000"
+
+  # MCP Configuration — SAP system destination(s)
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
+
+  # SmartAgent Configuration
+  LLM_AGENT_MODE: "smart"
+  LLM_AGENT_MAX_ITERATIONS: "20"
+  LLM_AGENT_RAG_TYPE: "vector"
+
+  # Handler sets to expose
+  LLM_AGENT_EXPOSITION: "readonly,high"
+
+  # History recency window
+  LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
+
+  # Approuter route host (unique subdomain for this deployment)
+  APPROUTER_HOST: "cloud-llm-hub"
+
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: false

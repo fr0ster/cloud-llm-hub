@@ -1,0 +1,54 @@
+# MCP + SAP AI Core — full SmartAgent with SAP AI Core Orchestration
+# Use case: Chat UI, OpenAI/Anthropic API endpoints, RAG, tool vectorization
+# Requires: SAP AI Core service binding with deployed models
+#
+# Usage:
+#   cp docs/deployment/mcp-sap-ai-core.mtaext.template .mtaext
+#   # Edit values below
+#   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
+
+_schema-version: '3.3.0'
+ID: cloud-llm-hub-deploy
+extends: cloud-llm-hub
+version: 1.0.0
+
+parameters:
+  # LLM Model Configuration
+  LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"  # Model deployed in AI Launchpad
+  LLM_AGENT_TEMPERATURE: "0.7"
+  LLM_AGENT_MAX_TOKENS: "32000"
+
+  # MCP Configuration — SAP system destination(s)
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
+
+  # SmartAgent Configuration
+  LLM_AGENT_MODE: "smart"
+  LLM_AGENT_MAX_ITERATIONS: "20"
+  LLM_AGENT_RAG_TYPE: "vector"
+  # LLM_AGENT_RESOURCE_GROUP: "default"
+
+  # Classifier model (cheaper model for classification, reranking, query expansion)
+  LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
+
+  # Embedding model for RAG semantic search
+  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
+
+  # Presentation model (fast model for formatting final responses)
+  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
+
+  # Handler sets to expose (readonly, high, low, compact, search, system)
+  LLM_AGENT_EXPOSITION: "readonly,high"
+
+  # History recency window (only last N messages sent to LLM, older via RAG)
+  LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
+
+  # System-to-destination mapping (optional, for multi-system routing)
+  DESTINATION_MAPPING: "DEV.100=S4HANA_DEV"
+
+  # Approuter route host (unique subdomain for this deployment)
+  APPROUTER_HOST: "cloud-llm-hub"
+  # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
+
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: true
