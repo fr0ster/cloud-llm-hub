@@ -81,7 +81,10 @@ export class NamespaceIgnoringRag implements IRag {
 
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
-import { getAvailableDestinations } from './lib/btp-destinations';
+import {
+  clearDestinationsCache,
+  getAvailableDestinations,
+} from './lib/btp-destinations';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 import { CollectionRegistry } from './rag-collections';
@@ -128,6 +131,9 @@ function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
 
 const agentHandles = new Map<string, SmartAgentHandle>();
 
+/** Set to true after initSmartAgents() completes, regardless of destination success */
+let initializationDone = false;
+
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
 let currentClassifierModel: string | null = null;
@@ -137,7 +143,7 @@ let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
-  return agentHandles.size > 0;
+  return initializationDone || agentHandles.size > 0;
 }
 
 /** Get the model name currently used by the agent */
@@ -302,20 +308,30 @@ export async function refreshDestinations(): Promise<
   Array<{ name: string; status: string; toolCount: number; error?: string }>
 > {
   const log = cds.log('agent-manager');
-  const unreachable = [...destinationStates.entries()].filter(
-    ([, s]) => s.status === 'unreachable',
-  );
 
-  if (unreachable.length === 0) {
-    log.info('All destinations already reachable, nothing to refresh');
-    return getDestinationStates();
-  }
+  // Force re-fetch from BTP (clear 5-min cache)
+  clearDestinationsCache();
+  const available = await getAvailableDestinations();
+
+  // New destinations not yet in state map
+  const newDests = available.filter((d) => !destinationStates.has(d.name));
+
+  // Already known unreachable destinations
+  const unreachable = [...destinationStates.entries()]
+    .filter(([, s]) => s.status === 'unreachable')
+    .map(([name]) => name);
 
   log.info('Manual destination refresh triggered', {
-    destinations: unreachable.map(([name]) => name),
+    fetched: available.map((d) => d.name),
+    new: newDests.map((d) => d.name),
+    unreachable,
   });
 
-  for (const [name] of unreachable) {
+  for (const d of newDests) {
+    await initDestination(d.name);
+  }
+
+  for (const name of unreachable) {
     await initDestination(name);
     const state = destinationStates.get(name);
     if (state?.status === 'ready') {
@@ -1134,36 +1150,44 @@ export async function initSmartAgents(): Promise<void> {
 
   const handle = agentHandles.get(destName);
   if (!handle) {
-    throw new Error(`Primary destination "${destName}" failed to initialize`);
+    log.warn(
+      'Primary destination failed to initialize — continuing in degraded mode',
+      {
+        destination: destName,
+      },
+    );
   }
 
-  // Run health check in background
-  (async () => {
-    try {
-      const res = await handle.agent.healthCheck();
-      if (res.ok) {
-        const v = res.value;
-        const mcpStatus =
-          v.mcp.length === 0
-            ? 'NONE'
-            : v.mcp.every((m) => m.ok)
-              ? 'OK'
-              : 'PARTIAL/FAIL';
-        log.info('SmartAgent health check', {
-          destination: destName,
-          llm: v.llm ? 'OK' : 'FAIL',
-          rag: v.rag ? 'OK' : 'FAIL',
-          mcp: mcpStatus,
-        });
-      } else {
-        log.warn('SmartAgent health check failed', {
-          error: res.error.message,
-        });
+  // Run health check in background (only if primary destination initialized)
+  if (handle)
+    (async () => {
+      try {
+        const res = await handle.agent.healthCheck();
+        if (res.ok) {
+          const v = res.value;
+          const mcpStatus =
+            v.mcp.length === 0
+              ? 'NONE'
+              : v.mcp.every((m) => m.ok)
+                ? 'OK'
+                : 'PARTIAL/FAIL';
+          log.info('SmartAgent health check', {
+            destination: destName,
+            llm: v.llm ? 'OK' : 'FAIL',
+            rag: v.rag ? 'OK' : 'FAIL',
+            mcp: mcpStatus,
+          });
+        } else {
+          log.warn('SmartAgent health check failed', {
+            error: res.error.message,
+          });
+        }
+      } catch (e) {
+        log.warn('SmartAgent health check error', { error: String(e) });
       }
-    } catch (e) {
-      log.warn('SmartAgent health check error', { error: String(e) });
-    }
-  })();
+    })();
+
+  initializationDone = true;
 
   log.info('SmartAgent ready', {
     destination: destName,
