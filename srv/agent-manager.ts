@@ -149,11 +149,6 @@ export function isAgentReady(): boolean {
   return initializationDone || agentHandles.size > 0;
 }
 
-/** Get the shared LLM provider instance (for model listing etc.) */
-export function getSharedLlm(): ReturnType<typeof makeLlm> | null {
-  return sharedMainLlm;
-}
-
 /** Get the model name currently used by the agent */
 export function getCurrentModel(): string {
   return currentModel || getAgentConfig().llm.model;
