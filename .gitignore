@@ -1,4 +1,5 @@
 # CAP cloud-llm-hub
+.worktrees/
 _out
 *.db
 *.sqlite
