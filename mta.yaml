@@ -9,9 +9,9 @@ parameters:
   LLM_AGENT_PROVIDER: "sap-ai-sdk"
   LLM_AGENT_MODEL:
   LLM_AGENT_TEMPERATURE:
-  # For openai provider: API key and base URL
-  LLM_AGENT_API_KEY: ""
-  LLM_AGENT_BASE_URL: ""
+  # For openai provider: API key and base URL — set via cf set-env (secrets!)
+  # cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY "sk-..."
+  # cf set-env cloud-llm-hub-srv LLM_AGENT_BASE_URL "https://api.openai.com/v1"
   LLM_AGENT_MAX_TOKENS:
   LLM_AGENT_MCP_DESTINATION:
   LLM_AGENT_MODE:
@@ -56,8 +56,6 @@ modules:
       # LLM Agent Configuration (values from .mtaext via global parameters)
       LLM_AGENT_PROVIDER: ${LLM_AGENT_PROVIDER}
       LLM_AGENT_MODEL: ${LLM_AGENT_MODEL}
-      LLM_AGENT_API_KEY: ${LLM_AGENT_API_KEY}
-      LLM_AGENT_BASE_URL: ${LLM_AGENT_BASE_URL}
       LLM_AGENT_TEMPERATURE: ${LLM_AGENT_TEMPERATURE}
       LLM_AGENT_MAX_TOKENS: ${LLM_AGENT_MAX_TOKENS}
       LLM_AGENT_MCP_DESTINATION: ${LLM_AGENT_MCP_DESTINATION}
