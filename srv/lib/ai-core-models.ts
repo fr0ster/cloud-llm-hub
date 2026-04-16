@@ -107,6 +107,64 @@ async function fetchModels(): Promise<AiCoreModelEntry[]> {
 }
 
 /**
+ * Fetch models from OpenAI-compatible API (openai, anthropic, deepseek providers).
+ * Uses LLM_AGENT_BASE_URL + LLM_AGENT_API_KEY to call GET /models.
+ */
+async function fetchOpenAiModels(): Promise<AiCoreModelEntry[]> {
+  const log = cds.log('ai-core-models');
+  const apiKey = process.env.LLM_AGENT_API_KEY;
+  const baseUrl = process.env.LLM_AGENT_BASE_URL || 'https://api.openai.com/v1';
+  const provider = process.env.LLM_AGENT_PROVIDER || 'openai';
+
+  if (!apiKey) {
+    log.warn('No LLM_AGENT_API_KEY — returning active model only');
+    const model = process.env.LLM_AGENT_MODEL;
+    return model
+      ? [{ id: model, object: 'model', created: 0, owned_by: provider }]
+      : [];
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Models API failed: ${response.status}`);
+    }
+
+    const data = (await response.json()) as {
+      data: Array<{ id: string; created?: number; owned_by?: string }>;
+    };
+
+    const models = data.data
+      .map((m) => ({
+        id: m.id,
+        object: 'model' as const,
+        created: m.created || 0,
+        owned_by: m.owned_by || provider,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    log.info('Fetched provider models', {
+      provider,
+      total: data.data.length,
+      llmModels: models.length,
+    });
+
+    return models;
+  } catch (err) {
+    log.warn('Failed to fetch provider models, returning active model only', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    const model = process.env.LLM_AGENT_MODEL;
+    return model
+      ? [{ id: model, object: 'model', created: 0, owned_by: provider }]
+      : [];
+  }
+}
+
+/**
  * Get available LLM models (cached with 5min TTL).
  */
 export async function getAvailableModels(): Promise<AiCoreModelEntry[]> {
@@ -114,16 +172,9 @@ export async function getAvailableModels(): Promise<AiCoreModelEntry[]> {
     return cachedModels;
   }
 
-  // Skip AI Core model fetch for non-SAP providers — return active model only
   const provider = process.env.LLM_AGENT_PROVIDER || 'sap-ai-sdk';
-  if (provider !== 'sap-ai-sdk') {
-    const activeModel = process.env.LLM_AGENT_MODEL;
-    return activeModel
-      ? [{ id: activeModel, object: 'model', created: 0, owned_by: provider }]
-      : [];
-  }
-
-  cachedModels = await fetchModels();
+  cachedModels =
+    provider === 'sap-ai-sdk' ? await fetchModels() : await fetchOpenAiModels();
   cacheTimestamp = Date.now();
   return cachedModels;
 }
