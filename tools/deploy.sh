@@ -67,17 +67,26 @@ echo ""
 echo "[1/4] Rebase on main..."
 git rebase main
 
-# Inject AICORE secrets from .env (if no binding)
+# Build
 echo ""
-echo "[2/4] Secrets..."
-HAS_BINDING=$(cf env "$SRV_APP" 2>/dev/null | grep -c '"aicore"' || true)
+echo "[2/4] Build..."
+npx mbt build $MTA_FLAG 2>&1 | tail -3
 
-if [ "$HAS_BINDING" -gt 0 ]; then
-  echo "  AI Core binding found — no injection needed"
-elif [ -f .env ]; then
-  echo "  No AI Core binding — injecting AICORE_* from .env..."
-  python3 << 'PYEOF'
-import subprocess, sys
+# Deploy
+MTAR=$(ls -t mta_archives/*.mtar 2>/dev/null | head -1)
+echo ""
+echo "[3/4] Deploy $MTAR..."
+cf deploy "$MTAR" -e "$MTAEXT"
+
+# Inject secrets from .env AFTER deploy (MTA overwrites cf set-env values)
+echo ""
+echo "[4/4] Secrets..."
+if [ -f .env ]; then
+  SRV_APP_RESOLVED="$SRV_APP"
+  python3 - "$SRV_APP_RESOLVED" << 'PYEOF'
+import subprocess, sys, os
+
+srv = sys.argv[1]
 env = {}
 with open('.env') as f:
     for line in f:
@@ -86,31 +95,28 @@ with open('.env') as f:
             k, v = line.split('=', 1)
             env[k.strip()] = v.strip()
 
-aicore = {k: v for k, v in env.items() if k.startswith('AICORE_')}
-if not aicore:
-    print('  No AICORE_* in .env')
+if not env:
+    print('  No vars in .env')
     sys.exit(0)
 
-import os
-srv = os.environ.get('SRV_APP', 'cloud-llm-hub-srv')
-for k, v in aicore.items():
+injected = 0
+for k, v in env.items():
     r = subprocess.run(['cf', 'set-env', srv, k, v], capture_output=True, text=True)
-    print(f'  {k}: {"OK" if r.returncode == 0 else "FAIL"}')
+    status = 'OK' if r.returncode == 0 else 'FAIL'
+    # Mask secrets in output
+    display = v[:8] + '...' if len(v) > 12 else v
+    print(f'  {k}={display} : {status}')
+    if r.returncode == 0:
+        injected += 1
+
+if injected > 0:
+    print(f'  Injected {injected} vars — restarting app...')
+    subprocess.run(['cf', 'restart', srv, '--strategy', 'rolling'], capture_output=True)
+    print('  Restart complete')
 PYEOF
 else
-  echo "  Warning: no .env and no AI Core binding — models endpoint may not work"
+  echo "  No .env — skipping secret injection"
 fi
-
-# Build
-echo ""
-echo "[3/4] Build..."
-npx mbt build $MTA_FLAG 2>&1 | tail -3
-
-# Deploy
-MTAR=$(ls -t mta_archives/*.mtar 2>/dev/null | head -1)
-echo ""
-echo "[4/4] Deploy $MTAR..."
-cf deploy "$MTAR" -e "$MTAEXT"
 
 echo ""
 echo "=== Done: $BRANCH ==="
