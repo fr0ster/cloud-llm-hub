@@ -1,0 +1,45 @@
+# Deploy: <SUBACCOUNT_NAME>
+
+## Subaccount
+
+- **Org:** `<CF_ORG>`
+- **Space:** `dev`
+- **URL:** `https://<APPROUTER_HOST>.cfapps.eu10.hana.ondemand.com`
+
+## Mode
+
+<!-- Choose one and delete the rest -->
+- **MCP + AI Core** — Full SmartAgent with MCP tools and SAP AI Core models
+- **MCP + OpenAI** — SmartAgent with MCP tools and OpenAI-compatible API
+- **LLM-only** — Chat without MCP/SAP connectivity
+
+## AI Core
+
+<!-- Choose one -->
+- **Binding** — AI Core service instance in this subaccount
+- **Shared via .env** — AI Core credentials from another subaccount (set AICORE_* in .env)
+
+## SAP Destinations
+
+| Destination | System | Notes |
+|------------|--------|-------|
+| `S4HANA_DEV` | DEV on-premise | Via Cloud Connector |
+
+## Prerequisites
+
+```bash
+# Login
+cf login -a https://api.cf.eu10.hana.ondemand.com
+cf target -o "<CF_ORG>" -s dev
+```
+
+## Deploy
+
+```bash
+cd .worktrees/<SHORT_NAME>
+../../tools/deploy.sh
+```
+
+## Notes
+
+<!-- Subaccount-specific notes, known issues, etc. -->
