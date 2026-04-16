@@ -24,35 +24,47 @@ const tokenCache = new Map<string, TokenCache>();
 export function getServiceCredentials(
   ...serviceNames: string[]
 ): BtpServiceCredentials {
+  // 1. Try VCAP_SERVICES (service binding)
   const vcap = process.env.VCAP_SERVICES;
-  if (!vcap) {
-    throw new Error('VCAP_SERVICES not available');
+  if (vcap) {
+    const services = JSON.parse(vcap);
+    for (const name of serviceNames) {
+      const binding = services[name]?.[0];
+      if (binding?.credentials) {
+        const creds = binding.credentials as Record<string, unknown>;
+        return {
+          tokenUrl: `${creds.url}/oauth/token`,
+          clientId: creds.clientid as string,
+          clientSecret: creds.clientsecret as string,
+          uri:
+            (creds.serviceurls as Record<string, string>)?.AI_API_URL ||
+            (creds.uri as string) ||
+            (creds.url as string),
+        };
+      }
+    }
   }
 
-  const services = JSON.parse(vcap);
-  let binding: { credentials: Record<string, unknown> } | undefined;
-
-  for (const name of serviceNames) {
-    binding = services[name]?.[0];
-    if (binding) break;
+  // 2. Try AICORE_SERVICE_KEY (assembled from env vars by ensureAiCoreCredentials)
+  if (serviceNames.includes('aicore') || serviceNames.includes('ai-core')) {
+    const serviceKey = process.env.AICORE_SERVICE_KEY;
+    if (serviceKey) {
+      const creds = JSON.parse(serviceKey) as Record<string, unknown>;
+      return {
+        tokenUrl: `${creds.url}/oauth/token`,
+        clientId: creds.clientid as string,
+        clientSecret: creds.clientsecret as string,
+        uri:
+          (creds.serviceurls as Record<string, string>)?.AI_API_URL ||
+          (creds.uri as string) ||
+          (creds.url as string),
+      };
+    }
   }
 
-  if (!binding?.credentials) {
-    throw new Error(
-      `Service binding not found in VCAP_SERVICES (tried: ${serviceNames.join(', ')})`,
-    );
-  }
-
-  const creds = binding.credentials as Record<string, unknown>;
-  return {
-    tokenUrl: `${creds.url}/oauth/token`,
-    clientId: creds.clientid as string,
-    clientSecret: creds.clientsecret as string,
-    uri:
-      (creds.serviceurls as Record<string, string>)?.AI_API_URL ||
-      (creds.uri as string) ||
-      (creds.url as string),
-  };
+  throw new Error(
+    `Service binding not found in VCAP_SERVICES (tried: ${serviceNames.join(', ')})`,
+  );
 }
 
 /**
