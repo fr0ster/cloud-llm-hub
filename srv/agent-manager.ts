@@ -951,7 +951,11 @@ async function buildAgentForDestination(
   const log = cds.log('agent-manager');
   const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
 
+  // Skip SAP AI SDK model validation for non-SAP providers (openai, anthropic, deepseek)
+  const skipModelValidation = config.llm.provider !== 'sap-ai-sdk';
+
   const builder = new SmartAgentBuilder({
+    skipModelValidation,
     agent: {
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
@@ -1043,6 +1047,7 @@ async function buildLlmOnlyAgent(
   const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
 
   const builder = new SmartAgentBuilder({
+    skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
       maxIterations: 1,
       mode: config.agent.mode,
