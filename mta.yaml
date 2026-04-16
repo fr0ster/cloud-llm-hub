@@ -27,10 +27,13 @@ parameters:
   LLM_AGENT_PIPELINE_MODE: "default"
   # System-to-destination mapping: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"
   DESTINATION_MAPPING: ""
-  AICORE_AUTH_URL: ""
-  AICORE_CLIENT_ID: ""
-  AICORE_CLIENT_SECRET: ""
-  AICORE_BASE_URL: ""
+  # AI Core credentials: set via cf set-env (not in .mtaext — secrets!)
+  # cf set-env cloud-llm-hub-srv AICORE_AUTH_URL "https://..."
+  # cf set-env cloud-llm-hub-srv AICORE_CLIENT_ID "sb-..."
+  # cf set-env cloud-llm-hub-srv AICORE_CLIENT_SECRET "..."
+  # cf set-env cloud-llm-hub-srv AICORE_BASE_URL "https://api.ai..."
+  # Not needed when AI Core service binding exists (VCAP_SERVICES takes priority)
+  #
   # CF landscape and approuter route host (override in .mtaext per subaccount)
   CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
   APPROUTER_HOST: "cloud-llm-hub"
@@ -70,10 +73,6 @@ modules:
       LLM_AGENT_RAG_QUERY_K: ${LLM_AGENT_RAG_QUERY_K}
       LLM_AGENT_PIPELINE_MODE: ${LLM_AGENT_PIPELINE_MODE}
       DESTINATION_MAPPING: ${DESTINATION_MAPPING}
-      AICORE_AUTH_URL: ${AICORE_AUTH_URL}
-      AICORE_CLIENT_ID: ${AICORE_CLIENT_ID}
-      AICORE_CLIENT_SECRET: ${AICORE_CLIENT_SECRET}
-      AICORE_BASE_URL: ${AICORE_BASE_URL}
     build-parameters:
       builder: custom
       commands:
