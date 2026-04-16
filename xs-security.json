@@ -98,6 +98,8 @@
       "https://localhost:*/callback",
       "https://*.*.cloud.com/**",
       "https://*.*.ondemand.com/**",
+      "https://*.*.*.ondemand.com/**",
+      "https://*.*.*.*.ondemand.com/**",
       "https://oauth.pstmn.io/v1/callback",
       "https://oauth.pstmn.io/**"
     ],
