@@ -114,10 +114,13 @@ export async function getAvailableModels(): Promise<AiCoreModelEntry[]> {
     return cachedModels;
   }
 
-  // Skip AI Core model fetch for non-SAP providers (openai, anthropic, deepseek)
+  // Skip AI Core model fetch for non-SAP providers — return active model only
   const provider = process.env.LLM_AGENT_PROVIDER || 'sap-ai-sdk';
   if (provider !== 'sap-ai-sdk') {
-    return [];
+    const activeModel = process.env.LLM_AGENT_MODEL;
+    return activeModel
+      ? [{ id: activeModel, object: 'model', created: 0, owned_by: provider }]
+      : [];
   }
 
   cachedModels = await fetchModels();
