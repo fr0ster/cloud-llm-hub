@@ -48,6 +48,7 @@ sk.json
 !xs-security.json
 !**/xs-security.json
 !**/package.json
+!srv/tool-intents.json
 
 # Submodules (exclude from this branch, keep folder for other branches)
 submodules/llm-agent/
