@@ -1,5 +1,9 @@
 {
   "authenticationMethod": "route",
+  "logout": {
+    "logoutEndpoint": "/logout",
+    "logoutPage": "/chat/webapp/index.html"
+  },
   "routes": [
     {
       "source": "^/v1/(.*)$",

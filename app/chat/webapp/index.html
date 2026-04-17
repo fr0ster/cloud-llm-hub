@@ -32,6 +32,8 @@
         button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
         #clear-btn { color: #ff5555; border-color: #552222; padding: 0 15px; font-size: 13px; }
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
+        #logout-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; margin-left: auto; }
+        #logout-btn:hover:not(:disabled) { background: #333; color: #fff; }
         .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
         .status-ready { color: #00ff00; }
         .status-error { color: #ff5555; }
@@ -165,6 +167,7 @@
             <button id="attach-btn" onclick="document.getElementById('quick-file-input').click()" title="Attach file to RAG" style="padding:0 12px;font-size:16px">&#x1F4CE;</button>
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
+            <button id="logout-btn" onclick="window.location.href='/logout'" title="Sign out">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
     </div>
