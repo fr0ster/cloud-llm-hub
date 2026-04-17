@@ -62,6 +62,7 @@
     "update:cline": "node tools/update-cline-connection.js",
     "update:cline:yaml": "node tools/update-cline-connection.js",
     "update:env": "node tools/update-default-env.js",
+    "generate:intents": "npx tsx tools/generate-tool-intents.ts",
     "sync:version": "node tools/sync-version.js",
     "bump:version": "node tools/bump-version.js",
     "version": "node tools/sync-version.js && git add mta.yaml",
