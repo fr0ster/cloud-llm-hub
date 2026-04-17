@@ -22,7 +22,6 @@ import {
   CompactHandlersGroup,
   HandlerExporter,
   HighLevelHandlersGroup,
-  LowLevelHandlersGroup,
   ReadOnlyHandlersGroup,
   SearchHandlersGroup,
   SystemHandlersGroup,
