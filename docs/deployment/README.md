@@ -135,9 +135,20 @@ cd .worktrees/<short-name>
 ../../tools/deploy.sh
 ```
 
-### 5. Add DEPLOY.md to the branch (optional)
+### 5. Create DEPLOY.md (required)
 
-Each deploy branch can have a `DEPLOY.md` with subaccount-specific notes. See active branches for examples.
+Each deploy branch **must** have a `DEPLOY.md` documenting:
+- Subaccount details, XSUAA subdomain
+- Routes (approuter + srv) and all endpoints
+- Mode, provider, model configuration
+- SAP destinations
+- Required secrets in `.env`
+- Branch-specific changes from main
+- Installation log (problems encountered and solutions)
+
+Copy template and fill in: `cp docs/deployment/templates/DEPLOY.md.template DEPLOY.md`
+
+After deploy, update DEPLOY.md with actual routes from `cf apps` output.
 
 ## Active deploy branches
 
@@ -145,7 +156,8 @@ Each deploy branch can have a `DEPLOY.md` with subaccount-specific notes. See ac
 |--------|-----------|------|---------|-------|
 | `deploy/acme-prod` | acme-subaccount | MCP + AI Core | Binding | Production |
 | `deploy/acme-prod-stg` | acme-subaccount | LLM-only | Binding | Staging, no MCP |
-| `deploy/acme-sandbox` | acme-sandbox | MCP + AI Core | Via .env | Shared AI Core from acme-prod |
+| `deploy/acme-sandbox` | acme-sandbox | MCP + AI Core | Via .env | Shared AI Core |
+| `deploy/customer-b` | cloud-llm-hub-acme2 (US21) | MCP + OpenAI | Disabled | gpt-5.4-pro, CLD |
 
 ## Quick Links
 
