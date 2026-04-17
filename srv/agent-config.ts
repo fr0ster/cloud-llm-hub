@@ -19,30 +19,13 @@
  * - LLM_AGENT_MODE: SmartAgent mode: 'smart' | 'pass' | 'hard' (default: 'smart')
  * - LLM_AGENT_MAX_ITERATIONS: Max tool loop iterations (default: 10)
  * - LLM_AGENT_RAG_TYPE: RAG backend: 'in-memory' | 'ollama' (default: 'in-memory')
- * - LLM_AGENT_EXPOSITION: Handler sets to expose (default: 'readonly,high')
+ * - LLM_AGENT_EXPOSITION: (deprecated — tool filtering now role-based via RAG)
  */
 
 import cds from '@sap/cds';
 
 export type SmartAgentMode = 'smart' | 'pass' | 'hard';
 export type RagType = 'in-memory' | 'ollama';
-
-/**
- * Handler set types matching @mcp-abap-adt/core exposition levels.
- * - readonly: Read*, Get* (read-only); auto-includes search + system
- * - high: Create*, Update*, Delete*, Get* (high-level CRUD)
- * - low: *Low — Lock, Unlock, Activate, Check, Validate (low-level ADT ops)
- * - compact: Handler* — unified facade
- * - search: SearchObject, GetObjectsList, GetObjectsByType
- * - system: GetWhereUsed, GetTypeInfo, Runtime*, etc.
- */
-export type HandlerSet =
-  | 'readonly'
-  | 'high'
-  | 'low'
-  | 'compact'
-  | 'search'
-  | 'system';
 
 export type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
@@ -104,9 +87,6 @@ export interface AgentConfig {
     /** RAG backend type */
     ragType: RagType;
 
-    /** Handler sets to expose (filters which MCP tools are available to the agent) */
-    exposition: HandlerSet[];
-
     /** Max recent messages to include from client history (older excluded, available via RAG) */
     historyRecencyWindow?: number;
 
@@ -163,26 +143,6 @@ export function loadAgentConfig(): AgentConfig {
   );
   const ragType = (process.env.LLM_AGENT_RAG_TYPE || 'in-memory') as RagType;
 
-  // Handler set exposition (which MCP tool groups to expose)
-  const expositionRaw = process.env.LLM_AGENT_EXPOSITION || 'readonly,high';
-  const validSets = new Set<HandlerSet>([
-    'readonly',
-    'high',
-    'low',
-    'compact',
-    'search',
-    'system',
-  ]);
-  const exposition = expositionRaw
-    .split(',')
-    .map((s) => s.trim().toLowerCase() as HandlerSet)
-    .filter((s) => validSets.has(s));
-  // Auto-include search + system when readonly is present (matches mcp-abap-adt behavior)
-  if (exposition.includes('readonly')) {
-    if (!exposition.includes('search')) exposition.push('search');
-    if (!exposition.includes('system')) exposition.push('system');
-  }
-
   // History recency window (max recent messages from client history)
   const historyRecencyWindowRaw = process.env.LLM_AGENT_HISTORY_RECENCY_WINDOW;
   const historyRecencyWindow = historyRecencyWindowRaw
@@ -213,7 +173,6 @@ export function loadAgentConfig(): AgentConfig {
       mode,
       maxIterations,
       ragType,
-      exposition,
       historyRecencyWindow,
       ragQueryK,
     },
@@ -227,7 +186,6 @@ export function loadAgentConfig(): AgentConfig {
     agentMode: config.agent.mode,
     maxIterations: config.agent.maxIterations,
     ragType: config.agent.ragType,
-    exposition: config.agent.exposition,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
   });
 

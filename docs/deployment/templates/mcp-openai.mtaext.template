@@ -32,7 +32,6 @@ parameters:
   LLM_AGENT_RAG_TYPE: "vector"
 
   # Handler sets to expose
-  LLM_AGENT_EXPOSITION: "readonly,high"
 
   # History recency window
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"

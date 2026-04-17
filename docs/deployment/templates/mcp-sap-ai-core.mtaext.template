@@ -37,7 +37,6 @@ parameters:
   LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
 
   # Handler sets to expose (readonly, high, low, compact, search, system)
-  LLM_AGENT_EXPOSITION: "readonly,high"
 
   # History recency window (only last N messages sent to LLM, older via RAG)
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
