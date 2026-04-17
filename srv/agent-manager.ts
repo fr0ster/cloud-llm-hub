@@ -623,6 +623,40 @@ async function vectorizeTools(
     return { name: t.name, text: t.text };
   });
 
+  // Enrich CRUD tool descriptions with related operation context.
+  // E.g., UpdateClass mentions "use after CreateClass" so vector search
+  // on "create class" also matches UpdateClass. Workaround until
+  // mcp-abap-adt#66 adds this to tool descriptions natively.
+  // Applied after cache lookup — appended to both cached and uncached text.
+  const toolNameSet = new Set(basicEntries.map((t) => t.name));
+  for (const t of toolEntries) {
+    const m = t.name.match(/^(Create|Update|Read)(.+)$/);
+    if (!m) continue;
+    const [, verb, object] = m;
+    const hints: string[] = [];
+    if (verb === 'Create') {
+      if (toolNameSet.has(`Update${object}`))
+        hints.push(
+          `After creating, use Update${object} to add source code/content.`,
+        );
+      if (toolNameSet.has(`Activate${object}`))
+        hints.push(`Use Activate${object} to activate after creation.`);
+    } else if (verb === 'Update') {
+      if (toolNameSet.has(`Create${object}`))
+        hints.push(
+          `Use after Create${object} to add implementation, or to modify existing code.`,
+        );
+    } else if (verb === 'Read') {
+      if (toolNameSet.has(`Update${object}`))
+        hints.push(
+          `Use to inspect current source before Update${object}, or to verify after changes.`,
+        );
+    }
+    if (hints.length > 0) {
+      t.text += `\nWorkflow: ${hints.join(' ')}`;
+    }
+  }
+
   // Enrich uncached tools via LLM (only runs for tools missing from cache)
   if (uncachedTools.length > 0 && cache) {
     const config = getAgentConfig();
