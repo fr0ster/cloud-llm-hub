@@ -15,31 +15,43 @@ export type ExpositionLevel =
  *
  * Role hierarchy (each higher role includes all lower):
  * - MCP_Reader:    readonly + search
- * - MCP_Analyst:   + system
- * - MCP_Developer: + high (per-object granular CRUD)
- * - MCP_Full:      + compact (unified CRUD router, both sets available)
+ * - MCP_Analyst:   readonly + search + system
+ * - MCP_Developer: readonly + search + system + high
+ * - MCP_Full:      readonly + search + system + high + compact
  *
+ * Any MCP_* role grants at least readonly + search as base.
  * Roles are additive — users with multiple roles get the union of tool sets.
  */
 export function resolveExposition(userRoles: string[]): ExpositionLevel[] {
   const roles = new Set(userRoles);
 
-  // Base: readonly + search for any authenticated user with MCP_Reader
-  if (!roles.has('MCP_Reader')) {
-    return [];
-  }
+  // Any MCP role grants base access
+  const hasMcpRole =
+    roles.has('MCP_Reader') ||
+    roles.has('MCP_Analyst') ||
+    roles.has('MCP_Developer') ||
+    roles.has('MCP_Full');
 
+  if (!hasMcpRole) return [];
+
+  // Base: readonly + search for any MCP role
   const exposition: ExpositionLevel[] = ['readonly', 'search'];
 
-  if (roles.has('MCP_Analyst')) {
+  // Analyst adds system; Developer includes Analyst level
+  if (
+    roles.has('MCP_Analyst') ||
+    roles.has('MCP_Developer') ||
+    roles.has('MCP_Full')
+  ) {
     exposition.push('system');
   }
 
-  if (roles.has('MCP_Developer')) {
+  // Developer adds high; Full includes Developer level
+  if (roles.has('MCP_Developer') || roles.has('MCP_Full')) {
     exposition.push('high');
   }
 
-  // MCP_Full adds compact on top of high — both sets available
+  // Full adds compact
   if (roles.has('MCP_Full')) {
     exposition.push('compact');
   }
