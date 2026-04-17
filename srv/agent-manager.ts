@@ -15,6 +15,7 @@
  * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
@@ -225,6 +226,32 @@ function getToolExpositionMap(): Map<string, string> {
   });
 
   return toolExpositionMap;
+}
+
+// ---------------------------------------------------------------------------
+// Per-request connection override via AsyncLocalStorage
+// ---------------------------------------------------------------------------
+// SmartAgent uses a shared connection (service user) for all requests.
+// When x-sap-login/x-sap-password headers are present, a per-request
+// connection is created and stored in ALS. callToolHandler reads from ALS
+// and uses per-request connection instead of shared one.
+// ---------------------------------------------------------------------------
+
+type AbapConnectionLike = import('@mcp-abap-adt/interfaces').IAbapConnection;
+
+const connectionALS = new AsyncLocalStorage<{
+  connection: AbapConnectionLike;
+  context: HandlerContext;
+}>();
+
+/**
+ * Set per-request connection for the current async context.
+ * All MCP tool calls in this async scope will use the given connection
+ * instead of the shared agent connection. Call before agent.process/streamProcess.
+ */
+export function setRequestConnection(connection: AbapConnectionLike): void {
+  const context: HandlerContext = { connection, logger: loggerAdapter };
+  connectionALS.enterWith({ connection, context });
 }
 
 import { createConnection } from './connections/connectionFactory';
@@ -1067,14 +1094,29 @@ async function buildEmbeddedMcpAdapter(
       if (!handler) {
         throw new Error(`Unknown MCP tool: ${name}`);
       }
+      // Per-request connection override: if ALS has a connection, use it
+      // instead of the shared agent connection (service user).
+      const requestScope = connectionALS.getStore();
+      const effectiveContext = requestScope?.context ?? context;
+
+      // For closure-based handlers, temporarily swap group.context
+      // so they pick up per-request connection.
+      let prevGroupContexts: HandlerContext[] | undefined;
       try {
+        if (requestScope && handlerGroups) {
+          prevGroupContexts = handlerGroups.map((g) => g.context);
+          for (const g of handlerGroups) {
+            g.context = effectiveContext;
+          }
+        }
+
         // Handlers from HandlerExporter have two signatures:
         // - length >= 2: (context, args) => ... (direct handlers)
         // - length === 1: (args) => ... (closure-based, uses group.context)
         // Match BaseMcpServer.registerHandlers() logic (line 283-301)
         const toolCall =
           handler.length >= 2
-            ? handler(context, args)
+            ? handler(effectiveContext, args)
             : (handler as unknown as (a: typeof args) => unknown)(args);
 
         // Timeout: prevent hanging when SAP system doesn't respond (e.g. after destination switch)
@@ -1104,6 +1146,7 @@ async function buildEmbeddedMcpAdapter(
           args: JSON.stringify(args).slice(0, 300),
           resultLength: resultStr.length,
           resultPreview: resultStr.slice(0, 500),
+          connectionOverride: !!requestScope,
         });
         return result;
       } catch (err) {
@@ -1113,6 +1156,13 @@ async function buildEmbeddedMcpAdapter(
           error: err instanceof Error ? err.message : String(err),
         });
         throw err;
+      } finally {
+        // Restore shared group.context after per-request override
+        if (prevGroupContexts && handlerGroups) {
+          for (let i = 0; i < handlerGroups.length; i++) {
+            handlerGroups[i].context = prevGroupContexts[i];
+          }
+        }
       }
     },
   });
