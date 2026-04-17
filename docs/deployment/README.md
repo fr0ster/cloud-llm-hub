@@ -135,9 +135,20 @@ cd .worktrees/<short-name>
 ../../tools/deploy.sh
 ```
 
-### 5. Add DEPLOY.md to the branch (optional)
+### 5. Create DEPLOY.md (required)
 
-Each deploy branch can have a `DEPLOY.md` with subaccount-specific notes. See active branches for examples.
+Each deploy branch **must** have a `DEPLOY.md` documenting:
+- Subaccount details, XSUAA subdomain
+- Routes (approuter + srv) and all endpoints
+- Mode, provider, model configuration
+- SAP destinations
+- Required secrets in `.env`
+- Branch-specific changes from main
+- Installation log (problems encountered and solutions)
+
+Copy template and fill in: `cp docs/deployment/templates/DEPLOY.md.template DEPLOY.md`
+
+After deploy, update DEPLOY.md with actual routes from `cf apps` output.
 
 ## Active deploy branches
 
@@ -145,7 +156,8 @@ Each deploy branch can have a `DEPLOY.md` with subaccount-specific notes. See ac
 |--------|-----------|------|---------|-------|
 | `deploy/ai-applications` | ai-applications-6efrmk2a | MCP + AI Core | Binding | Production |
 | `deploy/ai-applications-stg` | ai-applications-6efrmk2a | LLM-only | Binding | Staging, no MCP |
-| `deploy/epam-sap-mcp` | epam-sap-mcp-450kjhsb | MCP + AI Core | Via .env | Shared AI Core from ai-applications |
+| `deploy/epam-sap-mcp` | epam-sap-mcp-450kjhsb | MCP + AI Core | Via .env | Shared AI Core |
+| `deploy/nvcr` | cloud-llm-hub-4wmgo71p (US21) | MCP + OpenAI | Disabled | gpt-5.4-pro, DS4 |
 
 ## Quick Links
 
