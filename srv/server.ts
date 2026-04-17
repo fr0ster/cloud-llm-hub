@@ -271,21 +271,31 @@ cds.on('bootstrap', (app: Application) => {
   const [context, , auth] = cds.middlewares.before;
   const wrappedAuth = createBasicToBearerMiddleware(auth);
 
-  app.use(
-    '/mcp',
-    context,
-    wrappedAuth,
-    (_req: Request, res: Response, next: NextFunction) => {
-      if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
-        res.status(401).json({
-          error: 'Unauthorized',
-          message: 'Missing or invalid Authorization header',
-        });
-        return;
-      }
-      next();
-    },
-  );
+  const MCP_ROLES = ['MCP_Reader', 'MCP_Analyst', 'MCP_Developer', 'MCP_Full'];
+
+  /** Auth + role check middleware: user must be authenticated AND have at least one MCP_* role */
+  const requireMcpRole = (_req: Request, res: Response, next: NextFunction) => {
+    const user = cds.context?.user;
+    if (!user || user.is('anonymous')) {
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Missing or invalid Authorization header',
+      });
+      return;
+    }
+    const hasRole = MCP_ROLES.some((role) => user.is(role));
+    if (!hasRole) {
+      res.status(403).json({
+        error: 'Forbidden',
+        message:
+          'Access denied: user has no MCP roles. Assign MCP_Reader, MCP_Analyst, MCP_Developer, or MCP_Full role collection.',
+      });
+      return;
+    }
+    next();
+  };
+
+  app.use('/mcp', context, wrappedAuth, requireMcpRole);
 
   // Request logger for debugging
   app.use(
@@ -353,22 +363,8 @@ cds.on('bootstrap', (app: Application) => {
   // OpenAI-compatible endpoints (/v1/*)
   // -------------------------------------------------------------------
 
-  // Reuse CAP auth middleware for /v1 routes (same as /mcp above)
-  app.use(
-    '/v1',
-    context,
-    wrappedAuth,
-    (_req: Request, res: Response, next: NextFunction) => {
-      if (!cds.context?.user || cds.context?.user?.is('anonymous')) {
-        res.status(401).json({
-          error: 'Unauthorized',
-          message: 'Missing or invalid Authorization header',
-        });
-        return;
-      }
-      next();
-    },
-  );
+  // Reuse CAP auth + role check for /v1 routes
+  app.use('/v1', context, wrappedAuth, requireMcpRole);
 
   // CORS preflight for /v1/* routes
   app.options('/v1/*', (_req: Request, res: Response) => {
