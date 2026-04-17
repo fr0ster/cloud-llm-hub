@@ -28,8 +28,11 @@ import {
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
+  setRequestConnection,
   setSessionDestination,
 } from './agent-manager';
+import { createConnection } from './connections/connectionFactory';
+import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableModels } from './lib/ai-core-models';
 import { resolveExposition } from './lib/exposition';
 
@@ -607,6 +610,44 @@ export async function handleChatCompletions(
           contextChars: ragContext.length,
         });
       }
+    }
+  }
+
+  // Per-request credential override: create connection with user's credentials
+  const sapLogin = req.headers['x-sap-login'] as string | undefined;
+  const sapPassword = req.headers['x-sap-password'] as string | undefined;
+  let requestConnection:
+    | import('@mcp-abap-adt/interfaces').IAbapConnection
+    | undefined;
+
+  if (sapLogin && sapPassword && destAfter) {
+    try {
+      const resolved = await resolveDestinationSapConfig(
+        destAfter,
+        req.headers.authorization?.replace('Bearer ', ''),
+      );
+      const sapConfig = { ...resolved.sapConfig };
+      sapConfig.authType = 'basic';
+      sapConfig.username = sapLogin;
+      sapConfig.password = sapPassword;
+      const conn = createConnection({
+        sapConfig,
+        destinationName: resolved.destinationName,
+      });
+      await conn.connect();
+      requestConnection =
+        conn as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection;
+      setRequestConnection(requestConnection);
+      log.info('Per-request connection created', {
+        destination: destAfter,
+        username: sapLogin,
+      });
+    } catch (connErr) {
+      log.warn('Per-request connection failed, using shared', {
+        destination: destAfter,
+        username: sapLogin,
+        error: connErr instanceof Error ? connErr.message : String(connErr),
+      });
     }
   }
 
