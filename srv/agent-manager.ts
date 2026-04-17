@@ -114,12 +114,28 @@ export class ExpositionFilteringRag implements IRag {
       ragFilter?: { namespace?: string; exposition?: string[] };
     },
   ) {
+    const log = cds.log('tool-rag');
     const allowedExpositions = options?.ragFilter?.exposition;
     // Strip ragFilter — tools use exposition metadata, not namespace
     const { ragFilter: _unused, ...cleanOpts } = options ?? {};
     // Request more results to compensate for post-filtering
     const overFetchK = allowedExpositions ? k * 3 : k;
     const result = await this.inner.query(embedding, overFetchK, cleanOpts);
+
+    if (result.ok) {
+      log.debug('RAG tool search results', {
+        k,
+        overFetchK,
+        totalResults: result.value.length,
+        exposition: allowedExpositions ?? 'all',
+        results: result.value.map((r) => ({
+          id: r.metadata.id,
+          score: Math.round(r.score * 1000) / 1000,
+          exposition: r.metadata.exposition ?? 'none',
+        })),
+      });
+    }
+
     if (!result.ok || !allowedExpositions) return result;
 
     // Post-filter by allowed exposition levels
@@ -128,6 +144,21 @@ export class ExpositionFilteringRag implements IRag {
       (r) =>
         !r.metadata.exposition || allowed.has(r.metadata.exposition as string),
     );
+
+    if (filtered.length < result.value.length) {
+      log.debug('RAG tool search filtered by exposition', {
+        before: result.value.length,
+        after: filtered.length,
+        removed: result.value
+          .filter(
+            (r) =>
+              r.metadata.exposition &&
+              !allowed.has(r.metadata.exposition as string),
+          )
+          .map((r) => r.metadata.id),
+      });
+    }
+
     return { ok: true as const, value: filtered.slice(0, k) };
   }
 
@@ -633,23 +664,28 @@ async function vectorizeTools(
     const m = t.name.match(/^(Create|Update|Read)(.+)$/);
     if (!m) continue;
     const [, verb, object] = m;
+    // Split camelCase object name for BM25 matching (e.g., "Class" stays "class",
+    // "BehaviorDefinition" → "behavior definition")
+    const objWords = object.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
     const hints: string[] = [];
     if (verb === 'Create') {
       if (toolNameSet.has(`Update${object}`))
         hints.push(
-          `After creating, use Update${object} to add source code/content.`,
+          `After creating, use Update${object} (update ${objWords}) to add source code/content.`,
         );
       if (toolNameSet.has(`Activate${object}`))
-        hints.push(`Use Activate${object} to activate after creation.`);
+        hints.push(
+          `Use Activate${object} (activate ${objWords}) to activate after creation.`,
+        );
     } else if (verb === 'Update') {
       if (toolNameSet.has(`Create${object}`))
         hints.push(
-          `Use after Create${object} to add implementation, or to modify existing code.`,
+          `Also used after create ${objWords} (Create${object}) to add implementation.`,
         );
     } else if (verb === 'Read') {
       if (toolNameSet.has(`Update${object}`))
         hints.push(
-          `Use to inspect current source before Update${object}, or to verify after changes.`,
+          `Use to inspect current ${objWords} before update (Update${object}), or verify after create (Create${object}).`,
         );
     }
     if (hints.length > 0) {
