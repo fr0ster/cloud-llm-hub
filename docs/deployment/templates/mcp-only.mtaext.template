@@ -16,7 +16,6 @@ parameters:
   LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"        # BTP destination name
 
   # Handler sets to expose (readonly, high, low, compact, search, system)
-  LLM_AGENT_EXPOSITION: "readonly,high"
 
   # System-to-destination mapping (optional, for multi-system routing)
   # DESTINATION_MAPPING: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"

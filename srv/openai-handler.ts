@@ -20,6 +20,7 @@ import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   clearSessionTopic,
+  ExpositionFilteringRag,
   getCollectionRegistry,
   getCurrentClassifierModel,
   getCurrentDestination,
@@ -27,10 +28,10 @@ import {
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
-  NamespaceIgnoringRag,
   setSessionDestination,
 } from './agent-manager';
 import { getAvailableModels } from './lib/ai-core-models';
+import { resolveExposition } from './lib/exposition';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
 function getUserId(): string {
@@ -507,7 +508,7 @@ export async function handleChatCompletions(
   })();
 
   // Inject dynamic RAG collections per-request (save/restore pattern).
-  // Wrapped with NamespaceIgnoringRag because ragFilter namespace won't match.
+  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
   // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
   const deps = (handle.agent as any).deps;
   const originalRagStores = deps.ragStores;
@@ -518,7 +519,7 @@ export async function handleChatCompletions(
     if (injected.length > 0) {
       const mergedStores = { ...originalRagStores };
       for (const [key, store] of Object.entries(dynamicStores)) {
-        mergedStores[key] = new NamespaceIgnoringRag(store);
+        mergedStores[key] = new ExpositionFilteringRag(store);
       }
       deps.ragStores = mergedStores;
       log.info('Dynamic RAG collections injected', {
@@ -562,7 +563,7 @@ export async function handleChatCompletions(
       for (const colId of ragCollectionIds) {
         const store = registry.getRagStore(colId);
         if (!store) continue;
-        const result = await new NamespaceIgnoringRag(store).query(
+        const result = await new ExpositionFilteringRag(store).query(
           embedding,
           3,
         );
@@ -618,9 +619,16 @@ export async function handleChatCompletions(
       // for ClineClientAdapter detection and external tool_call routing.
       externalTools,
       sessionId,
-      // RAG namespace isolation: user + destination — results from DEV don't leak into QAS
-      // Tools store wrapped with NamespaceIgnoringRag to skip this filter.
-      ragFilter: { namespace: `${userId}:${destAfter}` },
+      // RAG filtering: namespace isolates user/destination data, exposition filters tools by role.
+      // ExpositionFilteringRag strips namespace (tools have none) and post-filters by exposition.
+      ragFilter: {
+        namespace: `${userId}:${destAfter}`,
+        exposition: resolveExposition(
+          ['MCP_Reader', 'MCP_Analyst', 'MCP_Developer', 'MCP_Full'].filter(
+            (role) => cds.context?.user?.is?.(role) ?? false,
+          ),
+        ),
+      },
       trace: { traceId },
       sessionLogger: {
         logStep(name: string, data: unknown) {

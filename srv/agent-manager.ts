@@ -18,7 +18,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
-import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
+import {
+  CompactHandlersGroup,
+  HandlerExporter,
+  HighLevelHandlersGroup,
+  LowLevelHandlersGroup,
+  ReadOnlyHandlersGroup,
+  SearchHandlersGroup,
+  SystemHandlersGroup,
+} from '@mcp-abap-adt/core/handlers';
 import { setSystemContext } from '@mcp-abap-adt/core/utils';
 import {
   CircuitBreaker,
@@ -79,14 +87,16 @@ function getToolIntentCache(): typeof toolIntentCache {
 }
 
 // ---------------------------------------------------------------------------
-// NamespaceIgnoringRag — wraps tools store to strip ragFilter on query
+// ExpositionFilteringRag — wraps tools store with role-based filtering
 // ---------------------------------------------------------------------------
-// Tools are vectorized without namespace. When opts include ragFilter (for
-// user/destination isolation), the inner store would filter out all tool records.
-// This wrapper strips ragFilter before querying, so tools always return results.
+// Tools are vectorized with metadata.exposition = group name (readonly, high, etc.).
+// On query, strips the user/destination namespace (tools have no namespace) but
+// post-filters results to only return tools whose exposition is in the caller's
+// allowed set (from ragFilter.exposition).
+// If ragFilter.exposition is not set, all tools are returned (backwards compat).
 // ---------------------------------------------------------------------------
 
-export class NamespaceIgnoringRag implements IRag {
+export class ExpositionFilteringRag implements IRag {
   constructor(private inner: IRag) {}
 
   async upsert(
@@ -100,16 +110,91 @@ export class NamespaceIgnoringRag implements IRag {
   async query(
     embedding: IQueryEmbedding,
     k: number,
-    options?: { signal?: AbortSignal; ragFilter?: { namespace?: string } },
+    options?: {
+      signal?: AbortSignal;
+      ragFilter?: { namespace?: string; exposition?: string[] };
+    },
   ) {
-    // Strip ragFilter — tools have no namespace
+    const allowedExpositions = options?.ragFilter?.exposition;
+    // Strip ragFilter — tools use exposition metadata, not namespace
     const { ragFilter: _unused, ...cleanOpts } = options ?? {};
-    return this.inner.query(embedding, k, cleanOpts);
+    // Request more results to compensate for post-filtering
+    const overFetchK = allowedExpositions ? k * 3 : k;
+    const result = await this.inner.query(embedding, overFetchK, cleanOpts);
+    if (!result.ok || !allowedExpositions) return result;
+
+    // Post-filter by allowed exposition levels
+    const allowed = new Set(allowedExpositions);
+    const filtered = result.value.filter(
+      (r) =>
+        !r.metadata.exposition || allowed.has(r.metadata.exposition as string),
+    );
+    return { ok: true as const, value: filtered.slice(0, k) };
   }
 
   async healthCheck() {
     return this.inner.healthCheck();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tool → exposition group mapping
+// ---------------------------------------------------------------------------
+// Each tool belongs to exactly one exposition group (readonly, high, search,
+// system, compact). Built once at startup from handler group instances.
+// Used to tag tools in RAG metadata for role-based filtering.
+// ---------------------------------------------------------------------------
+
+let toolExpositionMap: Map<string, string> | null = null;
+
+function getToolExpositionMap(): Map<string, string> {
+  if (toolExpositionMap) return toolExpositionMap;
+
+  const noopCtx: HandlerContext = {
+    connection: null as unknown as HandlerContext['connection'],
+    logger: loggerAdapter,
+  };
+
+  const groups: Array<{
+    name: string;
+    group: {
+      getHandlers(): Array<{
+        toolDefinition?: { name: string };
+        definition?: { name: string };
+      }>;
+    };
+  }> = [
+    { name: 'readonly', group: new ReadOnlyHandlersGroup(noopCtx) },
+    { name: 'high', group: new HighLevelHandlersGroup(noopCtx) },
+    { name: 'search', group: new SearchHandlersGroup(noopCtx) },
+    { name: 'system', group: new SystemHandlersGroup(noopCtx) },
+    { name: 'compact', group: new CompactHandlersGroup(noopCtx) },
+  ];
+
+  toolExpositionMap = new Map();
+  for (const { name, group } of groups) {
+    for (const h of group.getHandlers()) {
+      const toolName = h.toolDefinition?.name ?? h.definition?.name ?? '';
+      if (toolName && !toolExpositionMap.has(toolName)) {
+        toolExpositionMap.set(toolName, name);
+      }
+    }
+  }
+
+  cds.log('agent-manager').info('Built tool exposition map', {
+    total: toolExpositionMap.size,
+    readonly: [...toolExpositionMap.values()].filter((v) => v === 'readonly')
+      .length,
+    high: [...toolExpositionMap.values()].filter((v) => v === 'high').length,
+    search: [...toolExpositionMap.values()].filter((v) => v === 'search')
+      .length,
+    system: [...toolExpositionMap.values()].filter((v) => v === 'system')
+      .length,
+    compact: [...toolExpositionMap.values()].filter((v) => v === 'compact')
+      .length,
+  });
+
+  return toolExpositionMap;
 }
 
 import { createConnection } from './connections/connectionFactory';
@@ -454,7 +539,7 @@ function getOrCreateEmbedder(resourceGroup?: string): {
 /** Create a tools RAG store (one per destination), wrapped to ignore ragFilter */
 function createToolsRagStore(resourceGroup?: string): IRag {
   const embedding = getOrCreateEmbedder(resourceGroup);
-  if (!embedding) return new NamespaceIgnoringRag(new InMemoryRag());
+  if (!embedding) return new ExpositionFilteringRag(new InMemoryRag());
 
   const config = getAgentConfig();
   const helperLlm = makeLlm(
@@ -482,7 +567,7 @@ function createToolsRagStore(resourceGroup?: string): IRag {
     new InMemoryRag(),
     embedding.breaker,
   );
-  return new NamespaceIgnoringRag(fallback);
+  return new ExpositionFilteringRag(fallback);
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +670,11 @@ async function vectorizeTools(
 
     const failed: typeof pending = [];
     for (const t of pending) {
-      const res = await toolsStore.upsert(t.text, { id: `tool:${t.name}` });
+      const expo = getToolExpositionMap().get(t.name);
+      const res = await toolsStore.upsert(t.text, {
+        id: `tool:${t.name}`,
+        ...(expo ? { exposition: expo } : {}),
+      });
       if (res.ok) {
         totalOk++;
       } else {
@@ -847,16 +936,16 @@ async function buildEmbeddedMcpAdapter(
     });
   }
 
-  // Get MCP tool handlers filtered by configured exposition (handler sets)
-  const config = getAgentConfig();
-  const expo = config.agent.exposition;
+  // Load ALL tool handlers — role-based filtering happens at RAG query time
+  // via ExpositionFilteringRag (post-filter by exposition metadata).
+  // Low-level handlers excluded: they duplicate high-level with finer granularity.
   const exporter = new HandlerExporter({
-    includeReadOnly: expo.includes('readonly'),
-    includeHighLevel: expo.includes('high'),
-    includeLowLevel: expo.includes('low'),
-    includeCompact: expo.includes('compact'),
-    includeSystem: expo.includes('system'),
-    includeSearch: expo.includes('search'),
+    includeReadOnly: true,
+    includeHighLevel: true,
+    includeLowLevel: false,
+    includeCompact: true,
+    includeSystem: true,
+    includeSearch: true,
     logger: loggerAdapter,
   });
 
@@ -1081,7 +1170,7 @@ async function buildAgentForDestination(
     .withClientAdapter(new ClineClientAdapter());
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
-  // Tools store wrapped with NamespaceIgnoringRag to strip ragFilter
+  // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
   // (tools have no namespace, but opts carry ragFilter for user isolation).
 
   const handle = await builder.build();

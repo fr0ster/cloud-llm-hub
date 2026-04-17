@@ -35,7 +35,6 @@ parameters:
   LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
 
   # Handler sets
-  LLM_AGENT_EXPOSITION: "readonly,high"
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
   # IMPORTANT: Unique hostname for staging (different from production!)
