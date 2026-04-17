@@ -32,6 +32,8 @@
         button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
         #clear-btn { color: #ff5555; border-color: #552222; padding: 0 15px; font-size: 13px; }
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
+        #export-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
+        #export-btn:hover:not(:disabled) { background: #333; color: #fff; }
         #logout-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; margin-left: auto; }
         #logout-btn:hover:not(:disabled) { background: #333; color: #fff; }
         .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
@@ -162,11 +164,12 @@
         <div id="chat-window"></div>
         <div class="input-area">
             <input type="text" id="user-input" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
-                   onkeydown="if(event.key === 'Enter') sendMessage()">
+                   onkeydown="handleInputKeydown(event)">
             <input type="file" id="quick-file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="display:none" onchange="handleQuickFileAttach(this)">
             <button id="attach-btn" onclick="document.getElementById('quick-file-input').click()" title="Attach file to RAG" style="padding:0 12px;font-size:16px">&#x1F4CE;</button>
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
+            <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
             <button id="logout-btn" onclick="window.location.href='/logout'" title="Sign out">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
@@ -184,6 +187,11 @@
         let conversationHistory = [];
         let ready = false;
         const sessionId = 'ui-' + crypto.randomUUID();
+
+        // Input history (Up/Down arrow navigation like terminal)
+        const inputHistory = [];
+        let historyIndex = -1;
+        let historyDraft = '';
 
         // ---------------------------------------------------------------
         // File artifact helpers
@@ -698,6 +706,27 @@
             chatWindow.innerHTML = '';
         }
 
+        function exportSessionLog() {
+            if (conversationHistory.length === 0) { alert('No messages to export.'); return; }
+            const model = getSelectedModel() || 'unknown';
+            const dest = getSelectedDestination() || 'none';
+            const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            let md = `# Session Log\n\n`;
+            md += `- **Session:** ${sessionId}\n`;
+            md += `- **Model:** ${model}\n`;
+            md += `- **Destination:** ${dest}\n`;
+            md += `- **Exported:** ${new Date().toISOString()}\n\n---\n\n`;
+            for (const msg of conversationHistory) {
+                const role = msg.role === 'user' ? 'User' : 'Assistant';
+                md += `## ${role}\n\n${msg.content}\n\n---\n\n`;
+            }
+            const blob = new Blob([md], { type: 'text/markdown' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `session-${ts}.md`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
 
         function getSelectedModel() {
             return modelSelect.value || undefined;
@@ -730,10 +759,39 @@
             destSelect.disabled = false;
         }
 
+        function handleInputKeydown(event) {
+            if (event.key === 'Enter') { sendMessage(); return; }
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                if (inputHistory.length === 0) return;
+                if (historyIndex === -1) historyDraft = userInput.value;
+                if (historyIndex < inputHistory.length - 1) {
+                    historyIndex++;
+                    userInput.value = inputHistory[inputHistory.length - 1 - historyIndex];
+                }
+                return;
+            }
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                if (historyIndex <= 0) {
+                    historyIndex = -1;
+                    userInput.value = historyDraft;
+                    return;
+                }
+                historyIndex--;
+                userInput.value = inputHistory[inputHistory.length - 1 - historyIndex];
+                return;
+            }
+        }
+
         async function sendMessage() {
             if (!ready) return;
             const text = userInput.value.trim();
             if (!text) return;
+
+            inputHistory.push(text);
+            historyIndex = -1;
+            historyDraft = '';
 
             chatWindow.innerHTML += `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`;
             userInput.value = '';
