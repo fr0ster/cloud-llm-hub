@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [5.2.0] - 2026-04-17
+
+### Added
+- **Role-based tool filtering** — MCP tools filtered per-request via RAG exposition metadata. Each tool tagged with its group (readonly/high/search/system/compact), `ExpositionFilteringRag` post-filters query results based on caller's MCP roles:
+  - MCP_Reader → readonly + search (29 tools)
+  - MCP_Analyst → + system (57 tools)
+  - MCP_Developer → + high (175 tools)
+  - MCP_Full → + compact (197 tools)
+- **MCP role check middleware** — `/v1/*` and `/mcp/*` endpoints require at least one MCP_* role (MCP_Reader, MCP_Analyst, MCP_Developer, MCP_Full). Returns 403 Forbidden without roles, 401 without auth.
+- **Tool intent cache** (`srv/tool-intents.json`) — pre-generated IntentEnricher results for 291 tools, committed to git. Eliminates ~5 min of LLM calls (gpt-4.1-mini × 291) on every restart.
+- **`npm run generate:intents`** — regenerate intent cache after `@mcp-abap-adt/core` version bump.
+
+### Changed
+- **`LLM_AGENT_EXPOSITION` deprecated** — removed from mta.yaml, agent-config, and all .mtaext templates. Tool visibility now entirely role-driven, not deployment config.
+- **`NamespaceIgnoringRag` → `ExpositionFilteringRag`** — wraps tools RAG store with role-based post-filtering instead of ignoring all filters.
+- **SmartAgent loads all tools** — HandlerExporter includes readonly+high+compact+system+search (excludes low which duplicates high). Filtering happens at RAG query time, not at tool loading.
+- **VectorRag uses `NoopDocumentEnricher`** — enrichment done in `vectorizeTools()` from cache, not via LLM at upsert time.
+
 ## [4.0.11] - 2026-04-14
 
 ### Added
