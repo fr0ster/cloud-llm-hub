@@ -182,7 +182,7 @@
         </form>
         <div id="chat-window"></div>
         <div class="input-area">
-            <input type="text" id="user-input" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
+            <input type="text" id="user-input" autocomplete="off" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
                    onkeydown="handleInputKeydown(event)">
             <input type="file" id="quick-file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="display:none" onchange="handleQuickFileAttach(this)">
             <button id="attach-btn" onclick="document.getElementById('quick-file-input').click()" title="Attach file to RAG" style="padding:0 12px;font-size:16px">&#x1F4CE;</button>
