@@ -34,6 +34,9 @@
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
         #export-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
         #export-btn:hover:not(:disabled) { background: #333; color: #fff; }
+        #sap-creds-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
+        #sap-creds-btn:hover:not(:disabled) { background: #333; color: #fff; }
+        #sap-creds-btn.active { color: #00ff00; border-color: #00ff00; }
         #logout-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; margin-left: auto; }
         #logout-btn:hover:not(:disabled) { background: #333; color: #fff; }
         .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
@@ -161,6 +164,22 @@
             </div>
           </div>
         </div>
+        <div id="sap-creds-dialog" style="display:none;background:#0a0a0a;border:1px solid #333;padding:12px;border-radius:4px;margin-bottom:8px">
+          <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">SAP SYSTEM CREDENTIALS</div>
+          <div style="font-size:11px;color:#666;margin-bottom:8px">Override destination service user with your SAP credentials. Leave empty to use default.</div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="color:#888;font-size:12px;width:70px">Login:</label>
+            <input id="sap-login" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <label style="color:#888;font-size:12px;width:70px">Password:</label>
+            <input id="sap-password" type="password" placeholder="SAP password" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="applySapCreds()" style="font-size:11px;padding:2px 12px">APPLY</button>
+            <button onclick="clearSapCreds()" style="font-size:11px;padding:2px 12px;color:#ff5555;border-color:#552222">CLEAR</button>
+          </div>
+        </div>
         <div id="chat-window"></div>
         <div class="input-area">
             <input type="text" id="user-input" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
@@ -170,6 +189,7 @@
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
             <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
+            <button id="sap-creds-btn" onclick="toggleSapCredsDialog()" title="SAP system credentials (override destination user)">SAP</button>
             <button id="logout-btn" onclick="window.location.href='/logout'" title="Sign out">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
@@ -192,6 +212,46 @@
         const inputHistory = [];
         let historyIndex = -1;
         let historyDraft = '';
+
+        // SAP credential override (x-sap-login / x-sap-password)
+        let sapCredsLogin = '';
+        let sapCredsPassword = '';
+
+        function toggleSapCredsDialog() {
+            const dialog = document.getElementById('sap-creds-dialog');
+            dialog.style.display = dialog.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function applySapCreds() {
+            sapCredsLogin = document.getElementById('sap-login').value.trim();
+            sapCredsPassword = document.getElementById('sap-password').value;
+            const btn = document.getElementById('sap-creds-btn');
+            if (sapCredsLogin && sapCredsPassword) {
+                btn.classList.add('active');
+                btn.title = `SAP credentials: ${sapCredsLogin}`;
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'SAP system credentials (override destination user)';
+            }
+            document.getElementById('sap-creds-dialog').style.display = 'none';
+        }
+
+        function clearSapCreds() {
+            sapCredsLogin = '';
+            sapCredsPassword = '';
+            document.getElementById('sap-login').value = '';
+            document.getElementById('sap-password').value = '';
+            document.getElementById('sap-creds-btn').classList.remove('active');
+            document.getElementById('sap-creds-btn').title = 'SAP system credentials (override destination user)';
+            document.getElementById('sap-creds-dialog').style.display = 'none';
+        }
+
+        function getSapCredHeaders() {
+            if (sapCredsLogin && sapCredsPassword) {
+                return { 'X-SAP-Login': sapCredsLogin, 'X-SAP-Password': sapCredsPassword };
+            }
+            return {};
+        }
 
         // ---------------------------------------------------------------
         // File artifact helpers
@@ -850,7 +910,7 @@
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally
-                const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId };
+                const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId, ...getSapCredHeaders() };
                 const selectedDest = getSelectedDestination();
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
