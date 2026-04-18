@@ -169,11 +169,11 @@
           <div style="font-size:11px;color:#666;margin-bottom:8px">Override destination service user with your SAP credentials. Leave empty to use default.</div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
             <label style="color:#888;font-size:12px;width:70px">Login:</label>
-            <input id="sap-login" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            <input id="sap-login" name="sap-login" autocomplete="section-sap username" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <label style="color:#888;font-size:12px;width:70px">Password:</label>
-            <input id="sap-password" type="password" placeholder="SAP password" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            <input id="sap-password" name="sap-password" type="password" autocomplete="section-sap current-password" placeholder="SAP password" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
           </div>
           <div style="display:flex;gap:8px">
             <button onclick="applySapCreds()" style="font-size:11px;padding:2px 12px">APPLY</button>
