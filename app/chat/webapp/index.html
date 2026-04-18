@@ -164,22 +164,22 @@
             </div>
           </div>
         </div>
-        <div id="sap-creds-dialog" style="display:none;background:#0a0a0a;border:1px solid #333;padding:12px;border-radius:4px;margin-bottom:8px">
+        <form id="sap-creds-dialog" autocomplete="off" onsubmit="applySapCreds(); return false;" style="display:none;background:#0a0a0a;border:1px solid #333;padding:12px;border-radius:4px;margin-bottom:8px">
           <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">SAP SYSTEM CREDENTIALS</div>
           <div style="font-size:11px;color:#666;margin-bottom:8px">Override destination service user with your SAP credentials. Leave empty to use default.</div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
             <label style="color:#888;font-size:12px;width:70px">Login:</label>
-            <input id="sap-login" name="sap-login" autocomplete="section-sap username" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            <input id="sap-login" autocomplete="off" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <label style="color:#888;font-size:12px;width:70px">Password:</label>
-            <input id="sap-password" name="sap-password" type="password" autocomplete="section-sap current-password" placeholder="SAP password" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            <input id="sap-password" type="password" autocomplete="off" placeholder="SAP password" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
           </div>
           <div style="display:flex;gap:8px">
-            <button onclick="applySapCreds()" style="font-size:11px;padding:2px 12px">APPLY</button>
-            <button onclick="clearSapCreds()" style="font-size:11px;padding:2px 12px;color:#ff5555;border-color:#552222">CLEAR</button>
+            <button type="submit" style="font-size:11px;padding:2px 12px">APPLY</button>
+            <button type="button" onclick="clearSapCreds()" style="font-size:11px;padding:2px 12px;color:#ff5555;border-color:#552222">CLEAR</button>
           </div>
-        </div>
+        </form>
         <div id="chat-window"></div>
         <div class="input-area">
             <input type="text" id="user-input" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
