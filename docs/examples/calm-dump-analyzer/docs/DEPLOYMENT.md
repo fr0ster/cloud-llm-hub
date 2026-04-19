@@ -7,9 +7,29 @@
 - `cf` CLI and `mbt` build tool installed
 - Node.js 20+
 
-## Step 1: Create BTP Destination for cloud-llm-hub
+## Step 1: Obtain cloud-llm-hub credentials (analyst tier)
 
-In BTP Cockpit → Connectivity → Destinations, create a destination:
+This analyzer calls `RuntimeGetDumpById` (a system-tier tool), which requires the `MCP_Analyst` role. The `cloud-llm-hub` deployment provides a dedicated xsuaa instance — `cloud-llm-hub-analyst-consumer` — whose `client_credentials` tokens carry `MCP_Analyst` by default.
+
+> **Do NOT** use credentials from the main `cloud-llm-hub-auth` xsuaa. Its default authority is only `MCP_Reader`, which excludes `RuntimeGetDumpById` from the RAG tool pool and produces empty analyses.
+
+Create a service key on the cloud-llm-hub side (same CF org/space where cloud-llm-hub-srv runs):
+
+```bash
+cf create-service-key cloud-llm-hub-analyst-consumer calm-analyzer-key
+cf service-key cloud-llm-hub-analyst-consumer calm-analyzer-key
+```
+
+Record these fields from the output:
+- `clientid`
+- `clientsecret`
+- `url` (the xsuaa token endpoint host — use it as `<url>/oauth/token` below)
+
+> **Key lifecycle:** `binding-secret` xsuaa keys are tied to the specific key name. If you later delete `calm-analyzer-key`, the secret dies with it. Rotate by creating a NEW key first, swapping the credentials, verifying, THEN deleting the old one. See `docs/LESSONS_LEARNED.md` for the full story.
+
+## Step 2: Create BTP Destination for cloud-llm-hub
+
+In BTP Cockpit → Connectivity → Destinations, create a destination using the credentials from Step 1:
 
 | Field | Value |
 |-------|-------|
@@ -17,14 +37,14 @@ In BTP Cockpit → Connectivity → Destinations, create a destination:
 | Type | HTTP |
 | URL | `https://<cloud-llm-hub-srv>.cfapps.<region>.hana.ondemand.com` |
 | Proxy Type | Internet |
-| Authentication | OAuth2JWTBearer (same subaccount) or OAuth2ClientCredentials (cross-subaccount) |
-| Token Service URL | `https://<xsuaa>.authentication.<region>.hana.ondemand.com/oauth/token` |
-| Client ID | From cloud-llm-hub XSUAA service key |
-| Client Secret | From cloud-llm-hub XSUAA service key |
+| Authentication | OAuth2ClientCredentials |
+| Client ID | `<clientid>` from `calm-analyzer-key` |
+| Client Secret | `<clientsecret>` from `calm-analyzer-key` |
+| Token Service URL | `<url>/oauth/token` from `calm-analyzer-key` |
 
-If both services are in the same subaccount and CF space, you can use `NoAuthentication` for simplicity.
+If calm-dump-analyzer and cloud-llm-hub live in the **same** CF space, `NoAuthentication` is NOT sufficient here — role enforcement happens inside cloud-llm-hub, and without a valid JWT carrying `MCP_Analyst`, requests will be rejected with 403.
 
-## Step 2: Configure Deployment Parameters
+## Step 3: Configure Deployment Parameters
 
 ```bash
 cp .mtaext.example .mtaext
@@ -43,10 +63,10 @@ parameters:
   SAP_DESTINATION: "S4HANA_E19"
 ```
 
-- `CLOUD_LLM_HUB_DESTINATION` — the BTP Destination created in Step 1
+- `CLOUD_LLM_HUB_DESTINATION` — the BTP Destination created in Step 2
 - `SAP_DESTINATION` — the SAP system destination (passed to cloud-llm-hub as `x-sap-destination` header so the SmartAgent knows which system to analyze)
 
-## Step 3: Build and Deploy
+## Step 4: Build and Deploy
 
 ```bash
 npm install
@@ -55,7 +75,7 @@ npx mbt build
 cf deploy mta_archives/calm-dump-analyzer_1.0.0.mtar -e .mtaext
 ```
 
-## Step 4: Verify
+## Step 5: Verify
 
 ```bash
 # Get the service URL

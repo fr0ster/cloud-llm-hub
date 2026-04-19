@@ -70,6 +70,53 @@ ABAP Unit Test Service
 
 See [DESIGN.md](DESIGN.md) for full design document.
 
+## Outbound connection to cloud-llm-hub (developer tier)
+
+This service uses CRUD-level tools on cloud-llm-hub (`CreateUnitTest`, `UpdateUnitTest`, object activation), which require the `MCP_Developer` role. The `cloud-llm-hub` deployment provides a dedicated xsuaa instance for this — `cloud-llm-hub-developer-consumer` — whose `client_credentials` tokens carry `MCP_Developer` by default.
+
+> **Do NOT** use credentials from the main `cloud-llm-hub-auth` xsuaa (only `MCP_Reader`) or from `cloud-llm-hub-analyst-consumer` (only up to `MCP_Analyst`). Either will cause CRUD tools to be filtered out of the RAG pool and test generation/deployment will fail.
+
+### 1. Create a service key on the cloud-llm-hub side
+
+Target the CF org/space where `cloud-llm-hub-srv` runs:
+
+```bash
+cf create-service-key cloud-llm-hub-developer-consumer abap-test-service-key
+cf service-key cloud-llm-hub-developer-consumer abap-test-service-key
+```
+
+Record from the output:
+- `clientid`
+- `clientsecret`
+- `url` (the xsuaa token endpoint host — use as `<url>/oauth/token`)
+
+> **Key lifecycle warning.** `binding-secret` xsuaa keys are tied to the specific key name. Deleting `abap-test-service-key` invalidates its secret everywhere it was propagated. Rotate by creating a NEW key first, swapping credentials, verifying, THEN deleting the old key. See [`docs/LESSONS_LEARNED.md`](../../LESSONS_LEARNED.md) → xsuaa binding-secret lifecycle entry.
+
+### 2. Create BTP Destination `CLOUD_LLM_HUB`
+
+In BTP Cockpit → Connectivity → Destinations:
+
+| Field | Value |
+|-------|-------|
+| Name | `CLOUD_LLM_HUB` |
+| Type | HTTP |
+| URL | `https://<cloud-llm-hub-srv>.cfapps.<region>.hana.ondemand.com` |
+| Proxy Type | Internet |
+| Authentication | OAuth2ClientCredentials |
+| Client ID | `<clientid>` from `abap-test-service-key` |
+| Client Secret | `<clientsecret>` from `abap-test-service-key` |
+| Token Service URL | `<url>/oauth/token` from `abap-test-service-key` |
+
+### 3. Wire the destination into this service's deployment
+
+Set the destination name as an env var on this service (via `cf set-env` or `.mtaext`):
+
+```
+CLOUD_LLM_HUB_DESTINATION=CLOUD_LLM_HUB
+```
+
+`SAP_DESTINATION` is passed forward to cloud-llm-hub via the `x-sap-destination` header — it must match a destination that cloud-llm-hub itself can resolve (e.g. `S4HANA_E19`).
+
 ## Authentication
 
 The service uses XSUAA (OAuth 2.0) with Basic-to-Bearer middleware. Two authentication methods are available.
