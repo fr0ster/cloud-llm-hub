@@ -721,6 +721,7 @@ export async function handleChatCompletions(
         prompt_tokens: number;
         completion_tokens: number;
         total_tokens: number;
+        models?: Record<string, unknown>;
       } | null = null;
 
       log.info('Starting streamProcess', { sessionId });
@@ -794,9 +795,8 @@ export async function handleChatCompletions(
                 prompt_tokens: v.usage.promptTokens,
                 completion_tokens: v.usage.completionTokens,
                 total_tokens: v.usage.totalTokens,
-                // biome-ignore lint/suspicious/noExplicitAny: extended usage with per-model breakdown
                 ...(v.usage.models ? { models: v.usage.models } : {}),
-              } as any;
+              };
             }
             if (v.timing) {
               log.info('Pipeline stage timing', { timing: v.timing });
@@ -951,8 +951,8 @@ export async function handleChatCompletions(
       }
 
       // Log per-model token breakdown if available
-      if (lastUsage && (lastUsage as any).models) {
-        log.info('Token usage by model', (lastUsage as any).models);
+      if (lastUsage?.models) {
+        log.info('Token usage by model', lastUsage.models);
       }
 
       log.info('Stream completed', {
@@ -1038,11 +1038,10 @@ export async function handleChatCompletions(
         prompt_tokens: result.value.usage.promptTokens,
         completion_tokens: result.value.usage.completionTokens,
         total_tokens: result.value.usage.totalTokens,
-        // biome-ignore lint/suspicious/noExplicitAny: extended usage with per-model breakdown
         ...(result.value.usage.models
           ? { models: result.value.usage.models }
           : {}),
-      } as any;
+      };
     }
 
     // Save conversation turn to server session

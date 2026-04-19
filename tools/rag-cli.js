@@ -159,7 +159,7 @@ async function cmdDocs(args) {
     const tags = d.metadata?.tags ? ` [${d.metadata.tags.join(', ')}]` : '';
     const source = d.metadata?.source ? ` (${d.metadata.source})` : '';
     console.log(`\n--- ${d.id}${tags}${source} ---`);
-    console.log(d.text.length > 200 ? d.text.slice(0, 200) + '...' : d.text);
+    console.log(d.text.length > 200 ? `${d.text.slice(0, 200)}...` : d.text);
     console.log(`  created: ${d.createdAt}`);
   }
   console.log(`\nTotal: ${data.total} documents`);
@@ -277,7 +277,6 @@ async function cmdBatch(args) {
 
   for (let i = 0; i < files.length; i++) {
     const filePath = files[i];
-    const filename = path.basename(filePath);
     const relPath = path.relative(dirPath, filePath);
     const content = fs.readFileSync(filePath, 'utf-8');
 
@@ -337,7 +336,7 @@ async function cmdSearch(args) {
   for (let i = 0; i < data.results.length; i++) {
     const r = data.results[i];
     console.log(`\n#${i + 1} (score: ${r.score.toFixed(4)})`);
-    console.log(r.text.length > 300 ? r.text.slice(0, 300) + '...' : r.text);
+    console.log(r.text.length > 300 ? `${r.text.slice(0, 300)}...` : r.text);
   }
 }
 
