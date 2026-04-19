@@ -136,6 +136,24 @@ resources:
     parameters:
       service: connectivity
       service-plan: lite
+  - name: cloud-llm-hub-analyst-consumer
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security-analyst-consumer.json
+      config:
+        xsappname: cloud-llm-hub-analyst-consumer-${space-guid}
+        tenant-mode: shared
+  - name: cloud-llm-hub-developer-consumer
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security-developer-consumer.json
+      config:
+        xsappname: cloud-llm-hub-developer-consumer-${space-guid}
+        tenant-mode: shared
   - name: cloud-llm-hub-ai-core
     type: org.cloudfoundry.managed-service
     active: false

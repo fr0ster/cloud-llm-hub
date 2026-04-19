@@ -8,11 +8,17 @@
     },
     {
       "name": "$XSAPPNAME.MCP_Analyst",
-      "description": "Read access plus system analysis tools (SQL, AST, profiling, dumps)"
+      "description": "Read access plus system analysis tools (SQL, AST, profiling, dumps)",
+      "grant-as-authority-to-apps": [
+        "cloud-llm-hub-analyst-consumer-00000000-0000-0000-0000-000000000000!t000001"
+      ]
     },
     {
       "name": "$XSAPPNAME.MCP_Developer",
-      "description": "CRUD operations via compact handlers plus read and system tools"
+      "description": "CRUD operations via compact handlers plus read and system tools",
+      "grant-as-authority-to-apps": [
+        "cloud-llm-hub-developer-consumer-00000000-0000-0000-0000-000000000000!t000001"
+      ]
     },
     {
       "name": "$XSAPPNAME.MCP_Full",

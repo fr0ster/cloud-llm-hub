@@ -1,0 +1,14 @@
+{
+  "xsappname": "cloud-llm-hub-developer-consumer-{space-guid}",
+  "tenant-mode": "shared",
+  "scopes": [],
+  "authorities": [
+    "cloud-llm-hub-00000000-0000-0000-0000-000000000000!t000001.MCP_Developer"
+  ],
+  "oauth2-configuration": {
+    "credential-types": ["binding-secret", "x509"],
+    "grant-types": ["client_credentials"],
+    "token-validity": 86400,
+    "refresh-token-validity": 2592000
+  }
+}

@@ -108,28 +108,34 @@ GET /odata/v4/auth/CheckRoles?required=["MCP_Connector"]
 
 ```
 GET /odata/v4/mcp-proxy/ProbeDestination(destination='S4HANA')
-GET /odata/v4/auth/CheckRoles(required=['MCP_Connector'])
+GET /odata/v4/auth/CheckRoles(required=['MCP_Reader'])
 ```
 
 ### 3. Arrays in Query Parameters
 
 Arrays are passed as JSON, URL encoded:
 
-- ✅ Correct: `?required=["MCP_Connector"]` (JSON array)
-- ✅ URL encoded: `?required=%5B%22MCP_Connector%22%5D`
-- ❌ Incorrect: `?required=MCP_Connector`
-- ❌ Incorrect: `?required[]=MCP_Connector`
+- ✅ Correct: `?required=["MCP_Reader"]` (JSON array)
+- ✅ URL encoded: `?required=%5B%22MCP_Reader%22%5D`
+- ❌ Incorrect: `?required=MCP_Reader`
+- ❌ Incorrect: `?required[]=MCP_Reader`
 
 ### 4. Authorization
 
 #### Development (Basic Auth)
 
 ```bash
-# alice (MCP_Connector + MCP_Admin)
+# alice (MCP_Full + MCP_Developer + MCP_Analyst + MCP_Reader)
 Authorization: Basic YWxpY2U6
 
-# bob (MCP_Connector)
+# bob (MCP_Developer + MCP_Analyst + MCP_Reader)
 Authorization: Basic Ym9iOg==
+
+# carol (MCP_Analyst + MCP_Reader)
+Authorization: Basic Y2Fyb2w6
+
+# dave (MCP_Reader)
+Authorization: Basic ZGF2ZTo=
 ```
 
 #### Production (Bearer JWT)
@@ -138,7 +144,7 @@ Authorization: Basic Ym9iOg==
 Authorization: Bearer <JWT_TOKEN>
 ```
 
-The JWT token must contain scope `MCP_Connector` (or `MCP_Admin`).
+The JWT token must contain one of: `MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`.
 
 ## Examples for Postman
 
@@ -257,7 +263,7 @@ curl -X POST \
 ### Error: "Malformed parameters"
 
 - Check array format: must be JSON array `["role"]`, not string `"role"`
-- URL encode arrays: `["MCP_Connector"]` → `%5B%22MCP_Connector%22%5D`
+- URL encode arrays: `["MCP_Reader"]` → `%5B%22MCP_Reader%22%5D`
 
 ## Endpoint Summary
 
@@ -277,3 +283,31 @@ curl -X POST \
 - Direct Express routes: `/mcp/stream/http`
 - No OData prefix required
 - Used for streaming protocols (NDJSON)
+
+## Service-to-Service Authentication (consumer xsuaa tiers)
+
+For service-to-service integrations via `client_credentials`, the deployment provisions three xsuaa instances, each granting a different default scope. External consumer services obtain credentials from whichever tier matches their required tool set.
+
+| xsuaa instance | Default scope | Exposition tiers | Example consumer |
+|---|---|---|---|
+| `cloud-llm-hub-auth` (main) | `MCP_Reader` (via `authorities`) | `readonly + search` | Read-only monitors, health checks |
+| `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | [`calm-dump-analyzer`](../examples/calm-dump-analyzer/) (dumps, SQL, profiling) |
+| `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | [`test-management`](../examples/test-management/) (CreateUnitTest, activation) |
+
+`MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add a new entry to `grant-as-authority-to-apps` on the `MCP_Full` scope in `xs-security.json`, provision the consumer xsuaa via `mta.yaml`, and document the exception in `docs/LESSONS_LEARNED.md`.
+
+### How the cross-app scope grant works
+
+1. Main `xs-security.json` lists the consumer xsappnames (with `!tNNN` tenant suffix) in `grant-as-authority-to-apps` on the `MCP_Analyst` and `MCP_Developer` scopes.
+2. Each consumer `xs-security-<tier>-consumer.json` declares the provider scope in `authorities` using the form `<provider-xsappname-with-!tNNN>.<Scope>`.
+3. At `client_credentials` token issuance time, xsuaa inlines the granted scope into the consumer's token. `cloud-llm-hub-srv` accepts it unchanged because `@sap/xssec` validates signature, `iss`, and `aud` within the shared subaccount trust boundary — all three are common across xsuaa instances in the same subaccount.
+
+The exact descriptor syntax (and the non-obvious `!tNNN` suffix requirement) is documented in [`docs/lessons/2026-04-19-xsuaa-cross-app-grants.md`](../lessons/2026-04-19-xsuaa-cross-app-grants.md).
+
+### Porting to another subaccount
+
+`xs-security.json`, `xs-security-analyst-consumer.json`, and `xs-security-developer-consumer.json` contain hardcoded references that are **subaccount-specific**:
+- The space-guid portion of the main xsappname (e.g. `cloud-llm-hub-00000000`)
+- The tenant suffix `!tNNN` (e.g. `!t000001`)
+
+When merging `feat/consumer-xsuaa-instances` into a different deploy branch (`deploy/acme-prod`, `deploy/customer-b`, etc.), replace these values with the target subaccount's equivalents in all three descriptor files. The `!tNNN` suffix is subaccount-wide — obtain it from a service key's `xsappname` field on the target subaccount.
