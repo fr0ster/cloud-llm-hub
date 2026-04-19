@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.0.1] - 2026-04-19
+
+### Added
+- **`DEPLOY.md` in all deploy branches** — routes, endpoints, mode, AI Core config, prerequisites and deploy commands for `acme-prod`, `acme-prod-stg`, `acme-sandbox`, `customer-b`.
+
+### Fixed
+- **Biome lint warnings** cleaned up:
+  - `srv/openai-handler.ts` — typed `lastUsage` with optional `models` field, removed `as any` casts and redundant suppression comments
+  - `srv/rag-collections.ts` — narrowed `storagePath` via local const, removed non-null assertion
+  - `tools/rag-cli.js` — template literals for string interpolation, removed unused `filename` variable
+
 ## [5.2.0] - 2026-04-17
 
 ### Added
