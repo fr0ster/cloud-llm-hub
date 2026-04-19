@@ -420,9 +420,10 @@ export class CollectionRegistry {
 
   /** Load collections from disk and re-vectorize documents */
   async loadFromDisk(): Promise<void> {
-    if (!this.storagePath) return;
+    const storagePath = this.storagePath;
+    if (!storagePath) return;
 
-    const metaPath = path.join(this.storagePath, 'collections.json');
+    const metaPath = path.join(storagePath, 'collections.json');
     if (!fs.existsSync(metaPath)) return;
 
     try {
@@ -436,7 +437,7 @@ export class CollectionRegistry {
         const documents = new Map<string, RagDocument>();
 
         // Load documents
-        const docsDir = path.join(this.storagePath!, meta.id);
+        const docsDir = path.join(storagePath, meta.id);
         if (fs.existsSync(docsDir)) {
           const files = fs
             .readdirSync(docsDir)
