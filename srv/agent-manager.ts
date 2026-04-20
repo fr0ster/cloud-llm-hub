@@ -314,7 +314,6 @@ let llmOnlyHandle: SmartAgentHandle | null = null;
 
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
-let currentClassifierModel: string | null = null;
 /** Shared LLM instances (updated on model switch) */
 let sharedMainLlm: ReturnType<typeof makeLlm> | null = null;
 let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
@@ -330,11 +329,7 @@ export function getCurrentModel(): string {
 }
 
 export function getCurrentClassifierModel(): string {
-  return (
-    currentClassifierModel ||
-    process.env.LLM_AGENT_CLASSIFIER_MODEL ||
-    getAgentConfig().llm.model
-  );
+  return process.env.LLM_AGENT_CLASSIFIER_MODEL || getAgentConfig().llm.model;
 }
 
 /** Shared metrics instance (survives agent rebuilds) */
@@ -1365,7 +1360,6 @@ async function buildLlmOnlyAgent(
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
-  requestedClassifierModel?: string,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
@@ -1401,36 +1395,6 @@ export async function getSmartAgent(
       from: activeModel,
       to: requestedModel,
       agentCount: agentHandles.size,
-    });
-  }
-
-  // --- Classifier model hot-swap ---
-  if (
-    requestedClassifierModel &&
-    requestedClassifierModel !== getCurrentClassifierModel() &&
-    agentHandles.size > 0
-  ) {
-    const newClassifier = makeLlm(
-      {
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
-        baseURL: config.llm.baseUrl,
-        model: requestedClassifierModel,
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-      },
-      0.3,
-    );
-    for (const handle of agentHandles.values()) {
-      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
-      (handle.agent as any).deps.classifierLlm = newClassifier;
-    }
-    sharedClassifierLlm = newClassifier;
-    const prev = getCurrentClassifierModel();
-    currentClassifierModel = requestedClassifierModel;
-    log.info('Classifier model hot-swapped', {
-      from: prev,
-      to: requestedClassifierModel,
     });
   }
 
