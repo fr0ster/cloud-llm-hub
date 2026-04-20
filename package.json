@@ -58,6 +58,7 @@
     "deploy": "cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services -f",
     "cf-env": "cf e cloud-llm-hub-srv",
     "get:key": "node tools/get-mcp-service-key.js",
+    "proxy": "bash scripts/start-proxy.sh",
     "get:token": "npx mcp-auth --service-key ./mcp.json --output ./service.env --type xsuaa",
     "update:cline": "node tools/update-cline-connection.js",
     "update:cline:yaml": "node tools/update-cline-connection.js",
