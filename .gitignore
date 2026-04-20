@@ -69,6 +69,7 @@ docs/architecture/VIDEO_PLAN_15MIN.pdf
 docs/superpowers/
 docs/tutorials/*.pdf
 .codex
+.claude/
 docs/deployment/*.pdf
 docs/examples/calm-dump-analyzer/mta_archives/*
 .mtaext.no_aicore
