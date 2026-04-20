@@ -270,6 +270,7 @@ interface OpenAIChatRequest {
   stream_options?: { include_usage?: boolean };
   tools?: unknown[];
   model?: string;
+  /** Accepted but ignored — classifier is driven by LLM_AGENT_CLASSIFIER_MODEL env var. */
   classifier_model?: string;
   // Backward-compatible no-op: llm-agent 5.15 no longer exposes a presentation stage.
   presentation_model?: string;
@@ -444,10 +445,6 @@ export async function handleChatCompletions(
   // Get SmartAgent handle (pass model/destination to trigger switch if needed)
   const requestedModel =
     typeof body.model === 'string' ? body.model : undefined;
-  const requestedClassifierModel =
-    typeof body.classifier_model === 'string'
-      ? body.classifier_model
-      : undefined;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
@@ -464,11 +461,7 @@ export async function handleChatCompletions(
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent(
-      requestedModel,
-      requestedDestination,
-      requestedClassifierModel,
-    );
+    handle = await getSmartAgent(requestedModel, requestedDestination);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
