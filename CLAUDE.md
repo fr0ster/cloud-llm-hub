@@ -148,3 +148,7 @@ npm run update:env         # Fetch BTP credentials to default-env.json
 npm run bump:version       # Bump semantic version
 npm run sync:version       # Sync version to mta.yaml
 ```
+
+## Plans and Specs
+
+After a plan under `docs/superpowers/plans/` or spec under `docs/superpowers/specs/` has been fully implemented, delete the file. Keep only active (not yet implemented) plans and specs in the tree — implementation history lives in git, not in these directories.
