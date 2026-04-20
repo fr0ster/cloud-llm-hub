@@ -321,12 +321,19 @@ export async function createMCPServerForRequest(
       exposition,
     });
 
-    // Create NEW EmbeddableMcpServer with injected connection
-    // EmbeddableMcpServer handles proper handler registration via BaseMcpServer
+    // Create NEW EmbeddableMcpServer with injected connection.
+    // systemType derived from destination.proxyType so onprem-only tools
+    // (e.g., CreateProgram) are exposed when the destination is a Cloud
+    // Connector link, without mutating the global SAP_SYSTEM_TYPE env var.
+    const systemType: 'onprem' | 'cloud' =
+      (destination?.proxyType ?? '').toLowerCase() === 'onpremise'
+        ? 'onprem'
+        : 'cloud';
     const mcpServer = new EmbeddableMcpServer({
       connection,
       logger: loggerAdapter,
       exposition,
+      systemType,
     });
 
     // Create NEW transport for this request
