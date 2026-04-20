@@ -8,6 +8,10 @@ Ready-to-paste prompts for the Cloud LLM Hub chat UI. Prompts are grouped by int
 | [analysis/](analysis/) | Developers, support | Understanding code, diagnosing runtime issues |
 | [security/](security/) | Security, auditors | Static checks for common ABAP vulnerabilities |
 | [development/](development/) | Developers | Generating skeletons (CDS, class, RAP BO) |
+| [quick/](quick/) | Everyone | Short one-shot prompts (1-3 lines), numbered per theme — for dialog demos |
+| [scenarios/](scenarios/) | Facilitators | Opening prompts for multi-turn dialogs; AI drives the rest |
+| [with-skills/](with-skills/) | Everyone | Short prompts paired with a skill reference for structured output |
+| [with-rag/](with-rag/) | Everyone | Prompts that rely on pre-indexed RAG content |
 
 ## Prompt File Format
 
