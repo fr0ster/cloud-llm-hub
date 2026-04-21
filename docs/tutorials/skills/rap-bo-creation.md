@@ -29,6 +29,16 @@ The LLM may fabricate successful results without actually executing MCP tools. I
 - If prompt token count is suspiciously low, treat the response as fake and redo the step.
 - Start a fresh conversation session after each layer or every ~10 messages.
 
+## Corrections and RAG Freshness
+
+The RAG collection retains the first indexed version of every artifact. Stale versions get retrieved alongside current ones and can reintroduce errors the user has already corrected.
+
+**Rule:** whenever the user corrects an artifact (DDL, field name, mapping, BDEF fragment), remind them explicitly:
+
+> "The previous version of `<object>` is still in the RAG collection. Please re-ingest the corrected version (MANAGE → collection → upload), then tell me to use the new one. Otherwise, later steps may retrieve the stale version."
+
+Do not proceed to index-dependent steps (activation of grouped CDS/BDEF, batch reads) until the user confirms re-ingestion.
+
 ## Object Creation Order
 
 Objects must be created and activated in this exact dependency order:
