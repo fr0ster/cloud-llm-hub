@@ -948,6 +948,17 @@ Activate tables before creating CDS views. Objects must be activated in dependen
 ### "Draft table missing admin fields"
 Add `"%admin" : include sych_bdl_draft_admin_inc;` to the draft table.
 
+### Corrected artifact still gets reused with the old version
+
+The RAG collection keeps the first version of every indexed artifact. If you fix an error (wrong field name, missing mapping, bad DDL), the stale version is still retrievable and later steps may pull it in.
+
+**Workaround — until the RAG correction layer ships:**
+
+1. After you correct an artifact, open MANAGE → collection.
+2. Delete the stale entry (or overwrite the file).
+3. Upload the corrected version.
+4. Tell the agent: *"I've re-ingested the corrected `<object>`. Use the new version from RAG."*
+
 ### Agent creates but doesn't activate
 After each creation step, you can ask: "Activate all inactive objects starting with Z##_" or "Activate Z##_R_MAT_ROOT".
 

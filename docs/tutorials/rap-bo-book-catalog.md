@@ -181,6 +181,22 @@ Save the plan file — you'll follow it step by step in Phase 4.
 
 > **The specification is a living document.** When SAP rejects something during implementation (wrong key, missing mapping, incorrect type), fix it in the specification first, then in the code. This keeps the spec and reality in sync. By the end, your draft specification will have evolved into an accurate final specification.
 
+### Re-ingest artifacts after any correction
+
+**Temporary workaround — until the RAG correction layer ships.**
+
+Whenever you correct a generated artifact (fix a DDL field, rename an object, change a mapping), the AI's prior (wrong) version is still in the RAG collection as an indexed artifact. Subsequent steps may retrieve the stale version and reproduce the mistake.
+
+After every correction:
+
+1. Take the corrected artifact (code, DDL, spec fragment).
+2. Open MANAGE panel → your working collection.
+3. Delete the stale entry (or overwrite the file if you upload by filename).
+4. Upload the corrected version.
+5. Tell the agent explicitly: *"I've re-ingested the corrected version of `<object>`. Use the new version from RAG, not the previous one."*
+
+Skip this and you will see the same mistake recur two or three steps later.
+
 ### Detecting hallucinated responses
 
 AI can fabricate successful results without actually executing tools. Watch for these red flags:
