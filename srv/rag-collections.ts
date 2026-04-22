@@ -12,15 +12,20 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { CircuitBreaker } from '@mcp-abap-adt/llm-agent';
 import {
-  FallbackRag,
+  type CallOptions,
   type IEmbedder,
   InMemoryRag,
   type IQueryEmbedding,
   type IRag,
+  type IRagBackendWriter,
+  type IRagEditor,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  type CircuitBreaker,
+  FallbackRag,
+} from '@mcp-abap-adt/llm-agent-server';
 import cds from '@sap/cds';
 
 // ---------------------------------------------------------------------------
@@ -66,7 +71,7 @@ export interface RagDocument {
 interface StoredCollection {
   meta: CollectionMeta;
   documents: Map<string, RagDocument>;
-  rag: IRag;
+  rag: RecencyBoostedRag;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +82,7 @@ interface StoredCollection {
 // This ensures semantically relevant AND recent documents rank higher.
 // ---------------------------------------------------------------------------
 
-class RecencyBoostedRag implements IRag {
+class RecencyBoostedRag implements IRag, IRagEditor {
   private inner: IRag;
   private recencyBoost: number;
   private halfLifeMs: number;
@@ -94,13 +99,34 @@ class RecencyBoostedRag implements IRag {
   async upsert(
     text: string,
     metadata: Record<string, unknown>,
-    options?: { signal?: AbortSignal },
+    options?: CallOptions,
   ) {
     // Stamp creation time in metadata for recency scoring
     if (!metadata._createdAtMs) {
       metadata._createdAtMs = Date.now();
     }
-    return this.inner.upsert(text, metadata, options);
+    const writer = this.inner.writer?.();
+    if (!writer) throw new Error('Inner RAG is not editable');
+    const { id: rawId, ...rest } = metadata;
+    const id = typeof rawId === 'string' ? rawId : '';
+    if (!id) throw new Error('metadata.id is required for upsert');
+    const res = await writer.upsertRaw(id, text, rest, options);
+    if (!res.ok) return res;
+    return { ok: true as const, value: { id } };
+  }
+
+  async deleteById(id: string, options?: CallOptions) {
+    const writer = this.inner.writer?.();
+    if (!writer) throw new Error('Inner RAG is not editable');
+    return writer.deleteByIdRaw(id, options);
+  }
+
+  async getById(id: string, options?: CallOptions) {
+    return this.inner.getById(id, options);
+  }
+
+  writer(): IRagBackendWriter | undefined {
+    return this.inner.writer?.();
   }
 
   async query(
@@ -198,7 +224,7 @@ export class CollectionRegistry {
   }
 
   /** Create a RAG store for the given backend type, wrapped with recency boost. */
-  private createRagStore(backend?: RagBackendType): IRag {
+  private createRagStore(backend?: RagBackendType): RecencyBoostedRag {
     const type = backend ?? this.defaultBackend;
     const factory = this.backends.get(type);
     if (!factory) {
@@ -456,7 +482,7 @@ export class CollectionRegistry {
                   namespace: meta.scope === 'global' ? 'global' : meta.owner,
                   ...doc.metadata,
                 })
-                .catch((err) => {
+                .catch((err: unknown) => {
                   this.log.warn('Re-vectorization failed', {
                     collection: meta.id,
                     doc: doc.id,
