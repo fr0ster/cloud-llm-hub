@@ -29,28 +29,33 @@ import {
 } from '@mcp-abap-adt/core/handlers';
 import { setSystemContext } from '@mcp-abap-adt/core/utils';
 import {
+  type CallOptions,
+  InMemoryRag,
+  IntentEnricher,
+  type IQueryEmbedding,
+  type IRag,
+  type IRagBackendWriter,
+  type IRagEditor,
+  NoopDocumentEnricher,
+  TranslatePreprocessor,
+  VectorRag,
+} from '@mcp-abap-adt/llm-agent';
+import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   ClineClientAdapter,
   FallbackLlmCallStrategy,
   FallbackRag,
   InMemoryMetrics,
-  InMemoryRag,
-  IntentEnricher,
-  type IQueryEmbedding,
-  type IRag,
   MCPClientWrapper,
   McpClientAdapter,
   makeLlm,
-  NoopDocumentEnricher,
-  OpenAiEmbedder,
   SessionManager,
   SmartAgentBuilder,
   type SmartAgentHandle,
   ToolCache,
-  TranslatePreprocessor,
-  VectorRag,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-server';
+import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 
 import { z } from 'zod';
@@ -96,15 +101,36 @@ function getToolIntentCache(): typeof toolIntentCache {
 // If ragFilter.exposition is not set, all tools are returned (backwards compat).
 // ---------------------------------------------------------------------------
 
-export class ExpositionFilteringRag implements IRag {
+export class ExpositionFilteringRag implements IRag, IRagEditor {
   constructor(private inner: IRag) {}
 
   async upsert(
     text: string,
     metadata: Record<string, unknown>,
-    options?: { signal?: AbortSignal },
+    options?: CallOptions,
   ) {
-    return this.inner.upsert(text, metadata, options);
+    const writer = this.inner.writer?.();
+    if (!writer) throw new Error('Inner RAG is not editable');
+    const { id: rawId, ...rest } = metadata;
+    const id = typeof rawId === 'string' ? rawId : '';
+    if (!id) throw new Error('metadata.id is required for upsert');
+    const res = await writer.upsertRaw(id, text, rest, options);
+    if (!res.ok) return res;
+    return { ok: true as const, value: { id } };
+  }
+
+  async deleteById(id: string, options?: CallOptions) {
+    const writer = this.inner.writer?.();
+    if (!writer) throw new Error('Inner RAG is not editable');
+    return writer.deleteByIdRaw(id, options);
+  }
+
+  async getById(id: string, options?: CallOptions) {
+    return this.inner.getById(id, options);
+  }
+
+  writer(): IRagBackendWriter | undefined {
+    return this.inner.writer?.();
   }
 
   async query(
@@ -347,7 +373,7 @@ export function getAgentMetrics() {
 /** Per-destination pre-built state for fast switching */
 export interface DestinationState {
   mcpAdapter: McpClientAdapter | null;
-  toolsRag: IRag;
+  toolsRag: ExpositionFilteringRag;
   toolCount: number;
   status: 'pending' | 'ready' | 'vectorizing' | 'error' | 'unreachable';
   error?: string;
@@ -589,7 +615,7 @@ function getOrCreateEmbedder(resourceGroup?: string): {
 }
 
 /** Create a tools RAG store (one per destination), wrapped to ignore ragFilter */
-function createToolsRagStore(resourceGroup?: string): IRag {
+function createToolsRagStore(resourceGroup?: string): ExpositionFilteringRag {
   const embedding = getOrCreateEmbedder(resourceGroup);
   if (!embedding) return new ExpositionFilteringRag(new InMemoryRag());
 
@@ -629,7 +655,7 @@ function createToolsRagStore(resourceGroup?: string): IRag {
 /** Vectorize MCP tools into a RAG store */
 async function vectorizeTools(
   mcpAdapter: McpClientAdapter,
-  toolsStore: IRag,
+  toolsStore: ExpositionFilteringRag,
   embedderBreaker: CircuitBreaker | null,
 ): Promise<{ ok: number; failed: number; total: number }> {
   const log = cds.log('agent-manager');
@@ -899,7 +925,7 @@ async function initBackgroundDestinations(): Promise<void> {
       if (!destinationStates.has(dest.name)) {
         destinationStates.set(dest.name, {
           mcpAdapter: null,
-          toolsRag: new InMemoryRag(),
+          toolsRag: new ExpositionFilteringRag(new InMemoryRag()),
           toolCount: 0,
           status: 'pending',
         });
@@ -1215,7 +1241,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
  */
 async function buildAgentForDestination(
   mcpAdapter: McpClientAdapter,
-  toolsRag: IRag,
+  toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
