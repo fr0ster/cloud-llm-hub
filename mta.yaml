@@ -88,8 +88,8 @@ modules:
     type: approuter.nodejs
     path: app/router
     parameters:
-      disk-quota: 256M
-      memory: 256M
+      disk-quota: 512M
+      memory: 512M
       routes:
         - route: ${APPROUTER_HOST}.${CF_LANDSCAPE}
     properties:
