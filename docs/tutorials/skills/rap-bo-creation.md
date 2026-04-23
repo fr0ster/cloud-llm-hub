@@ -11,6 +11,44 @@ tags: [sap, rap, abap, cds, bdef, draft, fiori]
 
 This skill covers creating a RAP managed BO with draft support on SAP S/4HANA on-premise systems. It documents constraints, common mistakes, and correct patterns discovered through testing.
 
+## Specification vs System — Never Mix Them
+
+Phases 1–3 of the tutorial produce **documents**: business requirements, technical specification, implementation plan. Phase 4 produces **system artifacts**: domains, tables, CDS views, BDEFs.
+
+The LLM must never mutate the system while the user is editing a document — and vice versa.
+
+**Rules:**
+
+- **"Update the specification", "adjust the spec", "fix the requirements"** → edit or regenerate the markdown file. **No `Create…`, `Update…`, `Activate…` tool calls against the system.**
+- **"Update the table", "change the domain", "adjust the field"** during Phase 4 → call MCP tools against the system AFTER confirming with the user which object and which change.
+- **The phrase "UPDATE TABLES" inside a document-editing request refers to the document section, not the database.** Do not run `UpdateTable` tools unless the user explicitly says "in the system" or the current phase is Phase 4 Implementation.
+- **When in doubt, ask.** One short question ("Do you want me to change the document or the system?") is cheaper than an un-undoable write against SAP.
+
+**If the user asks for a destructive or system-changing operation,** list the exact actions you plan to take (object names, tool calls) and wait for explicit "yes" before executing. This applies regardless of phase.
+
+## Package Enforcement
+
+Every ABAP object created in Phase 4 must live in the package the user specified (e.g. `TEST_##_BOOK`). Never fall back to `$TMP` silently.
+
+**Rules:**
+
+- **Never create objects in `$TMP` unless the user says so literally.** If the Create tool fails because the target package lacks a transport or is locked, report the error and stop. Do not "helpfully" retry in `$TMP` — that scatters objects across packages and breaks the deployment story.
+- **Every `Create…` call must include the target package parameter.** If the skill or plan says `TEST_##_BOOK`, pass that. If the user's prompt omits it, ask before creating.
+- **Verify package after batch creation.** `SearchObject` with `package=TEST_##_BOOK` should list exactly the objects you just created, nothing more, nothing less. If the count is higher, stray objects from $TMP or another package are polluting results.
+
+## Specification Completeness Check (before Phase 3)
+
+Before leaving Phase 2, the technical specification must pass this checklist:
+
+1. **Every persistent table field maps to a named Data Element** (e.g. `z##_e_title`), not a base ABAP type (`CHAR`, `STRING`, `INT4`). Base types only appear inside domain definitions, never in tables or CDS views.
+2. **Every Data Element references a Domain** (`z##_d_title`), not a base ABAP type directly, unless the field is intentionally domainless (audit fields like `abp_creation_tstmpl`).
+3. **Every Domain has a concrete type + length**. `string` without length, `CHAR` without length, `DEC` without precision — all broken. The spec must show `CHAR 40` / `NUMC 4` / `DEC 10,2` etc.
+4. **Domain ↔ Data Element names do not cross** (e.g. `Z##_E_FORMAT` must reference `Z##_D_FORMAT`, not `Z##_D_GENRE`). A cross indicates sloppy spec generation — fix before continuing.
+5. **Draft tables declared for every persistent table.** Missing draft tables cause BDEF activation to fail.
+6. **Composition vs association clearly distinguished.** Composition = lifecycle owner (parent deletes children). Association = reference. Getting this wrong makes root entities "disappear" under another entity.
+
+If any of these fail, the spec is incomplete — go back to Phase 2 and fix before asking for an implementation plan.
+
 ## Hallucination Detection
 
 The LLM may fabricate successful results without actually executing MCP tools. Indicators:
@@ -26,6 +64,10 @@ The LLM may fabricate successful results without actually executing MCP tools. I
 **Rules:**
 - Create objects in batches of 3–4 per prompt, not more.
 - After batch creation, always verify by reading each object back (preferably in a fresh session).
+- **"Active" is a claim, not a result.** The LLM often writes "✅ All N objects are active" without running the tool. Require actual `ReadDomain` / `ReadDataElement` / `ReadTable` output with an `active: true` field before accepting the claim.
+- **Follow the plan's step numbering.** If the plan says Step 1.2 has 20 domains, Phase 4 must produce exactly those 20, in that order, not a re-numbered sequence the LLM invented on the fly.
+- **No silent additions.** If the plan says 20 domains, creating a 21st (because "it seemed needed") is a spec drift. Report first, wait for approval, then create.
+- **No duplicates.** If `SearchObject` finds a matching name, stop and ask — do not create an alternate name like `_V2`, `_NEW` etc.
 - If prompt token count is suspiciously low, treat the response as fake and redo the step.
 - Start a fresh conversation session after each layer or every ~10 messages.
 

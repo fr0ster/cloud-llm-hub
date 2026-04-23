@@ -62,154 +62,35 @@ If someone shares your initials — take the next number (`ZDEMO02_`, `ZDEMO03_`
 
 ## Architecture Overview
 
-```mermaid
-graph TD
-    A[You — Chat UI] -->|prompts| B[Cloud LLM Hub]
-    B -->|SmartAgent pipeline| C[LLM — Claude/GPT]
-    B -->|MCP tools| D[SAP S/4HANA]
-    C -->|tool calls| B
-    D -->|ADT responses| B
-    B -->|results| A
-
-    style A fill:#e1f5fe
-    style B fill:#fff3e0
-    style C fill:#f3e5f5
-    style D fill:#e8f5e9
-```
+You chat with Cloud LLM Hub, which runs a SmartAgent pipeline over an LLM (Claude/GPT) and calls MCP tools against SAP S/4HANA (ADT) to create and activate objects on your behalf.
 
 ## RAP BO Structure
 
 The Business Object we are creating follows the standard RAP managed scenario with draft support:
 
-```mermaid
-graph TB
-    subgraph "Service Layer"
-        SD[Service Definition<br/>ZUI_xx_MAT_O4]
-        SB[Service Binding<br/>ZUI_xx_MAT_O4]
-    end
+Layers, top-down:
 
-    subgraph "Projection Layer (C-type)"
-        CP_ROOT[Zxx_C_MAT_ROOT]
-        CP_PLANT[Zxx_C_MAT_PLANT]
-        CP_TEXT[Zxx_C_MAT_TEXT]
-        CP_SALES[Zxx_C_MAT_SALES]
-        BDEF_P[Projection BDEF]
-    end
+- **Service layer** — Service Definition + Service Binding (`ZUI_##_MAT_O4`), expose the BO as OData V4.
+- **Projection layer (C-type)** — `Z##_C_MAT_ROOT` + 3 children + projection BDEF; what the consumer sees.
+- **Interface layer (R-type)** — `Z##_R_MAT_ROOT` + 3 children + interface BDEF + BIMP class (`ZBP_##_R_MAT_ROOT`).
+- **Database layer** — 4 persistent tables (`Z##_MARA/MARC/MAKT/MVKE`) plus the matching 4 draft tables (`_D` suffix).
 
-    subgraph "Interface Layer (R-type)"
-        CI_ROOT[Zxx_R_MAT_ROOT]
-        CI_PLANT[Zxx_R_MAT_PLANT]
-        CI_TEXT[Zxx_R_MAT_TEXT]
-        CI_SALES[Zxx_R_MAT_SALES]
-        BDEF_I[Interface BDEF]
-        BIMP[BIMP Class<br/>ZBP_xx_R_MAT_ROOT]
-    end
-
-    subgraph "Database Layer"
-        T_MARA[Zxx_MARA]
-        T_MARC[Zxx_MARC]
-        T_MAKT[Zxx_MAKT]
-        T_MVKE[Zxx_MVKE]
-        T_MARA_D[Zxx_MARA_D]
-        T_MARC_D[Zxx_MARC_D]
-        T_MAKT_D[Zxx_MAKT_D]
-        T_MVKE_D[Zxx_MVKE_D]
-    end
-
-    SB --> SD
-    SD --> CP_ROOT
-    CP_ROOT --> CI_ROOT
-    CP_PLANT --> CI_PLANT
-    CP_TEXT --> CI_TEXT
-    CP_SALES --> CI_SALES
-    CI_ROOT --> T_MARA
-    CI_PLANT --> T_MARC
-    CI_TEXT --> T_MAKT
-    CI_SALES --> T_MVKE
-    BDEF_I --> T_MARA_D
-    BDEF_I --> T_MARC_D
-    BDEF_I --> T_MAKT_D
-    BDEF_I --> T_MVKE_D
-
-    CI_ROOT -- "composition" --> CI_PLANT
-    CI_ROOT -- "composition" --> CI_TEXT
-    CI_ROOT -- "composition" --> CI_SALES
-```
+Root composes the three children (Plant, Text, Sales); each C-view projects the matching R-view, which reads from the matching persistent table.
 
 ## Entity Model
 
-```mermaid
-erDiagram
-    MARA ||--o{ MARC : "has plants"
-    MARA ||--o{ MAKT : "has texts"
-    MARA ||--o{ MVKE : "has sales data"
+| Table        | Keys                                     | Business Fields                     | Notes                             |
+|--------------|------------------------------------------|-------------------------------------|-----------------------------------|
+| `Z##_MARA`   | client, uuid, matnr                      | mtart, matkl, lvorm, meins          | Root; no `root_uuid`              |
+| `Z##_MARC`   | client, uuid, matnr, werks               | —                                   | Plant; `root_uuid` FK to MARA     |
+| `Z##_MAKT`   | client, uuid, matnr, spras               | maktx                               | Text per language; `root_uuid` FK |
+| `Z##_MVKE`   | client, uuid, matnr, vkorg, vtweg        | —                                   | Sales; `root_uuid` FK to MARA     |
 
-    MARA {
-        clnt client PK
-        sysuuid_x16 uuid PK
-        char40 matnr PK
-        char4 mtart
-        char9 matkl
-        char1 lvorm
-        unit3 meins
-    }
-
-    MARC {
-        clnt client PK
-        sysuuid_x16 uuid PK
-        char40 matnr PK
-        char4 werks PK
-        sysuuid_x16 root_uuid FK
-    }
-
-    MAKT {
-        clnt client PK
-        sysuuid_x16 uuid PK
-        char40 matnr PK
-        spras spras PK
-        sysuuid_x16 root_uuid FK
-        char40 maktx
-    }
-
-    MVKE {
-        clnt client PK
-        sysuuid_x16 uuid PK
-        char40 matnr PK
-        char4 vkorg PK
-        char2 vtweg PK
-        sysuuid_x16 root_uuid FK
-    }
-```
+MARA has a 1..* relationship to each of MARC / MAKT / MVKE via `root_uuid`.
 
 ## Creation Order
 
-RAP objects must be created and activated in a specific order due to dependencies:
-
-```mermaid
-flowchart LR
-    P[1. Package] --> DD[2. Domains +<br/>Data Elements]
-    DD --> A[3-4. Tables<br/>persistent + draft]
-    A --> B[5. Interface CDS]
-    B --> C[6. Projection CDS]
-    C --> MDE[7. Metadata Ext.]
-    MDE --> D[8. Interface BDEF]
-    D --> E[9. BIMP Class]
-    E --> F[10. Projection BDEF]
-    F --> G[11. Service Def.]
-    G --> H[12. Service Binding]
-
-    style P fill:#f5f5f5
-    style DD fill:#e8f5e9
-    style A fill:#e8f5e9
-    style B fill:#e1f5fe
-    style C fill:#e1f5fe
-    style MDE fill:#e1f5fe
-    style D fill:#fff3e0
-    style E fill:#fff3e0
-    style F fill:#f3e5f5
-    style G fill:#fce4ec
-    style H fill:#fce4ec
-```
+RAP objects must be created and activated in a specific order due to dependencies. The steps below follow that order: Package → Domains & Data Elements → Persistent + Draft Tables → Interface CDS → Projection CDS → Metadata Extensions → Interface BDEF → BIMP → Projection BDEF → Service Definition → Service Binding.
 
 ---
 
@@ -337,24 +218,6 @@ The foundation of any RAP BO is the database tables. We need 4 persistent tables
 >
 > Activate after creation.
 
-**What happens:**
-
-```mermaid
-sequenceDiagram
-    participant You
-    participant Agent
-    participant SAP
-
-    You->>Agent: Create table Z##_MARA...
-    Agent->>SAP: CreateTable (create empty shell)
-    SAP-->>Agent: Created
-    Agent->>SAP: UpdateTable (set DDL source)
-    SAP-->>Agent: Updated
-    Agent->>SAP: ActivateObject
-    SAP-->>Agent: Activated
-    Agent-->>You: Table Z##_MARA created and activated
-```
-
 > **Key concept:** Creating an ABAP object is always a two-step process:
 > 1. `Create*` — creates an empty shell with metadata
 > 2. `Update*` — sets the actual source code
@@ -427,25 +290,13 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 
 **What happens:** The agent creates 4 draft tables. The naming convention difference between persistent and draft tables is critical:
 
-```mermaid
-graph LR
-    subgraph "Persistent Table Z##_MARA"
-        P1[mtart : abap.char 4]
-        P2[matkl : abap.char 9]
-        P3[created_by : abp_creation_user]
-    end
+| Persistent (`Z##_MARA`) | Draft (`Z##_MARA_D`) | Rule                             |
+|-------------------------|-----------------------|----------------------------------|
+| `mtart`                 | `materialtype`        | CDS alias (lowercased PascalCase) |
+| `matkl`                 | `materialgroup`       | CDS alias                        |
+| `created_by`            | `createdby`           | Audit fields spelled out, lowercase |
 
-    subgraph "Draft Table Z##_MARA_D"
-        D1[materialtype : abap.char 4]
-        D2[materialgroup : abap.char 9]
-        D3[createdby : abp_creation_user]
-        D4["'%admin' : include sych_bdl_draft_admin_inc"]
-    end
-
-    P1 -.->|"CDS alias"| D1
-    P2 -.->|"CDS alias"| D2
-    P3 -.->|"lowercase PascalCase"| D3
-```
+In addition, the draft table must end with `"%admin" : include sych_bdl_draft_admin_inc` — this carries the draft-administration fields required by the RAP draft framework.
 
 **Expected result:** All 4 draft tables created and activated. Key fields match persistent tables (mandt + uuid + business keys), non-key fields use PascalCase CDS alias names, and the `%admin` include is present.
 
@@ -490,21 +341,10 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 **What happens:** The agent creates a `define root view entity` with compositions. Syntax errors are expected at this point because child views don't exist yet.
 
-```mermaid
-graph TD
-    ROOT[Z##_R_MAT_ROOT<br/>root view entity]
-    PLANT[Z##_R_MAT_PLANT]
-    TEXT[Z##_R_MAT_TEXT]
-    SALES[Z##_R_MAT_SALES]
-
-    ROOT -->|"composition [0..*]"| PLANT
-    ROOT -->|"composition [0..*]"| TEXT
-    ROOT -->|"composition [0..*]"| SALES
-
-    PLANT -->|"association to parent<br/>on Matnr + RootUuid = Uuid"| ROOT
-    TEXT -->|"association to parent<br/>on Matnr + RootUuid = Uuid"| ROOT
-    SALES -->|"association to parent<br/>on Matnr + RootUuid = Uuid"| ROOT
-```
+- `Z##_R_MAT_ROOT` is a `define root view entity` with `composition [0..*]` to each child (`_Plant`, `_Text`, `_Sales`).
+- Each child declares `association to parent Z##_R_MAT_ROOT as _Root`.
+- The on-condition on every child joins both keys: `$projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid`.
+- `RootUuid` on the child is the technical link; `Matnr` is the business key — both are required.
 
 > **Key concept:** Composition on-conditions must include ALL keys: both the business key (Matnr) and the technical key (RootUuid = parent Uuid).
 
@@ -582,23 +422,10 @@ Projections define what the service consumer sees. They reference the interface 
 
 **What happens:**
 
-```mermaid
-graph LR
-    subgraph "Projection (C-type)"
-        C_ROOT[Z##_C_MAT_ROOT<br/>provider contract<br/>transactional_query]
-        C_PLANT[Z##_C_MAT_PLANT]
-    end
-
-    subgraph "Interface (R-type)"
-        R_ROOT[Z##_R_MAT_ROOT]
-        R_PLANT[Z##_R_MAT_PLANT]
-    end
-
-    C_ROOT -->|"as projection on"| R_ROOT
-    C_PLANT -->|"as projection on"| R_PLANT
-    C_ROOT -->|"redirected to<br/>composition child"| C_PLANT
-    C_PLANT -->|"redirected to<br/>parent"| C_ROOT
-```
+- Each C-view is defined `as projection on` the matching R-view (`Z##_C_MAT_ROOT` on `Z##_R_MAT_ROOT`, and so on).
+- Root projection redirects each composition to the child projection: `_Plant : redirected to Z##_C_MAT_PLANT`, etc.
+- Each child projection redirects `_Root` back to the parent projection (`Z##_C_MAT_ROOT`).
+- Only the root projection carries `provider contract transactional_query` — mandatory for a managed RAP BO with draft.
 
 **Expected result:** All 4 projection CDS views created and activated.
 
@@ -789,24 +616,17 @@ The BDEF defines the transactional behavior — CRUD operations, draft support, 
 
 **What happens:**
 
-```mermaid
-graph TD
-    BDEF[Interface BDEF<br/>managed + strict 2 + with draft]
+Interface BDEF header: `managed` + `strict ( 2 )` + `with draft`. Entities:
 
-    ROOT[MaterialRoot<br/>lock master<br/>create/update/delete]
-    PLANT[MaterialPlant<br/>lock dependent<br/>update/delete]
-    TEXT[MaterialText<br/>lock dependent<br/>update/delete]
-    SALES[MaterialSales<br/>lock dependent<br/>update/delete]
+| Entity         | Lock             | Actions              |
+|----------------|------------------|----------------------|
+| `MaterialRoot` | lock master      | create, update, delete |
+| `MaterialPlant`| lock dependent by `_Root` | update, delete |
+| `MaterialText` | lock dependent by `_Root` | update, delete |
+| `MaterialSales`| lock dependent by `_Root` | update, delete |
 
-    BDEF --> ROOT
-    BDEF --> PLANT
-    BDEF --> TEXT
-    BDEF --> SALES
-
-    ROOT -->|"association { create; with draft; }"| PLANT
-    ROOT -->|"association { create; with draft; }"| TEXT
-    ROOT -->|"association { create; with draft; }"| SALES
-```
+- Root entity also declares `authorization master ( instance )` and the five draft actions (`Edit`, `Resume`, `Activate optimized`, `Discard`, `Prepare`).
+- Root's compositions to children are declared as `association _Plant/_Text/_Sales { create; with draft; }`.
 
 **Expected result:** BDEF created (inactive until BIMP class exists). Do NOT activate yet — proceed to Step 10.
 
@@ -967,49 +787,6 @@ After each creation step, you can ask: "Activate all inactive objects starting w
 ---
 
 ## Summary
-
-```mermaid
-flowchart TB
-    START([Start]) --> SETUP
-
-    subgraph SETUP["Step 1-2: Setup"]
-        S0[Verify Connection] --> S1[Create Package]
-    end
-
-    SETUP --> DICT
-
-    subgraph DICT["Step 3: Dictionary"]
-        D1[Domains x8] --> D2[Data Elements x9]
-    end
-
-    DICT --> TABLES
-
-    subgraph TABLES["Step 4-5: Database Layer"]
-        T1[Persistent Tables x4] --> T2[Draft Tables x4]
-    end
-
-    TABLES --> CDS
-
-    subgraph CDS["Step 6-8: CDS + UI Layer"]
-        C1[Interface CDS x4] --> C2[Projection CDS x4]
-        C2 --> C3[Metadata Extensions]
-    end
-
-    CDS --> BEHAVIOR
-
-    subgraph BEHAVIOR["Step 9-11: Behavior Layer"]
-        B1[Interface BDEF] --> B2[BIMP Class]
-        B2 --> B3[Projection BDEF]
-    end
-
-    BEHAVIOR --> SERVICE
-
-    subgraph SERVICE["Step 12-13: Service Layer"]
-        S1a[Service Definition] --> S2[Service Binding + Publish]
-    end
-
-    SERVICE --> DONE([Step 14: Verification])
-```
 
 **Total objects created:** ~38 (1 package + 8 domains + 9 data elements + 4 persistent tables + 4 draft tables + 4 interface CDS + 4 projection CDS + metadata extensions + 2 BDEFs + 1 BIMP + 1 Service Definition + 1 Service Binding)
 
