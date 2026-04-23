@@ -44,12 +44,18 @@
     <div class="card">
         <h1>Signed out</h1>
         <p>Your session has ended. Click below to sign in again.</p>
-        <a class="btn" href="/chat/webapp/index.html">SIGN IN</a>
+        <button class="btn" type="button" onclick="signIn()">SIGN IN</button>
     </div>
     <script>
         // Defence-in-depth: clear any local/session storage residue.
         try { localStorage.clear(); } catch {}
         try { sessionStorage.clear(); } catch {}
+        function signIn() {
+            // Cache-bust query + replace so the browser can't serve the
+            // previously-loaded (authenticated) index.html from its cache,
+            // and the back button doesn't return here.
+            window.location.replace('/chat/webapp/index.html?_=' + Date.now());
+        }
     </script>
 </body>
 </html>
