@@ -2,9 +2,15 @@
   "authenticationMethod": "route",
   "logout": {
     "logoutEndpoint": "/logout",
-    "logoutPage": "/chat/webapp/index.html"
+    "logoutPage": "/chat/webapp/logged-out.html"
   },
   "routes": [
+    {
+      "source": "^/chat/webapp/logged-out\\.html$",
+      "target": "/chat/webapp/logged-out.html",
+      "localDir": ".",
+      "authenticationType": "none"
+    },
     {
       "source": "^/v1/(.*)$",
       "target": "/v1/$1",
