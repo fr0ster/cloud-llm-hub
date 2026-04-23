@@ -15,6 +15,33 @@ This tutorial teaches you how to build a complete SAP Fiori application through 
 
 ## Before You Start
 
+### What this tutorial is
+
+Pair programming with AI to build a RAP BO end-to-end. You drive; AI drafts documents, generates DDL, and runs MCP tool calls against your SAP system. Not a push-button generator — a structured way to learn what AI does well and where it breaks.
+
+### Ground rules
+
+- **You decide the business model.** AI suggests; you approve.
+- **Phases 1–3 produce documents only.** If AI runs a `Create…` tool during spec editing, stop — that's a phase confusion bug.
+- **Phase 4 is layer by layer:** Domains → Data Elements → Tables → Draft Tables → CDS → BDEF+BIMP → Services. Activate each layer before starting the next.
+- **3–4 objects per prompt, no more.** Larger batches trigger hallucination.
+- **"Active" is a claim, not a fact.** Require a real `ReadDomain` / `ReadTable` read-back with `active: true` in the tool output. No `[SmartAgent: Executing …]` line means no tool ran.
+- **Correct the spec the moment you find a problem, then re-ingest.** Otherwise later prompts retrieve the stale version and reintroduce the bug.
+
+### AI behaviours to watch for
+
+| Symptom | What it means | Fix |
+|---|---|---|
+| "All N objects active" with no `[SmartAgent: Executing …]` lines | Hallucination | Require read-back of each object |
+| AI creates more or fewer objects than the plan | Spec/plan drift | Quote the plan back, force the exact list |
+| Objects appear in `$TMP` | Silent fallback after a transport error | Stop, fix the transport, redo in the correct package |
+| `UpdateTable` runs while you're editing the spec | Phase confusion | Say "document only, not system" and revert |
+| Same prompt gives different results | Stale RAG + long session | Fresh session, re-ingest latest spec/plan |
+| Truncated file / 400 on spec regeneration | Single-shot too large | Regenerate section by section |
+| Draft table: "Missing fields (CamelCase expected)" | snake_case field names | Use lowercased CDS alias names |
+| CDS root-child relationship flipped | Composition vs association mis-read | Quote the spec, regenerate that view only |
+| 40+ BDEF mapping warnings | `mapping for … corresponding` | Use explicit `{ CdsAlias = table_field; }` |
+
 ### Load the RAP skill
 
 1. Open MANAGE panel in cloud-llm-hub chat UI
