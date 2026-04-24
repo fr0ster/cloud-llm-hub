@@ -2,6 +2,7 @@
 import './env-setup';
 
 import type { AbapConnection, SapConfig } from '@mcp-abap-adt/connection';
+import { ReadVsGetDedupStrategy } from '@mcp-abap-adt/core/handlers';
 import { EmbeddableMcpServer } from '@mcp-abap-adt/core/server';
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import {
@@ -334,6 +335,7 @@ export async function createMCPServerForRequest(
       logger: loggerAdapter,
       exposition,
       systemType,
+      readOnlyDedupStrategy: new ReadVsGetDedupStrategy(),
     });
 
     // Create NEW transport for this request

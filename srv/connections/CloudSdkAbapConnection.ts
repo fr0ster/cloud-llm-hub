@@ -21,7 +21,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private csrfToken: string | null = null;
   private cookieJar: Map<string, string> = new Map();
   private cachedBaseUrl: string | null = null;
-  private sessionId: string = 'cloud-sdk-session';
+  private readonly sessionId: string;
   private sessionType: 'stateless' | 'stateful' = 'stateless';
   private readonly destinationName: string;
   /** Shared promise for CSRF refresh — ensures only one fetch at a time */
@@ -30,8 +30,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
   constructor(
     private readonly config: SapConfig,
     destinationName: string,
+    sessionId?: string,
   ) {
     this.destinationName = destinationName;
+    this.sessionId = sessionId || randomUUID();
   }
 
   getConfig(): SapConfig {
