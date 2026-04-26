@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.1.0] - 2026-04-26
+
+### Added
+- **llm-agent 11.1.1** — modular split (`llm-agent`, `llm-agent-server`, providers, embedders, RAG backends).
+- **Consumer XSUAA instances** (#22) — service-to-service auth, analyst + developer tiers.
+- **Per-request systemType** for MCP server based on destination `proxyType`.
+- **`npm run proxy`** — launch mcp-abap-adt-proxy against currently targeted app.
+- **Explicit logout landing page** — breaks XSUAA silent re-auth.
+- **Demo materials** — short prompts, dialog scenarios, presenter guide template, skills, RAG mocks.
+
+### Fixed
+- **FM-404 root cause** — `sap-adt-connection-id` must be a real per-instance UUID; constant literal broke FM-endpoint resolution.
+- **Cross-user classifier-model contamination** — removed global classifier-model hot-swap.
+- **SIGN IN reload** — force network reload so approuter gates the request.
+
+### Changed
+- **mcp-abap-adt core 6.5.1**, adt-clients 5.4.1, interfaces 7.1.0; added `ReadVsGetDedupStrategy`.
+- **Approuter disk/memory** doubled to 512M.
+- **Tutorials** — dropped mermaid, tightened intros, sharpened design principles.
+
 ## [6.0.1] - 2026-04-19
 
 ### Added
