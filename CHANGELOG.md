@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.1.1] - 2026-04-26
+
+### Fixed
+- **Streaming tool_calls** — bump `@mcp-abap-adt/*` to 11.1.1 (upstream fr0ster/llm-agent#119); SAP AI SDK chunks now decoded via `getDeltaToolCalls()` instead of OpenAI-shape access.
+- **`ollama-embedder` missing dep** — `@mcp-abap-adt/llm-agent-server` does a static import of `OllamaRag`; package must be installed even when not used.
+
 ## [6.1.0] - 2026-04-26
 
 ### Added
