@@ -49,6 +49,17 @@ Pair programming with AI to build a RAP BO from start to finish. You drive. AI w
 3. Upload `rap-bo-creation.md` (from SharePoint or `docs/tutorials/skills/`)
 4. Enable the collection (checkbox ON)
 
+### Create the working RAG collection
+
+The agent saves the artifacts of Phase 1–3 (business requirements, technical specification, implementation plan) into a RAG collection so later phases can retrieve and correct them. You create the collection once, before Phase 1.
+
+1. Open MANAGE panel
+2. New collection — id e.g. `book-catalog`, displayName "Book Catalog Artifacts", scope `user`
+3. Enable the collection (checkbox ON)
+4. In your very first prompt to the agent, tell it the name: *"Use the `book-catalog` collection for all artifacts of this tutorial."*
+
+The agent then writes Phase 1–3 outputs into this collection via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. You do not need to interact with the collection manually — just keep it enabled.
+
 ### Choose your prefix
 
 Format: `Z<II><NN>_` — initials (2 chars) + number (2 digits).
@@ -207,10 +218,6 @@ Save the plan file — you'll follow it step by step in Phase 4.
 **Goal:** Execute the plan, one step at a time, with verification. Use the draft specification from Phase 2 as input for each step — DDL, field definitions, mappings come from there.
 
 > **The specification keeps changing.** When SAP rejects something during implementation (wrong key, missing mapping, wrong type), fix the specification first, then the code. This keeps the spec and the system in sync. By the end, your draft will have grown into an accurate final specification.
-
-### Working RAG collection
-
-Before starting, create one collection in MANAGE (e.g. `book-catalog`) and tell the agent its name in your first prompt. The skill describes how the agent will use it — saving Phase 1–3 artifacts and correcting them when later steps reveal issues.
 
 ### Detecting fake responses
 
