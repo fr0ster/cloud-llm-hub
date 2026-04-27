@@ -15,58 +15,66 @@
  * when to surface them (e.g. tutorial/skill-driven flows).
  */
 import { randomUUID } from 'node:crypto';
-import {
-  buildRagCollectionToolEntries,
-  type IRagEditor,
-  type IRagRegistry,
-  type RagToolEntry,
-} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import type { CollectionRegistry } from './rag-collections';
 
-const EXPOSED_TOOL_NAMES = ['rag_add', 'rag_correct', 'rag_deprecate'] as const;
-export type RagToolName = (typeof EXPOSED_TOOL_NAMES)[number];
+// NOTE: schemas are inlined (not pulled from llm-agent's
+// `buildRagCollectionToolEntries`) because llm-agent ships its own zod 3.x,
+// while we run zod 4.x. Cross-version ZodRawShape objects do not survive
+// `z.toJSONSchema` — internals (`_def`/`def`) differ. Mirror the names,
+// descriptions, and field shapes; bump them when the upstream package
+// changes them. Drift here is a tutorial/UI concern only — handlers below
+// are independent and stay authoritative for our CollectionRegistry.
 
-/**
- * Stub registry that satisfies `IRagRegistry` just enough for
- * `buildRagCollectionToolEntries` to produce tool definitions. We never
- * invoke the bundled handlers, so missing methods are not a problem.
- */
-const stubRegistry: IRagRegistry = {
-  register: () => undefined,
-  unregister: () => false,
-  get: () => undefined,
-  getEditor: (): IRagEditor | undefined => undefined,
-  list: () => [],
-  createCollection: async () => ({
-    ok: false,
-    error: { code: 'RAG_NOT_SUPPORTED', message: 'stub' } as never,
-  }),
-  deleteCollection: async () => ({
-    ok: false,
-    error: { code: 'RAG_NOT_SUPPORTED', message: 'stub' } as never,
-  }),
-  closeSession: async () => ({
-    ok: false,
-    error: { code: 'RAG_NOT_SUPPORTED', message: 'stub' } as never,
-  }),
-};
+const ragAddSchema = z.object({
+  collection: z.string(),
+  text: z.string(),
+  canonicalKey: z.string(),
+  tags: z.array(z.string()).optional(),
+});
 
-const exposedEntries: RagToolEntry[] = buildRagCollectionToolEntries({
-  registry: stubRegistry,
-}).filter((e) =>
-  (EXPOSED_TOOL_NAMES as readonly string[]).includes(e.toolDefinition.name),
+const ragCorrectSchema = z.object({
+  collection: z.string(),
+  predecessorId: z.string(),
+  predecessorCanonicalKey: z.string(),
+  newText: z.string(),
+  reason: z.string(),
+});
+
+const ragDeprecateSchema = z.object({
+  collection: z.string(),
+  id: z.string(),
+  canonicalKey: z.string(),
+  reason: z.string(),
+});
+
+const TOOL_DEFS = [
+  {
+    name: 'rag_add' as const,
+    description: 'Add a new document to a RAG collection.',
+    schema: ragAddSchema,
+  },
+  {
+    name: 'rag_correct' as const,
+    description:
+      'Supersede a document with a new corrected version. Marks the predecessor as superseded.',
+    schema: ragCorrectSchema,
+  },
+  {
+    name: 'rag_deprecate' as const,
+    description: 'Mark a document as deprecated (idempotent).',
+    schema: ragDeprecateSchema,
+  },
+];
+
+export type RagToolName = (typeof TOOL_DEFS)[number]['name'];
+
+const argSchemaByName: Record<string, z.ZodType> = Object.fromEntries(
+  TOOL_DEFS.map((t) => [t.name, t.schema]),
 );
 
-const argSchemaByName: Record<RagToolName, z.ZodObject> = Object.fromEntries(
-  exposedEntries.map((e) => [
-    e.toolDefinition.name,
-    z.object(e.toolDefinition.inputSchema),
-  ]),
-) as Record<RagToolName, z.ZodObject>;
-
 export function getRagToolNames(): RagToolName[] {
-  return [...EXPOSED_TOOL_NAMES];
+  return TOOL_DEFS.map((t) => t.name);
 }
 
 /** Returns OpenAI-format tool definitions for body.tools. */
@@ -78,14 +86,12 @@ export function buildRagToolSchemas(): Array<{
     parameters: Record<string, unknown>;
   };
 }> {
-  return exposedEntries.map((e) => ({
+  return TOOL_DEFS.map((t) => ({
     type: 'function' as const,
     function: {
-      name: e.toolDefinition.name,
-      description: e.toolDefinition.description,
-      parameters: z.toJSONSchema(
-        z.object(e.toolDefinition.inputSchema),
-      ) as Record<string, unknown>,
+      name: t.name,
+      description: t.description,
+      parameters: z.toJSONSchema(t.schema) as Record<string, unknown>,
     },
   }));
 }
