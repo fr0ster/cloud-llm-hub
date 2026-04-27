@@ -2,7 +2,7 @@
 
 This tutorial teaches you how to build a complete SAP Fiori application through **pair programming with AI**. You bring the business idea and make all decisions. AI proposes, implements, and checks — but never decides for you.
 
-> **Read first:** [Tutorial Design Principles](TUTORIAL_DESIGN_PRINCIPLES.md) — the methodology behind this tutorial.
+> **Read first:** [Tutorial Design Principles](TUTORIAL_DESIGN_PRINCIPLES.md) — the method behind this tutorial.
 
 **What you will build:** A Book Catalog application — authors, books, editions, reader ratings — with a polished Fiori UI.
 
@@ -17,16 +17,16 @@ This tutorial teaches you how to build a complete SAP Fiori application through 
 
 ### What this tutorial is
 
-Pair programming with AI to build a RAP BO end-to-end. You drive; AI drafts documents, generates DDL, and runs MCP tool calls against your SAP system. Not a push-button generator — a structured way to learn what AI does well and where it breaks.
+Pair programming with AI to build a RAP BO from start to finish. You drive. AI writes documents, generates DDL, and runs MCP tool calls on your SAP system. This is not a one-click generator. It is a step-by-step way to learn what AI does well and where it fails.
 
 ### Ground rules
 
 - **You decide the business model.** AI suggests; you approve.
 - **Phases 1–3 produce documents only.** If AI runs a `Create…` tool during spec editing, stop — that's a phase confusion bug.
 - **Phase 4 is layer by layer:** Domains → Data Elements → Tables → Draft Tables → CDS → BDEF+BIMP → Services. Activate each layer before starting the next.
-- **3–4 objects per prompt, no more.** Larger batches trigger hallucination.
-- **"Active" is a claim, not a fact.** Require a real `ReadDomain` / `ReadTable` read-back with `active: true` in the tool output. No `[SmartAgent: Executing …]` line means no tool ran.
-- **Correct the spec the moment you find a problem, then re-ingest.** Otherwise later prompts retrieve the stale version and reintroduce the bug.
+- **3–4 objects per prompt, no more.** Bigger batches make the AI invent results (hallucinate).
+- **Treat "Active" as a claim until proven.** Ask for a real `ReadDomain` / `ReadTable` call that shows `active: true` in the output. If the response has no `[SmartAgent: Executing …]` line, no tool ran.
+- **Fix the spec as soon as you find a problem.** Your job is to spot the issue and approve the fix. How the agent applies it is described in the skill.
 
 ### AI behaviours to watch for
 
@@ -36,7 +36,7 @@ Pair programming with AI to build a RAP BO end-to-end. You drive; AI drafts docu
 | AI creates more or fewer objects than the plan | Spec/plan drift | Quote the plan back, force the exact list |
 | Objects appear in `$TMP` | Silent fallback after a transport error | Stop, fix the transport, redo in the correct package |
 | `UpdateTable` runs while you're editing the spec | Phase confusion | Say "document only, not system" and revert |
-| Same prompt gives different results | Stale RAG + long session | Fresh session, re-ingest latest spec/plan |
+| Same prompt gives different results | Long session — too much earlier text confuses the AI | Start a fresh session. Your saved artifacts in RAG are still up to date |
 | Truncated file / 400 on spec regeneration | Single-shot too large | Regenerate section by section |
 | Draft table: "Missing fields (CamelCase expected)" | snake_case field names | Use lowercased CDS alias names |
 | CDS root-child relationship flipped | Composition vs association mis-read | Quote the spec, regenerate that view only |
@@ -48,6 +48,17 @@ Pair programming with AI to build a RAP BO end-to-end. You drive; AI drafts docu
 2. Create collection "RAP Skills"
 3. Upload `rap-bo-creation.md` (from SharePoint or `docs/tutorials/skills/`)
 4. Enable the collection (checkbox ON)
+
+### Create the working RAG collection
+
+The agent saves the artifacts of Phase 1–3 (business requirements, technical specification, implementation plan) into a RAG collection so later phases can retrieve and correct them. You create the collection once, before Phase 1.
+
+1. Open MANAGE panel
+2. New collection — id e.g. `book-catalog`, displayName "Book Catalog Artifacts", scope `user`
+3. Enable the collection (checkbox ON)
+4. In your very first prompt to the agent, tell it the name: *"Use the `book-catalog` collection for all artifacts of this tutorial."*
+
+The agent then writes Phase 1–3 outputs into this collection via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. You do not need to interact with the collection manually — just keep it enabled.
 
 ### Choose your prefix
 
@@ -103,7 +114,7 @@ Save the generated file — you'll reference it in the next phases.
 
 **Goal:** Transform business requirements into a **draft** technical specification — ABAP object types, field definitions, relationships, UI annotations.
 
-> **This is a draft, not a final document.** During Phase 4 (implementation), you will discover issues — wrong field types, missing keys, incorrect mappings. That's expected. The specification will be refined as you build. However, **the more accurate the draft, the fewer corrections later** — so invest effort here. A well-thought-out draft with correct field types, key structures, and mappings will save significant time during implementation.
+> **This is a draft, not a final document.** During Phase 4 (implementation) you will find issues — wrong field types, missing keys, wrong mappings. That is expected. You will refine the specification while you build. But **the better the draft now, the fewer fixes later** — so spend time here. A careful draft with correct field types, keys, and mappings saves a lot of time during implementation.
 
 ### Set the technology and constraints
 
@@ -149,7 +160,7 @@ Repeat until the specification is clean. Then:
 
 Save the generated file — this is your working document for Phase 4. You'll update it when implementation reveals issues.
 
-> **Note:** Some errors will only surface during implementation when SAP validates the actual DDL. You'll come back and update the specification as needed. But the more thorough you are here — checking draft table keys, BDEF mappings, authorization declarations — the smoother Phase 4 will be.
+> **Note:** Some errors will only show up during implementation, when SAP checks the real DDL. You will come back and update the specification then. But the more careful you are here — checking draft table keys, BDEF mappings, authorization declarations — the easier Phase 4 will be.
 
 > Let's create an implementation plan.
 
@@ -206,76 +217,60 @@ Save the plan file — you'll follow it step by step in Phase 4.
 
 **Goal:** Execute the plan, one step at a time, with verification. Use the draft specification from Phase 2 as input for each step — DDL, field definitions, mappings come from there.
 
-> **The specification is a living document.** When SAP rejects something during implementation (wrong key, missing mapping, incorrect type), fix it in the specification first, then in the code. This keeps the spec and reality in sync. By the end, your draft specification will have evolved into an accurate final specification.
+> **The specification keeps changing.** When SAP rejects something during implementation (wrong key, missing mapping, wrong type), fix the specification first, then the code. This keeps the spec and the system in sync. By the end, your draft will have grown into an accurate final specification.
 
-### Re-ingest artifacts after any correction
+### Detecting fake responses
 
-**Temporary workaround — until the RAG correction layer ships.**
+AI can pretend that a step succeeded without running any tool. Watch for these warning signs:
 
-Whenever you correct a generated artifact (fix a DDL field, rename an object, change a mapping), the AI's prior (wrong) version is still in the RAG collection as an indexed artifact. Subsequent steps may retrieve the stale version and reproduce the mistake.
+- **Low token count** — a real tool call uses 40,000–100,000+ prompt tokens. If the response shows about 4,000 prompt tokens, the AI probably answered from memory and did not call a tool.
+- **No `[SmartAgent: Executing ...]` lines** — every real tool call shows this trace. No trace means no tool ran.
+- **Reply is too fast** — creating 6 objects needs 30–60 seconds of tool calls, not instant.
 
-After every correction:
+This usually happens after long conversations (12+ messages). The AI copies the format of earlier replies and skips the tool call.
 
-1. Take the corrected artifact (code, DDL, spec fragment).
-2. Open MANAGE panel → your working collection.
-3. Delete the stale entry (or overwrite the file if you upload by filename).
-4. Upload the corrected version.
-5. Tell the agent explicitly: *"I've re-ingested the corrected version of `<object>`. Use the new version from RAG, not the previous one."*
+**How to avoid it:**
+- Start a fresh session often (after each layer, or every 10 messages)
+- After creating N objects, read each one back in a new session
+- If the token count is low, treat the reply as fake and redo the step
 
-Skip this and you will see the same mistake recur two or three steps later.
-
-### Detecting hallucinated responses
-
-AI can fabricate successful results without actually executing tools. Watch for these red flags:
-
-- **Low token count** — a real tool call uses 40,000–100,000+ prompt tokens. If the response shows ~4,000 prompt tokens, the AI likely answered from memory without calling any tool.
-- **Missing `[SmartAgent: Executing ...]` lines** — every real tool call produces an execution trace. No trace = no execution.
-- **Suspiciously fast response** — creating 6 objects should take 30–60 seconds of tool calls, not instant.
-
-This tends to happen when the conversation grows long (12+ messages). The AI "remembers" the pattern from earlier responses and reproduces it without acting.
-
-**Mitigation:**
-- Start a fresh session periodically (after each layer or every ~10 messages)
-- Always verify batch operations: after creating N objects, read each one back in a new session
-- If token count is low, assume the response is fake and redo the step
+> **You do not retype DDL, field types, or object names in Phase 4.** All of that is in the plan and the specification, which the agent already has in RAG. Your prompts only point to the plan step. The agent reads the plan, takes the object list and the spec for that step, and runs the tools.
 
 ### Simple objects: create and verify
 
-For domains, data elements, tables — straightforward:
+For domains, data elements, and tables — one step at a time:
 
-> Create domain Z##_D_TITLE in package TEST_##_BOOK with description 'Book Title', type CHAR length 200. Activate.
+> Run plan step 2.
 
 After creation:
 
-> Read domain Z##_D_TITLE to verify it's correct and active.
+> Verify all objects from step 2 are active.
 
 ### Complex objects: create-check-fix loop
 
-For CDS views and BDEF — **never assume first attempt works:**
+For CDS views and BDEF — **never assume the first attempt works:**
 
-> Create interface CDS view Z##_R_BOOK with this DDL: [paste DDL from specification]
-> Do NOT activate yet.
+> Run plan step 4. Do NOT activate yet.
 
 After creating all views in the group:
 
-> Check CDS view Z##_R_BOOK for syntax errors.
+> Check the views from step 4 for syntax errors.
 
-If errors found:
+If errors found, describe the error in plain words — the agent fixes it using the spec:
 
-> The check shows "association target not found" for _Author. Fix the association on-condition and update the view.
+> The check shows "association target not found" for _Author. Fix it based on the spec.
 
 Repeat check-fix until clean, then:
 
-> Activate all interface CDS views starting with Z##_R_ together.
+> Activate the views from step 4 together.
 
-### BDEF: the most iterative step
+### BDEF: expect several rounds
 
-BDEF typically requires multiple rounds:
+BDEF usually needs more than one round:
 
-> Create behavior definition for Z##_R_BOOK with this source: [paste full BDEF from specification]
-> Do NOT activate.
+> Run plan step 7. Do NOT activate.
 
-> Check behavior definition Z##_R_BOOK for syntax errors.
+> Check the BDEF from step 7 for syntax errors.
 
 Common issues at this stage:
 - Missing mapping fields → add to explicit mapping
@@ -301,7 +296,7 @@ Only proceed to the next layer when everything is active.
 
 After service binding is published:
 
-> Read the service binding Z##_BOOK and confirm it's published.
+> Confirm the service binding from the last plan step is published.
 
 Then test in ADT preview:
 1. Create an Author
@@ -315,13 +310,13 @@ Then test in ADT preview:
 
 ## What You Learned
 
-After completing this tutorial, you know how to:
+After this tutorial you know how to:
 
-1. **Formalize** business ideas into structured requirements with AI
+1. **Turn** business ideas into structured requirements with AI
 2. **Review** AI-generated technical specifications and catch common mistakes
-3. **Plan** implementation respecting ABAP object dependencies
-4. **Execute** iteratively — create, check, fix, activate
+3. **Plan** implementation in the correct ABAP dependency order
+4. **Build** step by step — create, check, fix, activate
 5. **Handle** complex objects (CDS circular dependencies, BDEF strict mode)
 6. **Verify** at every step instead of trusting AI output blindly
 
-The key insight: **AI accelerates development but doesn't replace your judgment.** Every decision — from entity design to field mapping — is yours. AI is the fastest pair programmer you'll ever have, but only if you lead.
+The key idea: **AI speeds up development but does not replace your judgement.** Every decision — from entity design to field mapping — is yours. AI is the fastest pair programmer you can get, but only if you lead.
