@@ -339,6 +339,33 @@ export class CollectionRegistry {
     return this.collections.get(collectionId)?.documents.get(docId) ?? null;
   }
 
+  /**
+   * Find the single active document with the given canonicalKey in a collection.
+   * "Active" = metadata.tags does not contain "superseded" or "deprecated".
+   * Returns null when no match; throws when more than one active match exists
+   * (an invariant violation that callers should surface, not silently pick one).
+   */
+  findActiveByCanonicalKey(
+    collectionId: string,
+    canonicalKey: string,
+  ): RagDocument | null {
+    const stored = this.collections.get(collectionId);
+    if (!stored) return null;
+    const matches: RagDocument[] = [];
+    for (const doc of stored.documents.values()) {
+      if (doc.metadata?.canonicalKey !== canonicalKey) continue;
+      const tags = (doc.metadata?.tags as string[] | undefined) ?? [];
+      if (tags.includes('superseded') || tags.includes('deprecated')) continue;
+      matches.push(doc);
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Collection "${collectionId}" has ${matches.length} active records with canonicalKey "${canonicalKey}" — expected exactly one`,
+      );
+    }
+    return matches[0] ?? null;
+  }
+
   async addDocument(
     collectionId: string,
     doc: Omit<RagDocument, 'createdAt'>,

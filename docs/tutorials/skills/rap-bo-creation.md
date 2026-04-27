@@ -1,7 +1,7 @@
 ---
 name: RAP Business Object Creation
 description: Rules and constraints for creating SAP RAP managed Business Objects with draft support on on-premise S/4HANA systems via MCP tools
-version: 2.1.0
+version: 2.2.0
 tags: [sap, rap, abap, cds, bdef, draft, fiori]
 ---
 
@@ -73,26 +73,26 @@ The LLM may fabricate successful results without actually executing MCP tools. I
 
 ## Artifact Lifecycle in RAG
 
-Phases 1–3 each produce one named artifact that downstream steps depend on:
+Phases 1–3 each produce one named artifact that downstream steps depend on. Address every artifact by a stable, human-readable `id` that you pass to all three RAG tools:
 
-| Phase | Artifact | Suggested `canonicalKey` |
+| Phase | Artifact | `id` |
 |---|---|---|
-| 1. Business Requirements | `business-requirements.md` | `<project>/business-requirements` |
-| 2. Technical Specification | `tech-spec.md` | `<project>/tech-spec` |
-| 3. Implementation Plan | `impl-plan.md` | `<project>/impl-plan` |
+| 1. Business Requirements | `business-requirements.md` | `business-requirements` |
+| 2. Technical Specification | `tech-spec.md` | `tech-spec` |
+| 3. Implementation Plan | `impl-plan.md` | `impl-plan` |
 
 The user creates the working RAG collection up front (MANAGE panel) and tells you its name (e.g. `book-catalog`). All three artifacts go there.
 
 **Save artifacts via `rag_add`.** When the user accepts an artifact ("the spec looks good", "save the plan"), call `rag_add` with:
 
 - `collection`: the working collection name
+- `id`: the stable id from the table above
 - `text`: the full artifact body (markdown)
-- `canonicalKey`: the stable key from the table above
 - `tags`: `["phase-1"]` / `["phase-2"]` / `["phase-3"]`
 
-Then tell the user: *"Saved as `<canonicalKey>` (id=`<returned id>`) in collection `<name>`."* Keep that `id` in the conversation — you need it to correct or supersede the artifact later.
+Then tell the user: *"Saved as `<id>` in collection `<name>`."* You no longer need to track UUIDs — `id` is the only handle you need across the whole tutorial.
 
-If the user starts a fresh session and asks you to correct an earlier artifact, ask them for the predecessor id (they can find it in the MANAGE panel). Do not guess.
+**Special case: writing into a RAG you do not own.** If the user points you at a collection where the id convention is different (or where a free-form id is expected), omit the `id` field — the system will assign a UUID. The user will then address those records via the MANAGE panel, not via you.
 
 ## Detect and Correct Earlier Artifacts
 
@@ -101,27 +101,27 @@ Errors found in Phase 4 (or later in Phase 2/3) often originate in an earlier ar
 **When a problem surfaces, do this first — before writing any fix:**
 
 1. Identify the smallest artifact that contains the root cause:
-   - "Field type wrong in table" → tech-spec (Phase 2). Maybe domain table in business requirements (Phase 1) too.
-   - "Plan creates objects in wrong order" → impl-plan (Phase 3).
-   - "Use case missing" → business-requirements (Phase 1) and tech-spec (Phase 2).
-2. Decide whether the artifact must change. Some errors are local to Phase 4 code (typo, transport issue) and should not propagate back. State the reasoning explicitly: *"This is a Phase 4-only issue, no spec change."* or *"The spec says X but should say Y — I'll correct the spec."*
-3. If a correction is required:
-   - Apply `rag_correct` to that artifact:
-     - `predecessorId` = id you saved when calling `rag_add`
-     - `predecessorCanonicalKey` = same canonicalKey as the original
-     - `newText` = full corrected body (not a diff)
-     - `reason` = one-sentence summary of what changed and why
-   - Tell the user: *"Corrected `<canonicalKey>` (new id=`<n>`, predecessor `<p>` superseded). Reason: `<reason>`."*
-4. If multiple artifacts share the same error (a wrong field type often lives in spec AND plan), correct each one separately. Do not try to bundle.
+   - "Field type wrong in table" → `tech-spec`. Maybe `business-requirements` too.
+   - "Plan creates objects in wrong order" → `impl-plan`.
+   - "Use case missing" → `business-requirements` and `tech-spec`.
+2. Decide whether the artifact must change. Some errors are local to Phase 4 code (typo, transport issue) and should not propagate back. State the reasoning explicitly: *"This is a Phase 4-only issue, no spec change."* or *"The spec says X but should say Y — I'll correct `tech-spec`."*
+3. If a correction is required, call `rag_correct` with:
+   - `collection` — the working collection
+   - `id` — the artifact's stable id
+   - `newText` — full corrected body (not a diff)
+   - `reason` — one-sentence summary of what changed and why
+
+   Tell the user: *"Corrected `<id>`. Reason: `<reason>`."*
+4. If multiple artifacts share the same error (a wrong field type often lives in tech-spec AND impl-plan), correct each one separately. Do not try to bundle.
 5. After correcting, only then continue with the Phase 4 fix.
 
-**Do not** apply silent edits or rewrite an artifact in place via re-`rag_add` — that creates duplicate documents with the same canonical key. Use `rag_correct` so the predecessor is marked superseded and the chain stays auditable.
+**Do not** call `rag_add` again with the same `id` to overwrite — the dispatcher will refuse with "Active record already exists". `rag_correct` is the only path that updates an existing artifact.
 
-**Use `rag_deprecate`** only when an artifact is no longer relevant (e.g. user pivoted scope, dropped an entity entirely) and there is no replacement.
+**Use `rag_deprecate`** only when an artifact is no longer relevant (e.g. user pivoted scope, dropped an entity entirely) and there is no replacement. After `rag_deprecate`, the same `id` is free to be re-added if needed.
 
 ## Phase 4 Reads the Plan, Not the User
 
-Object names, types, lengths, keys, mappings, DDL — all of these are decided by the user in Phase 2 (technical specification) and ordered into steps in Phase 3 (implementation plan). Both artifacts are saved in RAG before Phase 4 starts (`<project>/tech-spec`, `<project>/impl-plan`).
+Object names, types, lengths, keys, mappings, DDL — all of these are decided by the user in Phase 2 (technical specification) and ordered into steps in Phase 3 (implementation plan). Both artifacts are saved in RAG before Phase 4 starts (id `tech-spec`, id `impl-plan`).
 
 The names in the spec are **the user's own names** — they reflect the user's prefix and naming choices. Phase 4 must use those names verbatim. Never invent a variant (`_V2`, `_NEW`, an alternate prefix), never translate or shorten a name, and never re-infer a name from the business description when the spec already has one.
 
@@ -146,7 +146,7 @@ If the user types object names, DDL, or field definitions inline in a Phase 4 pr
 
 Once an artifact has been corrected, retrieval will surface the new version (predecessor is tagged `superseded`). You do not need to ask the user to re-ingest manually — that workaround is no longer required.
 
-The one situation where stale retrieval can still bite: you have an `id` in conversation memory that points to a now-superseded predecessor. Always reference an artifact by canonicalKey when discussing it with the user, and re-resolve the current id from the latest `rag_add`/`rag_correct` response, not from earlier messages.
+Because every artifact is addressed by its stable `id`, conversation memory of UUIDs is no longer a concern: the same `id` always points at the current active version after any number of `rag_correct` calls.
 
 ## Object Creation Order
 
