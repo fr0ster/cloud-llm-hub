@@ -5,7 +5,6 @@ System architecture, APIs, and technical specifications.
 ## Documents
 
 - [**Architecture Overview**](ARCHITECTURE.md) — comprehensive system design (v2.2+)
-- [**Architecture Analysis**](ARCHITECTURE_ANALYSIS.md) — component relationships and analysis
 - [**API Reference**](API_REFERENCE.md) — complete endpoint documentation
 - [**CAP Endpoints**](CAP_ENDPOINTS.md) — OData and Express endpoints
 - [**Features**](FEATURES.md) — capabilities and feature matrix

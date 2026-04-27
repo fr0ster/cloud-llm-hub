@@ -2,8 +2,6 @@
 
 Step-by-step guide to deploy Cloud LLM Hub from scratch on a new BTP subaccount.
 
-For the short reminder version of the MCP + external OpenAI-compatible provider scenario, see [MCP_OPENAI_COMPAT_MEMO.md](MCP_OPENAI_COMPAT_MEMO.md).
-
 ## Prerequisites
 
 > **Validate all prerequisites before starting.** If a missing prerequisite is discovered during installation (e.g., entitlement not assigned, ICF service not activated, Cloud Connector path not whitelisted), the process must be paused until the responsible team resolves it. After the fix, the installation restarts from Step 4 (rebuild + redeploy). When multiple teams are involved (Basis, BTP Admin, Security), this can turn a 2-hour installation into a multi-day effort. Completing the checklist below upfront avoids this.

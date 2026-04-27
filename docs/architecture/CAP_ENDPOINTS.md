@@ -292,7 +292,7 @@ For service-to-service integrations via `client_credentials`, the deployment pro
 |---|---|---|---|
 | `cloud-llm-hub-auth` (main) | `MCP_Reader` (via `authorities`) | `readonly + search` | Read-only monitors, health checks |
 | `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | [`calm-dump-analyzer`](../examples/calm-dump-analyzer/) (dumps, SQL, profiling) |
-| `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | [`test-management`](../examples/test-management/) (CreateUnitTest, activation) |
+| `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | Internal CI tooling (CreateUnitTest, activation) |
 
 `MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add a new entry to `grant-as-authority-to-apps` on the `MCP_Full` scope in `xs-security.json`, provision the consumer xsuaa via `mta.yaml`, and document the exception in `docs/LESSONS_LEARNED.md`.
 
@@ -302,7 +302,7 @@ For service-to-service integrations via `client_credentials`, the deployment pro
 2. Each consumer `xs-security-<tier>-consumer.json` declares the provider scope in `authorities` using the form `<provider-xsappname-with-!tNNN>.<Scope>`.
 3. At `client_credentials` token issuance time, xsuaa inlines the granted scope into the consumer's token. `cloud-llm-hub-srv` accepts it unchanged because `@sap/xssec` validates signature, `iss`, and `aud` within the shared subaccount trust boundary — all three are common across xsuaa instances in the same subaccount.
 
-The exact descriptor syntax (and the non-obvious `!tNNN` suffix requirement) is documented in [`docs/lessons/2026-04-19-xsuaa-cross-app-grants.md`](../lessons/2026-04-19-xsuaa-cross-app-grants.md).
+The exact descriptor syntax (and the non-obvious `!tNNN` suffix requirement) is enforced by the working `xs-security*.json` files in this repo and the `grant-as-authority-to-apps` entries on the main `xs-security.json` scopes.
 
 ### Porting to another subaccount
 
