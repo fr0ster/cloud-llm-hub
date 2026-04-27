@@ -1,10 +1,10 @@
-# AI-Assisted Tutorial: Book Catalog Application
+# AI-Assisted Tutorial: Building a RAP BO with AI (Book Catalog example)
 
 This tutorial teaches you how to build a complete SAP Fiori application through **pair programming with AI**. You bring the business idea and make all decisions. AI proposes, implements, and checks — but never decides for you.
 
-> **Read first:** [Tutorial Design Principles](TUTORIAL_DESIGN_PRINCIPLES.md) — the method behind this tutorial.
+> **Read first:** [Tutorial Design Principles](TUTORIAL_DESIGN_PRINCIPLES.md) — the method behind this tutorial. **The methodology is the lesson; the application you build is the side effect.** Book Catalog is the example domain used in every prompt below — substitute your own (warehouse stock, equipment maintenance, contact CRM, …) and the same flow applies.
 
-**What you will build:** A Book Catalog application — authors, books, editions, reader ratings — with a polished Fiori UI.
+**Example app:** A Book Catalog — authors, books, editions, reader ratings — with a Fiori UI. The shape of YOUR app comes out of Phase 1; entities, fields, and relationships below are illustrations.
 
 **System:** SAP S/4HANA (on-premise) via cloud-llm-hub
 **Skill:** Upload `skills/rap-bo-creation.md` to a RAG collection before starting
@@ -92,7 +92,7 @@ Use the prefix convention from [`rap-bo-creation.md` → Naming Convention](rap-
 
 ### Start the conversation
 
-Describe your idea in plain language:
+Describe your idea in plain language. **Use your own domain.** The Book Catalog wording below is an example — replace it with whatever you actually want to build.
 
 > I want to create an application for managing a book catalog. It should store information about book authors, their literary works, published editions of each book, and reader ratings. Users should be able to browse books, search by title or author, filter by genre and year, and see average ratings. When viewing a book, they should see all its editions and reviews.
 
@@ -102,10 +102,11 @@ Describe your idea in plain language:
 
 ### Review and iterate
 
-Read AI's proposal carefully. Things to check:
-- Are all entities captured? (Did AI miss Editions? Ratings?)
-- Are relationships correct? (Author has many Books, not the other way)
-- Are business rules captured? (Rating is 1-5, ISBN is unique, etc.)
+Read AI's proposal carefully. Things to check (Book-Catalog-style examples in parentheses — translate to your domain):
+
+- Are all entities captured? (e.g. did AI miss Editions or Ratings?)
+- Are relationships correct? (e.g. Author has many Books, not the reverse.)
+- Are business rules captured? (e.g. Rating is 1-5, ISBN is unique.)
 - Are use cases complete? (Create, search, filter, browse — what about edit? delete?)
 
 If something is missing or wrong:
@@ -131,6 +132,8 @@ The agent calls `rag_add` and shows a `RAG OP: rag_add OK` card with id `busines
 > **This is a draft, not a final document.** During Phase 4 (implementation) you will find issues — wrong field types, missing keys, wrong mappings. That is expected. You will refine the specification while you build. But **the better the draft now, the fewer fixes later** — so spend time here. A careful draft with correct field types, keys, and mappings saves a lot of time during implementation.
 
 ### Set the technology and constraints
+
+The technology choices (RAP managed + draft, strict 2, Fiori Elements, OData V4) and the cross-cutting constraints (explicit BDEF mapping, custom domains/data elements) apply to every RAP BO. The **domain-specific constraints** below are written for the Book Catalog example — translate each one to your domain (composition vs association rules, search/filter fields, formatting hints) and replace the package name `TEST_##_BOOK` with one that fits your project.
 
 > Based on the business requirements, create a technical specification for SAP RAP implementation:
 >
@@ -186,7 +189,7 @@ The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — 
 
 ### Ask for the plan
 
-> Create a step-by-step implementation plan for the Book Catalog. Include:
+> Create a step-by-step implementation plan for the BO described in `tech-spec`. Include:
 > - Creation order respecting dependencies
 > - Group activation points
 > - Checkpoints between layers (verify all objects active before next layer)
