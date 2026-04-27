@@ -190,7 +190,7 @@
             <button id="clear-btn" onclick="clearChat()">CLR</button>
             <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
             <button id="sap-creds-btn" onclick="toggleSapCredsDialog()" title="SAP system credentials (override destination user)">SAP</button>
-            <button id="logout-btn" onclick="window.location.href='/logout'" title="Sign out">LOGOUT</button>
+            <button id="logout-btn" onclick="try{localStorage.clear();sessionStorage.clear()}catch{};window.location.replace('/logout')" title="Sign out">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
     </div>
