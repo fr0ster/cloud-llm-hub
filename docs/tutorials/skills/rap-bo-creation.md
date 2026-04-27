@@ -108,8 +108,8 @@ Errors found in Phase 4 (or later in Phase 2/3) often originate in an earlier ar
 3. If a correction is required, call `rag_correct` with:
    - `collection` — the working collection
    - `id` — the artifact's stable id
-   - `newText` — full corrected body (not a diff)
-   - `reason` — one-sentence summary of what changed and why
+   - `newText` — full corrected body (not a diff). The previous text is overwritten in place; the same `id` keeps pointing at the new content after the call.
+   - `reason` — one-sentence summary of what changed and why (kept in metadata as `lastCorrectedReason`)
 
    Tell the user: *"Corrected `<id>`. Reason: `<reason>`."*
 4. If multiple artifacts share the same error (a wrong field type often lives in tech-spec AND impl-plan), correct each one separately. Do not try to bundle.
