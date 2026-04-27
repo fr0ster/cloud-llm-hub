@@ -54,7 +54,7 @@ const TOOL_DEFS = [
   {
     name: 'rag_deprecate' as const,
     description:
-      'Mark the active record with the given `id` as deprecated. The record stays in the store as audit history but is dropped from retrieval. Idempotent.',
+      'Permanently delete the active record with the given `id` from the collection. After the call, the same `id` is free to be re-added via `rag_add`. Use when an artifact is no longer relevant.',
     schema: ragDeprecateSchema,
   },
 ];
@@ -172,21 +172,14 @@ export async function dispatchRagTool(
             error: `No active record with id "${id}" in collection "${collection}"`,
           };
         }
-        const updated = await registry.updateDocument(collection, active.id, {
-          metadata: {
-            canonicalKey: id,
-            deprecatedReason: args.reason,
-            deprecatedAt: Math.floor(Date.now() / 1000),
-            tags: ['deprecated'],
-          },
-        });
-        if (!updated) {
+        const deleted = await registry.deleteDocument(collection, active.id);
+        if (!deleted) {
           return {
             ok: false,
-            error: `Active record vanished mid-deprecate in "${collection}" (id "${id}")`,
+            error: `Active record vanished mid-delete in "${collection}" (id "${id}")`,
           };
         }
-        return { ok: true, id };
+        return { ok: true, id, reason: args.reason };
       }
     }
   } catch (err) {

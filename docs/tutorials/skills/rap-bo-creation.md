@@ -117,7 +117,7 @@ Errors found in Phase 4 (or later in Phase 2/3) often originate in an earlier ar
 
 **Do not** call `rag_add` again with the same `id` to overwrite — the dispatcher will refuse with "Active record already exists". `rag_correct` is the only path that updates an existing artifact.
 
-**Use `rag_deprecate`** only when an artifact is no longer relevant (e.g. user pivoted scope, dropped an entity entirely) and there is no replacement. After `rag_deprecate`, the same `id` is free to be re-added if needed.
+**Use `rag_deprecate`** only when an artifact is no longer relevant (e.g. user pivoted scope, dropped an entity entirely) and there is no replacement. The record is removed from the collection — there is no soft-delete trace. After `rag_deprecate`, the same `id` is free to be re-added if needed.
 
 ## Phase 4 Reads the Plan, Not the User
 

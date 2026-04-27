@@ -325,8 +325,11 @@ export function registerRagRoutes(
   // DELETE /v1/rag/collections/:id/documents/:did
   router.delete(
     '/rag/collections/:id/documents/:did',
-    (req: Request, res: Response) => {
-      const deleted = registry.deleteDocument(req.params.id, req.params.did);
+    async (req: Request, res: Response) => {
+      const deleted = await registry.deleteDocument(
+        req.params.id,
+        req.params.did,
+      );
       if (!deleted) {
         error(res, 404, 'Document not found');
         return;

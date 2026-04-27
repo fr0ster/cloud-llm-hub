@@ -445,13 +445,24 @@ export class CollectionRegistry {
     return existing;
   }
 
-  deleteDocument(collectionId: string, docId: string): boolean {
+  async deleteDocument(collectionId: string, docId: string): Promise<boolean> {
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
     const deleted = stored.documents.delete(docId);
     if (deleted) {
       stored.meta.documentCount = stored.documents.size;
       this.deleteDocumentFile(collectionId, docId);
+      // Also drop the vector embedding from the RAG store, otherwise
+      // retrieval keeps surfacing the deleted document.
+      try {
+        await stored.rag.deleteById(`doc:${collectionId}:${docId}`);
+      } catch (err) {
+        this.log.warn('Failed to delete vector for document', {
+          collectionId,
+          docId,
+          error: (err as Error).message,
+        });
+      }
     }
     return deleted;
   }
