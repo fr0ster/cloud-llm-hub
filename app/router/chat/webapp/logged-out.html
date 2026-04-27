@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <title>Signed out — Cloud LLM Hub</title>
+    <style>
+        body {
+            background: #0b0b0b;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .card {
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 40px 50px;
+            text-align: center;
+            max-width: 420px;
+        }
+        h1 { margin: 0 0 12px; font-size: 18px; font-weight: 500; }
+        p { color: #888; font-size: 13px; margin: 0 0 24px; }
+        a.btn {
+            display: inline-block;
+            padding: 8px 20px;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            background: #1a1a1a;
+            text-decoration: none;
+            font-size: 12px;
+            letter-spacing: 0.05em;
+            border-radius: 3px;
+        }
+        a.btn:hover { background: #333; color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Signed out</h1>
+        <p>Your session has ended. Click below to sign in again.</p>
+        <button class="btn" type="button" onclick="signIn()">SIGN IN</button>
+    </div>
+    <script>
+        // Defence-in-depth: clear any local/session storage residue.
+        try { localStorage.clear(); } catch {}
+        try { sessionStorage.clear(); } catch {}
+        function signIn() {
+            // Cache-bust query + replace so the browser can't serve the
+            // previously-loaded (authenticated) index.html from its cache,
+            // and the back button doesn't return here.
+            window.location.replace('/chat/webapp/index.html?_=' + Date.now());
+        }
+    </script>
+</body>
+</html>
