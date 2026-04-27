@@ -19,7 +19,7 @@ A different input idea yields a different `business-requirements`, which yields 
 **System:** SAP S/4HANA (on-premise) via cloud-llm-hub
 **Skill:** Upload `skills/rap-bo-creation.md` to a RAG collection before starting
 **Time:** 1-2 hours
-**Prerequisites:** cloud-llm-hub chat UI with MCP connection to SAP
+**Prerequisites:** cloud-llm-hub chat UI with MCP connection to SAP, one working RAG collection for this tutorial
 
 ### Progress checklist
 
@@ -31,6 +31,16 @@ Tick each box as you go — keeps you oriented across a multi-hour run.
 - [ ] Phase 3 — Implementation Plan saved as `impl-plan`
 - [ ] Phase 4 — All objects active, service binding published
 - [ ] Final test in Fiori preview passes
+
+### Work rhythm
+
+Use this rhythm if long tutorials are hard to follow:
+
+- Do one phase or one implementation layer at a time.
+- Keep only one goal in the chat prompt.
+- After each saved artifact or active layer, tick the checklist and take a short pause.
+- Start a fresh chat session after each layer, or after about 10 messages.
+- If you feel lost, ask: *"Show my current phase, current artifact, and next one action."*
 
 ---
 
@@ -86,6 +96,21 @@ The agent saves the artifacts of Phase 1–3 (business requirements, technical s
 
 The agent then writes Phase 1–3 outputs into this collection via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. You do not need to interact with the collection manually — just keep it enabled.
 
+### RAG contract for this tutorial
+
+| Phase | Save exactly this id | What it contains |
+|---|---|---|
+| Phase 1 | `business-requirements` | Business entities, attributes, relationships, rules, use cases |
+| Phase 2 | `tech-spec` | ABAP objects, fields, mappings, annotations, draft design |
+| Phase 3 | `impl-plan` | Ordered build steps and checkpoints |
+
+Rules:
+
+- Save each accepted artifact with `rag_add`.
+- Correct an existing artifact with `rag_correct`, not a second `rag_add`.
+- Keep the same id after correction.
+- In Phase 4, prompts point to plan steps. You do not retype DDL or object names.
+
 ### Choose your prefix
 
 Use the prefix convention from [`rap-bo-creation.md` → Naming Convention](rap-bo-creation.md#naming-convention) — `Z<II><NN>_` (your 2-char initials + 2-digit number). Verify it is unused:
@@ -129,6 +154,12 @@ Repeat until you're satisfied. Then:
 > The business requirements look complete. Save them to the `book-catalog` collection as `business-requirements`.
 
 The agent calls `rag_add` and shows a `RAG OP: rag_add OK` card with id `business-requirements`. If it does not, ask explicitly: *"Use rag_add — collection `book-catalog`, id `business-requirements`."* From now on, later phases pull this artifact from RAG; you do not need to copy or re-paste it.
+
+Checkpoint before moving on:
+
+- The RAG card says `rag_add OK`.
+- The id is `business-requirements`.
+- You can explain the business model in 2-3 sentences.
 
 > Let's move to the technical specification.
 
@@ -189,6 +220,12 @@ The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — 
 
 > **Spec is a living document.** Phase 4 may surface issues SAP only catches when checking the real DDL. The agent will then call `rag_correct` on `tech-spec` — see the skill for that flow.
 
+Checkpoint before moving on:
+
+- The RAG card says `rag_add OK`.
+- The id is `tech-spec`.
+- Draft tables, BDEF mappings, draft actions, and authorization rules passed the review checklist.
+
 > Let's create an implementation plan.
 
 ---
@@ -234,6 +271,12 @@ Repeat until the plan is solid. Then:
 > The plan looks good. Save it as `impl-plan` in the `book-catalog` collection.
 
 The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — collection `book-catalog`, id `impl-plan`."*
+
+Checkpoint before moving on:
+
+- The RAG card says `rag_add OK`.
+- The id is `impl-plan`.
+- Every plan step has a clear verification step.
 
 > Let's start implementation.
 

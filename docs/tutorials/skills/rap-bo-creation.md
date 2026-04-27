@@ -114,6 +114,21 @@ Errors found in Phase 4 (or later in Phase 2/3) often originate in an earlier ar
 
 **Use `rag_deprecate`** only when an artifact is no longer relevant (e.g. user pivoted scope, dropped an entity entirely) and there is no replacement. The record is removed from the collection — there is no soft-delete trace. After `rag_deprecate`, the same `id` is free to be re-added if needed.
 
+## User-Facing Tutorial Style
+
+The tutorial is often followed by people who are new to RAP, are reading in B1-level English, or have ADHD / limited attention for long sessions. Keep interaction short and concrete.
+
+**Rules:**
+
+- Start each reply with the current phase and the one action you are taking.
+- Use short sentences. Avoid dense paragraphs unless you are returning a generated artifact.
+- Give one next action, not a menu of optional work.
+- For long artifacts, show a short summary first, then the artifact.
+- After every `rag_add` or `rag_correct`, state the collection and id in one sentence.
+- After every implementation layer, list only: created objects, verification result, next step.
+- If the user seems lost, answer with: current phase, current artifact id, last verified checkpoint, next prompt to send.
+- Prefer checklists for progress. Do not hide key decisions inside prose.
+
 ## Phase 4 Reads the Plan, Not the User
 
 Object names, types, lengths, keys, mappings, DDL — all of these are decided by the user in Phase 2 (technical specification) and ordered into steps in Phase 3 (implementation plan). Both artifacts are saved in RAG before Phase 4 starts (id `tech-spec`, id `impl-plan`).
