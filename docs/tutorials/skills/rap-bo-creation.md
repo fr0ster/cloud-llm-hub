@@ -1,7 +1,7 @@
 ---
 name: RAP Business Object Creation
 description: Rules and constraints for creating SAP RAP managed Business Objects with draft support on on-premise S/4HANA systems via MCP tools
-version: 2.2.0
+version: 2.2.1
 tags: [sap, rap, abap, cds, bdef, draft, fiori]
 ---
 
@@ -51,25 +51,20 @@ If any of these fail, the spec is incomplete — go back to Phase 2 and fix befo
 
 ## Hallucination Detection
 
-The LLM may fabricate successful results without actually executing MCP tools. Indicators:
+You may fabricate successful tool results without actually executing MCP tools, especially under two pressures: (1) batches of 5+ objects in one prompt, where the pattern from the first few successful creations gets reused for the rest; (2) long conversation context (10+ messages), where accumulated history overrides tool execution and earlier-response shapes get reproduced verbatim.
 
-- **Low prompt token count** — a real tool call uses 40K–100K+ prompt tokens. A response with ~4K tokens likely had no tool execution.
-- **Missing execution traces** — real tool calls produce `[SmartAgent: Executing ToolName...]` lines in the response. No trace = no execution.
-- **Long conversation context** — after 10–12 messages in a session, the LLM tends to "pattern-match" earlier successful responses instead of calling tools.
+**Detection signals** — any one is enough to treat the response as fake and redo the step:
+- Prompt token count under ~10K (a real tool call burns 40K–100K+).
+- No `[SmartAgent: Executing ToolName...]` line in the response.
+- Reply arrives in seconds when 6 objects should take 30–60 s of tool calls.
 
-**Triggers:**
-- **Too many parallel tasks in one prompt** — asking to create 5+ objects at once increases hallucination risk. The LLM sees the pattern from the first 2–3 successful creations and fabricates the rest.
-- **Long conversation context** — accumulated history from prior steps competes with tool execution. The LLM "remembers" the answer format and skips calling tools entirely.
-
-**Rules:**
-- Create objects in batches of 3–4 per prompt, not more.
-- After batch creation, always verify by reading each object back (preferably in a fresh session).
-- **"Active" is a claim, not a result.** The LLM often writes "✅ All N objects are active" without running the tool. Require actual `ReadDomain` / `ReadDataElement` / `ReadTable` output with an `active: true` field before accepting the claim.
-- **Follow the plan's step numbering.** If the plan says Step 1.2 has 20 domains, Phase 4 must produce exactly those 20, in that order, not a re-numbered sequence the LLM invented on the fly.
-- **No silent additions.** If the plan says 20 domains, creating a 21st (because "it seemed needed") is a spec drift. Report first, wait for approval, then create.
-- **No duplicates.** If `SearchObject` finds a matching name, stop and ask — do not create an alternate name like `_V2`, `_NEW` etc.
-- If prompt token count is suspiciously low, treat the response as fake and redo the step.
-- Start a fresh conversation session after each layer or every ~10 messages.
+**Hard rules to prevent it:**
+- **Batches of 3–4 objects per prompt, never more.**
+- **"Active" is a claim, not a result.** The phrase "✅ All N objects are active" is meaningless without a real `ReadDomain` / `ReadDataElement` / `ReadTable` call returning `active: true`. After every batch create, read each object back, preferably in a fresh session.
+- **Follow the plan's numbering.** If the plan says Step 1.2 has 20 domains, produce exactly those 20 in that order. No invented numbering.
+- **No silent additions.** A 21st domain "because it seemed needed" is spec drift — report first, wait for approval, then create.
+- **No duplicates.** If `SearchObject` finds a matching name, stop and ask. Do not invent `_V2`, `_NEW`, alternate prefixes.
+- Start a fresh conversation session after each layer or roughly every 10 messages.
 
 ## Artifact Lifecycle in RAG
 
