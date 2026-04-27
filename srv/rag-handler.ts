@@ -8,6 +8,11 @@
 import cds from '@sap/cds';
 import type { Request, Response, Router } from 'express';
 import type { CollectionRegistry } from './rag-collections';
+import {
+  buildRagToolSchemas,
+  dispatchRagTool,
+  getRagToolNames,
+} from './rag-tool-dispatcher';
 
 const log = cds.log('rag-handler');
 
@@ -446,6 +451,26 @@ export function registerRagRoutes(
     },
   );
 
+  // -------------------------------------------------------------------
+  // External-tool dispatch (rag_add / rag_correct / rag_deprecate)
+  // -------------------------------------------------------------------
+
+  // GET /v1/rag/tools — OpenAI-format schemas for body.tools
+  router.get('/rag/tools', (_req: Request, res: Response) => {
+    json(res, 200, { tools: buildRagToolSchemas() });
+  });
+
+  // POST /v1/rag/tool/:name — dispatch a single tool call
+  router.post('/rag/tool/:name', async (req: Request, res: Response) => {
+    const name = req.params.name;
+    if (!getRagToolNames().includes(name as never)) {
+      error(res, 404, `Unknown RAG tool: ${name}`);
+      return;
+    }
+    const result = await dispatchRagTool(registry, name, req.body ?? {});
+    json(res, result.ok ? 200 : 400, result);
+  });
+
   log.info('RAG management routes registered', {
     prefix: '/v1/rag',
     endpoints: [
@@ -463,6 +488,8 @@ export function registerRagRoutes(
       'PUT /v1/rag/collections/:id/documents/:did',
       'DELETE /v1/rag/collections/:id/documents/:did',
       'POST /v1/rag/collections/:id/query',
+      'GET /v1/rag/tools',
+      'POST /v1/rag/tool/:name',
     ],
   });
 }
