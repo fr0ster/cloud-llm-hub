@@ -25,13 +25,14 @@ If you want a specific BO to appear, you must steer every phase. AI will not rea
 
 ## Four phases
 
-Each phase produces a file. You approve before moving on. Never let AI chain phases on its own.
+Phases 1-3 produce one saved artifact each. You approve before moving on. Never let AI chain phases on its own.
 
 ### Phase 1 — Business requirements
 
 - **Your role:** domain expert.
 - **AI's role:** business analyst, formalizing what you describe.
 - **Output:** a markdown file listing entities, relationships, business rules, use cases.
+- **Save as:** `business-requirements` in the working RAG collection.
 - **Done when:** the file covers your idea end-to-end in plain business language, no ABAP terms.
 
 ### Phase 2 — Technical specification (draft)
@@ -39,6 +40,7 @@ Each phase produces a file. You approve before moving on. Never let AI chain pha
 - **Your role:** architect. You decide technology (RAP managed + draft, strict 2), naming, constraints.
 - **AI's role:** technical writer, translating business rules into ABAP objects, DDL, mappings.
 - **Output:** a markdown file — all domains, data elements, tables (persistent and draft), CDS views, BDEF, service layer.
+- **Save as:** `tech-spec` in the working RAG collection.
 - **Done when:** every field maps to a named data element (no base ABAP types in tables); every DE references a domain; domains have concrete type + length; compositions vs associations are correct; draft tables are declared for every persistent table.
 - **Important:** this is a draft. Implementation (Phase 4) will reveal gaps. Accept that now — investing effort in the draft reduces later churn but does not eliminate it.
 
@@ -47,6 +49,7 @@ Each phase produces a file. You approve before moving on. Never let AI chain pha
 - **Your role:** project manager.
 - **AI's role:** lead developer.
 - **Output:** a numbered plan — package → domains → data elements → tables → draft tables → CDS interface → CDS projection → MDE → BDEF + BIMP → projection BDEF → service definition → service binding. Each step names the objects, the DDL, the verification, and the activation.
+- **Save as:** `impl-plan` in the working RAG collection.
 - **Done when:** the plan lists every object from the spec, in dependency order, with explicit activation checkpoints between layers.
 
 ### Phase 4 — Implementation
@@ -58,13 +61,31 @@ Each phase produces a file. You approve before moving on. Never let AI chain pha
 - **Checkpoint between layers:** every object in the layer is verified active before starting the next layer.
 - **Done when:** the service binding works in a browser.
 
-**During Phase 4 the spec is alive.** When reality diverges from the draft — e.g. a field type you specified does not activate — fix the spec file AND re-ingest it into the RAG collection, so later prompts retrieve the corrected version.
+**During Phase 4 the spec is alive.** When reality diverges from the draft — e.g. a field type you specified does not activate — correct the saved artifact with `rag_correct` first, then fix the SAP object. Later prompts retrieve the corrected version by the same artifact id.
 
-## Why RAG re-ingest matters
+## RAG artifact rules
 
-RAG indexes the first version of each artefact. Corrected versions sit next to the originals until you re-ingest. Without re-ingest, later prompts retrieve the stale version and reintroduce the bug you already fixed. This is the single biggest source of "why did AI repeat that mistake" complaints.
+Create one working RAG collection before Phase 1. The tutorial should say this in prerequisites.
 
-Rule: after any meaningful correction to the spec or plan, re-upload the file to its RAG collection before proceeding.
+| Phase | Artifact id | Save with | Correct with |
+|---|---|---|---|
+| 1 | `business-requirements` | `rag_add` | `rag_correct` |
+| 2 | `tech-spec` | `rag_add` | `rag_correct` |
+| 3 | `impl-plan` | `rag_add` | `rag_correct` |
+
+Do not re-upload corrected artifacts manually and do not call `rag_add` again with the same id. `rag_correct` keeps the id stable and supersedes the old version.
+
+## Readability and focus rules
+
+Tutorials must be readable for B1-level English readers and workable for people with ADHD or anyone who loses focus in long sessions.
+
+- Use short sections with one goal per section.
+- Put the action before the explanation.
+- Keep prompts copyable and separate from commentary.
+- Add checklists for progress and checkpoints.
+- Say when to pause, verify, or start a fresh session.
+- Avoid long paragraphs unless they are reference material.
+- Repeat critical safety rules near the step where the reader needs them.
 
 ## Anti-patterns
 

@@ -63,6 +63,14 @@ SmartAgent configuration, integration, and testing.
 - [Embedded Usage](llm-agent/EMBEDDED_USAGE.md)
 - [Testing](llm-agent/TESTING.md)
 
+### [Tutorials](tutorials/)
+
+RAP tutorials and AI-assisted learning flows.
+
+- [Tutorial Design Principles](tutorials/TUTORIAL_DESIGN_PRINCIPLES.md)
+- [Building a RAP BO with AI](tutorials/rap-bo-book-catalog.md)
+- [Creating a RAP Business Object](tutorials/rap-bo-creation.md)
+
 ### Additional
 
 - [Configuration Templates](templates/) — ready-to-use MCP configs
