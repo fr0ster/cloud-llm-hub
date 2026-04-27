@@ -48,7 +48,7 @@ const TOOL_DEFS = [
   {
     name: 'rag_correct' as const,
     description:
-      'Supersede the active record with the given `id` by a new corrected version. The previous record is kept in the store as audit history (tagged superseded) and dropped from retrieval. The new record stays addressable by the same `id`.',
+      'Replace the text of the active record with the given `id`. The same record stays addressable by the same `id` after the call; the previous text is overwritten. Use `rag_deprecate` if you want to retire the record entirely.',
     schema: ragCorrectSchema,
   },
   {
@@ -143,27 +143,21 @@ export async function dispatchRagTool(
             error: `No active record with id "${id}" in collection "${collection}"`,
           };
         }
-        const newPhysicalId = randomUUID();
-        await registry.addDocument(collection, {
-          id: newPhysicalId,
+        // In-place text update. The same physical record stays in the
+        // collection — addressable by the same `id` throughout its life.
+        // No supersede chain in MANAGE.
+        const updated = await registry.updateDocument(collection, active.id, {
           text: args.newText as string,
           metadata: {
             canonicalKey: id,
-            tags: ['correction'],
-          },
-        });
-        const updated = await registry.updateDocument(collection, active.id, {
-          metadata: {
-            supersededBy: newPhysicalId,
-            deprecatedReason: args.reason,
-            deprecatedAt: Math.floor(Date.now() / 1000),
-            tags: ['superseded'],
+            lastCorrectedReason: args.reason,
+            lastCorrectedAt: Math.floor(Date.now() / 1000),
           },
         });
         if (!updated) {
           return {
             ok: false,
-            error: `Predecessor record vanished mid-correction in "${collection}" (id "${id}")`,
+            error: `Active record vanished mid-correction in "${collection}" (id "${id}")`,
           };
         }
         return { ok: true, id };
