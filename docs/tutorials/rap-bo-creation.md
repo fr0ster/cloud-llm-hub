@@ -136,20 +136,41 @@ Before creating tables, we define custom domains and data elements. This provide
 
 ### 3.1 Domains
 
-**You type in chat:**
+**One domain per message.** After each one, wait for the agent to confirm the domain is active before sending the next.
 
-> Create the following domains in package TEST_##_MAT. Activate each after creation.
->
-> 1. Z##_D_MATNR — 'Material Number', type abap.char(40)
-> 2. Z##_D_MTART — 'Material Type', type abap.char(4)
-> 3. Z##_D_MATKL — 'Material Group', type abap.char(9)
-> 4. Z##_D_MEINS — 'Base Unit of Measure', type abap.unit(3)
-> 5. Z##_D_WERKS — 'Plant', type abap.char(4)
-> 6. Z##_D_MAKTX — 'Material Description', type abap.char(40)
-> 7. Z##_D_VKORG — 'Sales Organization', type abap.char(4)
-> 8. Z##_D_VTWEG — 'Distribution Channel', type abap.char(2)
+**Message 1:**
 
-**Expected result:** 8 domains created and activated.
+> Create domain Z##_D_MATNR in package TEST_##_MAT with description 'Material Number', type abap.char(40). Activate it, then read it back and confirm it is active.
+
+**Message 2:**
+
+> Create domain Z##_D_MTART in package TEST_##_MAT with description 'Material Type', type abap.char(4). Activate it, then read it back and confirm it is active.
+
+**Message 3:**
+
+> Create domain Z##_D_MATKL in package TEST_##_MAT with description 'Material Group', type abap.char(9). Activate it, then read it back and confirm it is active.
+
+**Message 4:**
+
+> Create domain Z##_D_MEINS in package TEST_##_MAT with description 'Base Unit of Measure', type abap.unit(3). Activate it, then read it back and confirm it is active.
+
+**Message 5:**
+
+> Create domain Z##_D_WERKS in package TEST_##_MAT with description 'Plant', type abap.char(4). Activate it, then read it back and confirm it is active.
+
+**Message 6:**
+
+> Create domain Z##_D_MAKTX in package TEST_##_MAT with description 'Material Description', type abap.char(40). Activate it, then read it back and confirm it is active.
+
+**Message 7:**
+
+> Create domain Z##_D_VKORG in package TEST_##_MAT with description 'Sales Organization', type abap.char(4). Activate it, then read it back and confirm it is active.
+
+**Message 8:**
+
+> Create domain Z##_D_VTWEG in package TEST_##_MAT with description 'Distribution Channel', type abap.char(2). Activate it, then read it back and confirm it is active.
+
+**Expected result:** 8 domains created and activated, one at a time.
 
 > **If domains are not activated:** The agent may create domains without activating them (they will have status "new"). If this happens, type:
 > "Activate all inactive domains starting with Z##_D_"
@@ -162,19 +183,43 @@ Before creating tables, we define custom domains and data elements. This provide
 
 > **Important:** All domains must be active before creating data elements. If data element creation fails with "domain not active", activate the domains first (see note above).
 
-**You type in chat:**
+**One data element per message.** After each one, wait for the agent to confirm it is active before sending the next.
 
-> Create the following data elements in package TEST_##_MAT. Each references the corresponding domain. Activate each after creation.
->
-> 1. Z##_E_MATNR — 'Material Number', domain Z##_D_MATNR
-> 2. Z##_E_MTART — 'Material Type', domain Z##_D_MTART
-> 3. Z##_E_MATKL — 'Material Group', domain Z##_D_MATKL
-> 4. Z##_E_MEINS — 'Base Unit of Measure', domain Z##_D_MEINS
-> 5. Z##_E_WERKS — 'Plant', domain Z##_D_WERKS
-> 6. Z##_E_MAKTX — 'Material Description', domain Z##_D_MAKTX
-> 7. Z##_E_VKORG — 'Sales Organization', domain Z##_D_VKORG
-> 8. Z##_E_VTWEG — 'Distribution Channel', domain Z##_D_VTWEG
-> 9. Z##_E_LVORM — 'Marked for Deletion', type CHAR length 1 (no domain needed)
+**Message 1:**
+
+> Create data element Z##_E_MATNR in package TEST_##_MAT with label 'Material Number', referencing domain Z##_D_MATNR. Activate it, then read it back and confirm it is active.
+
+**Message 2:**
+
+> Create data element Z##_E_MTART in package TEST_##_MAT with label 'Material Type', referencing domain Z##_D_MTART. Activate it, then read it back and confirm it is active.
+
+**Message 3:**
+
+> Create data element Z##_E_MATKL in package TEST_##_MAT with label 'Material Group', referencing domain Z##_D_MATKL. Activate it, then read it back and confirm it is active.
+
+**Message 4:**
+
+> Create data element Z##_E_MEINS in package TEST_##_MAT with label 'Base Unit of Measure', referencing domain Z##_D_MEINS. Activate it, then read it back and confirm it is active.
+
+**Message 5:**
+
+> Create data element Z##_E_WERKS in package TEST_##_MAT with label 'Plant', referencing domain Z##_D_WERKS. Activate it, then read it back and confirm it is active.
+
+**Message 6:**
+
+> Create data element Z##_E_MAKTX in package TEST_##_MAT with label 'Material Description', referencing domain Z##_D_MAKTX. Activate it, then read it back and confirm it is active.
+
+**Message 7:**
+
+> Create data element Z##_E_VKORG in package TEST_##_MAT with label 'Sales Organization', referencing domain Z##_D_VKORG. Activate it, then read it back and confirm it is active.
+
+**Message 8:**
+
+> Create data element Z##_E_VTWEG in package TEST_##_MAT with label 'Distribution Channel', referencing domain Z##_D_VTWEG. Activate it, then read it back and confirm it is active.
+
+**Message 9:**
+
+> Create data element Z##_E_LVORM in package TEST_##_MAT with label 'Marked for Deletion', type CHAR length 1, no domain. Activate it, then read it back and confirm it is active.
 
 **Expected result:** 9 data elements created and activated.
 
@@ -216,7 +261,7 @@ The foundation of any RAP BO is the database tables. We need 4 persistent tables
 > - last_changed_at : abp_locinst_lastchange_tstmpl
 > - local_last_changed_at : abp_lastchange_tstmpl
 >
-> Activate after creation.
+> Activate after creation. Then read table Z##_MARA back and confirm it is active with exactly these fields.
 
 > **Key concept:** Creating an ABAP object is always a two-step process:
 > 1. `Create*` — creates an empty shell with metadata
@@ -228,35 +273,57 @@ The foundation of any RAP BO is the database tables. We need 4 persistent tables
 
 ### 4.2 Child Tables — Z##_MARC, Z##_MAKT, Z##_MVKE
 
-**You type in chat:**
+**One child table per message.** After each one, wait for the agent to confirm it is active before sending the next.
 
-> Now create the 3 child tables in package TEST_##_MAT. Use the data elements from Step 3. Include the same audit fields as the root table. Activate all after creation.
+**Message 1 — Z##_MARC (Plant Data for Material):**
+
+> Create table Z##_MARC in package TEST_##_MAT with description 'Plant Data for Material'. Fields:
+> - key client : abap.clnt not null
+> - key uuid : sysuuid_x16 not null
+> - key matnr : z##_e_matnr not null
+> - key werks : z##_e_werks not null
+> - root_uuid : sysuuid_x16
+> - created_by : abp_creation_user
+> - created_at : abp_creation_tstmpl
+> - last_changed_by : abp_locinst_lastchange_user
+> - last_changed_at : abp_locinst_lastchange_tstmpl
+> - local_last_changed_at : abp_lastchange_tstmpl
 >
-> 1. Z##_MARC — 'Plant Data for Material'
->    - key client : abap.clnt not null
->    - key uuid : sysuuid_x16 not null
->    - key matnr : z##_e_matnr not null
->    - key werks : z##_e_werks not null
->    - root_uuid : sysuuid_x16
->    - audit fields (created_by, created_at, last_changed_by, last_changed_at, local_last_changed_at)
+> Activate after creation. Then read Z##_MARC back and confirm it is active with exactly these fields.
+
+**Message 2 — Z##_MAKT (Material Descriptions):**
+
+> Create table Z##_MAKT in package TEST_##_MAT with description 'Material Descriptions'. Fields:
+> - key client : abap.clnt not null
+> - key uuid : sysuuid_x16 not null
+> - key matnr : z##_e_matnr not null
+> - key spras : spras not null
+> - root_uuid : sysuuid_x16
+> - maktx : z##_e_maktx
+> - created_by : abp_creation_user
+> - created_at : abp_creation_tstmpl
+> - last_changed_by : abp_locinst_lastchange_user
+> - last_changed_at : abp_locinst_lastchange_tstmpl
+> - local_last_changed_at : abp_lastchange_tstmpl
 >
-> 2. Z##_MAKT — 'Material Descriptions'
->    - key client : abap.clnt not null
->    - key uuid : sysuuid_x16 not null
->    - key matnr : z##_e_matnr not null
->    - key spras : spras not null
->    - root_uuid : sysuuid_x16
->    - maktx : z##_e_maktx
->    - audit fields
+> Activate after creation. Then read Z##_MAKT back and confirm it is active with exactly these fields.
+
+**Message 3 — Z##_MVKE (Sales Data for Material):**
+
+> Create table Z##_MVKE in package TEST_##_MAT with description 'Sales Data for Material'. Fields:
+> - key client : abap.clnt not null
+> - key uuid : sysuuid_x16 not null
+> - key matnr : z##_e_matnr not null
+> - key vkorg : z##_e_vkorg not null
+> - key vtweg : z##_e_vtweg not null
+> - root_uuid : sysuuid_x16
+> - created_by : abp_creation_user
+> - created_at : abp_creation_tstmpl
+> - last_changed_by : abp_locinst_lastchange_user
+> - last_changed_at : abp_locinst_lastchange_tstmpl
+> - local_last_changed_at : abp_lastchange_tstmpl
 >
-> 3. Z##_MVKE — 'Sales Data for Material'
->    - key client : abap.clnt not null
->    - key uuid : sysuuid_x16 not null
->    - key matnr : z##_e_matnr not null
->    - key vkorg : z##_e_vkorg not null
->    - key vtweg : z##_e_vtweg not null
->    - root_uuid : sysuuid_x16
->    - audit fields
+> Activate after creation. Then read Z##_MVKE back and confirm it is active with exactly these fields.
 
 **Expected result:** All 3 child tables created and activated. Each has `root_uuid` field linking back to the root.
 
@@ -268,25 +335,33 @@ The foundation of any RAP BO is the database tables. We need 4 persistent tables
 
 Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts before the user presses "Save".
 
-**You type in chat:**
+**One draft table per message.** After each one, wait for the agent to confirm it is active before sending the next.
 
-> Create draft tables for all 4 persistent tables in package TEST_##_MAT. Draft table naming: add _D suffix.
->
-> Rules for draft tables:
-> - key mandt : mandt not null (not abap.clnt!)
-> - key uuid : sysuuid_x16 not null
-> - **Key fields from persistent table must also be key in draft table** — but use CDS alias names
-> - Non-key fields use CDS-like PascalCase names (materialtype instead of mtart)
-> - Spell out audit fields individually using lowercase names: createdby, createdat, lastchangedby, lastchangedat, locallastchangedat
-> - Add "%admin" : include sych_bdl_draft_admin_inc at the end
->
-> Draft tables:
-> 1. Z##_MARA_D — root draft: key mandt, key uuid, **key matnr**, materialtype, materialgroup, markedfordeletion, baseunitofmeasure + audit + admin
-> 2. Z##_MARC_D — plant draft: key mandt, key uuid, **key matnr**, **key plant**(werks), rootuuid + audit + admin
-> 3. Z##_MAKT_D — text draft: key mandt, key uuid, **key matnr**, **key language**(spras), materialdescription, rootuuid + audit + admin
-> 4. Z##_MVKE_D — sales draft: key mandt, key uuid, **key matnr**, **key salesorganization**(vkorg), **key distributionchannel**(vtweg), rootuuid + audit + admin
->
-> Activate all after creation.
+Common rules for every draft table below:
+
+- `key mandt : mandt not null` (not `abap.clnt`)
+- `key uuid : sysuuid_x16 not null`
+- All key fields from the persistent table must also be keys in the draft table, using lowercased CDS aliases without underscores
+- Non-key fields use lowercased CDS aliases (`materialtype` instead of `mtart`)
+- Audit fields spelled out individually: `createdby`, `createdat`, `lastchangedby`, `lastchangedat`, `locallastchangedat`
+- End with `include sych_bdl_draft_admin_inc;` (with group name `"%admin"` if the tool supports it)
+- Do not add `draftuuid` or `parentuuid`; the draft framework manages those through the admin include
+
+**Message 1 — Z##_MARA_D (root draft):**
+
+> Create draft table Z##_MARA_D in package TEST_##_MAT, paired with persistent table Z##_MARA. Fields: key mandt, key uuid, key matnr, materialtype, materialgroup, markedfordeletion, baseunitofmeasure, createdby, createdat, lastchangedby, lastchangedat, locallastchangedat, plus `include sych_bdl_draft_admin_inc;`. Activate it, then read it back and confirm it is active and has no `draftuuid` or `parentuuid` field.
+
+**Message 2 — Z##_MARC_D (plant draft):**
+
+> Create draft table Z##_MARC_D in package TEST_##_MAT, paired with Z##_MARC. Fields: key mandt, key uuid, key matnr, key plant, rootuuid, createdby, createdat, lastchangedby, lastchangedat, locallastchangedat, plus `include sych_bdl_draft_admin_inc;`. Activate it, then read it back and confirm it is active and has no `draftuuid` or `parentuuid` field.
+
+**Message 3 — Z##_MAKT_D (text draft):**
+
+> Create draft table Z##_MAKT_D in package TEST_##_MAT, paired with Z##_MAKT. Fields: key mandt, key uuid, key matnr, key language, materialdescription, rootuuid, createdby, createdat, lastchangedby, lastchangedat, locallastchangedat, plus `include sych_bdl_draft_admin_inc;`. Activate it, then read it back and confirm it is active and has no `draftuuid` or `parentuuid` field.
+
+**Message 4 — Z##_MVKE_D (sales draft):**
+
+> Create draft table Z##_MVKE_D in package TEST_##_MAT, paired with Z##_MVKE. Fields: key mandt, key uuid, key matnr, key salesorganization, key distributionchannel, rootuuid, createdby, createdat, lastchangedby, lastchangedat, locallastchangedat, plus `include sych_bdl_draft_admin_inc;`. Activate it, then read it back and confirm it is active and has no `draftuuid` or `parentuuid` field.
 
 **What happens:** The agent creates 4 draft tables. The naming convention difference between persistent and draft tables is critical:
 
@@ -296,11 +371,11 @@ Draft tables enable the "Edit" mode in Fiori UI — changes are saved as drafts 
 | `matkl`                 | `materialgroup`       | CDS alias                        |
 | `created_by`            | `createdby`           | Audit fields spelled out, lowercase |
 
-In addition, the draft table must end with `"%admin" : include sych_bdl_draft_admin_inc` — this carries the draft-administration fields required by the RAP draft framework.
+In addition, the draft table must include `sych_bdl_draft_admin_inc` — this carries the draft-administration fields required by the RAP draft framework.
 
-**Expected result:** All 4 draft tables created and activated. Key fields match persistent tables (mandt + uuid + business keys), non-key fields use PascalCase CDS alias names, and the `%admin` include is present.
+**Expected result:** All 4 draft tables created and activated. Key fields match persistent tables (mandt + uuid + business keys), fields use lowercased CDS aliases without underscores, and the draft administration include is present.
 
-> **Critical rule:** Draft table key fields must match persistent table key fields. If persistent table has `key matnr`, draft table must also have `key matnr`. The field names in draft table must use CDS alias names (PascalCase for non-key fields), but key fields keep their original names.
+> **Critical rule:** Draft table key fields must match persistent table key fields. If persistent table has `key matnr`, draft table must also have `key matnr`. Draft table field names must use the CDS aliases lowercased without underscores, for example `materialtype`, `rootuuid`, `createdby`.
 >
 > **Known LLM mistake:** The LLM often generates draft tables with only `mandt` + `uuid` as keys, omitting business keys like `matnr`, `werks`, `spras`. This causes BDEF activation error: "Field MATNR is required but not a key". **Fix:** Ensure all key fields from the persistent table are also key fields in the draft table.
 >
@@ -350,26 +425,38 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 ### 6.2 Child CDS Views + Activate All
 
-**You type in chat:**
+**One child view per message. Do NOT activate yet — all 4 interface views (root + 3 children) must be activated together at the end because of the circular composition/association references.**
 
-> Create 3 child interface CDS view entities in the same package:
->
-> 1. Z##_R_MAT_PLANT — select from z##_marc
->    - association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
->    - Fields: uuid as Uuid, matnr as Matnr, werks as Plant, root_uuid as RootUuid + audit fields in PascalCase
->    - Expose _Root
->
-> 2. Z##_R_MAT_TEXT — select from z##_makt
->    - association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
->    - Fields: uuid as Uuid, matnr as Matnr, spras as Language, maktx as MaterialDescription, root_uuid as RootUuid + audit fields
->    - Expose _Root
->
-> 3. Z##_R_MAT_SALES — select from z##_mvke
->    - association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
->    - Fields: uuid as Uuid, matnr as Matnr, vkorg as SalesOrganization, vtweg as DistributionChannel, root_uuid as RootUuid + audit fields
->    - Expose _Root
->
-> After creating all 3, activate ALL 4 interface CDS views together (Z##_R_MAT_ROOT + 3 children).
+**Message 1 — Z##_R_MAT_PLANT:**
+
+> Create interface CDS view entity Z##_R_MAT_PLANT in package TEST_##_MAT.
+> Source table: z##_marc
+> association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
+> Fields: uuid as Uuid, matnr as Matnr, werks as Plant, root_uuid as RootUuid, created_by as CreatedBy, created_at as CreatedAt, last_changed_by as LastChangedBy, last_changed_at as LastChangedAt, local_last_changed_at as LocalLastChangedAt
+> Expose _Root.
+> Do NOT activate yet.
+
+**Message 2 — Z##_R_MAT_TEXT:**
+
+> Create interface CDS view entity Z##_R_MAT_TEXT in package TEST_##_MAT.
+> Source table: z##_makt
+> association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
+> Fields: uuid as Uuid, matnr as Matnr, spras as Language, maktx as MaterialDescription, root_uuid as RootUuid, created_by as CreatedBy, created_at as CreatedAt, last_changed_by as LastChangedBy, last_changed_at as LastChangedAt, local_last_changed_at as LocalLastChangedAt
+> Expose _Root.
+> Do NOT activate yet.
+
+**Message 3 — Z##_R_MAT_SALES:**
+
+> Create interface CDS view entity Z##_R_MAT_SALES in package TEST_##_MAT.
+> Source table: z##_mvke
+> association to parent Z##_R_MAT_ROOT as _Root on $projection.Matnr = _Root.Matnr and $projection.RootUuid = _Root.Uuid
+> Fields: uuid as Uuid, matnr as Matnr, vkorg as SalesOrganization, vtweg as DistributionChannel, root_uuid as RootUuid, created_by as CreatedBy, created_at as CreatedAt, last_changed_by as LastChangedBy, last_changed_at as LastChangedAt, local_last_changed_at as LocalLastChangedAt
+> Expose _Root.
+> Do NOT activate yet.
+
+**Message 4 — Activate the group:**
+
+> Activate ALL 4 interface CDS views together: Z##_R_MAT_ROOT, Z##_R_MAT_PLANT, Z##_R_MAT_TEXT, Z##_R_MAT_SALES.
 
 **Expected result:** All 4 CDS views created and activated. The agent confirms all views are active.
 
@@ -393,38 +480,55 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 Projections define what the service consumer sees. They reference the interface CDS views.
 
-> **Same activation strategy as Step 5:** Projections have the same circular dependency pattern (root redirects to child projections, children redirect to parent). Create all 4, then activate together.
+> **Same activation strategy as Step 6:** Projections have the same circular dependency pattern (root redirects to child projections, children redirect to parent). Create all 4, then activate together.
 
 **You type in chat:**
 
-> Create projection CDS views for all 4 entities in package TEST_##_MAT:
->
-> 1. Z##_C_MAT_ROOT — root projection on Z##_R_MAT_ROOT
->    - provider contract transactional_query
->    - All fields from interface view
->    - Redirect compositions: _Plant : redirected to Z##_C_MAT_PLANT, _Text : redirected to Z##_C_MAT_TEXT, _Sales : redirected to Z##_C_MAT_SALES
->    - @Search.searchable: true on view, @Search.defaultSearchElement on Matnr
->    - @Metadata.allowExtensions: true
->
-> 2. Z##_C_MAT_PLANT — projection on Z##_R_MAT_PLANT
->    - All fields, redirect _Root : redirected to Z##_C_MAT_ROOT
->    - @Metadata.allowExtensions: true
->
-> 3. Z##_C_MAT_TEXT — projection on Z##_R_MAT_TEXT
->    - All fields, redirect _Root : redirected to Z##_C_MAT_ROOT
->    - @Metadata.allowExtensions: true
->
-> 4. Z##_C_MAT_SALES — projection on Z##_R_MAT_SALES
->    - All fields, redirect _Root : redirected to Z##_C_MAT_ROOT
->    - @Metadata.allowExtensions: true
->
-> Create all 4 without activating, then activate all 4 together.
+**One projection per message. Do NOT activate yet — all 4 must be activated together because of the redirect chain.**
+
+**Message 1 — Z##_C_MAT_ROOT:**
+
+> Create projection CDS view Z##_C_MAT_ROOT in package TEST_##_MAT as projection on Z##_R_MAT_ROOT.
+> - provider contract transactional_query
+> - All fields from the interface view
+> - Redirect compositions: _Plant : redirected to composition child Z##_C_MAT_PLANT, _Text : redirected to composition child Z##_C_MAT_TEXT, _Sales : redirected to composition child Z##_C_MAT_SALES
+> - @Search.searchable: true on view, @Search.defaultSearchElement on Matnr
+> - @Metadata.allowExtensions: true
+> Do NOT activate yet.
+
+**Message 2 — Z##_C_MAT_PLANT:**
+
+> Create projection CDS view Z##_C_MAT_PLANT in package TEST_##_MAT as projection on Z##_R_MAT_PLANT.
+> - All fields from the interface view
+> - Redirect _Root : redirected to parent Z##_C_MAT_ROOT
+> - @Metadata.allowExtensions: true
+> Do NOT activate yet.
+
+**Message 3 — Z##_C_MAT_TEXT:**
+
+> Create projection CDS view Z##_C_MAT_TEXT in package TEST_##_MAT as projection on Z##_R_MAT_TEXT.
+> - All fields from the interface view
+> - Redirect _Root : redirected to parent Z##_C_MAT_ROOT
+> - @Metadata.allowExtensions: true
+> Do NOT activate yet.
+
+**Message 4 — Z##_C_MAT_SALES:**
+
+> Create projection CDS view Z##_C_MAT_SALES in package TEST_##_MAT as projection on Z##_R_MAT_SALES.
+> - All fields from the interface view
+> - Redirect _Root : redirected to parent Z##_C_MAT_ROOT
+> - @Metadata.allowExtensions: true
+> Do NOT activate yet.
+
+**Message 5 — Activate the group:**
+
+> Activate ALL 4 projection CDS views together: Z##_C_MAT_ROOT, Z##_C_MAT_PLANT, Z##_C_MAT_TEXT, Z##_C_MAT_SALES.
 
 **What happens:**
 
 - Each C-view is defined `as projection on` the matching R-view (`Z##_C_MAT_ROOT` on `Z##_R_MAT_ROOT`, and so on).
-- Root projection redirects each composition to the child projection: `_Plant : redirected to Z##_C_MAT_PLANT`, etc.
-- Each child projection redirects `_Root` back to the parent projection (`Z##_C_MAT_ROOT`).
+- Root projection redirects each composition to the child projection: `_Plant : redirected to composition child Z##_C_MAT_PLANT`, etc.
+- Each child projection redirects `_Root` back to the parent projection: `_Root : redirected to parent Z##_C_MAT_ROOT`.
 - Only the root projection carries `provider contract transactional_query` — mandatory for a managed RAP BO with draft.
 
 **Expected result:** All 4 projection CDS views created and activated.
@@ -674,11 +778,12 @@ Interface BDEF header: `managed` + `strict ( 2 )` + `with draft`. Entities:
 > ENDCLASS.
 > ```
 >
-> Activate it.
+> After the class exists, activate Z##_R_MAT_ROOT behavior definition and ZBP_##_R_MAT_ROOT together. If generic object activation cannot find the behavior definition, use direct behavior definition activation for Z##_R_MAT_ROOT, then activate the class.
 
 **Expected result:** A BIMP class with empty global class and a local handler class `lhc_MaterialRoot` implementing `get_instance_authorizations`. After BIMP exists, the BDEF from Step 9 can be activated.
 
 > **Note:** Steps 9 and 10 have a circular dependency: BDEF references the BIMP class, but the class is "for behavior of" the BDEF. The agent may need to create both and then activate them together.
+> If generic object activation cannot find the BDEF, ask the agent to activate the behavior definition directly (for example, `ActivateBehaviorDefinition`) and then activate the BIMP class.
 >
 > **Known LLM mistake:** The agent may create the BIMP as a plain empty class without local types. The correct BIMP has: empty global class + local handler class inheriting from `cl_abap_behavior_handler` with authorization method. If the BDEF has `authorization master ( instance )`, the handler class **must** implement `get_instance_authorizations`. Without it, activation fails.
 
@@ -694,6 +799,7 @@ Interface BDEF header: `managed` + `strict ( 2 )` + `with draft`. Entities:
 > Root entity Z##_C_MAT_ROOT (alias Material):
 > - use etag
 > - use create, update, delete
+> - use action Edit, Activate, Discard, Resume, Prepare
 > - use association _Plant { create; with draft; }
 > - use association _Text { create; with draft; }
 > - use association _Sales { create; with draft; }
@@ -703,7 +809,7 @@ Interface BDEF header: `managed` + `strict ( 2 )` + `with draft`. Entities:
 > - use update, delete
 > - use association _Root { with draft; }
 >
-> Activate.
+> Activate the projection behavior definition after creation.
 
 **Expected result:** Projection BDEF created and activated.
 
@@ -732,6 +838,7 @@ Interface BDEF header: `managed` + `strict ( 2 )` + `with draft`. Entities:
 **You type in chat:**
 
 > Create OData V4 UI service binding ZUI_##_MAT_O4 in package TEST_##_MAT for service definition ZUI_##_MAT_O4.
+> Use binding variant ODATA_V4_UI.
 > After creation, publish it.
 
 **Expected result:** Service binding created, activated, and published. You get a service URL for testing.
@@ -748,7 +855,7 @@ After all steps, verify the BO works:
 
 > Check the current state of all objects in package TEST_##_MAT. List any inactive objects and activate them.
 
-**Expected result:** The agent lists all ~20 objects and confirms they are all active. If any are inactive, it activates them.
+**Expected result:** The agent lists all tutorial objects and confirms they are all active. If any are inactive, it activates them.
 
 > **Final test:** Open the service binding in ADT and use "Preview" to launch the Fiori Elements app. You should be able to create, edit, and delete materials with plant data, texts, and sales data.
 
@@ -766,18 +873,7 @@ Draft tables use CDS alias names (MaterialType), not table field names (mtart). 
 Activate tables before creating CDS views. Objects must be activated in dependency order.
 
 ### "Draft table missing admin fields"
-Add `"%admin" : include sych_bdl_draft_admin_inc;` to the draft table.
-
-### Corrected artifact still gets reused with the old version
-
-The RAG collection keeps the first version of every indexed artifact. If you fix an error (wrong field name, missing mapping, bad DDL), the stale version is still retrievable and later steps may pull it in.
-
-**Workaround — until the RAG correction layer ships:**
-
-1. After you correct an artifact, open MANAGE → collection.
-2. Delete the stale entry (or overwrite the file).
-3. Upload the corrected version.
-4. Tell the agent: *"I've re-ingested the corrected `<object>`. Use the new version from RAG."*
+Add `include sych_bdl_draft_admin_inc;` to the draft table, ideally with group name `"%admin"` if the tool supports it.
 
 ### Agent creates but doesn't activate
 After each creation step, you can ask: "Activate all inactive objects starting with Z##_" or "Activate Z##_R_MAT_ROOT".
@@ -794,7 +890,7 @@ After each creation step, you can ask: "Activate all inactive objects starting w
 1. Always create objects in dependency order (package → domains → data elements → tables → CDS → BDEF → service)
 2. On on-premise, local packages must start with `TEST_` or `$` (software component LOCAL)
 3. Draft table keys must match persistent table keys — business keys included
-4. Draft table non-key fields use CDS alias names (PascalCase), key fields keep original names
+4. Draft table fields use lowercased CDS aliases without underscores
 5. CDS views with circular references (root ↔ children) must be activated together
 6. **Before group activation — run syntax check on each object and fix errors until clean.** This prevents costly activation failures and retry loops
 7. BDEF strict(2) requires: authorization master/dependent, lock master/dependent, all 5 draft actions (Edit, Resume, Activate, Discard, Prepare), explicit field mapping (not `corresponding`)
