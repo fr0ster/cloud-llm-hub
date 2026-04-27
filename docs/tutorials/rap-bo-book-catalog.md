@@ -4,7 +4,17 @@ This tutorial teaches you how to build a complete SAP Fiori application through 
 
 > **Read first:** [Tutorial Design Principles](TUTORIAL_DESIGN_PRINCIPLES.md) — the method behind this tutorial. **The methodology is the lesson; the application you build is the side effect.** Book Catalog is the example domain used in every prompt below — substitute your own (warehouse stock, equipment maintenance, contact CRM, …) and the same flow applies.
 
-**Example app:** A Book Catalog — authors, books, editions, reader ratings — with a Fiori UI. The shape of YOUR app comes out of Phase 1; entities, fields, and relationships below are illustrations.
+**The flow is a transformation pipeline.** Each phase takes the previous phase's artifact and produces the next one:
+
+```
+your informal idea
+   → Phase 1 → business-requirements (formal description)
+   → Phase 2 → tech-spec (ABAP design)
+   → Phase 3 → impl-plan (ordered steps)
+   → Phase 4 → active SAP objects (running app)
+```
+
+A different input idea yields a different `business-requirements`, which yields a different `tech-spec`, plan, and final functionality. The Book Catalog walkthrough below is one trace through the pipeline — your run will diverge as soon as your Phase 1 idea differs.
 
 **System:** SAP S/4HANA (on-premise) via cloud-llm-hub
 **Skill:** Upload `skills/rap-bo-creation.md` to a RAG collection before starting
@@ -87,8 +97,9 @@ Use the prefix convention from [`rap-bo-creation.md` → Naming Convention](rap-
 ## Phase 1: Business Requirements
 
 **Your role:** domain expert. **AI's role:** business analyst.
-**Goal:** A clear, formal description of what the application does — in business terms, no technical details yet.
-**Output:** A markdown document, saved to RAG as `business-requirements`.
+**Input:** Your idea in plain words (no ABAP, no schema — just what the app does).
+**Output:** A formal business-requirements document, saved to RAG as `business-requirements`.
+**Transformation:** informal idea → structured entities, attributes, relationships, use cases.
 
 ### Start the conversation
 
@@ -126,8 +137,9 @@ The agent calls `rag_add` and shows a `RAG OP: rag_add OK` card with id `busines
 ## Phase 2: Technical Specification (Draft)
 
 **Your role:** architect. **AI's role:** technical writer.
-**Goal:** Transform business requirements into a **draft** technical specification — ABAP object types, field definitions, relationships, UI annotations.
-**Output:** A markdown document, saved to RAG as `tech-spec`. The agent retrieves `business-requirements` from RAG to base the spec on.
+**Input:** `business-requirements` (Phase 1) — the agent retrieves it from RAG.
+**Output:** A draft technical specification, saved to RAG as `tech-spec`.
+**Transformation:** business entities → ABAP object types, DDL, field definitions, draft tables, BDEF mappings, UI annotations.
 
 > **This is a draft, not a final document.** During Phase 4 (implementation) you will find issues — wrong field types, missing keys, wrong mappings. That is expected. You will refine the specification while you build. But **the better the draft now, the fewer fixes later** — so spend time here. A careful draft with correct field types, keys, and mappings saves a lot of time during implementation.
 
@@ -184,8 +196,9 @@ The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — 
 ## Phase 3: Implementation Plan
 
 **Your role:** project manager. **AI's role:** lead developer.
-**Goal:** An ordered, step-by-step plan with checkpoints between layers.
-**Output:** A numbered markdown plan, saved to RAG as `impl-plan`. The agent retrieves `tech-spec` to drive each step.
+**Input:** `tech-spec` (Phase 2) — the agent retrieves it from RAG.
+**Output:** A numbered implementation plan, saved to RAG as `impl-plan`.
+**Transformation:** unordered set of objects from the spec → ordered steps respecting dependencies, with checkpoints between layers.
 
 ### Ask for the plan
 
@@ -229,8 +242,9 @@ The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — 
 ## Phase 4: Step-by-Step Implementation
 
 **Your role:** reviewer and tester. **AI's role:** developer.
-**Goal:** Execute the plan, one step at a time, with verification. Use the draft specification from Phase 2 as input for each step — DDL, field definitions, mappings come from there.
-**Output:** Real ABAP objects active in the SAP system. When the spec needs to change, the agent calls `rag_correct` on `tech-spec`; you do not retype anything.
+**Input:** `impl-plan` (Phase 3) for the order; `tech-spec` (Phase 2) for the DDL/field/mapping details. Both come from RAG.
+**Output:** Real ABAP objects active in the SAP system, working Fiori app.
+**Transformation:** plan steps + spec details → MCP tool calls (`Create…`, `Update…`, `Activate…`) on the live system. When SAP rejects something the agent fixes the spec via `rag_correct` first, then retries — you do not retype DDL.
 
 > **The specification keeps changing.** When SAP rejects something during implementation (wrong key, missing mapping, wrong type), fix the specification first, then the code. This keeps the spec and the system in sync. By the end, your draft will have grown into an accurate final specification.
 
