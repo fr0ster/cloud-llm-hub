@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   type CallOptions,
+  filterActive,
   type IEmbedder,
   InMemoryRag,
   type IQueryEmbedding,
@@ -142,8 +143,15 @@ class RecencyBoostedRag implements IRag, IRagEditor {
     );
     if (!result.ok) return result;
 
+    // Drop superseded/deprecated entries — they stay in the store as audit trail
+    // but must not surface to the LLM, otherwise rag_correct / rag_deprecate
+    // would not be transparent at retrieval time. filterActive only inspects
+    // `tags`; cast the metadata getter return so we don't need to widen
+    // RagResult.metadata to CorrectionMetadata.
+    const active = filterActive(result.value, (r) => r.metadata as never);
+
     const now = Date.now();
-    result.value = result.value
+    result.value = active
       .map((r) => {
         const createdAt = (r.metadata?._createdAtMs as number) || 0;
         if (!createdAt) return r;
