@@ -8,30 +8,37 @@ This tutorial walks through creating a complete RAP (RESTful Application Program
 **Time:** ~30-60 minutes
 **Prerequisites:** Access to cloud-llm-hub chat UI with MCP connection to an SAP system
 
+### Progress checklist
+
+Tick each box as you finish the step. Long sessions are easier when you can see what is left.
+
+- [ ] Step 1 — system connection verified
+- [ ] Step 2 — package created
+- [ ] Step 3 — 8 domains + 9 data elements created and active
+- [ ] Step 4 — 4 persistent tables created and active
+- [ ] Step 5 — 4 draft tables created and active
+- [ ] Step 6 — 4 interface CDS views activated together
+- [ ] Step 7 — 4 projection CDS views activated together
+- [ ] Step 8 — metadata extension created and active
+- [ ] Step 9 — interface BDEF created (do not activate yet)
+- [ ] Step 10 — BIMP class created and activated together with the interface BDEF
+- [ ] Step 11 — projection BDEF created and active
+- [ ] Step 12 — service definition created and active
+- [ ] Step 13 — service binding created and published
+- [ ] Step 14 — Fiori preview shows the working app
+
 ---
 
 ## Naming Convention
 
-ABAP object names have length limits (30 characters for most, 26 for service binding). To avoid conflicts between participants and fit within limits, we use a personal prefix convention.
+ABAP object names have length limits (30 characters for most, 26 for service binding). To avoid conflicts and fit the limits, use a personal prefix `Z<II><NN>_`:
 
-**Your prefix: `Z<II><NN>_`**
+- `<II>` — your initials, 2 characters (`OK` for Oleksii Kyslytsia)
+- `<NN>` — version number, 2 digits (`01`, `02`, ...). If your initials clash with another developer, use the next number.
 
-- `<II>` — your initials, 2 characters (e.g., `OK` for Oleksii Kyslytsia)
-- `<NN>` — version number, 2 digits, start with `01`
+**Naming table** — every object you create in this tutorial. `Z##_` is a placeholder; replace `##` with your prefix (e.g. `OK01`).
 
-**Examples:**
-
-| Developer | Prefix | Package | Root Table |
-|-----------|--------|---------|------------|
-| Oleksii Kyslytsia | `ZDEMO01_` | `TEST_DEMO1_MAT` | `ZDEMO01_MARA` |
-| Roman Semenov | `ZDEMO01_` | `TEST_RS01_MAT` | `ZDEMO01_MARA` |
-| Roman Semenov (2nd attempt) | `ZDEMO02_` | `TEST_RS02_MAT` | `ZDEMO02_MARA` |
-
-If someone shares your initials — take the next number (`ZDEMO02_`, `ZDEMO03_`, ...).
-
-**Full naming table:**
-
-| Object | Max | Placeholder | Example (ZDEMO01_) |
+| Object | Max | Placeholder | Example (`ZDEMO01_`) |
 |--------|-----|-------------|------------------|
 | Package | 30 | `TEST_##_MAT` | `TEST_DEMO1_MAT` |
 | Domain | 30 | `Z##_D_MATNR`, ... | `ZDEMO01_D_MATNR` |
@@ -49,14 +56,12 @@ If someone shares your initials — take the next number (`ZDEMO02_`, `ZDEMO03_`
 | Metadata Extension | 30 | `Z##_C_MAT_ROOT` | `ZDEMO01_C_MAT_ROOT` |
 
 > **Before you start:**
-> 1. Decide your prefix (e.g., `ZDEMO01_`)
-> 2. Ask the agent: *"Search for objects starting with ZDEMO01_"*
-> 3. If objects found — increment: `ZDEMO02_`, `ZDEMO03_`, ...
-> 4. When objects are clean — you're ready
+> 1. Decide your prefix (e.g., `ZDEMO01_`).
+> 2. Ask the agent: *"Search for objects starting with ZDEMO01_"*.
+> 3. If anything is found — increment to `ZDEMO02_`, `ZDEMO03_`, ...
+> 4. When the search comes back empty — you are ready.
 
-**In all steps below, `Z##_` is a placeholder.** Replace `##` with your chosen prefix (e.g., `OK01`). When typing prompts to the agent, use your actual prefix.
-
-> **Can I use different names?** Yes — the naming above is a convention, not a hard rule. You can rename tables, CDS views, classes, and services as you wish. However, RAP BO is a complex multi-layered system where objects reference each other: CDS views depend on table names, BDEFs reference CDS views and draft tables, projections redirect to interface views, and service definitions expose projections. If you change one name, you must update all objects that reference it. For this tutorial, we recommend following the convention exactly — you can always rename later when you understand the full dependency chain.
+> **Can I use different names?** Yes, but RAP objects reference each other (CDS views → tables, BDEFs → CDS views and draft tables, projections → interfaces, services → projections). If you rename one object, you must update everything that points at it. For this tutorial, follow the convention exactly — rename later when you know the full dependency chain.
 
 ---
 
@@ -387,11 +392,11 @@ In addition, the draft table must include `sych_bdl_draft_admin_inc` — this ca
 
 Interface CDS views define the BO's data model. The root view has compositions to children.
 
-> **Important — activation strategy:** Root and child CDS views reference each other (root has compositions to children, children have association to parent). This creates a circular dependency. The agent needs to:
-> 1. Create all 4 views first (they will have syntax errors — this is expected)
-> 2. Activate all 4 together in one activation call
+> **Important — activation strategy:** Root and child CDS views reference each other (root composes children, children associate to parent). This is a loop: each side needs the other to exist. The fix is two phases:
+> 1. Create all 4 views first (they will have syntax errors — that is expected, ignore for now).
+> 2. Activate all 4 together in one activation call.
 >
-> If the agent struggles with circular dependencies, tell it explicitly: "Create all views without activating, then activate all 4 together."
+> If the agent gets stuck, say: "Create all views without activating, then activate all 4 together."
 
 ### 6.1 Root CDS — Z##_R_MAT_ROOT
 
@@ -468,11 +473,11 @@ Interface CDS views define the BO's data model. The root view has compositions t
 >
 > 1. **DDL source not uploaded.** The LLM may create the view object shell but fail to upload the DDL source (circular dependency blocks syntax check). Error on activation: "DDIC source code does not contain a valid definition". **Fix:** Provide the exact DDL source code in the prompt. Ask the agent to update each view with the DDL, then activate all together.
 >
-> 2. **Views created then deleted during retries.** The LLM may delete and recreate views multiple times trying to resolve circular dependencies, accidentally deleting previously working views. **Fix:** After this step, always verify with a checkpoint that all 4 views exist and are active before proceeding.
+> 2. **Views created then deleted during retries.** The LLM may delete and recreate views many times while trying to break the loop dependency, and may delete views that already worked. **Fix:** After this step, always verify with a checkpoint that all 4 views exist and are active before moving on.
 >
-> **Important — run syntax check after activation:** CDS views are created without syntax check and activated as a group. After activation, verify each view has no errors:
+> **Important — run a syntax check after activation:** CDS views are created without a syntax check and activated as a group. After activation, verify each view has no errors:
 > "Check CDS view Z##_R_MAT_ROOT for syntax errors" (repeat for each view).
-> The check may show warnings about key definition mismatches and missing access control — these are non-blocking for the tutorial but should be addressed in production.
+> The check may show warnings about key definitions or missing access control — those are warnings only for this tutorial but should be fixed in production.
 
 ---
 
@@ -480,11 +485,9 @@ Interface CDS views define the BO's data model. The root view has compositions t
 
 Projections define what the service consumer sees. They reference the interface CDS views.
 
-> **Same activation strategy as Step 6:** Projections have the same circular dependency pattern (root redirects to child projections, children redirect to parent). Create all 4, then activate together.
+Same loop-dependency pattern as Step 6: root redirects to children, children redirect to root. Create all 4 without activating, then activate together.
 
-**You type in chat:**
-
-**One projection per message. Do NOT activate yet — all 4 must be activated together because of the redirect chain.**
+**One projection per message. Do NOT activate yet.**
 
 **Message 1 — Z##_C_MAT_ROOT:**
 
@@ -524,16 +527,7 @@ Projections define what the service consumer sees. They reference the interface 
 
 > Activate ALL 4 projection CDS views together: Z##_C_MAT_ROOT, Z##_C_MAT_PLANT, Z##_C_MAT_TEXT, Z##_C_MAT_SALES.
 
-**What happens:**
-
-- Each C-view is defined `as projection on` the matching R-view (`Z##_C_MAT_ROOT` on `Z##_R_MAT_ROOT`, and so on).
-- Root projection redirects each composition to the child projection: `_Plant : redirected to composition child Z##_C_MAT_PLANT`, etc.
-- Each child projection redirects `_Root` back to the parent projection: `_Root : redirected to parent Z##_C_MAT_ROOT`.
-- Only the root projection carries `provider contract transactional_query` — mandatory for a managed RAP BO with draft.
-
-**Expected result:** All 4 projection CDS views created and activated.
-
-> **Important:** The `provider contract transactional_query` is required on the root projection for RAP managed BO with draft.
+**Expected result:** All 4 projection CDS views created and activated. Only the root projection carries `provider contract transactional_query` — required for a managed RAP BO with draft.
 
 **Checkpoint:** Ask the agent: "List all CDS views starting with Z##_ and confirm they are all active."
 
@@ -579,6 +573,14 @@ Metadata extensions add UI annotations for the Fiori Elements app. They depend o
 ## Step 9: Create Interface Behavior Definition (BDEF)
 
 The BDEF defines the transactional behavior — CRUD operations, draft support, field control, and mappings.
+
+The BDEF source below is one big block. Scan it top-down — every section is marked by its `define behavior for ...` line:
+
+1. **Header** — `managed implementation in class ...` + `strict ( 2 )` + `with draft`
+2. **`define behavior for Z##_R_MAT_ROOT`** — root entity: lock master, etag, all 5 draft actions, field control, mapping, compositions to children
+3. **`define behavior for Z##_R_MAT_PLANT`** — plant child: lock dependent, mapping, association back to root
+4. **`define behavior for Z##_R_MAT_TEXT`** — text child: same shape as plant
+5. **`define behavior for Z##_R_MAT_SALES`** — sales child: same shape as plant
 
 **You type in chat:**
 
@@ -891,8 +893,8 @@ After each creation step, you can ask: "Activate all inactive objects starting w
 2. On on-premise, local packages must start with `TEST_` or `$` (software component LOCAL)
 3. Draft table keys must match persistent table keys — business keys included
 4. Draft table fields use lowercased CDS aliases without underscores
-5. CDS views with circular references (root ↔ children) must be activated together
-6. **Before group activation — run syntax check on each object and fix errors until clean.** This prevents costly activation failures and retry loops
+5. CDS views with loop dependencies (root ↔ children) must be activated together
+6. **Before group activation — run a syntax check on each object and fix errors until clean.** This avoids many failed activations and retry loops.
 7. BDEF strict(2) requires: authorization master/dependent, lock master/dependent, all 5 draft actions (Edit, Resume, Activate, Discard, Prepare), explicit field mapping (not `corresponding`)
 8. Never use "Activate all inactive objects" on shared systems — always filter by your prefix
 9. The agent handles Create + Update two-step process automatically but may not check syntax — always verify

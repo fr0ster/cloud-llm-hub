@@ -11,6 +11,17 @@ This tutorial teaches you how to build a complete SAP Fiori application through 
 **Time:** 1-2 hours
 **Prerequisites:** cloud-llm-hub chat UI with MCP connection to SAP
 
+### Progress checklist
+
+Tick each box as you go — keeps you oriented across a multi-hour run.
+
+- [ ] Setup: skill loaded, working RAG collection created, prefix chosen
+- [ ] Phase 1 — Business Requirements saved as `business-requirements`
+- [ ] Phase 2 — Technical Specification saved as `tech-spec`
+- [ ] Phase 3 — Implementation Plan saved as `impl-plan`
+- [ ] Phase 4 — All objects active, service binding published
+- [ ] Final test in Fiori preview passes
+
 ---
 
 ## Before You Start
@@ -28,13 +39,18 @@ Pair programming with AI to build a RAP BO from start to finish. You drive. AI w
 - **Treat "Active" as a claim until proven.** Ask for a real `ReadDomain` / `ReadTable` call that shows `active: true` in the output. If the response has no `[SmartAgent: Executing …]` line, no tool ran.
 - **Fix the spec as soon as you find a problem.** Your job is to spot the issue and approve the fix. How the agent applies it is described in the skill.
 
-### AI behaviours to watch for
+### Things AI does wrong
+
+Two terms you will see often:
+
+- **Spec/plan drift** — AI no longer follows what the spec or plan says (creates extra objects, skips ones, renames silently).
+- **Phase confusion** — AI runs system-changing tools (`Create`, `Update`, `Activate`) while you are still editing a Phase 1–3 document. Phases 1–3 produce text only; Phase 4 produces objects.
 
 | Symptom | What it means | Fix |
 |---|---|---|
-| "All N objects active" with no `[SmartAgent: Executing …]` lines | Hallucination | Require read-back of each object |
+| "All N objects active" with no `[SmartAgent: Executing …]` lines | Hallucination | Ask AI to read each object back |
 | AI creates more or fewer objects than the plan | Spec/plan drift | Quote the plan back, force the exact list |
-| Objects appear in `$TMP` | Silent fallback after a transport error | Stop, fix the transport, redo in the correct package |
+| Objects appear in `$TMP` | AI quietly used `$TMP` after a transport error | Stop, fix the transport, redo in the correct package |
 | `UpdateTable` runs while you're editing the spec | Phase confusion | Say "document only, not system" and revert |
 | Same prompt gives different results | Long session — too much earlier text confuses the AI | Start a fresh session. Your saved artifacts in RAG are still up to date |
 | Truncated file / 400 on spec regeneration | Single-shot too large | Regenerate section by section |
@@ -62,19 +78,17 @@ The agent then writes Phase 1–3 outputs into this collection via `rag_add` and
 
 ### Choose your prefix
 
-Format: `Z<II><NN>_` — initials (2 chars) + number (2 digits).
+Use the prefix convention from [`rap-bo-creation.md` → Naming Convention](rap-bo-creation.md#naming-convention) — `Z<II><NN>_` (your 2-char initials + 2-digit number). Verify it is unused:
 
-> Search for objects starting with ZDEMO01_ to verify my prefix is available.
-
-If taken — increment: `ZDEMO02_`, `ZDEMO03_`, etc.
+> Search for objects starting with `ZDEMO01_` to confirm the prefix is free.
 
 ---
 
 ## Phase 1: Business Requirements
 
 **Your role:** domain expert. **AI's role:** business analyst.
-
 **Goal:** A clear, formal description of what the application does — in business terms, no technical details yet.
+**Output:** A markdown document, saved to RAG as `business-requirements`.
 
 ### Start the conversation
 
@@ -100,9 +114,9 @@ If something is missing or wrong:
 
 Repeat until you're satisfied. Then:
 
-> The business requirements look complete. Generate a markdown file with the final business requirements document.
+> The business requirements look complete. Save them to the `book-catalog` collection as `business-requirements`.
 
-Save the generated file — you'll reference it in the next phases.
+The agent calls `rag_add` and shows a `RAG OP: rag_add OK` card with id `business-requirements`. If it does not, ask explicitly: *"Use rag_add — collection `book-catalog`, id `business-requirements`."* From now on, later phases pull this artifact from RAG; you do not need to copy or re-paste it.
 
 > Let's move to the technical specification.
 
@@ -111,8 +125,8 @@ Save the generated file — you'll reference it in the next phases.
 ## Phase 2: Technical Specification (Draft)
 
 **Your role:** architect. **AI's role:** technical writer.
-
 **Goal:** Transform business requirements into a **draft** technical specification — ABAP object types, field definitions, relationships, UI annotations.
+**Output:** A markdown document, saved to RAG as `tech-spec`. The agent retrieves `business-requirements` from RAG to base the spec on.
 
 > **This is a draft, not a final document.** During Phase 4 (implementation) you will find issues — wrong field types, missing keys, wrong mappings. That is expected. You will refine the specification while you build. But **the better the draft now, the fewer fixes later** — so spend time here. A careful draft with correct field types, keys, and mappings saves a lot of time during implementation.
 
@@ -123,7 +137,7 @@ Save the generated file — you'll reference it in the next phases.
 > Technology: SAP RAP managed BO with draft support, Fiori Elements UI, OData V4
 > Mode: strict ( 2 )
 > Naming: use prefix Z##_ for all objects, package TEST_##_BOOK
-> 
+>
 > Constraints:
 > - Use explicit field mapping in BDEF (not corresponding)
 > - Use custom domains and data elements for proper field labels
@@ -135,32 +149,30 @@ Save the generated file — you'll reference it in the next phases.
 
 ### Review the specification
 
-AI should produce something like:
-- List of all ABAP objects (domains, data elements, tables, CDS views, BDEFs, services)
-- Field definitions with types and lengths
-- Entity relationships (composition vs association)
-- Draft table structure (keys must match persistent!)
-- BDEF structure (authorization, lock, draft actions, explicit mapping)
-- UI annotations (search, filters, value help, text associations)
+The output must cover all ABAP layers — domains, data elements, persistent tables, draft tables, interface CDS, projection CDS, metadata extensions, BDEF, BIMP, service definition + binding — with field types/lengths, entity relationships, and UI annotations.
 
-Things to check:
-- **Draft table keys** — do they include ALL persistent table keys? (Common AI mistake: only mandt + uuid)
-- **BDEF mapping** — is it explicit `{ CdsAlias = table_field; }` and not `corresponding`?
-- **Draft actions** — all 5 present? (Edit, Resume, Activate, Discard, Prepare)
-- **Authorization** — master on root, dependent on children?
-- **BIMP class** — local handler with `get_instance_authorizations`?
+Walk the spec section by section against this checklist. If a row fails, ask the agent to fix that section, then re-check.
 
-If something is wrong:
+| Area | What to verify | Common AI mistake |
+|---|---|---|
+| Draft table keys | All keys from the persistent table are also keys here | Only `mandt + uuid` |
+| BDEF mapping | Explicit `{ CdsAlias = table_field; }` per field | `corresponding` shortcut, mapping warnings |
+| Draft actions | All 5 present: Edit, Resume, Activate, Discard, Prepare | One missing (often Discard) |
+| Authorization | `master` on root, `dependent` on children | Both `master`, or both `dependent` |
+| BIMP class | Local handler implements `get_instance_authorizations` | Plain empty class |
+| Composition / association | Book composes Edition/Rating; Book → Author is association | Author composed from Book |
 
-> The draft tables should have matnr as key, not just mandt + uuid — persistent table keys must match. Also add draft action Discard — you have only 4 of 5 required draft actions.
+Example fix prompt:
 
-Repeat until the specification is clean. Then:
+> The draft tables only have mandt + uuid as keys — add matnr to match the persistent tables. Also add draft action Discard.
 
-> The draft specification looks good enough to start. Generate a markdown file with the complete technical specification — all objects, DDL definitions, field mappings, and UI annotations.
+When the spec passes the checklist:
 
-Save the generated file — this is your working document for Phase 4. You'll update it when implementation reveals issues.
+> The specification is ready. Save it as `tech-spec` in the `book-catalog` collection.
 
-> **Note:** Some errors will only show up during implementation, when SAP checks the real DDL. You will come back and update the specification then. But the more careful you are here — checking draft table keys, BDEF mappings, authorization declarations — the easier Phase 4 will be.
+The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — collection `book-catalog`, id `tech-spec`."*
+
+> **Spec is a living document.** Phase 4 may surface issues SAP only catches when checking the real DDL. The agent will then call `rag_correct` on `tech-spec` — see the skill for that flow.
 
 > Let's create an implementation plan.
 
@@ -169,8 +181,8 @@ Save the generated file — this is your working document for Phase 4. You'll up
 ## Phase 3: Implementation Plan
 
 **Your role:** project manager. **AI's role:** lead developer.
-
 **Goal:** An ordered, step-by-step plan with checkpoints between layers.
+**Output:** A numbered markdown plan, saved to RAG as `impl-plan`. The agent retrieves `tech-spec` to drive each step.
 
 ### Ask for the plan
 
@@ -203,9 +215,9 @@ Check that:
 
 Repeat until the plan is solid. Then:
 
-> The plan looks good. Generate a markdown file with the numbered implementation plan — each step with what to create, DDL source where applicable, how to verify, and how to activate.
+> The plan looks good. Save it as `impl-plan` in the `book-catalog` collection.
 
-Save the plan file — you'll follow it step by step in Phase 4.
+The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — collection `book-catalog`, id `impl-plan`."*
 
 > Let's start implementation.
 
@@ -214,8 +226,8 @@ Save the plan file — you'll follow it step by step in Phase 4.
 ## Phase 4: Step-by-Step Implementation
 
 **Your role:** reviewer and tester. **AI's role:** developer.
-
 **Goal:** Execute the plan, one step at a time, with verification. Use the draft specification from Phase 2 as input for each step — DDL, field definitions, mappings come from there.
+**Output:** Real ABAP objects active in the SAP system. When the spec needs to change, the agent calls `rag_correct` on `tech-spec`; you do not retype anything.
 
 > **The specification keeps changing.** When SAP rejects something during implementation (wrong key, missing mapping, wrong type), fix the specification first, then the code. This keeps the spec and the system in sync. By the end, your draft will have grown into an accurate final specification.
 
