@@ -367,6 +367,4 @@ cf restage cloud-llm-hub-srv
 ## Next Steps
 
 - [LLM Agent Testing](../llm-agent/TESTING.md) - Complete testing guide
-- [Deployment Checklist](DEPLOYMENT_CHECKLIST.md) - Deployment checklist
-- [Agent Test Checklist](../development/AGENT_TEST_CHECKLIST.md) - Test checklist
 

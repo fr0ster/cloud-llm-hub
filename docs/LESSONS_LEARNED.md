@@ -8,11 +8,7 @@ Each lesson file has a YAML frontmatter block (`date`, `branch`, `subaccount`, `
 
 | Date | Lesson | Branch | Subaccount |
 |------|--------|--------|------------|
-| 2026-04-19 | [XSUAA `grant-as-authority-to-apps` syntax rules](lessons/2026-04-19-xsuaa-cross-app-grants.md) | `feat/consumer-xsuaa-instances` | epam-sap-mcp-450kjhsb |
-| 2026-04-19 | [XSUAA binding-secret tied to service key](lessons/2026-04-19-xsuaa-binding-secret-lifecycle.md) | `feat/consumer-xsuaa-instances` | epam-sap-mcp (consumer) + ai-applications (source) |
-| 2026-04-19 | [`cf deploy --abort-on-error` leaves failed services](lessons/2026-04-19-cf-deploy-rollback.md) | `feat/consumer-xsuaa-instances` | epam-sap-mcp-450kjhsb |
-| 2026-04-19 | [`git add -A` swept in unrelated dirty files](lessons/2026-04-19-git-add-discipline.md) | `feat/consumer-xsuaa-instances` | n/a |
-| 2026-04-19 | [Shell expansion corrupts xsuaa secrets with `$`](lessons/2026-04-19-shell-expansion-secrets.md) | `feat/consumer-xsuaa-instances` | epam-sap-mcp-450kjhsb |
+| | _Catalog reset 2026-04-27 — append new entries below._ Earlier 2026-04-19 entries retired with the docs cleanup; recover from git history if needed. | | |
 
 ## Adding a new lesson
 
