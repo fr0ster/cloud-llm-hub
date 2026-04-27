@@ -1,7 +1,7 @@
 ---
 name: RAP Business Object Creation
 description: Rules and constraints for creating SAP RAP managed Business Objects with draft support on on-premise S/4HANA systems via MCP tools
-version: 2.0.0
+version: 2.2.0
 tags: [sap, rap, abap, cds, bdef, draft, fiori]
 ---
 
@@ -71,15 +71,82 @@ The LLM may fabricate successful results without actually executing MCP tools. I
 - If prompt token count is suspiciously low, treat the response as fake and redo the step.
 - Start a fresh conversation session after each layer or every ~10 messages.
 
-## Corrections and RAG Freshness
+## Artifact Lifecycle in RAG
 
-The RAG collection retains the first indexed version of every artifact. Stale versions get retrieved alongside current ones and can reintroduce errors the user has already corrected.
+Phases 1–3 each produce one named artifact that downstream steps depend on. Address every artifact by a stable, human-readable `id` that you pass to all three RAG tools:
 
-**Rule:** whenever the user corrects an artifact (DDL, field name, mapping, BDEF fragment), remind them explicitly:
+| Phase | Artifact | `id` |
+|---|---|---|
+| 1. Business Requirements | `business-requirements.md` | `business-requirements` |
+| 2. Technical Specification | `tech-spec.md` | `tech-spec` |
+| 3. Implementation Plan | `impl-plan.md` | `impl-plan` |
 
-> "The previous version of `<object>` is still in the RAG collection. Please re-ingest the corrected version (MANAGE → collection → upload), then tell me to use the new one. Otherwise, later steps may retrieve the stale version."
+The user creates the working RAG collection up front (MANAGE panel) and tells you its name (e.g. `book-catalog`). All three artifacts go there.
 
-Do not proceed to index-dependent steps (activation of grouped CDS/BDEF, batch reads) until the user confirms re-ingestion.
+**Save artifacts via `rag_add`.** When the user accepts an artifact ("the spec looks good", "save the plan"), call `rag_add` with:
+
+- `collection`: the working collection name
+- `id`: the stable id from the table above
+- `text`: the full artifact body (markdown)
+- `tags`: `["phase-1"]` / `["phase-2"]` / `["phase-3"]`
+
+Then tell the user: *"Saved as `<id>` in collection `<name>`."* You no longer need to track UUIDs — `id` is the only handle you need across the whole tutorial.
+
+**Special case: writing into a RAG you do not own.** If the user points you at a collection where the id convention is different (or where a free-form id is expected), omit the `id` field — the system will assign a UUID. The user will then address those records via the MANAGE panel, not via you.
+
+## Detect and Correct Earlier Artifacts
+
+Errors found in Phase 4 (or later in Phase 2/3) often originate in an earlier artifact, not in the code being written. Catching that and fixing the source is what keeps the project consistent.
+
+**When a problem surfaces, do this first — before writing any fix:**
+
+1. Identify the smallest artifact that contains the root cause:
+   - "Field type wrong in table" → `tech-spec`. Maybe `business-requirements` too.
+   - "Plan creates objects in wrong order" → `impl-plan`.
+   - "Use case missing" → `business-requirements` and `tech-spec`.
+2. Decide whether the artifact must change. Some errors are local to Phase 4 code (typo, transport issue) and should not propagate back. State the reasoning explicitly: *"This is a Phase 4-only issue, no spec change."* or *"The spec says X but should say Y — I'll correct `tech-spec`."*
+3. If a correction is required, call `rag_correct` with:
+   - `collection` — the working collection
+   - `id` — the artifact's stable id
+   - `newText` — full corrected body (not a diff). The previous text is overwritten in place; the same `id` keeps pointing at the new content after the call.
+   - `reason` — one-sentence summary of what changed and why (kept in metadata as `lastCorrectedReason`)
+
+   Tell the user: *"Corrected `<id>`. Reason: `<reason>`."*
+4. If multiple artifacts share the same error (a wrong field type often lives in tech-spec AND impl-plan), correct each one separately. Do not try to bundle.
+5. After correcting, only then continue with the Phase 4 fix.
+
+**Do not** call `rag_add` again with the same `id` to overwrite — the dispatcher will refuse with "Active record already exists". `rag_correct` is the only path that updates an existing artifact.
+
+**Use `rag_deprecate`** only when an artifact is no longer relevant (e.g. user pivoted scope, dropped an entity entirely) and there is no replacement. The record is removed from the collection — there is no soft-delete trace. After `rag_deprecate`, the same `id` is free to be re-added if needed.
+
+## Phase 4 Reads the Plan, Not the User
+
+Object names, types, lengths, keys, mappings, DDL — all of these are decided by the user in Phase 2 (technical specification) and ordered into steps in Phase 3 (implementation plan). Both artifacts are saved in RAG before Phase 4 starts (id `tech-spec`, id `impl-plan`).
+
+The names in the spec are **the user's own names** — they reflect the user's prefix and naming choices. Phase 4 must use those names verbatim. Never invent a variant (`_V2`, `_NEW`, an alternate prefix), never translate or shorten a name, and never re-infer a name from the business description when the spec already has one.
+
+In Phase 4 the user no longer retypes any of that. A typical prompt is one of:
+
+- *"Run plan step N."* — execute the listed step end-to-end.
+- *"Verify objects from step N are active."* — checkpoint.
+- *"The check shows `<error>`. Fix it based on the spec."* — recover from a failed check.
+
+**Rule:** before any `Create…` / `Update…` / `Activate…` tool call, you must:
+
+1. Pull the named step from the plan (RAG retrieval is automatic — your query should mention the step number or the layer being executed).
+2. Read the object list **from that step** — never from the user's prompt and never invented.
+3. Pull the matching DDL / field / BDEF source from the tech-spec for each object on that list.
+4. Use the values from those artifacts — not values asked from the user.
+
+If the plan or spec is silent or ambiguous on a value (length, type, mapping), do **not** guess and do **not** ask the user for the raw DDL. Ask a focused, spec-level question instead: *"The spec does not specify the length for `Z##_D_TITLE`. Should I update the spec to `CHAR 200`?"* Then use `rag_correct` on the spec before creating.
+
+If the user types object names, DDL, or field definitions inline in a Phase 4 prompt, that is a signal the spec or plan is incomplete: stop, propose adding/correcting the spec first via `rag_correct`, then run the step from the corrected plan.
+
+## Avoid Stale Retrieval
+
+Once an artifact has been corrected, retrieval will surface the new version (predecessor is tagged `superseded`). You do not need to ask the user to re-ingest manually — that workaround is no longer required.
+
+Because every artifact is addressed by its stable `id`, conversation memory of UUIDs is no longer a concern: the same `id` always points at the current active version after any number of `rag_correct` calls.
 
 ## Object Creation Order
 

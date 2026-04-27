@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   type CallOptions,
+  filterActive,
   type IEmbedder,
   InMemoryRag,
   type IQueryEmbedding,
@@ -142,8 +143,15 @@ class RecencyBoostedRag implements IRag, IRagEditor {
     );
     if (!result.ok) return result;
 
+    // Drop superseded/deprecated entries — they stay in the store as audit trail
+    // but must not surface to the LLM, otherwise rag_correct / rag_deprecate
+    // would not be transparent at retrieval time. filterActive only inspects
+    // `tags`; cast the metadata getter return so we don't need to widen
+    // RagResult.metadata to CorrectionMetadata.
+    const active = filterActive(result.value, (r) => r.metadata as never);
+
     const now = Date.now();
-    result.value = result.value
+    result.value = active
       .map((r) => {
         const createdAt = (r.metadata?._createdAtMs as number) || 0;
         if (!createdAt) return r;
@@ -331,6 +339,33 @@ export class CollectionRegistry {
     return this.collections.get(collectionId)?.documents.get(docId) ?? null;
   }
 
+  /**
+   * Find the single active document with the given canonicalKey in a collection.
+   * "Active" = metadata.tags does not contain "superseded" or "deprecated".
+   * Returns null when no match; throws when more than one active match exists
+   * (an invariant violation that callers should surface, not silently pick one).
+   */
+  findActiveByCanonicalKey(
+    collectionId: string,
+    canonicalKey: string,
+  ): RagDocument | null {
+    const stored = this.collections.get(collectionId);
+    if (!stored) return null;
+    const matches: RagDocument[] = [];
+    for (const doc of stored.documents.values()) {
+      if (doc.metadata?.canonicalKey !== canonicalKey) continue;
+      const tags = (doc.metadata?.tags as string[] | undefined) ?? [];
+      if (tags.includes('superseded') || tags.includes('deprecated')) continue;
+      matches.push(doc);
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Collection "${collectionId}" has ${matches.length} active records with canonicalKey "${canonicalKey}" — expected exactly one`,
+      );
+    }
+    return matches[0] ?? null;
+  }
+
   async addDocument(
     collectionId: string,
     doc: Omit<RagDocument, 'createdAt'>,
@@ -410,13 +445,24 @@ export class CollectionRegistry {
     return existing;
   }
 
-  deleteDocument(collectionId: string, docId: string): boolean {
+  async deleteDocument(collectionId: string, docId: string): Promise<boolean> {
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
     const deleted = stored.documents.delete(docId);
     if (deleted) {
       stored.meta.documentCount = stored.documents.size;
       this.deleteDocumentFile(collectionId, docId);
+      // Also drop the vector embedding from the RAG store, otherwise
+      // retrieval keeps surfacing the deleted document.
+      try {
+        await stored.rag.deleteById(`doc:${collectionId}:${docId}`);
+      } catch (err) {
+        this.log.warn('Failed to delete vector for document', {
+          collectionId,
+          docId,
+          error: (err as Error).message,
+        });
+      }
     }
     return deleted;
   }
