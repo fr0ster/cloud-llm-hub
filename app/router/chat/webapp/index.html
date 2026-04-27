@@ -267,6 +267,22 @@
         };
         const fileArtifacts = {};
 
+        // Lazy-loaded RAG external tool definitions (rag_add / rag_correct / rag_deprecate).
+        // Schemas come from the server so they stay in sync with llm-agent — UI just opts in
+        // by including them in body.tools.
+        let ragToolsCache = null;
+        let ragToolsPromise = null;
+        async function getRagTools() {
+            if (ragToolsCache) return ragToolsCache;
+            if (!ragToolsPromise) {
+                ragToolsPromise = fetch('/v1/rag/tools')
+                    .then((r) => (r.ok ? r.json() : { tools: [] }))
+                    .then((d) => { ragToolsCache = Array.isArray(d.tools) ? d.tools : []; return ragToolsCache; })
+                    .catch(() => { ragToolsCache = []; return ragToolsCache; });
+            }
+            return ragToolsPromise;
+        }
+
         function getFileExt(path) {
             const dot = path.lastIndexOf('.');
             return dot >= 0 ? path.slice(dot + 1).toLowerCase() : 'txt';
@@ -882,6 +898,7 @@
             function stopTimer() { clearInterval(timer); }
 
             try {
+                const ragTools = await getRagTools();
                 const reqBody = {
                     messages: [{ role: 'user', content: text }],
                     stream: true,
@@ -903,7 +920,8 @@
                                     required: ['path', 'content']
                                 }
                             }
-                        }
+                        },
+                        ...ragTools
                     ]
                 };
                 const selectedModel = getSelectedModel();
@@ -1011,6 +1029,7 @@
 
                 // Process GenerateFile tool calls from external tool calls
                 const generateFileCalls = [];
+                const ragOpResults = [];
                 for (const tc of externalToolCalls) {
                     if (tc.name === 'GenerateFile') {
                         try {
@@ -1026,6 +1045,24 @@
                                 generateFileCalls.push({ cardId, attrs: args, content: args.content });
                             }
                         } catch (e) { /* ignore malformed args */ }
+                    } else if (tc.name === 'rag_add' || tc.name === 'rag_correct' || tc.name === 'rag_deprecate') {
+                        let args = null;
+                        try { args = JSON.parse(tc.arguments); } catch (e) { /* malformed */ }
+                        if (args) {
+                            try {
+                                const resp = await fetch('/v1/rag/tool/' + encodeURIComponent(tc.name), {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(args)
+                                });
+                                const body = await resp.json().catch(() => ({}));
+                                ragOpResults.push({ name: tc.name, args, ok: !!body.ok, response: body });
+                            } catch (err) {
+                                ragOpResults.push({ name: tc.name, args, ok: false, response: { error: String(err && err.message || err) } });
+                            }
+                        } else {
+                            ragOpResults.push({ name: tc.name, args: tc.arguments, ok: false, response: { error: 'malformed arguments' } });
+                        }
                     }
                 }
 
@@ -1084,9 +1121,22 @@
                         }
                     }
 
+                    // Build RAG operation cards
+                    let ragOpsHtml = '';
+                    for (const op of ragOpResults) {
+                        const status = op.ok ? '<span style="color:#0c0">OK</span>' : '<span style="color:#f55">ERR</span>';
+                        const args = op.args && typeof op.args === 'object' ? op.args : {};
+                        const collection = escapeHtml(String(args.collection || ''));
+                        const reason = args.reason ? `<div style="font-size:11px;color:#888">reason: ${escapeHtml(String(args.reason))}</div>` : '';
+                        const detail = op.ok
+                            ? `<div style="font-size:11px;color:#888">id: ${escapeHtml(String(op.response.id || op.response.newId || ''))}</div>`
+                            : `<div style="font-size:11px;color:#f88">${escapeHtml(String(op.response.error || ''))}</div>`;
+                        ragOpsHtml += `<div class="trace-container"><div class="trace-header">RAG OP: ${escapeHtml(op.name)} ${status}</div><div class="trace-step">collection: ${collection}</div>${reason}${detail}</div>`;
+                    }
+
                     placeholder.innerHTML = `
                         <span class="agent"><b>> AGENT:</b> ${finalHtml || '<em style="color:#888">No response</em>'}</span>
-                        ${fileCardsHtml}${toolsHtml}${usageHtml}
+                        ${fileCardsHtml}${ragOpsHtml}${toolsHtml}${usageHtml}
                     `;
                     placeholder.className = 'message';
                     const allMermaidIds = [...mermaidIds, ...fileMermaidIds];
