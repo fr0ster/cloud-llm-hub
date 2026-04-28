@@ -199,9 +199,10 @@
                 if (!data.documents?.length) { el.innerHTML = '<div class="status">No documents.</div>'; return; }
                 el.innerHTML = data.documents.map(d => `
                     <div class="doc">
-                        <div style="display:flex;justify-content:space-between">
-                            <span style="color:#00bfff;font-size:12px;font-weight:bold">${esc(d.id)}</span>
+                        <div style="display:flex;justify-content:space-between;gap:6px">
+                            <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${esc(d.id)}</span>
                             ${d.metadata?.tags ? `<span style="color:#888;font-size:11px">${d.metadata.tags.map(t=>'#'+esc(t)).join(' ')}</span>` : ''}
+                            <button class="btn-blue" onclick="downloadDoc('${esc(d.id)}')" style="padding:1px 6px;font-size:10px" title="Download as text file">DL</button>
                             <button class="btn-danger" onclick="delDoc('${esc(d.id)}')" style="padding:1px 6px;font-size:10px">DEL</button>
                         </div>
                         <div class="doc-text">${esc(d.text.length>300 ? d.text.slice(0,300)+'...' : d.text)}</div>
@@ -228,6 +229,21 @@
             if (!confirm(`Delete "${id}"?`)) return;
             await api(`/v1/rag/collections/${currentCollection}/documents/${id}`, { method: 'DELETE' });
             loadDocuments(); loadCollections();
+        }
+
+        async function downloadDoc(id) {
+            try {
+                const res = await api(`/v1/rag/collections/${currentCollection}/documents/${encodeURIComponent(id)}`);
+                if (!res.ok) { const e = await res.json(); alert(e.error?.message||'Error'); return; }
+                const data = await res.json();
+                const safeId = id.replace(/[^A-Za-z0-9._-]+/g, '_');
+                const blob = new Blob([data.text || ''], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `${safeId}.txt`;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            } catch(e) { alert(e.message); }
         }
 
         async function uploadFile() {
