@@ -14,7 +14,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createDefaultHandlerExporter } from '@mcp-abap-adt/core/handlers';
-import { IntentEnricher, makeLlm } from '@mcp-abap-adt/llm-agent';
+import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
+import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
 
 // Load default-env.json (VCAP_SERVICES) for SAP AI SDK — same as cds watch
 const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
@@ -56,7 +57,7 @@ async function main() {
   });
 
   // Create LLM for enrichment
-  const llm = makeLlm(
+  const llm = await makeLlm(
     {
       provider: PROVIDER,
       apiKey: process.env.LLM_AGENT_API_KEY || 'sap-ai-sdk-managed',
