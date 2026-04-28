@@ -14,6 +14,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   type CallOptions,
+  type CircuitBreaker,
+  FallbackRag,
   filterActive,
   type IEmbedder,
   InMemoryRag,
@@ -23,10 +25,6 @@ import {
   type IRagEditor,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  type CircuitBreaker,
-  FallbackRag,
-} from '@mcp-abap-adt/llm-agent-server';
 import cds from '@sap/cds';
 
 // ---------------------------------------------------------------------------
