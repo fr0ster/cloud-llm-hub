@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.3.0] - 2026-04-28
+
+### Changed
+- **llm-agent v12.0.4** — runtime composition split out of `@mcp-abap-adt/llm-agent-server` into focused packages (`llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`). Dropped `llm-agent-server` from the dependency tree; routed each import to its new home; bumped all `@mcp-abap-adt/*` (provider LLMs, embedders, RAG backends) to `^12.0.4`.
+- **`makeLlm()` is async in v12** — adapted `createToolsRagStore` (now async), `vectorizeTools`, `buildAgentForDestination`, `buildLlmOnlyAgent`, and the model hot-swap branch in `getSmartAgent`. Shared LLM cache holds the returned promise so the first-call await is amortised across reuses.
+
+### Added
+- **RAG record download (`DL`) in chat** — inline in RAG OP cards next to the saved `id` after `rag_add` / `rag_correct`, and on every row of the `MANAGE` modal's document list. Symmetric to the existing `UPLOAD` flow; saves the record's text as `<id>.txt`.
+- **RAG record download on `/chat/webapp/rag.html`** — `DL` button on each document row.
+
+### Fixed
+- **`tools/generate-tool-intents.ts`** — was missed in the v12 migration: imported `makeLlm` from `@mcp-abap-adt/llm-agent` (v12 moved it to `llm-agent-libs` and made it async). Now imports correctly and awaits the call. Also switched to the new `HandlerExporter({...})` API (replaces the gone `createDefaultHandlerExporter(string)`) so the pre-cache covers the same tool set the runtime sees.
+- **`srv/tool-intents.json` regenerated** — was stale after the v12 / core handler migration (22 missing + 39 stale runtime tools, 116 orphaned `*Low` entries). Regenerated against the current `HandlerExporter` config: 197 entries / 197 hits / 0 missing / 0 orphaned.
+- **`test/unit/exposition.test.ts`** — three cases drifted from the exposition contract since 95da49c (Apr 17) where any `MCP_*` role grants the base level and higher roles auto-include lower ones. Tests updated.
+
+### Internal
+- **`tsconfig.json` — include `tools/**/*.ts`** so `npm run test:check` catches type regressions in utility scripts (the v12 `makeLlm` runtime break in `tools/generate-tool-intents.ts` slipped through CI before this).
+
 ## [6.2.2] - 2026-04-28
 
 ### Fixed
