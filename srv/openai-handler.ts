@@ -10,11 +10,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { Message } from '@mcp-abap-adt/llm-agent';
 import {
+  type Message,
   normalizeAndValidateExternalTools,
   toToolCallDelta,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';

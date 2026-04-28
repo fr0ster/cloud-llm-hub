@@ -16,7 +16,7 @@ import {
   AnthropicApiAdapter,
   type ApiRequestContext,
   type NormalizedRequest,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { isAiCoreConfigured } from './agent-config';
