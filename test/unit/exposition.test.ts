@@ -47,12 +47,21 @@ describe('resolveExposition', () => {
     expect(result).toContain('compact');
   });
 
-  it('MCP_Analyst without MCP_Reader gets nothing', () => {
-    expect(resolveExposition(['MCP_Analyst'])).toEqual([]);
+  it('MCP_Analyst alone grants base + system (any MCP role grants base)', () => {
+    expect(resolveExposition(['MCP_Analyst'])).toEqual([
+      'readonly',
+      'search',
+      'system',
+    ]);
   });
 
-  it('MCP_Developer without MCP_Reader gets nothing', () => {
-    expect(resolveExposition(['MCP_Developer'])).toEqual([]);
+  it('MCP_Developer alone grants base + system + high', () => {
+    expect(resolveExposition(['MCP_Developer'])).toEqual([
+      'readonly',
+      'search',
+      'system',
+      'high',
+    ]);
   });
 
   it('combines Analyst + Developer roles additively', () => {
@@ -64,12 +73,9 @@ describe('resolveExposition', () => {
     expect(result).toEqual(['readonly', 'search', 'system', 'high']);
   });
 
-  it('MCP_Reader + MCP_Developer skips system without Analyst', () => {
+  it('MCP_Reader + MCP_Developer auto-includes Analyst level', () => {
     const result = resolveExposition(['MCP_Reader', 'MCP_Developer']);
-    expect(result).toContain('readonly');
-    expect(result).toContain('search');
-    expect(result).toContain('high');
-    expect(result).not.toContain('system');
+    expect(result).toEqual(['readonly', 'search', 'system', 'high']);
   });
 
   it('never includes low', () => {
