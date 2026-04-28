@@ -184,7 +184,7 @@ Objects must be created and activated in this exact dependency order:
 ## Domains
 
 - Each domain defines a single ABAP type (CHAR, UNIT, etc.) with length.
-- Domains may not activate automatically after creation. Always verify and activate if needed: "Activate all inactive domains starting with Z##_D_".
+- Domains may not activate automatically after creation. Always verify and activate if needed: "Activate all inactive domains starting with `Z##_D_`".
 
 ## Data Elements
 
@@ -217,7 +217,7 @@ Objects must be created and activated in this exact dependency order:
 - **Circular dependency:** root references children, children reference root. Create all views first (syntax errors are expected), then activate all together in one call.
 - **Syntax check before activation will show errors — this is normal.** Errors like "data source X does not exist or is not active" are expected because the views reference each other. These errors disappear after group activation. Only non-circular errors (wrong field names, missing tables) need fixing before activation.
 - **Always provide exact DDL source code** in the prompt — without it, the agent may create empty view shells that fail activation with "DDIC source code does not contain a valid definition".
-- After activation, run syntax check: "Check CDS view Z##_R_MAT_ROOT for syntax errors".
+- After activation, run syntax check: "Check CDS view `Z##_R_MAT_ROOT` for syntax errors".
 
 ## CDS Views — Projection (C-type)
 
@@ -308,7 +308,7 @@ Objects must be created and activated in this exact dependency order:
 
 ## Activation Rules
 
-- **Before group activation — check each object for syntax errors and fix all issues first.** Group activation is expensive (locks objects, may fail midway leaving inconsistent state). Run "Check CDS view Z##_R_MAT_ROOT for syntax errors" on each created object. Fix errors iteratively until clean. Only then activate.
+- **Before group activation — check each object for syntax errors and fix all issues first.** Group activation is expensive (locks objects, may fail midway leaving inconsistent state). Run "Check CDS view `Z##_R_MAT_ROOT` for syntax errors" on each created object. Fix errors iteratively until clean. Only then activate.
 - **Never say "Activate all inactive objects"** on shared systems — this activates other users' objects. Always filter by prefix: "Activate all inactive objects starting with Z##_".
 - CDS views with circular references must be activated together in one call.
 - BDEF + BIMP must be activated together.

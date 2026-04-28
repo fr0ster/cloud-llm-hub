@@ -182,7 +182,7 @@ The technology choices (RAP managed + draft, strict 2, Fiori Elements, OData V4)
 >
 > Technology: SAP RAP managed BO with draft support, Fiori Elements UI, OData V4
 > Mode: strict ( 2 )
-> Naming: use prefix Z##_ for all objects, package TEST_##_BOOK
+> Naming: use prefix Z##_ for all objects, package `TEST_##_BOOK`
 >
 > Constraints:
 > - Use explicit field mapping in BDEF (not corresponding)
