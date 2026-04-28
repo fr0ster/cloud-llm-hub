@@ -30,6 +30,11 @@ import {
 import { setSystemContext } from '@mcp-abap-adt/core/utils';
 import {
   type CallOptions,
+  CircuitBreaker,
+  CircuitBreakerEmbedder,
+  ClineClientAdapter,
+  FallbackLlmCallStrategy,
+  FallbackRag,
   InMemoryRag,
   IntentEnricher,
   type IQueryEmbedding,
@@ -37,24 +42,21 @@ import {
   type IRagBackendWriter,
   type IRagEditor,
   NoopDocumentEnricher,
+  ToolCache,
   TranslatePreprocessor,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  CircuitBreaker,
-  CircuitBreakerEmbedder,
-  ClineClientAdapter,
-  FallbackLlmCallStrategy,
-  FallbackRag,
   InMemoryMetrics,
-  MCPClientWrapper,
-  McpClientAdapter,
   makeLlm,
   SessionManager,
   SmartAgentBuilder,
   type SmartAgentHandle,
-  ToolCache,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent-libs';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 
@@ -615,12 +617,14 @@ function getOrCreateEmbedder(resourceGroup?: string): {
 }
 
 /** Create a tools RAG store (one per destination), wrapped to ignore ragFilter */
-function createToolsRagStore(resourceGroup?: string): ExpositionFilteringRag {
+async function createToolsRagStore(
+  resourceGroup?: string,
+): Promise<ExpositionFilteringRag> {
   const embedding = getOrCreateEmbedder(resourceGroup);
   if (!embedding) return new ExpositionFilteringRag(new InMemoryRag());
 
   const config = getAgentConfig();
-  const helperLlm = makeLlm(
+  const helperLlm = await makeLlm(
     {
       provider: config.llm.provider,
       apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
@@ -744,7 +748,7 @@ async function vectorizeTools(
   // Enrich uncached tools via LLM (only runs for tools missing from cache)
   if (uncachedTools.length > 0 && cache) {
     const config = getAgentConfig();
-    const helperLlm = makeLlm(
+    const helperLlm = await makeLlm(
       {
         provider: config.llm.provider,
         apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
@@ -847,7 +851,7 @@ async function initDestination(
 
   const state: DestinationState = {
     mcpAdapter: null,
-    toolsRag: createToolsRagStore(config.llm.resourceGroup),
+    toolsRag: await createToolsRagStore(config.llm.resourceGroup),
     toolCount: 0,
     status: 'vectorizing',
   };
@@ -1245,7 +1249,10 @@ async function buildAgentForDestination(
   config: AgentConfig,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
-  const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
+  const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
+    getOrCreateSharedLlms(config);
+  const mainLlm = await mainLlmPromise;
+  const classifierLlm = await classifierLlmPromise;
 
   // Skip SAP AI SDK model validation for non-SAP providers (openai, anthropic, deepseek)
   const skipModelValidation = config.llm.provider !== 'sap-ai-sdk';
@@ -1340,7 +1347,10 @@ async function buildLlmOnlyAgent(
   config: AgentConfig,
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
-  const { mainLlm, classifierLlm } = getOrCreateSharedLlms(config);
+  const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
+    getOrCreateSharedLlms(config);
+  const mainLlm = await mainLlmPromise;
+  const classifierLlm = await classifierLlmPromise;
 
   const builder = new SmartAgentBuilder({
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
@@ -1397,7 +1407,7 @@ export async function getSmartAgent(
     requestedModel !== activeModel &&
     agentHandles.size > 0
   ) {
-    const newLlm = makeLlm(
+    const newLlmPromise = makeLlm(
       {
         provider: config.llm.provider,
         apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
@@ -1409,12 +1419,13 @@ export async function getSmartAgent(
       },
       config.llm.temperature,
     );
+    const newLlm = await newLlmPromise;
 
     for (const handle of agentHandles.values()) {
       // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
       (handle.agent as any).deps.mainLlm = newLlm;
     }
-    sharedMainLlm = newLlm;
+    sharedMainLlm = newLlmPromise;
     currentModel = requestedModel;
 
     log.info('Model hot-swapped across all agents', {
