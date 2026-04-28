@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.2.2] - 2026-04-28
+
+### Fixed
+- **Tutorial rendering** — multi-underscore identifiers (`Z##_MARA_D`, `TEST_##_MAT`, `abp_creation_user`, `last_changed_by`, …) wrapped in backticks across tutorials and skill so markdown renderers stop italicizing the segments between underscores and visually dropping `_`.
+
+## [6.2.1] - 2026-04-27
+
+### Changed
+- **Tutorials** — phase pipeline (Input/Output/Transformation) made explicit and consolidated; B1-level English and ADHD-friendly scaffolding promoted to first-class style; book-catalog reframed as one example domain rather than the goal.
+
+## [6.2.0] - 2026-04-27
+
+### Added
+- **RAG editing as UI external tools** — `rag_add` / `rag_correct` / `rag_deprecate` exposed via `body.tools` on `/v1/chat/completions` and `/v1/messages`, so the client owns vector-store writes; tools no longer crowd the MCP top-k pool.
+- **Id-based RAG addressing** — `rag_add` / `rag_correct` / `rag_deprecate` operate on stable ids; `rag_correct` updates in place instead of building supersede chains; `rag_deprecate` hard-deletes the document and its vector.
+- **Retrieval filter** — superseded and deprecated entries excluded from RAG search results.
+- **Step-by-step tutorial** — one object per message guidance for the simple RAP tutorial; Phase 4 driven from the plan via RAG with simplified English.
+
+### Fixed
+- **rag_* schemas** — inlined and then realigned with `llm-agent` to dodge a zod major-version mismatch; chat webapp source/bundle synced.
+
+### Changed
+- **Documentation pruning** — removed stale and superseded docs; "Working RAG collection setup" moved to *Before You Start*.
+
 ## [6.1.1] - 2026-04-26
 
 ### Fixed
