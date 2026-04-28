@@ -40,40 +40,40 @@
     "enriched": "Tool: GetProgFullCode\nDescription: [read-only] Returns the full code for a program or function group, including all includes, in tree traversal order.\nParameters: type, properties, required\nIntent: get full program code, retrieve function group code, read complete source code, show all includes, view program code tree"
   },
   "ReadClass": {
-    "text": "Tool: ReadClass\nDescription: [read-only] Read ABAP class source code and metadata. Answers: \"show class code\", \"display class source\", \"view class definition/implementation\", \"get class X\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadClass\nDescription: [read-only] Read ABAP class source code and metadata. Answers: \"show class code\", \"display class source\", \"view class definition/implementation\", \"get class X\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read ABAP class code, view class source, show class definition, get class metadata, display class implementation"
+    "text": "Tool: ReadClass\nDescription: Operation: Read, Create, Update. Subject: Class. Will be useful for reading, creating, or updating class. [read-only] Read ABAP class source code and metadata. Answers: \"show class code\", \"display class source\", \"view class definition/implementation\", \"get class X\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadClass\nDescription: Operation: Read, Create, Update. Subject: Class. Will be useful for reading, creating, or updating class. [read-only] Read ABAP class source code and metadata. Answers: \"show class code\", \"display class source\", \"view class definition/implementation\", \"get class X\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read ABAP class code, view class source, display class definition, get class metadata, show class implementation"
   },
   "ReadInterface": {
-    "text": "Tool: ReadInterface\nDescription: [read-only] Read ABAP interface source code and metadata. Answers: \"show interface code\", \"display interface definition\", \"view interface X\", \"get interface source\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadInterface\nDescription: [read-only] Read ABAP interface source code and metadata. Answers: \"show interface code\", \"display interface definition\", \"view interface X\", \"get interface source\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read interface code, view interface source, show interface definition, get interface metadata, display interface details"
+    "text": "Tool: ReadInterface\nDescription: Operation: Read, Create, Update. Subject: Interface. Will be useful for reading, creating, or updating interface. [read-only] Read ABAP interface source code and metadata. Answers: \"show interface code\", \"display interface definition\", \"view interface X\", \"get interface source\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadInterface\nDescription: Operation: Read, Create, Update. Subject: Interface. Will be useful for reading, creating, or updating interface. [read-only] Read ABAP interface source code and metadata. Answers: \"show interface code\", \"display interface definition\", \"view interface X\", \"get interface source\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read interface code, display interface definition, view interface source, get interface metadata, show interface details"
   },
   "ReadProgram": {
-    "text": "Tool: ReadProgram\nDescription: [read-only] Read ABAP program (report) source code and metadata. Answers: \"show program code\", \"display report source\", \"view program X\", \"get program source\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadProgram\nDescription: [read-only] Read ABAP program (report) source code and metadata. Answers: \"show program code\", \"display report source\", \"view program X\", \"get program source\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read ABAP program, show program code, display report source, view program source, get program metadata"
+    "text": "Tool: ReadProgram\nDescription: Operation: Read, Create, Update. Subject: Program. Will be useful for reading, creating, or updating program. [read-only] Read ABAP program (report) source code and metadata. Answers: \"show program code\", \"display report source\", \"view program X\", \"get program source\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadProgram\nDescription: Operation: Read, Create, Update. Subject: Program. Will be useful for reading, creating, or updating program. [read-only] Read ABAP program (report) source code and metadata. Answers: \"show program code\", \"display report source\", \"view program X\", \"get program source\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read ABAP program, view report source, show program code, get program source, display ABAP report"
   },
   "ReadTable": {
-    "text": "Tool: ReadTable\nDescription: [read-only] Read ABAP table definition and metadata. Answers: \"show table fields\", \"display table structure\", \"view table X\", \"get table definition\". Returns field list, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadTable\nDescription: [read-only] Read ABAP table definition and metadata. Answers: \"show table fields\", \"display table structure\", \"view table X\", \"get table definition\". Returns field list, package, responsible, description.\nParameters: type, properties, required\nIntent: read table definition, show table fields, display table structure, view table metadata, get table info"
+    "text": "Tool: ReadTable\nDescription: Operation: Read, Create, Update. Subject: Table. Will be useful for reading, creating, or updating table. [read-only] Read ABAP table definition and metadata. Answers: \"show table fields\", \"display table structure\", \"view table X\", \"get table definition\". Returns field list, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadTable\nDescription: Operation: Read, Create, Update. Subject: Table. Will be useful for reading, creating, or updating table. [read-only] Read ABAP table definition and metadata. Answers: \"show table fields\", \"display table structure\", \"view table X\", \"get table definition\". Returns field list, package, responsible, description.\nParameters: type, properties, required\nIntent: read table definition, show table fields, display table structure, view table metadata, get table info"
   },
   "ReadStructure": {
-    "text": "Tool: ReadStructure\nDescription: [read-only] Read ABAP structure definition and metadata. Answers: \"show structure fields\", \"display structure X\", \"view structure definition\", \"get structure components\". Returns field list, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadStructure\nDescription: [read-only] Read ABAP structure definition and metadata. Answers: \"show structure fields\", \"display structure X\", \"view structure definition\", \"get structure components\". Returns field list, package, responsible, description.\nParameters: type, properties, required\nIntent: read structure definition, show structure fields, view structure components, display structure metadata, get structure details"
+    "text": "Tool: ReadStructure\nDescription: Operation: Read, Create, Update. Subject: Structure. Will be useful for reading, creating, or updating structure. [read-only] Read ABAP structure definition and metadata. Answers: \"show structure fields\", \"display structure X\", \"view structure definition\", \"get structure components\". Returns field list, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadStructure\nDescription: Operation: Read, Create, Update. Subject: Structure. Will be useful for reading, creating, or updating structure. [read-only] Read ABAP structure definition and metadata. Answers: \"show structure fields\", \"display structure X\", \"view structure definition\", \"get structure components\". Returns field list, package, responsible, description.\nParameters: type, properties, required\nIntent: read structure definition, show structure fields, view structure components, display structure metadata, get structure details"
   },
   "ReadView": {
-    "text": "Tool: ReadView\nDescription: [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadView\nDescription: [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read CDS view source, show CDS view code, display view definition, get CDS metadata, view CDS details"
+    "text": "Tool: ReadView\nDescription: Operation: Read, Create, Update. Subject: View. Will be useful for reading, creating, or updating view. [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadView\nDescription: Operation: Read, Create, Update. Subject: View. Will be useful for reading, creating, or updating view. [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read CDS view source, display view definition, get CDS code, show ABAP view metadata, read view details"
   },
   "ReadDomain": {
-    "text": "Tool: ReadDomain\nDescription: [read-only] Read ABAP domain definition and metadata. Answers: \"show domain X\", \"display domain fixed values\", \"view domain definition\", \"get domain properties\". Returns definition, fixed values, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadDomain\nDescription: [read-only] Read ABAP domain definition and metadata. Answers: \"show domain X\", \"display domain fixed values\", \"view domain definition\", \"get domain properties\". Returns definition, fixed values, package, responsible, description.\nParameters: type, properties, required\nIntent: read domain definition, show domain fixed values, view domain properties, display domain metadata, get domain details"
+    "text": "Tool: ReadDomain\nDescription: Operation: Read, Create, Update. Subject: Domain. Will be useful for reading, creating, or updating domain. [read-only] Read ABAP domain definition and metadata. Answers: \"show domain X\", \"display domain fixed values\", \"view domain definition\", \"get domain properties\". Returns definition, fixed values, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadDomain\nDescription: Operation: Read, Create, Update. Subject: Domain. Will be useful for reading, creating, or updating domain. [read-only] Read ABAP domain definition and metadata. Answers: \"show domain X\", \"display domain fixed values\", \"view domain definition\", \"get domain properties\". Returns definition, fixed values, package, responsible, description.\nParameters: type, properties, required\nIntent: read domain definition, show domain fixed values, view domain properties, display domain metadata, get domain details"
   },
   "ReadDataElement": {
-    "text": "Tool: ReadDataElement\nDescription: [read-only] Read ABAP data element definition and metadata. Answers: \"show data element X\", \"display data element properties\", \"view DTEL definition\", \"get data element type\". Returns definition, domain, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadDataElement\nDescription: [read-only] Read ABAP data element definition and metadata. Answers: \"show data element X\", \"display data element properties\", \"view DTEL definition\", \"get data element type\". Returns definition, domain, package, responsible, description.\nParameters: type, properties, required\nIntent: read data element, show data element properties, view data element definition, get data element metadata, display DTEL details"
+    "text": "Tool: ReadDataElement\nDescription: Operation: Read, Create, Update. Subject: DataElement. Will be useful for reading, creating, or updating data element. [read-only] Read ABAP data element definition and metadata. Answers: \"show data element X\", \"display data element properties\", \"view DTEL definition\", \"get data element type\". Returns definition, domain, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadDataElement\nDescription: Operation: Read, Create, Update. Subject: DataElement. Will be useful for reading, creating, or updating data element. [read-only] Read ABAP data element definition and metadata. Answers: \"show data element X\", \"display data element properties\", \"view DTEL definition\", \"get data element type\". Returns definition, domain, package, responsible, description.\nParameters: type, properties, required\nIntent: read data element, show data element properties, view data element definition, get data element metadata, display DTEL details"
   },
   "ReadFunctionModule": {
-    "text": "Tool: ReadFunctionModule\nDescription: [read-only] Read ABAP function module source code and metadata. Answers: \"show function module code\", \"display FM source\", \"view function X\", \"get function module implementation\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadFunctionModule\nDescription: [read-only] Read ABAP function module source code and metadata. Answers: \"show function module code\", \"display FM source\", \"view function X\", \"get function module implementation\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read function module code, view FM source, show function module implementation, get function module details, display ABAP function code"
+    "text": "Tool: ReadFunctionModule\nDescription: Operation: Read, Create, Update. Subject: FunctionModule. Will be useful for reading, creating, or updating function module. [read-only] Read ABAP function module source code and metadata. Answers: \"show function module code\", \"display FM source\", \"view function X\", \"get function module implementation\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadFunctionModule\nDescription: Operation: Read, Create, Update. Subject: FunctionModule. Will be useful for reading, creating, or updating function module. [read-only] Read ABAP function module source code and metadata. Answers: \"show function module code\", \"display FM source\", \"view function X\", \"get function module implementation\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read function module code, display FM source, view function module, get FM implementation, show function module details"
   },
   "ReadFunctionGroup": {
     "text": "Tool: ReadFunctionGroup\nDescription: [read-only] Read ABAP function group source code and metadata. Answers: \"show function group code\", \"display FUGR source\", \"view function group X\", \"get function group includes\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
@@ -84,24 +84,24 @@
     "enriched": "Tool: ReadPackage\nDescription: [read-only] Read ABAP package definition and metadata. Answers: \"show package X\", \"display package properties\", \"view package contents\", \"get package info\". Returns definition, super-package, responsible, description.\nParameters: type, properties, required\nIntent: read package info, show package properties, view package contents, display package metadata, get package definition"
   },
   "ReadServiceDefinition": {
-    "text": "Tool: ReadServiceDefinition\nDescription: [read-only] Read ABAP service definition (SRVD) source code and metadata. Answers: \"show service definition\", \"display SRVD source\", \"view service definition X\", \"get service exposure\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadServiceDefinition\nDescription: [read-only] Read ABAP service definition (SRVD) source code and metadata. Answers: \"show service definition\", \"display SRVD source\", \"view service definition X\", \"get service exposure\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read service definition, show SRVD source, view service metadata, display service exposure, get service details"
+    "text": "Tool: ReadServiceDefinition\nDescription: Operation: Read, Create, Update. Subject: ServiceDefinition. Will be useful for reading, creating, or updating service definition. [read-only] Read ABAP service definition (SRVD) source code and metadata. Answers: \"show service definition\", \"display SRVD source\", \"view service definition X\", \"get service exposure\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadServiceDefinition\nDescription: Operation: Read, Create, Update. Subject: ServiceDefinition. Will be useful for reading, creating, or updating service definition. [read-only] Read ABAP service definition (SRVD) source code and metadata. Answers: \"show service definition\", \"display SRVD source\", \"view service definition X\", \"get service exposure\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read service definition, show SRVD source, view service metadata, display service exposure, get service details"
   },
   "ReadMetadataExtension": {
-    "text": "Tool: ReadMetadataExtension\nDescription: [read-only] Read ABAP metadata extension (DDLX) source code and metadata. Answers: \"show metadata extension\", \"display DDLX source\", \"view UI annotations\", \"get metadata extension X\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadMetadataExtension\nDescription: [read-only] Read ABAP metadata extension (DDLX) source code and metadata. Answers: \"show metadata extension\", \"display DDLX source\", \"view UI annotations\", \"get metadata extension X\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read metadata extension, view DDLX source, show UI annotations, display metadata details, get metadata extension info"
+    "text": "Tool: ReadMetadataExtension\nDescription: Operation: Read, Create, Update. Subject: MetadataExtension. Will be useful for reading, creating, or updating metadata extension. [read-only] Read ABAP metadata extension (DDLX) source code and metadata. Answers: \"show metadata extension\", \"display DDLX source\", \"view UI annotations\", \"get metadata extension X\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadMetadataExtension\nDescription: Operation: Read, Create, Update. Subject: MetadataExtension. Will be useful for reading, creating, or updating metadata extension. [read-only] Read ABAP metadata extension (DDLX) source code and metadata. Answers: \"show metadata extension\", \"display DDLX source\", \"view UI annotations\", \"get metadata extension X\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read metadata extension, view DDLX source, show UI annotations, get metadata extension details, display metadata extension"
   },
   "ReadBehaviorDefinition": {
-    "text": "Tool: ReadBehaviorDefinition\nDescription: [read-only] Read ABAP RAP behavior definition (BDEF) source code and metadata. Answers: \"show behavior definition\", \"display BDEF source\", \"view RAP behavior X\", \"get behavior definition code\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadBehaviorDefinition\nDescription: [read-only] Read ABAP RAP behavior definition (BDEF) source code and metadata. Answers: \"show behavior definition\", \"display BDEF source\", \"view RAP behavior X\", \"get behavior definition code\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read behavior definition, view RAP behavior code, show BDEF source, display behavior metadata, get behavior source code"
+    "text": "Tool: ReadBehaviorDefinition\nDescription: Operation: Read, Create, Update. Subject: BehaviorDefinition. Will be useful for reading, creating, or updating behavior definition. [read-only] Read ABAP RAP behavior definition (BDEF) source code and metadata. Answers: \"show behavior definition\", \"display BDEF source\", \"view RAP behavior X\", \"get behavior definition code\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadBehaviorDefinition\nDescription: Operation: Read, Create, Update. Subject: BehaviorDefinition. Will be useful for reading, creating, or updating behavior definition. [read-only] Read ABAP RAP behavior definition (BDEF) source code and metadata. Answers: \"show behavior definition\", \"display BDEF source\", \"view RAP behavior X\", \"get behavior definition code\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read behavior definition, view RAP behavior code, show BDEF source, display behavior metadata, get behavior definition"
   },
   "ReadBehaviorImplementation": {
     "text": "Tool: ReadBehaviorImplementation\nDescription: [read-only] Read ABAP RAP behavior implementation source code and metadata. Answers: \"show behavior implementation\", \"display behavior pool code\", \"view RAP implementation X\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
     "enriched": "Tool: ReadBehaviorImplementation\nDescription: [read-only] Read ABAP RAP behavior implementation source code and metadata. Answers: \"show behavior implementation\", \"display behavior pool code\", \"view RAP implementation X\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read behavior implementation, view RAP source code, show behavior pool code, display RAP implementation, read ABAP RAP metadata"
   },
   "ReadServiceBinding": {
-    "text": "Tool: ReadServiceBinding\nDescription: [read-only] Read ABAP service binding (SRVB) payload and metadata. Answers: \"show service binding\", \"display SRVB config\", \"view service binding X\", \"get OData service binding\". Returns payload, package, responsible, description.\nParameters: type, properties, required",
-    "enriched": "Tool: ReadServiceBinding\nDescription: [read-only] Read ABAP service binding (SRVB) payload and metadata. Answers: \"show service binding\", \"display SRVB config\", \"view service binding X\", \"get OData service binding\". Returns payload, package, responsible, description.\nParameters: type, properties, required\nIntent: read service binding, show SRVB config, display OData service binding, view service binding details, get service binding info"
+    "text": "Tool: ReadServiceBinding\nDescription: Operation: Read, Create, Update. Subject: ServiceBinding. Will be useful for reading, creating, or updating service binding. [read-only] Read ABAP service binding (SRVB) payload and metadata. Answers: \"show service binding\", \"display SRVB config\", \"view service binding X\", \"get OData service binding\". Returns payload, package, responsible, description.\nParameters: type, properties, required",
+    "enriched": "Tool: ReadServiceBinding\nDescription: Operation: Read, Create, Update. Subject: ServiceBinding. Will be useful for reading, creating, or updating service binding. [read-only] Read ABAP service binding (SRVB) payload and metadata. Answers: \"show service binding\", \"display SRVB config\", \"view service binding X\", \"get OData service binding\". Returns payload, package, responsible, description.\nParameters: type, properties, required\nIntent: read service binding, display SRVB config, view OData service binding, show service binding details, get service binding info"
   },
   "ActivateObjects": {
     "text": "Tool: ActivateObjects\nDescription: Activate one or multiple ABAP repository objects. Use after Create/Update when objects remain inactive, or for group activation of related objects (e.g., domains + data elements + tables together). Works with any object type.\nParameters: type, properties, required",
@@ -172,32 +172,32 @@
     "enriched": "Tool: GetPackage\nDescription: Retrieve ABAP package metadata (description, super-package, etc.). Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get package metadata, read ABAP package info, retrieve package description, show super-package, fetch package details"
   },
   "CreateDomain": {
-    "text": "Tool: CreateDomain\nDescription: Create a new ABAP domain in SAP system with all required steps: lock, create, check, unlock, activate, and verify.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateDomain\nDescription: Create a new ABAP domain in SAP system with all required steps: lock, create, check, unlock, activate, and verify.\nParameters: type, properties, required\nIntent: create ABAP domain, define domain properties, activate domain, verify domain creation, setup domain in SAP"
+    "text": "Tool: CreateDomain\nDescription: Operation: Create. Subject: Domain. Will be useful for creating domain. Create a new ABAP domain in SAP system. Creates the domain object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateDomain\nDescription: Operation: Create. Subject: Domain. Will be useful for creating domain. Create a new ABAP domain in SAP system. Creates the domain object in initial state.\nParameters: type, properties, required\nIntent: create ABAP domain, new domain object, define domain properties, initialize domain, create domain in SAP"
   },
   "GetDomain": {
     "text": "Tool: GetDomain\nDescription: Retrieve ABAP domain definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetDomain\nDescription: Retrieve ABAP domain definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP domain definition, read domain properties, retrieve domain details, active inactive domain version, domain metadata lookup"
   },
   "UpdateDomain": {
-    "text": "Tool: UpdateDomain\nDescription: Update an existing ABAP domain in SAP system.\n\nWorkflow:\n1. Acquires lock on the domain\n2. Updates domain with provided parameters (complete replacement)\n3. Performs syntax check\n4. Unlocks domain\n5. Optionally activates domain (default: true)\n6. Returns updated domain details\n\nNote: All provided parameters completely replace existing values. Use GetDomain first to see current values if needed.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateDomain\nDescription: Update an existing ABAP domain in SAP system.\n\nWorkflow:\n1. Acquires lock on the domain\n2. Updates domain with provided parameters (complete replacement)\n3. Performs syntax check\n4. Unlocks domain\n5. Optionally activates domain (default: true)\n6. Returns updated domain details\n\nNote: All provided parameters completely replace existing values. Use GetDomain first to see current values if needed.\nParameters: type, properties, required\nIntent: update ABAP domain, modify domain properties, replace domain values, activate updated domain, domain syntax check"
+    "text": "Tool: UpdateDomain\nDescription: Operation: Update, Create. Subject: Domain. Will be useful for updating or creating domain. Update an existing ABAP domain. Locks, updates with provided parameters (complete replacement), unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateDomain\nDescription: Operation: Update, Create. Subject: Domain. Will be useful for updating or creating domain. Update an existing ABAP domain. Locks, updates with provided parameters (complete replacement), unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP domain, create domain, modify domain properties, replace domain data, activate domain changes"
   },
   "DeleteDomain": {
     "text": "Tool: DeleteDomain\nDescription: Delete an ABAP domain from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteDomain\nDescription: Delete an ABAP domain from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP domain, remove domain from SAP, delete domain object, domain deletion check, delete SAP domain"
   },
   "CreateDataElement": {
-    "text": "Tool: CreateDataElement\nDescription: Create a new ABAP data element in SAP system with all required steps: create, activate, and verify.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateDataElement\nDescription: Create a new ABAP data element in SAP system with all required steps: create, activate, and verify.\nParameters: type, properties, required\nIntent: create ABAP data element, define data element properties, activate data element, verify data element creation, new data element setup"
+    "text": "Tool: CreateDataElement\nDescription: Operation: Create. Subject: DataElement. Will be useful for creating data element. Create a new ABAP data element in SAP system. Creates the data element object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateDataElement\nDescription: Operation: Create. Subject: DataElement. Will be useful for creating data element. Create a new ABAP data element in SAP system. Creates the data element object in initial state.\nParameters: type, properties, required\nIntent: create data element, new ABAP data element, add data element, define data element, create SAP data element"
   },
   "GetDataElement": {
     "text": "Tool: GetDataElement\nDescription: Retrieve ABAP data element definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetDataElement\nDescription: Retrieve ABAP data element definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: data element definition, get ABAP data element, read data element properties, retrieve data element info, show data element details"
   },
   "UpdateDataElement": {
-    "text": "Tool: UpdateDataElement\nDescription: Update an existing ABAP data element in SAP system.\n\nWorkflow:\n1. Gets domain info (if type_kind is 'domain') to extract dataType/length/decimals\n2. Acquires lock on the data element\n3. Updates data element with provided parameters (complete replacement)\n4. Unlocks data element\n5. Optionally activates data element (default: true)\n6. Returns updated data element details\n\nSupported type_kind values:\n- domain: Based on ABAP domain (requires type_name = domain name)\n- predefinedAbapType: Direct ABAP type (requires data_type, length, decimals)\n- refToPredefinedAbapType: Reference to ABAP type (requires data_type, length, decimals)\n- refToDictionaryType: Reference to another data element (requires type_name = data element name)\n- refToClifType: Reference to class (requires type_name = class name)\n\nNote: All provided parameters completely replace existing values. Field labels are truncated to max lengths (10/20/40/55).\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateDataElement\nDescription: Update an existing ABAP data element in SAP system.\n\nWorkflow:\n1. Gets domain info (if type_kind is 'domain') to extract dataType/length/decimals\n2. Acquires lock on the data element\n3. Updates data element with provided parameters (complete replacement)\n4. Unlocks data element\n5. Optionally activates data element (default: true)\n6. Returns updated data element details\n\nSupported type_kind values:\n- domain: Based on ABAP domain (requires type_name = domain name)\n- predefinedAbapType: Direct ABAP type (requires data_type, length, decimals)\n- refToPredefinedAbapType: Reference to ABAP type (requires data_type, length, decimals)\n- refToDictionaryType: Reference to another data element (requires type_name = data element name)\n- refToClifType: Reference to class (requires type_name = class name)\n\nNote: All provided parameters completely replace existing values. Field labels are truncated to max lengths (10/20/40/55).\nParameters: type, properties, required\nIntent: update data element, modify ABAP data element, change data element properties, replace data element info, activate updated data element"
+    "text": "Tool: UpdateDataElement\nDescription: Operation: Update, Create. Subject: DataElement. Will be useful for updating or creating data element. Update an existing ABAP data element. Locks, updates with provided parameters (complete replacement), unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateDataElement\nDescription: Operation: Update, Create. Subject: DataElement. Will be useful for updating or creating data element. Update an existing ABAP data element. Locks, updates with provided parameters (complete replacement), unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update data element, create data element, modify ABAP data element, replace data element properties, activate data element"
   },
   "DeleteDataElement": {
     "text": "Tool: DeleteDataElement\nDescription: Delete an ABAP data element from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
@@ -208,72 +208,72 @@
     "enriched": "Tool: CreateTransport\nDescription: Create a new ABAP transport request in SAP system for development objects.\nParameters: type, properties, required\nIntent: create transport request, new ABAP transport, create SAP transport, development object transport, generate transport request"
   },
   "CreateTable": {
-    "text": "Tool: CreateTable\nDescription: Create a new ABAP table via the ADT API. Creates the table object in initial state. Use UpdateTable to set DDL code afterwards.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateTable\nDescription: Create a new ABAP table via the ADT API. Creates the table object in initial state. Use UpdateTable to set DDL code afterwards.\nParameters: type, properties, required\nIntent: create new ABAP table, define table structure, initialize table object, start table creation, set table properties"
+    "text": "Tool: CreateTable\nDescription: Operation: Create. Subject: Table. Will be useful for creating table. Create a new ABAP table in SAP system. Creates the table object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateTable\nDescription: Operation: Create. Subject: Table. Will be useful for creating table. Create a new ABAP table in SAP system. Creates the table object in initial state.\nParameters: type, properties, required\nIntent: create new table, make ABAP table, define table structure, add database table, initialize table object"
   },
   "GetTable": {
     "text": "Tool: GetTable\nDescription: Retrieve ABAP table definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetTable\nDescription: Retrieve ABAP table definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP table definition, read table structure, view table properties, retrieve table metadata, show table schema"
   },
   "UpdateTable": {
-    "text": "Tool: UpdateTable\nDescription: Update DDL source code of an existing ABAP table. Locks the table, uploads new DDL source, and unlocks. Optionally activates after update. Use this to modify existing tables without re-creating metadata.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateTable\nDescription: Update DDL source code of an existing ABAP table. Locks the table, uploads new DDL source, and unlocks. Optionally activates after update. Use this to modify existing tables without re-creating metadata.\nParameters: type, properties, required\nIntent: update ABAP table DDL, modify table structure, upload new table source, change existing table, update table metadata"
+    "text": "Tool: UpdateTable\nDescription: Operation: Update, Create. Subject: Table. Will be useful for updating or creating table. Update DDL source code of an existing ABAP table. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateTable\nDescription: Operation: Update, Create. Subject: Table. Will be useful for updating or creating table. Update DDL source code of an existing ABAP table. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update table data, create new table, modify ABAP table, update DDL source, lock and activate table"
   },
   "DeleteTable": {
     "text": "Tool: DeleteTable\nDescription: Delete an ABAP table from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteTable\nDescription: Delete an ABAP table from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP table, remove database table, delete SAP table, drop table from system, erase table data"
   },
   "CreateStructure": {
-    "text": "Tool: CreateStructure\nDescription: Create a new ABAP structure in SAP system with fields and type references. Includes create, activate, and verify steps.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateStructure\nDescription: Create a new ABAP structure in SAP system with fields and type references. Includes create, activate, and verify steps.\nParameters: type, properties, required\nIntent: create ABAP structure, define structure fields, create data type, activate structure, verify structure"
+    "text": "Tool: CreateStructure\nDescription: Operation: Create. Subject: Structure. Will be useful for creating structure. Create a new ABAP structure in SAP system. Creates the structure object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateStructure\nDescription: Operation: Create. Subject: Structure. Will be useful for creating structure. Create a new ABAP structure in SAP system. Creates the structure object in initial state.\nParameters: type, properties, required\nIntent: create ABAP structure, define new structure, make structure object, initialize structure, build data structure"
   },
   "GetStructure": {
     "text": "Tool: GetStructure\nDescription: Retrieve ABAP structure definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetStructure\nDescription: Retrieve ABAP structure definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP structure, retrieve structure definition, read structure properties, active inactive structure, show structure details"
   },
   "UpdateStructure": {
-    "text": "Tool: UpdateStructure\nDescription: Update DDL source code of an existing ABAP structure. Locks the structure, uploads new DDL source, and unlocks. Optionally activates after update. Use this to modify existing structures without re-creating metadata.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateStructure\nDescription: Update DDL source code of an existing ABAP structure. Locks the structure, uploads new DDL source, and unlocks. Optionally activates after update. Use this to modify existing structures without re-creating metadata.\nParameters: type, properties, required\nIntent: update ABAP structure, modify DDL source, change structure metadata, edit existing structure, update structure definition"
+    "text": "Tool: UpdateStructure\nDescription: Operation: Update, Create. Subject: Structure. Will be useful for updating or creating structure. Update DDL source code of an existing ABAP structure. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateStructure\nDescription: Operation: Update, Create. Subject: Structure. Will be useful for updating or creating structure. Update DDL source code of an existing ABAP structure. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update structure, create structure, modify ABAP structure, change DDL source, activate structure"
   },
   "DeleteStructure": {
     "text": "Tool: DeleteStructure\nDescription: Delete an ABAP structure from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteStructure\nDescription: Delete an ABAP structure from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP structure, remove structure from system, delete data structure, erase ABAP type, delete structure with check"
   },
   "CreateView": {
-    "text": "Tool: CreateView\nDescription: Create CDS View or Classic View in SAP. Creates the view object in initial state. Use UpdateView to set DDL source code afterwards.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateView\nDescription: Create CDS View or Classic View in SAP. Creates the view object in initial state. Use UpdateView to set DDL source code afterwards.\nParameters: type, properties, required\nIntent: create CDS view, create classic view, make SAP view, initialize view object, start view creation"
+    "text": "Tool: CreateView\nDescription: Operation: Create. Subject: View. Will be useful for creating view. Create a new CDS View or Classic View in SAP system. Creates the view object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateView\nDescription: Operation: Create. Subject: View. Will be useful for creating view. Create a new CDS View or Classic View in SAP system. Creates the view object in initial state.\nParameters: type, properties, required\nIntent: create new view, make CDS view, create classic view, define view object, build SAP view"
   },
   "GetView": {
     "text": "Tool: GetView\nDescription: Retrieve ABAP view definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetView\nDescription: Retrieve ABAP view definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP view definition, read view properties, retrieve active/inactive view, show view details, view metadata lookup"
   },
   "UpdateView": {
-    "text": "Tool: UpdateView\nDescription: Update DDL source code of an existing CDS View or Classic View. Locks the view, checks new code, uploads new DDL source, unlocks, and optionally activates.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateView\nDescription: Update DDL source code of an existing CDS View or Classic View. Locks the view, checks new code, uploads new DDL source, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update CDS view, modify DDL source, change classic view, edit database view, upload new view code"
+    "text": "Tool: UpdateView\nDescription: Operation: Update, Create. Subject: View. Will be useful for updating or creating view. Update DDL source code of an existing CDS View or Classic View. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateView\nDescription: Operation: Update, Create. Subject: View. Will be useful for updating or creating view. Update DDL source code of an existing CDS View or Classic View. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update view, create view, modify CDS view, edit classic view, activate view changes"
   },
   "DeleteView": {
     "text": "Tool: DeleteView\nDescription: Delete an ABAP view from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteView\nDescription: Delete an ABAP view from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP view, remove SAP view, delete database view, delete view with check, delete view transport request"
   },
   "CreateServiceDefinition": {
-    "text": "Tool: CreateServiceDefinition\nDescription: Create a new ABAP service definition for OData services. Service definitions define the structure and behavior of OData services. Uses stateful session for proper lock management.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateServiceDefinition\nDescription: Create a new ABAP service definition for OData services. Service definitions define the structure and behavior of OData services. Uses stateful session for proper lock management.\nParameters: type, properties, required\nIntent: create OData service definition, define OData service structure, new ABAP service definition, setup OData service behavior, create service with lock management"
+    "text": "Tool: CreateServiceDefinition\nDescription: Operation: Create. Subject: ServiceDefinition. Will be useful for creating service definition. Create a new ABAP service definition in SAP system. Creates the service definition object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateServiceDefinition\nDescription: Operation: Create. Subject: ServiceDefinition. Will be useful for creating service definition. Create a new ABAP service definition in SAP system. Creates the service definition object in initial state.\nParameters: type, properties, required\nIntent: create service definition, new ABAP service, define service object, create SAP service, initialize service definition"
   },
   "GetServiceDefinition": {
     "text": "Tool: GetServiceDefinition\nDescription: Retrieve ABAP service definition definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetServiceDefinition\nDescription: Retrieve ABAP service definition definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP service definition, read service details, fetch active/inactive service, retrieve service properties"
   },
   "UpdateServiceDefinition": {
-    "text": "Tool: UpdateServiceDefinition\nDescription: Update source code of an existing ABAP service definition. Uses stateful session with proper lock/unlock mechanism.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateServiceDefinition\nDescription: Update source code of an existing ABAP service definition. Uses stateful session with proper lock/unlock mechanism.\nParameters: type, properties, required\nIntent: update ABAP service code, modify service definition, change service properties, edit existing service, update service parameters"
+    "text": "Tool: UpdateServiceDefinition\nDescription: Operation: Update, Create. Subject: ServiceDefinition. Will be useful for updating or creating service definition. Update source code of an existing ABAP service definition. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateServiceDefinition\nDescription: Operation: Update, Create. Subject: ServiceDefinition. Will be useful for updating or creating service definition. Update source code of an existing ABAP service definition. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update service definition, create service definition, modify ABAP service, change service source code, activate service update"
   },
   "DeleteServiceDefinition": {
     "text": "Tool: DeleteServiceDefinition\nDescription: Delete an ABAP service definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteServiceDefinition\nDescription: Delete an ABAP service definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP service definition, remove SAP service, delete service from system, service deletion check, delete SAP service object"
   },
   "CreateServiceBinding": {
-    "text": "Tool: CreateServiceBinding\nDescription: Create ABAP service binding via ADT Business Services endpoint. XML is generated from high-level parameters.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateServiceBinding\nDescription: Create ABAP service binding via ADT Business Services endpoint. XML is generated from high-level parameters.\nParameters: type, properties, required\nIntent: create ABAP service binding, generate service binding XML, define service binding properties, setup service binding parameters"
+    "text": "Tool: CreateServiceBinding\nDescription: Operation: Create. Subject: ServiceBinding. Will be useful for creating service binding. Create a new ABAP service binding in SAP system. Creates the service binding object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateServiceBinding\nDescription: Operation: Create. Subject: ServiceBinding. Will be useful for creating service binding. Create a new ABAP service binding in SAP system. Creates the service binding object in initial state.\nParameters: type, properties, required\nIntent: create service binding, new ABAP service binding, create SAP service binding, initialize service binding, add service binding object"
   },
   "ListServiceBindingTypes": {
     "text": "Tool: ListServiceBindingTypes\nDescription: List available service binding types (for example ODataV2/ODataV4) from ADT Business Services endpoint.\nParameters: type, properties",
@@ -284,8 +284,8 @@
     "enriched": "Tool: GetServiceBinding\nDescription: Retrieve ABAP service binding source/metadata by name via ADT Business Services endpoint.\nParameters: type, properties, required\nIntent: get service binding, retrieve service metadata, fetch ABAP service info, find service binding details, access business service data"
   },
   "UpdateServiceBinding": {
-    "text": "Tool: UpdateServiceBinding\nDescription: Update publication state for ABAP service binding via AdtServiceBinding workflow.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateServiceBinding\nDescription: Update publication state for ABAP service binding via AdtServiceBinding workflow.\nParameters: type, properties, required\nIntent: update service binding state, change ABAP service status, modify service binding publication, set service binding properties"
+    "text": "Tool: UpdateServiceBinding\nDescription: Operation: Update, Create. Subject: ServiceBinding. Will be useful for updating or creating service binding. Update publication state of an existing ABAP service binding.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateServiceBinding\nDescription: Operation: Update, Create. Subject: ServiceBinding. Will be useful for updating or creating service binding. Update publication state of an existing ABAP service binding.\nParameters: type, properties, required\nIntent: update service binding, create service binding, modify ABAP service binding, change publication state, manage service binding"
   },
   "ValidateServiceBinding": {
     "text": "Tool: ValidateServiceBinding\nDescription: Validate service binding parameters (name, service definition, package, version) via ADT validation endpoint.\nParameters: type, properties, required",
@@ -300,12 +300,12 @@
     "enriched": "Tool: GetClass\nDescription: Retrieve ABAP class source code. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP class code, read class source, retrieve class code, show class source, fetch ABAP class"
   },
   "CreateClass": {
-    "text": "Tool: CreateClass\nDescription: Create a new ABAP class in SAP system. Creates the class object in initial state. Use UpdateClass to set source code afterwards.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateClass\nDescription: Create a new ABAP class in SAP system. Creates the class object in initial state. Use UpdateClass to set source code afterwards.\nParameters: type, properties, required\nIntent: create ABAP class, new class object, define class structure, initialize class in SAP"
+    "text": "Tool: CreateClass\nDescription: Operation: Create. Subject: Class. Will be useful for creating class. Create a new ABAP class in SAP system. Creates the class object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateClass\nDescription: Operation: Create. Subject: Class. Will be useful for creating class. Create a new ABAP class in SAP system. Creates the class object in initial state.\nParameters: type, properties, required\nIntent: create ABAP class, new class creation, define class properties, generate class object, initialize class"
   },
   "UpdateClass": {
-    "text": "Tool: UpdateClass\nDescription: Update source code of an existing ABAP class. Locks, checks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateClass\nDescription: Update source code of an existing ABAP class. Locks, checks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP class code, modify class source, edit existing class, change class properties, activate updated class"
+    "text": "Tool: UpdateClass\nDescription: Operation: Update, Create. Subject: Class. Will be useful for updating or creating class. Update source code of an existing ABAP class. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateClass\nDescription: Operation: Update, Create. Subject: Class. Will be useful for updating or creating class. Update source code of an existing ABAP class. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP class, create new class, modify class source code, lock and unlock class, activate class"
   },
   "DeleteClass": {
     "text": "Tool: DeleteClass\nDescription: Delete an ABAP class from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
@@ -412,32 +412,32 @@
     "enriched": "Tool: DeleteLocalMacros\nDescription: Delete local macros from an ABAP class by clearing the macros include. Manages lock, update, unlock, and optional activation. Note: Macros are supported in older ABAP versions but not in newer ones.\nParameters: type, properties, required\nIntent: delete local macros, remove ABAP macros, clear macros include, manage macro deletion, clean class macros"
   },
   "CreateProgram": {
-    "text": "Tool: CreateProgram\nDescription: Create a new ABAP program (report) in SAP system. Creates the program object in initial state. Use UpdateProgram to set source code afterwards.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateProgram\nDescription: Create a new ABAP program (report) in SAP system. Creates the program object in initial state. Use UpdateProgram to set source code afterwards.\nParameters: type, properties, required\nIntent: create new ABAP program, make ABAP report, initialize program object, start ABAP coding, new SAP report creation"
+    "text": "Tool: CreateProgram\nDescription: Operation: Create. Subject: Program. Will be useful for creating program. Create a new ABAP program (report) in SAP system. Creates the program object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateProgram\nDescription: Operation: Create. Subject: Program. Will be useful for creating program. Create a new ABAP program (report) in SAP system. Creates the program object in initial state.\nParameters: type, properties, required\nIntent: create ABAP program, new SAP report, create program object, start new program, ABAP report creation"
   },
   "GetProgram": {
     "text": "Tool: GetProgram\nDescription: Retrieve ABAP program definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetProgram\nDescription: Retrieve ABAP program definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP program, retrieve program definition, read active program, read inactive program, fetch program properties"
   },
   "UpdateProgram": {
-    "text": "Tool: UpdateProgram\nDescription: Update source code of an existing ABAP program. Locks the program, checks new code, uploads new source code, and unlocks. Optionally activates after update. Use this to modify existing programs without re-creating metadata.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateProgram\nDescription: Update source code of an existing ABAP program. Locks the program, checks new code, uploads new source code, and unlocks. Optionally activates after update. Use this to modify existing programs without re-creating metadata.\nParameters: type, properties, required\nIntent: update ABAP program code, modify existing program, upload new source code, change program logic, edit ABAP source"
+    "text": "Tool: UpdateProgram\nDescription: Operation: Update, Create. Subject: Program. Will be useful for updating or creating program. Update source code of an existing ABAP program. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateProgram\nDescription: Operation: Update, Create. Subject: Program. Will be useful for updating or creating program. Update source code of an existing ABAP program. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP program, create new program, modify program source, program code update, activate program"
   },
   "DeleteProgram": {
     "text": "Tool: DeleteProgram\nDescription: Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteProgram\nDescription: Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP program, remove SAP program, delete code object, erase ABAP report, delete SAP report"
   },
   "CreateInterface": {
-    "text": "Tool: CreateInterface\nDescription: Create a new ABAP interface in SAP system. Creates the interface object in initial state. Use UpdateInterface to set source code afterwards.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateInterface\nDescription: Create a new ABAP interface in SAP system. Creates the interface object in initial state. Use UpdateInterface to set source code afterwards.\nParameters: type, properties, required\nIntent: create ABAP interface, new interface object, generate interface in SAP, initialize interface creation"
+    "text": "Tool: CreateInterface\nDescription: Operation: Create. Subject: Interface. Will be useful for creating interface. Create a new ABAP interface in SAP system. Creates the interface object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateInterface\nDescription: Operation: Create. Subject: Interface. Will be useful for creating interface. Create a new ABAP interface in SAP system. Creates the interface object in initial state.\nParameters: type, properties, required\nIntent: create ABAP interface, new interface creation, define interface object, generate SAP interface, initialize interface design"
   },
   "GetInterface": {
     "text": "Tool: GetInterface\nDescription: Retrieve ABAP interface definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetInterface\nDescription: Retrieve ABAP interface definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP interface, retrieve interface definition, read interface properties, fetch active/inactive interface, show interface details"
   },
   "UpdateInterface": {
-    "text": "Tool: UpdateInterface\nDescription: Update source code of an existing ABAP interface. Uses stateful session with proper lock/unlock mechanism. Lock handle and transport number are passed in URL parameters.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateInterface\nDescription: Update source code of an existing ABAP interface. Uses stateful session with proper lock/unlock mechanism. Lock handle and transport number are passed in URL parameters.\nParameters: type, properties, required\nIntent: update ABAP interface, modify interface code, change interface source, edit existing interface, interface code update"
+    "text": "Tool: UpdateInterface\nDescription: Operation: Update, Create. Subject: Interface. Will be useful for updating or creating interface. Update source code of an existing ABAP interface. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateInterface\nDescription: Operation: Update, Create. Subject: Interface. Will be useful for updating or creating interface. Update source code of an existing ABAP interface. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP interface, create interface, modify interface code, activate interface, lock and unlock interface"
   },
   "DeleteInterface": {
     "text": "Tool: DeleteInterface\nDescription: Delete an ABAP interface from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
@@ -460,32 +460,32 @@
     "enriched": "Tool: DeleteFunctionGroup\nDescription: Delete an ABAP function group from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete function group, remove ABAP function group, delete SAP function group, erase function group, delete function module group"
   },
   "CreateFunctionModule": {
-    "text": "Tool: CreateFunctionModule\nDescription: Create a new ABAP function module within an existing function group. Creates the function module in initial state. Use UpdateFunctionModule to set source code afterwards.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateFunctionModule\nDescription: Create a new ABAP function module within an existing function group. Creates the function module in initial state. Use UpdateFunctionModule to set source code afterwards.\nParameters: type, properties, required\nIntent: create ABAP function module, add new function module, initialize function module, create FM in function group, start function module development"
+    "text": "Tool: CreateFunctionModule\nDescription: Operation: Create. Subject: FunctionModule. Will be useful for creating function module. Create a new ABAP function module within an existing function group. Creates the function module in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateFunctionModule\nDescription: Operation: Create. Subject: FunctionModule. Will be useful for creating function module. Create a new ABAP function module within an existing function group. Creates the function module in initial state.\nParameters: type, properties, required\nIntent: create function module, new ABAP function, add function module, define function module, initialize function module"
   },
   "GetFunctionModule": {
     "text": "Tool: GetFunctionModule\nDescription: Retrieve ABAP function module definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetFunctionModule\nDescription: Retrieve ABAP function module definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get function module definition, read function module, retrieve FM details, show FM properties, active inactive FM version"
   },
   "UpdateFunctionModule": {
-    "text": "Tool: UpdateFunctionModule\nDescription: Update source code of an existing ABAP function module. Locks the function module, uploads new source code, and unlocks. Optionally activates after update. Use this to modify existing function modules without re-creating metadata.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateFunctionModule\nDescription: Update source code of an existing ABAP function module. Locks the function module, uploads new source code, and unlocks. Optionally activates after update. Use this to modify existing function modules without re-creating metadata.\nParameters: type, properties, required\nIntent: update function module code, modify ABAP function module, change function module source, edit existing function module, upload new function code"
+    "text": "Tool: UpdateFunctionModule\nDescription: Operation: Update, Create. Subject: FunctionModule. Will be useful for updating or creating function module. Update source code of an existing ABAP function module. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateFunctionModule\nDescription: Operation: Update, Create. Subject: FunctionModule. Will be useful for updating or creating function module. Update source code of an existing ABAP function module. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update function module, create function module, modify ABAP function, change function module code, activate function module"
   },
   "DeleteFunctionModule": {
     "text": "Tool: DeleteFunctionModule\nDescription: Delete an ABAP function module from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
     "enriched": "Tool: DeleteFunctionModule\nDescription: Delete an ABAP function module from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete function module, remove ABAP function, delete SAP FM, erase function module, delete ABAP code"
   },
   "CreateBehaviorDefinition": {
-    "text": "Tool: CreateBehaviorDefinition\nDescription: Create a new ABAP Behavior Definition (BDEF) in SAP system. Defines RAP business object behavior: CRUD operations, validations, determinations, actions, and draft handling.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateBehaviorDefinition\nDescription: Create a new ABAP Behavior Definition (BDEF) in SAP system. Defines RAP business object behavior: CRUD operations, validations, determinations, actions, and draft handling.\nParameters: type, properties, required\nIntent: create behavior definition, define RAP business object, set CRUD operations, configure validations, setup draft handling"
+    "text": "Tool: CreateBehaviorDefinition\nDescription: Operation: Create. Subject: BehaviorDefinition. Will be useful for creating behavior definition. Create a new ABAP Behavior Definition (BDEF) in SAP system. Creates the behavior definition object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateBehaviorDefinition\nDescription: Operation: Create. Subject: BehaviorDefinition. Will be useful for creating behavior definition. Create a new ABAP Behavior Definition (BDEF) in SAP system. Creates the behavior definition object in initial state.\nParameters: type, properties, required\nIntent: create behavior definition, new ABAP BDEF, define behavior object, create behavior in SAP, initialize behavior definition"
   },
   "GetBehaviorDefinition": {
     "text": "Tool: GetBehaviorDefinition\nDescription: Retrieve ABAP behavior definition definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetBehaviorDefinition\nDescription: Retrieve ABAP behavior definition definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP behavior definition, read behavior properties, retrieve active/inactive behavior, fetch behavior metadata"
   },
   "UpdateBehaviorDefinition": {
-    "text": "Tool: UpdateBehaviorDefinition\nDescription: Update source code of an ABAP Behavior Definition (BDEF). Modifies RAP business object behavior: CRUD operations, validations, determinations, actions, and draft handling.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateBehaviorDefinition\nDescription: Update source code of an ABAP Behavior Definition (BDEF). Modifies RAP business object behavior: CRUD operations, validations, determinations, actions, and draft handling.\nParameters: type, properties, required\nIntent: update ABAP behavior definition, modify RAP business object, change CRUD operations, edit validations and actions, update draft handling"
+    "text": "Tool: UpdateBehaviorDefinition\nDescription: Operation: Update, Create. Subject: BehaviorDefinition. Will be useful for updating or creating behavior definition. Update source code of an existing ABAP Behavior Definition (BDEF). Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateBehaviorDefinition\nDescription: Operation: Update, Create. Subject: BehaviorDefinition. Will be useful for updating or creating behavior definition. Update source code of an existing ABAP Behavior Definition (BDEF). Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update behavior definition, create behavior definition, modify ABAP BDEF, edit behavior source code, activate behavior definition"
   },
   "DeleteBehaviorDefinition": {
     "text": "Tool: DeleteBehaviorDefinition\nDescription: Delete an ABAP behavior definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
@@ -508,16 +508,16 @@
     "enriched": "Tool: DeleteBehaviorImplementation\nDescription: Delete an ABAP behavior implementation from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP behavior implementation, remove behavior code, delete SAP behavior, check before delete, transport request deletion"
   },
   "CreateMetadataExtension": {
-    "text": "Tool: CreateMetadataExtension\nDescription: Create a new ABAP Metadata Extension (DDLX) in SAP system. Defines Fiori UI annotations, field labels, search help, and list/object page layout for CDS views.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateMetadataExtension\nDescription: Create a new ABAP Metadata Extension (DDLX) in SAP system. Defines Fiori UI annotations, field labels, search help, and list/object page layout for CDS views.\nParameters: type, properties, required\nIntent: create ABAP metadata extension, define Fiori UI annotations, set field labels, configure search help, design CDS view layout"
+    "text": "Tool: CreateMetadataExtension\nDescription: Operation: Create. Subject: MetadataExtension. Will be useful for creating metadata extension. Create a new ABAP Metadata Extension (DDLX) in SAP system. Creates the metadata extension object in initial state.\nParameters: type, properties, required",
+    "enriched": "Tool: CreateMetadataExtension\nDescription: Operation: Create. Subject: MetadataExtension. Will be useful for creating metadata extension. Create a new ABAP Metadata Extension (DDLX) in SAP system. Creates the metadata extension object in initial state.\nParameters: type, properties, required\nIntent: create metadata extension, new metadata object, add metadata extension, create DDLX object, initialize metadata extension"
   },
   "GetMetadataExtension": {
     "text": "Tool: GetMetadataExtension\nDescription: Retrieve ABAP metadata extension definition. Supports reading active or inactive version.\nParameters: type, properties, required",
     "enriched": "Tool: GetMetadataExtension\nDescription: Retrieve ABAP metadata extension definition. Supports reading active or inactive version.\nParameters: type, properties, required\nIntent: get ABAP metadata extension, read metadata definition, retrieve metadata properties, active inactive metadata, metadata extension info"
   },
   "UpdateMetadataExtension": {
-    "text": "Tool: UpdateMetadataExtension\nDescription: Update source code of an ABAP Metadata Extension (DDLX). Modifies Fiori UI annotations, field labels, search help, and list/object page layout for CDS views.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateMetadataExtension\nDescription: Update source code of an ABAP Metadata Extension (DDLX). Modifies Fiori UI annotations, field labels, search help, and list/object page layout for CDS views.\nParameters: type, properties, required\nIntent: update ABAP metadata extension, modify Fiori UI annotations, change CDS view layout, edit field labels, update search help"
+    "text": "Tool: UpdateMetadataExtension\nDescription: Operation: Update, Create. Subject: MetadataExtension. Will be useful for updating or creating metadata extension. Update source code of an existing ABAP Metadata Extension (DDLX). Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required",
+    "enriched": "Tool: UpdateMetadataExtension\nDescription: Operation: Update, Create. Subject: MetadataExtension. Will be useful for updating or creating metadata extension. Update source code of an existing ABAP Metadata Extension (DDLX). Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update metadata extension, create metadata extension, modify ABAP metadata, edit DDLX source, activate metadata changes"
   },
   "DeleteMetadataExtension": {
     "text": "Tool: DeleteMetadataExtension\nDescription: Delete an ABAP metadata extension from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
@@ -574,470 +574,6 @@
   "CheckView": {
     "text": "Tool: CheckView\nDescription: Perform syntax check on an ABAP CDS view. Can check existing view (active/inactive) or validate hypothetical DDL source. Returns syntax errors, warnings, and messages.\nParameters: type, properties, required",
     "enriched": "Tool: CheckView\nDescription: Perform syntax check on an ABAP CDS view. Can check existing view (active/inactive) or validate hypothetical DDL source. Returns syntax errors, warnings, and messages.\nParameters: type, properties, required\nIntent: CDS view syntax check, validate ABAP CDS, check CDS errors, verify DDL source, CDS warnings and messages"
-  },
-  "ActivateObjectLow": {
-    "text": "Tool: ActivateObjectLow\nDescription: [low-level] Activate one or multiple ABAP repository objects. Works with any object type; URI is auto-generated from name and type.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateObjectLow\nDescription: [low-level] Activate one or multiple ABAP repository objects. Works with any object type; URI is auto-generated from name and type.\nParameters: type, properties, required\nIntent: activate ABAP object, activate repository object, compile ABAP object, activate multiple objects, activate by name and type"
-  },
-  "UpdatePackageLow": {
-    "text": "Tool: UpdatePackageLow\nDescription: [low-level] Update description of an existing ABAP package. Requires lock handle from LockObject and superPackage. - use UpdatePackageSource for full workflow with lock/unlock.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdatePackageLow\nDescription: [low-level] Update description of an existing ABAP package. Requires lock handle from LockObject and superPackage. - use UpdatePackageSource for full workflow with lock/unlock.\nParameters: type, properties, required\nIntent: update ABAP package description, modify package details, change package info, edit package metadata"
-  },
-  "UnlockPackageLow": {
-    "text": "Tool: UnlockPackageLow\nDescription: [low-level] Unlock an ABAP package after modification. Requires lock handle from LockObject and superPackage. - must use the same session_id and lock_handle from LockObject.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockPackageLow\nDescription: [low-level] Unlock an ABAP package after modification. Requires lock handle from LockObject and superPackage. - must use the same session_id and lock_handle from LockObject.\nParameters: type, properties, required\nIntent: unlock ABAP package, release package lock, remove package modification lock, unlock development object"
-  },
-  "CheckPackageLow": {
-    "text": "Tool: CheckPackageLow\nDescription: [low-level] Perform syntax check on an ABAP package. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckPackageLow\nDescription: [low-level] Perform syntax check on an ABAP package. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check ABAP package, find syntax errors, check ABAP warnings, validate ABAP code, ABAP package analysis"
-  },
-  "DeletePackageLow": {
-    "text": "Tool: DeletePackageLow\nDescription: [low-level] Delete an ABAP package from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeletePackageLow\nDescription: [low-level] Delete an ABAP package from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP package, remove SAP package, delete package via API, delete development package, erase ABAP package"
-  },
-  "LockPackageLow": {
-    "text": "Tool: LockPackageLow\nDescription: [low-level] Lock an ABAP package for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id. Requires super_package.\nParameters: type, properties, required",
-    "enriched": "Tool: LockPackageLow\nDescription: [low-level] Lock an ABAP package for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id. Requires super_package.\nParameters: type, properties, required\nIntent: lock ABAP package, lock package for modification, package lock handle, secure package update, prevent package changes"
-  },
-  "ValidatePackageLow": {
-    "text": "Tool: ValidatePackageLow\nDescription: [low-level] Validate an ABAP package name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidatePackageLow\nDescription: [low-level] Validate an ABAP package name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP package name, check package availability, package name validation, verify package creation, ABAP package name check"
-  },
-  "CreatePackageLow": {
-    "text": "Tool: CreatePackageLow\nDescription: [low-level] Create a new ABAP package. - use CreatePackage (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreatePackageLow\nDescription: [low-level] Create a new ABAP package. - use CreatePackage (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP package, new package creation, define package properties, initialize package setup"
-  },
-  "UpdateDomainLow": {
-    "text": "Tool: UpdateDomainLow\nDescription: [low-level] Update properties of an existing ABAP domain. Requires lock handle from LockObject. - use UpdateDomain (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateDomainLow\nDescription: [low-level] Update properties of an existing ABAP domain. Requires lock handle from LockObject. - use UpdateDomain (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP domain properties, modify domain settings, change domain attributes, edit domain parameters"
-  },
-  "CheckDomainLow": {
-    "text": "Tool: CheckDomainLow\nDescription: [low-level] Perform syntax check on an ABAP domain. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckDomainLow\nDescription: [low-level] Perform syntax check on an ABAP domain. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check ABAP domain, validate domain code, find domain errors, check domain warnings, domain syntax validation"
-  },
-  "DeleteDomainLow": {
-    "text": "Tool: DeleteDomainLow\nDescription: [low-level] Delete an ABAP domain from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteDomainLow\nDescription: [low-level] Delete an ABAP domain from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP domain, remove SAP domain, delete domain object, erase domain from system, domain deletion API"
-  },
-  "LockDomainLow": {
-    "text": "Tool: LockDomainLow\nDescription: [low-level] Lock an ABAP domain for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockDomainLow\nDescription: [low-level] Lock an ABAP domain for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP domain, domain modification lock, obtain lock handle, lock for update, prevent concurrent changes"
-  },
-  "UnlockDomainLow": {
-    "text": "Tool: UnlockDomainLow\nDescription: [low-level] Unlock an ABAP domain after modification. Must use the same session_id and lock_handle from LockDomain operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockDomainLow\nDescription: [low-level] Unlock an ABAP domain after modification. Must use the same session_id and lock_handle from LockDomain operation.\nParameters: type, properties, required\nIntent: unlock ABAP domain, release domain lock, domain modification unlock, free locked domain"
-  },
-  "ValidateDomainLow": {
-    "text": "Tool: ValidateDomainLow\nDescription: [low-level] Validate an ABAP domain name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateDomainLow\nDescription: [low-level] Validate an ABAP domain name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP domain name, check domain name availability, domain name validity, domain creation check, ABAP domain validation"
-  },
-  "CreateDomainLow": {
-    "text": "Tool: CreateDomainLow\nDescription: [low-level] Create a new ABAP domain. - use CreateDomain (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateDomainLow\nDescription: [low-level] Create a new ABAP domain. - use CreateDomain (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP domain, define domain properties, new domain creation, low-level domain setup"
-  },
-  "ActivateDomainLow": {
-    "text": "Tool: ActivateDomainLow\nDescription: [low-level] Activate an ABAP domain. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateDomainLow\nDescription: [low-level] Activate an ABAP domain. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP domain, domain activation status, activate domain errors, activate domain warnings, ABAP domain session management"
-  },
-  "UpdateDataElementLow": {
-    "text": "Tool: UpdateDataElementLow\nDescription: [low-level] Update properties of an existing ABAP data element. Requires lock handle from LockObject. - use UpdateDataElement (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateDataElementLow\nDescription: [low-level] Update properties of an existing ABAP data element. Requires lock handle from LockObject. - use UpdateDataElement (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP data element, modify data element properties, change data element attributes, edit existing data element, update data element details"
-  },
-  "CheckDataElementLow": {
-    "text": "Tool: CheckDataElementLow\nDescription: [low-level] Perform syntax check on an ABAP data element. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckDataElementLow\nDescription: [low-level] Perform syntax check on an ABAP data element. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check data element, validate ABAP data element, check data element errors, data element warnings, ABAP data element syntax"
-  },
-  "DeleteDataElementLow": {
-    "text": "Tool: DeleteDataElementLow\nDescription: [low-level] Delete an ABAP data element from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteDataElementLow\nDescription: [low-level] Delete an ABAP data element from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP data element, remove data element, delete SAP data element, erase ABAP element, delete data element via API"
-  },
-  "LockDataElementLow": {
-    "text": "Tool: LockDataElementLow\nDescription: [low-level] Lock an ABAP data element for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockDataElementLow\nDescription: [low-level] Lock an ABAP data element for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP data element, modify data element, lock for update, obtain lock handle, secure data element changes"
-  },
-  "UnlockDataElementLow": {
-    "text": "Tool: UnlockDataElementLow\nDescription: [low-level] Unlock an ABAP data element after modification. Must use the same session_id and lock_handle from LockDataElement operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockDataElementLow\nDescription: [low-level] Unlock an ABAP data element after modification. Must use the same session_id and lock_handle from LockDataElement operation.\nParameters: type, properties, required\nIntent: unlock ABAP data element, release data element lock, undo data element modification lock, free locked data element"
-  },
-  "ValidateDataElementLow": {
-    "text": "Tool: ValidateDataElementLow\nDescription: [low-level] Validate an ABAP data element name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateDataElementLow\nDescription: [low-level] Validate an ABAP data element name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate data element name, check data element validity, data element availability, validate ABAP data element, data element creation check"
-  },
-  "CreateDataElementLow": {
-    "text": "Tool: CreateDataElementLow\nDescription: [low-level] Create a new ABAP data element. - use CreateDataElement (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateDataElementLow\nDescription: [low-level] Create a new ABAP data element. - use CreateDataElement (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP data element, define data element, new data element creation, ABAP data type setup, data element properties"
-  },
-  "ActivateDataElementLow": {
-    "text": "Tool: ActivateDataElementLow\nDescription: [low-level] Activate an ABAP data element. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateDataElementLow\nDescription: [low-level] Activate an ABAP data element. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP data element, activate data element status, data element activation errors, activate ABAP object, data element warnings"
-  },
-  "CreateTransportLow": {
-    "text": "Tool: CreateTransportLow\nDescription: [low-level] Create a new ABAP transport request.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateTransportLow\nDescription: [low-level] Create a new ABAP transport request.\nParameters: type, properties, required\nIntent: create transport request, new ABAP transport, generate transport, ABAP change request, create transport task"
-  },
-  "UpdateTableLow": {
-    "text": "Tool: UpdateTableLow\nDescription: [low-level] Update DDL source code of an existing ABAP table. Requires lock handle from LockObject. - use CreateTable for full workflow with lock/unlock.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateTableLow\nDescription: [low-level] Update DDL source code of an existing ABAP table. Requires lock handle from LockObject. - use CreateTable for full workflow with lock/unlock.\nParameters: type, properties, required\nIntent: update ABAP table DDL, modify table source code, change table structure, edit ABAP table definition, update database table design"
-  },
-  "DeleteTableLow": {
-    "text": "Tool: DeleteTableLow\nDescription: [low-level] Delete an ABAP table from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteTableLow\nDescription: [low-level] Delete an ABAP table from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP table, remove SAP table, delete database table, drop table in SAP, erase table data"
-  },
-  "LockTableLow": {
-    "text": "Tool: LockTableLow\nDescription: [low-level] Lock an ABAP table for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockTableLow\nDescription: [low-level] Lock an ABAP table for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP table, lock table for update, table modification lock, get lock handle, session lock management"
-  },
-  "UnlockTableLow": {
-    "text": "Tool: UnlockTableLow\nDescription: [low-level] Unlock an ABAP table after modification. Must use the same session_id and lock_handle from LockTable operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockTableLow\nDescription: [low-level] Unlock an ABAP table after modification. Must use the same session_id and lock_handle from LockTable operation.\nParameters: type, properties, required\nIntent: unlock ABAP table, release table lock, remove table lock, free locked table, unlock modified table"
-  },
-  "CreateTableLow": {
-    "text": "Tool: CreateTableLow\nDescription: [low-level] Create a new ABAP table. - use CreateTable (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateTableLow\nDescription: [low-level] Create a new ABAP table. - use CreateTable (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create new ABAP table, define table structure, add table properties, initialize ABAP table, low-level table creation"
-  },
-  "CheckTableLow": {
-    "text": "Tool: CheckTableLow\nDescription: [low-level] Perform syntax check on an ABAP table. Returns syntax errors, warnings, and messages. Requires session_id for stateful operations. Can use session_id and session_state from GetSession to maintain the same session. If ddl_code is provided, validates new/unsaved code (will be base64 encoded in request).\nParameters: type, properties, required",
-    "enriched": "Tool: CheckTableLow\nDescription: [low-level] Perform syntax check on an ABAP table. Returns syntax errors, warnings, and messages. Requires session_id for stateful operations. Can use session_id and session_state from GetSession to maintain the same session. If ddl_code is provided, validates new/unsaved code (will be base64 encoded in request).\nParameters: type, properties, required\nIntent: syntax check ABAP table, validate table code, find table errors, check table warnings, verify table syntax"
-  },
-  "ValidateTableLow": {
-    "text": "Tool: ValidateTableLow\nDescription: [low-level] Validate an ABAP table name before creation. Checks if the name is valid and available. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateTableLow\nDescription: [low-level] Validate an ABAP table name before creation. Checks if the name is valid and available. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP table name, check table name availability, verify table name validity, pre-create table validation, ABAP table naming rules"
-  },
-  "ActivateTableLow": {
-    "text": "Tool: ActivateTableLow\nDescription: [low-level] Activate an ABAP table. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateTableLow\nDescription: [low-level] Activate an ABAP table. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP table, table activation status, activate database table, check activation errors, activate table with session"
-  },
-  "UpdateStructureLow": {
-    "text": "Tool: UpdateStructureLow\nDescription: [low-level] Update DDL source code of an existing ABAP structure. Requires lock handle from LockObject. - use UpdateStructureSource for full workflow with lock/unlock.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateStructureLow\nDescription: [low-level] Update DDL source code of an existing ABAP structure. Requires lock handle from LockObject. - use UpdateStructureSource for full workflow with lock/unlock.\nParameters: type, properties, required\nIntent: update ABAP structure, modify DDL source, change structure definition, edit structure code, update structure fields"
-  },
-  "CheckStructureLow": {
-    "text": "Tool: CheckStructureLow\nDescription: [low-level] Perform syntax check on an ABAP structure. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session. If ddl_code is provided, validates new/unsaved code (will be base64 encoded in request).\nParameters: type, properties, required",
-    "enriched": "Tool: CheckStructureLow\nDescription: [low-level] Perform syntax check on an ABAP structure. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session. If ddl_code is provided, validates new/unsaved code (will be base64 encoded in request).\nParameters: type, properties, required\nIntent: syntax check ABAP structure, validate ABAP structure code, check ABAP structure errors, ABAP structure warnings, verify ABAP structure syntax"
-  },
-  "DeleteStructureLow": {
-    "text": "Tool: DeleteStructureLow\nDescription: [low-level] Delete an ABAP structure from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteStructureLow\nDescription: [low-level] Delete an ABAP structure from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP structure, remove structure from system, delete SAP structure, ABAP structure deletion, erase structure data"
-  },
-  "LockStructureLow": {
-    "text": "Tool: LockStructureLow\nDescription: [low-level] Lock an ABAP structure for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockStructureLow\nDescription: [low-level] Lock an ABAP structure for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP structure, modify structure lock, obtain lock handle, session lock management, structure update lock"
-  },
-  "UnlockStructureLow": {
-    "text": "Tool: UnlockStructureLow\nDescription: [low-level] Unlock an ABAP structure after modification. Must use the same session_id and lock_handle from LockStructure operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockStructureLow\nDescription: [low-level] Unlock an ABAP structure after modification. Must use the same session_id and lock_handle from LockStructure operation.\nParameters: type, properties, required\nIntent: unlock ABAP structure, release structure lock, unlock modified structure, free locked structure"
-  },
-  "ValidateStructureLow": {
-    "text": "Tool: ValidateStructureLow\nDescription: [low-level] Validate an ABAP structure name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateStructureLow\nDescription: [low-level] Validate an ABAP structure name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP structure name, check structure name validity, verify structure name availability, ABAP structure name validation, pre-create structure check"
-  },
-  "CreateStructureLow": {
-    "text": "Tool: CreateStructureLow\nDescription: [low-level] Create a new ABAP structure. - use CreateStructure (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateStructureLow\nDescription: [low-level] Create a new ABAP structure. - use CreateStructure (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP structure, define new structure, make data structure, build structure type, ABAP structure creation"
-  },
-  "ActivateStructureLow": {
-    "text": "Tool: ActivateStructureLow\nDescription: [low-level] Activate an ABAP structure. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateStructureLow\nDescription: [low-level] Activate an ABAP structure. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP structure, activate data structure, ABAP structure status, activate with session, structure activation errors"
-  },
-  "UpdateViewLow": {
-    "text": "Tool: UpdateViewLow\nDescription: [low-level] Update DDL source code of an existing CDS View or Classic View. Requires lock handle from LockObject. - use UpdateView (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateViewLow\nDescription: [low-level] Update DDL source code of an existing CDS View or Classic View. Requires lock handle from LockObject. - use UpdateView (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update CDS view source, modify classic view code, edit DDL source, change existing view, update database view"
-  },
-  "CheckViewLow": {
-    "text": "Tool: CheckViewLow\nDescription: [low-level] Perform syntax check on an ABAP view. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session. If ddl_source is provided, validates new/unsaved code (will be base64 encoded in request).\nParameters: type, properties, required",
-    "enriched": "Tool: CheckViewLow\nDescription: [low-level] Perform syntax check on an ABAP view. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session. If ddl_source is provided, validates new/unsaved code (will be base64 encoded in request).\nParameters: type, properties, required\nIntent: syntax check ABAP view, validate ABAP view code, check view errors, ABAP view warnings, verify ABAP view syntax"
-  },
-  "DeleteViewLow": {
-    "text": "Tool: DeleteViewLow\nDescription: [low-level] Delete an ABAP view from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteViewLow\nDescription: [low-level] Delete an ABAP view from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP view, remove SAP view, delete database view, erase ABAP CDS view, delete view object"
-  },
-  "LockViewLow": {
-    "text": "Tool: LockViewLow\nDescription: [low-level] Lock an ABAP view for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockViewLow\nDescription: [low-level] Lock an ABAP view for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP view, modify view lock, obtain lock handle, lock for update, session lock management"
-  },
-  "UnlockViewLow": {
-    "text": "Tool: UnlockViewLow\nDescription: [low-level] Unlock an ABAP view after modification. Must use the same session_id and lock_handle from LockView operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockViewLow\nDescription: [low-level] Unlock an ABAP view after modification. Must use the same session_id and lock_handle from LockView operation.\nParameters: type, properties, required\nIntent: unlock ABAP view, release view lock, remove view modification lock, unlock locked view"
-  },
-  "ValidateViewLow": {
-    "text": "Tool: ValidateViewLow\nDescription: [low-level] Validate an ABAP view name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateViewLow\nDescription: [low-level] Validate an ABAP view name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP view name, check view name availability, ABAP view name validation, verify view name before creation, validate view naming rules"
-  },
-  "CreateViewLow": {
-    "text": "Tool: CreateViewLow\nDescription: [low-level] Create a new ABAP view. - use CreateView (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateViewLow\nDescription: [low-level] Create a new ABAP view. - use CreateView (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP view, define new view, build database view, setup view properties, initialize view creation"
-  },
-  "ActivateViewLow": {
-    "text": "Tool: ActivateViewLow\nDescription: [low-level] Activate an ABAP view (CDS view). Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateViewLow\nDescription: [low-level] Activate an ABAP view (CDS view). Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP view, activate CDS view, compile ABAP view, activate database view, view activation status"
-  },
-  "UpdateClassLow": {
-    "text": "Tool: UpdateClassLow\nDescription: [low-level] Update source code of an existing ABAP class. Uses session from HandlerContext. Requires lock handle from LockClass operation. - use UpdateClass (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateClassLow\nDescription: [low-level] Update source code of an existing ABAP class. Uses session from HandlerContext. Requires lock handle from LockClass operation. - use UpdateClass (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP class source, modify class code, edit existing class, change class properties, update class definition"
-  },
-  "DeleteClassLow": {
-    "text": "Tool: DeleteClassLow\nDescription: [low-level] Delete an ABAP class from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteClassLow\nDescription: [low-level] Delete an ABAP class from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP class, remove class from system, delete class via API, erase ABAP class, delete class transport optional"
-  },
-  "LockClassLow": {
-    "text": "Tool: LockClassLow\nDescription: [low-level] Lock an ABAP class for modification. Uses session from HandlerContext. Returns lock handle that must be used in subsequent update/unlock operations.\nParameters: type, properties, required",
-    "enriched": "Tool: LockClassLow\nDescription: [low-level] Lock an ABAP class for modification. Uses session from HandlerContext. Returns lock handle that must be used in subsequent update/unlock operations.\nParameters: type, properties, required\nIntent: lock ABAP class, lock class for modification, reserve class for edit, class lock handle, prevent concurrent changes"
-  },
-  "UnlockClassLow": {
-    "text": "Tool: UnlockClassLow\nDescription: [low-level] Unlock an ABAP class after modification. Uses session from HandlerContext. Must use the same lock_handle from LockClass operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockClassLow\nDescription: [low-level] Unlock an ABAP class after modification. Uses session from HandlerContext. Must use the same lock_handle from LockClass operation.\nParameters: type, properties, required\nIntent: unlock ABAP class, release class lock, remove class modification lock, unlock modified class"
-  },
-  "CreateClassLow": {
-    "text": "Tool: CreateClassLow\nDescription: [low-level] Create a new ABAP class. - use CreateClass (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateClassLow\nDescription: [low-level] Create a new ABAP class. - use CreateClass (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP class, define class properties, generate new class, low-level class creation, ABAP class template"
-  },
-  "ValidateClassLow": {
-    "text": "Tool: ValidateClassLow\nDescription: [low-level] Validate an ABAP class name before creation. Checks if the name is valid, available, and validates package, description, and superclass if provided. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateClassLow\nDescription: [low-level] Validate an ABAP class name before creation. Checks if the name is valid, available, and validates package, description, and superclass if provided. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP class name, check class name availability, validate package and superclass, class name syntax check, pre-create class validation"
-  },
-  "CheckClassLow": {
-    "text": "Tool: CheckClassLow\nDescription: [low-level] Perform syntax check on an ABAP class. Can check existing class (active/inactive) or hypothetical source code. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckClassLow\nDescription: [low-level] Perform syntax check on an ABAP class. Can check existing class (active/inactive) or hypothetical source code. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check ABAP class, validate class code, find class errors, check class warnings, ABAP class syntax validation"
-  },
-  "ActivateClassLow": {
-    "text": "Tool: ActivateClassLow\nDescription: [low-level] Activate an ABAP class. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateClassLow\nDescription: [low-level] Activate an ABAP class. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP class, compile class, class activation status, check activation errors, activate code object"
-  },
-  "LockClassTestClassesLow": {
-    "text": "Tool: LockClassTestClassesLow\nDescription: [low-level] Lock ABAP Unit test classes include (CLAS/OC testclasses) for the specified class. Returns a test_classes_lock_handle for subsequent update/unlock operations using the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: LockClassTestClassesLow\nDescription: [low-level] Lock ABAP Unit test classes include (CLAS/OC testclasses) for the specified class. Returns a test_classes_lock_handle for subsequent update/unlock operations using the same session.\nParameters: type, properties, required\nIntent: lock ABAP test classes, lock unit test classes, lock test classes for class, manage test class locks, lock test classes session"
-  },
-  "UnlockClassTestClassesLow": {
-    "text": "Tool: UnlockClassTestClassesLow\nDescription: [low-level] Unlock ABAP Unit test classes include for a class using the test_classes_lock_handle obtained from LockClassTestClassesLow.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockClassTestClassesLow\nDescription: [low-level] Unlock ABAP Unit test classes include for a class using the test_classes_lock_handle obtained from LockClassTestClassesLow.\nParameters: type, properties, required\nIntent: unlock ABAP test classes, release test class lock, unlock unit test classes, manage test class locks, free test class include"
-  },
-  "UpdateClassTestClassesLow": {
-    "text": "Tool: UpdateClassTestClassesLow\nDescription: [low-level] Upload ABAP Unit test include source code for an existing class. Requires test_classes_lock_handle from LockClassTestClassesLow.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateClassTestClassesLow\nDescription: [low-level] Upload ABAP Unit test include source code for an existing class. Requires test_classes_lock_handle from LockClassTestClassesLow.\nParameters: type, properties, required\nIntent: upload ABAP Unit test code, update test include source, modify class test code, upload test class source"
-  },
-  "ActivateClassTestClassesLow": {
-    "text": "Tool: ActivateClassTestClassesLow\nDescription: [low-level] Activate ABAP Unit test classes include for an existing class. Should be executed after updating and unlocking test classes.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateClassTestClassesLow\nDescription: [low-level] Activate ABAP Unit test classes include for an existing class. Should be executed after updating and unlocking test classes.\nParameters: type, properties, required\nIntent: activate ABAP unit test classes, enable test classes, activate test code, update test classes, unlock and activate tests"
-  },
-  "RunClassUnitTestsLow": {
-    "text": "Tool: RunClassUnitTestsLow\nDescription: [low-level] Start an ABAP Unit test run for provided class test definitions. Returns run_id extracted from SAP response headers.\nParameters: type, properties, required",
-    "enriched": "Tool: RunClassUnitTestsLow\nDescription: [low-level] Start an ABAP Unit test run for provided class test definitions. Returns run_id extracted from SAP response headers.\nParameters: type, properties, required\nIntent: run ABAP unit tests, start class test run, execute unit tests, get test run ID, run class test definitions"
-  },
-  "GetClassUnitTestStatusLow": {
-    "text": "Tool: GetClassUnitTestStatusLow\nDescription: [low-level] Retrieve ABAP Unit run status XML for a previously started run_id.\nParameters: type, properties, required",
-    "enriched": "Tool: GetClassUnitTestStatusLow\nDescription: [low-level] Retrieve ABAP Unit run status XML for a previously started run_id.\nParameters: type, properties, required\nIntent: ABAP Unit test status, retrieve test run results, get unit test XML, check test run status, fetch test execution data"
-  },
-  "GetClassUnitTestResultLow": {
-    "text": "Tool: GetClassUnitTestResultLow\nDescription: [low-level] Retrieve ABAP Unit run result (ABAPUnit or JUnit XML) for a completed run_id.\nParameters: type, properties, required",
-    "enriched": "Tool: GetClassUnitTestResultLow\nDescription: [low-level] Retrieve ABAP Unit run result (ABAPUnit or JUnit XML) for a completed run_id.\nParameters: type, properties, required\nIntent: retrieve ABAP Unit results, get unit test run data, fetch JUnit XML results, view test run outcome, access test execution report"
-  },
-  "UpdateProgramLow": {
-    "text": "Tool: UpdateProgramLow\nDescription: [low-level] Update source code of an existing ABAP program. Requires lock handle from LockObject. - use UpdateProgram (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateProgramLow\nDescription: [low-level] Update source code of an existing ABAP program. Requires lock handle from LockObject. - use UpdateProgram (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP program source, modify program code, change existing program, edit ABAP source code"
-  },
-  "CheckProgramLow": {
-    "text": "Tool: CheckProgramLow\nDescription: [low-level] Perform syntax check on an ABAP program. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckProgramLow\nDescription: [low-level] Perform syntax check on an ABAP program. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check ABAP program, find syntax errors, ABAP program warnings, check ABAP code, validate ABAP syntax"
-  },
-  "DeleteProgramLow": {
-    "text": "Tool: DeleteProgramLow\nDescription: [low-level] Delete an ABAP program from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteProgramLow\nDescription: [low-level] Delete an ABAP program from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP program, remove SAP program, delete code object, erase ABAP report, delete program via API"
-  },
-  "LockProgramLow": {
-    "text": "Tool: LockProgramLow\nDescription: [low-level] Lock an ABAP program for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockProgramLow\nDescription: [low-level] Lock an ABAP program for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP program, program modification lock, obtain program lock, lock handle for update, prevent concurrent changes"
-  },
-  "UnlockProgramLow": {
-    "text": "Tool: UnlockProgramLow\nDescription: [low-level] Unlock an ABAP program after modification. Must use the same session_id and lock_handle from LockProgram operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockProgramLow\nDescription: [low-level] Unlock an ABAP program after modification. Must use the same session_id and lock_handle from LockProgram operation.\nParameters: type, properties, required\nIntent: unlock ABAP program, release program lock, remove program modification lock, free locked program"
-  },
-  "ValidateProgramLow": {
-    "text": "Tool: ValidateProgramLow\nDescription: [low-level] Validate an ABAP program name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateProgramLow\nDescription: [low-level] Validate an ABAP program name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP program name, check program name availability, ABAP name validation, program name correctness, verify program name"
-  },
-  "CreateProgramLow": {
-    "text": "Tool: CreateProgramLow\nDescription: [low-level] Create a new ABAP program. - use CreateProgram (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateProgramLow\nDescription: [low-level] Create a new ABAP program. - use CreateProgram (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create new ABAP program, generate ABAP code, new program creation, ABAP development start, create program skeleton"
-  },
-  "ActivateProgramLow": {
-    "text": "Tool: ActivateProgramLow\nDescription: [low-level] Activate an ABAP program. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateProgramLow\nDescription: [low-level] Activate an ABAP program. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP program, compile ABAP code, program activation status, check activation errors, activate code with session"
-  },
-  "UpdateInterfaceLow": {
-    "text": "Tool: UpdateInterfaceLow\nDescription: [low-level] Update source code of an existing ABAP interface. Requires lock handle from LockObject. - use UpdateInterface (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateInterfaceLow\nDescription: [low-level] Update source code of an existing ABAP interface. Requires lock handle from LockObject. - use UpdateInterface (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP interface code, modify interface source, change interface properties, edit existing interface, low-level interface update"
-  },
-  "CheckInterfaceLow": {
-    "text": "Tool: CheckInterfaceLow\nDescription: [low-level] Perform syntax check on an ABAP interface. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckInterfaceLow\nDescription: [low-level] Perform syntax check on an ABAP interface. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check ABAP interface, validate interface code, find interface errors, check interface warnings, ABAP interface syntax validation"
-  },
-  "DeleteInterfaceLow": {
-    "text": "Tool: DeleteInterfaceLow\nDescription: [low-level] Delete an ABAP interface from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteInterfaceLow\nDescription: [low-level] Delete an ABAP interface from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP interface, remove interface from system, delete SAP interface, erase ABAP interface, interface deletion"
-  },
-  "LockInterfaceLow": {
-    "text": "Tool: LockInterfaceLow\nDescription: [low-level] Lock an ABAP interface for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockInterfaceLow\nDescription: [low-level] Lock an ABAP interface for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP interface, modify interface lock, obtain lock handle, interface update lock, session lock management"
-  },
-  "UnlockInterfaceLow": {
-    "text": "Tool: UnlockInterfaceLow\nDescription: [low-level] Unlock an ABAP interface after modification. Must use the same session_id and lock_handle from LockInterface operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockInterfaceLow\nDescription: [low-level] Unlock an ABAP interface after modification. Must use the same session_id and lock_handle from LockInterface operation.\nParameters: type, properties, required\nIntent: unlock ABAP interface, release interface lock, interface modification unlock, unlock after edit"
-  },
-  "ValidateInterfaceLow": {
-    "text": "Tool: ValidateInterfaceLow\nDescription: [low-level] Validate an ABAP interface name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateInterfaceLow\nDescription: [low-level] Validate an ABAP interface name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP interface name, check interface name availability, interface name validation, ABAP interface creation check, interface name correctness"
-  },
-  "CreateInterfaceLow": {
-    "text": "Tool: CreateInterfaceLow\nDescription: [low-level] Create a new ABAP interface. - use CreateInterface (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateInterfaceLow\nDescription: [low-level] Create a new ABAP interface. - use CreateInterface (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP interface, define interface properties, make new interface, ABAP interface creation, generate interface code"
-  },
-  "ActivateInterfaceLow": {
-    "text": "Tool: ActivateInterfaceLow\nDescription: [low-level] Activate an ABAP interface. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateInterfaceLow\nDescription: [low-level] Activate an ABAP interface. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP interface, interface activation status, enable ABAP interface, check activation errors, activate interface with session"
-  },
-  "CheckFunctionGroupLow": {
-    "text": "Tool: CheckFunctionGroupLow\nDescription: [low-level] Perform syntax check on an ABAP function group. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckFunctionGroupLow\nDescription: [low-level] Perform syntax check on an ABAP function group. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check function group, validate ABAP function group, find syntax errors, check function group warnings, ABAP code validation"
-  },
-  "DeleteFunctionGroupLow": {
-    "text": "Tool: DeleteFunctionGroupLow\nDescription: [low-level] Delete an ABAP function group from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteFunctionGroupLow\nDescription: [low-level] Delete an ABAP function group from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP function group, remove function group, delete SAP function module group, erase function group from system"
-  },
-  "DeleteFunctionModuleLow": {
-    "text": "Tool: DeleteFunctionModuleLow\nDescription: [low-level] Delete an ABAP function module from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteFunctionModuleLow\nDescription: [low-level] Delete an ABAP function module from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP function module, remove function module, delete SAP function module, erase function module, delete FM from system"
-  },
-  "LockFunctionGroupLow": {
-    "text": "Tool: LockFunctionGroupLow\nDescription: [low-level] Lock an ABAP function group for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockFunctionGroupLow\nDescription: [low-level] Lock an ABAP function group for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock function group, lock ABAP function group, lock for modification, obtain lock handle, secure function group editing"
-  },
-  "LockFunctionModuleLow": {
-    "text": "Tool: LockFunctionModuleLow\nDescription: [low-level] Lock an ABAP function module for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockFunctionModuleLow\nDescription: [low-level] Lock an ABAP function module for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock function module, lock FM for modification, obtain lock handle, secure FM editing, lock ABAP function module"
-  },
-  "UnlockFunctionGroupLow": {
-    "text": "Tool: UnlockFunctionGroupLow\nDescription: [low-level] Unlock an ABAP function group after modification. Must use the same session_id and lock_handle from LockFunctionGroup operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockFunctionGroupLow\nDescription: [low-level] Unlock an ABAP function group after modification. Must use the same session_id and lock_handle from LockFunctionGroup operation.\nParameters: type, properties, required\nIntent: unlock ABAP function group, release function group lock, unlock modified function group, free function group after edit"
-  },
-  "UnlockFunctionModuleLow": {
-    "text": "Tool: UnlockFunctionModuleLow\nDescription: [low-level] Unlock an ABAP function module after modification. Must use the same session_id and lock_handle from LockFunctionModule operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockFunctionModuleLow\nDescription: [low-level] Unlock an ABAP function module after modification. Must use the same session_id and lock_handle from LockFunctionModule operation.\nParameters: type, properties, required\nIntent: unlock function module, release function module lock, ABAP function module unlock, remove function module lock, free modified function module"
-  },
-  "ValidateFunctionGroupLow": {
-    "text": "Tool: ValidateFunctionGroupLow\nDescription: [low-level] Validate an ABAP function group name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateFunctionGroupLow\nDescription: [low-level] Validate an ABAP function group name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate function group name, check function group availability, ABAP function group validation, function group name check, verify function group creation"
-  },
-  "CreateFunctionGroupLow": {
-    "text": "Tool: CreateFunctionGroupLow\nDescription: [low-level] Create a new ABAP function group. - use CreateFunctionGroup (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateFunctionGroupLow\nDescription: [low-level] Create a new ABAP function group. - use CreateFunctionGroup (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP function group, new function group, define function group, ABAP function group setup"
-  },
-  "CreateFunctionModuleLow": {
-    "text": "Tool: CreateFunctionModuleLow\nDescription: [low-level] Create a new ABAP function module. - use CreateFunctionModule (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateFunctionModuleLow\nDescription: [low-level] Create a new ABAP function module. - use CreateFunctionModule (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP function module, new function module, define function module, ABAP FM creation, function module setup"
-  },
-  "UpdateFunctionModuleLow": {
-    "text": "Tool: UpdateFunctionModuleLow\nDescription: [low-level] Update source code of an existing ABAP function module. Requires lock handle from LockObject and function group name. - use UpdateFunctionModule (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateFunctionModuleLow\nDescription: [low-level] Update source code of an existing ABAP function module. Requires lock handle from LockObject and function group name. - use UpdateFunctionModule (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update function module code, modify ABAP function module, change function module source, edit function module program, update FM source code"
-  },
-  "ValidateFunctionModuleLow": {
-    "text": "Tool: ValidateFunctionModuleLow\nDescription: [low-level] Validate an ABAP function module name before creation. Checks if the name is valid and available. Requires function group name. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateFunctionModuleLow\nDescription: [low-level] Validate an ABAP function module name before creation. Checks if the name is valid and available. Requires function group name. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate function module name, check function module availability, ABAP function module validation, verify function module name, function module name check"
-  },
-  "CheckFunctionModuleLow": {
-    "text": "Tool: CheckFunctionModuleLow\nDescription: [low-level] Perform syntax check on an ABAP function module. Returns syntax errors, warnings, and messages. Requires function group name. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckFunctionModuleLow\nDescription: [low-level] Perform syntax check on an ABAP function module. Returns syntax errors, warnings, and messages. Requires function group name. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check function module, validate ABAP function, find syntax errors, check function module code, ABAP function warnings"
-  },
-  "ActivateFunctionModuleLow": {
-    "text": "Tool: ActivateFunctionModuleLow\nDescription: [low-level] Activate an ABAP function module. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateFunctionModuleLow\nDescription: [low-level] Activate an ABAP function module. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate function module, enable ABAP function, function module activation status, activate FM with session, ABAP FM warnings errors"
-  },
-  "ActivateFunctionGroupLow": {
-    "text": "Tool: ActivateFunctionGroupLow\nDescription: [low-level] Activate an ABAP function group. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateFunctionGroupLow\nDescription: [low-level] Activate an ABAP function group. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP function group, function group activation status, activate function module group, check activation errors, activate ABAP code group"
-  },
-  "CheckBdefLow": {
-    "text": "Tool: CheckBdefLow\nDescription: [low-level] Perform syntax check on an ABAP behavior definition. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckBdefLow\nDescription: [low-level] Perform syntax check on an ABAP behavior definition. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check behavior definition, validate ABAP behavior, check BDEF syntax, find syntax errors, ABAP behavior warnings"
-  },
-  "DeleteBehaviorDefinitionLow": {
-    "text": "Tool: DeleteBehaviorDefinitionLow\nDescription: [low-level] Delete an ABAP behavior definition from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteBehaviorDefinitionLow\nDescription: [low-level] Delete an ABAP behavior definition from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP behavior definition, remove behavior from SAP, delete behavior via API, erase ABAP behavior object"
-  },
-  "LockBehaviorDefinitionLow": {
-    "text": "Tool: LockBehaviorDefinitionLow\nDescription: [low-level] Lock an ABAP behavior definition for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockBehaviorDefinitionLow\nDescription: [low-level] Lock an ABAP behavior definition for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP behavior definition, modify behavior definition, lock for update, obtain lock handle, session-based locking"
-  },
-  "UnlockBehaviorDefinitionLow": {
-    "text": "Tool: UnlockBehaviorDefinitionLow\nDescription: [low-level] Unlock an ABAP behavior definition after modification. Must use the same session_id and lock_handle from LockBehaviorDefinition operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockBehaviorDefinitionLow\nDescription: [low-level] Unlock an ABAP behavior definition after modification. Must use the same session_id and lock_handle from LockBehaviorDefinition operation.\nParameters: type, properties, required\nIntent: unlock ABAP behavior definition, release behavior lock, modify behavior unlock, unlock after edit"
-  },
-  "ValidateBehaviorDefinitionLow": {
-    "text": "Tool: ValidateBehaviorDefinitionLow\nDescription: [low-level] Validate an ABAP behavior definition name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateBehaviorDefinitionLow\nDescription: [low-level] Validate an ABAP behavior definition name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate behavior definition name, check name availability, validate ABAP behavior, behavior definition validation, name validity check"
-  },
-  "CreateBehaviorDefinitionLow": {
-    "text": "Tool: CreateBehaviorDefinitionLow\nDescription: [low-level] Create a new ABAP Behavior Definition. - use CreateBehaviorDefinition (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateBehaviorDefinitionLow\nDescription: [low-level] Create a new ABAP Behavior Definition. - use CreateBehaviorDefinition (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP behavior definition, define behavior properties, new behavior definition, low-level behavior creation"
-  },
-  "UpdateBehaviorDefinitionLow": {
-    "text": "Tool: UpdateBehaviorDefinitionLow\nDescription: [low-level] Update source code of an existing ABAP behavior definition. Requires lock handle from LockObject. - use UpdateBehaviorDefinition (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateBehaviorDefinitionLow\nDescription: [low-level] Update source code of an existing ABAP behavior definition. Requires lock handle from LockObject. - use UpdateBehaviorDefinition (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP behavior definition, modify behavior source code, change behavior properties, edit existing behavior, update behavior parameters"
-  },
-  "ActivateBehaviorDefinitionLow": {
-    "text": "Tool: ActivateBehaviorDefinitionLow\nDescription: [low-level] Activate an ABAP behavior definition. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateBehaviorDefinitionLow\nDescription: [low-level] Activate an ABAP behavior definition. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP behavior definition, enable behavior definition, activate behavior status, ABAP behavior errors, ABAP behavior warnings"
-  },
-  "ValidateBehaviorImplementationLow": {
-    "text": "Tool: ValidateBehaviorImplementationLow\nDescription: [low-level] Validate an ABAP behavior implementation class name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateBehaviorImplementationLow\nDescription: [low-level] Validate an ABAP behavior implementation class name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate ABAP behavior class name, check class name availability, verify behavior implementation name, validate class name before creation, ABAP class name validation"
-  },
-  "CreateBehaviorImplementationLow": {
-    "text": "Tool: CreateBehaviorImplementationLow\nDescription: [low-level] Create a new ABAP behavior implementation class with full workflow (create, lock, update main source, update implementations, unlock, activate). - use CreateBehaviorImplementation (high-level) for additional validation.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateBehaviorImplementationLow\nDescription: [low-level] Create a new ABAP behavior implementation class with full workflow (create, lock, update main source, update implementations, unlock, activate). - use CreateBehaviorImplementation (high-level) for additional validation.\nParameters: type, properties, required\nIntent: create ABAP behavior implementation, generate behavior class, create behavior workflow, implement behavior logic, ABAP behavior class creation"
-  },
-  "LockBehaviorImplementationLow": {
-    "text": "Tool: LockBehaviorImplementationLow\nDescription: [low-level] Lock an ABAP behavior implementation class for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockBehaviorImplementationLow\nDescription: [low-level] Lock an ABAP behavior implementation class for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP behavior class, lock implementation for modification, obtain lock handle, secure class for update, prevent concurrent changes"
-  },
-  "CheckMetadataExtensionLow": {
-    "text": "Tool: CheckMetadataExtensionLow\nDescription: [low-level] Perform syntax check on an ABAP metadata extension. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: CheckMetadataExtensionLow\nDescription: [low-level] Perform syntax check on an ABAP metadata extension. Returns syntax errors, warnings, and messages. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: syntax check metadata extension, validate ABAP metadata, check metadata errors, ABAP metadata warnings, metadata extension syntax validation"
-  },
-  "DeleteMetadataExtensionLow": {
-    "text": "Tool: DeleteMetadataExtensionLow\nDescription: [low-level] Delete an ABAP metadata extension from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteMetadataExtensionLow\nDescription: [low-level] Delete an ABAP metadata extension from the SAP system via ADT deletion API. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP metadata extension, remove metadata extension, delete SAP metadata, erase ABAP extension, delete ADT metadata"
-  },
-  "LockMetadataExtensionLow": {
-    "text": "Tool: LockMetadataExtensionLow\nDescription: [low-level] Lock an ABAP metadata extension for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required",
-    "enriched": "Tool: LockMetadataExtensionLow\nDescription: [low-level] Lock an ABAP metadata extension for modification. Returns lock handle that must be used in subsequent update/unlock operations with the same session_id.\nParameters: type, properties, required\nIntent: lock ABAP metadata extension, lock metadata for edit, obtain lock handle, secure metadata modification, prevent concurrent changes"
-  },
-  "UnlockMetadataExtensionLow": {
-    "text": "Tool: UnlockMetadataExtensionLow\nDescription: [low-level] Unlock an ABAP metadata extension after modification. Must use the same session_id and lock_handle from LockMetadataExtension operation.\nParameters: type, properties, required",
-    "enriched": "Tool: UnlockMetadataExtensionLow\nDescription: [low-level] Unlock an ABAP metadata extension after modification. Must use the same session_id and lock_handle from LockMetadataExtension operation.\nParameters: type, properties, required\nIntent: unlock ABAP metadata extension, release metadata lock, unlock modified metadata, metadata extension unlock, ABAP metadata session management"
-  },
-  "ValidateMetadataExtensionLow": {
-    "text": "Tool: ValidateMetadataExtensionLow\nDescription: [low-level] Validate an ABAP metadata extension name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ValidateMetadataExtensionLow\nDescription: [low-level] Validate an ABAP metadata extension name before creation. Checks if the name is valid and available. Returns validation result with success status and message. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: validate metadata extension name, check name availability, validate ABAP metadata name, metadata extension validation, name validity check"
-  },
-  "CreateMetadataExtensionLow": {
-    "text": "Tool: CreateMetadataExtensionLow\nDescription: [low-level] Create a new ABAP Metadata Extension. - use CreateMetadataExtension (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required",
-    "enriched": "Tool: CreateMetadataExtensionLow\nDescription: [low-level] Create a new ABAP Metadata Extension. - use CreateMetadataExtension (high-level) for full workflow with validation, lock, update, check, unlock, and activate.\nParameters: type, properties, required\nIntent: create ABAP metadata extension, define metadata properties, add metadata fields, extend metadata structure"
-  },
-  "UpdateMetadataExtensionLow": {
-    "text": "Tool: UpdateMetadataExtensionLow\nDescription: [low-level] Update source code of an existing ABAP metadata extension. Requires lock handle from LockObject. - use UpdateMetadataExtension (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required",
-    "enriched": "Tool: UpdateMetadataExtensionLow\nDescription: [low-level] Update source code of an existing ABAP metadata extension. Requires lock handle from LockObject. - use UpdateMetadataExtension (high-level) for full workflow with lock/unlock/activate.\nParameters: type, properties, required\nIntent: update ABAP metadata extension, modify metadata source code, change metadata properties, edit existing metadata extension"
-  },
-  "ActivateMetadataExtensionLow": {
-    "text": "Tool: ActivateMetadataExtensionLow\nDescription: [low-level] Activate an ABAP metadata extension. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateMetadataExtensionLow\nDescription: [low-level] Activate an ABAP metadata extension. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP metadata extension, enable metadata extension, activate metadata changes, metadata activation status, apply metadata updates"
-  },
-  "ActivateServiceDefinitionLow": {
-    "text": "Tool: ActivateServiceDefinitionLow\nDescription: [low-level] Activate an ABAP service definition. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateServiceDefinitionLow\nDescription: [low-level] Activate an ABAP service definition. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP service definition, enable service, service activation status, activate backend service, service activation errors"
-  },
-  "ActivateServiceBindingLow": {
-    "text": "Tool: ActivateServiceBindingLow\nDescription: [low-level] Activate an ABAP service binding. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required",
-    "enriched": "Tool: ActivateServiceBindingLow\nDescription: [low-level] Activate an ABAP service binding. Returns activation status and any warnings/errors. Can use session_id and session_state from GetSession to maintain the same session.\nParameters: type, properties, required\nIntent: activate ABAP service binding, enable service binding, service binding status, activate service endpoint, service binding errors"
   },
   "GetTypeInfo": {
     "text": "Tool: GetTypeInfo\nDescription: [read-only] Retrieve ABAP type information for domains (DOMA), data elements (DTEL), table types, and structures. Returns field definitions, value ranges, fixed values, and DDIC metadata.\nParameters: type, properties, required",
@@ -1162,5 +698,93 @@
   "GetObjectsByType": {
     "text": "Tool: GetObjectsByType\nDescription: [read-only] Retrieves all ABAP objects of a specific type (classes, tables, programs, interfaces, etc.) under a given parent node. Useful for listing all objects of one type within a package or composite object.\nParameters: type, properties, required",
     "enriched": "Tool: GetObjectsByType\nDescription: [read-only] Retrieves all ABAP objects of a specific type (classes, tables, programs, interfaces, etc.) under a given parent node. Useful for listing all objects of one type within a package or composite object.\nParameters: type, properties, required\nIntent: list ABAP objects by type, get objects in package, show classes tables programs, retrieve objects under node, list repository objects"
+  },
+  "HandlerValidate": {
+    "text": "Tool: HandlerValidate\nDescription: Validate before create only. object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), VIEW(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*), SERVICE_BINDING(object_name*=service_binding_name*, service_definition_name*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerValidate\nDescription: Validate before create only. object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), VIEW(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*), SERVICE_BINDING(object_name*=service_binding_name*, service_definition_name*).\nParameters: type, properties, required\nIntent: validate object before creation, check object validity, pre-create object validation, verify ABAP object type, validate object properties"
+  },
+  "HandlerActivate": {
+    "text": "Tool: HandlerActivate\nDescription: Activate operation. Single mode(object_name*, object_adt_type*). Batch mode(objects[].name*, objects[].type*).\nParameters: type, properties",
+    "enriched": "Tool: HandlerActivate\nDescription: Activate operation. Single mode(object_name*, object_adt_type*). Batch mode(objects[].name*, objects[].type*).\nParameters: type, properties\nIntent: activate object, activate ABAP object, batch activate objects, activate by name and type, activate repository objects"
+  },
+  "HandlerLock": {
+    "text": "Tool: HandlerLock\nDescription: Lock operation. object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), VIEW(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerLock\nDescription: Lock operation. object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), VIEW(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*).\nParameters: type, properties, required\nIntent: lock ABAP object, lock program or class, lock function module, lock database table, lock repository object"
+  },
+  "HandlerUnlock": {
+    "text": "Tool: HandlerUnlock\nDescription: Unlock operation. object_type required: CLASS(object_name*, lock_handle*, session_id*), PROGRAM(object_name*, lock_handle*, session_id*), INTERFACE(object_name*, lock_handle*, session_id*), FUNCTION_GROUP(object_name*, lock_handle*, session_id*), FUNCTION_MODULE(object_name*, lock_handle*, session_id*), TABLE(object_name*, lock_handle*, session_id*), STRUCTURE(object_name*, lock_handle*, session_id*), VIEW(object_name*, lock_handle*, session_id*), DOMAIN(object_name*, lock_handle*, session_id*), DATA_ELEMENT(object_name*, lock_handle*, session_id*), PACKAGE(object_name*, lock_handle*, session_id*), BEHAVIOR_DEFINITION(object_name*, lock_handle*, session_id*), BEHAVIOR_IMPLEMENTATION(object_name*, lock_handle*, session_id*), METADATA_EXTENSION(object_name*, lock_handle*, session_id*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerUnlock\nDescription: Unlock operation. object_type required: CLASS(object_name*, lock_handle*, session_id*), PROGRAM(object_name*, lock_handle*, session_id*), INTERFACE(object_name*, lock_handle*, session_id*), FUNCTION_GROUP(object_name*, lock_handle*, session_id*), FUNCTION_MODULE(object_name*, lock_handle*, session_id*), TABLE(object_name*, lock_handle*, session_id*), STRUCTURE(object_name*, lock_handle*, session_id*), VIEW(object_name*, lock_handle*, session_id*), DOMAIN(object_name*, lock_handle*, session_id*), DATA_ELEMENT(object_name*, lock_handle*, session_id*), PACKAGE(object_name*, lock_handle*, session_id*), BEHAVIOR_DEFINITION(object_name*, lock_handle*, session_id*), BEHAVIOR_IMPLEMENTATION(object_name*, lock_handle*, session_id*), METADATA_EXTENSION(object_name*, lock_handle*, session_id*).\nParameters: type, properties, required\nIntent: unlock object lock, release locked object, remove object lock, clear session lock, unlock ABAP object"
+  },
+  "HandlerCheckRun": {
+    "text": "Tool: HandlerCheckRun\nDescription: CheckRun operation (syntax, no activation). object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), VIEW(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerCheckRun\nDescription: CheckRun operation (syntax, no activation). object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), VIEW(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*).\nParameters: type, properties, required\nIntent: syntax check, code validation, check activation errors, validate ABAP object, syntax verification"
+  },
+  "HandlerUnitTestRun": {
+    "text": "Tool: HandlerUnitTestRun\nDescription: ABAP Unit run. object_type: not used. Required: tests[]{container_class*, test_class*}. Optional: title, context, scope, risk_level, duration. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerUnitTestRun\nDescription: ABAP Unit run. object_type: not used. Required: tests[]{container_class*, test_class*}. Optional: title, context, scope, risk_level, duration. Response: JSON.\nParameters: type, properties, required\nIntent: run ABAP unit tests, execute unit test classes, run test containers, ABAP test automation, get unit test results"
+  },
+  "HandlerUnitTestStatus": {
+    "text": "Tool: HandlerUnitTestStatus\nDescription: ABAP Unit status. object_type: not used. Required: run_id*. Optional: with_long_polling. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerUnitTestStatus\nDescription: ABAP Unit status. object_type: not used. Required: run_id*. Optional: with_long_polling. Response: JSON.\nParameters: type, properties, required\nIntent: ABAP Unit test status, check unit test results, get test run status, ABAP test run info, unit test JSON response"
+  },
+  "HandlerUnitTestResult": {
+    "text": "Tool: HandlerUnitTestResult\nDescription: ABAP Unit result. object_type: not used. Required: run_id*. Optional: with_navigation_uris, format(abapunit|junit). Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerUnitTestResult\nDescription: ABAP Unit result. object_type: not used. Required: run_id*. Optional: with_navigation_uris, format(abapunit|junit). Response: JSON.\nParameters: type, properties, required\nIntent: ABAP Unit test results, get unit test outcome, fetch test run data, retrieve ABAP test JSON, unit test report"
+  },
+  "HandlerCdsUnitTestStatus": {
+    "text": "Tool: HandlerCdsUnitTestStatus\nDescription: CDS unit test status. object_type: not used. Required: run_id*. Optional: with_long_polling. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerCdsUnitTestStatus\nDescription: CDS unit test status. object_type: not used. Required: run_id*. Optional: with_long_polling. Response: JSON.\nParameters: type, properties, required\nIntent: CDS unit test status, check test results, get test run status, CDS test JSON response, monitor unit tests"
+  },
+  "HandlerCdsUnitTestResult": {
+    "text": "Tool: HandlerCdsUnitTestResult\nDescription: CDS unit test result. object_type: not used. Required: run_id*. Optional: with_navigation_uris, format(abapunit|junit). Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerCdsUnitTestResult\nDescription: CDS unit test result. object_type: not used. Required: run_id*. Optional: with_navigation_uris, format(abapunit|junit). Response: JSON.\nParameters: type, properties, required\nIntent: CDS unit test results, get test run results, fetch ABAP unit test data, retrieve JUnit test output, show test run JSON"
+  },
+  "HandlerProfileRun": {
+    "text": "Tool: HandlerProfileRun\nDescription: Runtime profiling run. object_type: not used. Required: target_type*(CLASS|PROGRAM) + class_name* for CLASS or program_name* for PROGRAM. Optional profiling flags and description. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerProfileRun\nDescription: Runtime profiling run. object_type: not used. Required: target_type*(CLASS|PROGRAM) + class_name* for CLASS or program_name* for PROGRAM. Optional profiling flags and description. Response: JSON.\nParameters: type, properties, required\nIntent: runtime profiling, performance analysis, profile class execution, profile program run, generate profiling report"
+  },
+  "HandlerProfileList": {
+    "text": "Tool: HandlerProfileList\nDescription: Runtime profiling list. object_type: not used. Required: none. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerProfileList\nDescription: Runtime profiling list. object_type: not used. Required: none. Response: JSON.\nParameters: type, properties, required\nIntent: runtime profiling list, show profiling data, get runtime profile, list performance metrics, profiling information JSON"
+  },
+  "HandlerProfileView": {
+    "text": "Tool: HandlerProfileView\nDescription: Runtime profiling view. object_type: not used. Required: trace_id_or_uri*, view*(hitlist|statements|db_accesses). Optional: with_system_events, id, with_details, auto_drill_down_threshold. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerProfileView\nDescription: Runtime profiling view. object_type: not used. Required: trace_id_or_uri*, view*(hitlist|statements|db_accesses). Optional: with_system_events, id, with_details, auto_drill_down_threshold. Response: JSON.\nParameters: type, properties, required\nIntent: runtime profiling view, trace analysis, view hitlist, view statements, view db accesses"
+  },
+  "HandlerDumpList": {
+    "text": "Tool: HandlerDumpList\nDescription: Runtime dump list. object_type: not used. Required: none. Optional: user, top, from, to. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerDumpList\nDescription: Runtime dump list. object_type: not used. Required: none. Optional: user, top, from, to. Response: JSON.\nParameters: type, properties, required\nIntent: runtime dump list, show error dumps, list program crashes, view dump reports, runtime error logs"
+  },
+  "HandlerDumpView": {
+    "text": "Tool: HandlerDumpView\nDescription: Runtime dump view. object_type: not used. Required: dump_id*. Optional: view(default|summary|formatted). Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerDumpView\nDescription: Runtime dump view. object_type: not used. Required: dump_id*. Optional: view(default|summary|formatted). Response: JSON.\nParameters: type, properties, required\nIntent: view runtime dump, show dump details, get error dump, runtime error report, dump summary view"
+  },
+  "HandlerServiceBindingListTypes": {
+    "text": "Tool: HandlerServiceBindingListTypes\nDescription: Service binding types list. object_type: not used. Required: none. Optional: response_format(xml|json|plain). Response: XML/JSON/plain by response_format.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerServiceBindingListTypes\nDescription: Service binding types list. object_type: not used. Required: none. Optional: response_format(xml|json|plain). Response: XML/JSON/plain by response_format.\nParameters: type, properties, required\nIntent: list service binding types, show binding types, get service bindings, service binding type list, display binding types"
+  },
+  "HandlerServiceBindingValidate": {
+    "text": "Tool: HandlerServiceBindingValidate\nDescription: Service binding validate before create. object_type: not used. Required: service_binding_name*, service_definition_name*. Optional: service_binding_version, package_name, description. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerServiceBindingValidate\nDescription: Service binding validate before create. object_type: not used. Required: service_binding_name*, service_definition_name*. Optional: service_binding_version, package_name, description. Response: JSON.\nParameters: type, properties, required\nIntent: validate service binding, check service binding before create, service binding validation, verify service definition, service binding JSON response"
+  },
+  "HandlerTransportCreate": {
+    "text": "Tool: HandlerTransportCreate\nDescription: Transport create. object_type: not used. Required: description*. Optional: transport_type(workbench|customizing), target_system, owner. Response: JSON.\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerTransportCreate\nDescription: Transport create. object_type: not used. Required: description*. Optional: transport_type(workbench|customizing), target_system, owner. Response: JSON.\nParameters: type, properties, required\nIntent: create transport request, new transport task, initiate transport, create change request, transport description entry"
+  },
+  "HandlerCreate": {
+    "text": "Tool: HandlerCreate\nDescription: Create operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerCreate\nDescription: Create operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required\nIntent: create ABAP object, generate package domain data element, create table structure view, make class program interface, build function module behavior definition"
+  },
+  "HandlerGet": {
+    "text": "Tool: HandlerGet\nDescription: Read operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), LOCAL_TEST_CLASS(class_name*), LOCAL_TYPES(class_name*), LOCAL_DEFINITIONS(class_name*), LOCAL_MACROS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerGet\nDescription: Read operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), LOCAL_TEST_CLASS(class_name*), LOCAL_TYPES(class_name*), LOCAL_DEFINITIONS(class_name*), LOCAL_MACROS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required\nIntent: read ABAP object, get object details, fetch object properties, retrieve ABAP metadata, read repository object"
+  },
+  "HandlerUpdate": {
+    "text": "Tool: HandlerUpdate\nDescription: Update operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), LOCAL_TEST_CLASS(class_name*), LOCAL_TYPES(class_name*), LOCAL_DEFINITIONS(class_name*), LOCAL_MACROS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerUpdate\nDescription: Update operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), LOCAL_TEST_CLASS(class_name*), LOCAL_TYPES(class_name*), LOCAL_DEFINITIONS(class_name*), LOCAL_MACROS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required\nIntent: update ABAP object, modify package or class, change data element, edit function module, update service definition"
+  },
+  "HandlerDelete": {
+    "text": "Tool: HandlerDelete\nDescription: Delete operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), LOCAL_TEST_CLASS(class_name*), LOCAL_TYPES(class_name*), LOCAL_DEFINITIONS(class_name*), LOCAL_MACROS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required",
+    "enriched": "Tool: HandlerDelete\nDescription: Delete operation. object_type required: PACKAGE(package_name*), DOMAIN(domain_name*), DATA_ELEMENT(data_element_name*), TABLE(table_name*), STRUCTURE(structure_name*), VIEW(view_name*), SERVICE_DEFINITION(service_definition_name*), SERVICE_BINDING(service_binding_name*), CLASS(class_name*), LOCAL_TEST_CLASS(class_name*), LOCAL_TYPES(class_name*), LOCAL_DEFINITIONS(class_name*), LOCAL_MACROS(class_name*), PROGRAM(program_name*), INTERFACE(interface_name*), FUNCTION_GROUP(function_group_name*), FUNCTION_MODULE(function_module_name*, function_group_name*), BEHAVIOR_DEFINITION(behavior_definition_name*), BEHAVIOR_IMPLEMENTATION(behavior_implementation_name*), METADATA_EXTENSION(metadata_extension_name*), UNIT_TEST(run_id*), CDS_UNIT_TEST(run_id*).\nParameters: type, properties, required\nIntent: delete ABAP object, remove package, delete function module, erase class or interface, delete program or table"
   }
 }

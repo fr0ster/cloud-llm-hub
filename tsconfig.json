@@ -30,7 +30,8 @@
   "include": [
     "srv/**/*.ts",
     "types/**/*.d.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "tools/**/*.ts"
   ],
   "exclude": [
     "node_modules",
