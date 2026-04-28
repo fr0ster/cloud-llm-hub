@@ -1128,8 +1128,13 @@
                         const args = op.args && typeof op.args === 'object' ? op.args : {};
                         const collection = escapeHtml(String(args.collection || ''));
                         const reason = args.reason ? `<div style="font-size:11px;color:#888">reason: ${escapeHtml(String(args.reason))}</div>` : '';
+                        const docId = op.ok ? String(op.response.id || op.response.newId || '') : '';
+                        const canDownload = op.ok && docId && op.name !== 'rag_deprecate' && args.collection;
+                        const dlBtn = canDownload
+                            ? ` <button onclick="downloadRagDoc('${escapeHtml(String(args.collection))}','${escapeHtml(docId)}')" style="margin-left:8px;font-size:10px;padding:1px 6px;background:#1a1a1a;color:#00bfff;border:1px solid #003355;cursor:pointer;border-radius:3px" title="Download record as text file">DL</button>`
+                            : '';
                         const detail = op.ok
-                            ? `<div style="font-size:11px;color:#888">id: ${escapeHtml(String(op.response.id || op.response.newId || ''))}</div>`
+                            ? `<div style="font-size:11px;color:#888">id: ${escapeHtml(docId)}${dlBtn}</div>`
                             : `<div style="font-size:11px;color:#f88">${escapeHtml(String(op.response.error || ''))}</div>`;
                         ragOpsHtml += `<div class="trace-container"><div class="trace-header">RAG OP: ${escapeHtml(op.name)} ${status}</div><div class="trace-step">collection: ${collection}</div>${reason}${detail}</div>`;
                     }
@@ -1378,8 +1383,9 @@
                     const source = d.metadata?.source ? ` · <span style="color:#888">${escapeHtml(String(d.metadata.source))}</span>` : '';
                     return `
                         <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
-                            <div style="display:flex;justify-content:space-between;align-items:center">
-                                <span style="color:#00bfff;font-size:12px;font-weight:bold">${escapeHtml(d.id)}</span>${source}
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+                                <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(d.id)}</span>${source}
+                                <button onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download record as text file">DL</button>
                                 <button onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
                             </div>
                             <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
@@ -1460,6 +1466,21 @@
                 await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents/${docId}`, { method: 'DELETE' });
                 loadDocuments();
                 loadCollections();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function downloadRagDoc(collection, docId) {
+            try {
+                const res = await ragFetch(`/v1/rag/collections/${encodeURIComponent(collection)}/documents/${encodeURIComponent(docId)}`);
+                if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.error?.message || `Error ${res.status}`); return; }
+                const data = await res.json();
+                const safeId = String(docId).replace(/[^A-Za-z0-9._-]+/g, '_');
+                const blob = new Blob([data.text || ''], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `${safeId}.txt`;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
             } catch (err) { alert(err.message); }
         }
 
