@@ -13,9 +13,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createDefaultHandlerExporter } from '@mcp-abap-adt/core/handlers';
+import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
+
+type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
 // Load default-env.json (VCAP_SERVICES) for SAP AI SDK — same as cds watch
 const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
@@ -26,19 +28,26 @@ if (fs.existsSync(defaultEnvPath)) {
   }
 }
 
-const EXPOSITION = process.env.LLM_AGENT_EXPOSITION || 'readonly,high';
 const MODEL = process.env.LLM_AGENT_CLASSIFIER_MODEL || 'gpt-4.1-mini';
-const PROVIDER = process.env.LLM_AGENT_PROVIDER || 'sap-ai-sdk';
+const PROVIDER = (process.env.LLM_AGENT_PROVIDER ||
+  'sap-ai-sdk') as LlmProvider;
 const OUTPUT = path.resolve(__dirname, '../srv/tool-intents.json');
 
 async function main() {
   console.log(
     `Generating tool intents with model=${MODEL}, provider=${PROVIDER}`,
   );
-  console.log(`Exposition: ${EXPOSITION}`);
 
-  // Get all tool definitions
-  const exporter = createDefaultHandlerExporter(EXPOSITION);
+  // Match the runtime exposition set used by srv/agent-manager.ts so that
+  // pre-cached intents cover exactly the tools the agent will see at runtime.
+  const exporter = new HandlerExporter({
+    includeReadOnly: true,
+    includeHighLevel: true,
+    includeLowLevel: false,
+    includeCompact: true,
+    includeSystem: true,
+    includeSearch: true,
+  });
   const entries = exporter.getHandlerEntries();
   console.log(`Tools: ${entries.length}`);
 
