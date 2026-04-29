@@ -96,6 +96,33 @@ The agent saves the artifacts of Phase 1–3 (business requirements, technical s
 
 The agent then writes Phase 1–3 outputs into this collection via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. You do not need to interact with the collection manually — just keep it enabled.
 
+### Backup RAG before you stop. Restore before you continue.
+
+> ⚠️ **Required if you split this tutorial across more than one session.** Otherwise skip.
+
+**TL;DR:** download 3 files at the end, upload them at the start.
+
+#### Stopping for the day → backup
+
+1. Open **MANAGE**.
+2. Click **DL** on `business-requirements`.
+3. Click **DL** on `tech-spec`.
+4. Click **DL** on `impl-plan`.
+
+Save all 3 files in one folder. Done.
+
+#### Coming back → restore
+
+1. Open **MANAGE**.
+2. Re-create collection `book-catalog` (scope `user`, enabled).
+3. Click **UPLOAD** → pick all 3 files at once.
+4. First prompt to agent:
+   > *"Use `book-catalog`. Phase 1–3 already in RAG. Continue from Phase 4."*
+
+#### Why bother
+
+No backup → empty RAG next session → agent re-asks you for everything (or invents it). 30 seconds saves a Phase.
+
 ### RAG contract for this tutorial
 
 | Phase | Save exactly this id | What it contains |
