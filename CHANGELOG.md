@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.4.0] - 2026-04-29
+
+### Added
+- **In-app Help dialog (`HELP` button in chat UI top toolbar)** — four tabs (Chat / Model / SAP / RAG) describing what the user actually clicks and types: Send/Enter/CLR/LOG, LLM/CLASSIFIER pickers, DEST + SAP credentials override, MANAGE → create / UPLOAD / +ADD / SEARCH / DL (backup) / UPLOAD (restore). ADHD-friendly: TL;DR per tab, short bullets, one tab visible at a time. Esc closes the modal.
+- **Tutorial pre-rendering pipeline** — new `tools/build-tutorials.mjs` converts `docs/tutorials/*.md` to standalone HTML at build time (via `marked`), output to `app/chat/webapp/tutorials/` (gitignored). Wired through `prebuild` so `npm run build` and `cds build` regenerate automatically. Currently used internally; not surfaced from the Help dialog.
+
+### Docs
+- **`docs/tutorials/rap-bo-book-catalog.md`** — added a required "Backup RAG before you stop. Restore before you continue." section. Cross-session work needs DL/UPLOAD because user-scoped collections are not guaranteed to survive between sessions.
+
 ## [6.3.0] - 2026-04-28
 
 ### Changed
