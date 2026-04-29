@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.4.2] - 2026-04-29
+
+### Removed
+- **Tutorial HTML build pipeline** — `tools/build-tutorials.mjs`, the `marked` devDependency, the `build:tutorials` script, the `prebuild` hook, and the `app/chat/webapp/tutorials/` gitignore entry. The pipeline existed only to feed the Tutorials tab of the Help dialog (removed in v6.4.0). Tutorial source lives in `docs/tutorials/*.md` and is distributed by copying to a knowledge-base platform; nothing in the deployed app consumes the rendered HTML.
+
 ## [6.4.1] - 2026-04-29
 
 ### Fixed
