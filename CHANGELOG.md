@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.4.1] - 2026-04-29
+
+### Fixed
+- **RAG file upload no longer prepends `[Source: filename]` into chunk text** (`srv/rag-handler.ts`). The prefix accumulated noise across DL → re-UPLOAD cycles (a backup file re-uploaded twice produced three stacked `[Source: ...]` lines on top of the real content), and the DL filename is auto-generated (`<id>.txt`) so it carried no semantic value for the embedder either. Source and description remain in `metadata` for traceability; only the chunk text is now stored verbatim.
+
+### Internal
+- **`mbt@1.2.34`** pinned as a devDependency (no caret) so each worktree has a stable local `node_modules/.bin/mbt`. mbt 1.2.48 ships a broken `setup.mjs` preinstall hook that returns early when `bun` is on PATH and never extracts the binary, causing `npx mbt build` to silently exit 0 without producing an archive.
+
 ## [6.4.0] - 2026-04-29
 
 ### Added

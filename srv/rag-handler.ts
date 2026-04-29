@@ -371,14 +371,13 @@ export function registerRagRoutes(
         const maxChunkChars = chunkSize || 2000;
         const chunks = splitTextIntoChunks(content, maxChunkChars);
 
-        // Prefix each chunk with description (for semantic search) and source
-        const prefix = description
-          ? `[${description}] [Source: ${name}]`
-          : `[Source: ${name}]`;
-
+        // Store chunks verbatim. Source/description are kept in metadata
+        // for traceability; prepending them into the chunk text accumulates
+        // noise across DL → re-UPLOAD cycles and the auto-generated
+        // download filename (`<id>.txt`) carries no semantic value anyway.
         const docs = chunks.map((text, i) => ({
           id: `${slugify(name)}-chunk-${String(i + 1).padStart(3, '0')}`,
-          text: `${prefix}\n${text}`,
+          text,
           metadata: {
             source: name,
             description: description || undefined,
