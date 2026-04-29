@@ -176,53 +176,59 @@
 
             <!-- Tab strip -->
             <div role="tablist" aria-label="Help sections" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
-              <button class="help-tab" data-help-tab="chat"      role="tab" aria-selected="true"  onclick="switchHelpTab('chat')"      style="background:#1a1a1a;color:#00ff00;border:1px solid #00ff00;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">💬 Chat</button>
-              <button class="help-tab" data-help-tab="rag"       role="tab" aria-selected="false" onclick="switchHelpTab('rag')"       style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">📚 RAG</button>
-              <button class="help-tab" data-help-tab="mcp"       role="tab" aria-selected="false" onclick="switchHelpTab('mcp')"       style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">🔌 MCP</button>
-              <button class="help-tab" data-help-tab="tutorials" role="tab" aria-selected="false" onclick="switchHelpTab('tutorials')" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">📘 Tutorials</button>
+              <button class="help-tab" data-help-tab="chat"  role="tab" aria-selected="true"  onclick="switchHelpTab('chat')"  style="background:#1a1a1a;color:#00ff00;border:1px solid #00ff00;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">💬 Chat</button>
+              <button class="help-tab" data-help-tab="model" role="tab" aria-selected="false" onclick="switchHelpTab('model')" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">🧠 Model</button>
+              <button class="help-tab" data-help-tab="sap"   role="tab" aria-selected="false" onclick="switchHelpTab('sap')"   style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">🔌 SAP</button>
+              <button class="help-tab" data-help-tab="rag"   role="tab" aria-selected="false" onclick="switchHelpTab('rag')"   style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">📚 RAG</button>
             </div>
 
             <!-- Tab panels -->
             <section data-help-panel="chat" role="tabpanel">
-              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Type a question, press Enter or Send.</p>
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Type, press Enter. That's it.</p>
               <ul style="margin:0;padding-left:20px;line-height:1.7">
-                <li><b>Send</b> or <b>Enter</b> &mdash; submit your message.</li>
-                <li><b>CLR</b> &mdash; wipe the current session.</li>
-                <li><b>LOG</b> &mdash; export this session.</li>
-                <li><b>SAP</b> &mdash; override destination credentials.</li>
-                <li><b>STATUS</b> &mdash; ready, streaming, or error.</li>
-                <li><b>LLM</b> &mdash; the model currently selected.</li>
+                <li><b>Type</b> in the input box at the bottom.</li>
+                <li><b>Send</b> or <b>Enter</b> &mdash; submit the message.</li>
+                <li><b>CLR</b> &mdash; wipe history and start a fresh session.</li>
+                <li><b>LOG</b> &mdash; download the current session as text.</li>
+                <li><b>STATUS</b> &mdash; <span style="color:#00ff00">green</span> idle, <span style="color:#ffcc00">yellow</span> streaming, <span style="color:#ff5555">red</span> error.</li>
+                <li>Long answers stream live. Wait for <b>STATUS</b> to turn green again.</li>
+              </ul>
+            </section>
+
+            <section data-help-panel="model" role="tabpanel" style="display:none">
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Pick what runs the answer.</p>
+              <ul style="margin:0;padding-left:20px;line-height:1.7">
+                <li><b>LLM</b> dropdown &mdash; the main model that answers you.</li>
+                <li><b>CLASSIFIER</b> dropdown &mdash; small model for routing (advanced; usually leave default).</li>
+                <li><b>EMBEDDER</b> &mdash; read-only, set at deploy.</li>
+                <li><b>MODE</b> &mdash; read-only, current pipeline mode.</li>
+                <li>Switch <b>LLM</b> any time. The new pick applies to your next message.</li>
+              </ul>
+            </section>
+
+            <section data-help-panel="sap" role="tabpanel" style="display:none">
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Tell the chat which SAP system to use.</p>
+              <ul style="margin:0;padding-left:20px;line-height:1.7">
+                <li><b>DEST</b> dropdown &mdash; pick the SAP destination.</li>
+                <li><b>↻</b> next to DEST &mdash; refresh the destination list.</li>
+                <li><b>SAP</b> button (footer) &mdash; open the override form.</li>
+                <li>Override <b>Login + Password</b> &mdash; run as your own SAP user.</li>
+                <li>Leave override empty &mdash; use destination defaults.</li>
+                <li>Wrong creds? <b>STATUS</b> turns red on the next SAP call.</li>
               </ul>
             </section>
 
             <section data-help-panel="rag" role="tabpanel" style="display:none">
-              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">The agent searches your collections.</p>
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Your private knowledge for the chat.</p>
               <ul style="margin:0;padding-left:20px;line-height:1.7">
-                <li><b>RAG OP card</b> &mdash; the agent read or wrote a record.</li>
-                <li><b>rag_add</b> &mdash; new record stored.</li>
-                <li><b>rag_correct</b> &mdash; existing record updated.</li>
-                <li><b>DL</b> &mdash; download a record to a file.</li>
-                <li><b>MANAGE</b> &mdash; full collection editor.</li>
-                <li><b>Backup before a break</b> &mdash; see <b>Tutorials &rarr; Book Catalog</b>.</li>
-              </ul>
-            </section>
-
-            <section data-help-panel="mcp" role="tabpanel" style="display:none">
-              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">The agent uses SAP tools.</p>
-              <ul style="margin:0;padding-left:20px;line-height:1.7">
-                <li><b>Tool Calls card</b> &mdash; MCP tools used by the agent.</li>
-                <li><b>DEST</b> &mdash; selected SAP destination.</li>
-                <li><b>SAP override</b> &mdash; runs as that SAP user.</li>
-                <li>Tool failed? Check <b>DEST</b> and credentials.</li>
-              </ul>
-            </section>
-
-            <section data-help-panel="tutorials" role="tabpanel" style="display:none">
-              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Step-by-step guides. Open in a new tab.</p>
-              <ul style="margin:0;padding-left:20px;line-height:1.7">
-                <li><a href="tutorials/rap-bo-book-catalog.html" target="_blank" rel="noopener noreferrer" style="color:#00bfff"><b>RAP BO Book Catalog</b></a> &mdash; AI-assisted, 4 phases.</li>
-                <li><a href="tutorials/rap-bo-creation.html"     target="_blank" rel="noopener noreferrer" style="color:#00bfff"><b>RAP BO Creation</b></a> &mdash; manual, 14 steps.</li>
-                <li><b>Skill files</b> &mdash; upload to RAG before starting.</li>
+                <li><b>MANAGE</b> &mdash; opens the collection editor.</li>
+                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (only you) or <i>global</i> (everyone).</li>
+                <li><b>UPLOAD FILE</b> &mdash; add a <code>.txt</code>/<code>.md</code>/<code>.csv</code>/<code>.json</code>/<code>.yaml</code>/<code>.xml</code>/<code>.log</code>; chunked automatically.</li>
+                <li><b>+ ADD</b> &mdash; add one record by hand (paste text, optional id and tags).</li>
+                <li><b>SEARCH</b> &mdash; find records inside a collection.</li>
+                <li><b>DL</b> on a record &mdash; download it as a file (use this to back records up).</li>
+                <li><b>UPLOAD</b> a saved file in MANAGE &mdash; restore records into a collection.</li>
+                <li>Records survive across sessions; collections do not always &mdash; back up DL files for anything you cannot afford to lose.</li>
               </ul>
             </section>
 
