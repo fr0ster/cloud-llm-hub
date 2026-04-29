@@ -79,6 +79,7 @@
             <span>MODE: <span id="agent-mode">...</span></span>
             <span>DEST: <select id="dest-select" disabled><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="margin-left:4px;padding:1px 6px;font-size:12px;cursor:pointer" disabled>&#x21bb;</button></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
+            <span><button id="help-btn" type="button" onclick="openHelp()" title="Help" aria-haspopup="dialog" style="padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">HELP</button></span>
         </div>
         <div class="system-bar">
             <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
@@ -164,6 +165,70 @@
             </div>
           </div>
         </div>
+
+        <!-- Help Modal -->
+        <div id="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;overflow:auto">
+          <div style="max-width:760px;margin:30px auto;background:#111;border:1px solid #333;border-radius:6px;padding:20px;color:#e0e0e0;font-size:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+              <span id="help-modal-title" style="color:#00ff00;font-size:18px;font-weight:bold">Help</span>
+              <button onclick="closeHelp()" style="background:none;border:1px solid #555;color:#ff5555;cursor:pointer;padding:4px 12px;font-family:'Courier New',monospace;border-radius:3px">CLOSE</button>
+            </div>
+
+            <!-- Tab strip -->
+            <div role="tablist" aria-label="Help sections" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+              <button class="help-tab" data-help-tab="chat"      role="tab" aria-selected="true"  onclick="switchHelpTab('chat')"      style="background:#1a1a1a;color:#00ff00;border:1px solid #00ff00;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">💬 Chat</button>
+              <button class="help-tab" data-help-tab="rag"       role="tab" aria-selected="false" onclick="switchHelpTab('rag')"       style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">📚 RAG</button>
+              <button class="help-tab" data-help-tab="mcp"       role="tab" aria-selected="false" onclick="switchHelpTab('mcp')"       style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">🔌 MCP</button>
+              <button class="help-tab" data-help-tab="tutorials" role="tab" aria-selected="false" onclick="switchHelpTab('tutorials')" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:6px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">📘 Tutorials</button>
+            </div>
+
+            <!-- Tab panels -->
+            <section data-help-panel="chat" role="tabpanel">
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Type a question, press Enter or Send.</p>
+              <ul style="margin:0;padding-left:20px;line-height:1.7">
+                <li><b>Send</b> or <b>Enter</b> &mdash; submit your message.</li>
+                <li><b>CLR</b> &mdash; wipe the current session.</li>
+                <li><b>LOG</b> &mdash; export this session.</li>
+                <li><b>SAP</b> &mdash; override destination credentials.</li>
+                <li><b>STATUS</b> &mdash; ready, streaming, or error.</li>
+                <li><b>LLM</b> &mdash; the model currently selected.</li>
+              </ul>
+            </section>
+
+            <section data-help-panel="rag" role="tabpanel" style="display:none">
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">The agent searches your collections.</p>
+              <ul style="margin:0;padding-left:20px;line-height:1.7">
+                <li><b>RAG OP card</b> &mdash; the agent read or wrote a record.</li>
+                <li><b>rag_add</b> &mdash; new record stored.</li>
+                <li><b>rag_correct</b> &mdash; existing record updated.</li>
+                <li><b>DL</b> &mdash; download a record to a file.</li>
+                <li><b>MANAGE</b> &mdash; full collection editor.</li>
+                <li><b>Backup before a break</b> &mdash; see <b>Tutorials &rarr; Book Catalog</b>.</li>
+              </ul>
+            </section>
+
+            <section data-help-panel="mcp" role="tabpanel" style="display:none">
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">The agent uses SAP tools.</p>
+              <ul style="margin:0;padding-left:20px;line-height:1.7">
+                <li><b>Tool Calls card</b> &mdash; MCP tools used by the agent.</li>
+                <li><b>DEST</b> &mdash; selected SAP destination.</li>
+                <li><b>SAP override</b> &mdash; runs as that SAP user.</li>
+                <li>Tool failed? Check <b>DEST</b> and credentials.</li>
+              </ul>
+            </section>
+
+            <section data-help-panel="tutorials" role="tabpanel" style="display:none">
+              <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Step-by-step guides. Open in a new tab.</p>
+              <ul style="margin:0;padding-left:20px;line-height:1.7">
+                <li><a href="tutorials/rap-bo-book-catalog.html" target="_blank" rel="noopener noreferrer" style="color:#00bfff"><b>RAP BO Book Catalog</b></a> &mdash; AI-assisted, 4 phases.</li>
+                <li><a href="tutorials/rap-bo-creation.html"     target="_blank" rel="noopener noreferrer" style="color:#00bfff"><b>RAP BO Creation</b></a> &mdash; manual, 14 steps.</li>
+                <li><b>Skill files</b> &mdash; upload to RAG before starting.</li>
+              </ul>
+            </section>
+
+          </div>
+        </div>
+
         <form id="sap-creds-dialog" onsubmit="applySapCreds(); return false;" style="display:none;background:#0a0a0a;border:1px solid #333;padding:12px;border-radius:4px;margin-bottom:8px">
           <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">SAP SYSTEM CREDENTIALS</div>
           <div style="font-size:11px;color:#666;margin-bottom:8px">Override destination service user with your SAP credentials. Leave empty to use default.</div>
@@ -1286,6 +1351,46 @@
         function closeRagPanel() {
             document.getElementById('rag-modal').style.display = 'none';
         }
+
+        // Help modal — open/close + tab switching + Esc-to-close.
+        let _helpPreviouslyFocused = null;
+
+        function openHelp() {
+            _helpPreviouslyFocused = document.activeElement;
+            document.getElementById('help-modal').style.display = 'block';
+            switchHelpTab('chat');
+            const firstTab = document.querySelector('.help-tab[data-help-tab="chat"]');
+            if (firstTab) firstTab.focus();
+        }
+
+        function closeHelp() {
+            document.getElementById('help-modal').style.display = 'none';
+            if (_helpPreviouslyFocused && typeof _helpPreviouslyFocused.focus === 'function') {
+                _helpPreviouslyFocused.focus();
+                _helpPreviouslyFocused = null;
+            }
+        }
+
+        function switchHelpTab(name) {
+            document.querySelectorAll('.help-tab').forEach(btn => {
+                const active = btn.dataset.helpTab === name;
+                btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                btn.style.color = active ? '#00ff00' : '#888';
+                btn.style.borderColor = active ? '#00ff00' : '#333';
+            });
+            document.querySelectorAll('[data-help-panel]').forEach(panel => {
+                panel.style.display = panel.dataset.helpPanel === name ? '' : 'none';
+            });
+        }
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key !== 'Escape') return;
+            const modal = document.getElementById('help-modal');
+            if (modal && modal.style.display === 'block') {
+                e.preventDefault();
+                closeHelp();
+            }
+        });
 
         async function loadCollections() {
             const list = document.getElementById('rag-collections-list');
