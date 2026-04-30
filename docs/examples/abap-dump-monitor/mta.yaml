@@ -30,16 +30,7 @@ modules:
         - npm install --omit=dev
     requires:
       - name: abap-dump-monitor-auth
-      - name: abap-dump-monitor-db
       - name: abap-dump-monitor-destination
-
-  - name: abap-dump-monitor-db-deployer
-    type: hdb
-    path: gen/db
-    parameters:
-      buildpack: nodejs_buildpack
-    requires:
-      - name: abap-dump-monitor-db
 
 resources:
   - name: abap-dump-monitor-auth
@@ -48,12 +39,6 @@ resources:
       service: xsuaa
       service-plan: application
       path: ./xs-security.json
-
-  - name: abap-dump-monitor-db
-    type: com.sap.xs.hdi-container
-    parameters:
-      service: hana
-      service-plan: hdi-shared
 
   - name: abap-dump-monitor-destination
     type: org.cloudfoundry.managed-service

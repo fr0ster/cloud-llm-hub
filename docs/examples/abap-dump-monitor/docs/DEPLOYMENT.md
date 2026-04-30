@@ -1,5 +1,8 @@
 # Deployment
 
+> **Storage:** this example uses **SQLite at `/tmp/abap-dump-monitor.sqlite`** for production. The file is **ephemeral** — every CF restart, restage, or scale-to-zero loses all `MonitoredDump` rows and `Setting` overrides (Setting is reseeded from env on next boot). This is fine for a demo or learning environment, but for any real use you must switch to HANA Cloud HDI: change `cds.requires.db.[production]` in `package.json` to `{ "kind": "hana-cloud" }` and restore the `abap-dump-monitor-db` resource + `abap-dump-monitor-db-deployer` module in `mta.yaml` (see git history of this file for the original HDI shape). HANA Cloud requires an entitlement on the target subaccount.
+
+
 ## 1. cloud-llm-hub consumer
 
 The service must use the **analyst** consumer xsuaa, NOT the default reader.

@@ -38,7 +38,7 @@
         }
       },
       "db": {
-        "[production]": { "kind": "hana-cloud" },
+        "[production]": { "kind": "sqlite", "credentials": { "url": "/tmp/abap-dump-monitor.sqlite" } },
         "[development]": { "kind": "sqlite", "credentials": { "url": ":memory:" } }
       }
     }
