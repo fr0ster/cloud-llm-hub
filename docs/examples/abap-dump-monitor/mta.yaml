@@ -1,0 +1,82 @@
+_schema-version: 3.3.0
+ID: abap-dump-monitor
+version: 1.0.0
+description: "abap-dump-monitor — scheduled-pull ABAP dump monitor via cloud-llm-hub + Jira"
+parameters:
+  enable-parallel-deployments: true
+  CLOUD_LLM_HUB_URL: ""
+  CLOUD_LLM_HUB_CLIENT_ID: ""
+  CLOUD_LLM_HUB_CLIENT_SECRET: ""
+  CLOUD_LLM_HUB_TOKEN_URL: ""
+  JIRA_URL: "https://jiraeu.epam.com"
+  JIRA_USER: ""
+  JIRA_TOKEN: ""
+
+modules:
+  - name: abap-dump-monitor-srv
+    type: nodejs
+    path: gen/srv
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 256M
+    properties:
+      SAP_SYSTEM_ID: "E19.100"
+      SAP_DESTINATION: "S4HANA_E19"
+      CLOUD_LLM_HUB_DESTINATION: "CLOUD_LLM_HUB"
+      JIRA_DESTINATION: "JIRA_EPAM"
+    build-parameters:
+      builder: custom
+      commands:
+        - npm install --omit=dev
+    requires:
+      - name: abap-dump-monitor-auth
+      - name: abap-dump-monitor-db
+      - name: abap-dump-monitor-destination
+
+  - name: abap-dump-monitor-db-deployer
+    type: hdb
+    path: gen/db
+    parameters:
+      buildpack: nodejs_buildpack
+    requires:
+      - name: abap-dump-monitor-db
+
+resources:
+  - name: abap-dump-monitor-auth
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+
+  - name: abap-dump-monitor-db
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+
+  - name: abap-dump-monitor-destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        init_data:
+          instance:
+            existing_destinations_policy: update
+            destinations:
+              - Name: CLOUD_LLM_HUB
+                Type: HTTP
+                URL: ${CLOUD_LLM_HUB_URL}
+                ProxyType: Internet
+                Authentication: OAuth2ClientCredentials
+                clientId: ${CLOUD_LLM_HUB_CLIENT_ID}
+                clientSecret: ${CLOUD_LLM_HUB_CLIENT_SECRET}
+                tokenServiceURL: ${CLOUD_LLM_HUB_TOKEN_URL}
+              - Name: JIRA_EPAM
+                Type: HTTP
+                URL: ${JIRA_URL}
+                ProxyType: Internet
+                Authentication: BasicAuthentication
+                User: ${JIRA_USER}
+                Password: ${JIRA_TOKEN}

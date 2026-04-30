@@ -1,0 +1,54 @@
+{
+  "name": "abap-dump-monitor",
+  "version": "1.0.0",
+  "description": "CAP example: scheduled-pull ABAP dump monitor via cloud-llm-hub + Jira",
+  "main": "gen/srv/srv/server.js",
+  "scripts": {
+    "start": "cds-serve",
+    "build": "cds build --production",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "npx biome check --write .",
+    "lint:check": "npx biome check ."
+  },
+  "dependencies": {
+    "@sap/cds": "^9",
+    "@sap-cloud-sdk/http-client": "^3",
+    "@modelcontextprotocol/sdk": "^1.23.0",
+    "express": "^4"
+  },
+  "devDependencies": {
+    "@sap/cds-dk": "^9",
+    "@types/jest": "^29",
+    "@types/node": "^22",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5"
+  },
+  "cds": {
+    "requires": {
+      "auth": {
+        "[production]": { "kind": "xsuaa" },
+        "[development]": {
+          "kind": "mocked",
+          "users": {
+            "admin": { "roles": ["Admin", "Viewer"] },
+            "viewer": { "roles": ["Viewer"] }
+          }
+        }
+      },
+      "db": {
+        "[production]": { "kind": "hana-cloud" },
+        "[development]": { "kind": "sqlite", "credentials": { "url": ":memory:" } }
+      }
+    }
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/test/unit/**/*.test.ts"],
+    "moduleFileExtensions": ["ts", "js", "json"],
+    "modulePathIgnorePatterns": ["<rootDir>/gen/"],
+    "testPathIgnorePatterns": ["/node_modules/", "<rootDir>/gen/"]
+  }
+}

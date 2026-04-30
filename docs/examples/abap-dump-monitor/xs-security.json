@@ -1,0 +1,16 @@
+{
+  "xsappname": "abap-dump-monitor",
+  "tenant-mode": "dedicated",
+  "scopes": [
+    { "name": "$XSAPPNAME.Admin",  "description": "Edit Setting / AssigneeRule, trigger pollNow / retry actions" },
+    { "name": "$XSAPPNAME.Viewer", "description": "Read MonitoredDump" }
+  ],
+  "role-templates": [
+    { "name": "Admin",  "description": "Administrator", "scope-references": ["$XSAPPNAME.Admin", "$XSAPPNAME.Viewer"] },
+    { "name": "Viewer", "description": "Read-only",     "scope-references": ["$XSAPPNAME.Viewer"] }
+  ],
+  "role-collections": [
+    { "name": "AbapDumpMonitorAdmin",  "description": "abap-dump-monitor administrator", "role-template-references": ["$XSAPPNAME.Admin"] },
+    { "name": "AbapDumpMonitorViewer", "description": "abap-dump-monitor viewer",        "role-template-references": ["$XSAPPNAME.Viewer"] }
+  ]
+}

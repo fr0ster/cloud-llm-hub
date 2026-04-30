@@ -1,0 +1,5 @@
+node_modules/
+gen/
+mta_archives/
+.mtaext
+*.log

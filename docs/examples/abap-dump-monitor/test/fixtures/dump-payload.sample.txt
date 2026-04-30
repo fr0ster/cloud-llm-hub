@@ -1,0 +1,31 @@
+RUNTIME_ERROR    OBJECTS_OBJREF_NOT_ASSIGNED
+EXCEPTION        CX_SY_REF_IS_INITIAL
+DATE             2026-04-29 12:34:56
+USER             DEVELOPER1
+CLIENT           100
+HOST             s4hana-dev-01
+INSTANCE         S4H_00
+PROGRAM          ZCL_DEMO==========================CP
+INCLUDE          ZCL_DEMO==========================CM001
+LINE             42
+EVENT            METHOD GET_DATA OF ZCL_DEMO
+TRANSACTION_ID   T0000001
+SHORT_TEXT       Access via 'NULL' object reference not possible.
+
+----- CALL STACK -----
+1 METHOD GET_DATA  ZCL_DEMO==========================CP   ZCL_DEMO==========================CM001  42
+2 FORM PROCESS     ZREPORT_MAIN                            ZREPORT_MAIN_F01                          27
+3 EVENT START-OF-SELECTION ZREPORT_MAIN                    ZREPORT_MAIN                              10
+
+----- SOURCE EXTRACT -----
+PROGRAM ZCL_DEMO==========================CP
+INCLUDE ZCL_DEMO==========================CM001
+40    METHOD get_data.
+41      DATA(lo_provider) = mo_provider.
+>>>   42      lo_provider->fetch( ).
+43    ENDMETHOD.
+
+----- VARIABLES -----
+LOCAL  LO_PROVIDER  REF TO ZCL_PROVIDER  <INITIAL>
+SY     SY-SUBRC     I                    0
+GLOBAL MO_PROVIDER  REF TO ZCL_PROVIDER  <INITIAL>
