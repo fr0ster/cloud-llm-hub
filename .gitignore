@@ -47,6 +47,7 @@ sk.json
 !tsconfig.json
 !xs-security.json
 !**/xs-security.json
+!docs/examples/abap-dump-monitor/app/**/manifest.json
 !**/package.json
 !srv/tool-intents.json
 
