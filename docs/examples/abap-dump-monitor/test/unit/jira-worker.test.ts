@@ -6,7 +6,8 @@ const settings: ISettings = {
   get: jest.fn(async (k: string) => ({
     JIRA_PROJECT_KEY: 'X',
     JIRA_ISSUE_TYPE: 'Story',
-    JIRA_DEFAULT_ASSIGNEE: ''
+    JIRA_DEFAULT_ASSIGNEE: '',
+    JIRA_MODE: 'auto'
   } as Record<string, string>)[k]),
   getInt: jest.fn(async (k: string) => ({
     JIRA_MAX_ATTEMPTS: 3,
@@ -32,6 +33,7 @@ function makeRepo(pending: any[]): DumpRepository {
     updateAnalysis: jest.fn(),
     findPendingJira: jest.fn(async () => pending),
     updateJira: jest.fn(),
+    findJiraState: jest.fn(async () => ({ jiraStatus: 'pending', skipJira: false })),
     countSignatureWithin: jest.fn(async () => 1),
     findRecentByJira: jest.fn(async () => undefined),
     listAssigneeRules: jest.fn(async () => []),
@@ -87,5 +89,41 @@ describe('JiraWorker.tickOnce', () => {
     await w.tickOnce();
     expect(jira.create).not.toHaveBeenCalled();
     expect(repo.updateJira).toHaveBeenCalledWith('1', expect.objectContaining({ jiraStatus: 'skipped', jiraIssueKey: 'X-DUP' }));
+  });
+
+  test('skips when JIRA_MODE is manual (default)', async () => {
+    const jira: IJiraClient = {
+      searchByLabel: jest.fn(),
+      getIssue: jest.fn(),
+      create: jest.fn(),
+      comment: jest.fn()
+    };
+    const repo = makeRepo([baseRow]);
+    const localSettings: ISettings = {
+      ...settings,
+      get: jest.fn(async (k: string) => k === 'JIRA_MODE' ? undefined : (settings.get as any)(k))
+    };
+    const w = new JiraWorker({ settings: localSettings, jira, repo, log: () => {} });
+    await w.tickOnce();
+    expect(repo.findPendingJira).not.toHaveBeenCalled();
+    expect(jira.create).not.toHaveBeenCalled();
+    expect(jira.comment).not.toHaveBeenCalled();
+  });
+
+  test('runs when JIRA_MODE is auto', async () => {
+    const jira: IJiraClient = {
+      searchByLabel: jest.fn().mockResolvedValue(undefined),
+      getIssue: jest.fn(),
+      create: jest.fn().mockResolvedValue('X-1'),
+      comment: jest.fn()
+    };
+    const localSettings: ISettings = {
+      ...settings,
+      get: jest.fn(async (k: string) => k === 'JIRA_MODE' ? 'auto' : (settings.get as any)(k))
+    };
+    const repo = makeRepo([baseRow]);
+    const w = new JiraWorker({ settings: localSettings, jira, repo, log: () => {} });
+    await w.tickOnce();
+    expect(jira.create).toHaveBeenCalledTimes(1);
   });
 });

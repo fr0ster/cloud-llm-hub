@@ -37,6 +37,7 @@ function makeRepo(): DumpRepository {
     updateAnalysis: jest.fn(),
     findPendingJira: jest.fn(async () => []),
     updateJira: jest.fn(),
+    findJiraState: jest.fn(async () => ({ jiraStatus: 'pending', skipJira: false })),
     countSignatureWithin: jest.fn(async () => 1),
     findRecentByJira: jest.fn(async () => undefined),
     listAssigneeRules: jest.fn(async () => []),

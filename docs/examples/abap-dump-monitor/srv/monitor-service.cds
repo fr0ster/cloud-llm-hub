@@ -5,6 +5,7 @@ service MonitorService @(path: 'admin', requires: 'Viewer') {
   @readonly
   entity MonitoredDump as projection on core.MonitoredDump
     actions {
+      @(requires: 'Admin') action pushToJira()    returns String;
       @(requires: 'Admin') action retryAnalysis() returns String;
       @(requires: 'Admin') action retryJira()     returns String;
     };

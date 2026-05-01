@@ -1,0 +1,139 @@
+{
+  "_version": "1.65.0",
+  "sap.app": {
+    "id": "monitor",
+    "type": "application",
+    "title": "ABAP Dump Monitor",
+    "description": "List and inspect monitored ABAP dumps",
+    "applicationVersion": { "version": "1.0.0" },
+    "dataSources": {
+      "mainService": {
+        "uri": "/odata/v4/admin/",
+        "type": "OData",
+        "settings": {
+          "odataVersion": "4.0"
+        }
+      }
+    },
+    "crossNavigation": {
+      "inbounds": {
+        "monitor-display": {
+          "semanticObject": "MonitoredDump",
+          "action": "display",
+          "title": "ABAP Dump Monitor",
+          "signature": { "parameters": {}, "additionalParameters": "allowed" }
+        }
+      }
+    }
+  },
+  "sap.ui": {
+    "technology": "UI5",
+    "icons": { "icon": "sap-icon://alert" }
+  },
+  "sap.ui5": {
+    "flexEnabled": true,
+    "dependencies": {
+      "minUI5Version": "1.121.0",
+      "libs": {
+        "sap.fe.templates": {}
+      }
+    },
+    "models": {
+      "i18n": {
+        "type": "sap.ui.model.resource.ResourceModel",
+        "settings": { "bundleName": "monitor.i18n.i18n" }
+      },
+      "": {
+        "dataSource": "mainService",
+        "settings": {
+          "synchronizationMode": "None",
+          "operationMode": "Server",
+          "autoExpandSelect": true,
+          "earlyRequests": true
+        }
+      }
+    },
+    "routing": {
+      "routes": [
+        {
+          "pattern": ":?query:",
+          "name": "MonitoredDumpList",
+          "target": "MonitoredDumpList"
+        },
+        {
+          "pattern": "MonitoredDump({key}):?query:",
+          "name": "MonitoredDumpObjectPage",
+          "target": "MonitoredDumpObjectPage"
+        },
+        {
+          "pattern": "MonitoredDump({key})/callStack({key2}):?query:",
+          "name": "CallStackObjectPage",
+          "target": "CallStackObjectPage"
+        },
+        {
+          "pattern": "MonitoredDump({key})/variables({key2}):?query:",
+          "name": "VariableObjectPage",
+          "target": "VariableObjectPage"
+        },
+        {
+          "pattern": "MonitoredDump({key})/referencedObjects({key2}):?query:",
+          "name": "ReferencedObjectPage",
+          "target": "ReferencedObjectPage"
+        }
+      ],
+      "targets": {
+        "MonitoredDumpList": {
+          "type": "Component",
+          "id": "MonitoredDumpList",
+          "name": "sap.fe.templates.ListReport",
+          "options": {
+            "settings": {
+              "contextPath": "/MonitoredDump",
+              "navigation": {
+                "MonitoredDump": { "detail": { "route": "MonitoredDumpObjectPage" } }
+              }
+            }
+          }
+        },
+        "MonitoredDumpObjectPage": {
+          "type": "Component",
+          "id": "MonitoredDumpObjectPage",
+          "name": "sap.fe.templates.ObjectPage",
+          "options": {
+            "settings": {
+              "contextPath": "/MonitoredDump",
+              "navigation": {
+                "callStack": { "detail": { "route": "CallStackObjectPage" } },
+                "variables": { "detail": { "route": "VariableObjectPage" } },
+                "referencedObjects": { "detail": { "route": "ReferencedObjectPage" } }
+              }
+            }
+          }
+        },
+        "CallStackObjectPage": {
+          "type": "Component",
+          "id": "CallStackObjectPage",
+          "name": "sap.fe.templates.ObjectPage",
+          "options": { "settings": { "contextPath": "/MonitoredDump/callStack" } }
+        },
+        "VariableObjectPage": {
+          "type": "Component",
+          "id": "VariableObjectPage",
+          "name": "sap.fe.templates.ObjectPage",
+          "options": { "settings": { "contextPath": "/MonitoredDump/variables" } }
+        },
+        "ReferencedObjectPage": {
+          "type": "Component",
+          "id": "ReferencedObjectPage",
+          "name": "sap.fe.templates.ObjectPage",
+          "options": { "settings": { "contextPath": "/MonitoredDump/referencedObjects" } }
+        }
+      }
+    },
+    "contentDensities": { "compact": true, "cozy": true }
+  },
+  "sap.fiori": {
+    "registrationIds": [],
+    "archeType": "transactional"
+  }
+}

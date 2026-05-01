@@ -2,6 +2,36 @@
 
 All Admin endpoints require an XSUAA token from a user holding the `AbapDumpMonitorAdmin` role collection.
 
+## UI
+
+A Fiori Elements V4 List Report is served at `/monitor/webapp/`. It lists `MonitoredDump` rows with filters, a List Report → Object Page navigation, all composition tabs (Call Stack, Source, Variables, References), and header/row actions (`Push to Jira`, `Retry Analysis`, `Retry Jira`, `pollNow`).
+
+> **Auth boundary:** the UI **shell** (HTML/JS/manifest) is served as static assets without auth — same pattern cloud-llm-hub itself uses for `/chat/webapp`. The actual data and actions all flow through OData at `/odata/v4/admin/...`, which is auth-gated by the `MonitorService.@requires: 'Viewer'` (read) / `Admin` (actions). An unauthenticated browser sees the empty app shell; the moment it tries to fetch dumps it gets 401 with the standard XSUAA / mocked-auth challenge. For a fully gated experience put an approuter in front (see how `cloud-llm-hub`'s root MTA wires `app/router/`).
+
+## Jira mode
+
+`Setting('JIRA_MODE')` controls whether the JiraWorker auto-creates tickets:
+
+- `manual` (default) — JiraWorker tick is dormant. Operator clicks **Push to Jira** in the UI (or POSTs `pushToJira(ID)`) to send one row to Jira.
+- `auto` — JiraWorker processes every `findPendingJira` row each tick (the original example behaviour).
+
+Switch any time:
+
+```bash
+curl -X PATCH "https://<app>/odata/v4/admin/Setting('JIRA_MODE')" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"value":"auto"}'
+```
+
+## Push one row to Jira manually
+
+```bash
+curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService.pushToJira" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns 400 if the row is not pushable (`analysisStatus != done`, `skipJira = true`, or `jiraStatus` already in `created/commented/skipped`).
+
 ## Change polling interval (hot)
 
 ```bash
@@ -77,6 +107,7 @@ If a tick value cannot be parsed as int, the worker logs a warning and falls bac
 | `JIRA_FREQ_THRESHOLD_LOW` | `2` | int | `count >= LOW && < HIGH` → RECURRING |
 | `JIRA_FREQ_THRESHOLD_HIGH` | `5` | int | `count >= HIGH` → FREQUENT |
 | `JIRA_MAX_ATTEMPTS` | `3` | int | retry cap for the Jira step |
+| `JIRA_MODE` | `manual` | string | `manual` = wait for UI Push to Jira; `auto` = JiraWorker creates tickets automatically. |
 
 ## Sensitive-data note
 

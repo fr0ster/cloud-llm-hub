@@ -9,70 +9,125 @@ export interface JiraWorkerDeps {
   log: (msg: string, err?: unknown) => void;
 }
 
+export interface JiraPendingRow {
+  ID: string;
+  system: string;
+  dumpId: string;
+  signature: string;
+  runtimeError?: string;
+  program?: string;
+  include?: string;
+  sourceLine?: number;
+  category?: string;
+  recommendations?: string;
+  shortText?: string;
+  occurredAt?: string;
+  abapUser?: string;
+  jiraAttempts: number;
+}
+
+export interface JiraCtx {
+  sinceIso: string;
+  projectKey: string;
+  issueType: string;
+  baseLabels: string[];
+  defaultAssignee: string | undefined;
+  dueCfg: { first: number; recurring: number; frequent: number; low: number; high: number };
+  // biome-ignore lint/suspicious/noExplicitAny: rules are arbitrary records from CDS
+  rules: any[];
+}
+
 export class JiraWorker {
   private running = false;
+  private mutex: Promise<unknown> = Promise.resolve();
   constructor(private deps: JiraWorkerDeps) {}
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.mutex.then(fn, fn);
+    this.mutex = next.catch(() => {});  // never let an error block subsequent work
+    return next;
+  }
 
   async tickOnce(): Promise<void> {
     if (this.running) { this.deps.log('jira-worker: previous tick still running, skip'); return; }
     this.running = true;
     try {
+      const mode = (await this.deps.settings.get('JIRA_MODE')) ?? 'manual';
+      if (mode !== 'auto') return;
       const cap = await this.deps.settings.getInt('JIRA_MAX_ATTEMPTS', 3);
       const rows = await this.deps.repo.findPendingJira(cap);
       if (rows.length === 0) return;
+      const ctx = await this.buildCtx();
+      for (const row of rows) await this.processOne(row as JiraPendingRow, ctx);
+    } finally { this.running = false; }
+  }
 
-      const historyDays = await this.deps.settings.getInt('JIRA_HISTORY_DAYS', 30);
-      const sinceIso = new Date(Date.now() - historyDays * 86400_000).toISOString();
-      const projectKey = (await this.deps.settings.get('JIRA_PROJECT_KEY'))!;
-      const issueType = (await this.deps.settings.get('JIRA_ISSUE_TYPE'))!;
-      const baseLabels = await this.deps.settings.getCsv('JIRA_LABELS');
-      const defaultAssignee = (await this.deps.settings.get('JIRA_DEFAULT_ASSIGNEE')) || undefined;
-      const dueCfg = {
+  async buildCtx(): Promise<JiraCtx> {
+    const historyDays = await this.deps.settings.getInt('JIRA_HISTORY_DAYS', 30);
+    return {
+      sinceIso: new Date(Date.now() - historyDays * 86400_000).toISOString(),
+      projectKey: (await this.deps.settings.get('JIRA_PROJECT_KEY'))!,
+      issueType: (await this.deps.settings.get('JIRA_ISSUE_TYPE'))!,
+      baseLabels: await this.deps.settings.getCsv('JIRA_LABELS'),
+      defaultAssignee: (await this.deps.settings.get('JIRA_DEFAULT_ASSIGNEE')) || undefined,
+      dueCfg: {
         first: await this.deps.settings.getInt('JIRA_DUE_DAYS_FIRST', 14),
         recurring: await this.deps.settings.getInt('JIRA_DUE_DAYS_RECURRING', 7),
         frequent: await this.deps.settings.getInt('JIRA_DUE_DAYS_FREQUENT', 2),
         low: await this.deps.settings.getInt('JIRA_FREQ_THRESHOLD_LOW', 2),
         high: await this.deps.settings.getInt('JIRA_FREQ_THRESHOLD_HIGH', 5)
-      };
-      const rules = await this.deps.repo.listAssigneeRules();
+      },
+      rules: await this.deps.repo.listAssigneeRules()
+    };
+  }
 
-      for (const row of rows) {
-        try {
-          const label = `${row.system}:${row.dumpId}`;
-          const dup = await this.deps.jira.searchByLabel(label);
-          if (dup) {
-            await this.deps.repo.updateJira(row.ID, { jiraStatus: 'skipped', jiraIssueKey: dup.key });
-            continue;
-          }
-          const recent = await this.deps.repo.findRecentByJira(row.signature, sinceIso);
-          if (recent) {
-            const issue = await this.deps.jira.getIssue(recent.jiraIssueKey);
-            if (issue.statusCategoryKey !== 'done') {
-              await this.deps.jira.comment(issue.key, this.recurrenceComment(row));
-              await this.deps.repo.updateJira(row.ID, { jiraStatus: 'commented', jiraIssueKey: issue.key });
-              continue;
-            }
-          }
-          const count = await this.deps.repo.countSignatureWithin(row.signature, sinceIso);
-          const duedate = dueDateForCount(count, dueCfg);
-          const assignee = matchAssignee(row, rules) ?? defaultAssignee;
-          const key = await this.deps.jira.create({
-            projectKey,
-            issueType,
-            summary: `[${row.system}] ${row.runtimeError ?? 'ABAP dump'} in ${row.program ?? '?'}@${row.include ?? '?'}:${row.sourceLine ?? '?'}`,
-            description: this.renderDescription(row),
-            duedate,
-            labels: [...baseLabels, label],
-            assignee
-          });
-          await this.deps.repo.updateJira(row.ID, { jiraStatus: 'created', jiraIssueKey: key, jiraError: null });
-        } catch (e: any) {
-          await this.deps.repo.updateJira(row.ID, {
-            jiraStatus: 'failed', jiraError: String(e?.message ?? e), jiraAttempts: row.jiraAttempts + 1
-          });
+  async processOne(row: JiraPendingRow, ctx: JiraCtx): Promise<void> {
+    return this.withLock(() => this.processOneInner(row, ctx));
+  }
+
+  private async processOneInner(row: JiraPendingRow, ctx: JiraCtx): Promise<void> {
+    // Re-read inside the lock. The caller's row snapshot is from before the
+    // mutex was acquired, so it may be stale if another path (auto tick or
+    // concurrent pushToJira) already moved this row to a terminal state.
+    const fresh = await this.deps.repo.findJiraState(row.ID);
+    if (!fresh) return;                        // row deleted
+    if (fresh.skipJira) return;                // operator opted out
+    if (fresh.jiraStatus !== 'pending' && fresh.jiraStatus !== 'failed') return; // already handled
+
+    try {
+      const label = `${row.system}:${row.dumpId}`;
+      const dup = await this.deps.jira.searchByLabel(label);
+      if (dup) {
+        await this.deps.repo.updateJira(row.ID, { jiraStatus: 'skipped', jiraIssueKey: dup.key });
+        return;
+      }
+      const recent = await this.deps.repo.findRecentByJira(row.signature, ctx.sinceIso);
+      if (recent) {
+        const issue = await this.deps.jira.getIssue(recent.jiraIssueKey);
+        if (issue.statusCategoryKey !== 'done') {
+          await this.deps.jira.comment(issue.key, this.recurrenceComment(row));
+          await this.deps.repo.updateJira(row.ID, { jiraStatus: 'commented', jiraIssueKey: issue.key });
+          return;
         }
       }
-    } finally { this.running = false; }
+      const count = await this.deps.repo.countSignatureWithin(row.signature, ctx.sinceIso);
+      const duedate = dueDateForCount(count, ctx.dueCfg);
+      const assignee = matchAssignee(row, ctx.rules) ?? ctx.defaultAssignee;
+      const key = await this.deps.jira.create({
+        projectKey: ctx.projectKey,
+        issueType: ctx.issueType,
+        summary: `[${row.system}] ${row.runtimeError ?? 'ABAP dump'} in ${row.program ?? '?'}@${row.include ?? '?'}:${row.sourceLine ?? '?'}`,
+        description: this.renderDescription(row),
+        duedate,
+        labels: [...ctx.baseLabels, label],
+        assignee
+      });
+      await this.deps.repo.updateJira(row.ID, { jiraStatus: 'created', jiraIssueKey: key, jiraError: null });
+    } catch (e: any) {
+      await this.deps.repo.updateJira(row.ID, {
+        jiraStatus: 'failed', jiraError: String(e?.message ?? e), jiraAttempts: row.jiraAttempts + 1
+      });
+    }
   }
 
   private recurrenceComment(row: { ID: string; system: string; dumpId: string; occurredAt?: string; abapUser?: string }): string {

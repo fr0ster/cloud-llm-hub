@@ -23,13 +23,17 @@ The service runs three independent loops that use `MonitoredDump` itself as the 
    └──────────────────────────────┘        │            │
                                             │            │     JiraWorker (single, sequential per tick)
                                             │            │     tick = JIRA_TICK_MS (10s)
+                                            │            │     mode = JIRA_MODE (manual default | auto)
                                             │            │     ┌────────────────────────────────────────────┐
-                                            │            │     │ findPendingJira (analysisStatus = done AND │
-                                            │            │ ──► │   jiraStatus IN pending|failed AND         │
-                                            │            │     │   skipJira = false AND attempts < cap)     │
-                                            │            │     │ for each row, sequentially:                │
-                                            └────────────┘     │   search → create | comment | skip         │
-                                                               │   UPDATE jiraStatus                        │
+                                            │            │     │ if JIRA_MODE = auto:                       │
+                                            │            │     │   findPendingJira (analysisStatus = done   │
+                                            │            │ ──► │     AND jiraStatus IN pending|failed AND   │
+                                            │            │     │     skipJira = false AND attempts < cap)   │
+                                            │            │     │   for each row, sequentially:              │
+                                            └────────────┘     │     search → create | comment | skip       │
+                                                               │ if JIRA_MODE = manual (default):           │
+                                                               │   tick is dormant — operator clicks        │
+                                                               │   Push to Jira in UI → pushToJira(ID)      │
                                                                └────────────────────────────────────────────┘
 ```
 
@@ -70,6 +74,8 @@ jiraStatus:      pending ─► created   ─┐
 There is no intermediate `analyzing` / `creating` state on the row. Transitions go `pending → terminal` in a single update at the end of work. This avoids stuck-row recovery if a process dies mid-way.
 
 After the per-row attempt cap is reached, a `failed` row stays `failed` until an admin explicitly invokes the `retryAnalysis(ID)` or `retryJira(ID)` bound action. Those actions reset `*Status=pending` and `*Attempts=0`, but only for rows currently in `failed`; calling on any other status returns 400.
+
+When `JIRA_MODE = manual` (the default), `jiraStatus = pending` rows do **not** auto-progress — the JiraWorker tick is a no-op. The operator must invoke the `pushToJira(ID)` bound action (button in the Fiori Elements UI) to drive a single row through the same `searchByLabel → create | comment | skipped` pipeline. Switch `JIRA_MODE` to `auto` to restore the original behaviour.
 
 ## Recurrence / due-date logic
 

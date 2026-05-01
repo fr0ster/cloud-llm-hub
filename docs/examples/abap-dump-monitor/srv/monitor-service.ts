@@ -10,12 +10,32 @@ import { AnalysisWorker } from './analysis-worker';
 import { JiraWorker } from './jira-worker';
 import { parseDump } from './dump-parser';
 import type { DumpListItem, ParsedDump } from './interfaces';
+import express from 'express';
+import { join } from 'node:path';
 
 declare const SELECT: any;
 declare const INSERT: any;
 declare const UPDATE: any;
 
 const log = cds.log('abap-dump-monitor');
+
+// Serve the Fiori Elements app (copied to gen/srv/app/monitor/webapp at build time
+// by the cpSync step in mta.yaml). At runtime __dirname is gen/srv/srv, so the
+// webapp folder is one level up under app/monitor/webapp.
+cds.on('bootstrap', (app: express.Express) => {
+  const webappPath = join(__dirname, '..', 'app', 'monitor', 'webapp');
+  // Serve the Fiori Elements app (copied to gen/srv/app/monitor/webapp at build time
+  // by the cpSync step in mta.yaml). At runtime __dirname is gen/srv/srv, so the
+  // webapp folder is one level up under app/monitor/webapp.
+  //
+  // NOTE: Static assets served here bypass CAP's OData-level auth. The OData
+  // endpoints themselves require 'Viewer' role (see monitor-service.cds), which
+  // is the primary protection. For production deployments where static asset
+  // protection is required, mount the app under the OData path or use a separate
+  // auth gate (e.g., reverse proxy, app router).
+  app.use('/monitor/webapp', express.static(webappPath));
+  log.info(`Fiori UI served from ${webappPath} at /monitor/webapp`);
+});
 
 class CdsDumpRepository implements DumpRepository {
   constructor(private systemId: string) {}
@@ -85,6 +105,10 @@ class CdsDumpRepository implements DumpRepository {
   async updateJira(id: string, patch: Record<string, unknown>) {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
     await UPDATE(MonitoredDump).set(patch).where({ ID: id });
+  }
+  async findJiraState(id: string) {
+    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
+    return SELECT.one.from(MonitoredDump).columns('jiraStatus', 'jiraIssueKey', 'skipJira').where({ ID: id });
   }
   async countSignatureWithin(signature: string, sinceIso: string): Promise<number> {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
@@ -158,6 +182,42 @@ export default cds.service.impl(async function (this: any) {
   this.on('pollNow', async () => {
     await discoverer.tickOnce();
     return 'ok';
+  });
+
+  this.on('pushToJira', 'MonitoredDump', async (req: any) => {
+    const { ID } = req.params[0] as { ID: string };
+    const row = await SELECT.one.from(MonitoredDump)
+      .columns('ID','system','dumpId','signature','runtimeError','program','category','recommendations','jiraAttempts','jiraStatus','analysisStatus','skipJira','shortText','include','sourceLine','occurredAt','abapUser')
+      .where({ ID });
+    if (!row) { req.error(404, `MonitoredDump ${ID} not found`); return; }
+    if (row.analysisStatus !== 'done') { req.error(400, `pushToJira requires analysisStatus = 'done' (current: ${row.analysisStatus})`); return; }
+    if (row.skipJira) { req.error(400, `MonitoredDump ${ID} has skipJira=true`); return; }
+    if (row.jiraStatus !== 'pending' && row.jiraStatus !== 'failed') {
+      req.error(400, `pushToJira not valid in jiraStatus=${row.jiraStatus}`);
+      return;
+    }
+
+    await jiraWorker.processOne(row, await jiraWorker.buildCtx());
+
+    const after = await SELECT.one.from(MonitoredDump).columns('jiraStatus','jiraIssueKey','jiraError').where({ ID });
+    if (!after) { req.error(500, 'row vanished after processOne'); return; }
+    if (after.jiraStatus === 'created' || after.jiraStatus === 'commented' || after.jiraStatus === 'skipped') {
+      return after.jiraIssueKey ?? after.jiraStatus;
+    }
+    req.error(502, `Jira step failed: ${after.jiraError ?? 'unknown error'}`);
+  });
+
+  this.after('READ', MonitoredDump, (rows: any) => {
+    if (!rows) return;
+    const arr = Array.isArray(rows) ? rows : [rows];
+    const aMap: Record<string, number> = { done: 3, pending: 2, analyzing: 2, failed: 1 };
+    const jMap: Record<string, number> = { created: 3, commented: 3, skipped: 3, pending: 2, failed: 1 };
+    for (const r of arr) {
+      if (r && typeof r === 'object') {
+        if ('analysisStatus' in r) r.analysisStatusCriticality = aMap[r.analysisStatus] ?? 0;
+        if ('jiraStatus'     in r) r.jiraStatusCriticality     = jMap[r.jiraStatus]     ?? 0;
+      }
+    }
   });
 
   this.on('retryAnalysis', 'MonitoredDump', async (req: any) => {

@@ -11,6 +11,7 @@ export interface DumpRepository {
   updateAnalysis(id: string, patch: Record<string, unknown>): Promise<void>;
   findPendingJira(maxAttempts: number): Promise<Array<{ ID: string; system: string; dumpId: string; signature: string; runtimeError?: string; program?: string; category?: string; recommendations?: string; jiraAttempts: number; shortText?: string; include?: string; sourceLine?: number; occurredAt?: string; abapUser?: string }>>;
   updateJira(id: string, patch: Record<string, unknown>): Promise<void>;
+  findJiraState(id: string): Promise<{ jiraStatus: string; jiraIssueKey?: string; skipJira: boolean } | undefined>;
   countSignatureWithin(signature: string, sinceIso: string): Promise<number>;
   findRecentByJira(signature: string, sinceIso: string): Promise<{ ID: string; jiraIssueKey: string } | undefined>;
   listAssigneeRules(): Promise<AssigneeRuleRow[]>;
