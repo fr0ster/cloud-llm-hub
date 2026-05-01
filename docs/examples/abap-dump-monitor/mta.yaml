@@ -27,7 +27,7 @@ modules:
     build-parameters:
       builder: custom
       commands:
-        - node -e "require('fs').cpSync('app/monitor/webapp','gen/srv/app/monitor/webapp',{recursive:true})"
+        - node -e "require('fs').cpSync('../../app/monitor/webapp','app/monitor/webapp',{recursive:true})"
         - npm install --omit=dev
     requires:
       - name: abap-dump-monitor-auth
