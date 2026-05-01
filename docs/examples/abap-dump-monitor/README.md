@@ -13,5 +13,6 @@ See:
 - [docs/OVERVIEW.md](docs/OVERVIEW.md) — architecture
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — BTP / Jira / cloud-llm-hub setup
 - [docs/CONSUMER-GUIDE.md](docs/CONSUMER-GUIDE.md) — how to operate the service
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — IAS / xsuaa / Fiori pitfalls hit during the first stage deploy, with fixes applied here
 
 > Local `cds watch` is NOT supported because the service depends on BTP destinations + cloud-llm-hub MCP at runtime. Validate via deploy to a dev subaccount.
