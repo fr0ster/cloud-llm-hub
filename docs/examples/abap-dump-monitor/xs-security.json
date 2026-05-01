@@ -1,6 +1,12 @@
 {
   "xsappname": "abap-dump-monitor",
   "tenant-mode": "dedicated",
+  "oauth2-configuration": {
+    "redirect-uris": [
+      "https://*.cfapps.eu10-004.hana.ondemand.com/**",
+      "https://*.cfapps.us21.hana.ondemand.com/**"
+    ]
+  },
   "scopes": [
     { "name": "$XSAPPNAME.Admin",  "description": "Edit Setting / AssigneeRule, trigger pollNow / retry actions" },
     { "name": "$XSAPPNAME.Viewer", "description": "Read MonitoredDump" }
