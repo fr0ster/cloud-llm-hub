@@ -11,6 +11,8 @@ parameters:
   JIRA_URL: "https://jiraeu.epam.com"
   JIRA_USER: ""
   JIRA_TOKEN: ""
+  CF_LANDSCAPE: "cfapps.eu10-004.hana.ondemand.com"
+  APPROUTER_HOST: "abap-dump-monitor"
 
 modules:
   - name: abap-dump-monitor-srv
@@ -29,9 +31,34 @@ modules:
       commands:
         - node -e "require('fs').cpSync('../../app/monitor/webapp','app/monitor/webapp',{recursive:true})"
         - npm install --omit=dev
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
     requires:
       - name: abap-dump-monitor-auth
       - name: abap-dump-monitor-destination
+
+  - name: abap-dump-monitor-approuter
+    type: approuter.nodejs
+    path: app/router
+    parameters:
+      disk-quota: 256M
+      memory: 256M
+      routes:
+        - route: ${APPROUTER_HOST}.${CF_LANDSCAPE}
+    build-parameters:
+      builder: custom
+      commands:
+        - npm install --omit=dev
+    requires:
+      - name: srv-api
+        group: destinations
+        properties:
+          name: srv-api
+          url: ~{srv-url}
+          forwardAuthToken: true
+      - name: abap-dump-monitor-auth
 
 resources:
   - name: abap-dump-monitor-auth
