@@ -8,7 +8,7 @@ A field guide based on real bumps encountered while deploying this example to a 
 
 **Cause:** the example originally used HANA Cloud HDI for `MonitoredDump` storage. Most demo subaccounts don't have HANA Cloud entitlement.
 
-**Fix:** the deployable variant uses **SQLite at `/tmp/abap-dump-monitor.sqlite`** (ephemeral; rows lost on CF restart). To switch back to HANA in a fork, change `cds.requires.db.[production]` to `{ "kind": "hana-cloud" }` and restore the `abap-dump-monitor-db` resource + `abap-dump-monitor-db-deployer` module in `mta.yaml`. See `DEPLOYMENT.md` "Storage" callout.
+**Fix:** the deployable variant uses **SQLite at `/home/vcap/app/db/abap-dump-monitor.sqlite`** (ephemeral; rows lost on CF restart). To switch back to HANA in a fork, change `cds.requires.db.[production]` to `{ "kind": "hana-cloud" }` and restore the `abap-dump-monitor-db` resource + `abap-dump-monitor-db-deployer` module in `mta.yaml`. See `DEPLOYMENT.md` "Storage" callout.
 
 ## App boots, then crashes — `Cannot find module '@cap-js/sqlite'`
 

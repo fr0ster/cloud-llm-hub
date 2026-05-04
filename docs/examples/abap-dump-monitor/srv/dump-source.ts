@@ -1,21 +1,15 @@
-import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
-import { randomUUID } from 'node:crypto';
+import { getDestination } from '@sap-cloud-sdk/connectivity';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { IDumpSource, DumpListItem } from './interfaces';
-
-interface McpResult { content?: Array<{ type: string; text?: string }>; isError?: boolean; }
-interface McpPayload { result?: McpResult; error?: unknown; }
 
 const ADT_TS = (iso: string): string =>
   iso.replace(/[-:T]/g, '').replace(/\..*$/, '').replace('Z', '').slice(0, 14);
 
 export class DumpSource implements IDumpSource {
-  private initialized = false;
+  private client?: Client;
 
-  constructor(
-    private destinationName: string,
-    private sapDestination: string,
-    private sessionIdRef: { id?: string } = {}
-  ) {}
+  constructor(private destinationName: string, private sapDestination: string) {}
 
   async listSince(system: string, fromIso: string): Promise<DumpListItem[]> {
     const result = await this.callTool('RuntimeListFeeds', {
@@ -23,81 +17,85 @@ export class DumpSource implements IDumpSource {
       from: ADT_TS(fromIso),
       to: ADT_TS(new Date().toISOString())
     });
-    const text = result.content?.find(c => c.type === 'text')?.text ?? '[]';
+    const text = (result.content as Array<{ type: string; text?: string }>)
+      ?.find(c => c.type === 'text')?.text ?? '[]';
     const entries = normalizeDumpList(JSON.parse(text));
-    return entries.map(d => ({
-      system,
-      dumpId: String(d.id ?? d.dumpId ?? d.runtime_error_id),
-      occurredAt: String(d.timestamp ?? d.occurredAt ?? d.time),
-      abapUser: d.user,
-      runtimeError: d.runtime_error,
-      category: d.category,
-      program: d.program
-    })).filter(d => d.dumpId && d.dumpId !== 'undefined');
+    return entries.map(d => {
+      // RuntimeListFeeds returns d.id as ADT URL (e.g. /sap/bc/adt/vit/runtime/dumps/<runtime_error_id>).
+      // RuntimeGetDumpById expects the bare runtime_error_id, so strip the URL prefix.
+      const rawId = String(d.runtime_error_id ?? d.dumpId ?? d.id ?? '');
+      const dumpId = rawId.includes('/') ? rawId.split('/').pop() ?? rawId : rawId;
+      return {
+        system,
+        dumpId: decodeURIComponent(dumpId).trim(),
+        occurredAt: String(d.timestamp ?? d.occurredAt ?? d.time),
+        abapUser: d.user,
+        runtimeError: d.runtime_error,
+        category: d.category,
+        program: d.program
+      };
+    }).filter(d => d.dumpId && d.dumpId !== 'undefined');
   }
 
   async fetch(_system: string, dumpId: string): Promise<string> {
+    // view=formatted returns the long-form ST22 dump text (pipe-delimited),
+    // which contains call stack, variables and source extract — required to
+    // populate compositions on MonitoredDump. Default view returns metadata only.
     const result = await this.callTool('RuntimeGetDumpById', {
       dump_id: dumpId,
-      response_mode: 'both'
+      view: 'formatted',
+      response_mode: 'payload'
     });
-    return result.content?.find(c => c.type === 'text')?.text ?? '';
+    const text = (result.content as Array<{ type: string; text?: string }>)
+      ?.find(c => c.type === 'text')?.text ?? '';
+    // Envelope: { success, dump_id, view, status, payload: '<raw text>' }
+    try {
+      const env = JSON.parse(text);
+      return typeof env?.payload === 'string' ? env.payload : text;
+    } catch {
+      return text;
+    }
   }
 
-  private async callTool(name: string, args: Record<string, unknown>): Promise<McpResult> {
-    await this.ensureInitialized();
-    const payload = await this.postJsonRpc('tools/call', { name, arguments: args });
-    if (payload.error) throw new Error(`MCP ${name} failed: ${JSON.stringify(payload.error)}`);
-    return payload.result as McpResult;
+  private async callTool(name: string, args: Record<string, unknown>): Promise<any> {
+    const client = await this.ensureClient();
+    const result = await client.callTool({ name, arguments: args });
+    if ((result as any).isError) throw new Error(`MCP ${name} returned error: ${JSON.stringify((result as any).content)}`);
+    return result;
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
-    const init = await this.postJsonRpc('initialize', {
-      protocolVersion: '2025-06-18',
-      capabilities: {},
-      clientInfo: { name: 'abap-dump-monitor', version: '1.0.0' }
-    });
-    if (init.error) throw new Error(`MCP initialize failed: ${JSON.stringify(init.error)}`);
-    await this.postJsonRpc('notifications/initialized', undefined, false);
-    this.initialized = true;
-  }
+  private async ensureClient(): Promise<Client> {
+    if (this.client) return this.client;
 
-  private async postJsonRpc(method: string, params?: unknown, withId = true): Promise<McpPayload> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/event-stream',
-      'X-SAP-Destination': this.sapDestination
-    };
-    if (this.sessionIdRef.id) headers['Mcp-Session-Id'] = this.sessionIdRef.id;
+    const destination = await getDestination({ destinationName: this.destinationName });
+    if (!destination) throw new Error(`Destination ${this.destinationName} not found`);
 
-    const body = {
-      jsonrpc: '2.0',
-      ...(withId ? { id: randomUUID() } : {}),
-      method,
-      ...(params === undefined ? {} : { params })
-    };
+    const baseUrl = destination.url;
+    if (!baseUrl) throw new Error(`Destination ${this.destinationName} has no URL`);
 
-    const resp = await executeHttpRequest(
-      { destinationName: this.destinationName },
-      { method: 'POST', url: '/mcp/stream/http', headers, data: body, responseType: 'text' }
+    const authToken = destination.authTokens?.[0]?.value;
+    if (!authToken) throw new Error(`Destination ${this.destinationName} has no auth token`);
+
+    const tokenType = destination.authTokens?.[0]?.type ?? 'Bearer';
+    const transport = new StreamableHTTPClientTransport(
+      new URL('/mcp/stream/http', baseUrl),
+      {
+        requestInit: {
+          headers: {
+            Authorization: `${tokenType} ${authToken}`,
+            'X-SAP-Destination': this.sapDestination
+          }
+        }
+      }
     );
 
-    if (!this.sessionIdRef.id) {
-      const sid = resp.headers?.['mcp-session-id'] ?? resp.headers?.['Mcp-Session-Id'];
-      if (sid) this.sessionIdRef.id = String(sid);
-    }
-
-    const payload = typeof resp.data === 'string' ? this.parseSseOrJson(resp.data) : resp.data;
-    return payload ?? {};
-  }
-
-  private parseSseOrJson(text: string): any {
-    const trimmed = text.trim();
-    if (trimmed.startsWith('{')) return JSON.parse(trimmed);
-    const dataLines = trimmed.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim());
-    const last = dataLines[dataLines.length - 1] ?? '{}';
-    return JSON.parse(last);
+    const client = new Client(
+      { name: 'abap-dump-monitor', version: '1.0.0' },
+      { capabilities: {} }
+    );
+    await client.connect(transport);
+    this.client = client;
+    return client;
   }
 }
 

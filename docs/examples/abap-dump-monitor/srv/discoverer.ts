@@ -32,13 +32,18 @@ export class Discoverer {
   async tickOnce(): Promise<void> {
     if (this.running) { this.deps.log('discoverer: previous tick still running, skip'); return; }
     this.running = true;
+    console.log('[discoverer] tickOnce: start');
     try {
       const sigFields = await this.deps.settings.getCsv('DUMP_SIGNATURE_FIELDS');
-      for (const system of await this.deps.repo.listSystems()) {
+      const systems = await this.deps.repo.listSystems();
+      console.log('[discoverer] tickOnce: systems=', systems);
+      for (const system of systems) {
         const since = await this.computeSince(system);
+        console.log('[discoverer] tickOnce: listing', system, 'since', since);
         let items: DumpListItem[];
         try { items = await this.deps.dumpSource.listSince(system, since); }
-        catch (e) { this.deps.log(`list ${system} failed`, e); continue; }
+        catch (e) { console.error('[discoverer] tickOnce: list failed', system, e); this.deps.log(`list ${system} failed`, e); continue; }
+        console.log('[discoverer] tickOnce:', system, 'returned', items.length, 'items');
         for (const it of items) {
           const existing = await this.deps.repo.findByDumpId(it.system, it.dumpId);
           if (existing) continue;
@@ -55,7 +60,7 @@ export class Discoverer {
 
   private async computeSince(system: string): Promise<string> {
     const last = await this.deps.repo.maxOccurredAt(system);
-    if (!last) return new Date(Date.now() - 24 * 3600_000).toISOString();
+    if (!last) return new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
     return new Date(new Date(last).getTime() - 24 * 3600_000).toISOString();
   }
 }

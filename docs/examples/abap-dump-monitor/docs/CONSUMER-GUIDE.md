@@ -4,7 +4,7 @@ All Admin endpoints require an XSUAA token from a user holding the `AbapDumpMoni
 
 ## UI
 
-A Fiori Elements V4 List Report is served at `/monitor/webapp/`. It lists `MonitoredDump` rows with filters, a List Report → Object Page navigation, all composition tabs (Call Stack, Source, Variables, References), and header/row actions (`Push to Jira`, `Retry Analysis`, `Retry Jira`, `pollNow`).
+A Fiori Elements V4 List Report is served at `/monitor/webapp/`. It lists `MonitoredDump` rows with filters, a List Report → Object Page navigation, all composition tabs (Call Stack, Source, Variables, References), and two row-level actions: **Analysis** (re-runs LLM analysis synchronously) and **Jira** (pushes the row to Jira).
 
 > **Auth boundary:** the UI **shell** (HTML/JS/manifest) is served as static assets without auth — same pattern cloud-llm-hub itself uses for `/chat/webapp`. The actual data and actions all flow through OData at `/odata/v4/admin/...`, which is auth-gated by the `MonitorService.@requires: 'Viewer'` (read) / `Admin` (actions). An unauthenticated browser sees the empty app shell; the moment it tries to fetch dumps it gets 401 with the standard XSUAA / mocked-auth challenge. For a fully gated experience put an approuter in front (see how `cloud-llm-hub`'s root MTA wires `app/router/`).
 
@@ -50,15 +50,22 @@ Within 5 seconds (cache TTL) the next tick uses the new value.
 curl -X POST "https://<app>/odata/v4/admin/pollNow" -H "Authorization: Bearer $TOKEN"
 ```
 
-## Retry a failed row
+## Retry analysis or push to Jira
+
+`retryAnalysis` re-runs the LLM analysis inline (synchronous, ~15-40s through
+the approuter) and returns the refreshed row. `pushToJira` creates / comments
+the Jira ticket. Both are admin-only and bound to a single `MonitoredDump`.
 
 ```bash
 curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService.retryAnalysis" \
   -H "Authorization: Bearer $TOKEN"
 
-curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService.retryJira" \
+curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService.pushToJira" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+`retryAnalysis` is also valid on rows stuck in `analysisStatus = analyzing`
+(crash recovery — see `docs/OVERVIEW.md` "stuck rows").
 
 ## Add a routing rule (assignee matrix)
 

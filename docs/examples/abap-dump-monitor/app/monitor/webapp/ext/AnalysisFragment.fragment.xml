@@ -1,0 +1,28 @@
+<core:FragmentDefinition
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:l="sap.ui.layout"
+    xmlns:codeeditor="sap.ui.codeeditor">
+  <l:VerticalLayout class="sapUiSmallMargin" width="100%">
+    <HBox alignItems="Center">
+      <Label text="Status:" class="sapUiTinyMarginEnd"/>
+      <ObjectStatus
+          state="{= ${analysisStatus} === 'done' ? 'Success' : ${analysisStatus} === 'failed' ? 'Error' : 'Warning'}"
+          text="{analysisStatus}"/>
+      <Label text="Attempts:" class="sapUiSmallMarginBegin sapUiTinyMarginEnd"/>
+      <Text text="{analysisAttempts}"/>
+    </HBox>
+    <Text text="{analysisError}" visible="{= !!${analysisError}}" class="sapUiSmallMarginTop"/>
+    <Title text="Recommendations" level="H4" visible="{= !!${recommendations}}" class="sapUiSmallMarginTop"/>
+    <codeeditor:CodeEditor
+        visible="{= !!${recommendations}}"
+        type="markdown"
+        height="600px"
+        width="100%"
+        value="{recommendations}"
+        editable="false"
+        lineNumbers="false"
+        syntaxHints="true"
+        valueSelection="true"/>
+  </l:VerticalLayout>
+</core:FragmentDefinition>

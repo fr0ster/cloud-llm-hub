@@ -8,7 +8,7 @@ const SEED: Array<{ key: string; envKey: string; def: string; dataType: string; 
   { key: 'POLL_INTERVAL_MS',         envKey: 'POLL_INTERVAL_MS',         def: '300000',                                  dataType: 'int',    description: 'Discovery interval in ms (min 60000 enforced).' },
   { key: 'JIRA_MODE',                envKey: 'JIRA_MODE',                def: 'manual',                                  dataType: 'string', description: 'manual = wait for UI Push to Jira; auto = JiraWorker creates tickets on its own.' },
   { key: 'ANALYSIS_TICK_MS',         envKey: 'ANALYSIS_TICK_MS',         def: '10000',                                   dataType: 'int',    description: 'Analysis worker tick interval in ms.' },
-  { key: 'ANALYSIS_CONCURRENCY',     envKey: 'ANALYSIS_CONCURRENCY',     def: '5',                                       dataType: 'int',    description: 'Max parallel analyses per tick.' },
+  { key: 'ANALYSIS_CONCURRENCY',     envKey: 'ANALYSIS_CONCURRENCY',     def: '2',                                       dataType: 'int',    description: 'Max parallel analyses per tick.' },
   { key: 'JIRA_TICK_MS',             envKey: 'JIRA_TICK_MS',             def: '10000',                                   dataType: 'int',    description: 'Jira worker tick interval in ms.' },
   { key: 'LLM_MODEL',                envKey: 'LLM_MODEL',                def: 'anthropic--claude-4.5-sonnet',            dataType: 'string', description: 'cloud-llm-hub model id.' },
   { key: 'LLM_TEMPERATURE',          envKey: 'LLM_TEMPERATURE',          def: '0.2',                                     dataType: 'string', description: 'LLM temperature.' },

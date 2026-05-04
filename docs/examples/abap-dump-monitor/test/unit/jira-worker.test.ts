@@ -59,7 +59,7 @@ describe('JiraWorker.tickOnce', () => {
     expect(jira.create).toHaveBeenCalledTimes(1);
     const arg = (jira.create as jest.Mock).mock.calls[0][0];
     expect(arg.summary).toContain('RE');
-    expect(arg.labels).toContain('E19.100:D-1');
+    expect(arg.labels).toContain('E19.100-D-1');
   });
 
   test('comments on existing open recurring issue', async () => {

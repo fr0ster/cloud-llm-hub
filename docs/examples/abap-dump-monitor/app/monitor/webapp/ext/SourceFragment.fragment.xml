@@ -1,0 +1,18 @@
+<core:FragmentDefinition
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:l="sap.ui.layout"
+    xmlns:codeeditor="sap.ui.codeeditor">
+  <l:VerticalLayout class="sapUiSmallMargin" width="100%">
+    <Title text="{sourceExtract/program} / {sourceExtract/include}  (lines {sourceExtract/lineFrom}–{sourceExtract/lineTo})" level="H4"/>
+    <codeeditor:CodeEditor
+        type="abap"
+        height="600px"
+        width="100%"
+        value="{sourceExtract/code}"
+        editable="false"
+        lineNumbers="true"
+        syntaxHints="true"
+        valueSelection="true"/>
+  </l:VerticalLayout>
+</core:FragmentDefinition>

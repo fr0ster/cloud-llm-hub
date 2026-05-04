@@ -39,16 +39,17 @@ function makeRepo(pending: any[]): DumpRepository {
 describe('AnalysisWorker.tickOnce', () => {
   beforeEach(() => { jest.clearAllMocks(); });
 
-  test('successful analysis updates status to done with no intermediate analyzing write', async () => {
+  test('successful analysis writes analyzing then done', async () => {
     const analyzer: IAnalyzer = { analyze: jest.fn().mockResolvedValue({ raw: '{}', recommendations: 'do X' }) };
     const repo = makeRepo([{ ID: '1', rawPayload: 'r', system: 'E19.100', dumpId: 'D-1', analysisAttempts: 0 }]);
     const w = new AnalysisWorker({ settings, analyzer, repo, log: () => {} });
     await w.tickOnce();
     expect(analyzer.analyze).toHaveBeenCalledTimes(1);
-    expect(repo.updateAnalysis).toHaveBeenCalledTimes(1);
-    const [id, patch] = (repo.updateAnalysis as jest.Mock).mock.calls[0];
-    expect(id).toBe('1');
-    expect(patch).toMatchObject({ analysisStatus: 'done', recommendations: 'do X' });
+    expect(repo.updateAnalysis).toHaveBeenCalledTimes(2);
+    const calls = (repo.updateAnalysis as jest.Mock).mock.calls;
+    expect(calls[0][0]).toBe('1');
+    expect(calls[0][1]).toMatchObject({ analysisStatus: 'analyzing' });
+    expect(calls[1][1]).toMatchObject({ analysisStatus: 'done', recommendations: 'do X' });
   });
 
   test('failed analysis sets failed + increments attempts', async () => {
@@ -56,9 +57,11 @@ describe('AnalysisWorker.tickOnce', () => {
     const repo = makeRepo([{ ID: '1', rawPayload: 'r', system: 'E19.100', dumpId: 'D-1', analysisAttempts: 1 }]);
     const w = new AnalysisWorker({ settings, analyzer, repo, log: () => {} });
     await w.tickOnce();
-    const [, patch] = (repo.updateAnalysis as jest.Mock).mock.calls[0];
-    expect(patch).toMatchObject({ analysisStatus: 'failed', analysisAttempts: 2 });
-    expect(String(patch.analysisError)).toContain('boom');
+    const calls = (repo.updateAnalysis as jest.Mock).mock.calls;
+    expect(calls[0][1]).toMatchObject({ analysisStatus: 'analyzing' });
+    const failPatch = calls[1][1];
+    expect(failPatch).toMatchObject({ analysisStatus: 'failed', analysisAttempts: 2 });
+    expect(String(failPatch.analysisError)).toContain('boom');
   });
 
   test('runs up to ANALYSIS_CONCURRENCY rows in parallel', async () => {

@@ -1,5 +1,5 @@
 {
-  "welcomeFile": "/monitor/webapp/index.html",
+  "welcomeFile": "/fiori-apps.html",
   "authenticationMethod": "route",
   "routes": [
     {

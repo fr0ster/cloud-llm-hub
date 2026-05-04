@@ -25,14 +25,18 @@ export class AnalysisWorker {
     } finally { this.running = false; }
   }
 
-  private async processOne(row: { ID: string; rawPayload: string; system: string; dumpId: string; analysisAttempts: number }): Promise<void> {
+  async processOne(row: { ID: string; rawPayload: string; system: string; dumpId: string; analysisAttempts: number }): Promise<void> {
+    console.log(`[analyzer] processOne start ${row.system}/${row.dumpId}`);
+    await this.deps.repo.updateAnalysis(row.ID, { analysisStatus: 'analyzing' });
     try {
       const parsed = this.deps.repo.parsePayload(row.system, row.dumpId, row.rawPayload);
       const r = await this.deps.analyzer.analyze(parsed);
       await this.deps.repo.updateAnalysis(row.ID, {
         analysisStatus: 'done', analysisResult: r.raw, recommendations: r.recommendations, analysisError: null
       });
+      console.log(`[analyzer] processOne done ${row.dumpId} (${(r.recommendations ?? '').length} chars)`);
     } catch (e: any) {
+      console.error(`[analyzer] processOne failed ${row.dumpId}:`, e?.message ?? e);
       await this.deps.repo.updateAnalysis(row.ID, {
         analysisStatus: 'failed', analysisError: String(e?.message ?? e), analysisAttempts: row.analysisAttempts + 1
       });

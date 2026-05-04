@@ -86,16 +86,23 @@ export class JiraWorker {
   }
 
   private async processOneInner(row: JiraPendingRow, ctx: JiraCtx): Promise<void> {
+    console.log(`[jira-worker] processOne start ID=${row.ID} dumpId=${row.dumpId}`);
     // Re-read inside the lock. The caller's row snapshot is from before the
     // mutex was acquired, so it may be stale if another path (auto tick or
     // concurrent pushToJira) already moved this row to a terminal state.
     const fresh = await this.deps.repo.findJiraState(row.ID);
-    if (!fresh) return;                        // row deleted
-    if (fresh.skipJira) return;                // operator opted out
-    if (fresh.jiraStatus !== 'pending' && fresh.jiraStatus !== 'failed') return; // already handled
+    if (!fresh) { console.log(`[jira-worker] bail: row deleted ${row.ID}`); return; }
+    if (fresh.skipJira) { console.log(`[jira-worker] bail: skipJira ${row.ID}`); return; }
+    if (fresh.jiraStatus !== 'pending' && fresh.jiraStatus !== 'failed') {
+      console.log(`[jira-worker] bail: status=${fresh.jiraStatus} (not pending/failed) ${row.ID}`);
+      return;
+    }
 
     try {
-      const label = `${row.system}:${row.dumpId}`;
+      // Jira labels disallow whitespace and most punctuation. ABAP dump_id is
+      // fixed-width padded with spaces — squash them so the JQL search and the
+      // resulting issue label are valid.
+      const label = `${row.system}-${row.dumpId}`.replace(/[^A-Za-z0-9._-]+/g, '_');
       const dup = await this.deps.jira.searchByLabel(label);
       if (dup) {
         await this.deps.repo.updateJira(row.ID, { jiraStatus: 'skipped', jiraIssueKey: dup.key });
@@ -122,8 +129,11 @@ export class JiraWorker {
         labels: [...ctx.baseLabels, label],
         assignee
       });
+      console.log(`[jira-worker] created ID=${row.ID} key=${key}`);
       await this.deps.repo.updateJira(row.ID, { jiraStatus: 'created', jiraIssueKey: key, jiraError: null });
+      console.log(`[jira-worker] updateJira done ID=${row.ID}`);
     } catch (e: any) {
+      console.error(`[jira-worker] FAILED ID=${row.ID}`, e?.message ?? e);
       await this.deps.repo.updateJira(row.ID, {
         jiraStatus: 'failed', jiraError: String(e?.message ?? e), jiraAttempts: row.jiraAttempts + 1
       });

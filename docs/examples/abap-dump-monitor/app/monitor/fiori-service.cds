@@ -1,4 +1,4 @@
-using MonitorService from './monitor-service';
+using MonitorService from '../../srv/monitor-service';
 
 annotate MonitorService.MonitoredDump with @(
   UI: {
@@ -8,7 +8,11 @@ annotate MonitorService.MonitoredDump with @(
       Title: { Value: dumpId },
       Description: { Value: runtimeError }
     },
-    SelectionFields: [system, analysisStatus, jiraStatus, runtimeError, program],
+    Identification: [
+      { $Type: 'UI.DataFieldForAction', Label: 'Analysis', Action: 'MonitorService.retryAnalysis' },
+      { $Type: 'UI.DataFieldForAction', Label: 'Jira',     Action: 'MonitorService.pushToJira'    }
+    ],
+    SelectionFields: [ abapUser, system, runtimeError, category, occurredAt, analysisStatus, jiraStatus ],
     LineItem: [
       { Value: firstSeenAt, Label: 'Seen' },
       { Value: system, Label: 'System' },
@@ -18,21 +22,27 @@ annotate MonitorService.MonitoredDump with @(
       { Value: include, Label: 'Include' },
       { Value: sourceLine, Label: 'Line' },
       { Value: abapUser, Label: 'User' },
-      { Value: analysisStatus, Label: 'Analysis', Criticality: analysisStatusCriticality },
-      { Value: jiraStatus, Label: 'Jira', Criticality: jiraStatusCriticality },
-      { Value: jiraIssueKey, Label: 'Jira Key' },
-      { $Type: 'UI.DataFieldForAction', Label: 'Push to Jira',    Action: 'MonitorService.pushToJira'    },
-      { $Type: 'UI.DataFieldForAction', Label: 'Retry Analysis',  Action: 'MonitorService.retryAnalysis' },
-      { $Type: 'UI.DataFieldForAction', Label: 'Retry Jira',      Action: 'MonitorService.retryJira'     }
+      { Value: analysisStatus, Label: 'Analysis' },
+      { Value: jiraStatus, Label: 'Jira' },
+      { $Type: 'UI.DataFieldForAction', Label: 'Analysis', Action: 'MonitorService.retryAnalysis' },
+      { $Type: 'UI.DataFieldForAction', Label: 'Jira',     Action: 'MonitorService.pushToJira'    }
     ],
     Facets: [
       { $Type: 'UI.ReferenceFacet', ID: 'Header',    Label: 'Header',     Target: '@UI.FieldGroup#Header' },
       { $Type: 'UI.ReferenceFacet', ID: 'Stack',     Label: 'Call Stack', Target: 'callStack/@UI.LineItem' },
-      { $Type: 'UI.ReferenceFacet', ID: 'Source',    Label: 'Source',     Target: 'sourceExtract/@UI.FieldGroup#Source' },
+      // Source code is rendered by a custom CodeEditor section (manifest.json → SourceCode)
+      // for monospace + ABAP syntax highlight; the auto-generated FieldGroup facet is
+      // intentionally omitted to avoid a duplicate tab.
       { $Type: 'UI.ReferenceFacet', ID: 'Variables', Label: 'Variables',  Target: 'variables/@UI.LineItem' },
       { $Type: 'UI.ReferenceFacet', ID: 'Refs',      Label: 'References', Target: 'referencedObjects/@UI.LineItem' },
-      { $Type: 'UI.ReferenceFacet', ID: 'Analysis',  Label: 'Analysis',   Target: '@UI.FieldGroup#Analysis' },
-      { $Type: 'UI.ReferenceFacet', ID: 'Jira',      Label: 'Jira',       Target: '@UI.FieldGroup#Jira' }
+      // Hidden helper facets — force Fiori to $select recommendations / jiraIssueUrl
+      // (FE V4 doesn't honour requestAtLeast for LargeString fields in custom
+      // sections, so visible FieldGroup references are the only way to make those
+      // fields appear in OData $select). The tabs themselves are hidden via
+      // @UI.Hidden; the user-facing rendering lives in the custom AnalysisCustom /
+      // JiraCustom sections (CodeEditor / Link), see manifest.json.
+      { $Type: 'UI.ReferenceFacet', ID: 'AnalysisHidden', Target: '@UI.FieldGroup#Analysis', @UI.Hidden: true },
+      { $Type: 'UI.ReferenceFacet', ID: 'JiraHidden',     Target: '@UI.FieldGroup#Jira',     @UI.Hidden: true }
     ],
     FieldGroup#Header: {
       Data: [
@@ -60,6 +70,7 @@ annotate MonitorService.MonitoredDump with @(
       Data: [
         { Value: jiraStatus },
         { Value: jiraIssueKey },
+        { Value: jiraIssueUrl },
         { Value: jiraAttempts },
         { Value: skipJira },
         { Value: jiraError }
@@ -69,11 +80,41 @@ annotate MonitorService.MonitoredDump with @(
 ) {
   analysisStatus @Common.FieldControl: #ReadOnly;
   jiraStatus     @Common.FieldControl: #ReadOnly;
+
+  // Value Helps for filter bar — self-reference the same entity so Fiori
+  // Elements offers a F4 dialog with the distinct values currently in the
+  // table (works without a separate VH entity).
+  abapUser @Common.ValueList: {
+    CollectionPath: 'AbapUserVH',
+    Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: abapUser, ValueListProperty: 'abapUser' }
+    ]
+  };
+  system @Common.ValueList: {
+    CollectionPath: 'SystemVH',
+    Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: system, ValueListProperty: 'system' }
+    ]
+  };
+  runtimeError @Common.ValueList: {
+    CollectionPath: 'RuntimeErrorVH',
+    Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: runtimeError, ValueListProperty: 'runtimeError' }
+    ]
+  };
+  category @Common.ValueList: {
+    CollectionPath: 'CategoryVH',
+    Parameters: [
+      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: category, ValueListProperty: 'category' }
+    ]
+  };
 };
 
-extend MonitorService.MonitoredDump with columns {
-  virtual null as analysisStatusCriticality : Integer,
-  virtual null as jiraStatusCriticality     : Integer
+// SideEffects — refetch the entire bound entity after each action so Object Page
+// reflects updated status / recommendations / Jira key automatically.
+annotate MonitorService.MonitoredDump actions {
+  retryAnalysis @(Common.SideEffects: { TargetEntities: ['_it'] });
+  pushToJira    @(Common.SideEffects: { TargetEntities: ['_it'] });
 };
 
 annotate MonitorService.CallStackEntry with @(
@@ -115,10 +156,12 @@ annotate MonitorService.SourceExtract with @(
       { Value: include },
       { Value: lineFrom },
       { Value: lineTo },
-      { Value: code }
+      { Value: code, @UI.MultiLineText: true }
     ]
   }
-);
+) {
+  code @UI.MultiLineText;
+};
 
 annotate MonitorService.Setting with @(
   UI.LineItem: [ { Value: key }, { Value: value }, { Value: dataType }, { Value: description }, { Value: updatedAt }, { Value: updatedBy } ],

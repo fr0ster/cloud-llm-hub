@@ -60,20 +60,32 @@ Each worker has one focused responsibility, takes injected interfaces (`ISetting
 ## State machine
 
 ```
-analysisStatus:  pending ─► done   ─┐
-                 pending ─► failed ─┤  (failed rows are NOT sticky;
-                                    │   they are auto-retried each tick
-                                    │   until analysisAttempts >= cap)
-                                    │
+analysisStatus:  pending ─► analyzing ─► done    ─┐
+                                      ─► failed  ─┤  (failed/analyzing rows
+                                                  │   are not sticky — see
+                                                  │   recovery rules below)
+                                                  │
 jiraStatus:      pending ─► created   ─┐
                  pending ─► commented  ─┤  (failed rows likewise auto-retry
                  pending ─► skipped    ─┤   until jiraAttempts >= cap)
                  pending ─► failed     ─┘
 ```
 
-There is no intermediate `analyzing` / `creating` state on the row. Transitions go `pending → terminal` in a single update at the end of work. This avoids stuck-row recovery if a process dies mid-way.
+`analyzing` is an intermediate state written by the AnalysisWorker before
+calling the LLM. It exists so the UI can show the row "in flight". Recovery
+rules:
 
-After the per-row attempt cap is reached, a `failed` row stays `failed` until an admin explicitly invokes the `retryAnalysis(ID)` or `retryJira(ID)` bound action. Those actions reset `*Status=pending` and `*Attempts=0`, but only for rows currently in `failed`; calling on any other status returns 400.
+- `findPendingAnalysis` includes both `pending` and `failed`. `analyzing`
+  rows older than `ANALYSIS_STUCK_MS` (default 10 min) are also re-picked,
+  so a process crash mid-call cannot strand a row.
+- The bound action `retryAnalysis` accepts `failed` and `analyzing` and
+  drives the row through `AnalysisWorker.processOne` synchronously. The
+  worker writes `analyzing` first, then `done` or `failed` (incrementing
+  `analysisAttempts` only on failure). `retryAnalysis` returns 400 on
+  `pending` or `done` (nothing to retry).
+
+After the per-row attempt cap is reached, the auto-loop stops re-picking
+the row, but `retryAnalysis` still works — each call is one more attempt.
 
 When `JIRA_MODE = manual` (the default), `jiraStatus = pending` rows do **not** auto-progress — the JiraWorker tick is a no-op. The operator must invoke the `pushToJira(ID)` bound action (button in the Fiori Elements UI) to drive a single row through the same `searchByLabel → create | comment | skipped` pipeline. Switch `JIRA_MODE` to `auto` to restore the original behaviour.
 

@@ -1,50 +1,55 @@
 {
-  "_version": "1.65.0",
+  "_version": "1.28.0",
   "sap.app": {
     "id": "monitor",
     "type": "application",
-    "title": "ABAP Dump Monitor",
-    "description": "List and inspect monitored ABAP dumps",
+    "title": "{{appTitle}}",
+    "description": "{{appDescription}}",
+    "i18n": "i18n/i18n.properties",
     "applicationVersion": { "version": "1.0.0" },
     "dataSources": {
-      "mainService": {
+      "MonitorService": {
         "uri": "/odata/v4/admin/",
         "type": "OData",
-        "settings": {
-          "odataVersion": "4.0"
-        }
+        "settings": { "odataVersion": "4.0" }
       }
     },
     "crossNavigation": {
       "inbounds": {
-        "monitor-display": {
+        "MonitoredDump-display": {
+          "signature": {
+            "parameters": {},
+            "additionalParameters": "ignored"
+          },
           "semanticObject": "MonitoredDump",
           "action": "display",
-          "title": "ABAP Dump Monitor",
-          "signature": { "parameters": {}, "additionalParameters": "allowed" }
+          "title": "{{appTitle}}",
+          "info": "{{appDescription}}",
+          "icon": "sap-icon://alert",
+          "indicatorDataSource": {
+            "dataSource": "MonitorService",
+            "path": "MonitoredDump/$count",
+            "refresh": 600
+          }
         }
       }
     }
   },
-  "sap.ui": {
-    "technology": "UI5",
-    "icons": { "icon": "sap-icon://alert" }
-  },
   "sap.ui5": {
-    "flexEnabled": true,
     "dependencies": {
-      "minUI5Version": "1.121.0",
+      "minUI5Version": "1.136.0",
       "libs": {
-        "sap.fe.templates": {}
+        "sap.fe.templates": {},
+        "sap.ui.codeeditor": {}
       }
     },
     "models": {
       "i18n": {
         "type": "sap.ui.model.resource.ResourceModel",
-        "settings": { "bundleName": "monitor.i18n.i18n" }
+        "uri": "i18n/i18n.properties"
       },
       "": {
-        "dataSource": "mainService",
+        "dataSource": "MonitorService",
         "settings": {
           "synchronizationMode": "None",
           "operationMode": "Server",
@@ -62,23 +67,8 @@
         },
         {
           "pattern": "MonitoredDump({key}):?query:",
-          "name": "MonitoredDumpObjectPage",
-          "target": "MonitoredDumpObjectPage"
-        },
-        {
-          "pattern": "MonitoredDump({key})/callStack({key2}):?query:",
-          "name": "CallStackObjectPage",
-          "target": "CallStackObjectPage"
-        },
-        {
-          "pattern": "MonitoredDump({key})/variables({key2}):?query:",
-          "name": "VariableObjectPage",
-          "target": "VariableObjectPage"
-        },
-        {
-          "pattern": "MonitoredDump({key})/referencedObjects({key2}):?query:",
-          "name": "ReferencedObjectPage",
-          "target": "ReferencedObjectPage"
+          "name": "MonitoredDumpDetails",
+          "target": "MonitoredDumpDetails"
         }
       ],
       "targets": {
@@ -88,49 +78,69 @@
           "name": "sap.fe.templates.ListReport",
           "options": {
             "settings": {
-              "contextPath": "/MonitoredDump",
+              "entitySet": "MonitoredDump",
+              "liveMode": true,
               "navigation": {
-                "MonitoredDump": { "detail": { "route": "MonitoredDumpObjectPage" } }
+                "MonitoredDump": {
+                  "detail": {
+                    "route": "MonitoredDumpDetails"
+                  }
+                }
               }
             }
           }
         },
-        "MonitoredDumpObjectPage": {
+        "MonitoredDumpDetails": {
           "type": "Component",
-          "id": "MonitoredDumpObjectPage",
+          "id": "MonitoredDumpDetailsList",
           "name": "sap.fe.templates.ObjectPage",
           "options": {
             "settings": {
-              "contextPath": "/MonitoredDump",
-              "navigation": {
-                "callStack": { "detail": { "route": "CallStackObjectPage" } },
-                "variables": { "detail": { "route": "VariableObjectPage" } },
-                "referencedObjects": { "detail": { "route": "ReferencedObjectPage" } }
+              "entitySet": "MonitoredDump",
+              "content": {
+                "body": {
+                  "sections": {
+                    "SourceCode": {
+                      "type": "XMLFragment",
+                      "title": "Source",
+                      "template": "monitor.ext.SourceFragment",
+                      "requestAtLeast": "sourceExtract/code,sourceExtract/program,sourceExtract/include,sourceExtract/lineFrom,sourceExtract/lineTo",
+                      "position": { "placement": "After", "anchor": "Stack" }
+                    },
+                    "AnalysisCustom": {
+                      "type": "XMLFragment",
+                      "title": "Analysis",
+                      "template": "monitor.ext.AnalysisFragment",
+                      "requestAtLeast": "analysisStatus,analysisAttempts,analysisError,recommendations,recommendationsHtml",
+                      "position": { "placement": "After", "anchor": "Refs" }
+                    },
+                    "JiraCustom": {
+                      "type": "XMLFragment",
+                      "title": "Jira",
+                      "template": "monitor.ext.JiraFragment",
+                      "requestAtLeast": "jiraStatus,jiraAttempts,jiraError,jiraIssueKey,jiraIssueUrl,skipJira",
+                      "position": { "placement": "After", "anchor": "AnalysisCustom" }
+                    }
+                  }
+                }
               }
             }
           }
-        },
-        "CallStackObjectPage": {
-          "type": "Component",
-          "id": "CallStackObjectPage",
-          "name": "sap.fe.templates.ObjectPage",
-          "options": { "settings": { "contextPath": "/MonitoredDump/callStack" } }
-        },
-        "VariableObjectPage": {
-          "type": "Component",
-          "id": "VariableObjectPage",
-          "name": "sap.fe.templates.ObjectPage",
-          "options": { "settings": { "contextPath": "/MonitoredDump/variables" } }
-        },
-        "ReferencedObjectPage": {
-          "type": "Component",
-          "id": "ReferencedObjectPage",
-          "name": "sap.fe.templates.ObjectPage",
-          "options": { "settings": { "contextPath": "/MonitoredDump/referencedObjects" } }
         }
       }
     },
-    "contentDensities": { "compact": true, "cozy": true }
+    "contentDensities": {
+      "compact": true,
+      "cozy": true
+    }
+  },
+  "sap.ui": {
+    "technology": "UI5",
+    "deviceTypes": {
+      "desktop": true,
+      "tablet": true,
+      "phone": true
+    }
   },
   "sap.fiori": {
     "registrationIds": [],

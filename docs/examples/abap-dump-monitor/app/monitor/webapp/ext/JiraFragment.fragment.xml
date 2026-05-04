@@ -1,0 +1,23 @@
+<core:FragmentDefinition
+    xmlns="sap.m"
+    xmlns:core="sap.ui.core"
+    xmlns:l="sap.ui.layout">
+  <l:VerticalLayout class="sapUiSmallMargin" width="100%">
+    <HBox alignItems="Center">
+      <Label text="Status:" class="sapUiTinyMarginEnd"/>
+      <ObjectStatus
+          state="{= (${jiraStatus} === 'created' || ${jiraStatus} === 'commented' || ${jiraStatus} === 'skipped') ? 'Success' : ${jiraStatus} === 'failed' ? 'Error' : 'Warning'}"
+          text="{jiraStatus}"/>
+      <Label text="Attempts:" class="sapUiSmallMarginBegin sapUiTinyMarginEnd"/>
+      <Text text="{jiraAttempts}"/>
+    </HBox>
+    <HBox alignItems="Center" class="sapUiSmallMarginTop" visible="{= !!${jiraIssueKey}}">
+      <Label text="Issue:" class="sapUiTinyMarginEnd"/>
+      <Link text="{jiraIssueKey}" target="_blank" href="{jiraIssueUrl}"/>
+    </HBox>
+    <HBox alignItems="Center" class="sapUiSmallMarginTop" visible="{= ${skipJira} === true}">
+      <ObjectStatus state="Information" text="Push to Jira disabled (skipJira=true)"/>
+    </HBox>
+    <Text text="{jiraError}" visible="{= !!${jiraError}}" class="sapUiSmallMarginTop"/>
+  </l:VerticalLayout>
+</core:FragmentDefinition>

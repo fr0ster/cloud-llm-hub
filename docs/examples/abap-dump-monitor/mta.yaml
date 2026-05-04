@@ -12,7 +12,11 @@ parameters:
   JIRA_USER: ""
   JIRA_TOKEN: ""
   CF_LANDSCAPE: "cfapps.eu10-004.hana.ondemand.com"
+  # Approuter host = <tenant-subdomain>-<APP_SUFFIX>.<CF_LANDSCAPE>.
+  # The leading <tenant-subdomain>- segment is required by TENANT_HOST_PATTERN
+  # (shared-tenant xsuaa). Override APPROUTER_HOST in .mtaext per subaccount.
   APPROUTER_HOST: "abap-dump-monitor"
+  APP_SUFFIX: "abap-dump-monitor"
 
 modules:
   - name: abap-dump-monitor-srv
@@ -20,17 +24,27 @@ modules:
     path: gen/srv
     parameters:
       buildpack: nodejs_buildpack
-      memory: 256M
+      memory: 1G
     properties:
       SAP_SYSTEM_ID: "E19.100"
       SAP_DESTINATION: "S4HANA_E19"
       CLOUD_LLM_HUB_DESTINATION: "CLOUD_LLM_HUB"
       JIRA_DESTINATION: "JIRA_EPAM"
+      # Used to render clickable Jira issue links on Object Page (jiraIssueUrl
+      # virtual field). Same value as the Jira destination URL.
+      JIRA_URL: ${JIRA_URL}
+      NODE_OPTIONS: "--max-old-space-size=896"
     build-parameters:
       builder: custom
       commands:
-        - node -e "require('fs').cpSync('../../app/monitor/webapp','app/monitor/webapp',{recursive:true})"
-        - npm install --omit=dev
+        - node -e "require('fs').cpSync('../../app/monitor/webapp','app/monitor/webapp',{recursive:true});require('fs').cpSync('../../app/fiori-apps.html','app/fiori-apps.html')"
+        - npm install
+        - node -e "require('fs').writeFileSync('tsconfig.json',JSON.stringify({compilerOptions:{target:'ES2022',module:'CommonJS',moduleResolution:'Node',esModuleInterop:true,skipLibCheck:true,resolveJsonModule:true,outDir:'.tsbuild',rootDir:'srv'},include:['srv/**/*.ts']}))"
+        - npx tsc -p tsconfig.json
+        - node -e "const fs=require('fs');for(const f of fs.readdirSync('srv')){if(f.endsWith('.ts'))fs.unlinkSync(`srv/${f}`)}for(const f of fs.readdirSync('.tsbuild')){fs.copyFileSync(`.tsbuild/${f}`,`srv/${f}`)}"
+        - node -e "require('fs').rmSync('.tsbuild',{recursive:true,force:true});require('fs').unlinkSync('tsconfig.json')"
+        - bash -c "npx cds compile ../../srv/monitor-service.cds --to sql --dialect sqlite > srv/schema.sql && wc -l srv/schema.sql"
+        - npm prune --omit=dev
     provides:
       - name: srv-api
         properties:
@@ -46,7 +60,7 @@ modules:
       disk-quota: 256M
       memory: 256M
       routes:
-        - route: ${APPROUTER_HOST}.${CF_LANDSCAPE}
+        - route: ${APPROUTER_HOST}-${space}.${CF_LANDSCAPE}
     build-parameters:
       builder: custom
       commands:
@@ -58,6 +72,10 @@ modules:
           name: srv-api
           url: ~{srv-url}
           forwardAuthToken: true
+          # Backend request timeout (ms). Default 30000 is too short for
+          # synchronous LLM analysis (15-40s). Approuter reads this from the
+          # destination object itself (lib/utils/destination-normalization.js).
+          timeout: 180000
       - name: abap-dump-monitor-auth
 
 resources:
@@ -67,6 +85,9 @@ resources:
       service: xsuaa
       service-plan: application
       path: ./xs-security.json
+      config:
+        xsappname: abap-dump-monitor-${space-guid}
+        tenant-mode: dedicated
 
   - name: abap-dump-monitor-destination
     type: org.cloudfoundry.managed-service
@@ -76,7 +97,10 @@ resources:
       config:
         init_data:
           instance:
-            existing_destinations_policy: update
+            # 'ignore' keeps existing destinations untouched on redeploys — credentials
+            # drift (rotated keys etc.) is preserved. Switch to 'update' for one-shot
+            # refresh, then back to 'ignore'.
+            existing_destinations_policy: ignore
             destinations:
               - Name: CLOUD_LLM_HUB
                 Type: HTTP
