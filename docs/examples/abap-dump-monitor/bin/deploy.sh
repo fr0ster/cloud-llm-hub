@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
-# Build and deploy abap-dump-monitor to the targeted CF org/space.
+# Convenience deploy script. Reads .mtaext (gitignored — real
+# CLOUD_LLM_HUB_*, JIRA_* secrets; see .mtaext.example for the template),
+# auto-derives APPROUTER_HOST from the CF org's subaccount subdomain to
+# avoid landscape host collisions, then runs cds + mbt build + cf deploy.
 #
-# Reads .mtaext (gitignored — must contain real CLOUD_LLM_HUB_*, JIRA_*
-# values; see .mtaext.example for the template), then layers a generated
-# extension on top that sets APPROUTER_HOST to "<subaccount-subdomain>-abap-dump-monitor"
-# so the route is unique per subaccount on the same CF landscape.
+# URL produced: <subaccount-subdomain>-abap-dump-monitor.cfapps.<landscape>
+# (matches cloud-llm-hub's per-subaccount host pattern.)
+#
+# For CUSTOMERS that want BOTH prod and staging in the same CF space,
+# duplicate this example's mta.yaml as mta-staging.yaml with a renamed
+# top-level ID (e.g. 'abap-dump-monitor-staging'), commit a per-env
+# .mtaext.staging that 'extends:' that ID and uses a -staging APPROUTER_HOST,
+# and drive each environment with its own deploy invocation. CF Deploy
+# Service tracks MTAs by ID; same-ID deploys overwrite each other regardless
+# of route, which is why distinct prod/staging in one space need distinct
+# MTA descriptors. See cloud-llm-hub's tools/deploy.sh for the full pattern.
+#
+# For PROD-only single-instance deploys, just commit a per-subaccount
+# .mtaext on the deploy/<env> branch with the desired APPROUTER_HOST and
+# run: cf deploy ... -e .mtaext  (no host override needed).
 #
 # Usage: cf login --sso && cf target -o ... -s ... && bin/deploy.sh
 set -euo pipefail

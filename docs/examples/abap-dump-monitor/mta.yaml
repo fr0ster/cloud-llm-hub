@@ -60,7 +60,7 @@ modules:
       disk-quota: 256M
       memory: 256M
       routes:
-        - route: ${APPROUTER_HOST}-${space}.${CF_LANDSCAPE}
+        - route: ${APPROUTER_HOST}.${CF_LANDSCAPE}
     build-parameters:
       builder: custom
       commands:
