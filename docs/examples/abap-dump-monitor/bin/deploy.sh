@@ -38,17 +38,44 @@ SUBDOMAIN="${ORG##*_}"
   exit 1
 }
 
-HOST_EXT=".host.${SUBDOMAIN}.mtaext"
+# Detect staging deploy from the current git branch / worktree dir name.
+# Convention: any branch or worktree containing 'stg' or 'staging' (case-
+# insensitive) gets a '-staging' suffix on the route, so an operator can
+# tell prod and staging apart at a glance:
+#   prod deploy:    <sub>-abap-dump-monitor.cfapps...
+#   staging deploy: <sub>-abap-dump-monitor-staging.cfapps...
+# The MTA ID stays 'abap-dump-monitor' either way, so the same CF space
+# tracks ONE deployment (last cf deploy wins). For true prod+staging
+# coexistence in one space, use Option C in DEPLOYMENT.md (separate
+# mta-staging.yaml with renamed top-level ID).
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+WT_NAME="$(basename "$(realpath "$(git rev-parse --show-toplevel)")")"
+SUFFIX=""
+# Token boundary check — alphanumerics in the regex are anchors so the
+# match doesn't fire on substrings like 'po(stg)res' inside
+# 'feature/postgresql-support'. Underscore is NOT in [:alnum:], so
+# 'foo_stg' still matches at the underscore boundary.
+TOKEN_RE='(^|[^[:alnum:]])(stg|staging)([^[:alnum:]]|$)'
+shopt -s nocasematch
+if [[ "$BRANCH" =~ $TOKEN_RE ]] || [[ "$WT_NAME" =~ $TOKEN_RE ]]; then
+  SUFFIX="-staging"
+fi
+shopt -u nocasematch
+HOST="${SUBDOMAIN}-abap-dump-monitor${SUFFIX}"
+
+HOST_EXT=".host.${SUBDOMAIN}${SUFFIX}.mtaext"
 cat > "$HOST_EXT" <<EOF
 _schema-version: '3.3.0'
-ID: abap-dump-monitor.host.${SUBDOMAIN}
+ID: abap-dump-monitor.host.${SUBDOMAIN}${SUFFIX}
 extends: abap-dump-monitor
 parameters:
-  APPROUTER_HOST: "${SUBDOMAIN}-abap-dump-monitor"
+  APPROUTER_HOST: "${HOST}"
 EOF
 
 echo "Subaccount subdomain: $SUBDOMAIN"
-echo "Generated host override: $HOST_EXT"
+echo "Detected env suffix:   ${SUFFIX:-<none, prod>}"
+echo "APPROUTER_HOST:        $HOST"
+echo "Generated override:    $HOST_EXT"
 
 npx cds build
 npx mbt build

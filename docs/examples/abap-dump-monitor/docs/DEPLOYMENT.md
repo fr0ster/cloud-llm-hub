@@ -26,7 +26,14 @@ The MTA descriptor produces an approuter route as `${APPROUTER_HOST}.${CF_LANDSC
 
 ### Option A — single instance (staging or prod), automatic host
 
-`bin/deploy.sh` reads your `.mtaext` (real `CLOUD_LLM_HUB_*`, `JIRA_*` values — copy `.mtaext.example` and fill in), auto-derives `APPROUTER_HOST = <subaccount-subdomain>-abap-dump-monitor` from the targeted CF org's subaccount, builds and deploys. URL: `<subaccount-subdomain>-abap-dump-monitor.cfapps.<landscape>`.
+`bin/deploy.sh` reads your `.mtaext` (real `CLOUD_LLM_HUB_*`, `JIRA_*` values — copy `.mtaext.example` and fill in), auto-derives `APPROUTER_HOST` from the targeted CF org's subaccount, builds and deploys. The script also tags the URL as staging if the current git branch or worktree directory name matches `stg` or `staging` (case-insensitive), so operators can tell prod and staging apart at a glance:
+
+| Context (branch or worktree dir name)        | Auto-derived `APPROUTER_HOST`         | URL                                                       |
+|----------------------------------------------|----------------------------------------|------------------------------------------------------------|
+| matches `stg` / `staging` (any case)         | `<subdomain>-abap-dump-monitor-staging` | `<subdomain>-abap-dump-monitor-staging.cfapps.<landscape>` |
+| no `stg` / `staging` token                   | `<subdomain>-abap-dump-monitor`         | `<subdomain>-abap-dump-monitor.cfapps.<landscape>`         |
+
+The MTA ID stays `abap-dump-monitor` regardless of suffix, so a prod and a staging deploy in the **same** CF space still overwrite each other (last `cf deploy` wins). True same-space coexistence requires Option C below. The auto-suffix only fixes the visual cue when prod and staging live in different spaces or subaccounts.
 
 ```bash
 cd docs/examples/abap-dump-monitor
