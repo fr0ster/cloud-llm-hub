@@ -50,7 +50,7 @@ describe('Discoverer.tickOnce', () => {
 
   test('discovers and inserts a new dump', async () => {
     const repo = makeRepo();
-    const d = new Discoverer({ settings, dumpSource, repo, log: () => {} });
+    const d = new Discoverer({ settings, dumpSource, repo, lifecycleProbeFactory: () => ({ getIssueCached: jest.fn() }), log: () => {} });
     await d.tickOnce();
     expect(repo.insertParsed).toHaveBeenCalledTimes(1);
     const call = (repo.insertParsed as jest.Mock).mock.calls[0];
@@ -60,7 +60,7 @@ describe('Discoverer.tickOnce', () => {
   test('skips already-known dump', async () => {
     const repo = makeRepo();
     (repo.findByDumpId as jest.Mock).mockResolvedValue({ ID: 'existing' });
-    const d = new Discoverer({ settings, dumpSource, repo, log: () => {} });
+    const d = new Discoverer({ settings, dumpSource, repo, lifecycleProbeFactory: () => ({ getIssueCached: jest.fn() }), log: () => {} });
     await d.tickOnce();
     expect(repo.insertParsed).not.toHaveBeenCalled();
   });

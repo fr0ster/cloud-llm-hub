@@ -1,5 +1,5 @@
 import type { ISettings, IJiraClient } from './interfaces';
-import { dueDateForCount, matchAssignee } from './jira-policy';
+import { dueDateForCount, matchAssignee, signatureLabel } from './jira-policy';
 import type { DumpRepository } from './discoverer';
 
 export interface JiraWorkerDeps {
@@ -24,6 +24,10 @@ export interface JiraPendingRow {
   occurredAt?: string;
   abapUser?: string;
   jiraAttempts: number;
+  // Set by the discoverer if a prior dump in the same signature group already
+  // has a Jira ticket — lets the worker comment / branch on the known group
+  // ticket without an extra searchByLabel round-trip.
+  jiraIssueKey?: string;
 }
 
 export interface JiraCtx {
@@ -99,24 +103,47 @@ export class JiraWorker {
     }
 
     try {
-      // Jira labels disallow whitespace and most punctuation. ABAP dump_id is
-      // fixed-width padded with spaces — squash them so the JQL search and the
-      // resulting issue label are valid.
-      const label = `${row.system}-${row.dumpId}`.replace(/[^A-Za-z0-9._-]+/g, '_');
-      const dup = await this.deps.jira.searchByLabel(label);
-      if (dup) {
-        await this.deps.repo.updateJira(row.ID, { jiraStatus: 'skipped', jiraIssueKey: dup.key });
-        return;
-      }
-      const recent = await this.deps.repo.findRecentByJira(row.signature, ctx.sinceIso);
-      if (recent) {
-        const issue = await this.deps.jira.getIssue(recent.jiraIssueKey);
-        if (issue.statusCategoryKey !== 'done') {
-          await this.deps.jira.comment(issue.key, this.recurrenceComment(row));
-          await this.deps.repo.updateJira(row.ID, { jiraStatus: 'commented', jiraIssueKey: issue.key });
+      // Two labels per ticket:
+      //   • sigLabel: stable across every recurrence of the same root cause —
+      //     the canonical dedup key. Search Jira by this to find an existing
+      //     ticket for this signature.
+      //   • dumpLabel: per-dump cross-reference (kept as additional metadata,
+      //     not used for dedup).
+      const sigLabel = signatureLabel(row.signature);
+      const dumpLabel = `${row.system}-${row.dumpId}`.replace(/[^A-Za-z0-9._-]+/g, '_');
+
+      // Resolve the group ticket. The discoverer already set row.jiraIssueKey
+      // if a prior dump in this signature group has one — use that directly
+      // (one fewer Jira call). Otherwise fall back to a Jira-side search by
+      // sigLabel, which also covers manually-created tickets the discoverer
+      // never knew about.
+      let existing = row.jiraIssueKey
+        ? await this.deps.jira.getIssue(row.jiraIssueKey)
+        : await this.deps.jira.searchByLabel(sigLabel);
+      if (existing) {
+        if (existing.statusCategoryKey !== 'done') {
+          // Open ticket → comment instead of creating a duplicate.
+          await this.deps.jira.comment(existing.key, this.recurrenceComment(row));
+          await this.deps.repo.updateJira(row.ID, { jiraStatus: 'commented', jiraIssueKey: existing.key });
           return;
         }
+        // Closed ticket → fall through to create a new one with a back-reference.
+        const count = await this.deps.repo.countSignatureWithin(row.signature, ctx.sinceIso);
+        const duedate = dueDateForCount(count, ctx.dueCfg);
+        const assignee = matchAssignee(row, ctx.rules) ?? ctx.defaultAssignee;
+        const key = await this.deps.jira.create({
+          projectKey: ctx.projectKey,
+          issueType: ctx.issueType,
+          summary: `[${row.system}] ${row.runtimeError ?? 'ABAP dump'} in ${row.program ?? '?'}@${row.include ?? '?'}:${row.sourceLine ?? '?'}`,
+          description: `${this.renderDescription(row)}\n\n_Recurrence after closed ticket ${existing.key}._`,
+          duedate,
+          labels: [...ctx.baseLabels, sigLabel, dumpLabel],
+          assignee
+        });
+        await this.deps.repo.updateJira(row.ID, { jiraStatus: 'created', jiraIssueKey: key, jiraError: null });
+        return;
       }
+
       const count = await this.deps.repo.countSignatureWithin(row.signature, ctx.sinceIso);
       const duedate = dueDateForCount(count, ctx.dueCfg);
       const assignee = matchAssignee(row, ctx.rules) ?? ctx.defaultAssignee;
@@ -126,7 +153,7 @@ export class JiraWorker {
         summary: `[${row.system}] ${row.runtimeError ?? 'ABAP dump'} in ${row.program ?? '?'}@${row.include ?? '?'}:${row.sourceLine ?? '?'}`,
         description: this.renderDescription(row),
         duedate,
-        labels: [...ctx.baseLabels, label],
+        labels: [...ctx.baseLabels, sigLabel, dumpLabel],
         assignee
       });
       console.log(`[jira-worker] created ID=${row.ID} key=${key}`);

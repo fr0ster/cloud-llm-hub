@@ -5,11 +5,10 @@ import { seedSettings } from './bootstrap';
 import { DumpSource } from './dump-source';
 import { Analyzer } from './analyzer';
 import { JiraClient, defaultJiraHttpFn } from './jira-client';
-import { Discoverer, type DumpRepository } from './discoverer';
+import { Discoverer, createLifecycleProbe } from './discoverer';
+import { CdsDumpRepository } from './dump-repository';
 import { AnalysisWorker } from './analysis-worker';
 import { JiraWorker } from './jira-worker';
-import { parseDump } from './dump-parser';
-import type { DumpListItem, ParsedDump } from './interfaces';
 import express from 'express';
 import { join } from 'node:path';
 
@@ -97,105 +96,6 @@ function toIso(input: unknown): string | null {
   log.info(`Fiori UI served from ${webappPath} at /monitor/webapp`);
 });
 
-class CdsDumpRepository implements DumpRepository {
-  constructor(private systemId: string) {}
-
-  parsePayload(system: string, dumpId: string, raw: string): ParsedDump {
-    return parseDump(system, dumpId, raw);
-  }
-  async listSystems(): Promise<string[]> {
-    return this.systemId ? [this.systemId] : [];
-  }
-  async maxOccurredAt(system: string): Promise<string | undefined> {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    const r = await SELECT.one`max(occurredAt) as m`.from(MonitoredDump).where({ system });
-    return r?.m;
-  }
-  async findByDumpId(system: string, dumpId: string) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    return SELECT.one.from(MonitoredDump).where({ system, dumpId });
-  }
-  async insertParsed(item: DumpListItem, parsed: ParsedDump, signature: string): Promise<string> {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    const ID = cds.utils.uuid();
-    await INSERT.into(MonitoredDump).entries({
-      ID,
-      system: item.system, dumpId: item.dumpId,
-      runtimeError: parsed.header.runtimeError,
-      exceptionClass: parsed.header.exceptionClass,
-      category: item.category,
-      host: parsed.header.host, instance: parsed.header.instance,
-      program: parsed.header.program, include: parsed.header.include,
-      mainProgram: parsed.header.mainProgram,
-      sourceLine: parsed.header.sourceLine,
-      event: parsed.header.event, transactionId: parsed.header.transactionId,
-      abapUser: parsed.header.abapUser, client: parsed.header.client,
-      occurredAt: toIso(parsed.header.occurredAt ?? item.occurredAt),
-      firstSeenAt: new Date().toISOString(),
-      shortText: parsed.header.shortText,
-      signature,
-      rawPayload: parsed.rawPayload,
-      analysisStatus: 'pending',
-      analysisAttempts: 0,
-      jiraStatus: 'pending',
-      jiraAttempts: 0,
-      skipJira: false,
-      callStack: parsed.callStack.map(f => ({ ...f, ID: cds.utils.uuid() })),
-      referencedObjects: parsed.referencedObjects.map(o => ({ ...o, ID: cds.utils.uuid() })),
-      variables: parsed.variables.map(v => ({ ...v, ID: cds.utils.uuid() })),
-      sourceExtract: parsed.sourceExtract ? { ...parsed.sourceExtract, ID: cds.utils.uuid() } : undefined
-    });
-    return ID;
-  }
-  async findPendingAnalysis(maxAttempts: number) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    // Pick pending/failed rows + any 'analyzing' row whose modifiedAt is older
-    // than ANALYSIS_STUCK_MS (default 10min) — that means the worker process
-    // died mid-call and the row would otherwise be stranded.
-    const stuckMs = Number.parseInt(process.env.ANALYSIS_STUCK_MS ?? '600000', 10);
-    const stuckCutoff = new Date(Date.now() - stuckMs).toISOString();
-    return SELECT.from(MonitoredDump).columns('ID', 'rawPayload', 'system', 'dumpId', 'analysisAttempts')
-      .where(
-        `analysisAttempts < ${maxAttempts} and (` +
-        `analysisStatus in ('pending','failed') ` +
-        `or (analysisStatus = 'analyzing' and modifiedAt < '${stuckCutoff}')` +
-        `)`
-      );
-  }
-  async updateAnalysis(id: string, patch: Record<string, unknown>) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    await UPDATE(MonitoredDump).set(patch).where({ ID: id });
-  }
-  async findPendingJira(maxAttempts: number) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    return SELECT.from(MonitoredDump)
-      .columns('ID','system','dumpId','signature','runtimeError','program','category','recommendations','jiraAttempts','shortText','include','sourceLine','occurredAt','abapUser')
-      .where(`analysisStatus = 'done' and jiraStatus in ('pending','failed') and skipJira = false and jiraAttempts < ${maxAttempts}`);
-  }
-  async updateJira(id: string, patch: Record<string, unknown>) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    await UPDATE(MonitoredDump).set(patch).where({ ID: id });
-  }
-  async findJiraState(id: string) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    return SELECT.one.from(MonitoredDump).columns('jiraStatus', 'jiraIssueKey', 'skipJira').where({ ID: id });
-  }
-  async countSignatureWithin(signature: string, sinceIso: string): Promise<number> {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    const r = await SELECT.one`count(*) as c`.from(MonitoredDump).where({ signature, firstSeenAt: { '>=': sinceIso } });
-    return Number(r?.c ?? 0);
-  }
-  async findRecentByJira(signature: string, sinceIso: string) {
-    const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    return SELECT.one.from(MonitoredDump).columns('ID', 'jiraIssueKey')
-      .where({ signature, firstSeenAt: { '>=': sinceIso }, jiraIssueKey: { '!=': null } })
-      .orderBy('firstSeenAt desc');
-  }
-  async listAssigneeRules() {
-    const { AssigneeRule } = cds.entities('example.abapdumpmonitor');
-    return SELECT.from(AssigneeRule).where({ active: true });
-  }
-}
 
 const timers = new Map<string, NodeJS.Timeout>();
 
@@ -286,7 +186,11 @@ export default cds.service.impl(async function (this: any) {
   const repo = new CdsDumpRepository(systemId);
 
   const logFn = (m: string, e?: unknown) => e ? log.error(m, e) : log.info(m);
-  const discoverer = new Discoverer({ settings, dumpSource, repo, log: logFn });
+  const discoverer = new Discoverer({
+    settings, dumpSource, repo,
+    lifecycleProbeFactory: () => createLifecycleProbe(jira),
+    log: logFn
+  });
   const analysisWorker = new AnalysisWorker({ settings, analyzer, repo, log: logFn });
   const jiraWorker = new JiraWorker({ settings, jira, repo, log: logFn });
 
@@ -326,13 +230,19 @@ export default cds.service.impl(async function (this: any) {
   this.on('pushToJira', 'MonitoredDump', async (req: any) => {
     const { ID } = req.params[0] as { ID: string };
     const row = await SELECT.one.from(MonitoredDump)
-      .columns('ID','system','dumpId','signature','runtimeError','program','category','recommendations','jiraAttempts','jiraStatus','analysisStatus','skipJira','shortText','include','sourceLine','occurredAt','abapUser')
+      .columns('ID','system','dumpId','signature','runtimeError','program','category','recommendations','jiraAttempts','jiraStatus','analysisStatus','skipJira','shortText','include','sourceLine','occurredAt','abapUser','jiraIssueKey')
       .where({ ID });
     if (!row) { req.error(404, `MonitoredDump ${ID} not found`); return; }
     if (row.analysisStatus !== 'done') { req.error(400, `pushToJira requires analysisStatus = 'done' (current: ${row.analysisStatus})`); return; }
     if (row.skipJira) { req.error(400, `MonitoredDump ${ID} has skipJira=true`); return; }
-    // No jiraStatus guard — single foreground action covers both first push and
-    // replay; jiraWorker.processOne handles "comment on existing issue" itself.
+    // Defence-in-depth: the UI gates the button via @Common.OperationAvailable,
+    // but a direct OData call would still reach the worker, which bails on
+    // non-pending/failed status and the action returned a misleading
+    // '502 Jira step failed: unknown error'. Reject up-front with a clear 400.
+    if (row.jiraStatus !== 'pending' && row.jiraStatus !== 'failed') {
+      req.error(400, `pushToJira requires jiraStatus IN ('pending','failed') (current: ${row.jiraStatus})`);
+      return;
+    }
 
     await jiraWorker.processOne(row, await jiraWorker.buildCtx());
 
@@ -374,6 +284,16 @@ export default cds.service.impl(async function (this: any) {
         console.log(`[after-READ] jira ID=${r.ID} key=${r.jiraIssueKey} base=${base} url=${r.jiraIssueUrl}`);
       } else if ('jiraIssueUrl' in r) {
         r.jiraIssueUrl = null;
+      }
+
+      // Recurrence group metadata — count rows in the same signature group and
+      // the ID of the oldest one. Done per row (small N per group). Skip if
+      // signature isn't loaded into this projection slice.
+      if ('signature' in r && r.signature) {
+        const cnt = await SELECT.one`count(*) as c`.from(MonitoredDump).where({ signature: r.signature });
+        r.recurrenceCount = cnt?.c ?? 1;
+        const first = await SELECT.one.from(MonitoredDump).columns('ID').where({ signature: r.signature }).orderBy('firstSeenAt asc');
+        r.firstOccurrenceID = first?.ID ?? r.ID;
       }
     }
   });

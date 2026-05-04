@@ -112,9 +112,23 @@ annotate MonitorService.MonitoredDump with @(
 
 // SideEffects — refetch the entire bound entity after each action so Object Page
 // reflects updated status / recommendations / Jira key automatically.
+// OperationAvailable — disable the bound action button on terminal-status rows
+// so clicking it never reaches the worker and returns 502 (it would bail there).
 annotate MonitorService.MonitoredDump actions {
-  retryAnalysis @(Common.SideEffects: { TargetEntities: ['_it'] });
-  pushToJira    @(Common.SideEffects: { TargetEntities: ['_it'] });
+  retryAnalysis @(
+    Common.SideEffects: { TargetEntities: ['_it'] },
+    Common.OperationAvailable: { $edmJson: { $Or: [
+      { $Eq: [{ $Path: 'in/analysisStatus' }, 'failed'   ] },
+      { $Eq: [{ $Path: 'in/analysisStatus' }, 'analyzing'] }
+    ] } }
+  );
+  pushToJira @(
+    Common.SideEffects: { TargetEntities: ['_it'] },
+    Common.OperationAvailable: { $edmJson: { $Or: [
+      { $Eq: [{ $Path: 'in/jiraStatus' }, 'pending'] },
+      { $Eq: [{ $Path: 'in/jiraStatus' }, 'failed' ] }
+    ] } }
+  );
 };
 
 annotate MonitorService.CallStackEntry with @(

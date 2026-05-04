@@ -1,4 +1,4 @@
-import { computeSignature, dueDateForCount, matchAssignee } from '../../srv/jira-policy';
+import { computeSignature, decideJiraInsertStatus, dueDateForCount, matchAssignee, signatureLabel } from '../../srv/jira-policy';
 
 describe('jira-policy', () => {
   describe('computeSignature', () => {
@@ -51,6 +51,82 @@ describe('jira-policy', () => {
         priority: 10, system: 'OTHER', programPattern: 'Z*', assigneeName: 'a@x', active: true
       } as any];
       expect(matchAssignee(dump, rules)).toBeUndefined();
+    });
+  });
+
+  describe('signatureLabel', () => {
+    test('format: dump-sig-<16 hex chars>', () => {
+      expect(signatureLabel('any')).toMatch(/^dump-sig-[0-9a-f]{16}$/);
+    });
+    test('deterministic for same input', () => {
+      expect(signatureLabel('E19.100|RE|ZP|ZI')).toBe(signatureLabel('E19.100|RE|ZP|ZI'));
+    });
+    test('different signatures yield different labels', () => {
+      expect(signatureLabel('a')).not.toBe(signatureLabel('b'));
+    });
+  });
+
+  describe('decideJiraInsertStatus', () => {
+    const openA  = { jiraIssueKey: 'X-1', statusCategoryKey: 'open' as const };
+    const doneA  = { jiraIssueKey: 'X-1', statusCategoryKey: 'done' as const };
+
+    test('canonical=null → pending+null', () => {
+      expect(decideJiraInsertStatus({ canonical: null, slotRowsForCanonicalKey: [] }))
+        .toEqual({ jiraStatus: 'pending', jiraIssueKey: null });
+    });
+
+    describe('open branch (canonical statusCategoryKey=open)', () => {
+      test('empty slot rows → pending+key (claim)', () => {
+        expect(decideJiraInsertStatus({ canonical: openA, slotRowsForCanonicalKey: [] }))
+          .toEqual({ jiraStatus: 'pending', jiraIssueKey: 'X-1' });
+      });
+      test('only created row in slot (canonical itself does not occupy slot in this rule) → pending+key', () => {
+        // canonical's own row has jiraStatus='created' which is NOT in the open-branch slot set.
+        expect(decideJiraInsertStatus({ canonical: openA, slotRowsForCanonicalKey: [{ jiraStatus: 'created' }] }))
+          .toEqual({ jiraStatus: 'pending', jiraIssueKey: 'X-1' });
+      });
+      test.each([
+        ['pending'], ['failed'], ['commented'], ['unheard']
+      ])('slot has %s → unheard+key', (s) => {
+        expect(decideJiraInsertStatus({ canonical: openA, slotRowsForCanonicalKey: [{ jiraStatus: s }] }))
+          .toEqual({ jiraStatus: 'unheard', jiraIssueKey: 'X-1' });
+      });
+      test('mixed slot states → unheard+key', () => {
+        expect(decideJiraInsertStatus({
+          canonical: openA,
+          slotRowsForCanonicalKey: [{ jiraStatus: 'created' }, { jiraStatus: 'pending' }, { jiraStatus: 'commented' }]
+        })).toEqual({ jiraStatus: 'unheard', jiraIssueKey: 'X-1' });
+      });
+    });
+
+    describe('closed branch (canonical statusCategoryKey=done)', () => {
+      test('empty slot rows → pending+key (claim next-cycle creator slot)', () => {
+        expect(decideJiraInsertStatus({ canonical: doneA, slotRowsForCanonicalKey: [] }))
+          .toEqual({ jiraStatus: 'pending', jiraIssueKey: 'X-1' });
+      });
+      test.each([
+        ['pending'], ['failed']
+      ])('slot has %s → unheard+key', (s) => {
+        expect(decideJiraInsertStatus({ canonical: doneA, slotRowsForCanonicalKey: [{ jiraStatus: s }] }))
+          .toEqual({ jiraStatus: 'unheard', jiraIssueKey: 'X-1' });
+      });
+      test.each([
+        ['commented'], ['unheard']
+      ])('closed branch ignores old %s rows from previous cycle → pending+key', (s) => {
+        // commented/unheard from the OLD open cycle do not occupy the closed-branch slot.
+        expect(decideJiraInsertStatus({ canonical: doneA, slotRowsForCanonicalKey: [{ jiraStatus: s }] }))
+          .toEqual({ jiraStatus: 'pending', jiraIssueKey: 'X-1' });
+      });
+      test('only created (canonical itself) → pending+key', () => {
+        expect(decideJiraInsertStatus({ canonical: doneA, slotRowsForCanonicalKey: [{ jiraStatus: 'created' }] }))
+          .toEqual({ jiraStatus: 'pending', jiraIssueKey: 'X-1' });
+      });
+      test('mixed: commented + pending → unheard (pending wins)', () => {
+        expect(decideJiraInsertStatus({
+          canonical: doneA,
+          slotRowsForCanonicalKey: [{ jiraStatus: 'commented' }, { jiraStatus: 'pending' }]
+        })).toEqual({ jiraStatus: 'unheard', jiraIssueKey: 'X-1' });
+      });
     });
   });
 });

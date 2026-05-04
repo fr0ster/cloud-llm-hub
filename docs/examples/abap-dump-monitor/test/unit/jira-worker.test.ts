@@ -46,7 +46,7 @@ const baseRow = { ID: '1', system: 'E19.100', dumpId: 'D-1', signature: 'sig', r
 describe('JiraWorker.tickOnce', () => {
   beforeEach(() => { jest.clearAllMocks(); });
 
-  test('happy path: creates a Jira ticket', async () => {
+  test('happy path (no existing ticket): creates with sigLabel + dumpLabel', async () => {
     const jira: IJiraClient = {
       searchByLabel: jest.fn().mockResolvedValue(undefined),
       getIssue: jest.fn(),
@@ -60,26 +60,12 @@ describe('JiraWorker.tickOnce', () => {
     const arg = (jira.create as jest.Mock).mock.calls[0][0];
     expect(arg.summary).toContain('RE');
     expect(arg.labels).toContain('E19.100-D-1');
+    expect(arg.labels).toEqual(expect.arrayContaining([expect.stringMatching(/^dump-sig-[0-9a-f]{16}$/)]));
   });
 
-  test('comments on existing open recurring issue', async () => {
+  test('open existing ticket → comment, no new ticket', async () => {
     const jira: IJiraClient = {
-      searchByLabel: jest.fn().mockResolvedValue(undefined),
-      getIssue: jest.fn().mockResolvedValue({ key: 'X-EXISTING', statusCategoryKey: 'indeterminate' }),
-      create: jest.fn(),
-      comment: jest.fn()
-    };
-    const repo = makeRepo([baseRow]);
-    (repo.findRecentByJira as jest.Mock).mockResolvedValue({ ID: 'old', jiraIssueKey: 'X-EXISTING' });
-    const w = new JiraWorker({ settings, jira, repo, log: () => {} });
-    await w.tickOnce();
-    expect(jira.comment).toHaveBeenCalledWith('X-EXISTING', expect.any(String));
-    expect(jira.create).not.toHaveBeenCalled();
-  });
-
-  test('skips when label search finds existing issue', async () => {
-    const jira: IJiraClient = {
-      searchByLabel: jest.fn().mockResolvedValueOnce({ key: 'X-DUP', statusCategoryKey: 'done' }),
+      searchByLabel: jest.fn().mockResolvedValue({ key: 'X-OPEN', statusCategoryKey: 'indeterminate' }),
       getIssue: jest.fn(),
       create: jest.fn(),
       comment: jest.fn()
@@ -87,8 +73,62 @@ describe('JiraWorker.tickOnce', () => {
     const repo = makeRepo([baseRow]);
     const w = new JiraWorker({ settings, jira, repo, log: () => {} });
     await w.tickOnce();
+    expect(jira.comment).toHaveBeenCalledWith('X-OPEN', expect.any(String));
     expect(jira.create).not.toHaveBeenCalled();
-    expect(repo.updateJira).toHaveBeenCalledWith('1', expect.objectContaining({ jiraStatus: 'skipped', jiraIssueKey: 'X-DUP' }));
+    expect(repo.updateJira).toHaveBeenCalledWith('1', expect.objectContaining({ jiraStatus: 'commented', jiraIssueKey: 'X-OPEN' }));
+  });
+
+  test('failed retry with inherited jiraIssueKey → still uses getIssue, no searchByLabel', async () => {
+    // findPendingJira returns failed rows; if such a row carries an inherited
+    // key, the retry path must use getIssue so the group ticket is found, not
+    // a stale label search that may miss tickets created before sigLabel existed.
+    const jira: IJiraClient = {
+      searchByLabel: jest.fn(),
+      getIssue: jest.fn().mockResolvedValue({ key: 'X-OPEN', statusCategoryKey: 'indeterminate' }),
+      create: jest.fn(),
+      comment: jest.fn()
+    };
+    const repo = makeRepo([{ ...baseRow, jiraIssueKey: 'X-OPEN', jiraStatus: 'failed', jiraAttempts: 1 }]);
+    (repo.findJiraState as jest.Mock).mockResolvedValue({ jiraStatus: 'failed', jiraIssueKey: 'X-OPEN', skipJira: false });
+    const w = new JiraWorker({ settings, jira, repo, log: () => {} });
+    await w.tickOnce();
+    expect(jira.searchByLabel).not.toHaveBeenCalled();
+    expect(jira.getIssue).toHaveBeenCalledWith('X-OPEN');
+    expect(jira.comment).toHaveBeenCalledWith('X-OPEN', expect.any(String));
+    expect(repo.updateJira).toHaveBeenCalledWith('1', expect.objectContaining({ jiraStatus: 'commented', jiraIssueKey: 'X-OPEN' }));
+  });
+
+  test('inherited jiraIssueKey from group → uses getIssue, skips searchByLabel', async () => {
+    const jira: IJiraClient = {
+      searchByLabel: jest.fn(),
+      getIssue: jest.fn().mockResolvedValue({ key: 'X-GROUP', statusCategoryKey: 'indeterminate' }),
+      create: jest.fn(),
+      comment: jest.fn()
+    };
+    const repo = makeRepo([{ ...baseRow, jiraIssueKey: 'X-GROUP' }]);
+    const w = new JiraWorker({ settings, jira, repo, log: () => {} });
+    await w.tickOnce();
+    expect(jira.searchByLabel).not.toHaveBeenCalled();
+    expect(jira.getIssue).toHaveBeenCalledWith('X-GROUP');
+    expect(jira.comment).toHaveBeenCalledWith('X-GROUP', expect.any(String));
+    expect(jira.create).not.toHaveBeenCalled();
+  });
+
+  test('closed existing ticket → create new with back-reference', async () => {
+    const jira: IJiraClient = {
+      searchByLabel: jest.fn().mockResolvedValue({ key: 'X-CLOSED', statusCategoryKey: 'done' }),
+      getIssue: jest.fn(),
+      create: jest.fn().mockResolvedValue('X-2'),
+      comment: jest.fn()
+    };
+    const repo = makeRepo([baseRow]);
+    const w = new JiraWorker({ settings, jira, repo, log: () => {} });
+    await w.tickOnce();
+    expect(jira.comment).not.toHaveBeenCalled();
+    expect(jira.create).toHaveBeenCalledTimes(1);
+    const arg = (jira.create as jest.Mock).mock.calls[0][0];
+    expect(arg.description).toContain('X-CLOSED');
+    expect(repo.updateJira).toHaveBeenCalledWith('1', expect.objectContaining({ jiraStatus: 'created', jiraIssueKey: 'X-2' }));
   });
 
   test('skips when JIRA_MODE is manual (default)', async () => {

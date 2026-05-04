@@ -89,7 +89,11 @@ the row, but `retryAnalysis` still works — each call is one more attempt.
 
 When `JIRA_MODE = manual` (the default), `jiraStatus = pending` rows do **not** auto-progress — the JiraWorker tick is a no-op. The operator must invoke the `pushToJira(ID)` bound action (button in the Fiori Elements UI) to drive a single row through the same `searchByLabel → create | comment | skipped` pipeline. Switch `JIRA_MODE` to `auto` to restore the original behaviour.
 
-## Recurrence / due-date logic
+## Recurrence / dedup
+
+Full design: [`DEDUPLICATION.md`](DEDUPLICATION.md). Short summary — dumps are grouped by `signature`; the discoverer at INSERT inherits the group's `jiraIssueKey` onto each new row; the JiraWorker comments on the group's open ticket exactly once (`jiraStatus='commented'`), every further recurrence becomes `'unheard'` and skips Jira to avoid noise.
+
+## Due-date logic
 
 For each new dump where analysis succeeded:
 

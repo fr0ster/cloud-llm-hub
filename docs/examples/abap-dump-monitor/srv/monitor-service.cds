@@ -9,7 +9,12 @@ service MonitorService @(path: 'admin', requires: 'Viewer') {
     // Server-side rendered markdown (recommendations) for sap.m.FormattedText.
     null as recommendationsHtml : LargeString,
     // URL to the Jira ticket — built from JIRA_URL + jiraIssueKey at READ time.
-    null as jiraIssueUrl : String(500)
+    null as jiraIssueUrl : String(500),
+    // Recurrence group metadata — populated in after-READ over rows sharing the
+    // same signature. recurrenceCount = total dumps in this group seen so far;
+    // firstOccurrenceID = ID of the oldest dump in the group (for navigation).
+    null as recurrenceCount    : Integer,
+    null as firstOccurrenceID  : UUID
   } actions {
     @(requires: 'Admin') action retryAnalysis() returns MonitoredDump;
     @(requires: 'Admin') action pushToJira()    returns MonitoredDump;
