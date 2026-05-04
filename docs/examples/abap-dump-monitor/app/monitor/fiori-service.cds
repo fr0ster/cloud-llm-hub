@@ -115,13 +115,13 @@ annotate MonitorService.MonitoredDump with @(
 // OperationAvailable — disable the bound action button on terminal-status rows
 // so clicking it never reaches the worker and returns 502 (it would bail there).
 annotate MonitorService.MonitoredDump actions {
-  retryAnalysis @(
-    Common.SideEffects: { TargetEntities: ['_it'] },
-    Common.OperationAvailable: { $edmJson: { $Or: [
-      { $Eq: [{ $Path: 'in/analysisStatus' }, 'failed'   ] },
-      { $Eq: [{ $Path: 'in/analysisStatus' }, 'analyzing'] }
-    ] } }
-  );
+  // No OperationAvailable on retryAnalysis: the Analysis button is the
+  // operator's manual-override path and must work on every status —
+  // 'pending' (skip the queue, run NOW), 'failed'/'analyzing' (recovery),
+  // 'done' (re-analyse e.g. after a prompt/model change). Server handler
+  // runs processOne synchronously. Concurrent manual/auto runs may overwrite
+  // each other; that is an accepted manual-override trade-off.
+  retryAnalysis @(Common.SideEffects: { TargetEntities: ['_it'] });
   pushToJira @(
     Common.SideEffects: { TargetEntities: ['_it'] },
     Common.OperationAvailable: { $edmJson: { $Or: [

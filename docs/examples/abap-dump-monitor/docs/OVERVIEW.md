@@ -78,14 +78,20 @@ rules:
 - `findPendingAnalysis` includes both `pending` and `failed`. `analyzing`
   rows older than `ANALYSIS_STUCK_MS` (default 10 min) are also re-picked,
   so a process crash mid-call cannot strand a row.
-- The bound action `retryAnalysis` accepts `failed` and `analyzing` and
-  drives the row through `AnalysisWorker.processOne` synchronously. The
-  worker writes `analyzing` first, then `done` or `failed` (incrementing
-  `analysisAttempts` only on failure). `retryAnalysis` returns 400 on
-  `pending` or `done` (nothing to retry).
+- The bound action `retryAnalysis` (the **Analysis** button on the
+  Object Page) is the operator's manual-override path. It accepts
+  **any** `analysisStatus` and drives the row through
+  `AnalysisWorker.processOne` synchronously, returning the refreshed
+  row when done: `pending` → skip the auto-loop queue, run NOW;
+  `failed`/`analyzing` → recovery; `done` → re-analyse (e.g. after a
+  prompt or model change). The worker writes `analyzing` first, then
+  `done` or `failed` (incrementing `analysisAttempts` only on failure).
+  Concurrent manual/auto runs may overwrite each other; this is acceptable
+  because the action is an operator-driven foreground override.
 
 After the per-row attempt cap is reached, the auto-loop stops re-picking
-the row, but `retryAnalysis` still works — each call is one more attempt.
+the row, but the **Analysis** button still works — each click is one
+more attempt.
 
 When `JIRA_MODE = manual` (the default), `jiraStatus = pending` rows do **not** auto-progress — the JiraWorker tick is a no-op. The operator must invoke the `pushToJira(ID)` bound action (button in the Fiori Elements UI) to drive a single row through the same `searchByLabel → create | comment | skipped` pipeline. Switch `JIRA_MODE` to `auto` to restore the original behaviour.
 

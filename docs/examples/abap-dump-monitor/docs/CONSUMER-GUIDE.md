@@ -30,7 +30,7 @@ curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Returns 400 if the row is not pushable (`analysisStatus != done`, `skipJira = true`, or `jiraStatus` already in `created/commented/skipped`).
+Returns 400 if the row is not pushable (`analysisStatus != done`, `skipJira = true`, or `jiraStatus NOT IN ('pending','failed')` — the Jira button is gated to those two statuses; see `docs/DEDUPLICATION.md` "Manual control" for why).
 
 ## Change polling interval (hot)
 
@@ -50,22 +50,34 @@ Within 5 seconds (cache TTL) the next tick uses the new value.
 curl -X POST "https://<app>/odata/v4/admin/pollNow" -H "Authorization: Bearer $TOKEN"
 ```
 
-## Retry analysis or push to Jira
+## Run analysis or push to Jira
 
-`retryAnalysis` re-runs the LLM analysis inline (synchronous, ~15-40s through
-the approuter) and returns the refreshed row. `pushToJira` creates / comments
-the Jira ticket. Both are admin-only and bound to a single `MonitoredDump`.
+The two bound actions on `MonitoredDump` have **deliberately asymmetric availability**. See `docs/DEDUPLICATION.md` "Manual control" for the full rationale.
+
+### `retryAnalysis` — Analysis button, manual-override on every status
+
+Runs the LLM analysis inline (synchronous, ~15-40 s through the approuter) and returns the refreshed row. **Always available** regardless of current `analysisStatus`:
+
+| Current status | What it does                                                           |
+|----------------|------------------------------------------------------------------------|
+| `pending`      | Skip the auto-loop queue and analyse this row NOW.                     |
+| `analyzing`    | Recovery if a previous worker call died mid-LLM-request.               |
+| `failed`       | Retry — counts one more attempt against `ANALYSIS_MAX_ATTEMPTS`.       |
+| `done`         | Re-analyse — useful after a prompt or model change.                    |
 
 ```bash
 curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService.retryAnalysis" \
   -H "Authorization: Bearer $TOKEN"
+```
 
+### `pushToJira` — Jira button, gated to `pending|failed`
+
+Drives a single row through the dedup pipeline (see `DEDUPLICATION.md`). Returns 400 on terminal-status rows because clicking on `created`/`commented`/`unheard`/`skipped` would either bail or duplicate a Jira write — the action is gated by design (UI annotation + server precondition).
+
+```bash
 curl -X POST "https://<app>/odata/v4/admin/MonitoredDump(ID=<ID>)/MonitorService.pushToJira" \
   -H "Authorization: Bearer $TOKEN"
 ```
-
-`retryAnalysis` is also valid on rows stuck in `analysisStatus = analyzing`
-(crash recovery — see `docs/OVERVIEW.md` "stuck rows").
 
 ## Add a routing rule (assignee matrix)
 

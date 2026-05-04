@@ -127,7 +127,10 @@ jiraStatus transitions driven by JiraWorker / pushToJira action
   failed   ──► created | commented   (next worker tick / button click)
 ```
 
-`'unheard'` is terminal. No further Jira write.
+`'unheard'` is terminal in the normal JiraWorker / discoverer flow. The only
+exception is manual re-analysis reconciliation below: if recommendations change,
+the action may revert an `unheard` row to `pending` so the updated analysis can
+be pushed as a follow-up comment.
 
 ## Worker resolution at processOne
 
@@ -148,18 +151,62 @@ Created tickets always carry both labels:
 
 ## Manual control
 
-`pushToJira` admin action runs the same dedup logic on a single row. The action handler MUST select the row with `jiraIssueKey` and `signature` columns populated, so the worker's group-inheritance path (`row.jiraIssueKey ? getIssue : searchByLabel`) takes the cheap branch when a group ticket is known. Otherwise manual mode silently degrades to label-only search and risks duplicating tickets that were created before `sigLabel` existed.
+The Object Page exposes two bound actions on each `MonitoredDump` row. They have **deliberately asymmetric availability**, because they have different costs and side-effects:
 
-### UI gating
+### Analysis button (`retryAnalysis`) — manual-override, **always available**
 
-The Object Page **Jira** button is exposed only on rows where the action can do something useful. UI-side gating via `@Common.OperationAvailable`:
+The Analysis button is the operator's "do it NOW" path. It runs `AnalysisWorker.processOne` synchronously and returns the refreshed row when done (~15-40 s through the approuter). It is enabled on **every** `analysisStatus`:
+
+| Current status | What the button does                                                              |
+|----------------|-----------------------------------------------------------------------------------|
+| `pending`      | Skip the auto-loop queue and analyse this row immediately.                        |
+| `analyzing`    | Recovery path if a previous worker call died mid-LLM-request.                     |
+| `failed`       | Retry — counts as one more attempt against `ANALYSIS_MAX_ATTEMPTS`.               |
+| `done`         | Re-analyse — useful after upgrading the LLM model or editing the analyzer prompt. |
+
+Concurrent manual/auto analyses may overwrite each other; this is acceptable because the button is an operator-driven foreground override. **No `@Common.OperationAvailable` annotation** — the button is always clickable; the server handler runs `processOne` regardless of current status.
+
+#### Jira-side reconciliation after re-analysis
+
+If the row already pushed to Jira (`jiraIssueKey` set) AND the new analysis produces different `recommendations` than what's recorded on the row, the Jira ticket/comment now contains outdated content while our DB shows fresh content. The action handler reconciles automatically: it reverts `jiraStatus` to `'pending'` (keeping `jiraIssueKey`) so the Jira button is re-enabled. The operator's next Jira click runs the worker's normal dedup path — `searchByLabel(sigLabel)` finds the existing ticket and the open-branch posts the updated recommendations as a **comment on the same ticket** (no new ticket, no duplicate label).
+
+| Pre-re-analysis `jiraStatus`        | After re-analysis with changed recommendations |
+|-------------------------------------|------------------------------------------------|
+| `pending` / `failed`                | unchanged — already pushable                   |
+| `skipped`                           | unchanged — deliberate bypass                  |
+| **`created`**                       | **unchanged** — see "Why creator is excluded"  |
+| `commented` / `unheard`             | reverted to `pending` (key preserved)          |
+| (any) — recommendations identical   | unchanged — no Jira churn for no-op LLM re-run |
+
+**Operator workflow depends on `JIRA_MODE`:**
+
+- **`JIRA_MODE = manual` (default)** — re-analyse → review the new recommendations in the Object Page → click Jira when satisfied. The reverted `commented`/`unheard` rows are pushable; the worker posts the new content as a comment on the same ticket on click. The auto-loop is dormant in this mode, so there is no surprise auto-sync.
+- **`JIRA_MODE = auto`** — re-analyse → the next JiraWorker tick (≤ `JIRA_TICK_MS`) picks up the reverted rows automatically and posts the comment without an explicit click. Consistent with auto-mode's "no manual gates" philosophy. If you need a review-before-push step, switch to `manual`.
+
+#### Why `created` is excluded from the revert
+
+The canonical-key INSERT algorithm anchors the group's current cycle to the row with `jiraStatus='created' AND jiraIssueKey IS NOT NULL`. If we reverted the creator to `pending`, the canonical query would temporarily return None until the worker promotes the row again — and the worker's comment branch transitions it to `commented`, not back to `created`. During that window, new INSERTs in the group fall into the `canonical = None` first-cycle path, miss the slot rule and may post extra comments via `searchByLabel(sigLabel)` fallback. We avoid this by leaving creators alone.
+
+If the operator only has the creator row in a group (no siblings yet) and the new recommendations matter for Jira, two manual paths — explicitly chosen over a programmatic auto-sync to keep the algorithm and schema simple:
+
+- Wait for the next recurrence — it will land as `commented`/`unheard` and the auto-revert + Jira click (or auto-mode tick) pushes the new content.
+- Or close the existing ticket manually — the next recurrence enters the closed-cycle branch and creates a fresh ticket with the new recommendations and a back-reference.
+
+This trade-off is deliberate: the alternative is a separate "needs Jira sync" status (or a `syncJira` action) that bypasses the canonical query but doubles the state surface. We chose the simpler model and accept that lone-creator groups do not auto-sync.
+
+### Jira button (`pushToJira`) — gated to `pending|failed`
+
+`pushToJira` runs the same dedup logic as the auto-loop on a single row (canonical-key resolution → searchByLabel → comment / create / closed-cycle-create). It is gated:
 
 ```
-pushToJira    → enabled when jiraStatus IN ('pending', 'failed')
-retryAnalysis → enabled when analysisStatus IN ('failed', 'analyzing')
+pushToJira @Common.OperationAvailable: jiraStatus IN ('pending', 'failed')
 ```
 
-Server-side handlers keep their own preconditions as defence-in-depth; the annotation only affects the rendered button state. Clicking `pushToJira` on a `'unheard'` row would otherwise route through the worker, which bails on non-pending status, and the action returns `502 Jira step failed: unknown error` — the annotation prevents that misleading outcome from being reachable in the first place.
+The server handler enforces the same precondition with an explicit 400 (`pushToJira requires jiraStatus IN ('pending','failed')`) as defence-in-depth — the UI annotation alone is not load-bearing.
+
+The Jira button is gated because every successful click writes to Jira (create, comment, or skipped marker). Clicking on terminal-status rows (`created`, `commented`, `unheard`, `skipped`) is meaningless — those rows are by design not a Jira-write target — so the action would either bail with an error or, worse, double-comment. Disabling the button up-front keeps the UI honest.
+
+The action handler MUST select the row with `jiraIssueKey` and `signature` columns populated, so the worker's group-inheritance path (`row.jiraIssueKey ? getIssue : searchByLabel`) takes the cheap branch when a group ticket is known. Otherwise manual mode silently degrades to label-only search and risks duplicating tickets that were created before `sigLabel` existed.
 
 `Setting('JIRA_MODE')` controls auto-mode:
 

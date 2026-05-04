@@ -304,18 +304,21 @@ export default cds.service.impl(async function (this: any) {
   // Object Page shows the new analysisStatus / recommendations / Html.
   this.on('retryAnalysis', 'MonitoredDump', async (req: any) => {
     const { ID } = req.params[0] as { ID: string };
+    // SELECT pre-analysis snapshot — we need recommendations + Jira state to
+    // decide whether the Jira side has gone stale post-re-analysis.
     const row = await SELECT.one.from(MonitoredDump)
-      .columns('ID','system','dumpId','rawPayload','analysisStatus','analysisAttempts')
+      .columns('ID','system','dumpId','rawPayload','analysisStatus','analysisAttempts','recommendations','jiraStatus','jiraIssueKey')
       .where({ ID });
     if (!row) { req.error(404, `MonitoredDump ${ID} not found`); return; }
-    // Allow recovery from 'analyzing' (process crashed mid-call) — processOne
-    // will overwrite the status as it progresses. Reject only 'done' / 'pending'
-    // (nothing to retry there).
-    if (row.analysisStatus === 'done' || row.analysisStatus === 'pending') {
-      req.error(400, `Cannot retry — analysisStatus=${row.analysisStatus}`);
-      return;
-    }
-
+    // The Analysis button is the operator's manual-override path: it must run
+    // synchronously regardless of current analysisStatus. 'pending' means the
+    // worker has not picked it up yet — the user wants analysis NOW, not when
+    // the queue gets there. 'failed'/'analyzing' is recovery. 'done' is
+    // re-analysis (e.g. after a prompt or model change). processOne writes
+    // 'analyzing' → 'done'/'failed' as it progresses. Concurrent manual/auto
+    // runs may overwrite each other; that is an accepted manual-override
+    // trade-off.
+    const recommendationsBefore = row.recommendations ?? null;
     await analysisWorker.processOne(row);
 
     const after = await SELECT.one.from(MonitoredDump).where({ ID });
@@ -324,6 +327,39 @@ export default cds.service.impl(async function (this: any) {
       req.error(502, `Analysis failed: ${after.analysisError ?? 'unknown'}`);
       return;
     }
+
+    // Jira-side staleness reconciliation after a successful re-analysis whose
+    // recommendations changed. Revert jiraStatus to 'pending' (keeping
+    // jiraIssueKey) on sibling rows so the Jira button is re-enabled and the
+    // next click posts a comment on the same ticket with the updated content
+    // via the worker's normal dedup path (searchByLabel → open → comment).
+    //
+    // Statuses included: 'commented', 'unheard'.
+    // Statuses excluded:
+    //   • 'created' — this is the group's canonical ticket-creation row.
+    //     Reverting it would temporarily break the canonical-key query
+    //     (`jiraStatus='created' AND jiraIssueKey IS NOT NULL`) until the
+    //     worker promotes it again, leaving a window where new INSERTs see
+    //     canonical=None and miss the slot rule. If the creator row alone
+    //     was re-analysed, operators can either wait for a sibling
+    //     recurrence to push the update, or manually close the ticket so
+    //     the next recurrence creates a new one with current content.
+    //   • 'pending' / 'failed' — already pushable
+    //   • 'skipped'            — deliberate bypass
+    const reconcileStatuses = new Set(['commented', 'unheard']);
+    if (
+      after.jiraIssueKey &&
+      reconcileStatuses.has(after.jiraStatus) &&
+      (after.recommendations ?? null) !== recommendationsBefore
+    ) {
+      await UPDATE(MonitoredDump)
+        .set({ jiraStatus: 'pending', jiraAttempts: 0, jiraError: null })
+        .where({ ID });
+      after.jiraStatus = 'pending';
+      after.jiraAttempts = 0;
+      after.jiraError = null;
+    }
+
     return await enrichRow(after);
   });
 
