@@ -20,6 +20,7 @@
     "express": "^4"
   },
   "devDependencies": {
+    "@cap-js/cds-test": "^1.0.1",
     "@sap/cds-dk": "^9",
     "@types/jest": "^29",
     "@types/node": "^22",

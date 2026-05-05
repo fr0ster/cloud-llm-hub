@@ -43,14 +43,9 @@ export class CdsDumpRepository implements DumpRepository {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
     const ID = cds.utils.uuid();
     // Canonical-key INSERT algorithm — see docs/DEDUPLICATION.md.
-    //
-    // ⚠ Coverage gap: the two SELECTs below (canonical + slot rows) and the
-    // INSERT they feed are NOT under integration test in this repo. The
-    // algorithm itself is owned by `decideJiraInsertStatus` (pure function,
-    // 30 unit cases in test/unit/jira-policy.test.ts). A typo in either
-    // SELECT predicate — e.g. `'create'` instead of `'created'`, or losing
-    // the `jiraIssueKey` filter — would pass current tests. Tracked in
-    // https://github.com/fr0ster/cloud-llm-hub/issues/50; touch with care.
+    // Pure decision is in `decideJiraInsertStatus` (test/unit/jira-policy.test.ts).
+    // The two SELECTs below + the INSERT they feed are covered end-to-end by
+    // test/unit/insert-integration.test.ts (cds.test() with in-memory sqlite).
     //
     // canonical = latest row in group with jiraStatus='created' AND jiraIssueKey IS NOT NULL
     const canonicalRow = await SELECT.one.from(MonitoredDump)

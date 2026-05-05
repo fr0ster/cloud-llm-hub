@@ -78,23 +78,28 @@ function toIso(input: unknown): string | null {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+// Server-only side effects (express static, schema bootstrap, worker timers,
+// shutdown hook) are guarded by NODE_ENV: Jest sets it to 'test' so cds.test()
+// can boot the OData layer without leaking setTimeout loops or hitting a
+// disk-resident sqlite path. Production / cds-serve sees the default ('' or
+// 'production') and the guard is a no-op.
+const IS_TEST = process.env.NODE_ENV === 'test';
+
 // Serve the Fiori Elements app (copied to gen/srv/app/monitor/webapp at build time
 // by the cpSync step in mta.yaml). At runtime __dirname is gen/srv/srv, so the
 // webapp folder is one level up under app/monitor/webapp.
-(cds as unknown as { on(e: 'bootstrap', cb: (app: express.Express) => void): void }).on('bootstrap', (app: express.Express) => {
-  const webappPath = join(__dirname, '..', 'app', 'monitor', 'webapp');
-  // Serve the Fiori Elements app (copied to gen/srv/app/monitor/webapp at build time
-  // by the cpSync step in mta.yaml). At runtime __dirname is gen/srv/srv, so the
-  // webapp folder is one level up under app/monitor/webapp.
-  //
-  // NOTE: Static assets served here bypass CAP's OData-level auth. The OData
-  // endpoints themselves require 'Viewer' role (see monitor-service.cds), which
-  // is the primary protection. For production deployments where static asset
-  // protection is required, mount the app under the OData path or use a separate
-  // auth gate (e.g., reverse proxy, app router).
-  app.use('/monitor/webapp', express.static(webappPath));
-  log.info(`Fiori UI served from ${webappPath} at /monitor/webapp`);
-});
+if (!IS_TEST) {
+  (cds as unknown as { on(e: 'bootstrap', cb: (app: express.Express) => void): void }).on('bootstrap', (app: express.Express) => {
+    const webappPath = join(__dirname, '..', 'app', 'monitor', 'webapp');
+    // NOTE: Static assets served here bypass CAP's OData-level auth. The OData
+    // endpoints themselves require 'Viewer' role (see monitor-service.cds), which
+    // is the primary protection. For production deployments where static asset
+    // protection is required, mount the app under the OData path or use a separate
+    // auth gate (e.g., reverse proxy, app router).
+    app.use('/monitor/webapp', express.static(webappPath));
+    log.info(`Fiori UI served from ${webappPath} at /monitor/webapp`);
+  });
+}
 
 
 const timers = new Map<string, NodeJS.Timeout>();
@@ -373,7 +378,9 @@ export default cds.service.impl(async function (this: any) {
   });
 
   console.log('[monitor-service] impl: sapDest=', sapDest, 'systemId=', systemId, 'hubDest=', hubDest, 'jiraDest=', jiraDest);
-  if (sapDest) {
+  if (IS_TEST) {
+    console.log('[monitor-service] impl: NODE_ENV=test — workers not started');
+  } else if (sapDest) {
     console.log('[monitor-service] impl: starting workers');
     startLoop('discoverer',     () => discoverer.tickOnce(),     'POLL_INTERVAL_MS', settings, 300_000, 60_000);
     startLoop('analysis-worker', () => analysisWorker.tickOnce(), 'ANALYSIS_TICK_MS', settings, 10_000, 1_000);
@@ -384,7 +391,9 @@ export default cds.service.impl(async function (this: any) {
   }
 });
 
-cds.on('shutdown', () => {
-  for (const t of timers.values()) clearTimeout(t);
-  timers.clear();
-});
+if (!IS_TEST) {
+  cds.on('shutdown', () => {
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
+  });
+}
