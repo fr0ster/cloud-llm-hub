@@ -63,11 +63,20 @@ fi
 shopt -u nocasematch
 HOST="${SUBDOMAIN}-abap-dump-monitor${SUFFIX}"
 
+# Discover the user's .mtaext ID — the host override must extend IT
+# (chain: mta.yaml ← .mtaext ← .host.*.mtaext), not the base mta.yaml.
+# MTA Deploy Service only applies one extension descriptor per parent ID;
+# making both extend 'abap-dump-monitor' silently drops one of them with
+# 'Provided but unused extension descriptors because extend another MTA
+# ID or extends order is not correct'.
+USER_EXT_ID="$(awk -F'[[:space:]]*:[[:space:]]*' '/^ID:/{print $2; exit}' .mtaext)"
+[[ -z "$USER_EXT_ID" ]] && { echo "Cannot read 'ID:' from .mtaext" >&2; exit 1; }
+
 HOST_EXT=".host.${SUBDOMAIN}${SUFFIX}.mtaext"
 cat > "$HOST_EXT" <<EOF
 _schema-version: '3.3.0'
 ID: abap-dump-monitor.host.${SUBDOMAIN}${SUFFIX}
-extends: abap-dump-monitor
+extends: ${USER_EXT_ID}
 parameters:
   APPROUTER_HOST: "${HOST}"
 EOF
