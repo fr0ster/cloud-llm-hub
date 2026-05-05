@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.5.3] - 2026-05-05
+
+Patch on top of v6.5.2. Local-proxy tooling: `npm run proxy` now self-heals after switching CF subaccounts and ships its own dependency.
+
+### Fixed
+- **`scripts/start-proxy.sh` no longer launches with stale credentials** (PRs #63 + #64 follow-up). Pre-flight now (1) verifies CF auth is alive — `cf target` happily prints cached values even when the OAuth token has expired, so the script also probes with `cf orgs`; (2) resolves the app's live route via `cf app` and fails fast if the app isn't deployed in the targeted space (wrong subaccount); (3) refreshes the proxy's service-key from `cf service-key cloud-llm-hub-auth mcp` on every launch and overwrites `~/.config/mcp-abap-adt/service-keys/<btp>.json`. The proxy was caching keys forever — switching CF target between subaccounts produced a JWT whose audience didn't match the new app and surfaced as `500 + WrongAudienceError` on every request. The script now also wipes the matching session file under `~/.config/mcp-abap-adt/sessions/` when the cached key's `identityzone` doesn't match the freshly-fetched one.
+- **`Authorization Request Error` from xsuaa when CONSUMER overridden to a `*-consumer` instance.** `cloud-llm-hub-{analyst,developer}-consumer` xsuaa apps are configured with `grant-types: ["client_credentials"]` only — they cannot drive the browser OAuth flow that `mcp-abap-adt-proxy` uses. Default `CONSUMER` is now `cloud-llm-hub-auth` (the server's own xsuaa with `authorization_code` grant + `redirect-uris: ["http://localhost:*/**"]`); the help text in the script and the new docs section explicitly call out that the `*-consumer` instances are not eligible.
+
+### Added
+- **`@mcp-abap-adt/proxy` is now a devDependency.** `npm install` puts the binary on PATH for `npm run` scripts, so a clean clone runs `npm install && npm run proxy` without any global install. The `have mcp-abap-adt-proxy` pre-flight check now points to `npm install` rather than a global setup step.
+- **`docs/usage/MCP_CONNECTION.md` — Local Proxy section.** Quick-start, env-var override matrix, what the script actually does on each launch (CF auth probe → app resolution → service-key refresh), and a troubleshooting table for the four most-seen errors (CF token expired, wrong subaccount, `WrongAudienceError`, `Authorization Request Error`).
+
 ## [6.5.2] - 2026-05-05
 
 Patch on top of v6.5.1. All work in `docs/examples/abap-dump-monitor/`. Closes #58; opens #60 for follow-up.

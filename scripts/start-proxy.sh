@@ -31,7 +31,11 @@ PORT="${PORT:-3001}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 have cf                  || { echo "ERROR: cf CLI not installed" >&2; exit 1; }
-have mcp-abap-adt-proxy  || { echo "ERROR: mcp-abap-adt-proxy not installed" >&2; exit 1; }
+# mcp-abap-adt-proxy ships as @mcp-abap-adt/proxy in devDependencies; npm run
+# puts node_modules/.bin on PATH so 'have' resolves the local install. The
+# global brew/npm install still works as a fallback when run outside npm-script
+# context.
+have mcp-abap-adt-proxy  || { echo "ERROR: mcp-abap-adt-proxy not on PATH — run 'npm install' first" >&2; exit 1; }
 
 # 1. Verify CF authentication is alive. `cf target` succeeds locally even when
 #    the OAuth token has expired — only an actual API call reveals expiry. Use
