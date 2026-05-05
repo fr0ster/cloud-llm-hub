@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.5.1] - 2026-05-05
+
+Patch on top of v6.5.0. All work in `docs/examples/abap-dump-monitor/`.
+
+### Fixed
+- **Jira `searchByLabel` 502 Bad Gateway through corporate proxy.** The on-prem Jira's reverse proxy intermittently rejected `GET /rest/api/2/search?jql=...` with `500 HTTP 406 Not Acceptable` (Squid-style HTML error). Root cause was a stale destination Personal Access Token surfacing through the proxy as 406; secondary issue was URL-pattern filtering on long encoded JQL. `srv/jira-client.ts` now POSTs the JQL as a JSON body and falls back from `/rest/api/2/search` to `/rest/api/2/search/jql` (newer Atlassian path) on any HTTP error. Diagnostic logging added: any Jira HTTP failure dumps method, URL, status, content-type, header names (Authorization redacted) and a 500-char body preview, so future credential rotations / endpoint changes are visible in `cf logs` immediately.
+- **Server-side guard on `pushToJira`.** Direct OData calls on terminal-status rows (`created`/`commented`/`unheard`/`skipped`) used to reach the worker which bailed silently and returned an opaque `502 Jira step failed: unknown error`. The action handler now rejects up-front with `400 pushToJira requires jiraStatus IN ('pending','failed')`, matching the UI gating already in place via `@Common.OperationAvailable`.
+
+### Changed
+- **Jira destination is no longer managed by `mta.yaml`.** Customers create `JIRA` once in the BTP cockpit (subaccount-level) with their Personal Access Token; redeploys never touch it, so credential rotation stays manual / under operator control. `JIRA_USER` / `JIRA_TOKEN` parameters removed from `mta.yaml` and `.mtaext.example`; only `JIRA_URL` remains for clickable issue links. `docs/DEPLOYMENT.md` section 2 rewritten with the manual create-destination steps.
+- **`bin/deploy.sh` simplified to single-instance mode.** The earlier dual-MTA scaffolding (mta-staging.yaml + xs-security-staging.json + .mtaext.staging) is dropped — same-space prod+staging coexistence requires too many separate concerns (renamed module/resource names, role-collection split, temp-swap of mta.yaml around the build) for an example. Customers who need it fork the example into a new repository. The host-extension chain fix (PR #55) is preserved. DEPLOYMENT.md collapsed to "automatic host" / "custom host" with a fork-the-example note.
+
 ## [6.5.0] - 2026-05-05
 
 All work in `docs/examples/abap-dump-monitor/` — the parent `cloud-llm-hub` runtime is unchanged. Bumped to a minor because the example now ships a customer-ready Fiori Elements monitor on top of the original scheduled-pull skeleton.
