@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.5.4] - 2026-05-06
+
+Patch on top of v6.5.3. Closes #50.
+
+### Added
+- **`test/unit/insert-integration.test.ts`** in `docs/examples/abap-dump-monitor/` (PR #66). End-to-end coverage of `CdsDumpRepository.insertParsed` via `cds.test()` against an in-memory sqlite — the two SELECTs (canonical row + slot rows) and the INSERT they feed are now exercised by real CDS queries. Eight cases from the PR #49 spec: canonical=null, canonical=open + 4 slot states (created / commented / unheard / failed), canonical=closed + 2 slot states, and the per-tick lifecycle cache. Catches a class of bug the existing 30 pure-function tests in `jira-policy.test.ts` cannot — typos in SQL predicates (e.g. `'create'` instead of `'created'`, or losing the `jiraIssueKey` filter on the slot query).
+- **`@cap-js/cds-test`** as devDependency in the example's `package.json`.
+
+### Changed
+- **`srv/monitor-service.ts` bootstrap is gated on `process.env.NODE_ENV`** (PR #66). Jest sets `NODE_ENV=test` so `cds.test()` boots the OData layer + sqlite without the side effects that previously hung the test process: the `cds.on('bootstrap')` express-static registration, the three `startLoop` worker timers, and the `cds.on('shutdown')` cleanup hook are skipped in tests. Production / `cds-serve` sees the default and the guards are no-ops. The coverage-gap warning comment in `dump-repository.ts` is removed since the SQL paths are now covered.
+
 ## [6.5.3] - 2026-05-05
 
 Patch on top of v6.5.2. Local-proxy tooling: `npm run proxy` now self-heals after switching CF subaccounts and ships its own dependency.
