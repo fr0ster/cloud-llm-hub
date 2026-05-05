@@ -80,7 +80,11 @@ export class CdsDumpRepository implements DumpRepository {
       system: item.system, dumpId: item.dumpId,
       runtimeError: parsed.header.runtimeError,
       exceptionClass: parsed.header.exceptionClass,
-      category: item.category,
+      // Prefer the MCP feed value (RuntimeListFeeds → d.category — the SAP
+      // Application Component code, e.g. 'BC-ABA-LA'). Fall back to the
+      // parsed ST22 header value when MCP omits the field; the dump payload
+      // itself usually carries 'Application Component' in the top header.
+      category: item.category ?? parsed.header.category,
       host: parsed.header.host, instance: parsed.header.instance,
       program: parsed.header.program, include: parsed.header.include,
       mainProgram: parsed.header.mainProgram,

@@ -18,6 +18,10 @@ describe('parseDump', () => {
     expect(parsed.header.sourceLine).toBe(42);
   });
 
+  test('extracts Application Component into header.category (preferred over Category)', () => {
+    expect(parsed.header.category).toBe('BC-ABA-LA');
+  });
+
   test('extracts user and client', () => {
     expect(parsed.header.abapUser).toBe('DEVELOPER1');
     expect(parsed.header.client).toBe('100');

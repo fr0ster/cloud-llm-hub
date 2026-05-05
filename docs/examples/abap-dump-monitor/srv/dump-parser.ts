@@ -7,6 +7,12 @@ import type { ParsedDump, DumpHeader, CallFrame, ReferencedObject, VariableSnaps
 //   • |Active Calls/Events| — call stack (paired rows: details + readable name)
 //   • |Source Code Extract| — line + code, with crash line marked '>>>>>'
 //   • |Selected Variables| — per-frame variable name/value groups
+// header.category mirrors the cloud-llm-hub MCP feed field 'd.category',
+// which is the SAP Application Component code (e.g. 'BC-ABA-LA'). The
+// dump payload's 'Application Component' top-header line is the same
+// value — used as a fallback when the MCP omits the field. The high-
+// level 'Category' line ('ABAP Programming Error' etc.) is a different
+// concept and intentionally NOT mapped here.
 const TOP_HEADER_KEYS: Record<string, keyof DumpHeader> = {
   'Runtime Errors':         'runtimeError',
   'Except.':                'exceptionClass',

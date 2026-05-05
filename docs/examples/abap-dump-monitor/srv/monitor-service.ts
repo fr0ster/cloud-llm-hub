@@ -199,6 +199,15 @@ export default cds.service.impl(async function (this: any) {
     return 'ok';
   });
 
+  // Fixed-value VH for status enums — annotated in fiori-service.cds with
+  // @Common.ValueList + @Common.ValueListWithFixedValues, the rows are not
+  // discovered from existing data so the picker shows every canonical
+  // choice even on a fresh DB or when a status hasn't materialised yet.
+  const ANALYSIS_STATUS_CODES = ['pending', 'analyzing', 'done', 'failed'];
+  const JIRA_STATUS_CODES     = ['pending', 'created', 'commented', 'skipped', 'failed', 'unheard'];
+  this.on('READ', 'AnalysisStatusVH', () => ANALYSIS_STATUS_CODES.map(code => ({ code })));
+  this.on('READ', 'JiraStatusVH',     () => JIRA_STATUS_CODES.map(code => ({ code })));
+
   // Resolve Jira base URL from the destination on demand. Env JIRA_URL is the
   // legacy fallback for local/dev runs where destinations service isn't bound.
   const { getDestination } = await import('@sap-cloud-sdk/connectivity');

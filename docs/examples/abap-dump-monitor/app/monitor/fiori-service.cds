@@ -18,6 +18,7 @@ annotate MonitorService.MonitoredDump with @(
       { Value: system, Label: 'System' },
       { Value: dumpId, Label: 'Dump' },
       { Value: runtimeError, Label: 'Runtime Error' },
+      { Value: category, Label: 'Application Component' },
       { Value: program, Label: 'Program' },
       { Value: include, Label: 'Include' },
       { Value: sourceLine, Label: 'Line' },
@@ -102,12 +103,38 @@ annotate MonitorService.MonitoredDump with @(
       { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: runtimeError, ValueListProperty: 'runtimeError' }
     ]
   };
-  category @Common.ValueList: {
-    CollectionPath: 'CategoryVH',
-    Parameters: [
-      { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: category, ValueListProperty: 'category' }
-    ]
-  };
+  category @(
+    Common.Label: 'Application Component',
+    Common.ValueList: {
+      CollectionPath: 'CategoryVH',
+      Parameters: [
+        { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: category, ValueListProperty: 'category' }
+      ]
+    }
+  );
+  // Status enums — fixed value lists. Rows come from a CAP READ handler
+  // with canonical enum literals (see srv/monitor-service.ts), not from
+  // distinct-from-table, so a fresh DB still shows every choice.
+  analysisStatus @(
+    Common.Label: 'Analysis',
+    Common.ValueList: {
+      CollectionPath: 'AnalysisStatusVH',
+      Parameters: [
+        { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: analysisStatus, ValueListProperty: 'code' }
+      ]
+    },
+    Common.ValueListWithFixedValues: true
+  );
+  jiraStatus @(
+    Common.Label: 'Jira',
+    Common.ValueList: {
+      CollectionPath: 'JiraStatusVH',
+      Parameters: [
+        { $Type: 'Common.ValueListParameterInOut', LocalDataProperty: jiraStatus, ValueListProperty: 'code' }
+      ]
+    },
+    Common.ValueListWithFixedValues: true
+  );
 };
 
 // SideEffects — refetch the entire bound entity after each action so Object Page

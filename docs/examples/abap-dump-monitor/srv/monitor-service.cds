@@ -32,4 +32,11 @@ service MonitorService @(path: 'admin', requires: 'Viewer') {
   @readonly entity SystemVH        as select distinct key system       from core.MonitoredDump where system       is not null;
   @readonly entity RuntimeErrorVH  as select distinct key runtimeError from core.MonitoredDump where runtimeError is not null;
   @readonly entity CategoryVH      as select distinct key category     from core.MonitoredDump where category     is not null;
+
+  // Fixed-value VH for status enums. These are NOT discovered from existing
+  // rows (a fresh DB or a status that hasn't materialised yet would hide
+  // entries), so the rows are returned by a CAP READ handler with the
+  // canonical enum literals — see srv/monitor-service.ts.
+  @readonly @cds.persistence.skip entity AnalysisStatusVH { key code : String; }
+  @readonly @cds.persistence.skip entity JiraStatusVH     { key code : String; }
 }
