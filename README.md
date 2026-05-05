@@ -61,9 +61,9 @@ Enterprise controls (XSUAA roles, scope-based access, separation of functions) a
 
 **New to Cloud LLM Hub?** Start here:
 
-1. **[⚡ Quick Setup Guide](docs/usage/QUICK_SETUP.md)** - Get running in 60 seconds
-2. **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** - Complete onboarding guide
-3. **[🔌 Integration Examples](docs/architecture/INTEGRATIONS.md)** - Ready-to-use code for Cline, n8n, CI/CD, and more
+1. **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** - Complete onboarding guide
+2. **[🔌 MCP Connection](docs/usage/MCP_CONNECTION.md)** - Connect Cline / Claude Desktop / agent frameworks
+3. **[🤖 OpenAI Agent](docs/usage/OPENAI_AGENT.md)** - Use `/v1/chat/completions` from any OpenAI-compatible client
 
 **For Developers:**
 
@@ -81,7 +81,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - Embedded MCP servers are created per request in `srv/mcp-manager.ts` (no server instance cache).
 - The first Streamable HTTP request **must** omit the `Mcp-Session-Id` header. The proxy returns a generated session ID which clients must echo in subsequent calls.
 - Dropping the header (or restarting the proxy) forces a clean re-initialization, which is useful after rotating SAP credentials or clearing stale state.
-- Detailed lifecycle notes and integration examples are documented in [`docs/usage/MCP_PROXY_USAGE.md`](docs/usage/MCP_PROXY_USAGE.md#streamable-http-session-lifecycle).
+- Detailed connection and session examples are documented in [`docs/usage/MCP_CONNECTION.md`](docs/usage/MCP_CONNECTION.md) and the [`Stream-HTTP` API reference](docs/architecture/API_REFERENCE.md#12-stream-http).
 
 ## Destination Diagnostics
 
@@ -97,7 +97,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
   - Token lifecycle management and refresh
   - Proxy configuration (including Cloud Connector for on-premise destinations)
 - **On-Premise Connectivity**: The Connectivity service is configured in `mta.yaml` with a specified `ConnectorID` for Cloud Connector integration. When a destination with `ProxyType=OnPremise` is used, `executeHttpRequest` automatically routes requests through the Connectivity proxy.
-- The `tools/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. It works both inside the repository (with automatic defaults) and standalone (with explicit `--settings`), and supports both CLI and YAML modes. All workflows are documented in [`docs/usage/MCP_CONFIG_UPDATE_HOWTO.md`](docs/usage/MCP_CONFIG_UPDATE_HOWTO.md), including CLI overrides such as `--mcp-endpoint`, `--mcp-type`, `--mcp-username`, and `--mcp-password ""` for generating ready-to-apply templates without manual edits.
+- The `tools/update-cline-connection.js` utility synchronizes `cline_mcp_settings.json` with SAP JWT tokens and MCP headers. It works both inside the repository (with automatic defaults) and standalone (with explicit `--settings`), and supports both CLI and YAML modes. CLI overrides such as `--mcp-endpoint`, `--mcp-type`, `--mcp-username`, and `--mcp-password ""` allow generating ready-to-apply templates without manual edits.
 
 ## Tooling & Tests
 
@@ -111,79 +111,60 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **Endpoint test script**: `tools/test-endpoints.sh` covers MCP, OpenAI-compatible, and Anthropic Messages API protocols against local and BTP deployments.
 - Legacy smoke tests under `test/smoke/` (manual scripts for health and Stream-HTTP).
 - Run `npm exec -- tsc --noEmit` to type-check the project.
-- The `docs/development/TESTING_CHEAT_SHEET.md` file summarizes manual verification steps.
+- Manual verification steps are covered by [`docs/deployment/TESTING_AFTER_DEPLOYMENT.md`](docs/deployment/TESTING_AFTER_DEPLOYMENT.md) and [`docs/llm-agent/TESTING.md`](docs/llm-agent/TESTING.md).
 
 ## 📚 Documentation
 
-Full documentation is organized by purpose in the **[docs/](docs/)** directory:
+Full documentation is organized by purpose in the **[docs/](docs/)** directory — the canonical index with section groupings is **[docs/README.md](docs/README.md)**. Highlights:
 
 ### 🎯 For New Users
 
-Start here to get up and running quickly:
-
-- **[⚡ Quick Setup](docs/usage/QUICK_SETUP.md)** - Get running in 60 seconds
-- **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** - Complete onboarding guide
-- **[🐛 Troubleshooting](docs/usage/TROUBLESHOOTING.md)** - Common issues and solutions
-
-### 📖 Usage Guides
-
-Learn how to use Cloud LLM Hub effectively:
-
-- **[👥 Consumer Guide](docs/usage/CONSUMER_GUIDE.md)** - End-user focused guide
-- **[📖 Proxy Usage](docs/usage/MCP_PROXY_USAGE.md)** - Detailed usage examples
-- **[🔧 Configuration](docs/usage/MCP_CONFIG_UPDATE_HOWTO.md)** - Automated setup tools
-- **[🤖 Assistant Guidelines](docs/usage/ASSISTANT_GUIDELINES.md)** - AI assistant integration best practices
+- **[🚀 Getting Started](docs/usage/GETTING_STARTED.md)** — onboarding guide
+- **[🔌 MCP Connection](docs/usage/MCP_CONNECTION.md)** — connecting Cline / Claude Desktop / agent frameworks
+- **[🐛 Troubleshooting](docs/usage/TROUBLESHOOTING.md)** — common issues
+- **[🤖 OpenAI Agent](docs/usage/OPENAI_AGENT.md)** — `/v1/chat/completions` consumer guide
 
 ### 🏗️ Architecture
 
-Understand how the system works:
-
-- **[📡 API Reference](docs/architecture/API_REFERENCE.md)** - Complete API specification
-- **[🔌 CAP Endpoints](docs/architecture/CAP_ENDPOINTS.md)** - Service endpoints documentation
-- **[✨ Features](docs/architecture/FEATURES.md)** - Why choose Cloud LLM Hub?
-- **[🔌 Integrations](docs/architecture/INTEGRATIONS.md)** - Integration examples
-- **[📊 MCP Header Matrix](docs/architecture/MCP_HEADER_MATRIX.md)** - Header configuration reference
-- **[⚡ Performance](docs/architecture/PERFORMANCE.md)** - Performance optimization
-- **[📋 Implementation Status](docs/architecture/IMPLEMENTATION_STATUS.md)** - Feature implementation tracking
-
-### 🛠️ Development
-
-For contributors and developers:
-
-- **[📖 Contributing Guide](CONTRIBUTING.md)** - How to contribute
-- **[👥 Contributors](CONTRIBUTORS.md)** - List of contributors
-- **[🛠️ Contributor Docs](docs/contributors/)** - Development guides
-  - [Setup Guide](docs/contributors/SETUP.md) - Development environment
-  - [Git Workflow](docs/contributors/WORKFLOW.md) - Fork → Branch → PR
-  - [Code Style](docs/contributors/CODE_STYLE.md) - Coding standards
-  - [Architecture](docs/architecture/ARCHITECTURE.md) - System overview
-  - [Testing Guide](docs/contributors/TESTING.md) - Testing practices
-  - [🗺️ mcp-abap-adt Integration](docs/contributors/MCP_ABAP_ADT_INTEGRATION.md) - v1.1.22 integration roadmap
-- **[🐛 Debugging](docs/development/DEBUGGING.md)** - Debugging techniques
-- **[🔍 Debug Cline Requests](docs/development/DEBUG_CLINE_REQUESTS.md)** - Cline integration debugging
-- **[🧪 Testing Cheat Sheet](docs/development/TESTING_CHEAT_SHEET.md)** - Testing workflows
-- **[🔑 JWT Token Refresh](docs/archive/JWT_TOKEN_REFRESH_GUIDE.md)** - Token management (deprecated)
+- **[🗺️ Architecture Overview](docs/architecture/ARCHITECTURE.md)**
+- **[📡 API Reference](docs/architecture/API_REFERENCE.md)** — full API spec
+- **[🔌 CAP Endpoints](docs/architecture/CAP_ENDPOINTS.md)** — service endpoints
+- **[🧩 Extension Guide](docs/architecture/EXTENSION_GUIDE.md)** — adding tools / providers
+- **[✨ Features](docs/architecture/FEATURES.md)** — capabilities overview
+- **[📊 MCP Header Matrix](docs/architecture/MCP_HEADER_MATRIX.md)** — routing / auth header reference
 
 ### 🚀 Deployment
 
-Deploy and operate in production:
+- **[📘 Deploy Guide](docs/deployment/DEPLOY_GUIDE.md)** — full BTP / CF deployment
+- **[⚡ Quick Deploy](docs/deployment/QUICK_DEPLOY.md)** — accelerated path
+- **[✅ Testing After Deployment](docs/deployment/TESTING_AFTER_DEPLOYMENT.md)** — post-deploy verification
+- **[📋 Installation Plan](docs/deployment/INSTALLATION_PLAN.md)** / **[📄 Summary](docs/deployment/INSTALLATION_SUMMARY.md)**
 
-- **[✅ Deployment Checklist](docs/deployment/DEPLOYMENT_CHECKLIST.md)** - Deployment procedures
-- **[🔄 Migration Guide](docs/deployment/MIGRATION_GUIDE.md)** - Version upgrade instructions
-- **[📊 Monitoring](docs/deployment/MONITORING.md)** - Monitoring setup and metrics
-- **[🔧 Operations](docs/deployment/OPERATIONS.md)** - Production runbook
+### 🛠️ Development
+
+- **[📖 Contributing Guide](CONTRIBUTING.md)**
+- **[👥 Contributors](CONTRIBUTORS.md)**
+- **[🎨 Code Style](docs/contributors/CODE_STYLE.md)**
+- **[🔗 Connection Architecture](docs/contributors/CONNECTION_ARCHITECTURE.md)** — BTP destination vs. direct connection factory pattern
+- **[🔐 CAP Express Auth](docs/development/CAP_EXPRESS_AUTH.md)** — XSUAA + middleware notes
+- **[🌐 Cross-Platform Guide](docs/development/CROSS_PLATFORM_GUIDE.md)** / **[🪟 Windows Setup](docs/development/WINDOWS_SETUP.md)**
+
+### 🤖 LLM Agent
+
+- **[⚙️ Config Usage](docs/llm-agent/CONFIG_USAGE.md)** — SmartAgent configuration
+- **[🧩 Embedded Usage](docs/llm-agent/EMBEDDED_USAGE.md)** — embedding the pipeline
+- **[🧪 Testing](docs/llm-agent/TESTING.md)**
+
+### 🎓 Tutorials
+
+- **[🧭 Tutorial Design Principles](docs/tutorials/TUTORIAL_DESIGN_PRINCIPLES.md)**
+- **[📦 Creating a RAP Business Object](docs/tutorials/rap-bo-creation.md)** — concrete Material Master walkthrough
+- **[📚 Building a RAP BO with AI](docs/tutorials/rap-bo-book-catalog.md)** — advanced AI-assisted Book Catalog flow
 
 ### 📁 Additional Resources
 
-- **[📝 Architecture Decision Records](docs/adrs/)** - Design decisions
-- **[📋 Templates](docs/templates/mcp-config/)** - Ready-to-use configurations
-- **[💡 Examples](docs/examples/)** - Integration examples
-
-### 🌍 Internationalization
-
-- **[🇺🇦 Українська](docs/uk/)** - Ukrainian translations (partial)
-  - [Швидкий старт](docs/uk/QUICK_SETUP.md)
-  - [Вирішення проблем](docs/uk/TROUBLESHOOTING.md)
+- **[📋 Configuration Templates](docs/templates/)** — ready-to-use MCP configs
+- **[💡 Examples](docs/examples/)** — integration examples (`abap-dump-monitor`, `calm-dump-analyzer`, …)
 
 ## Deployment Notes
 

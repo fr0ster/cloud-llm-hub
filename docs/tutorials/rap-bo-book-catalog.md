@@ -78,6 +78,15 @@ Two terms you will see often:
 | CDS root-child relationship flipped | Composition vs association mis-read | Quote the spec, regenerate that view only |
 | 40+ BDEF mapping warnings | `mapping for … corresponding` | Use explicit `{ CdsAlias = table_field; }` |
 
+### Two RAG collections
+
+This tutorial uses two RAG collections with different lifetimes — make sure both are enabled before Phase 1.
+
+| Collection | Scope | Contents | Lifetime |
+|------------|-------|----------|----------|
+| `RAP Skills` | shared/user | The reusable RAP skill (`rap-bo-creation.md`). Read-only reference; the same content drives every project. | Permanent — upload once, reuse across all RAP projects. |
+| `<project>` (e.g. `book-catalog`) | user | Per-project artifacts produced in Phase 1–3 (`business-requirements`, `tech-spec`, `impl-plan`). The agent writes them via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. | Per project — create one fresh per tutorial run; back up before stopping if the run spans sessions. |
+
 ### Load the RAP skill
 
 1. Open MANAGE panel in cloud-llm-hub chat UI
