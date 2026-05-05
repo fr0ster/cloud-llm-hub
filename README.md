@@ -109,6 +109,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
   - Copy `test/integration.yaml.template` to `test/integration.yaml` and fill in your values.
   - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
 - **Endpoint test script**: `tools/test-endpoints.sh` covers MCP, OpenAI-compatible, and Anthropic Messages API protocols against local and BTP deployments.
+- **Local MCP proxy** (`npm run proxy [DESTINATION]`): convenience wrapper around `@mcp-abap-adt/proxy` that bridges `localhost:3001` to the deployed `cloud-llm-hub-srv` in the targeted CF subaccount. Use it during local development so MCP clients (Cline, Claude Desktop, scripts, `curl`) can hit the service through `localhost` without juggling JWT tokens, BTP destinations, or the public approuter URL on every request — the proxy handles XSUAA auth-code flow once per session and self-heals its service-key cache when CF target switches. See [`docs/usage/MCP_CONNECTION.md` → Local Proxy](docs/usage/MCP_CONNECTION.md#local-proxy-npm-run-proxy).
 - Legacy smoke tests under `test/smoke/` (manual scripts for health and Stream-HTTP).
 - Run `npm exec -- tsc --noEmit` to type-check the project.
 - Manual verification steps are covered by [`docs/deployment/TESTING_AFTER_DEPLOYMENT.md`](docs/deployment/TESTING_AFTER_DEPLOYMENT.md) and [`docs/llm-agent/TESTING.md`](docs/llm-agent/TESTING.md).
