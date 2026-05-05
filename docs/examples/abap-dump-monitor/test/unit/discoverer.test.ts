@@ -13,7 +13,6 @@ const parsed: ParsedDump = {
   header: { system: 'E19.100', dumpId: 'D-1', runtimeError: 'RE', program: 'ZP', include: 'ZI', sourceLine: 1, occurredAt: '2026-04-29T00:00:00Z' },
   rawPayload: 'raw',
   callStack: [],
-  referencedObjects: [],
   variables: []
 };
 

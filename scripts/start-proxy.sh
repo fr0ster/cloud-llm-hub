@@ -33,13 +33,13 @@ HOST=$(cf app "$APP" 2>/dev/null | awk -F': *' '/^routes:/{print $2; exit}')
 URL="https://${HOST}"
 if [[ -n "$DEST" ]]; then
   echo "proxying :$PORT → $URL (destination=$DEST, btp=$BTP)"
-  exec mcp-abap-adt-proxy --btp="$BTP" \
+  exec mcp-abap-adt-proxy --transport=streamable-http --btp="$BTP" \
     --url="$URL" \
     --http-port="$PORT" \
     --header "x-sap-destination=$DEST"
 else
   echo "proxying :$PORT → $URL (btp=$BTP, destination from server default)"
-  exec mcp-abap-adt-proxy --btp="$BTP" \
+  exec mcp-abap-adt-proxy --transport=streamable-http --btp="$BTP" \
     --url="$URL" \
     --http-port="$PORT"
 fi

@@ -14,7 +14,6 @@ const parsed: ParsedDump = {
   header: { system: 'E19.100', dumpId: 'D-1' },
   rawPayload: 'raw',
   callStack: [],
-  referencedObjects: [],
   variables: []
 };
 

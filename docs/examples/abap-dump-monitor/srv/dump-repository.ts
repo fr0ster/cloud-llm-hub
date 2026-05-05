@@ -103,7 +103,6 @@ export class CdsDumpRepository implements DumpRepository {
       jiraAttempts: 0,
       skipJira: false,
       callStack: parsed.callStack.map(f => ({ ...f, ID: cds.utils.uuid() })),
-      referencedObjects: parsed.referencedObjects.map(o => ({ ...o, ID: cds.utils.uuid() })),
       variables: parsed.variables.map(v => ({ ...v, ID: cds.utils.uuid() })),
       sourceExtract: parsed.sourceExtract ? { ...parsed.sourceExtract, ID: cds.utils.uuid() } : undefined
     });

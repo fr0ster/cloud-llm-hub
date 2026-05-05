@@ -30,12 +30,13 @@ annotate MonitorService.MonitoredDump with @(
     ],
     Facets: [
       { $Type: 'UI.ReferenceFacet', ID: 'Header',    Label: 'Header',     Target: '@UI.FieldGroup#Header' },
-      { $Type: 'UI.ReferenceFacet', ID: 'Stack',     Label: 'Call Stack', Target: 'callStack/@UI.LineItem' },
+      // Target the PresentationVariant (not LineItem directly) so Fiori
+      // Elements applies the default SortOrder defined on the entity.
+      { $Type: 'UI.ReferenceFacet', ID: 'Stack',     Label: 'Call Stack', Target: 'callStack/@UI.PresentationVariant' },
       // Source code is rendered by a custom CodeEditor section (manifest.json → SourceCode)
       // for monospace + ABAP syntax highlight; the auto-generated FieldGroup facet is
       // intentionally omitted to avoid a duplicate tab.
-      { $Type: 'UI.ReferenceFacet', ID: 'Variables', Label: 'Variables',  Target: 'variables/@UI.LineItem' },
-      { $Type: 'UI.ReferenceFacet', ID: 'Refs',      Label: 'References', Target: 'referencedObjects/@UI.LineItem' },
+      { $Type: 'UI.ReferenceFacet', ID: 'Variables', Label: 'Variables',  Target: 'variables/@UI.PresentationVariant' },
       // Hidden helper facets — force Fiori to $select recommendations / jiraIssueUrl
       // (FE V4 doesn't honour requestAtLeast for LargeString fields in custom
       // sections, so visible FieldGroup references are the only way to make those
@@ -165,29 +166,33 @@ annotate MonitorService.CallStackEntry with @(
     { Value: eventName },
     { Value: program },
     { Value: include },
-    { Value: line },
-    { Value: objectClass }
-  ]
-);
-
-annotate MonitorService.ReferencedObject with @(
-  UI.LineItem: [
-    { Value: objectName },
-    { Value: objectType },
-    { Value: subObject },
-    { Value: package },
-    { Value: source }
-  ]
+    { Value: line }
+  ],
+  // Default sort: ABAP numbers frames from entry point upward, so the deepest
+  // frame (where the dump occurred) has the highest position. Sort descending
+  // to mirror ST22 — crash frame at the top, entry point at the bottom.
+  UI.PresentationVariant: {
+    SortOrder: [{ Property: position, Descending: true }],
+    Visualizations: ['@UI.LineItem']
+  }
 );
 
 annotate MonitorService.VariableSnapshot with @(
   UI.LineItem: [
+    { Value: frameNo },
     { Value: scope },
     { Value: name },
-    { Value: type },
     { Value: value },
     { Value: truncated }
-  ]
+  ],
+  // Group by frame, crash frame first (mirrors call stack order).
+  UI.PresentationVariant: {
+    SortOrder: [
+      { Property: frameNo, Descending: true },
+      { Property: name,    Descending: false }
+    ],
+    Visualizations: ['@UI.LineItem']
+  }
 );
 
 annotate MonitorService.SourceExtract with @(

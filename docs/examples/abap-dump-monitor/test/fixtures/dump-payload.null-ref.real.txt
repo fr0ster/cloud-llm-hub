@@ -1,0 +1,598 @@
+----------------------------------------------------------------------------------------------------
+Category               ABAP programming error                                                                                                                                                                                                                                                       
+Runtime Errors         DATREF_NOT_ASSIGNED                                                                                                                                                                                                                                                          
+ABAP: Program          CL_MDC_MODEL_BP_BASE==========CP                                                                                                                                                                                                                                             
+Application Component  CA-MDG-PF-BP                                                                                                                                                                                                                                                                 
+Date and Time          05.05.2026 12:20:12 (UTC+3)                                                                                                                                                                                                                                                  
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Short Text                                                                                        |
+|    Access using a 'NULL' data reference is not possible.                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What happened?                                                                                    |
+|    Error in the ABAP application program.                                                        |
+|                                                                                                  |
+|    The current ABAP program "CL_MDC_MODEL_BP_BASE==========CP" had to be                         |
+|     terminated because it found a                                                                |
+|    statement that could not be executed.                                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What can you do?                                                                                  |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Error analysis                                                                                    |
+|    An attempt was made to access a data object using a 'NULL' data                               |
+|    reference (points to 'nothing').                                                              |
+|    A data reference must point to a data object before it can be used to                         |
+|    access the referenced data object.                                                            |
+|    The reference has either never been set, or it was set to 'NULL' with a                       |
+|    CLEAR statement.                                                                              |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|How to correct the error                                                                          |
+|    If the error occurs in one of your own ABAP programs or an SAP program                        |
+|    that you have modified, try to correct the error yourself.                                    |
+|    If the error occurs in a non-modified SAP program, you might be able to                       |
+|    find a solution in the SAP Notes system. If you have access to the SAP                        |
+|    Notes system, check there first using the following keywords:                                 |
+|                                                                                                  |
+|    "DATREF_NOT_ASSIGNED"                                                                         |
+|    "CL_MDC_MODEL_BP_BASE==========CP" or CL_MDC_MODEL_BP_BASE==========CM00Y                     |
+|    "PREFETCH_OWN_OBJECT_IDS"                                                                     |
+|    If you cannot solve the problem yourself, please send the following                           |
+|    information to SAP:                                                                           |
+|                                                                                                  |
+|    1. The description of the problem (short dump)                                                |
+|    Please press the "Local File” button in the current display.                                  |
+|                                                                                                  |
+|    2. The relevant system log                                                                    |
+|    To do this, call the system log in transaction SM21. Restrict the time                        |
+|    interval to ten minutes before the short dump and five minutes after                          |
+|    it. In the display, choose System -> List -> Save -> Local File                               |
+|    (unconverted).                                                                                |
+|                                                                                                  |
+|    3. If these are programs of your own, or modified SAP programs: The                           |
+|    source text of the programs                                                                   |
+|    To do this, please choose                                                                     |
+|    "Other Utilities -> Upload/Download -> Download".                                             |
+|                                                                                                  |
+|    4. Details regarding the conditions under which the error occurred or                         |
+|    which actions and input caused the error.                                                     |
+|    which actions and input caused the error.                                                     |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|System environment                                                                                |
+|    SAP Release..... 816                                                                          |
+|    SAP Basis level 0000                                                                          |
+|                                                                                                  |
+|    Application server... demohost01                                                           |
+|    Instance name....... demohost01_E19_00                                                     |
+|    Network address...... 10.6.6.50                                                               |
+|    Operating system... Linux                                                                     |
+|    Release.............. 6.4.0-150600.21-defa                                                    |
+|    Hardware type....... x86_64                                                                   |
+|    Character length..... 16 Bits                                                                 |
+|    Pointer length........ 64 Bits                                                                |
+|    Work process number... 4                                                                      |
+|    Work process ID....... 19871                                                                  |
+|    ABAP load version.... 3684                                                                    |
+|    Shortdump setting. full                                                                       |
+|                                                                                                  |
+|    Database server... demohost01                                                              |
+|    Database type..... HDB                                                                        |
+|    Database name..... E19                                                                        |
+|    Database user ID SAPHANADB                                                                    |
+|                                                                                                  |
+|    Terminal.......... demohost01.example.com                                                     |
+|                                                                                                  |
+|    Character set C                                                                               |
+|                                                                                                  |
+|    SAP kernel....... 916                                                                         |
+|    Created on....... Aug 19 2025 20:27:15                                                        |
+|    Created at....... Linux GNU SLES-15 x86_64  cc10.3.0 use-pr250819                             |
+|    Database version SQLDBC 2.25.029.1751901582                                                   |
+|    Patch level....... 50                                                                         |
+|    Patch text.......                                                                             |
+|    Hash............. c923521b123f8872bbf887037deb5b11f4a01151                                    |
+|    Version.......... v9.16-2346-gc923521b                                                        |
+|                                                                                                  |
+|    Database............ HANA 1.0, HANA 2.0                                                       |
+|    SAP database version. 916                                                                     |
+|    Operating system... "Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                       |
+|     c923521b123f8872bbf887037deb5b11f4a01151"                                                    |
+|    Operating system... Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                        |
+|     c923521b123f8872bbf887037deb5b11f4a01151                                                     |
+|                                                                                                  |
+|    Memory consumption                                                                            |
+|    EM...... 12383657 Bytes                                                                       |
+|    Heap........................ 0 Bytes                                                          |
+|    Page........................ 0 Bytes                                                          |
+|    MM used memory..... 9204856 Bytes                                                             |
+|    MM free memory.......... 3174656 Bytes                                                        |
+|    MM largest free block... 1424216 Bytes                                                        |
+|    MM used blocks....... 8932                                                                    |
+|    MM free blocks............ 201                                                                |
+|    MM maximum memory used... 10826776 Bytes                                                      |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|User and Transaction                                                                              |
+|    Client................. 100                                                                   |
+|    User.................. SAP_WFRT                                                               |
+|    Language key.......... E                                                                      |
+|    Transaction.........                                                                          |
+|    Transaction ID...... 6158BA575B2C4D4F959835E40422128C                                         |
+|                                                                                                  |
+|    EPP Root Context ID.... 473DCC7674FB4F1499C8A4650C6F50A9                                      |
+|    EPP Connection ID...... 69F5007622685825E10000000A060632                                      |
+|    EPP Connection Counter. 1                                                                     |
+|    EPP Component Name..... mdm.cmd.cmpmonprocs1@1.136.0                                          |
+|                                                                                                  |
+|    Program....................... CL_MDC_MODEL_BP_BASE==========CP                               |
+|    Screen......................... SAPMSSY1                                3004                  |
+|    Screen line.................... 2                                                             |
+|    Debugger interpretor loop... "none"                                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Server-Side Connection Information                                                                |
+|    Information on caller of Remote Function Call (RFC):                                          |
+|    System.............. E19                                                                      |
+|    Installation number 0021081860                                                                |
+|    Database Release..... 816                                                                     |
+|    Kernel Release...... 916                                                                      |
+|    Connection type..... 3  (2=R/2, 3=ABAP-System, E=External,                                    |
+|    R=Reg.External) call type....... asynchronous with reply bgRFC type Q (emode                  |
+|     0, imode 0)                                                                                  |
+|    Inbound TID..........0CC47A1E68C11FE1928C73ACC0E9D5CA                                         |
+|    Inbound queue name...MDC_QUEUE_000000000060ACT_1                                              |
+|    Outbound TID.........                                                                         |
+|    Outbound queue name..                                                                         |
+|                                                                                                  |
+|    Client................. 100                                                                   |
+|    User.................. SAP_WFRT                                                               |
+|    Transaction.........                                                                          |
+|    Call program...........CL_BGRFC_DS_EXEC_INBOUND======CP                                       |
+|    Function module..... BGRFC_DEST_SHIP                                                          |
+|    Call destination..... demohost01_E19_00                                                    |
+|    Source server...... demohost01_E19_00                                                      |
+|    Source IP address.. 10.6.6.50                                                                 |
+|                                                                                                  |
+|    Additional information on RFC logon:                                                          |
+|    Trusted relationship..                                                                        |
+|    Logon return code.... 0                                                                       |
+|    Trusted return code.. 0                                                                       |
+|                                                                                                  |
+|    Remarks:                                                                                      |
+|    - In Releases prior to 4.0, information about the RFC caller might be                         |
+|    missing or incomplete.                                                                        |
+|    - The installation number is provided in caller Release 700 and higher.                       |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Information on where terminated                                                                   |
+|    The termination occurred in ABAP program or include                                           |
+|     "CL_MDC_MODEL_BP_BASE==========CP", in "PREFETCH_OWN_OBJECT_IDS". The                        |
+|    main program was "SAPMSSY1".                                                                  |
+|                                                                                                  |
+|    In the source code, the termination point is in line 3 of include                             |
+|     "CL_MDC_MODEL_BP_BASE==========CM00Y".                                                       |
+|    include "CL_MDC_MODEL_BP_BASE==========CM00Y".                                                |
+----------------------------------------------------------------------------------------------------
+
+|Source Code Extract                                                                                                                                             |
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|Line |Code                                                                                                                                                      |
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|    1|  METHOD prefetch_own_object_ids.                                                                                                                         |
+|    2|    CLEAR: me->mt_own_business_partner_ids.                                                                                                               |
+|>>>>>|    DATA(lt_own_partner_ids) = VALUE bup_t_cent_id(                                                                                                       |
+|    4|      FOR <ls_but000_prc> IN me->mr_but000_prc->* WHERE ( partner IS NOT INITIAL AND source_system = own_system ) ( partner = <ls_but000_prc>-partner ) ).|
+|    5|                                                                                                                                                          |
+|    6|    CHECK lt_own_partner_ids IS NOT INITIAL.                                                                                                              |
+|    7|                                                                                                                                                          |
+|    8|    CALL FUNCTION 'BUP_BUT000_MSELECT_WITH_PARTNR'                                                                                                        |
+|    9|      EXPORTING                                                                                                                                           |
+|   10|        it_partner      = lt_own_partner_ids                                                                                                              |
+|   11|        i_cp_exclude    = abap_true                                                                                                                       |
+|   12|      IMPORTING                                                                                                                                           |
+|   13|        et_but000       = mt_own_business_partner_ids                                                                                                     |
+|   14|      EXCEPTIONS                                                                                                                                          |
+|   15|        blocked_partner = 1                                                                                                                               |
+|   16|        OTHERS          = 2.                                                                                                                              |
+|   17|    IF sy-subrc = 0.                                                                                                                                      |
+|   18|      SORT mt_own_business_partner_ids BY partner.                                                                                                        |
+|   19|    ENDIF.                                                                                                                                                |
+|   20|  ENDMETHOD.                                                                                                                                              |
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Contents of system fields                                                                         |
+----------------------------------------------------------------------------------------------------
+|Name    |Val.                                                                                     |
+----------------------------------------------------------------------------------------------------
+|SY-SUBRC|0                                                                                        |
+|SY-INDEX|1                                                                                        |
+|SY-TABIX|1                                                                                        |
+|SY-DBCNT|2                                                                                        |
+|SY-FDPOS|2                                                                                        |
+|SY-LSIND|0                                                                                        |
+|SY-PAGNO|0                                                                                        |
+|SY-LINNO|1                                                                                        |
+|SY-COLNO|1                                                                                        |
+|SY-PFKEY|                                                                                         |
+|SY-UCOMM|                                                                                         |
+|SY-TITLE|CPIC and RFC Control                                                                     |
+|SY-MSGTY|S                                                                                        |
+|SY-MSGID|OO                                                                                       |
+|SY-MSGNO|003                                                                                      |
+|SY-MSGV1|Object type                                                                              |
+|SY-MSGV2|ZCL_MDQ_SYSTEM_UTILITY                                                                   |
+|SY-MSGV3|                                                                                         |
+|SY-MSGV4|                                                                                         |
+|SY-MODNO|0                                                                                        |
+|Active Calls/Events                                                                               |
+----------------------------------------------------------------------------------------------------
+|No.   Ty.          Program                             Include                             Line   |
+|      Name                                                                                        |
+----------------------------------------------------------------------------------------------------
+|   18 METHOD       CL_MDC_MODEL_BP_BASE==========CP    CL_MDC_MODEL_BP_BASE==========CM00Y     3  |
+|      CL_MDC_MODEL_BP_BASE=>PREFETCH_OWN_OBJECT_IDS                                               |
+|   17 METHOD       CL_MDC_MODEL_BP===============CP    CL_MDC_MODEL_BP===============CM02E     4  |
+|      CL_MDC_MODEL_BP=>PREFETCH_OWN_OBJECT_IDS                                                    |
+|   16 METHOD       CL_MDC_MODEL_BP===============CP    CL_MDC_MODEL_BP===============CM00A    29  |
+|      CL_MDC_MODEL_BP=>MAP_BUSINESS_PARTNER_2API                                                  |
+|   15 METHOD       CL_MDC_MODEL_BP===============CP    CL_MDC_MODEL_BP===============CM00I    12  |
+|      CL_MDC_MODEL_BP=>IF_MDC_MODEL~CHECK                                                         |
+|   14 METHOD       CL_MDC_MODEL_BP===============CP    CL_MDC_MODEL_BP===============CM04A     4  |
+|      CL_MDC_MODEL_BP=>ACTIVATE_BUSINESS_PARTNER                                                  |
+|   13 METHOD       CL_MDC_MODEL_BP_BASE==========CP    CL_MDC_MODEL_BP_BASE==========CM01T    13  |
+|      CL_MDC_MODEL_BP_BASE=>IF_MDC_MODEL~SAVE                                                     |
+|   12 METHOD       CL_MDC_ADAPTER_BASE===========CP    CL_MDC_ADAPTER_BASE===========CM00A    14  |
+|      CL_MDC_ADAPTER_BASE=>EXECUTE_DATA_HANDLING                                                  |
+|   11 METHOD       CL_MDC_ADAPTER_BASE===========CP    CL_MDC_ADAPTER_BASE===========CM01Q     3  |
+|      CL_MDC_ADAPTER_BASE=>HANDLE_PACKAGE                                                         |
+|   10 METHOD       CL_MDC_ADAPTER_BASE===========CP    CL_MDC_ADAPTER_BASE===========CM00E    56  |
+|      CL_MDC_ADAPTER_BASE=>IF_MDC_ADAPTER_RUN~START_PACKAGE                                       |
+|    9 METHOD       CL_MDC_ADAPTER_BP_ACT=========CP    CL_MDC_ADAPTER_BP_ACT=========CM00A     5  |
+|      CL_MDC_ADAPTER_BP_ACT=>IF_MDC_ADAPTER_RUN~START_PACKAGE                                     |
+|    8 FUNCTION     SAPLMDC_ADAPTER                     LMDC_ADAPTERU01                        33  |
+|      MDC_ADAPTER_EXECUTE_PACKAGE                                                                 |
+|    7 FORM         SAPLMDC_ADAPTER                     LMDC_ADAPTERU01                         1  |
+|      MDC_ADAPTER_EXECUTE_PACKAGE                                                                 |
+|    6 METHOD       CL_RFC_RECORDER_EXECUTOR======CP    CL_RFC_RECORDER_EXECUTOR======CM003    74  |
+|      CL_RFC_RECORDER_EXECUTOR=>IF_RFC_RECORDER_EXECUTOR~EXECUTE_ALL                              |
+|    5 METHOD       SAPLBGRFC_EXTERN                    LBGRFC_EXTERNF01                      141  |
+|      LCL_BGRFC_SERVER=>BGRFC_EXECUTE                                                             |
+|    4 FUNCTION     SAPLBGRFC_EXTERN                    LBGRFC_EXTERNU08                      291  |
+|      BGRFC_DEST_SHIP                                                                             |
+|    3 FORM         SAPLBGRFC_EXTERN                    LBGRFC_EXTERNU08                        1  |
+|      BGRFC_DEST_SHIP                                                                             |
+|    2 FORM         SAPMSSY1                            SAPMSSY1                              189  |
+|      REMOTE_FUNCTION_CALL                                                                        |
+|    1 MODULE (PBO) SAPMSSY1                            SAPMSSY1                               35  |
+|      %_RFC_START                                                                                 |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Selected Variables                                                                                |
+----------------------------------------------------------------------------------------------------
+|Name                                                                                              |
+|    Val.                                                                                          |
+----------------------------------------------------------------------------------------------------
+|No.      18 Ty.          METHOD                                                                   |
+|Name  CL_MDC_MODEL_BP_BASE=>PREFETCH_OWN_OBJECT_IDS                                               |
+----------------------------------------------------------------------------------------------------
+|ME->MT_OWN_BUSINESS_PARTNER_IDS                                                                   |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|LT_OWN_PARTNER_IDS                                                                                |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|%_##TVREG_001                                                                                     |
+|    {}                                                                                            |
+|    20202020202020202020                                                                          |
+|    00000000000000000000                                                                          |
+|    2000200020002000200020002000200020002000                                                      |
+|ME->OWN_SYSTEM                                                                                    |
+|    E19                                                                                           |
+|    433222222222222222222222222222222222222222222222222222222222                                  |
+|    519000000000000000000000000000000000000000000000000000000000                                  |
+|    000000000000000000000000000000000000000000000000000000000000                                  |
+|    000000000000000000000000000000000000000000000000000000000000                                  |
+|    450031003900200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|00200020002000200020002000200020002000200020002000                                                |
+|<%_L074>                                                                                          |
+|    E19                                                                                           |
+|    433222222222222222222222222222222222222222222222222222222222                                  |
+|    519000000000000000000000000000000000000000000000000000000000                                  |
+|    000000000000000000000000000000000000000000000000000000000000                                  |
+|    000000000000000000000000000000000000000000000000000000000000                                  |
+|    450031003900200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|00200020002000200020002000200020002000200020002000                                                |
+|SY-REPID                                                                                          |
+|    CL_MDC_MODEL_BP_BASE==========CP                                                              |
+|    4454445444445455445433333333334522222222                                                      |
+|    3CFD43FDF45CF20F2135DDDDDDDDDD3000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    43004C005F004D00440043005F004D004F00440045004C005F00420050005F0042004100530045003D003D003D003\|
+|D003D003D003D003D003D003D004300500020002000200020002000200020002000                               |
+|ME->MR_BUT000_PRC->*                                                                              |
+|    ???                                                                                           |
+|                                                                                                  |
+|<LS_BUT000_PRC>                                                                                   |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+|<%_L073>                                                                                          |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+|IF_MDC_DESTINATION_RULER=>PROCESS_TARGET                                                          |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+|<%_L073>-PARTNER                                                                                  |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+|SYST-REPID                                                                                        |
+|    CL_MDC_MODEL_BP_BASE==========CP                                                              |
+|    4454445444445455445433333333334522222222                                                      |
+|    3CFD43FDF45CF20F2135DDDDDDDDDD3000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    43004C005F004D00440043005F004D004F00440045004C005F00420050005F0042004100530045003D003D003D003\|
+|D003D003D003D003D003D003D004300500020002000200020002000200020002000                               |
+|<%_L073>-SOURCE_SYSTEM                                                                            |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+|IF_MDC_SEMANTICAL_DESTINE=>EVERY_SHIFT                                                            |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    00                                                                                            |
+|IF_MDC_DATA=>GC_TYPE-SOURCE                                                                       |
+|    W                                                                                             |
+|    5                                                                                             |
+|    7                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    5700                                                                                          |
+----------------------------------------------------------------------------------------------------
+|No.      17 Ty.          METHOD                                                                   |
+|Name  CL_MDC_MODEL_BP=>PREFETCH_OWN_OBJECT_IDS                                                    |
+----------------------------------------------------------------------------------------------------
+|ME->MT_OWN_CUSTOMER_OBJECT_IDS                                                                    |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|ME->MT_OWN_VENDOR_OBJECT_IDS                                                                      |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|ME->MT_OWN_BUSINESS_PARTNER_IDS                                                                   |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|ME->ACTIVE_ADRTS                                                                                  |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|ME                                                                                                |
+|    {O:21*\CLASS=ZCL_MDC_MODEL_BP}                                                                |
+|    E0001000                                                                                      |
+|    A0005000                                                                                      |
+|    EA00000015000000                                                                              |
+|%_DUMMY$$                                                                                         |
+|                                                                                                  |
+|    2222                                                                                          |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    2000200020002000                                                                              |
+|SY-XPROG                                                                                          |
+|    SAPLMDC_ADAPTER                                                                               |
+|    5454444544455452222222222222222222222222                                                      |
+|    310CD43F14104520000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    5300410050004C004D00440043005F004100440041005000540045005200200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000                               |
+----------------------------------------------------------------------------------------------------
+|No.      16 Ty.          METHOD                                                                   |
+|Name  CL_MDC_MODEL_BP=>MAP_BUSINESS_PARTNER_2API                                                  |
+----------------------------------------------------------------------------------------------------
+|ME->MT_CVI_EI_EXTERN                                                                              |
+|    Table[initial]                                                                                |
+|                                                                                                  |
+|ME->MV_LOOP_MODE_FAILED                                                                           |
+|                                                                                                  |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    2000                                                                                          |
+|%_SPACE                                                                                           |
+|                                                                                                  |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    2000                                                                                          |
+|LO_MLTAS_API                                                                                      |
+|    {O:1327*\CLASS=CMD_MLTAS_API}                                                                 |
+|    D0002000                                                                                      |
+|    0000F500                                                                                      |
+|    D00000002F050000                                                                              |
+|ME                                                                                                |
+|    {O:21*\CLASS=ZCL_MDC_MODEL_BP}                                                                |
+|    E0001000                                                                                      |
+|    A0005000                                                                                      |
+|    EA00000015000000                                                                              |
+|ME->GT_TB056                                                                                      |
+|    Table IT_28[4x48]                                                                             |
+|    \CLASS=CL_MDC_MODEL_BP_BASE\DATA=GT_TB056                                                     |
+|    Table reference: 23                                                                           |
+|    TABH+ 0(20) = 605C7D8E647F00000000000000000000985E7D8E                                        |
+|    TABH+20(20) = 647F000000000000000000000400000044010000                                        |
+|    TABH+40(20) = 00000000170000001C0000000400000030000000                                        |
+|    TABH+60(20) = FFFFFFFF045A0000E4280C000400010202000000                                        |
+|    store                   = 0x885B7D8E647F0000                                                  |
+|    statScndKeyAdmin        = 0                                                                   |
+|    ext1                    = 0x40DE448E647F0000                                                  |
+|    ----- Primary Key -----                                                                       |
+|    idxPtr                  = 0                                                                   |
+|    idxKind                 = 0     (ItIndexNone)                                                 |
+|    accKind                 = 1     (ItAccStandard)                                               |
+|    uniKind                 = 2     (ItUniNo)                                                     |
+|    keyKind (from pbag)     = 1     (default)                                                     |
+|    cmpMode                 = 2     (cmpSingleMcmpR)                                              |
+|    shmId                   = 0     (0x00000000)                                                  |
+|    id                      = 23    (0x17000000)                                                  |
+|    label                   = 28    (0x1C000000)                                                  |
+|    fill                    = 4     (0x04000000)                                                  |
+|    leng                    = 48    (0x30000000)                                                  |
+|    loop                    = -1    (0xFFFFFFFF)                                                  |
+|    xtyp                    = PROG#000090/TYPE#000089                                             |
+|    occu                    = 4     (0x0400)                                                      |
+|    occu0                   = 1                                                                   |
+|    stMode                  = 0                                                                   |
+|    groupCntl               = 0                                                                   |
+|    rfc                     = 0                                                                   |
+|    unShareable             = 0                                                                   |
+|    mightBeShared           = 0                                                                   |
+|    sharedWithShmTab        = 0                                                                   |
+|    isShmLockId             = 0                                                                   |
+|    isUsed                  = 1                                                                   |
+|    ctfyExclude             = 0                                                                   |
+|    hasScndKeys             = 0                                                                   |
+|    hasRowId                = 0                                                                   |
+|    statScndKeysOutdated    = 0                                                                   |
+|    statScndUniKeysOutdated = 0                                                                   |
+|    primKeyIsEmpty          = No                                                                  |
+|    rtmSelectNoOrderBy      = 0                                                                   |
+|    tstForceExtSort         = 0                                                                   |
+|    ----- Shareable Table Header Data (Store) -----                                               |
+|    tabi                    = 0x3100300030004200                                                  |
+|    pgHook                  = 0                                                                   |
+|    uniqueNumber            = 23    (0x17000000)                                                  |
+|    shmTabhSet              = 0                                                                   |
+|    refCount                = 0     (0x00000000)                                                  |
+|    tstRefCount             = 0     (0x00000000)                                                  |
+|    lineAdmin               = 4     (0x04000000)                                                  |
+|    lineAlloc               = 4     (0x04000000)                                                  |
+|    shmVersId               = 0     (0x00000000)                                                  |
+|    shmRefCount             = 1     (0x01000000)                                                  |
+|    rowId                   = 18446744073709551615                                                |
+|    ----- 1st level extension part -----                                                          |
+|    regHook                 = 0x0000000000000000                                                  |
+|    collHook                = 0                                                                   |
+|    ext2                    = 0                                                                   |
+|                                                                                                  |
+|    {100;BUPA;BUT000;}                                                                            |
+|    303030405050402020202020204050503030302020202020                                              |
+|    100000205000100000000000002050400000000000000000                                              |
+|    310030003000420055005000410020002000200020002000200042005500540030003000300020002000200020002\|
+|000                                                                                               |
+|                                                                                                  |
+|    {100;BUPA;BUT020;X}                                                                           |
+|    303030405050402020202020204050503030302020202050                                              |
+|    100000205000100000000000002050400020000000000080                                              |
+|    310030003000420055005000410020002000200020002000200042005500540030003200300020002000200020005\|
+|800                                                                                               |
+|                                                                                                  |
+|    {100;BUPA;BUT0BK;X}                                                                           |
+|    303030405050402020202020204050503040402020202050                                              |
+|    100000205000100000000000002050400020B00000000080                                              |
+|    3100300030004200550050004100200020002000200020002000420055005400300042004B0020002000200020005\|
+|800                                                                                               |
+|                                                                                                  |
+|    {100;BUPA;BUT100;X}                                                                           |
+|    303030405050402020202020204050503030302020202050                                              |
+|    100000205000100000000000002050401000000000000080                                              |
+|    310030003000420055005000410020002000200020002000200042005500540031003000300020002000200020005\|
+|800                                                                                               |
+|LS_TD_ADDRESS                                                                                     |
+|    {;;;}                                                                                         |
+|    202020202020202020202020202020202020202020202020                                              |
+|    000000000000000000000000000000000000000000000000                                              |
+|    200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|000                                                                                               |
+|SY-REPID                                                                                          |
+|    CL_MDC_MODEL_BP===============CP                                                              |
+|    4454445444445453333333333333334522222222                                                      |
+|    3CFD43FDF45CF20DDDDDDDDDDDDDDD3000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    43004C005F004D00440043005F004D004F00440045004C005F00420050003D003D003D003D003D003D003D003D003\|
+|D003D003D003D003D003D003D004300500020002000200020002000200020002000                               |
+|LS_TD_BANK                                                                                        |
+|    {;;;}                                                                                         |
+|    202020202020202020202020202020202020202020202020                                              |
+|    000000000000000000000000000000000000000000000000                                              |
+|    200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|000                                                                                               |
+|LS_TD_IND_COMM                                                                                    |
+|    {;;;}                                                                                         |
+|    202020202020202020202020202020202020202020202020                                              |
+|    000000000000000000000000000000000000000000000000                                              |
+|    200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|000                                                                                               |
+|LS_TD_ROLE                                                                                        |
+|    {;;;}                                                                                         |
+|    202020202020202020202020202020202020202020202020                                              |
+|    000000000000000000000000000000000000000000000000                                              |
+|    200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|000                                                                                               |
+|ME->MR_BUT000_PRC->*                                                                              |
+|    ???                                                                                           |
+|                                                                                                  |
+|<LS_BUT000_PRC>                                                                                   |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+----------------------------------------------------------------------------------------------------
+|No.      15 Ty.          METHOD                                                                   |
+|Name  CL_MDC_MODEL_BP=>IF_MDC_MODEL~CHECK                                                         |
+----------------------------------------------------------------------------------------------------
+|%_ARCHIVE                                                                                         |
+|    {;;;;;;;;;;;;;;;;;;0}                                                                         |
+|    202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202\|
+|0202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020\|
+|20202020202020202020202020202020202020202020202020202020202020202                                 |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|00000000000000000000000000000000000000000000000000000000000000000                                 |
+|    200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|0020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200\|
+|0200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000\|
+|2000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|00020002000200020002000200020                                                                     |
+(remainder of dump trimmed for fixture brevity)

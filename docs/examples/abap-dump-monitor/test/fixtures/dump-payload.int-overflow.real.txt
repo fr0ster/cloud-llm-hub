@@ -1,0 +1,576 @@
+----------------------------------------------------------------------------------------------------
+Category               ABAP programming error                                                                                                                                                                                                                                                       
+Runtime Errors         COMPUTE_INT_PLUS_OVERFLOW                                                                                                                                                                                                                                                    
+Except.                CX_SY_ARITHMETIC_OVERFLOW                                                                                                                                                                                                                                                    
+ABAP: Program          /IWFND/CL_METERING_DB=========CP                                                                                                                                                                                                                                             
+Application Component  OPU-FND-CS                                                                                                                                                                                                                                                                   
+Date and Time          01.05.2026 03:12:39 (UTC+3)                                                                                                                                                                                                                                                  
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Short Text                                                                                        |
+|    Integer overflow during addition (type I or INT8)                                             |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What happened?                                                                                    |
+|    Error in the ABAP application program.                                                        |
+|                                                                                                  |
+|    The current ABAP program "/IWFND/CL_METERING_DB=========CP" had to be                         |
+|     terminated because it found a                                                                |
+|    statement that could not be executed.                                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What can you do?                                                                                  |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Error analysis                                                                                    |
+|    An exception of class "CX_SY_ARITHMETIC_OVERFLOW" occurred. This exception was                |
+|     not caught in                                                                                |
+|    procedure "DETERMINE_GW_USED" "(METHOD)" or propagated by a RAISING clause.                   |
+|    Since the caller of the procedure could not have anticipated this                             |
+|    exception, the current program was terminated.                                                |
+|    The reason for the exception occurring was:                                                   |
+|    The reason for the exception is:                                                              |
+|    In the current program "/IWFND/CL_METERING_DB=========CP", adding the numbers                 |
+|     2147483647 and 1 (using the                                                                  |
+|    operation '+' or 'ADD') returned a value either greater than 2147483647                       |
+|    or smaller than -2147483648 (or greater than 9223372036854775807 or                           |
+|    smaller than -9223372036854775808 if using type INT8). This resulted in                       |
+|    an integer overflow.                                                                          |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|How to correct the error                                                                          |
+|    If the exception cannot be prevented, "CX_SY_ARITHMETIC_OVERFLOW" must be                     |
+|     caught within                                                                                |
+|    procedure "DETERMINE_GW_USED" "(METHOD)" or declared in the procedure's                       |
+|     RAISING clause.                                                                              |
+|    To prevent the exception, note the following:                                                 |
+|                                                                                                  |
+|    You could try to split the current process into separate components so                        |
+|    that the amounts in the values are smaller.                                                   |
+|    If the error occurs in one of your own ABAP programs or an SAP program                        |
+|    that you have modified, try to remedy the error.                                              |
+|                                                                                                  |
+|    If you cannot solve the problem yourself, please send the following                           |
+|    information to SAP:                                                                           |
+|                                                                                                  |
+|    1. The description of the problem (short dump)                                                |
+|    Please press the "Local File” button in the current display.                                  |
+|                                                                                                  |
+|    2. The relevant system log                                                                    |
+|    To do this, call the system log in transaction SM21. Restrict the time                        |
+|    interval to ten minutes before the short dump and five minutes after                          |
+|    it. In the display, choose System -> List -> Save -> Local File                               |
+|    (unconverted).                                                                                |
+|                                                                                                  |
+|    3. If these are programs of your own, or modified SAP programs: The                           |
+|    source text of the programs                                                                   |
+|    To do this, please choose                                                                     |
+|    "Other Utilities -> Upload/Download -> Download".                                             |
+|                                                                                                  |
+|    4. Details regarding the conditions under which the error occurred or                         |
+|    which actions and input caused the error.                                                     |
+|    which actions and input caused the error.                                                     |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|System environment                                                                                |
+|    SAP Release..... 816                                                                          |
+|    SAP Basis level 0000                                                                          |
+|                                                                                                  |
+|    Application server... demohost01                                                           |
+|    Instance name....... demohost01_E19_00                                                     |
+|    Network address...... 10.6.6.50                                                               |
+|    Operating system... Linux                                                                     |
+|    Release.............. 6.4.0-150600.21-defa                                                    |
+|    Hardware type....... x86_64                                                                   |
+|    Character length..... 16 Bits                                                                 |
+|    Pointer length........ 64 Bits                                                                |
+|    Work process number... 28                                                                     |
+|    Work process ID....... 15203                                                                  |
+|    ABAP load version.... 3684                                                                    |
+|    Shortdump setting. full                                                                       |
+|                                                                                                  |
+|    Database server... demohost01                                                              |
+|    Database type..... HDB                                                                        |
+|    Database name..... E19                                                                        |
+|    Database user ID SAPHANADB                                                                    |
+|                                                                                                  |
+|    Terminal..........                                                                            |
+|                                                                                                  |
+|    Character set C                                                                               |
+|                                                                                                  |
+|    SAP kernel....... 916                                                                         |
+|    Created on....... Aug 19 2025 20:27:15                                                        |
+|    Created at....... Linux GNU SLES-15 x86_64  cc10.3.0 use-pr250819                             |
+|    Database version SQLDBC 2.25.029.1751901582                                                   |
+|    Patch level....... 50                                                                         |
+|    Patch text.......                                                                             |
+|    Hash............. c923521b123f8872bbf887037deb5b11f4a01151                                    |
+|    Version.......... v9.16-2346-gc923521b                                                        |
+|                                                                                                  |
+|    Database............ HANA 1.0, HANA 2.0                                                       |
+|    SAP database version. 916                                                                     |
+|    Operating system... "Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                       |
+|     c923521b123f8872bbf887037deb5b11f4a01151"                                                    |
+|    Operating system... Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                        |
+|     c923521b123f8872bbf887037deb5b11f4a01151                                                     |
+|                                                                                                  |
+|    Memory consumption                                                                            |
+|    EM...... 0 Bytes                                                                              |
+|    Heap........................ 17926208 Bytes                                                   |
+|    Page........................ 24576 Bytes                                                      |
+|    MM used memory..... 10934632 Bytes                                                            |
+|    MM free memory.......... 2240392 Bytes                                                        |
+|    MM largest free block... 2199024 Bytes                                                        |
+|    MM used blocks....... 1475                                                                    |
+|    MM free blocks............ 22                                                                 |
+|    MM maximum memory used... 10953488 Bytes                                                      |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|User and Transaction                                                                              |
+|    Client................. 000                                                                   |
+|    User.................. DDIC                                                                   |
+|    Language key.......... E                                                                      |
+|    Transaction.........                                                                          |
+|    Transaction ID...... 8926B038578201C0E00695B821D55670                                         |
+|                                                                                                  |
+|    EPP Root Context ID.... 0CC47A1E68C11FE18896962AB974F5CA                                      |
+|    EPP Connection ID...... 00000000000000000000000000000000                                      |
+|    EPP Connection Counter. 0                                                                     |
+|    EPP Component Name..... E19/demohost01_E19_00                                              |
+|                                                                                                  |
+|    Program....................... /IWFND/CL_METERING_DB=========CP                               |
+|    Screen......................... SAPMSSY0                                1000                  |
+|    Screen line.................... 6                                                             |
+|    Debugger interpretor loop... "none"                                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Chain of Exception Objects                                                                        |
+----------------------------------------------------------------------------------------------------
+|Level        Class                                                                                |
+|Attrib. Name                   Value                                                              |
+----------------------------------------------------------------------------------------------------
+|1            CX_SY_ARITHMETIC_OVERFLOW                                                            |
+|(Program)                      /IWFND/CL_METERING_DB=========CP                                   |
+|(Include)                      /IWFND/CL_METERING_DB=========CM00C                                |
+|(Row)                          21                                                                 |
+|(Short Text)                   Overflow in the operation +                                        |
+|(Long Text)                    The execution of the arithmetic operation                          |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                  '&O PERATION&'  |
+|                               resulted in a value that lies outwith the valid values range.      |
+|IS_RESUMABLE                                                                                      |
+|KERNEL_ERRID                   COMPUTE_INT_PLUS_OVERFLOW                                          |
+|OPERATION                      +                                                                  |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Information on where terminated                                                                   |
+|    The termination occurred in ABAP program or include                                           |
+|     "/IWFND/CL_METERING_DB=========CP", in "DETERMINE_GW_USED". The                              |
+|    main program was "/IWFND/R_METERING_AGGREGATE".                                               |
+|                                                                                                  |
+|    In the source code, the termination point is in line 21 of include                            |
+|     "/IWFND/CL_METERING_DB=========CM00C".                                                       |
+|    include "/IWFND/CL_METERING_DB=========CM00C".                                                |
+|    Program "/IWFND/CL_METERING_DB=========CP" was started as a background job.                   |
+|                                                                                                  |
+|    Job name....... /IWFND/METERING_AGG                                                           |
+|    Job initiator.. DDIC                                                                          |
+|    Job number...... 03123801                                                                     |
+|    The termination is due to exception "CX_SY_ARITHMETIC_OVERFLOW" occurring in                  |
+|     procedure "DETERMINE_GW_USED" "(METHOD)",                                                    |
+|    but not being handled locally there or being declared in the RAISING                          |
+|    clause.                                                                                       |
+|    The procedure is in program "/IWFND/CL_METERING_DB=========CP". Its source                    |
+|     code begins in line 1 of                                                                     |
+|    include "/IWFND/CL_METERING_DB=========CM00C".                                                |
+----------------------------------------------------------------------------------------------------
+
+|Source Code Extract                                                                               |
+----------------------------------------------------------------------------------------------------
+|Line |Code                                                                                        |
+----------------------------------------------------------------------------------------------------
+|    1|METHOD determine_gw_used.                                                                   |
+|    2|                                                                                            |
+|    3|  DATA: ls_gw_used      TYPE /iwfnd/d_met_agr.                                              |
+|    4|                                                                                            |
+|    5|  FIELD-SYMBOLS:                                                                            |
+|    6|        <ls_gw_used>    TYPE /iwfnd/d_met_agr,                                              |
+|    7|        <ls_gw_used_db> TYPE /iwfnd/d_met_agr.                                              |
+|    8|                                                                                            |
+|    9|                                                                                            |
+|   10|                                                                                            |
+|   11|*-update operation values that came from the data base                                      |
+|   12|*--------------------------------------------------------------------*                      |
+|   13|  READ TABLE mt_gw_used_db WITH KEY mandt      = is_met_dat-mandt                           |
+|   14|                                    agr_date   = iv_date                                    |
+|   15|                                    agr_period = gc_aggregation_period-monthly              |
+|   16|                                    operation  = is_met_dat-operation                       |
+|   17|                                    userid     = space                                      |
+|   18|                           ASSIGNING <ls_gw_used_db>.                                       |
+|   19|                                                                                            |
+|   20|  IF sy-subrc = 0.                                                                          |
+|>>>>>|    <ls_gw_used_db>-obj_count = <ls_gw_used_db>-obj_count + 1 .                             |
+|   22|                                                                                            |
+|   23|  ELSE.                                                                                     |
+|   24|*---create new record for operation data base or increase the new record                    |
+|   25|*--------------------------------------------------------------------*                      |
+|   26|    READ TABLE mt_gw_used WITH KEY mandt      = is_met_dat-mandt                            |
+|   27|                                   agr_date   = iv_date                                     |
+|   28|                                   agr_period = gc_aggregation_period-monthly               |
+|   29|                                   operation  = is_met_dat-operation                        |
+|   30|                                   userid     = space                                       |
+|   31|                          ASSIGNING <ls_gw_used>.                                           |
+|   32|                                                                                            |
+|   33|    IF sy-subrc = 0.                                                                        |
+|   34|*-----Add to and modify exiting daily agrregation record                                    |
+|   35|      <ls_gw_used>-obj_count = <ls_gw_used>-obj_count + 1 .                                 |
+|   36|                                                                                            |
+|   37|    ELSE.                                                                                   |
+|   38|*-----Create new agrregation monthly record for operation                                   |
+|   39|      CLEAR ls_gw_used.                                                                     |
+|   40|      ls_gw_used-mandt           = is_met_dat-mandt.                                        |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Contents of system fields                                                                         |
+----------------------------------------------------------------------------------------------------
+|Name    |Val.                                                                                     |
+----------------------------------------------------------------------------------------------------
+|Active Calls/Events                                                                               |
+----------------------------------------------------------------------------------------------------
+|No.   Ty.          Program                             Include                             Line   |
+|      Name                                                                                        |
+----------------------------------------------------------------------------------------------------
+|    3 METHOD       /IWFND/CL_METERING_DB=========CP    /IWFND/CL_METERING_DB=========CM00C    21  |
+|      /IWFND/CL_METERING_DB=>DETERMINE_GW_USED                                                    |
+|    2 METHOD       /IWFND/CL_METERING_DB=========CP    /IWFND/CL_METERING_DB=========CM008    73  |
+|      /IWFND/CL_METERING_DB=>AGGREGATE_COL_DATA                                                   |
+|    1 EVENT        /IWFND/R_METERING_AGGREGATE         /IWFND/R_METERING_AGGREGATE            72  |
+|      START-OF-SELECTION                                                                          |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Selected Variables                                                                                |
+----------------------------------------------------------------------------------------------------
+|Name                                                                                              |
+|    Val.                                                                                          |
+----------------------------------------------------------------------------------------------------
+|No.       3 Ty.          METHOD                                                                   |
+|Name  /IWFND/CL_METERING_DB=>DETERMINE_GW_USED                                                    |
+----------------------------------------------------------------------------------------------------
+|IV_DATE                                                                                           |
+|    20260401                                                                                      |
+|    33333333                                                                                      |
+|    20260401                                                                                      |
+|    00000000                                                                                      |
+|    00000000                                                                                      |
+|    32003000320036003000340030003100                                                              |
+|IS_MET_DAT                                                                                        |
+|    {100;0CC47A1E68C11FE190DB51B5E5C7F5CA;;;ZGW_VG_HW_SRV;0001;read feed;2;Carriers;;ODATA;atom;2\|
+|223;;/sap/opu/odata/SAP/ZGW_VG_HW_SRV/Carriers?$skip=2&$top=2&$orderby=Currcode;VGERTS;2026042808\|
+|1627;X;;27756052;/SAP/;20260428081627.2562540;0;00000000000000000                                 |
+|    3030300C716C1E9D5BECFC20202020202020202020202020202020202020202020202020202020202020202020202\|
+|0202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020\|
+|20202020202020202020202020202020202020202020202020202020202020202                                 |
+|    100000C4AE81F10B15575A00000000000000000000000000000000000000000000000000000000000000000000000\|
+|0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|00000000000000000000000000000000000000000000000000000000000000000                                 |
+|    3100300030000CC47A1E68C11FE190DB51B5E5C7F5CA2000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|0020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200\|
+|0200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000\|
+|2000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|00020002000200020002000200020                                                                     |
+|SY-REPID                                                                                          |
+|    /IWFND/CL_METERING_DB=========CP                                                              |
+|    2454442445445454445443333333334522222222                                                      |
+|    F976E4F3CFD54529E7F42DDDDDDDDD3000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    2F004900570046004E0044002F0043004C005F004D00450054004500520049004E0047005F00440042003D003D003\|
+|D003D003D003D003D003D003D004300500020002000200020002000200020002000                               |
+|ME->MT_GW_USED_DB                                                                                 |
+|    Table IT_102[27x120]                                                                          |
+|    {O:29*\CLASS=/IWFND/CL_METERING_DB}\DATA=MT_GW_USED_DB                                        |
+|    Table reference: 45                                                                           |
+|    TABH+ 0(20) = 50931F225F7F00000000000000000000C0B62522                                        |
+|    TABH+20(20) = 5F7F000000000000000000001B00000044040000                                        |
+|    TABH+40(20) = 000000002D000000660000001B00000078000000                                        |
+|    TABH+60(20) = FFFFFFFF04AD00001C4D01001B00010202000000                                        |
+|    store                   = 0x48AD1E225F7F0000                                                  |
+|    statScndKeyAdmin        = 0                                                                   |
+|    ext1                    = 0x28941F225F7F0000                                                  |
+|    ----- Primary Key -----                                                                       |
+|    idxPtr                  = 0                                                                   |
+|    idxKind                 = 0     (ItIndexNone)                                                 |
+|    accKind                 = 1     (ItAccStandard)                                               |
+|    uniKind                 = 2     (ItUniNo)                                                     |
+|    keyKind (from pbag)     = 1     (default)                                                     |
+|    cmpMode                 = 8     (cmpManyEq)                                                   |
+|    shmId                   = 0     (0x00000000)                                                  |
+|    id                      = 45    (0x2D000000)                                                  |
+|    label                   = 102   (0x66000000)                                                  |
+|    fill                    = 27    (0x1B000000)                                                  |
+|    leng                    = 120   (0x78000000)                                                  |
+|    loop                    = -1    (0xFFFFFFFF)                                                  |
+|    xtyp                    = PROG#000173/TYPE#000075                                             |
+|    occu                    = 27    (0x1B00)                                                      |
+|    occu0                   = 1                                                                   |
+|    stMode                  = 0                                                                   |
+|    groupCntl               = 0                                                                   |
+|    rfc                     = 0                                                                   |
+|    unShareable             = 0                                                                   |
+|    mightBeShared           = 0                                                                   |
+|    sharedWithShmTab        = 0                                                                   |
+|    isShmLockId             = 0                                                                   |
+|    isUsed                  = 1                                                                   |
+|    ctfyExclude             = 0                                                                   |
+|    hasScndKeys             = 0                                                                   |
+|    hasRowId                = 0                                                                   |
+|    statScndKeysOutdated    = 0                                                                   |
+|    statScndUniKeysOutdated = 0                                                                   |
+|    primKeyIsEmpty          = No                                                                  |
+|    rtmSelectNoOrderBy      = 0                                                                   |
+|    tstForceExtSort         = 0                                                                   |
+|    ----- Shareable Table Header Data (Store) -----                                               |
+|    tabi                    = 0x3100300030000CC4                                                  |
+|    pgHook                  = 0                                                                   |
+|    uniqueNumber            = 88    (0x58000000)                                                  |
+|    shmTabhSet              = 0                                                                   |
+|    refCount                = 0     (0x00000000)                                                  |
+|    tstRefCount             = 0     (0x00000000)                                                  |
+|    lineAdmin               = 27    (0x1B000000)                                                  |
+|    lineAlloc               = 27    (0x1B000000)                                                  |
+|    shmVersId               = 0     (0x00000000)                                                  |
+|    shmRefCount             = 1     (0x01000000)                                                  |
+|    rowId                   = 18446744073709551615                                                |
+|    ----- 1st level extension part -----                                                          |
+|    regHook                 = 0x0000000000000000                                                  |
+|    collHook                = 0                                                                   |
+|    ext2                    = 0                                                                   |
+|                                                                                                  |
+|    {100;0CC47A1E68C11FE18BC5132763E635CA;read entry;115094629;0000;;20260401;M}                  |
+|    3030300C716C1E8C126E3C20706060602060607070702020202020202020202063D03030303020202020202020202\|
+|020202030303030303030304020                                                                       |
+|    100000C4AE81F1B537365A00205010400050E04020900000000000000000000054C60000000000000000000000000\|
+|00000002000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE18BC5132763E635CA20007200650061006400200065006E0074007200790020002\|
+|000200020002000200020002000200020006534DC06300030003000300020002000200020002000200020002000200020\|
+|0020002000320030003200360030003400300031004D002000                                                |
+|                                                                                                  |
+|    {100;0CC47A1E68C11FE18BC5132763E655CA;;0;0000;DSOMVANSHI;20260401;M}                          |
+|    3030300C716C1E8C126E5C20202020202020202020202020202020202020202000003030303040504040504040504\|
+|040202030303030303030304020                                                                       |
+|    100000C4AE81F1B537365A0000000000000000000000000000000000000000000000000000004030F0D06010E0308\|
+|09000002000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE18BC5132763E655CA2000200020002000200020002000200020002000200020002\|
+|00020002000200020002000200020002000000000003000300030003000440053004F004D00560041004E005300480049\|
+|0020002000320030003200360030003400300031004D002000                                                |
+|                                                                                                  |
+|    {100;0CC47A1E68C11FE18BC5132763E675CA;read feed;2147483647;0000;;20260401;M}                  |
+|    3030300C716C1E8C126E7C207060606020606060602020202020202020202020FFF73030303020202020202020202\|
+|020202030303030303030304020                                                                       |
+|    100000C4AE81F1B537365A002050104000605050400000000000000000000000FFFF0000000000000000000000000\|
+|00000002000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE18BC5132763E675CA2000720065006100640020006600650065006400200020002\|
+|00020002000200020002000200020002000FFFFFF7F300030003000300020002000200020002000200020002000200020\|
+|0020002000320030003200360030003400300031004D002000                                                |
+|                                                                                                  |
+|    {100;0CC47A1E68C11FE18BC5132763E695CA;metadata;29835576;0000;;20260401;M}                     |
+|    3030300C716C1E8C126E9C30606070606060706020202020202020202020202034C03030303020202020202020202\|
+|020202030303030303030304020                                                                       |
+|    100000C4AE81F1B537365A00D05040104010401000000000000000000000000081710000000000000000000000000\|
+|00000002000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE18BC5132763E695CA30006D0065007400610064006100740061002000200020002\|
+|000200020002000200020002000200020003841C701300030003000300020002000200020002000200020002000200020\|
+|0020002000320030003200360030003400300031004D002000                                                |
+|                                                                                                  |
+|    {100;0CC47A1E68C11FE18BC5132763E6B5CA;create;91446420;0000;;20260401;M}                       |
+|    3030300C716C1E8C126EBC40607060607060202020202020202020202020202095703030303020202020202020202\|
+|020202030303030303030304030                                                                       |
+|    100000C4AE81F1B537365A1030205010405000000000000000000000000000004C350000000000000000000000000\|
+|00000002000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE18BC5132763E6B5CA4100630072006500610074006500200020002000200020002\|
+|00020002000200020002000200020002000945C7305300030003000300020002000200020002000200020002000200020\|
+|0020002000320030003200360030003400300031004D003000                                                |
+|<LS_GW_USED_DB>                                                                                   |
+|    {100;0CC47A1E68C11FE18BC5132763E675CA;read feed;2147483647;0000;;20260401;M}                  |
+|    3030300C716C1E8C126E7C207060606020606060602020202020202020202020FFF73030303020202020202020202\|
+|020202030303030303030304020                                                                       |
+|    100000C4AE81F1B537365A002050104000605050400000000000000000000000FFFF0000000000000000000000000\|
+|00000002000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE18BC5132763E675CA2000720065006100640020006600650065006400200020002\|
+|00020002000200020002000200020002000FFFFFF7F300030003000300020002000200020002000200020002000200020\|
+|0020002000320030003200360030003400300031004D002000                                                |
+|%_DUMMY$$                                                                                         |
+|                                                                                                  |
+|    2222                                                                                          |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    2000200020002000                                                                              |
+|%_SPACE                                                                                           |
+|                                                                                                  |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    2000                                                                                          |
+|SPACE                                                                                             |
+|                                                                                                  |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    2000                                                                                          |
+|IS_MET_DAT-MANDT                                                                                  |
+|    100                                                                                           |
+|    333                                                                                           |
+|    100                                                                                           |
+|    000                                                                                           |
+|    000                                                                                           |
+|    310030003000                                                                                  |
+|ME->GC_AGGREGATION_PERIOD-MONTHLY                                                                 |
+|    M                                                                                             |
+|    4                                                                                             |
+|    D                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    4D00                                                                                          |
+|IS_MET_DAT-OPERATION                                                                              |
+|    read feed                                                                                     |
+|    766626666222222222222222222222222222222222222222222222222222                                  |
+|    251406554000000000000000000000000000000000000000000000000000                                  |
+|    000000000000000000000000000000000000000000000000000000000000                                  |
+|    000000000000000000000000000000000000000000000000000000000000                                  |
+|    720065006100640020006600650065006400200020002000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|00200020002000200020002000200020002000200020002000                                                |
+|SY-SUBRC                                                                                          |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+|SY                                                                                                |
+|    {1;0;3;27;0;0;1;0;0;0;27;40;1;65;1;80;0;0;0;120;0;0;0;0;380;0;0;0;0;0;0;0;0;0;0;0;0;0;22;84;0\|
+|;0;0;10800;;u;0000;5;0;0;;;;E;0;X;;X;1000;;;;;;0;__S;000;;;8;0;;;;;;X;;;/IWFND/R_MET;00;LIST1S;;S\|
+|UB;;;DDIC;;;;;X_PAPER;001;;;;;;;;;HDB;;;E19;Linux;STLI;816;;;;;00                                 |
+|    000000000000100000000000000000000000000010002000000040000000500000000000000070000000000000000\|
+|0007000000000000000000000000000000000000000000000000000000010005000000000000000320020700000000000\|
+|00002020204000000050205030303030202020202020202000000050505020202                                 |
+|    100000003000B000000000001000000000000000B0008000100010001000000000000000000080000000000000000\|
+|000C1000000000000000000000000000000000000000000000000000000600040000000000000000A0000500050000C00\|
+|00C000000050000000800080100000000000000000000000000000F0F03000000                                 |
+|    0100000000000000030000001B0000000000000000000000010000000000000000000000000000001B00000028000\|
+|0000100000041000000010000005000000000000000000000000000000078000000000000000000000000000000000000\|
+|007C010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|000000000000000001600000054000000000000000000000000000000302A000020007500000005000000000C00000000\|
+|0C00200020002000450000000000000058002000580031003000300030002000200020002000200020002000200000000\|
+|00000005F005F0053002000200020                                                                     |
+|ME->MT_GW_USED                                                                                    |
+|    Table IT_104[1x120]                                                                           |
+|    {O:29*\CLASS=/IWFND/CL_METERING_DB}\DATA=MT_GW_USED                                           |
+|    Table reference: 44                                                                           |
+|    TABH+ 0(20) = 30C825225F7F0000000000000000000000000000                                        |
+|    TABH+20(20) = 0000000000000000000000000100000044040000                                        |
+|    TABH+40(20) = 000000002C000000680000000100000078000000                                        |
+|    TABH+60(20) = FFFFFFFF04AD00001C4D01000400010202000000                                        |
+|    store                   = 0x10C925225F7F0000                                                  |
+|    statScndKeyAdmin        = 0                                                                   |
+|    ext1                    = 0                                                                   |
+|    ----- Primary Key -----                                                                       |
+|    idxPtr                  = 0                                                                   |
+|    idxKind                 = 0     (ItIndexNone)                                                 |
+|    accKind                 = 1     (ItAccStandard)                                               |
+|    uniKind                 = 2     (ItUniNo)                                                     |
+|    keyKind (from pbag)     = 1     (default)                                                     |
+|    cmpMode                 = 8     (cmpManyEq)                                                   |
+|    shmId                   = 0     (0x00000000)                                                  |
+|    id                      = 44    (0x2C000000)                                                  |
+|    label                   = 104   (0x68000000)                                                  |
+|    fill                    = 1     (0x01000000)                                                  |
+|    leng                    = 120   (0x78000000)                                                  |
+|    loop                    = -1    (0xFFFFFFFF)                                                  |
+|    xtyp                    = PROG#000173/TYPE#000075                                             |
+|    occu                    = 4     (0x0400)                                                      |
+|    occu0                   = 1                                                                   |
+|    stMode                  = 0                                                                   |
+|    groupCntl               = 0                                                                   |
+|    rfc                     = 0                                                                   |
+|    unShareable             = 0                                                                   |
+|    mightBeShared           = 0                                                                   |
+|    sharedWithShmTab        = 0                                                                   |
+|    isShmLockId             = 0                                                                   |
+|    isUsed                  = 1                                                                   |
+|    ctfyExclude             = 0                                                                   |
+|    hasScndKeys             = 0                                                                   |
+|    hasRowId                = 0                                                                   |
+|    statScndKeysOutdated    = 0                                                                   |
+|    statScndUniKeysOutdated = 0                                                                   |
+|    primKeyIsEmpty          = No                                                                  |
+|    rtmSelectNoOrderBy      = 0                                                                   |
+|    tstForceExtSort         = 0                                                                   |
+|    ----- Shareable Table Header Data (Store) -----                                               |
+|    tabi                    = 0x3100300030000CC4                                                  |
+|    pgHook                  = 0                                                                   |
+|    uniqueNumber            = 90    (0x5A000000)                                                  |
+|    shmTabhSet              = 0                                                                   |
+|    refCount                = 0     (0x00000000)                                                  |
+|    tstRefCount             = 0     (0x00000000)                                                  |
+|    lineAdmin               = 4     (0x04000000)                                                  |
+|    lineAlloc               = 4     (0x04000000)                                                  |
+|    shmVersId               = 0     (0x00000000)                                                  |
+|    shmRefCount             = 1     (0x01000000)                                                  |
+|    rowId                   = 18446744073709551615                                                |
+|    {100;0CC47A1E68C11FE1919E4EE4610615CA;;0;0000;ADMIN_SG_E19;20260401;M}                        |
+|    3030300C716C1E994E601C00202020202020202020202020202020202020202000003030303040404040405050405\|
+|040303030303030303030304000                                                                       |
+|    100000C4AE81F11EE4165A0000000000000000000000000000000000000000000000000000001040D090E0F03070F\|
+|05010902000206000400010D000                                                                       |
+|    3100300030000CC47A1E68C11FE1919E4EE4610615CA0000200020002000200020002000200020002000200020002\|
+|00020002000200020002000200020002000000000003000300030003000410044004D0049004E005F00530047005F0045\|
+|0031003900320030003200360030003400300031004D000000                                                |
+|<LS_GW_USED>                                                                                      |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+|LS_GW_USED                                                                                        |
+|    {;00000000000000000000000000000000;;0;0000;;00000000;}                                        |
+|    202020000000000000000000202020202020202020202020202020202020202000003030303020202020202020202\|
+|020202030303030303030302000                                                                       |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|000000000000000000000000000                                                                       |
+|    200020002000000000000000000000000000000000000000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200000000000300030003000300020002000200020002000200020002000200020\|
+|00200020003000300030003000300030003000300020000000                                                |
+----------------------------------------------------------------------------------------------------
+|No.       2 Ty.          METHOD                                                                   |
+|Name  /IWFND/CL_METERING_DB=>AGGREGATE_COL_DATA                                                   |
+----------------------------------------------------------------------------------------------------
+|IV_MSG_HANDLE                                                                                     |
+|    {;000000}                                                                                     |
+|    20202020202020202020202020202020202020202020303030303030                                      |
+(remainder of dump trimmed for fixture brevity)

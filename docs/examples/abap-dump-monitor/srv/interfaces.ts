@@ -43,19 +43,11 @@ export interface CallFrame {
   line?: number;
   eventType?: string;
   eventName?: string;
-  objectClass?: string;
-}
-
-export interface ReferencedObject {
-  objectName: string;
-  objectType: string;
-  subObject?: string;
-  package?: string;
-  source: 'stack' | 'source-extract' | 'message';
 }
 
 export interface VariableSnapshot {
-  scope: 'local' | 'global' | 'sy';
+  scope: string;
+  frameNo?: number;
   name: string;
   type?: string;
   value?: string;
@@ -74,7 +66,6 @@ export interface ParsedDump {
   header: DumpHeader;
   rawPayload: string;
   callStack: CallFrame[];
-  referencedObjects: ReferencedObject[];
   variables: VariableSnapshot[];
   sourceExtract?: SourceExtract;
 }

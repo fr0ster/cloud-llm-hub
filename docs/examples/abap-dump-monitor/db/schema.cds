@@ -35,7 +35,6 @@ entity MonitoredDump : cuid, managed {
   skipJira          : Boolean     default false;
 
   callStack         : Composition of many CallStackEntry on callStack.parent = $self;
-  referencedObjects : Composition of many ReferencedObject on referencedObjects.parent = $self;
   variables         : Composition of many VariableSnapshot on variables.parent = $self;
   sourceExtract     : Composition of one SourceExtract on sourceExtract.parent = $self;
 }
@@ -48,20 +47,11 @@ entity CallStackEntry : cuid {
   line         : Integer;
   eventType    : String(40);
   eventName    : String(60);
-  objectClass  : String(20);
-}
-
-entity ReferencedObject : cuid {
-  parent      : Association to MonitoredDump;
-  objectName  : String(60);
-  objectType  : String(20);
-  subObject   : String(60);
-  package     : String(40);
-  source      : String(20);
 }
 
 entity VariableSnapshot : cuid {
   parent     : Association to MonitoredDump;
+  frameNo    : Integer;
   scope      : String(20);
   name       : String(60);
   type       : String(40);

@@ -11,7 +11,7 @@ const SEED: Array<{ key: string; envKey: string; def: string; dataType: string; 
   { key: 'ANALYSIS_CONCURRENCY',     envKey: 'ANALYSIS_CONCURRENCY',     def: '2',                                       dataType: 'int',    description: 'Max parallel analyses per tick.' },
   { key: 'JIRA_TICK_MS',             envKey: 'JIRA_TICK_MS',             def: '10000',                                   dataType: 'int',    description: 'Jira worker tick interval in ms.' },
   { key: 'LLM_MODEL',                envKey: 'LLM_MODEL',                def: 'anthropic--claude-4.5-sonnet',            dataType: 'string', description: 'cloud-llm-hub model id.' },
-  { key: 'LLM_TEMPERATURE',          envKey: 'LLM_TEMPERATURE',          def: '0.2',                                     dataType: 'string', description: 'LLM temperature.' },
+  { key: 'LLM_TEMPERATURE',          envKey: 'LLM_TEMPERATURE',          def: '0',                                       dataType: 'string', description: 'LLM temperature. 0 = deterministic decoding (right for strict-format tasks). Raise only if the analyser is repeatedly hallucinating fixes.' },
   { key: 'DUMP_SIGNATURE_FIELDS',    envKey: 'DUMP_SIGNATURE_FIELDS',    def: 'system,runtimeError,program,include',     dataType: 'csv',    description: 'Fields composing the dedup signature.' },
   { key: 'JIRA_HISTORY_DAYS',        envKey: 'JIRA_HISTORY_DAYS',        def: '30',                                      dataType: 'int',    description: 'Window for recurrence count.' },
   { key: 'JIRA_PROJECT_KEY',         envKey: 'JIRA_PROJECT_KEY',         def: 'EPMCSAPDDF',                              dataType: 'string', description: 'Jira project key.' },

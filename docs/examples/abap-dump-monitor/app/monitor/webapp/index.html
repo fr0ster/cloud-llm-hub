@@ -4,14 +4,30 @@
   <meta charset="utf-8">
   <title>ABAP Dump Monitor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script
-    id="sap-ui-bootstrap"
-    src="https://sapui5.hana.ondemand.com/1.136.0/resources/sap-ui-core.js"
-    data-sap-ui-theme="sap_horizon"
-    data-sap-ui-resourceroots='{"monitor": "./"}'
-    data-sap-ui-oninit="module:sap/ui/core/ComponentSupport"
-    data-sap-ui-async="true"
-    data-sap-ui-frameoptions="trusted">
+  <script>
+    // Pick the theme before UI5 bootstraps so the right CSS is loaded on
+    // first paint. Priority: explicit ?sap-theme=… query → persisted
+    // localStorage choice → OS prefers-color-scheme. This makes deep-link
+    // / new-window opens (which bypass BTP Launchpad's shell that would
+    // normally inject the user's theme) match the user's OS / last pick.
+    // Write the bootstrap script tag dynamically so the data-sap-ui-theme
+    // attribute is set BEFORE the browser starts fetching sap-ui-core.js.
+    (function () {
+      var url    = new URLSearchParams(window.location.search);
+      var stored = null;
+      try { stored = window.localStorage.getItem('abap-dump-monitor-theme'); } catch (_) {}
+      var dark   = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var theme  = url.get('sap-theme') || stored || (dark ? 'sap_horizon_dark' : 'sap_horizon');
+      document.write(
+        '<script id="sap-ui-bootstrap"' +
+        ' src="https://sapui5.hana.ondemand.com/1.136.0/resources/sap-ui-core.js"' +
+        ' data-sap-ui-theme="' + theme + '"' +
+        ' data-sap-ui-resourceroots=\'{"monitor": "./"}\'' +
+        ' data-sap-ui-oninit="module:sap/ui/core/ComponentSupport"' +
+        ' data-sap-ui-async="true"' +
+        ' data-sap-ui-frameoptions="trusted"><\/script>'
+      );
+    })();
   </script>
 </head>
 <body class="sapUiBody" id="content">

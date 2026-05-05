@@ -10,7 +10,7 @@ export class Analyzer implements IAnalyzer {
 
   async analyze(parsed: ParsedDump): Promise<AnalysisResult> {
     const model = (await this.settings.get('LLM_MODEL')) ?? 'anthropic--claude-4.5-sonnet';
-    const temperature = Number.parseFloat((await this.settings.get('LLM_TEMPERATURE')) ?? '0.2');
+    const temperature = Number.parseFloat((await this.settings.get('LLM_TEMPERATURE')) ?? '0');
 
     const userPrompt = buildPrompt(parsed);
     const body = {
@@ -21,16 +21,25 @@ export class Analyzer implements IAnalyzer {
         {
           role: 'system',
           content: [
-            'You are an automated ABAP dump-triage formatter. Your output is fed verbatim',
-            'into a Jira ticket — there is NO human chat going on, no follow-up turn, no',
-            'tools to call. Produce the issue body and stop.',
+            'This is NOT a conversation. There is no user on the other end. Your single',
+            'response is taken as-is and posted as the body of a Jira incident ticket for',
+            'an ABAP runtime dump. The reader is the assigned developer reading the ticket',
+            'after the fact — they cannot reply, ask follow-up questions, or accept offers',
+            'of further help. There will be no second turn.',
             '',
-            'The response MUST be exactly four markdown sections, in this order, and',
-            'NOTHING else. No preamble, no first-person narration, no tool announcements,',
-            'no "I can see" / "Let me check" / "[SmartAgent: …]" / "Would you like me to".',
-            'If you write any of those phrases, the output is rejected.',
+            'OUTPUT CONTRACT — these are hard requirements, not suggestions:',
+            '* Your response begins with the literal characters "## Location" — no leading',
+            '  H1 title, no preamble paragraph, no "Analysis of…" cover heading.',
+            '* The response contains EXACTLY four "## " headings, in this order, spelled',
+            '  exactly: "## Location", "## Cause", "## Investigation", "## Fix". No other',
+            '  H2/H3 headings (no "## Problem Summary", "## Root Cause", "## Why", "## Next',
+            '  Steps", "## Recommended Solutions", "## Recommendations", etc.).',
+            '* The response ends with the last line of the "## Fix" section — no trailing',
+            '  questions, no offers ("Would you like…", "Should I…", "Do you want…",',
+            '  "I can also…", "Let me know…"), no closing summary.',
+            '* Style: terse, factual, business — third-person impersonal, no first-person.',
             '',
-            'Required output template (replace the bracketed text, keep the headings):',
+            'Section contents (replace the bracketed text, keep the headings):',
             '',
             '## Location',
             '<one paragraph: program / include / method / line + the exact offending ABAP',
@@ -86,53 +95,47 @@ export class Analyzer implements IAnalyzer {
     const data = await resp.json() as any;
     const raw = JSON.stringify(data);
     const content: string = data?.choices?.[0]?.message?.content ?? '';
-    // Strip cloud-llm-hub SmartAgent traces and chat-style narration that some
-    // models still inject despite the "no chat asides" rule. Keep only the
-    // sectioned content: from the first "## " heading onward.
-    const cleaned = stripChatNoise(content);
-    const recommendations = cleaned;
+    // No code-side filtering: response shape is the prompt's contract.
+    // If the model emits chat asides, fix the prompt — not regexes here.
+    const recommendations = content.trim();
     return { raw, recommendations };
   }
 }
 
 function buildPrompt(p: ParsedDump): string {
-  const top5 = p.callStack.slice(0, 5).map(f => `${f.position}. ${f.eventType ?? ''} ${f.eventName ?? ''} @ ${f.program}/${f.include}:${f.line}`).join('\n');
+  // The user message is *data*, not a structured document. Markdown headings
+  // here (e.g. '## Top stack') leak into the model's output style — it mirrors
+  // the input's heading structure and emits its own H2 headings ('## Problem
+  // Summary', '## Root Cause') instead of the four required by the system
+  // prompt. Use lowercase YAML-like labels and indented blocks; reserve '##'
+  // for the response template only.
+  const top5 = p.callStack.slice(0, 5)
+    .map(f => `  ${f.position}. ${f.eventType ?? ''} ${f.eventName ?? ''} @ ${f.program}/${f.include}:${f.line}`)
+    .join('\n');
+  const vars = p.variables.slice(0, 20)
+    .map(v => `  - [${v.scope}] ${v.name} = ${v.value ?? ''}`)
+    .join('\n');
   return [
-    `# ABAP Dump`,
-    `System: ${p.header.system}  Client: ${p.header.client ?? ''}  User: ${p.header.abapUser ?? ''}`,
-    `Runtime error: ${p.header.runtimeError ?? ''}`,
-    `Exception: ${p.header.exceptionClass ?? ''}`,
-    `Location: ${p.header.program}/${p.header.include}:${p.header.sourceLine}`,
-    `Short text: ${p.header.shortText ?? ''}`,
+    `dump_data:`,
+    `  system: ${p.header.system}`,
+    `  client: ${p.header.client ?? ''}`,
+    `  abap_user: ${p.header.abapUser ?? ''}`,
+    `  runtime_error: ${p.header.runtimeError ?? ''}`,
+    `  exception_class: ${p.header.exceptionClass ?? ''}`,
+    `  location: ${p.header.program}/${p.header.include}:${p.header.sourceLine}`,
+    `  short_text: ${p.header.shortText ?? ''}`,
     ``,
-    `## Top stack`,
+    `top_stack:`,
     top5,
     ``,
-    `## Source extract`,
-    '```abap',
-    p.sourceExtract?.code ?? '(none)',
-    '```',
+    `source_extract: |`,
+    (p.sourceExtract?.code ?? '(none)').split('\n').map(l => '  ' + l).join('\n'),
     ``,
-    `## Variables`,
-    p.variables.slice(0, 20).map(v => `- [${v.scope}] ${v.name} : ${v.type ?? ''} = ${v.value ?? ''}`).join('\n')
+    `variables:`,
+    vars,
+    ``,
+    `Now produce the four-section ticket body per the system prompt's contract.`
   ].join('\n');
-}
-
-function stripChatNoise(md: string): string {
-  if (!md) return md;
-  let s = md;
-  // Drop cloud-llm-hub SmartAgent traces (single line and multi-line).
-  s = s.replace(/^\s*\[SmartAgent:[^\]]*\]\s*$/gm, '');
-  s = s.replace(/^\s*\[Tool[^\]]*\]\s*$/gm, '');
-  s = s.replace(/^\s*Let me [^\n]+\n/gm, '');
-  s = s.replace(/^\s*I (?:can see|will|need to|notice|am going to)[^\n]+\n/gm, '');
-  s = s.replace(/^\s*Would you like[^\n]+\n/gm, '');
-  // Trim everything before the first "## " heading.
-  const i = s.indexOf('## ');
-  if (i > 0) s = s.slice(i);
-  // Collapse 3+ blank lines.
-  s = s.replace(/\n{3,}/g, '\n\n');
-  return s.trim();
 }
 
 function extractSection(md: string, heading: string): string | undefined {

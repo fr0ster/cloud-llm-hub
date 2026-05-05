@@ -1,4 +1,4 @@
-import type { ParsedDump, DumpHeader, CallFrame, ReferencedObject, VariableSnapshot, SourceExtract } from './interfaces';
+import type { ParsedDump, DumpHeader, CallFrame, VariableSnapshot, SourceExtract } from './interfaces';
 
 // cloud-llm-hub RuntimeGetDumpById(view='formatted') returns the long-form ST22
 // dump as pipe-delimited text. Sections of interest:
@@ -99,9 +99,7 @@ export function parseDump(system: string, dumpId: string, payload: string): Pars
     }
   }
 
-  const referencedObjects = dedupReferences(callStack, sourceExtract);
-
-  return { header, rawPayload: payload, callStack, referencedObjects, variables, sourceExtract };
+  return { header, rawPayload: payload, callStack, variables, sourceExtract };
 }
 
 // Known top-level chapter titles in formatted ST22 dumps. Any pipe-line whose entire
@@ -146,23 +144,30 @@ function pipeContent(line: string): string {
 function parseCallStack(section: string): CallFrame[] {
   const frames: CallFrame[] = [];
   const lines = section.split(/\r?\n/).filter(l => l.startsWith('|') && !/^\|-+/.test(l));
+  // Detail row examples:
+  //   "   13 METHOD       CL_X=========CP    CL_X=========CM00G    22"
+  //   "    2 FUNCTION     SAPLHTTP_RUNTIME    LHTTP_RUNTIMEU02    1779"
+  //   "    1 MODULE (PBO) SAPMHTTP            SAPMHTTP              12"   ← parens with space
+  // eventType may include a parenthesised qualifier: anchor on KIND keyword,
+  // optionally followed by " (...)".
+  const ROW = /^\s*(\d+)\s+(METHOD|FUNCTION|FORM|EVENT|MODULE|PROGRAM)(\s*\([^)]+\))?\s+(\S+)\s+(\S+)\s+(\d+)\s*$/;
   for (let i = 0; i < lines.length; i++) {
     const c = pipeContent(lines[i]);
-    // Detail row:  "    3 METHOD       /IWFND/CL_METERING_DB=========CP    /IWFND/CL_METERING_DB=========CM00C    21"
-    const m = /^\s*(\d+)\s+(\w+)\s+(\S+)\s+(\S+)\s+(\d+)\s*$/.exec(c);
+    const m = ROW.exec(c);
     if (!m) continue;
+    const eventType = (m[2] + (m[3] ?? '')).replace(/\s+/g, ' ').trim();
     let eventName: string | undefined;
     if (i + 1 < lines.length) {
       const next = pipeContent(lines[i + 1]).trim();
-      if (next && !/^\d+\s+\w+\s+/.test(next)) eventName = next;
+      if (next && !ROW.test(next)) eventName = next;
     }
     frames.push({
       position: Number.parseInt(m[1], 10),
-      eventType: m[2],
+      eventType,
       eventName,
-      program: m[3],
-      include: m[4],
-      line: Number.parseInt(m[5], 10)
+      program: m[4],
+      include: m[5],
+      line: Number.parseInt(m[6], 10)
     });
   }
   return frames;
@@ -198,40 +203,83 @@ function parseSourceExtract(section: string): SourceExtract | undefined {
 function parseVariables(section: string): VariableSnapshot[] {
   if (!section) return [];
   const result: VariableSnapshot[] = [];
-  const lines = section.split(/\r?\n/);
+  const rawLines = section.split(/\r?\n/);
+  // Pre-pass: stitch continuation lines. ST22 long values overflow the pipe
+  // column; the formatter terminates an unfinished line with a literal '\'
+  // before the closing pipe ('...XYZ\|'). The next line continues without a
+  // leading-space indent marker — treat the join as character-level.
+  const stitched: string[] = [];
+  let buf = '';
+  for (const raw of rawLines) {
+    if (!raw.startsWith('|')) { if (buf) { stitched.push(buf); buf = ''; } continue; }
+    if (/^\|-+/.test(raw)) { if (buf) { stitched.push(buf); buf = ''; } continue; }
+    const c = pipeContent(raw);
+    if (c.endsWith('\\')) buf += c.slice(0, -1);
+    else { stitched.push(buf + c); buf = ''; }
+  }
+  if (buf) stitched.push(buf);
+
   let pendingName: string | undefined;
   let valueAccum: string[] = [];
-  let scope: VariableSnapshot['scope'] = 'local';
+  let scope = 'local';
+  let frameNo: number | undefined;
+  let expectFrameNameLine = false;
+  // ABAP runtime-internal helpers that pollute the variables list — '%_PRINT',
+  // '%_SPACE', '%_DUMMY$$', '%_ARCHIVE', '%_##TVREG_*', '%_EXCP%_#E*' and the
+  // anonymous '<%_L###>' field symbols. These describe ST22's own bookkeeping,
+  // not user code state, and on recursive dumps they account for ~20% of rows.
+  // SY-* / SYST-* are kept — they expose the SAP system field state (SUBRC,
+  // MSGID, DBCNT, …) which is genuinely useful when reading a dump.
+  const NOISE = /^(?:%_|<%_)/;
   const flush = () => {
-    if (pendingName) {
+    if (pendingName && !NOISE.test(pendingName)) {
+      // Keep only the first (printable) representation row of the value;
+      // ST22 lists 3-4 additional rows per non-printable type for hex
+      // high/low bytes and char codes, which collapse into the cell as
+      // "X\n5\n8\n0\n0\n5800" — useless in a Fiori table.
+      const lines = valueAccum.map(l => l.trimEnd()).filter(l => l.length > 0);
+      const first = lines[0] ?? '';
       result.push({
         scope,
+        frameNo,
         name: pendingName,
         type: '',
-        value: valueAccum.join('\n').trim()
+        value: first,
+        truncated: lines.length > 1
       });
     }
     pendingName = undefined;
     valueAccum = [];
   };
-  for (const raw of lines) {
-    if (!raw.startsWith('|') || /^\|-+/.test(raw)) continue;
-    const c = pipeContent(raw);
+  for (const c of stitched) {
     const trimmed = c.trim();
     if (!trimmed) continue;
-    if (/^No\.\s+\d+\s+Ty\./.test(trimmed)) {
-      // frame separator; classify upcoming variables as local/global by frame.
+    // Frame separator: "No.   13 Ty.   METHOD ..."
+    const fm = /^No\.\s+(\d+)\s+Ty\.\s+([A-Z()\s]+?)(?:\s{2,}|$)/.exec(trimmed);
+    if (fm) {
       flush();
+      frameNo = Number.parseInt(fm[1], 10);
+      scope = fm[2].replace(/\s+/g, ' ').trim().toLowerCase();
+      expectFrameNameLine = true;
       continue;
     }
-    if (trimmed.startsWith('Name')) { flush(); continue; }
-    // Variable name: starts at column 0, ALL CAPS or with - or < pattern, no leading spaces beyond pipe
-    if (!c.startsWith('    ') && !c.startsWith('\t') && trimmed.length > 0) {
+    // Frame name line right after frame separator: "Name  CL_X=>METHOD" — skip.
+    if (expectFrameNameLine && /^Name\s+\S/.test(trimmed)) {
+      expectFrameNameLine = false;
+      continue;
+    }
+    expectFrameNameLine = false;
+    // Section column header: "Name", "Val.", "Name    Val." — skip.
+    if (/^Name(\s+Val\.?)?$/.test(trimmed) || /^Val\.?$/.test(trimmed)) { flush(); continue; }
+    // Variable name lines start at column 0 of pipe content (no leading spaces).
+    // Value lines are indented (≥4 spaces) — they may be hex/char rows for the
+    // current variable, multiple per name (printable, hex high, hex low, etc).
+    if (!/^\s/.test(c)) {
       flush();
       pendingName = trimmed;
       continue;
     }
-    valueAccum.push(c.replace(/^\s{0,8}/, ''));
+    valueAccum.push(c.replace(/^ {0,8}/, ''));
   }
   flush();
   return result;
@@ -242,15 +290,3 @@ function extractShortText(payload: string): string | undefined {
   return m ? m[1].trim() : undefined;
 }
 
-function dedupReferences(callStack: CallFrame[], src: SourceExtract | undefined): ReferencedObject[] {
-  const seen = new Set<string>();
-  const out: ReferencedObject[] = [];
-  const add = (name: string | undefined, source: ReferencedObject['source']) => {
-    if (!name || seen.has(name)) return;
-    seen.add(name);
-    out.push({ objectName: name, objectType: 'PROG', source });
-  };
-  for (const f of callStack) { add(f.program, 'stack'); add(f.include, 'stack'); }
-  if (src) { add(src.program, 'source-extract'); add(src.include, 'source-extract'); }
-  return out;
-}

@@ -1,0 +1,609 @@
+----------------------------------------------------------------------------------------------------
+Category               ABAP programming error                                                                                                                                                                                                                                                       
+Runtime Errors         STRING_LENGTH_NEGATIVE                                                                                                                                                                                                                                                       
+Except.                CX_SY_RANGE_OUT_OF_BOUNDS                                                                                                                                                                                                                                                    
+ABAP: Program          CL_ADT_DP_ABSTRACT_SQL_HANDLERCP                                                                                                                                                                                                                                             
+Application Component  BC-DWB-AIE-DP                                                                                                                                                                                                                                                                
+Date and Time          04.05.2026 18:24:46 (UTC+3)                                                                                                                                                                                                                                                  
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Short Text                                                                                        |
+|    Invalid access with negative length to a string                                               |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What happened?                                                                                    |
+|    Error in the ABAP application program.                                                        |
+|                                                                                                  |
+|    The current ABAP program "CL_ADT_DP_ABSTRACT_SQL_HANDLERCP" had to be                         |
+|     terminated because it found a                                                                |
+|    statement that could not be executed.                                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What can you do?                                                                                  |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Error analysis                                                                                    |
+|    An exception of class "CX_SY_RANGE_OUT_OF_BOUNDS" occurred. This exception was                |
+|     not caught in                                                                                |
+|    procedure "PARSE_QUERY" "(METHOD)" or propagated by a RAISING clause.                         |
+|    Since the caller of the procedure could not have anticipated this                             |
+|    exception, the current program was terminated.                                                |
+|    The reason for the exception occurring was:                                                   |
+|    The reason for the exception is:                                                              |
+|    An attempt was made in program "CL_ADT_DP_ABSTRACT_SQL_HANDLERCP" to access a                 |
+|     part of a string using                                                                       |
+|    an explicitly specified length.                                                               |
+|    This length ("-6") was negative however.                                                      |
+|    Access is not possible like this.                                                             |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|How to correct the error                                                                          |
+|    If the exception cannot be prevented, "CX_SY_RANGE_OUT_OF_BOUNDS" must be                     |
+|     caught within                                                                                |
+|    procedure "PARSE_QUERY" "(METHOD)" or declared in the procedure's RAISING                     |
+|     clause.                                                                                      |
+|    To prevent the exception, note the following:                                                 |
+|                                                                                                  |
+|    To access a substring, always enter a positive length.                                        |
+|    If the error occurs in one of your own ABAP programs or an SAP program                        |
+|    that you have modified, try to remedy the error.                                              |
+|                                                                                                  |
+|    If you cannot solve the problem yourself, please send the following                           |
+|    information to SAP:                                                                           |
+|                                                                                                  |
+|    1. The description of the problem (short dump)                                                |
+|    Please press the "Local File” button in the current display.                                  |
+|                                                                                                  |
+|    2. The relevant system log                                                                    |
+|    To do this, call the system log in transaction SM21. Restrict the time                        |
+|    interval to ten minutes before the short dump and five minutes after                          |
+|    it. In the display, choose System -> List -> Save -> Local File                               |
+|    (unconverted).                                                                                |
+|                                                                                                  |
+|    3. If these are programs of your own, or modified SAP programs: The                           |
+|    source text of the programs                                                                   |
+|    To do this, please choose                                                                     |
+|    "Other Utilities -> Upload/Download -> Download".                                             |
+|                                                                                                  |
+|    4. Details regarding the conditions under which the error occurred or                         |
+|    which actions and input caused the error.                                                     |
+|    which actions and input caused the error.                                                     |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|System environment                                                                                |
+|    SAP Release..... 816                                                                          |
+|    SAP Basis level 0000                                                                          |
+|                                                                                                  |
+|    Application server... demohost01                                                           |
+|    Instance name....... demohost01_E19_00                                                     |
+|    Network address...... 10.6.6.50                                                               |
+|    Operating system... Linux                                                                     |
+|    Release.............. 6.4.0-150600.21-defa                                                    |
+|    Hardware type....... x86_64                                                                   |
+|    Character length..... 16 Bits                                                                 |
+|    Pointer length........ 64 Bits                                                                |
+|    Work process number... 19                                                                     |
+|    Work process ID....... 35575                                                                  |
+|    ABAP load version.... 3684                                                                    |
+|    Shortdump setting. full                                                                       |
+|                                                                                                  |
+|    Database server... demohost01                                                              |
+|    Database type..... HDB                                                                        |
+|    Database name..... E19                                                                        |
+|    Database user ID SAPHANADB                                                                    |
+|                                                                                                  |
+|    Terminal.......... 10.82.39.70                                                                |
+|                                                                                                  |
+|    Character set C                                                                               |
+|                                                                                                  |
+|    SAP kernel....... 916                                                                         |
+|    Created on....... Aug 19 2025 20:27:15                                                        |
+|    Created at....... Linux GNU SLES-15 x86_64  cc10.3.0 use-pr250819                             |
+|    Database version SQLDBC 2.25.029.1751901582                                                   |
+|    Patch level....... 50                                                                         |
+|    Patch text.......                                                                             |
+|    Hash............. c923521b123f8872bbf887037deb5b11f4a01151                                    |
+|    Version.......... v9.16-2346-gc923521b                                                        |
+|                                                                                                  |
+|    Database............ HANA 1.0, HANA 2.0                                                       |
+|    SAP database version. 916                                                                     |
+|    Operating system... "Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                       |
+|     c923521b123f8872bbf887037deb5b11f4a01151"                                                    |
+|    Operating system... Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                        |
+|     c923521b123f8872bbf887037deb5b11f4a01151                                                     |
+|                                                                                                  |
+|    Memory consumption                                                                            |
+|    EM...... 8273433 Bytes                                                                        |
+|    Heap........................ 0 Bytes                                                          |
+|    Page........................ 24576 Bytes                                                      |
+|    MM used memory..... 3987688 Bytes                                                             |
+|    MM free memory.......... 4281600 Bytes                                                        |
+|    MM largest free block... 2858624 Bytes                                                        |
+|    MM used blocks....... 1369                                                                    |
+|    MM free blocks............ 24                                                                 |
+|    MM maximum memory used... 9402048 Bytes                                                       |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|User and Transaction                                                                              |
+|    Client................. 100                                                                   |
+|    User.................. DEMOUSER1                                                               |
+|    Language key.......... E                                                                      |
+|    Transaction.........                                                                          |
+|    Transaction ID...... 8926B03857820130E0069F07BAA2A8E6                                         |
+|                                                                                                  |
+|    EPP Root Context ID.... 0CC47A1E68C11FE191F9AC4A3B2995CA                                      |
+|    EPP Connection ID...... 0CC47A1E68C11FE191F9AC4A3B29B5CA                                      |
+|    EPP Connection Counter. 1                                                                     |
+|    EPP Component Name..... E19/demohost01_E19_00                                              |
+|                                                                                                  |
+|    Program....................... CL_ADT_DP_ABSTRACT_SQL_HANDLERCP                               |
+|    Screen......................... SAPMHTTP                                0010                  |
+|    Screen line.................... 2                                                             |
+|    Debugger interpretor loop... "none"                                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Server-Side Connection Information                                                                |
+|    Information on caller of "HTTP" connection: Plug-in type......... HTTP                        |
+|    Caller IP.............. 10.82.39.70                                                           |
+|    Caller port............ 8000                                                                  |
+|    Universal resource ID /sap/bc/adt/datapreview/freestyle                                       |
+|                                                                                                  |
+|    Program.............. CL_ADT_DP_ABSTRACT_SQL_HANDLERCP                                        |
+|    Screen.............. SAPMHTTP                                0010                             |
+|    Screen line.......... 2                                                                       |
+|                                                                                                  |
+|    Information on caller of "HTTP" connection: Plug-in type......... HTTP                        |
+|    Caller IP.............. 10.82.39.70                                                           |
+|    Caller port............ 8000                                                                  |
+|    Universal resource ID "/sap/bc/adt/datapreview/freestyle"                                     |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Chain of Exception Objects                                                                        |
+----------------------------------------------------------------------------------------------------
+|Level        Class                                                                                |
+|Attrib. Name                   Value                                                              |
+----------------------------------------------------------------------------------------------------
+|1            CX_SY_RANGE_OUT_OF_BOUNDS                                                            |
+|(Program)                      CL_ADT_DP_ABSTRACT_SQL_HANDLERCP                                   |
+|(Include)                      CL_ADT_DP_ABSTRACT_SQL_HANDLERCM00G                                |
+|(Row)                          22                                                                 |
+|(Short Text)                   Substring access (offset = 6, length = 6-) to a data object of the |
+|                               size 68 exceeds valid boundaries.                                  |
+|(Long Text)                    The sub area access (Offset = 6, Länge =                           |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                          &LEN GTH&) on a data    |
+|                               object of size 68, lies outwith the valid boundaries.              |
+|IS_RESUMABLE                                                                                      |
+|KERNEL_ERRID                                                                                      |
+|LENGTH                         6-                                                                 |
+|OFFSET                         6                                                                  |
+|SIZE                           68                                                                 |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Information on where terminated                                                                   |
+|    The termination occurred in ABAP program or include                                           |
+|     "CL_ADT_DP_ABSTRACT_SQL_HANDLERCP", in "PARSE_QUERY". The                                    |
+|    main program was "SAPMHTTP".                                                                  |
+|                                                                                                  |
+|    In the source code, the termination point is in line 22 of include                            |
+|     "CL_ADT_DP_ABSTRACT_SQL_HANDLERCM00G".                                                       |
+|    include "CL_ADT_DP_ABSTRACT_SQL_HANDLERCM00G".                                                |
+|    The termination is due to exception "CX_SY_RANGE_OUT_OF_BOUNDS" occurring in                  |
+|     procedure "PARSE_QUERY" "(METHOD)",                                                          |
+|    but not being handled locally there or being declared in the RAISING                          |
+|    clause.                                                                                       |
+|    The procedure is in program "CL_ADT_DP_ABSTRACT_SQL_HANDLERCP". Its source                    |
+|     code begins in line 1 of                                                                     |
+|    include "CL_ADT_DP_ABSTRACT_SQL_HANDLERCM00G".                                                |
+----------------------------------------------------------------------------------------------------
+
+|Source Code Extract                                                                                                                                                       |
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|Line |Code                                                                                                                                                                |
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|    1|  METHOD parse_query.                                                                                                                                               |
+|    2|    DATA ls_token         TYPE stokesx.                                                                                                                             |
+|    3|    DATA lv_substr_length TYPE i.                                                                                                                                   |
+|    4|    DATA lv_error_message TYPE string.                                                                                                                              |
+|    5|                                                                                                                                                                    |
+|    6|    tokenise_query( IMPORTING et_tokens = mt_query_tokens ).                                                                                                        |
+|    7|                                                                                                                                                                    |
+|    8|    validate_tokens( ).                                                                                                                                             |
+|    9|                                                                                                                                                                    |
+|   10|    lv_substr_length = 0.                                                                                                                                           |
+|   11|    " getting the select clause                                                                                                                                     |
+|   12|    LOOP AT mt_query_tokens INTO ls_token.                                                                                                                          |
+|   13|      IF ( ls_token-type = sana_tok_keyword OR ls_token-type = sana_tok_word ) AND (    ls_token-str = c_select_keyword-from OR ls_token-str = c_select_keyword-into|
+|   14|                                                                                     OR ls_token-str = c_select_keyword-up   ).                                     |
+|   15|        EXIT.                                                                                                                                                       |
+|   16|      ENDIF.                                                                                                                                                        |
+|   17|    ENDLOOP.                                                                                                                                                        |
+|   18|                                                                                                                                                                    |
+|   19|    DATA(lv_regex) =  |(^\|\\s){ ls_token-str }(\\s\|$)|.                                                                                                           |
+|   20|    FIND PCRE lv_regex IN mv_query_string MATCH OFFSET lv_substr_length.                                                                                            |
+|   21|                                                                                                                                                                    |
+|>>>>>|    mv_select_clause = substring( val = mv_query_string                                                                                                             |
+|   23|                                  off = 6                                                                                                                           |
+|   24|                                  len = ( lv_substr_length  - 6 ) ).                                                                                                |
+|   25|                                                                                                                                                                    |
+|   26|    CONDENSE mv_select_clause.                                                                                                                                      |
+|   27|                                                                                                                                                                    |
+|   28|    get_clause_for_token( EXPORTING iv_token  = c_select_keyword-from                                                                                               |
+|   29|                          IMPORTING ev_clause = mv_from_clause                                                                                                      |
+|   30|                                    ev_offset = mv_from_offset                                                                                                      |
+|   31|                                    ev_length = mv_from_length ).                                                                                                   |
+|   32|                                                                                                                                                                    |
+|   33|    get_clause_for_token( EXPORTING iv_token  = c_select_keyword-into                                                                                               |
+|   34|                          IMPORTING ev_clause = mv_into_clause                                                                                                      |
+|   35|                                    ev_offset = mv_into_offset                                                                                                      |
+|   36|                                    ev_length = mv_into_length ).                                                                                                   |
+|   37|                                                                                                                                                                    |
+|   38|    get_clause_for_token( EXPORTING iv_token  = c_select_keyword-up                                                                                                 |
+|   39|                          IMPORTING ev_clause = mv_up_to_clause                                                                                                     |
+|   40|                                    ev_offset = mv_up_to_offset                                                                                                     |
+|   41|                                    ev_length = mv_up_to_length ).                                                                                                  |
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Contents of system fields                                                                         |
+----------------------------------------------------------------------------------------------------
+|Name    |Val.                                                                                     |
+|Active Calls/Events                                                                               |
+----------------------------------------------------------------------------------------------------
+|No.   Ty.          Program                             Include                             Line   |
+|      Name                                                                                        |
+----------------------------------------------------------------------------------------------------
+|   13 METHOD       CL_ADT_DP_ABSTRACT_SQL_HANDLERCP    CL_ADT_DP_ABSTRACT_SQL_HANDLERCM00G    22  |
+|      CL_ADT_DP_ABSTRACT_SQL_HANDLER=>PARSE_QUERY                                                 |
+|   12 METHOD       CL_ADT_DP_ABSTRACT_SQL_HANDLERCP    CL_ADT_DP_ABSTRACT_SQL_HANDLERCM006    19  |
+|      CL_ADT_DP_ABSTRACT_SQL_HANDLER=>GENERATE_SUBROUTINE                                         |
+|   11 METHOD       CL_ADT_DP_ABSTRACT_SQL_HANDLERCP    CL_ADT_DP_ABSTRACT_SQL_HANDLERCM00B     5  |
+|      CL_ADT_DP_ABSTRACT_SQL_HANDLER=>GET_QUERY_RESULT                                            |
+|   10 METHOD       CL_ADT_DP_FREESTYLE_RES=======CP    CL_ADT_DP_FREESTYLE_RES=======CM001   231  |
+|      CL_ADT_DP_FREESTYLE_RES=>POST                                                               |
+|    9 METHOD       CL_ADT_REST_RESOURCE==========CP    CL_ADT_REST_RESOURCE==========CM004    24  |
+|      CL_ADT_REST_RESOURCE=>IF_REST_HANDLER~HANDLE                                                |
+|    8 METHOD       CL_REST_ROUTER================CP    CL_REST_ROUTER================CM003    60  |
+|      CL_REST_ROUTER=>IF_REST_HANDLER~HANDLE                                                      |
+|    7 METHOD       CL_REST_HTTP_HANDLER==========CP    CL_REST_HTTP_HANDLER==========CM001    99  |
+|      CL_REST_HTTP_HANDLER=>IF_HTTP_EXTENSION~HANDLE_REQUEST                                      |
+|    6 METHOD       CL_ADT_WB_RES_APP=============CP    CL_ADT_WB_RES_APP=============CCIMP    19  |
+|      LCL_REQUEST_HANDLER=>LIF_REQUEST_HANDLER~HANDLE_REQUEST                                     |
+|    5 METHOD       CL_ADT_WB_RES_APP=============CP    CL_ADT_WB_RES_APP=============CCIMP   319  |
+|      LCL_HTTP_REQUEST_PROXY=>HANDLE_REQUEST                                                      |
+|    4 METHOD       CL_ADT_WB_RES_APP=============CP    CL_ADT_WB_RES_APP=============CM002    23  |
+|      CL_ADT_WB_RES_APP=>IF_HTTP_EXTENSION~HANDLE_REQUEST                                         |
+|    3 METHOD       CL_HTTP_SERVER================CP    CL_HTTP_SERVER================CM00D   814  |
+|      CL_HTTP_SERVER=>EXECUTE_REQUEST                                                             |
+|    2 FUNCTION     SAPLHTTP_RUNTIME                    LHTTP_RUNTIMEU02                     1779  |
+|      HTTP_DISPATCH_REQUEST                                                                       |
+|    1 MODULE (PBO) SAPMHTTP                            SAPMHTTP                               12  |
+|      %_HTTP_START                                                                                |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Selected Variables                                                                                |
+----------------------------------------------------------------------------------------------------
+|Name                                                                                              |
+|    Val.                                                                                          |
+----------------------------------------------------------------------------------------------------
+|No.      13 Ty.          METHOD                                                                   |
+|Name  CL_ADT_DP_ABSTRACT_SQL_HANDLER=>PARSE_QUERY                                                 |
+----------------------------------------------------------------------------------------------------
+|LS_TOKEN-TYPE                                                                                     |
+|    m                                                                                             |
+|    6                                                                                             |
+|    D                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    6D00                                                                                          |
+|%_PRINT                                                                                           |
+|    {;000;;;;;;0;0;0;;;;;;;;;;;0;;;0}                                                             |
+|    202020203030302020202020202020202020202020202020202020202020202020202020202020202020202020202\|
+|0202020202020202020202020202020202020202020202020202020202020202020202020202020202020203000000000\|
+|00202020202020202020202020202020202020202020202020202020202020202                                 |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|00000000000000000000000000000000000000000000000000000000000000000                                 |
+|    200020002000200030003000300020002000200020002000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|0020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200\|
+|0200020002000200020002000200020002000200020002000200020002000200020002000300000000000000000000000\|
+|2000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|00020002000200020002000200020                                                                     |
+|LS_TOKEN-STR                                                                                      |
+|    DESCENDING                                                                                    |
+|    4454444444                                                                                    |
+|    45335E49E7                                                                                    |
+|    0000000000                                                                                    |
+|    0000000000                                                                                    |
+|    440045005300430045004E00440049004E004700                                                      |
+|ME->C_SELECT_KEYWORD-FROM                                                                         |
+|    FROM                                                                                          |
+|    4544                                                                                          |
+|    62FD                                                                                          |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    460052004F004D00                                                                              |
+|SYST-REPID                                                                                        |
+|    CL_ADT_DP_ABSTRACT_SQL_HANDLERCP                                                              |
+|    4454455455445554455554544444454522222222                                                      |
+|    3CF144F40F12342134F31CF81E4C523000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    0000000000000000000000000000000000000000                                                      |
+|    43004C005F004100440054005F00440050005F00410042005300540052004100430054005F00530051004C005F004\|
+|80041004E0044004C00450052004300500020002000200020002000200020002000                               |
+|ME->C_SELECT_KEYWORD-INTO                                                                         |
+|    INTO                                                                                          |
+|    4454                                                                                          |
+|    9E4F                                                                                          |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    49004E0054004F00                                                                              |
+|ME->C_SELECT_KEYWORD-UP                                                                           |
+|    UP                                                                                            |
+|    55                                                                                            |
+|    50                                                                                            |
+|    00                                                                                            |
+|    00                                                                                            |
+|    55005000                                                                                      |
+|%_SPACE                                                                                           |
+|                                                                                                  |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    2000                                                                                          |
+|LV_REGEX                                                                                          |
+|    (^|\s)DESCENDING(\s|$)                                                                        |
+|    2575724454444444257722                                                                        |
+|    8ECC3945335E49E78C3C49                                                                        |
+|    0000000000000000000000                                                                        |
+|    0000000000000000000000                                                                        |
+|    28005E007C005C0073002900440045005300430045004E00440049004E00470028005C0073007C0024002900      |
+|ME->MV_QUERY_STRING                                                                               |
+|    SELECT TOP 100 * FROM /IWFND/D_MET_AGR ORDER BY AGR_DATE DESCENDING.                          |
+|    54444525452333222454422454442454455445245445245244554454244544444442                          |
+|    35C53404F001000A062FD0F976E4F4FD54F1720F24520290172F4145045335E49E7E                          |
+|    00000000000000000000000000000000000000000000000000000000000000000000                          |
+|    00000000000000000000000000000000000000000000000000000000000000000000                          |
+|    530045004C00450043005400200054004F005000200031003000300020002A002000460052004F004D0020002F004\|
+|900570046004E0044002F0044005F004D00450054005F0041004700520020004F00520044004500520020004200590020\|
+|004100470052005F0044004100540045002000440045005300430045004E00440049004E0047002E00                |
+|LV_SUBSTR_LENGTH                                                                                  |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+|IF_ABAP_LANGUAGE_VERSION=>GC_VERSION-KEY_USER                                                     |
+|    2                                                                                             |
+|    3                                                                                             |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    3200                                                                                          |
+|SYST                                                                                              |
+|    {1;0;1;10;0;0;1;0;0;0;1;1;1;0;1;0;0;0;0;32;0;0;0;4;8;0;0;0;0;0;0;0;0;0;0;0;0;0;22;84;0;0;0;10\|
+|800;;g;0000;1;0;0;;;;E;0;;;;0010;;;;;;0;__S;100;;;0;0;;;;;;;;;;00;;;;;;;;;;;;000;;;;;;;;;HDB;;;E1\|
+|9;Linux;;816;;;;;0000000000;0000000000;;00000000;20260504;;00;;;;                                 |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000000\|
+|0000000000000000000000000000000000000000000000000000000000010005000000000000000320020600000000000\|
+|00002020204000000020202030303030202020202020202000000050505020202                                 |
+|    100000001000A00000000000100000000000000010001000100000001000000000000000000000000000000000004\|
+|00080000000000000000000000000000000000000000000000000000000600040000000000000000A0000700010000C00\|
+|00C000000050000000000000000010000000000000000000000000F0F03000000                                 |
+|    0100000000000000010000000A0000000000000000000000010000000000000000000000000000000100000001000\|
+|0000100000000000000010000000000000000000000000000000000000020000000000000000000000000000000040000\|
+|0008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|000000000000000001600000054000000000000000000000000000000302A000020006700000001000000000C00000000\|
+|0C00200020002000450000000000000020002000200030003000310030002000200020002000200020002000200000000\|
+|00000005F005F0053002000200020                                                                     |
+|%_##TVREG_001                                                                                     |
+|    -6                                                                                            |
+|    FFFF                                                                                          |
+|    AFFF                                                                                          |
+|    FAFFFFFF                                                                                      |
+|ME->MV_SELECT_CLAUSE                                                                              |
+|    <empty string>                                                                                |
+|    10000000                                                                                      |
+|    40000000                                                                                      |
+|    1400000000000000                                                                              |
+|ME                                                                                                |
+|    {O:136*\CLASS=CL_ADT_FREESTYLE_SQL_HANDLER}                                                   |
+|    70008000                                                                                      |
+|    70008000                                                                                      |
+|    7700000088000000                                                                              |
+|ME->MV_FROM_CLAUSE                                                                                |
+|    <empty string>                                                                                |
+|    10000000                                                                                      |
+|    40000000                                                                                      |
+|    1400000000000000                                                                              |
+|ME->MV_FROM_OFFSET                                                                                |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+|ME->MV_FROM_LENGTH                                                                                |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+----------------------------------------------------------------------------------------------------
+|No.      12 Ty.          METHOD                                                                   |
+|Name  CL_ADT_DP_ABSTRACT_SQL_HANDLER=>GENERATE_SUBROUTINE                                         |
+----------------------------------------------------------------------------------------------------
+|IV_ROW_COUNT                                                                                      |
+|    100                                                                                           |
+|    6000                                                                                          |
+|    4000                                                                                          |
+|    64000000                                                                                      |
+|IV_FREE_STYLE                                                                                     |
+|    X                                                                                             |
+|    5                                                                                             |
+|    8                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    5800                                                                                          |
+|IV_ABAP_LANG_VER                                                                                  |
+|                                                                                                  |
+|    2                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    0                                                                                             |
+|    2000                                                                                          |
+|EV_PROG                                                                                           |
+|    <empty string>                                                                                |
+|    10000000                                                                                      |
+|    40000000                                                                                      |
+|    1400000000000000                                                                              |
+|EV_ERROR_MESSAGE                                                                                  |
+|    <empty string>                                                                                |
+|    10000000                                                                                      |
+|    40000000                                                                                      |
+|    1400000000000000                                                                              |
+|EV_ERROR_LINE                                                                                     |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+|EV_ERROR_OFFSET                                                                                   |
+|    0                                                                                             |
+|    0000                                                                                          |
+|    0000                                                                                          |
+|    00000000                                                                                      |
+|EV_ERROR_WORD                                                                                     |
+|    <empty string>                                                                                |
+|    10000000                                                                                      |
+|    40000000                                                                                      |
+|    1400000000000000                                                                              |
+|QUERY_LINES                                                                                       |
+|    Table IT_440[1x8]                                                                             |
+|    \CLASS=CL_ADT_DP_ABSTRACT_SQL_HANDLER\METHOD=GENERATE_SUBROUTINE\DATA=QUERY_LINES             |
+|    Table reference: 68                                                                           |
+|    TABH+ 0(20) = 4864B085647F0000000000000000000000000000                                        |
+|    TABH+20(20) = 0000000000000000000000000100000044020000                                        |
+|    TABH+40(20) = 0000000044000000B80100000100000008000000                                        |
+|    TABH+60(20) = FFFFFFFF04C5000018D801000400010202000000                                        |
+|    store                   = 0x5065B085647F0000                                                  |
+|    statScndKeyAdmin        = 0                                                                   |
+|    ext1                    = 0                                                                   |
+|    ----- Primary Key -----                                                                       |
+|    idxPtr                  = 0                                                                   |
+|    idxKind                 = 0     (ItIndexNone)                                                 |
+|    accKind                 = 1     (ItAccStandard)                                               |
+|    uniKind                 = 2     (ItUniNo)                                                     |
+|    keyKind (from pbag)     = 1     (default)                                                     |
+|    cmpMode                 = 4     (cmpSingleEq)                                                 |
+|    shmId                   = 0     (0x00000000)                                                  |
+|    id                      = 68    (0x44000000)                                                  |
+|    label                   = 440   (0xB8010000)                                                  |
+|    fill                    = 1     (0x01000000)                                                  |
+|    leng                    = 8     (0x08000000)                                                  |
+|    loop                    = -1    (0xFFFFFFFF)                                                  |
+|    xtyp                    = PROG#000197/TYPE#000086                                             |
+|    occu                    = 4     (0x0400)                                                      |
+|    occu0                   = 1                                                                   |
+|    stMode                  = 0                                                                   |
+|    groupCntl               = 0                                                                   |
+|    rfc                     = 0                                                                   |
+|    unShareable             = 0                                                                   |
+|    mightBeShared           = 0                                                                   |
+|    sharedWithShmTab        = 0                                                                   |
+|    isShmLockId             = 0                                                                   |
+|    isUsed                  = 1                                                                   |
+|    ctfyExclude             = 0                                                                   |
+|    hasScndKeys             = 0                                                                   |
+|    hasRowId                = 0                                                                   |
+|    statScndKeysOutdated    = 0                                                                   |
+|    statScndUniKeysOutdated = 0                                                                   |
+|    primKeyIsEmpty          = No                                                                  |
+|    rtmSelectNoOrderBy      = 0                                                                   |
+|    tstForceExtSort         = 0                                                                   |
+|    ----- Shareable Table Header Data (Store) -----                                               |
+|    tabi                    = 0x14000000720000C0                                                  |
+|    pgHook                  = 0                                                                   |
+|    uniqueNumber            = 312   (0x38010000)                                                  |
+|    shmTabhSet              = 0                                                                   |
+|    refCount                = 0     (0x00000000)                                                  |
+|    tstRefCount             = 0     (0x00000000)                                                  |
+|    lineAdmin               = 4     (0x04000000)                                                  |
+|    lineAlloc               = 4     (0x04000000)                                                  |
+|    shmVersId               = 0     (0x00000000)                                                  |
+|    shmRefCount             = 1     (0x01000000)                                                  |
+|    rowId                   = 18446744073709551615                                                |
+|    SELECT TOP 100 * FROM /IWFND/D_MET_AGR ORDER BY AGR_DATE DESCENDING                           |
+|    5444452545233322245442245444245445544524544524524455445424454444444                           |
+|    35C53404F001000A062FD0F976E4F4FD54F1720F24520290172F4145045335E49E7                           |
+|    0000000000000000000000000000000000000000000000000000000000000000000                           |
+|    0000000000000000000000000000000000000000000000000000000000000000000                           |
+|    530045004C00450043005400200054004F005000200031003000300020002A002000460052004F004D0020002F004\|
+|900570046004E0044002F0044005F004D00450054005F0041004700520020004F00520044004500520020004200590020\|
+|004100470052005F0044004100540045002000440045005300430045004E00440049004E004700                    |
+|LS_QUERY                                                                                          |
+|    SELECT TOP 100 * FROM /IWFND/D_MET_AGR ORDER BY AGR_DATE DESCENDING                           |
+|    5444452545233322245442245444245445544524544524524455445424454444444                           |
+|    35C53404F001000A062FD0F976E4F4FD54F1720F24520290172F4145045335E49E7                           |
+|    0000000000000000000000000000000000000000000000000000000000000000000                           |
+|    0000000000000000000000000000000000000000000000000000000000000000000                           |
+|    530045004C00450043005400200054004F005000200031003000300020002A002000460052004F004D0020002F004\|
+|900570046004E0044002F0044005F004D00450054005F0041004700520020004F00520044004500520020004200590020\|
+|004100470052005F0044004100540045002000440045005300430045004E00440049004E004700                    |
+|%_FSREG_001                                                                                       |
+|    ???                                                                                           |
+|    ??????                                                                                        |
+|    ??????                                                                                        |
+|    ????????????                                                                                  |
+|SCREEN                                                                                            |
+|    {;;;;;;;;;;00;;;;;;0}                                                                         |
+|    202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202\|
+|0202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020\|
+|20202020202020202020202020202020202020202020202020202020202020202                                 |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|00000000000000000000000000000000000000000000000000000000000000000                                 |
+|    200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|0002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020\|
+|0020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200\|
+|0200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000\|
+|2000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002\|
+|00020002000200020002000200020                                                                     |
+|TEXT-006                                                                                          |
+|    Maximum number of character exceeds 255 in line                                               |
+|    467667626766672662666766767267666672333266266662222222222222222222222222222222222222222222222\|
+|22222222222222222                                                                                 |
+|    D189D5D0E5D2520F6038121345205835543025509E0C9E50000000000000000000000000000000000000000000000\|
+|00000000000000000                                                                                 |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|00000000000000000                                                                                 |
+|    000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\|
+|00000000000000000                                                                                 |
+|    4D006100780069006D0075006D0020006E0075006D0062006500720020006F0066002000630068006100720061006\|
+|300740065007200200065007800630065006500640073002000320035003500200069006E0020006C0069006E00650020\|
+|0020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000200\|
+|0200020002000200020002000200020002000200020002000200020002000200020002000200020002000200020002000\|
+|20002000200020002000200020002000200020002000200020002000                                          |
+|SY-TABIX                                                                                          |
+(remainder of dump trimmed for fixture brevity)
