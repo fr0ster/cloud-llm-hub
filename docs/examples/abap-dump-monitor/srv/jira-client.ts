@@ -16,19 +16,38 @@ export class JiraClient implements IJiraClient {
   constructor(private destinationName: string, private http: JiraHttpFn) {}
 
   async searchByLabel(label: string): Promise<JiraIssueRef | undefined> {
-    const resp = await this.http(
-      { destinationName: this.destinationName },
-      {
-        method: 'GET',
-        url: '/rest/api/2/search',
-        params: { jql: `labels = "${label}"`, fields: 'status', maxResults: '1' },
-        responseType: 'json'
+    // Two Atlassian endpoints in the wild:
+    //   • /rest/api/2/search       — legacy; on-prem Jira always has it,
+    //                                but a corporate Squid proxy in front
+    //                                of EPAM's Jira intermittently returns
+    //                                '500 HTTP 406 Not Acceptable' as text/html.
+    //   • /rest/api/2/search/jql   — newer Atlassian path; some on-prem
+    //                                instances 404 because they predate it.
+    // Try both in order and return the first success — any HTTP error from
+    // the first endpoint is a reason to fall back, no error-pattern matching.
+    const ENDPOINTS = ['/rest/api/2/search', '/rest/api/2/search/jql'];
+    let lastErr: Error | undefined;
+    for (const endpoint of ENDPOINTS) {
+      try {
+        const resp = await this.http(
+          { destinationName: this.destinationName },
+          {
+            method: 'POST',
+            url: endpoint,
+            headers: { 'Content-Type': 'application/json' },
+            data: { jql: `labels = "${label}"`, fields: ['status'], maxResults: 1 },
+            responseType: 'json'
+          }
+        );
+        this.assertOk(resp, `search (${endpoint})`);
+        const issue = resp.data?.issues?.[0];
+        if (!issue) return undefined;
+        return { key: issue.key, statusCategoryKey: issue.fields?.status?.statusCategory?.key ?? 'undefined' };
+      } catch (e: any) {
+        lastErr = e;
       }
-    );
-    this.assertOk(resp, 'search');
-    const issue = resp.data?.issues?.[0];
-    if (!issue) return undefined;
-    return { key: issue.key, statusCategoryKey: issue.fields?.status?.statusCategory?.key ?? 'undefined' };
+    }
+    throw lastErr ?? new Error('Jira search failed: no endpoint reachable');
   }
 
   async getIssue(key: string): Promise<JiraIssueRef> {
@@ -93,8 +112,14 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
   const d = await getDestination({ destinationName: dest.destinationName });
   if (!d?.url) throw new Error(`Destination ${dest.destinationName} not found`);
   const baseUrl = d.url.replace(/\/+$/, '');
+  // Use percent-encoding (%20 for space) instead of URLSearchParams' '+'
+  // form: some on-prem Jira deployments behind Apache reverse proxies
+  // refuse '+' in JQL with HTTP 406 / wrapped 500. encodeURIComponent
+  // emits '%20', which both Jira and Apache always accept.
   const search = req.params
-    ? '?' + new URLSearchParams(req.params).toString()
+    ? '?' + Object.entries(req.params)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+        .join('&')
     : '';
   const url = baseUrl + req.url + search;
   const headers: Record<string, string> = {
@@ -123,6 +148,22 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
   let data: any = undefined;
   if (text) {
     try { data = JSON.parse(text); } catch { data = text; }
+  }
+  if (resp.status >= 400) {
+    // Diagnose Jira-side rejections: dump the request shape (URL +
+    // header keys, NEVER values) and the response body so an operator
+    // can tell apart auth failure (401/403), wrong endpoint (404 / 406
+    // with HTML body), and content-negotiation issues. Body capped to
+    // 500 chars to keep the log readable.
+    const safeHeaders = Object.fromEntries(
+      Object.entries(headers).map(([k]) => [k, k.toLowerCase() === 'authorization' ? '<redacted>' : 'set'])
+    );
+    const bodyPreview = String(text ?? '').slice(0, 500);
+    console.error(
+      `[jira-http] ${req.method} ${url} → ${resp.status} ` +
+      `content-type=${resp.headers.get('content-type')} ` +
+      `headers=${JSON.stringify(safeHeaders)} body=${JSON.stringify(bodyPreview)}`
+    );
   }
   return { status: resp.status, data };
 };

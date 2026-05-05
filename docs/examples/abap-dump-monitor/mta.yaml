@@ -9,8 +9,8 @@ parameters:
   CLOUD_LLM_HUB_CLIENT_SECRET: ""
   CLOUD_LLM_HUB_TOKEN_URL: ""
   JIRA_URL: "https://jiraeu.epam.com"
-  JIRA_USER: ""
-  JIRA_TOKEN: ""
+  # Jira credentials are NOT in MTA — destination is created manually in the
+  # BTP cockpit with a Personal Access Token. See the JIRA_EPAM stanza below.
   CF_LANDSCAPE: "cfapps.eu10-004.hana.ondemand.com"
   # Approuter host = <tenant-subdomain>-<APP_SUFFIX>.<CF_LANDSCAPE>.
   # The leading <tenant-subdomain>- segment is required by TENANT_HOST_PATTERN
@@ -110,10 +110,10 @@ resources:
                 clientId: ${CLOUD_LLM_HUB_CLIENT_ID}
                 clientSecret: ${CLOUD_LLM_HUB_CLIENT_SECRET}
                 tokenServiceURL: ${CLOUD_LLM_HUB_TOKEN_URL}
-              - Name: JIRA_EPAM
-                Type: HTTP
-                URL: ${JIRA_URL}
-                ProxyType: Internet
-                Authentication: BasicAuthentication
-                User: ${JIRA_USER}
-                Password: ${JIRA_TOKEN}
+              # Jira destination is NOT managed via mta.yaml. Create it once
+              # in the BTP cockpit (subaccount-level) with a Personal Access
+              # Token / API key — Authentication=BasicAuthentication, User=
+              # <your-email>, Password=<api-token>. The service binding picks
+              # up subaccount-level destinations at runtime; redeploys do not
+              # touch them, so the token survives. Name must match the
+              # JIRA_DESTINATION env var (default 'JIRA_EPAM').

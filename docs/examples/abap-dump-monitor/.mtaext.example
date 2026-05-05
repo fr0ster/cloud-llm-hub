@@ -14,10 +14,11 @@ parameters:
   CLOUD_LLM_HUB_CLIENT_SECRET: "..."
   CLOUD_LLM_HUB_TOKEN_URL: "https://<subaccount>.authentication.eu10-004.hana.ondemand.com/oauth/token"
 
-  # Jira
+  # Jira base URL (used to render clickable issue links in the Object Page).
+  # Credentials are NOT in .mtaext — create the JIRA_EPAM destination once
+  # in the BTP cockpit (subaccount-level) with your Personal Access Token.
+  # Redeploys do not overwrite it.
   JIRA_URL: "https://jiraeu.epam.com"
-  JIRA_USER: "your.email@epam.com"
-  JIRA_TOKEN: "<your Jira API token>"
 
 modules:
   - name: abap-dump-monitor-srv
