@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.5.2] - 2026-05-05
+
+Patch on top of v6.5.1. All work in `docs/examples/abap-dump-monitor/`. Closes #58; opens #60 for follow-up.
+
+### Fixed
+- **Real-world ST22 call stack lost the bottom frame** (PR #59, closes #58). `parseCallStack` regex matched only single-word event types, silently dropping rows like `MODULE (PBO) SAPMHTTP` / `MODULE (PAI)` — the entry-point frame on every HTTP-driven dump. Anchored regex on the KIND keyword + optional `(...)` qualifier; `eventType` now correctly preserves the parenthesised form.
+- **Variables list polluted by hex continuation rows** (PR #59). ST22 wraps long values across the pipe-column boundary with a trailing `\|`; the previous parser treated each continuation as a new variable name, inflating the list 3-7× on real recursive dumps. Pre-stitch `\`-terminated rows back together before classifying name vs. value. Verified on a 256-frame `RAISE_SHORTDUMP` recursion test fixture: 2724 → 2241 entries, none of them hex-only.
+- **Multi-line value renderings collapsed into one cell** (PR #59). For non-printable types ST22 emits 3-4 follow-up rows (printable repr, hex high byte, hex low byte, char codes) which the parser concatenated into a single `value` field — a 1-byte `'X'` rendered as `"X\n5\n8\n0\n0\n5800"`. The parser now keeps only the first (printable) row and sets `truncated=true` when rows were dropped.
+- **ABAP runtime-internal helpers crowded out user state** (PR #59). `%_PRINT`, `%_SPACE`, `%_DUMMY$$`, `%_ARCHIVE`, `%_##TVREG_*`, `%_EXCP%_#E*`, anonymous `<%_L###>` field symbols are filtered out before insert (≈20% of rows on a recursive dump). `SY-*` / `SYST-*` are kept — they expose useful system field state.
+- **Object Page Call Stack sort order ignored** (PR #59). The Reference Facet pointed at `callStack/@UI.LineItem`, which Fiori Elements does NOT honour `PresentationVariant` on. Switched target to `callStack/@UI.PresentationVariant`; default sort is now `position` descending so the crash frame is at the top, mirroring ST22. Same fix for the Variables facet (sort by `frameNo` desc, then `name`).
+- **New-window / deep-link opens reverted to default theme** (PR #59). When the app is opened outside the BTP Launchpad shell wrapper, the user's chosen theme (e.g. SAP Evening Horizon) was not propagated. Both `monitor/webapp/index.html` and `app/fiori-apps.html` now resolve the theme before UI5 bootstrap from `?sap-theme=` query → `localStorage('abap-dump-monitor-theme')` → `prefers-color-scheme` so deep-link opens match the user's OS / last pick.
+
+### Changed
+- **`VariableSnapshot.frameNo : Integer`** added to `db/schema.cds`; `scope` is populated from the ST22 frame-header KIND (`METHOD`, `MODULE (PBO)`, `FUNCTION`, …) instead of the placeholder string `"local"`. Object Page now groups variables by frame; LineItem replaces the always-empty `type` column with `frameNo` (the value users actually need to read variables in context).
+- **Analyzer prompt rewritten** (PR #59). Two reinforcing fixes for "model emits its own H2 headings (`## Problem Summary`, `## Root Cause`, `## Next Steps`) and trailing chat offers despite the strict template":
+  - User message no longer uses markdown headings — payload is YAML-style `key: value` blocks. The previous `# ABAP Dump` / `## Top stack` / `## Source extract` / `## Variables` headings in the input collided with the response template; the model mirrored that structure into its output. `##` is now reserved exclusively for the response.
+  - System prompt opens with explicit no-conversation framing ("there is no user on the other end, single response posted as Jira ticket body, no second turn"), an OUTPUT CONTRACT block (first chars are literally `## Location`; exactly four `##` headings with the listed names; response ends with the last line of `## Fix`), and counter-examples enumerating the previously observed drifts.
+  - Default `LLM_TEMPERATURE` 0.2 → 0 (strict-format tasks want deterministic decoding).
+- **No code-side response post-processing.** The earlier `stripChatNoise` / `stripOfferTrailer` regex sanitisers are gone; response shape is the prompt's contract, and prompt drift is the lever to pull, not new regexes. `recommendations` is `content.trim()`.
+- **`scripts/start-proxy.sh` actually opens the HTTP listener** (PR #59). `mcp-abap-adt-proxy` defaults to stdio without an explicit transport flag — added `--transport=streamable-http` so `npm run proxy` binds :3001 as documented.
+
+### Removed
+- **`CallStackEntry.objectClass`** (PR #59). Formatted ST22 has no Object Class column; the field was always `undefined`. Schema, projection, parser, interface, and Fiori annotation cleaned up.
+- **`ReferencedObject` entity, `referencedObjects` composition, References facet** (PR #59). `dedupReferences` only collected program/include names already present in CallStackEntry — no enrichment, no metadata, no navigation. Replacing it with proper per-frame source preview through cloud-llm-hub MCP is tracked as #60 (in-app rendering, no Eclipse `adt://` links).
+
+### Added
+- **Three anonymized real-world dump fixtures** under `docs/examples/abap-dump-monitor/test/fixtures/`:
+  - `dump-payload.string-length.real.txt` — `STRING_LENGTH_NEGATIVE`, 13 frames, heavy hex continuation
+  - `dump-payload.null-ref.real.txt` — `DATREF_NOT_ASSIGNED`, 18 frames, workflow user
+  - `dump-payload.int-overflow.real.txt` — `COMPUTE_INT_PLUS_OVERFLOW`, 3 frames, namespace-prefixed program
+
+  Hostnames / users replaced with `demo*` placeholders; SAP-standard class names (`CL_ADT_*`, `CL_REST_*`) preserved as public knowledge. Unit tests cover all three so the bugs above stay caught.
+
 ## [6.5.1] - 2026-05-05
 
 Patch on top of v6.5.0. All work in `docs/examples/abap-dump-monitor/`.
