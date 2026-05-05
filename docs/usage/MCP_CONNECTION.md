@@ -204,6 +204,57 @@ curl "$BASE_URL/odata/v4/mcp/ProbeDestination(destination='S4HANA_DEV')" \
 curl "$BASE_URL/odata/v4/agent/Health()" -H "Authorization: Bearer $JWT"
 ```
 
+## Local Proxy (`npm run proxy`)
+
+For local development against a deployed `cloud-llm-hub-srv`, the repo ships a wrapper around `mcp-abap-adt-proxy` that handles CF authentication, app-route resolution, and service-key refresh in one command.
+
+### Quick start
+
+```bash
+npm install                        # ships @mcp-abap-adt/proxy as a devDependency
+cf login --sso
+cf target -o <your-org> -s <space>
+npm run proxy S4HANA_DEV           # destination is positional; defaults to server-side default
+```
+
+The proxy listens on `http://localhost:3001/mcp/stream/http` and forwards every request to the live `cloud-llm-hub-srv` route in the targeted CF subaccount. On first launch it triggers an interactive OAuth flow in your default browser; subsequent calls reuse the cached session until it expires (≈24h).
+
+### What the script does on each launch
+
+1. **Validates CF auth.** Fails fast with a clear error if you're not logged in, no org/space targeted, or the OAuth token has expired (`cf target` cached values mask this — the script probes with `cf orgs`).
+2. **Resolves the app route** via `cf app cloud-llm-hub-srv`. If the app isn't deployed in the targeted space (wrong subaccount), it errors out instead of producing a proxy bound to an empty URL.
+3. **Refreshes the service key** by pulling `cf service-key cloud-llm-hub-auth mcp` and writing it to `~/.config/mcp-abap-adt/service-keys/mcp.json`. If the cached key was for a different subaccount, the corresponding session file is wiped so the next request triggers a fresh auth flow against the right tenant. Without this step, switching CF target between subaccounts produces `WrongAudienceError` 500s on every request.
+
+Confirmation lines look like:
+
+```
+✓ CF target:  <ORG> / <SPACE>
+✓ App route:  <subaccount>-cloud-llm-hub-srv.cfapps.<landscape>
+✓ Service key: cloud-llm-hub-auth/mcp (<identityzone>)
+```
+
+### Environment overrides
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APP` | `cloud-llm-hub-srv` | CF app to proxy to |
+| `BTP` | `mcp` | Cache filename under `~/.config/mcp-abap-adt/service-keys/` |
+| `CONSUMER` | `cloud-llm-hub-auth` | xsuaa instance for the OAuth flow. Must support `authorization_code` grant + have `redirect-uris: ["http://localhost:*/**"]`. The `*-consumer` xsuaa instances (analyst/developer) are `client_credentials`-only and won't drive a browser flow. |
+| `CONSUMER_KEY` | `mcp` | Service-key on `$CONSUMER` |
+| `PORT` | `3001` | Local HTTP port |
+
+Override only when running against a non-standard topology (e.g. a fork with different module names).
+
+### Common errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `ERROR: not logged into Cloud Foundry` | No CF token | `cf login --sso` |
+| `ERROR: CF auth token expired or invalid` | Stale token | `cf login --sso` to refresh |
+| `ERROR: app 'cloud-llm-hub-srv' not found in '<org>' / '<space>'` | Wrong CF target | `cf target -o … -s …` |
+| Proxy returns 502 with `WrongAudienceError` | Cached service-key from a previous subaccount | Re-run `npm run proxy` — the script auto-refreshes the key (since v6.5.3). For older versions, manually delete `~/.config/mcp-abap-adt/service-keys/mcp.json`. |
+| `Authorization Request Error` in the browser | `$CONSUMER` xsuaa rejects the redirect URI (e.g. you switched it to a `*-consumer` instance) | Reset `CONSUMER` to default (`cloud-llm-hub-auth`) — that's the only xsuaa configured for the browser OAuth flow. |
+
 ## Smoke Testing
 
 ```bash
