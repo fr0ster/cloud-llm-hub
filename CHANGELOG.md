@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.5.0] - 2026-05-05
+
+All work in `docs/examples/abap-dump-monitor/` — the parent `cloud-llm-hub` runtime is unchanged. Bumped to a minor because the example now ships a customer-ready Fiori Elements monitor on top of the original scheduled-pull skeleton.
+
+### Added
+- **abap-dump-monitor — full Fiori Elements V4 List Report + Object Page** (PRs #35, #38, #40, #45). MonitoredDump grid with filters and per-row drill-down; custom Object Page sections for Analysis (markdown via `sap.ui.codeeditor.CodeEditor`) and Source extract (ABAP syntax highlight); `Analysis` and `Jira` row-level actions.
+- **Synchronous LLM analysis on demand** (PR #45, refined #52). The Object Page **Analysis** button is the operator's manual-override path — drives `AnalysisWorker.processOne` synchronously through the approuter (`timeout: 180000` ms) regardless of current `analysisStatus`. `pending` skips the auto-loop queue, `failed`/`analyzing` recovers, `done` re-analyses. Jira-side reconciliation: when re-analysis on a `commented`/`unheard` row produces different recommendations, the row reverts to `pending` so the next Jira click posts the updated content as a comment on the existing ticket. Creator rows (`created`) deliberately excluded to keep the canonical anchor stable; documented trade-off.
+- **Recurring-dump deduplication via stable signature label** (PR #49, closes #48). New `signatureLabel(signature) = 'dump-sig-' + sha1(signature)[0..16]` is the canonical Jira-side dedup key; the discoverer at INSERT inherits the group's `jiraIssueKey` onto each new row and applies a canonical-key slot rule so each cycle produces exactly one ticket plus one `'commented'` row plus N-2 `'unheard'` rows. Lifecycle correctness across closed→reopened cycles is preserved by an explicit `getIssue` recheck at INSERT, cached per Discoverer tick to keep burst recurrences cheap. Full design: `docs/examples/abap-dump-monitor/docs/DEDUPLICATION.md`.
+- **Filter Value Helps and labels** (PR #56, closes #46). F4 dropdowns for `abapUser`, `system`, `runtimeError`, `category` (distinct values from `MonitoredDump`); fixed-value enum lists for `analysisStatus` (`pending|analyzing|done|failed`) and `jiraStatus` (`pending|created|commented|skipped|failed|unheard`) served from canonical literals so a fresh DB still shows every choice. `category` column now visible in the LineItem with `@Common.Label: 'Application Component'`; discoverer falls back to the parsed-header value when the MCP feed omits the field, and `dump-parser` extracts the `Application Component` top-header line into `header.category` accordingly.
+- **`Application Component`/`Analysis`/`Jira` property labels** (PR #56). `@Common.Label` on the projection so filter bar, LineItem, and any future annotation render the same display name.
+- **`bin/deploy.sh`** (PR #45 baseline, hardened in #53/#54/#55). Convenience deploy script: reads `.mtaext` (gitignored secrets), auto-derives `APPROUTER_HOST` from the targeted CF org's subaccount subdomain, appends `-staging` when the current branch / worktree directory name matches `(stg|staging)` at a token boundary (case-insensitive), then runs `cds + mbt build + cf deploy`. Generated host extension chains through the user's `.mtaext` (`extends: <user-ext-id>`) so the override actually applies — sibling extensions silently dropped one of them.
+- **SSO via `@sap/approuter ^21.4`** (PR #40). XSUAA-gated Fiori UI; role collections `AbapDumpMonitorAdmin` / `AbapDumpMonitorViewer`. Approuter destination `timeout: 180000` ms supports synchronous LLM analysis through the proxy.
+- **`docs/examples/abap-dump-monitor/docs/DEDUPLICATION.md`** — long-term reference for the dedup design (replaced the in-flight `docs/superpowers/specs/2026-05-04-jira-dedup-design.md` after PR #49 merged).
+- **`docs/examples/abap-dump-monitor/docs/TROUBLESHOOTING.md`** (PR #43) — IAS / xsuaa / Fiori pitfalls hit during the first staging deploy, with the fixes applied.
+
+### Changed
+- **xsuaa configuration aligned with the parent repo** (PR #44). `xsappname: abap-dump-monitor-${space-guid}` via mta.yaml `config:` (unique per space, IAS-friendly); `tenant-mode: shared`; `redirect-uris` extended to cover staging landscapes.
+- **URL pattern matches `cloud-llm-hub`** (PR #53). Approuter route is `${APPROUTER_HOST}.${CF_LANDSCAPE}` — the previous `-${space}` suffix is gone; differentiation lives in `APPROUTER_HOST` so prod and staging URLs are visibly distinct (e.g. `<sub>-abap-dump-monitor.cfapps...` vs `<sub>-abap-dump-monitor-staging.cfapps...`). `docs/examples/abap-dump-monitor/docs/DEPLOYMENT.md` describes three options: auto-derived host (Option A), custom host (Option B), prod+staging coexistence in one space via duplicate MTA descriptors (Option C).
+
+### Fixed
+- **Persistence on Cloud Foundry** (PR #36). The deployable variant uses `@cap-js/sqlite` at `/home/vcap/app/db/abap-dump-monitor.sqlite` instead of HANA Cloud HDI; the original HDI shape is documented for forks that have HANA entitlement.
+- **`@cap-js/sqlite` listed as a runtime dependency** (PR #37) so the example actually starts on CF.
+- **mbt build copies relative to module path** (PR #39). The custom builder's `cpSync` invocations now use paths relative to the module root, fixing failures on fresh checkouts.
+- **xsuaa redirect-URIs include the approuter route** (PR #41) so SSO completes after the OAuth round-trip.
+
+### Removed
+- **`app/router/chat/webapp/`** (PR #47) — duplicate of `app/chat/webapp/` regenerated by `mbt` at build time via `cpSync`. The committed snapshot only collected drift; cleanup eliminated a recurring confusion source where a partial local sync looked like unrelated uncommitted changes.
+- **Spec/plan files under `docs/superpowers/`** (PRs #51, post-#49). Per project policy, plan and spec files exist in tree only while work is active; once implemented or cancelled they get deleted and history lives in git.
+
+### Internal
+- **`fsevents` lockfile entry retained** in `docs/examples/abap-dump-monitor/package-lock.json`. Optional darwin-only transitive that npm re-adds on certain `npm install` paths; committing the current state keeps the lockfile reproducible across machines.
+
 ## [6.4.2] - 2026-04-29
 
 ### Removed
