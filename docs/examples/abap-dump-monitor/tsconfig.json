@@ -6,6 +6,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "isolatedModules": true,
     "resolveJsonModule": true,
     "outDir": "gen/srv",
     "rootDir": ".",
