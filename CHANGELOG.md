@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.5.5] - 2026-05-08
+
+Security maintenance release. PR #68. No functional changes.
+
+### Security
+- **`mbt` 1.2.34 → 1.2.49** (exact pin maintained). Clears 3 high-severity transitive `node-tar` advisories. `mbt@1.2.48` was the Shai-Hulud worm release; npm has removed 1.2.48 from the registry (404). 1.2.49 is the recovery release published by `cloudmtabot` (the same official MBT publisher as 1.2.34), confirmed in registry metadata.
+
+### Changed
+- Root patch/minor bumps within stated semver ranges (closes the moderate `follow-redirects` advisory pulled via `@sap/cds-dk`):
+  - `axios` ^1.15.0 → ^1.16.0
+  - `@sap/cds` ^9.8.5 → ^9.9.1, `@sap/cds-dk` ^9.8.4 → ^9.9.1
+  - `@sap-ai-sdk/orchestration` ^2.9.0 → ^2.10.0
+  - `@cap-js/sqlite` ^2.2.0 → ^2.4.0
+  - `@biomejs/biome` ^2.4.11 → ^2.4.14
+  - `dotenv` ^17.4.0 → ^17.4.2
+  - `@types/node` ^25.6.0 → ^25.6.2, `jest` ^30.3.0 → ^30.4.0, `typescript` ^6.0.2 → ^6.0.3
+- Example `abap-dump-monitor` aligned with root: `jest` ^29 → ^30, `typescript` ^5 → ^6, `@types/node` ^22 → ^25. `tsconfig.json` adds `"isolatedModules": true` (required by TS6 + NodeNext for `ts-jest`'s `@types/jest` global resolution). `@types/jest` stays at ^29 — `ts-jest@29.4.9` is the only published line; v30 not on npm yet.
+
+### Not bumped (intentional)
+- `express` ^4 → 5 (root + example). Major; CAP / approuter binding constraints.
+- `ts-jest` ^29.4.9 — no v30 on npm (`dist-tags`: latest=29.4.9, next=29.0.0-next.1).
+
+### Audit state
+- Root: 4 moderate (transitives in `@mcp-abap-adt/*` + `@modelcontextprotocol/sdk` → `fast-xml-parser` / `hono` / `ip-address`; only upstream maintainers can fix).
+- `abap-dump-monitor` example: 0 vulnerabilities.
+
 ## [6.5.4] - 2026-05-06
 
 Patch on top of v6.5.3. Closes #50.
