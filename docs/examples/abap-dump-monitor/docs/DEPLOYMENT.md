@@ -5,12 +5,15 @@
 
 ## 1. cloud-llm-hub consumer
 
-The service must use the **analyst** consumer xsuaa, NOT the default reader.
-Reader xsuaa silently excludes dump-related tools from the SmartAgent tool pool.
+The service must use the **developer** consumer xsuaa.
+
+- **`cloud-llm-hub-analyst-consumer`** (`MCP_Analyst` role → `[readonly, search, system]` exposition) is enough for dump fetch + LLM analysis but excludes `GetClass` from the tool pool, so the **Frame Source** section's METHOD frames return 502 ("Tool GetClass not found"). FORM/EVENT/REPORT frames still work.
+- **`cloud-llm-hub-developer-consumer`** (`MCP_Developer` role → adds `high` exposition) exposes `GetClass` and is what the deployed example expects. Use this one.
+- The default `MCP_Reader` consumer silently excludes dump-related tools entirely — never use it here.
 
 ```bash
-cf create-service-key cloud-llm-hub-analyst-consumer abap-dump-monitor-key
-cf service-key cloud-llm-hub-analyst-consumer abap-dump-monitor-key
+cf create-service-key cloud-llm-hub-developer-consumer abap-dump-monitor-key
+cf service-key cloud-llm-hub-developer-consumer abap-dump-monitor-key
 ```
 
 Copy `clientid`, `clientsecret`, `url` (without trailing path), and `xsuaa.url + /oauth/token` into `.mtaext` (see `.mtaext.example`).

@@ -123,6 +123,6 @@ UI annotations (`UI.LineItem`, `UI.HeaderInfo`, `UI.Facets` etc.) live in `srv/m
 
 1. Pin `mbt@1.2.34` in repo-root `devDependencies` (avoids the Shai-Hulud `mbt@1.2.48`).
 2. Confirm the subaccount has no HANA Cloud — accept SQLite or arrange entitlement first.
-3. Provision the `cloud-llm-hub-analyst-consumer` xsuaa key via `cf create-service-key` and copy values into `.env`.
+3. Provision the `cloud-llm-hub-developer-consumer` xsuaa key via `cf create-service-key` and copy values into `.mtaext` (analyst-consumer also works for everything except the **Frame Source** section's METHOD frames — see DEPLOYMENT.md §1).
 4. Apply both `tenant-mode: shared` and `oauth2-configuration.redirect-uris` to `xs-security.json` before the very first `cf deploy` — backsetting them later requires the xsuaa instance to be deleted and recreated to pick up the new schema.
 5. Generate the Fiori app via `@sap-ux/fiori-elements-writer`, never by hand.

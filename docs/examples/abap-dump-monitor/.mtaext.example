@@ -8,7 +8,8 @@ parameters:
   # automatically from the targeted CF org name.
   APPROUTER_HOST: "<subaccount-subdomain>-abap-dump-monitor"
 
-  # cloud-llm-hub OAuth2ClientCredentials — fetch from `cloud-llm-hub-analyst-consumer` service key
+  # cloud-llm-hub OAuth2ClientCredentials — fetch from `cloud-llm-hub-developer-consumer`
+  # service key (analyst-consumer is missing GetClass; see docs/DEPLOYMENT.md).
   CLOUD_LLM_HUB_URL: "https://cloud-llm-hub-srv.cfapps.eu10-004.hana.ondemand.com"
   CLOUD_LLM_HUB_CLIENT_ID: "sb-..."
   CLOUD_LLM_HUB_CLIENT_SECRET: "..."

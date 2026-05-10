@@ -4,7 +4,9 @@ All Admin endpoints require an XSUAA token from a user holding the `AbapDumpMoni
 
 ## UI
 
-A Fiori Elements V4 List Report is served at `/monitor/webapp/`. It lists `MonitoredDump` rows with filters, a List Report → Object Page navigation, all composition tabs (Call Stack, Source, Variables, References), and two row-level actions: **Analysis** (re-runs LLM analysis synchronously) and **Jira** (pushes the row to Jira).
+A Fiori Elements V4 List Report is served at `/monitor/webapp/`. It lists `MonitoredDump` rows with filters, a List Report → Object Page navigation, all composition tabs (Call Stack, **Source** — crash extract from the ST22 payload, **Frame Source** — live ABAP source for any selected call-stack frame, fetched on demand via cloud-llm-hub MCP, Variables, References), and two row-level actions: **Analysis** (re-runs LLM analysis synchronously) and **Jira** (pushes the row to Jira).
+
+The **Frame Source** section is a master/detail block: a ComboBox lists every frame from the call stack (sorted ST22-style, deepest first); selecting one fires the `GetFrameSource(dumpID, position)` OData function, which routes to the appropriate MCP tool (`GetClass` for METHOD frames, `GetInclude`/`GetProgFullCode` for FORMs/EVENTs/MODULEs, with a 404 fallback for REPORT-style executables) and renders the result in a CodeEditor. METHOD frames work only when the consumer xsuaa attached to `CLOUD_LLM_HUB` has the `MCP_Developer` role (the `cloud-llm-hub-developer-consumer` xsuaa instance, not the analyst one); see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 > **Auth boundary:** the UI **shell** (HTML/JS/manifest) is served as static assets without auth — same pattern cloud-llm-hub itself uses for `/chat/webapp`. The actual data and actions all flow through OData at `/odata/v4/admin/...`, which is auth-gated by the `MonitorService.@requires: 'Viewer'` (read) / `Admin` (actions). An unauthenticated browser sees the empty app shell; the moment it tries to fetch dumps it gets 401 with the standard XSUAA / mocked-auth challenge. For a fully gated experience put an approuter in front (see how `cloud-llm-hub`'s root MTA wires `app/router/`).
 
