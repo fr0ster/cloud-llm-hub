@@ -1,4 +1,10 @@
-import type { ParsedDump, DumpHeader, CallFrame, VariableSnapshot, SourceExtract } from './interfaces';
+import type {
+  CallFrame,
+  DumpHeader,
+  ParsedDump,
+  SourceExtract,
+  VariableSnapshot,
+} from './interfaces';
 
 // cloud-llm-hub RuntimeGetDumpById(view='formatted') returns the long-form ST22
 // dump as pipe-delimited text. Sections of interest:
@@ -14,20 +20,28 @@ import type { ParsedDump, DumpHeader, CallFrame, VariableSnapshot, SourceExtract
 // level 'Category' line ('ABAP Programming Error' etc.) is a different
 // concept and intentionally NOT mapped here.
 const TOP_HEADER_KEYS: Record<string, keyof DumpHeader> = {
-  'Runtime Errors':         'runtimeError',
-  'Except.':                'exceptionClass',
-  'ABAP: Program':          'program',
-  'Application Component':  'category',
-  'User and Client':        'abapUser'
+  'Runtime Errors': 'runtimeError',
+  'Except.': 'exceptionClass',
+  'ABAP: Program': 'program',
+  'Application Component': 'category',
+  'User and Client': 'abapUser',
 };
 
-export function parseDump(system: string, dumpId: string, payload: string): ParsedDump {
+export function parseDump(
+  system: string,
+  dumpId: string,
+  payload: string,
+): ParsedDump {
   const header: DumpHeader = { system, dumpId };
 
   // Top fixed-width key/value block lives between the first two dashed separators.
   // Lines look like:  "Runtime Errors         COMPUTE_INT_PLUS_OVERFLOW   ..."
   const chunks = payload.split(/^[-]{50,}.*$/m);
-  const topBlock = chunks.find(c => /^\s*Category\s+/m.test(c)) ?? chunks[1] ?? chunks[0] ?? '';
+  const topBlock =
+    chunks.find((c) => /^\s*Category\s+/m.test(c)) ??
+    chunks[1] ??
+    chunks[0] ??
+    '';
   for (const line of topBlock.split(/\r?\n/)) {
     if (!line.trim()) continue;
     for (const [key, prop] of Object.entries(TOP_HEADER_KEYS)) {
@@ -47,8 +61,12 @@ export function parseDump(system: string, dumpId: string, payload: string): Pars
       }
     }
     if (line.startsWith('Date and Time')) {
-      const m = /Date and Time\s+(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/.exec(line);
-      if (m) header.occurredAt = `${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}Z`;
+      const m =
+        /Date and Time\s+(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/.exec(
+          line,
+        );
+      if (m)
+        header.occurredAt = `${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}Z`;
     }
   }
 
@@ -76,17 +94,31 @@ export function parseDump(system: string, dumpId: string, payload: string): Pars
   const wt = extractSection(payload, 'Information on where terminated');
   if (wt) {
     const wtFlat = wt.replace(/\r?\n/g, ' ');
-    const m1 = /termination point is in line (\d+) of include\s+"([^"]+)"/.exec(wtFlat);
-    if (m1) { header.sourceLine ??= Number.parseInt(m1[1], 10); header.include ??= m1[2]; }
-    const m2 = /termination occurred in ABAP program or include\s+"([^"]+)"/.exec(wtFlat);
+    const m1 = /termination point is in line (\d+) of include\s+"([^"]+)"/.exec(
+      wtFlat,
+    );
+    if (m1) {
+      header.sourceLine ??= Number.parseInt(m1[1], 10);
+      header.include ??= m1[2];
+    }
+    const m2 =
+      /termination occurred in ABAP program or include\s+"([^"]+)"/.exec(
+        wtFlat,
+      );
     if (m2) header.program ??= m2[1];
     const m3 = /main program was\s+"([^"]+)"/.exec(wtFlat);
     if (m3) header.mainProgram ??= m3[1];
   }
 
-  const callStack = parseCallStack(extractSection(payload, 'Active Calls/Events'));
-  const sourceExtract = parseSourceExtract(extractSection(payload, 'Source Code Extract'));
-  const variables = parseVariables(extractSection(payload, 'Selected Variables'));
+  const callStack = parseCallStack(
+    extractSection(payload, 'Active Calls/Events'),
+  );
+  const sourceExtract = parseSourceExtract(
+    extractSection(payload, 'Source Code Extract'),
+  );
+  const variables = parseVariables(
+    extractSection(payload, 'Selected Variables'),
+  );
 
   // Pipe-delimited ST22 'Source Code Extract' has no PROGRAM/INCLUDE prefix —
   // those values live in the top header. Mirror them onto sourceExtract so the
@@ -106,13 +138,26 @@ export function parseDump(system: string, dumpId: string, payload: string): Pars
 // content matches one of these is a section boundary; all other pipe-lines (including
 // inner frame markers like "|No. 3 Ty. METHOD|") are content of the current section.
 const MAJOR_TITLES = new Set([
-  'Short Text', 'What happened?', 'What can you do?', 'Error analysis', 'How to correct the error',
-  'Chain of Exception Objects', 'Information on where terminated', 'Source Code Extract',
-  'Contents of system fields', 'Active Calls/Events', 'Selected Variables',
-  'Information About Memory Usage in the Internal Session', 'Application Calls',
-  'List of ABAP programs affected', 'Internal notes', 'Active Calls in SAP Kernel',
-  'Directory of Application Tables', 'ABAP Control Blocks (CONT)', 'System environment',
-  'User and Transaction'
+  'Short Text',
+  'What happened?',
+  'What can you do?',
+  'Error analysis',
+  'How to correct the error',
+  'Chain of Exception Objects',
+  'Information on where terminated',
+  'Source Code Extract',
+  'Contents of system fields',
+  'Active Calls/Events',
+  'Selected Variables',
+  'Information About Memory Usage in the Internal Session',
+  'Application Calls',
+  'List of ABAP programs affected',
+  'Internal notes',
+  'Active Calls in SAP Kernel',
+  'Directory of Application Tables',
+  'ABAP Control Blocks (CONT)',
+  'System environment',
+  'User and Transaction',
 ]);
 
 function extractSection(payload: string, title: string): string {
@@ -122,18 +167,24 @@ function extractSection(payload: string, title: string): string {
   for (const l of lines) {
     const titleMatch = /^\|\s*([^|]+?)\s*\|\s*$/.exec(l);
     const candidate = titleMatch?.[1].trim();
+    // ST22 sometimes appends "(Source code changed)" or other parenthesised
+    // qualifiers to a section heading — strip them before comparing so we
+    // still recognise the section under its canonical title.
+    const canonical = candidate?.replace(/\s*\([^)]+\)\s*$/, '').trim();
     if (!inside) {
-      if (candidate === title) inside = true;
+      if (canonical === title) inside = true;
       continue;
     }
     // Inside: stop only when we hit ANOTHER known major section title.
-    if (candidate && candidate !== title && MAJOR_TITLES.has(candidate)) break;
+    if (canonical && canonical !== title && MAJOR_TITLES.has(canonical)) break;
     out.push(l);
   }
   return out.join('\n');
 }
 
-function escape(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function _escape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function pipeContent(line: string): string {
   // Strip leading '|' and trailing '...|', return middle content.
@@ -143,14 +194,17 @@ function pipeContent(line: string): string {
 
 function parseCallStack(section: string): CallFrame[] {
   const frames: CallFrame[] = [];
-  const lines = section.split(/\r?\n/).filter(l => l.startsWith('|') && !/^\|-+/.test(l));
+  const lines = section
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith('|') && !/^\|-+/.test(l));
   // Detail row examples:
   //   "   13 METHOD       CL_X=========CP    CL_X=========CM00G    22"
   //   "    2 FUNCTION     SAPLHTTP_RUNTIME    LHTTP_RUNTIMEU02    1779"
   //   "    1 MODULE (PBO) SAPMHTTP            SAPMHTTP              12"   ← parens with space
   // eventType may include a parenthesised qualifier: anchor on KIND keyword,
   // optionally followed by " (...)".
-  const ROW = /^\s*(\d+)\s+(METHOD|FUNCTION|FORM|EVENT|MODULE|PROGRAM)(\s*\([^)]+\))?\s+(\S+)\s+(\S+)\s+(\d+)\s*$/;
+  const ROW =
+    /^\s*(\d+)\s+(METHOD|FUNCTION|FORM|EVENT|MODULE|PROGRAM)(\s*\([^)]+\))?\s+(\S+)\s+(\S+)\s+(\d+)\s*$/;
   for (let i = 0; i < lines.length; i++) {
     const c = pipeContent(lines[i]);
     const m = ROW.exec(c);
@@ -167,7 +221,7 @@ function parseCallStack(section: string): CallFrame[] {
       eventName,
       program: m[4],
       include: m[5],
-      line: Number.parseInt(m[6], 10)
+      line: Number.parseInt(m[6], 10),
     });
   }
   return frames;
@@ -179,7 +233,8 @@ function parseSourceExtract(section: string): SourceExtract | undefined {
   let lineFrom: number | undefined;
   let lineTo: number | undefined;
   for (const raw of section.split(/\r?\n/)) {
-    if (!raw.startsWith('|') || /^\|-+/.test(raw) || /^\|Line\s*\|/.test(raw)) continue;
+    if (!raw.startsWith('|') || /^\|-+/.test(raw) || /^\|Line\s*\|/.test(raw))
+      continue;
     // "|>>>>>|    <ls_gw_used_db>-obj_count..." crash marker has 5 chars before pipe
     // "|    1|METHOD determine_gw_used."  normal line: number + pipe + code
     const m = /^\|(\s*(?:>{2,}|\d+))\|(.*)\|\s*$/.exec(raw);
@@ -211,11 +266,26 @@ function parseVariables(section: string): VariableSnapshot[] {
   const stitched: string[] = [];
   let buf = '';
   for (const raw of rawLines) {
-    if (!raw.startsWith('|')) { if (buf) { stitched.push(buf); buf = ''; } continue; }
-    if (/^\|-+/.test(raw)) { if (buf) { stitched.push(buf); buf = ''; } continue; }
+    if (!raw.startsWith('|')) {
+      if (buf) {
+        stitched.push(buf);
+        buf = '';
+      }
+      continue;
+    }
+    if (/^\|-+/.test(raw)) {
+      if (buf) {
+        stitched.push(buf);
+        buf = '';
+      }
+      continue;
+    }
     const c = pipeContent(raw);
     if (c.endsWith('\\')) buf += c.slice(0, -1);
-    else { stitched.push(buf + c); buf = ''; }
+    else {
+      stitched.push(buf + c);
+      buf = '';
+    }
   }
   if (buf) stitched.push(buf);
 
@@ -237,7 +307,9 @@ function parseVariables(section: string): VariableSnapshot[] {
       // ST22 lists 3-4 additional rows per non-printable type for hex
       // high/low bytes and char codes, which collapse into the cell as
       // "X\n5\n8\n0\n0\n5800" — useless in a Fiori table.
-      const lines = valueAccum.map(l => l.trimEnd()).filter(l => l.length > 0);
+      const lines = valueAccum
+        .map((l) => l.trimEnd())
+        .filter((l) => l.length > 0);
       const first = lines[0] ?? '';
       result.push({
         scope,
@@ -245,7 +317,7 @@ function parseVariables(section: string): VariableSnapshot[] {
         name: pendingName,
         type: '',
         value: first,
-        truncated: lines.length > 1
+        truncated: lines.length > 1,
       });
     }
     pendingName = undefined;
@@ -270,7 +342,10 @@ function parseVariables(section: string): VariableSnapshot[] {
     }
     expectFrameNameLine = false;
     // Section column header: "Name", "Val.", "Name    Val." — skip.
-    if (/^Name(\s+Val\.?)?$/.test(trimmed) || /^Val\.?$/.test(trimmed)) { flush(); continue; }
+    if (/^Name(\s+Val\.?)?$/.test(trimmed) || /^Val\.?$/.test(trimmed)) {
+      flush();
+      continue;
+    }
     // Variable name lines start at column 0 of pipe content (no leading spaces).
     // Value lines are indented (≥4 spaces) — they may be hex/char rows for the
     // current variable, multiple per name (printable, hex high, hex low, etc).
@@ -289,4 +364,3 @@ function extractShortText(payload: string): string | undefined {
   const m = /\|Short Text\s*\|[\r\n-]+\|\s*([^|]+?)\s*\|/m.exec(payload);
   return m ? m[1].trim() : undefined;
 }
-

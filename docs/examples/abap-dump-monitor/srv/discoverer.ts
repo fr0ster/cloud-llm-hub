@@ -1,6 +1,13 @@
-import type { ISettings, IDumpSource, IJiraClient, JiraIssueRef, ParsedDump, DumpListItem } from './interfaces';
-import { computeSignature } from './jira-policy';
+import type {
+  DumpListItem,
+  IDumpSource,
+  IJiraClient,
+  ISettings,
+  JiraIssueRef,
+  ParsedDump,
+} from './interfaces';
 import type { AssigneeRuleRow } from './jira-policy';
+import { computeSignature } from './jira-policy';
 
 // Per-tick lifecycle probe: caches `getIssue` results for the duration of one
 // `Discoverer.tickOnce` call. Cross-tick reads always re-fetch from Jira so a
@@ -20,26 +27,70 @@ export function createLifecycleProbe(jira: IJiraClient): LifecycleProbe {
         // INSERTs in the same tick share the single Jira call. Errors are NOT
         // cached — on rejection the entry is evicted so the next attempt
         // re-fetches.
-        p = jira.getIssue(key).catch(err => { cache.delete(key); throw err; });
+        p = jira.getIssue(key).catch((err) => {
+          cache.delete(key);
+          throw err;
+        });
         cache.set(key, p);
       }
       return p;
-    }
+    },
   };
 }
 
 export interface DumpRepository {
   listSystems(): Promise<string[]>;
   maxOccurredAt(system: string): Promise<string | undefined>;
-  findByDumpId(system: string, dumpId: string): Promise<{ ID: string } | undefined>;
-  insertParsed(item: DumpListItem, parsed: ParsedDump, signature: string, lifecycle: LifecycleProbe): Promise<string>;
-  findPendingAnalysis(maxAttempts: number): Promise<Array<{ ID: string; rawPayload: string; system: string; dumpId: string; analysisAttempts: number }>>;
+  findByDumpId(
+    system: string,
+    dumpId: string,
+  ): Promise<{ ID: string } | undefined>;
+  insertParsed(
+    item: DumpListItem,
+    parsed: ParsedDump,
+    signature: string,
+    lifecycle: LifecycleProbe,
+  ): Promise<string>;
+  findPendingAnalysis(maxAttempts: number): Promise<
+    Array<{
+      ID: string;
+      rawPayload: string;
+      system: string;
+      dumpId: string;
+      analysisAttempts: number;
+    }>
+  >;
   updateAnalysis(id: string, patch: Record<string, unknown>): Promise<void>;
-  findPendingJira(maxAttempts: number): Promise<Array<{ ID: string; system: string; dumpId: string; signature: string; runtimeError?: string; program?: string; category?: string; recommendations?: string; jiraAttempts: number; shortText?: string; include?: string; sourceLine?: number; occurredAt?: string; abapUser?: string; jiraIssueKey?: string }>>;
+  findPendingJira(maxAttempts: number): Promise<
+    Array<{
+      ID: string;
+      system: string;
+      dumpId: string;
+      signature: string;
+      runtimeError?: string;
+      program?: string;
+      category?: string;
+      recommendations?: string;
+      jiraAttempts: number;
+      shortText?: string;
+      include?: string;
+      sourceLine?: number;
+      occurredAt?: string;
+      abapUser?: string;
+      jiraIssueKey?: string;
+    }>
+  >;
   updateJira(id: string, patch: Record<string, unknown>): Promise<void>;
-  findJiraState(id: string): Promise<{ jiraStatus: string; jiraIssueKey?: string; skipJira: boolean } | undefined>;
+  findJiraState(
+    id: string,
+  ): Promise<
+    { jiraStatus: string; jiraIssueKey?: string; skipJira: boolean } | undefined
+  >;
   countSignatureWithin(signature: string, sinceIso: string): Promise<number>;
-  findRecentByJira(signature: string, sinceIso: string): Promise<{ ID: string; jiraIssueKey: string } | undefined>;
+  findRecentByJira(
+    signature: string,
+    sinceIso: string,
+  ): Promise<{ ID: string; jiraIssueKey: string } | undefined>;
   listAssigneeRules(): Promise<AssigneeRuleRow[]>;
   parsePayload(system: string, dumpId: string, raw: string): ParsedDump;
 }
@@ -60,11 +111,16 @@ export class Discoverer {
   constructor(private deps: DiscovererDeps) {}
 
   async tickOnce(): Promise<void> {
-    if (this.running) { this.deps.log('discoverer: previous tick still running, skip'); return; }
+    if (this.running) {
+      this.deps.log('discoverer: previous tick still running, skip');
+      return;
+    }
     this.running = true;
     console.log('[discoverer] tickOnce: start');
     try {
-      const sigFields = await this.deps.settings.getCsv('DUMP_SIGNATURE_FIELDS');
+      const sigFields = await this.deps.settings.getCsv(
+        'DUMP_SIGNATURE_FIELDS',
+      );
       const systems = await this.deps.repo.listSystems();
       console.log('[discoverer] tickOnce: systems=', systems);
       // Fresh per-tick lifecycle probe — discarded when this method returns.
@@ -73,21 +129,43 @@ export class Discoverer {
         const since = await this.computeSince(system);
         console.log('[discoverer] tickOnce: listing', system, 'since', since);
         let items: DumpListItem[];
-        try { items = await this.deps.dumpSource.listSince(system, since); }
-        catch (e) { console.error('[discoverer] tickOnce: list failed', system, e); this.deps.log(`list ${system} failed`, e); continue; }
-        console.log('[discoverer] tickOnce:', system, 'returned', items.length, 'items');
+        try {
+          items = await this.deps.dumpSource.listSince(system, since);
+        } catch (e) {
+          console.error('[discoverer] tickOnce: list failed', system, e);
+          this.deps.log(`list ${system} failed`, e);
+          continue;
+        }
+        console.log(
+          '[discoverer] tickOnce:',
+          system,
+          'returned',
+          items.length,
+          'items',
+        );
         for (const it of items) {
-          const existing = await this.deps.repo.findByDumpId(it.system, it.dumpId);
+          const existing = await this.deps.repo.findByDumpId(
+            it.system,
+            it.dumpId,
+          );
           if (existing) continue;
           try {
             const raw = await this.deps.dumpSource.fetch(it.system, it.dumpId);
-            const parsed = this.deps.repo.parsePayload(it.system, it.dumpId, raw);
+            const parsed = this.deps.repo.parsePayload(
+              it.system,
+              it.dumpId,
+              raw,
+            );
             const sig = computeSignature(parsed.header, sigFields);
             await this.deps.repo.insertParsed(it, parsed, sig, lifecycle);
-          } catch (e) { this.deps.log(`fetch ${it.system}/${it.dumpId} failed`, e); }
+          } catch (e) {
+            this.deps.log(`fetch ${it.system}/${it.dumpId} failed`, e);
+          }
         }
       }
-    } finally { this.running = false; }
+    } finally {
+      this.running = false;
+    }
   }
 
   private async computeSince(system: string): Promise<string> {

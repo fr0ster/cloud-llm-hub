@@ -36,6 +36,15 @@
     }
   },
   "sap.ui5": {
+    "extends": {
+      "extensions": {
+        "sap.ui.controllerExtensions": {
+          "sap.fe.templates.ObjectPage.ObjectPageController": {
+            "controllerName": "monitor.ext.controller.FrameSource"
+          }
+        }
+      }
+    },
     "dependencies": {
       "minUI5Version": "1.136.0",
       "libs": {
@@ -106,6 +115,12 @@
                       "template": "monitor.ext.SourceFragment",
                       "requestAtLeast": "sourceExtract/code,sourceExtract/program,sourceExtract/include,sourceExtract/lineFrom,sourceExtract/lineTo",
                       "position": { "placement": "After", "anchor": "Stack" }
+                    },
+                    "FrameSource": {
+                      "type": "XMLFragment",
+                      "title": "Frame Source",
+                      "template": "monitor.ext.FrameSourceFragment",
+                      "position": { "placement": "After", "anchor": "SourceCode" }
                     },
                     "AnalysisCustom": {
                       "type": "XMLFragment",

@@ -1,16 +1,24 @@
 import { getDestination } from '@sap-cloud-sdk/connectivity';
-import type { IAnalyzer, ISettings, ParsedDump, AnalysisResult } from './interfaces';
+import type {
+  AnalysisResult,
+  IAnalyzer,
+  ISettings,
+  ParsedDump,
+} from './interfaces';
 
 export class Analyzer implements IAnalyzer {
   constructor(
     private destinationName: string,
     private sapDestination: string,
-    private settings: ISettings
+    private settings: ISettings,
   ) {}
 
   async analyze(parsed: ParsedDump): Promise<AnalysisResult> {
-    const model = (await this.settings.get('LLM_MODEL')) ?? 'anthropic--claude-4.5-sonnet';
-    const temperature = Number.parseFloat((await this.settings.get('LLM_TEMPERATURE')) ?? '0');
+    const model =
+      (await this.settings.get('LLM_MODEL')) ?? 'anthropic--claude-4.5-sonnet';
+    const temperature = Number.parseFloat(
+      (await this.settings.get('LLM_TEMPERATURE')) ?? '0',
+    );
 
     const userPrompt = buildPrompt(parsed);
     const body = {
@@ -65,17 +73,21 @@ export class Analyzer implements IAnalyzer {
             '- Reference actual values from variables / source extract / call stack.',
             '- One sentence per numbered item.',
             '- Code fences only for ABAP code; no fence around the whole answer.',
-            '- If a section truly has nothing to say, write a single dash "—" under it.'
-          ].join('\n')
+            '- If a section truly has nothing to say, write a single dash "—" under it.',
+          ].join('\n'),
         },
-        { role: 'user', content: userPrompt }
-      ]
+        { role: 'user', content: userPrompt },
+      ],
     };
 
-    const dest = await getDestination({ destinationName: this.destinationName });
-    if (!dest?.url) throw new Error(`Destination ${this.destinationName} has no URL`);
+    const dest = await getDestination({
+      destinationName: this.destinationName,
+    });
+    if (!dest?.url)
+      throw new Error(`Destination ${this.destinationName} has no URL`);
     const token = dest.authTokens?.[0]?.value;
-    if (!token) throw new Error(`Destination ${this.destinationName} has no auth token`);
+    if (!token)
+      throw new Error(`Destination ${this.destinationName} has no auth token`);
     const tokenType = dest.authTokens?.[0]?.type ?? 'Bearer';
 
     const url = new URL('/v1/chat/completions', dest.url).toString();
@@ -84,15 +96,15 @@ export class Analyzer implements IAnalyzer {
       headers: {
         Authorization: `${tokenType} ${token}`,
         'Content-Type': 'application/json',
-        'X-SAP-Destination': this.sapDestination
+        'X-SAP-Destination': this.sapDestination,
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       throw new Error(`LLM HTTP ${resp.status}: ${text.slice(0, 500)}`);
     }
-    const data = await resp.json() as any;
+    const data = (await resp.json()) as any;
     const raw = JSON.stringify(data);
     const content: string = data?.choices?.[0]?.message?.content ?? '';
     // No code-side filtering: response shape is the prompt's contract.
@@ -109,11 +121,16 @@ function buildPrompt(p: ParsedDump): string {
   // Summary', '## Root Cause') instead of the four required by the system
   // prompt. Use lowercase YAML-like labels and indented blocks; reserve '##'
   // for the response template only.
-  const top5 = p.callStack.slice(0, 5)
-    .map(f => `  ${f.position}. ${f.eventType ?? ''} ${f.eventName ?? ''} @ ${f.program}/${f.include}:${f.line}`)
+  const top5 = p.callStack
+    .slice(0, 5)
+    .map(
+      (f) =>
+        `  ${f.position}. ${f.eventType ?? ''} ${f.eventName ?? ''} @ ${f.program}/${f.include}:${f.line}`,
+    )
     .join('\n');
-  const vars = p.variables.slice(0, 20)
-    .map(v => `  - [${v.scope}] ${v.name} = ${v.value ?? ''}`)
+  const vars = p.variables
+    .slice(0, 20)
+    .map((v) => `  - [${v.scope}] ${v.name} = ${v.value ?? ''}`)
     .join('\n');
   return [
     `dump_data:`,
@@ -129,17 +146,23 @@ function buildPrompt(p: ParsedDump): string {
     top5,
     ``,
     `source_extract: |`,
-    (p.sourceExtract?.code ?? '(none)').split('\n').map(l => '  ' + l).join('\n'),
+    (p.sourceExtract?.code ?? '(none)')
+      .split('\n')
+      .map((l) => `  ${l}`)
+      .join('\n'),
     ``,
     `variables:`,
     vars,
     ``,
-    `Now produce the four-section ticket body per the system prompt's contract.`
+    `Now produce the four-section ticket body per the system prompt's contract.`,
   ].join('\n');
 }
 
-function extractSection(md: string, heading: string): string | undefined {
-  const re = new RegExp(`^##\\s+${heading}\\b[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|\\Z)`, 'mi');
+function _extractSection(md: string, heading: string): string | undefined {
+  const re = new RegExp(
+    `^##\\s+${heading}\\b[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|\\Z)`,
+    'mi',
+  );
   const m = re.exec(md);
   return m ? m[1].trim() : undefined;
 }

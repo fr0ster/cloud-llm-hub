@@ -20,12 +20,16 @@
 // process.env.NODE_ENV === 'test' so cds.test() boots the OData layer
 // without leaking setTimeout worker loops.
 //
-// @ts-ignore - @sap/cds has no type definitions
-import cds from '@sap/cds';
-import { CdsDumpRepository } from '../../srv/dump-repository';
-import type { ParsedDump, DumpListItem, JiraIssueRef } from '../../srv/interfaces';
-import type { LifecycleProbe } from '../../srv/discoverer';
 import { join } from 'node:path';
+// @ts-expect-error - @sap/cds has no type definitions
+import cds from '@sap/cds';
+import type { LifecycleProbe } from '../../srv/discoverer';
+import { CdsDumpRepository } from '../../srv/dump-repository';
+import type {
+  DumpListItem,
+  JiraIssueRef,
+  ParsedDump,
+} from '../../srv/interfaces';
 
 const PROJECT_ROOT = join(__dirname, '..', '..');
 
@@ -51,11 +55,11 @@ function fakeParsed(dumpId: string): ParsedDump {
       runtimeError: 'OBJECTS_OBJREF_NOT_ASSIGNED',
       program: 'ZCL_TEST',
       include: 'ZCL_TEST_CM01',
-      sourceLine: 42
+      sourceLine: 42,
     },
     callStack: [],
     variables: [],
-    sourceExtract: undefined
+    sourceExtract: undefined,
   };
 }
 
@@ -63,23 +67,27 @@ function fakeItem(dumpId: string, occurredAt: string): DumpListItem {
   return { system: SYSTEM, dumpId, occurredAt };
 }
 
-function makeLifecycle(category: 'open' | 'done', spy: { calls: string[] }): LifecycleProbe {
+function makeLifecycle(
+  category: 'open' | 'done',
+  spy: { calls: string[] },
+): LifecycleProbe {
   // Mirrors the per-tick cache from srv/discoverer.createLifecycleProbe — a Map
   // keyed on jiraIssueKey, so two inserts in the same probe instance don't
   // re-hit Jira. Spy captures only the underlying upstream calls (post-cache).
   const cache = new Map<string, JiraIssueRef>();
   return {
     async getIssueCached(key: string): Promise<JiraIssueRef> {
-      if (cache.has(key)) return cache.get(key)!;
+      const hit = cache.get(key);
+      if (hit) return hit;
       spy.calls.push(key);
       const issue: JiraIssueRef = {
         key,
-        statusCategoryKey: category === 'done' ? 'done' : 'indeterminate'
+        statusCategoryKey: category === 'done' ? 'done' : 'indeterminate',
       };
       cache.set(key, issue);
       return issue;
     },
-    cache
+    cache,
   } as unknown as LifecycleProbe;
 }
 
@@ -101,8 +109,10 @@ async function seedRow(overrides: {
     system: SYSTEM,
     dumpId: overrides.dumpId,
     signature: overrides.signature ?? SIG,
-    firstSeenAt: overrides.firstSeenAt ?? new Date(Date.now() - 60_000).toISOString(),
-    occurredAt: overrides.firstSeenAt ?? new Date(Date.now() - 60_000).toISOString(),
+    firstSeenAt:
+      overrides.firstSeenAt ?? new Date(Date.now() - 60_000).toISOString(),
+    occurredAt:
+      overrides.firstSeenAt ?? new Date(Date.now() - 60_000).toISOString(),
     runtimeError: 'OBJECTS_OBJREF_NOT_ASSIGNED',
     program: 'ZCL_TEST',
     rawPayload: `seed ${overrides.dumpId}`,
@@ -111,7 +121,7 @@ async function seedRow(overrides: {
     jiraStatus: overrides.jiraStatus,
     jiraIssueKey: overrides.jiraIssueKey,
     jiraAttempts: 0,
-    skipJira: false
+    skipJira: false,
   });
 }
 
@@ -132,7 +142,12 @@ describe('CdsDumpRepository.insertParsed (integration, closes #50)', () => {
 
   test('1. canonical=null (first occurrence) → pending, no key, no Jira read', async () => {
     const lifecycle = makeLifecycle('open', spy);
-    await repo.insertParsed(fakeItem('D-1', '2026-01-01T00:00:00Z'), fakeParsed('D-1'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-1', '2026-01-01T00:00:00Z'),
+      fakeParsed('D-1'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-1');
     expect(row.jiraStatus).toBe('pending');
     expect(row.jiraIssueKey).toBeFalsy();
@@ -140,9 +155,18 @@ describe('CdsDumpRepository.insertParsed (integration, closes #50)', () => {
   });
 
   test('2. canonical=open + slot has only "created" → pending on canonical key (slot is not "taken" by created alone)', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created', jiraIssueKey: 'X-1' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+    });
     const lifecycle = makeLifecycle('open', spy);
-    await repo.insertParsed(fakeItem('D-2', '2026-01-02T00:00:00Z'), fakeParsed('D-2'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-2', '2026-01-02T00:00:00Z'),
+      fakeParsed('D-2'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-2');
     expect(row.jiraStatus).toBe('pending');
     expect(row.jiraIssueKey).toBe('X-1');
@@ -150,59 +174,142 @@ describe('CdsDumpRepository.insertParsed (integration, closes #50)', () => {
   });
 
   test('3. canonical=open + slot has "commented" → unheard on canonical key', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created',   jiraIssueKey: 'X-1', firstSeenAt: '2026-01-01T00:00:00Z' });
-    await seedRow({ dumpId: 'D-2', jiraStatus: 'commented', jiraIssueKey: 'X-1', firstSeenAt: '2026-01-02T00:00:00Z' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-01T00:00:00Z',
+    });
+    await seedRow({
+      dumpId: 'D-2',
+      jiraStatus: 'commented',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-02T00:00:00Z',
+    });
     const lifecycle = makeLifecycle('open', spy);
-    await repo.insertParsed(fakeItem('D-3', '2026-01-03T00:00:00Z'), fakeParsed('D-3'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-3', '2026-01-03T00:00:00Z'),
+      fakeParsed('D-3'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-3');
     expect(row.jiraStatus).toBe('unheard');
     expect(row.jiraIssueKey).toBe('X-1');
   });
 
   test('4. canonical=open + slot has "unheard" → unheard on canonical key', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created', jiraIssueKey: 'X-1', firstSeenAt: '2026-01-01T00:00:00Z' });
-    await seedRow({ dumpId: 'D-2', jiraStatus: 'unheard', jiraIssueKey: 'X-1', firstSeenAt: '2026-01-02T00:00:00Z' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-01T00:00:00Z',
+    });
+    await seedRow({
+      dumpId: 'D-2',
+      jiraStatus: 'unheard',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-02T00:00:00Z',
+    });
     const lifecycle = makeLifecycle('open', spy);
-    await repo.insertParsed(fakeItem('D-3', '2026-01-03T00:00:00Z'), fakeParsed('D-3'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-3', '2026-01-03T00:00:00Z'),
+      fakeParsed('D-3'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-3');
     expect(row.jiraStatus).toBe('unheard');
     expect(row.jiraIssueKey).toBe('X-1');
   });
 
   test('5. canonical=open + slot has "failed" alongside "created" → unheard on canonical key', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created', jiraIssueKey: 'X-1', firstSeenAt: '2026-01-01T00:00:00Z' });
-    await seedRow({ dumpId: 'D-2', jiraStatus: 'failed',  jiraIssueKey: 'X-1', firstSeenAt: '2026-01-02T00:00:00Z' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-01T00:00:00Z',
+    });
+    await seedRow({
+      dumpId: 'D-2',
+      jiraStatus: 'failed',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-02T00:00:00Z',
+    });
     const lifecycle = makeLifecycle('open', spy);
-    await repo.insertParsed(fakeItem('D-3', '2026-01-03T00:00:00Z'), fakeParsed('D-3'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-3', '2026-01-03T00:00:00Z'),
+      fakeParsed('D-3'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-3');
     expect(row.jiraStatus).toBe('unheard');
     expect(row.jiraIssueKey).toBe('X-1');
   });
 
   test('6. canonical=closed (statusCategoryKey=done) + slot has only "created" → pending on canonical key (worker will create new ticket and overwrite)', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created', jiraIssueKey: 'X-1' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+    });
     const lifecycle = makeLifecycle('done', spy);
-    await repo.insertParsed(fakeItem('D-2', '2026-01-02T00:00:00Z'), fakeParsed('D-2'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-2', '2026-01-02T00:00:00Z'),
+      fakeParsed('D-2'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-2');
     expect(row.jiraStatus).toBe('pending');
     expect(row.jiraIssueKey).toBe('X-1');
   });
 
   test('7. canonical=closed + slot has "commented" → pending (commented does NOT occupy slot in CLOSED branch — new cycle starts)', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created',   jiraIssueKey: 'X-1', firstSeenAt: '2026-01-01T00:00:00Z' });
-    await seedRow({ dumpId: 'D-2', jiraStatus: 'commented', jiraIssueKey: 'X-1', firstSeenAt: '2026-01-02T00:00:00Z' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-01T00:00:00Z',
+    });
+    await seedRow({
+      dumpId: 'D-2',
+      jiraStatus: 'commented',
+      jiraIssueKey: 'X-1',
+      firstSeenAt: '2026-01-02T00:00:00Z',
+    });
     const lifecycle = makeLifecycle('done', spy);
-    await repo.insertParsed(fakeItem('D-3', '2026-01-03T00:00:00Z'), fakeParsed('D-3'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-3', '2026-01-03T00:00:00Z'),
+      fakeParsed('D-3'),
+      SIG,
+      lifecycle,
+    );
     const row = await readDump('D-3');
     expect(row.jiraStatus).toBe('pending');
     expect(row.jiraIssueKey).toBe('X-1');
   });
 
   test('8. per-tick lifecycle cache: two inserts on same canonical → one upstream Jira read', async () => {
-    await seedRow({ dumpId: 'D-1', jiraStatus: 'created', jiraIssueKey: 'X-1' });
+    await seedRow({
+      dumpId: 'D-1',
+      jiraStatus: 'created',
+      jiraIssueKey: 'X-1',
+    });
     const lifecycle = makeLifecycle('open', spy);
-    await repo.insertParsed(fakeItem('D-2', '2026-01-02T00:00:00Z'), fakeParsed('D-2'), SIG, lifecycle);
-    await repo.insertParsed(fakeItem('D-3', '2026-01-03T00:00:00Z'), fakeParsed('D-3'), SIG, lifecycle);
+    await repo.insertParsed(
+      fakeItem('D-2', '2026-01-02T00:00:00Z'),
+      fakeParsed('D-2'),
+      SIG,
+      lifecycle,
+    );
+    await repo.insertParsed(
+      fakeItem('D-3', '2026-01-03T00:00:00Z'),
+      fakeParsed('D-3'),
+      SIG,
+      lifecycle,
+    );
     expect(spy.calls).toEqual(['X-1']); // one upstream call shared across both inserts
   });
 });

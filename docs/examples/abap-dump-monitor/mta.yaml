@@ -39,7 +39,7 @@ modules:
       commands:
         - node -e "require('fs').cpSync('../../app/monitor/webapp','app/monitor/webapp',{recursive:true});require('fs').cpSync('../../app/fiori-apps.html','app/fiori-apps.html')"
         - npm install
-        - node -e "require('fs').writeFileSync('tsconfig.json',JSON.stringify({compilerOptions:{target:'ES2022',module:'CommonJS',moduleResolution:'Node',esModuleInterop:true,skipLibCheck:true,resolveJsonModule:true,outDir:'.tsbuild',rootDir:'srv'},include:['srv/**/*.ts']}))"
+        - node -e "require('fs').writeFileSync('tsconfig.json',JSON.stringify({compilerOptions:{target:'ES2022',module:'CommonJS',moduleResolution:'Node',ignoreDeprecations:'6.0',esModuleInterop:true,skipLibCheck:true,resolveJsonModule:true,isolatedModules:true,outDir:'.tsbuild',rootDir:'srv'},include:['srv/**/*.ts']}))"
         - npx tsc -p tsconfig.json
         - node -e "const fs=require('fs');for(const f of fs.readdirSync('srv')){if(f.endsWith('.ts'))fs.unlinkSync(`srv/${f}`)}for(const f of fs.readdirSync('.tsbuild')){fs.copyFileSync(`.tsbuild/${f}`,`srv/${f}`)}"
         - node -e "require('fs').rmSync('.tsbuild',{recursive:true,force:true});require('fs').unlinkSync('tsconfig.json')"

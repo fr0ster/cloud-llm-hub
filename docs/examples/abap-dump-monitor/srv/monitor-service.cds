@@ -26,6 +26,16 @@ service MonitorService @(path: 'admin', requires: 'Viewer') {
   @(requires: 'Admin')
   action pollNow() returns String;
 
+  // Read source for one call-stack frame via cloud-llm-hub MCP. Invoked
+  // from a master/detail section on the Object Page: user selects a row
+  // in the Call Stack table, the FrameSource section's controller calls
+  // this function with (dumpID, position) and renders the result.
+  @(requires: 'Viewer')
+  function GetFrameSource(
+    dumpID   : UUID,
+    position : Integer
+  ) returns LargeString;
+
   // Value-help projections — distinct values currently in MonitoredDump,
   // used by Fiori Elements F4 dialogs on the List Report filter bar.
   @readonly entity AbapUserVH      as select distinct key abapUser     from core.MonitoredDump where abapUser     is not null;

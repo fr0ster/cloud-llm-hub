@@ -11,13 +11,13 @@
       <Label text="Attempts:" class="sapUiSmallMarginBegin sapUiTinyMarginEnd"/>
       <Text text="{jiraAttempts}"/>
     </HBox>
-    <HBox alignItems="Center" class="sapUiSmallMarginTop" visible="{= !!${jiraIssueKey}}">
+    <HBox alignItems="Center" class="sapUiSmallMarginTop" visible="{= !!${path:'jiraIssueKey',targetType:'any'} }">
       <Label text="Issue:" class="sapUiTinyMarginEnd"/>
       <Link text="{jiraIssueKey}" target="_blank" href="{jiraIssueUrl}"/>
     </HBox>
-    <HBox alignItems="Center" class="sapUiSmallMarginTop" visible="{= ${skipJira} === true}">
+    <HBox alignItems="Center" class="sapUiSmallMarginTop" visible="{= ${path:'skipJira',targetType:'any'} === true}">
       <ObjectStatus state="Information" text="Push to Jira disabled (skipJira=true)"/>
     </HBox>
-    <Text text="{jiraError}" visible="{= !!${jiraError}}" class="sapUiSmallMarginTop"/>
+    <Text text="{jiraError}" visible="{= !!${path:'jiraError',targetType:'any'} }" class="sapUiSmallMarginTop"/>
   </l:VerticalLayout>
 </core:FragmentDefinition>

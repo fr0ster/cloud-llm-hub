@@ -1,9 +1,9 @@
-// @ts-ignore - @sap/cds has no type definitions
+// @ts-expect-error - @sap/cds has no type definitions
 import cds from '@sap/cds';
-import { parseDump } from './dump-parser';
-import { decideJiraInsertStatus } from './jira-policy';
 import type { DumpRepository, LifecycleProbe } from './discoverer';
-import type { ParsedDump, DumpListItem } from './interfaces';
+import { parseDump } from './dump-parser';
+import type { DumpListItem, ParsedDump } from './interfaces';
+import { decideJiraInsertStatus } from './jira-policy';
 
 declare const SELECT: any;
 declare const INSERT: any;
@@ -17,7 +17,7 @@ function toIso(input: unknown): string | null {
   const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(s);
   if (m) return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
   const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d.toISOString();
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 export class CdsDumpRepository implements DumpRepository {
@@ -31,7 +31,9 @@ export class CdsDumpRepository implements DumpRepository {
   }
   async maxOccurredAt(system: string): Promise<string | undefined> {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    const r = await SELECT.one`max(occurredAt) as m`.from(MonitoredDump).where({ system });
+    const r = await SELECT.one`max(occurredAt) as m`
+      .from(MonitoredDump)
+      .where({ system });
     return r?.m;
   }
   async findByDumpId(system: string, dumpId: string) {
@@ -39,7 +41,12 @@ export class CdsDumpRepository implements DumpRepository {
     return SELECT.one.from(MonitoredDump).where({ system, dumpId });
   }
 
-  async insertParsed(item: DumpListItem, parsed: ParsedDump, signature: string, lifecycle: LifecycleProbe): Promise<string> {
+  async insertParsed(
+    item: DumpListItem,
+    parsed: ParsedDump,
+    signature: string,
+    lifecycle: LifecycleProbe,
+  ): Promise<string> {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
     const ID = cds.utils.uuid();
     // Canonical-key INSERT algorithm — see docs/DEDUPLICATION.md.
@@ -48,11 +55,15 @@ export class CdsDumpRepository implements DumpRepository {
     // test/unit/insert-integration.test.ts (cds.test() with in-memory sqlite).
     //
     // canonical = latest row in group with jiraStatus='created' AND jiraIssueKey IS NOT NULL
-    const canonicalRow = await SELECT.one.from(MonitoredDump)
+    const canonicalRow = await SELECT.one
+      .from(MonitoredDump)
       .columns('jiraIssueKey')
       .where({ signature, jiraStatus: 'created', jiraIssueKey: { '!=': null } })
       .orderBy('firstSeenAt desc');
-    let canonical: { jiraIssueKey: string; statusCategoryKey: 'open' | 'done' } | null = null;
+    let canonical: {
+      jiraIssueKey: string;
+      statusCategoryKey: 'open' | 'done';
+    } | null = null;
     let slotRows: Array<{ jiraStatus: string }> = [];
     if (canonicalRow?.jiraIssueKey) {
       // Lifecycle recheck via the per-tick cache. Errors propagate so the
@@ -60,7 +71,10 @@ export class CdsDumpRepository implements DumpRepository {
       // marking it incorrectly.
       const issue = await lifecycle.getIssueCached(canonicalRow.jiraIssueKey);
       const cat = issue.statusCategoryKey === 'done' ? 'done' : 'open';
-      canonical = { jiraIssueKey: canonicalRow.jiraIssueKey, statusCategoryKey: cat };
+      canonical = {
+        jiraIssueKey: canonicalRow.jiraIssueKey,
+        statusCategoryKey: cat,
+      };
       // ALL rows in the group with the same canonical key, regardless of
       // status. The pure decision function picks which statuses count as
       // 'slot occupied' for open vs done branches.
@@ -68,11 +82,15 @@ export class CdsDumpRepository implements DumpRepository {
         .columns('jiraStatus')
         .where({ signature, jiraIssueKey: canonicalRow.jiraIssueKey });
     }
-    const decision = decideJiraInsertStatus({ canonical, slotRowsForCanonicalKey: slotRows });
+    const decision = decideJiraInsertStatus({
+      canonical,
+      slotRowsForCanonicalKey: slotRows,
+    });
 
     await INSERT.into(MonitoredDump).entries({
       ID,
-      system: item.system, dumpId: item.dumpId,
+      system: item.system,
+      dumpId: item.dumpId,
       runtimeError: parsed.header.runtimeError,
       exceptionClass: parsed.header.exceptionClass,
       // Prefer the MCP feed value (RuntimeListFeeds → d.category — the SAP
@@ -80,12 +98,16 @@ export class CdsDumpRepository implements DumpRepository {
       // parsed ST22 header value when MCP omits the field; the dump payload
       // itself usually carries 'Application Component' in the top header.
       category: item.category ?? parsed.header.category,
-      host: parsed.header.host, instance: parsed.header.instance,
-      program: parsed.header.program, include: parsed.header.include,
+      host: parsed.header.host,
+      instance: parsed.header.instance,
+      program: parsed.header.program,
+      include: parsed.header.include,
       mainProgram: parsed.header.mainProgram,
       sourceLine: parsed.header.sourceLine,
-      event: parsed.header.event, transactionId: parsed.header.transactionId,
-      abapUser: parsed.header.abapUser, client: parsed.header.client,
+      event: parsed.header.event,
+      transactionId: parsed.header.transactionId,
+      abapUser: parsed.header.abapUser,
+      client: parsed.header.client,
       occurredAt: toIso(parsed.header.occurredAt ?? item.occurredAt),
       firstSeenAt: new Date().toISOString(),
       shortText: parsed.header.shortText,
@@ -97,23 +119,29 @@ export class CdsDumpRepository implements DumpRepository {
       jiraIssueKey: decision.jiraIssueKey ?? undefined,
       jiraAttempts: 0,
       skipJira: false,
-      callStack: parsed.callStack.map(f => ({ ...f, ID: cds.utils.uuid() })),
-      variables: parsed.variables.map(v => ({ ...v, ID: cds.utils.uuid() })),
-      sourceExtract: parsed.sourceExtract ? { ...parsed.sourceExtract, ID: cds.utils.uuid() } : undefined
+      callStack: parsed.callStack.map((f) => ({ ...f, ID: cds.utils.uuid() })),
+      variables: parsed.variables.map((v) => ({ ...v, ID: cds.utils.uuid() })),
+      sourceExtract: parsed.sourceExtract
+        ? { ...parsed.sourceExtract, ID: cds.utils.uuid() }
+        : undefined,
     });
     return ID;
   }
 
   async findPendingAnalysis(maxAttempts: number) {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    const stuckMs = Number.parseInt(process.env.ANALYSIS_STUCK_MS ?? '600000', 10);
+    const stuckMs = Number.parseInt(
+      process.env.ANALYSIS_STUCK_MS ?? '600000',
+      10,
+    );
     const stuckCutoff = new Date(Date.now() - stuckMs).toISOString();
-    return SELECT.from(MonitoredDump).columns('ID', 'rawPayload', 'system', 'dumpId', 'analysisAttempts')
+    return SELECT.from(MonitoredDump)
+      .columns('ID', 'rawPayload', 'system', 'dumpId', 'analysisAttempts')
       .where(
         `analysisAttempts < ${maxAttempts} and (` +
-        `analysisStatus in ('pending','failed') ` +
-        `or (analysisStatus = 'analyzing' and modifiedAt < '${stuckCutoff}')` +
-        `)`
+          `analysisStatus in ('pending','failed') ` +
+          `or (analysisStatus = 'analyzing' and modifiedAt < '${stuckCutoff}')` +
+          `)`,
       );
   }
   async updateAnalysis(id: string, patch: Record<string, unknown>) {
@@ -123,8 +151,26 @@ export class CdsDumpRepository implements DumpRepository {
   async findPendingJira(maxAttempts: number) {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
     return SELECT.from(MonitoredDump)
-      .columns('ID','system','dumpId','signature','runtimeError','program','category','recommendations','jiraAttempts','shortText','include','sourceLine','occurredAt','abapUser','jiraIssueKey')
-      .where(`analysisStatus = 'done' and jiraStatus in ('pending','failed') and skipJira = false and jiraAttempts < ${maxAttempts}`);
+      .columns(
+        'ID',
+        'system',
+        'dumpId',
+        'signature',
+        'runtimeError',
+        'program',
+        'category',
+        'recommendations',
+        'jiraAttempts',
+        'shortText',
+        'include',
+        'sourceLine',
+        'occurredAt',
+        'abapUser',
+        'jiraIssueKey',
+      )
+      .where(
+        `analysisStatus = 'done' and jiraStatus in ('pending','failed') and skipJira = false and jiraAttempts < ${maxAttempts}`,
+      );
   }
   async updateJira(id: string, patch: Record<string, unknown>) {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
@@ -132,17 +178,31 @@ export class CdsDumpRepository implements DumpRepository {
   }
   async findJiraState(id: string) {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    return SELECT.one.from(MonitoredDump).columns('jiraStatus', 'jiraIssueKey', 'skipJira').where({ ID: id });
+    return SELECT.one
+      .from(MonitoredDump)
+      .columns('jiraStatus', 'jiraIssueKey', 'skipJira')
+      .where({ ID: id });
   }
-  async countSignatureWithin(signature: string, sinceIso: string): Promise<number> {
+  async countSignatureWithin(
+    signature: string,
+    sinceIso: string,
+  ): Promise<number> {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    const r = await SELECT.one`count(*) as c`.from(MonitoredDump).where({ signature, firstSeenAt: { '>=': sinceIso } });
+    const r = await SELECT.one`count(*) as c`
+      .from(MonitoredDump)
+      .where({ signature, firstSeenAt: { '>=': sinceIso } });
     return Number(r?.c ?? 0);
   }
   async findRecentByJira(signature: string, sinceIso: string) {
     const { MonitoredDump } = cds.entities('example.abapdumpmonitor');
-    return SELECT.one.from(MonitoredDump).columns('ID', 'jiraIssueKey')
-      .where({ signature, firstSeenAt: { '>=': sinceIso }, jiraIssueKey: { '!=': null } })
+    return SELECT.one
+      .from(MonitoredDump)
+      .columns('ID', 'jiraIssueKey')
+      .where({
+        signature,
+        firstSeenAt: { '>=': sinceIso },
+        jiraIssueKey: { '!=': null },
+      })
       .orderBy('firstSeenAt desc');
   }
   async listAssigneeRules() {

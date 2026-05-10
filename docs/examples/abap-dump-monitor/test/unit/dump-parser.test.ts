@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseDump } from '../../srv/dump-parser';
 
-const fix = (name: string) => readFileSync(join(__dirname, `../fixtures/${name}`), 'utf-8');
+const fix = (name: string) =>
+  readFileSync(join(__dirname, `../fixtures/${name}`), 'utf-8');
 
 describe('parseDump (synthetic minimal fixture)', () => {
   const parsed = parseDump('E19.100', 'D-001', fix('dump-payload.sample.txt'));
@@ -14,7 +15,9 @@ describe('parseDump (synthetic minimal fixture)', () => {
 
   test('extracts program/include/line', () => {
     expect(parsed.header.program).toBe('ZCL_DEMO==========================CP');
-    expect(parsed.header.include).toBe('ZCL_DEMO==========================CM001');
+    expect(parsed.header.include).toBe(
+      'ZCL_DEMO==========================CM001',
+    );
     expect(parsed.header.sourceLine).toBe(42);
   });
 
@@ -29,7 +32,11 @@ describe('parseDump (synthetic minimal fixture)', () => {
 
   test('parses 3-frame call stack', () => {
     expect(parsed.callStack).toHaveLength(3);
-    expect(parsed.callStack[0]).toMatchObject({ position: 1, eventType: 'METHOD', line: 42 });
+    expect(parsed.callStack[0]).toMatchObject({
+      position: 1,
+      eventType: 'METHOD',
+      line: 42,
+    });
   });
 
   test('extracts source code with marker', () => {
@@ -39,7 +46,7 @@ describe('parseDump (synthetic minimal fixture)', () => {
   });
 
   test('parses variable snapshots with frameNo + scope from frame header', () => {
-    const v = parsed.variables.find(x => x.name === 'LO_PROVIDER');
+    const v = parsed.variables.find((x) => x.name === 'LO_PROVIDER');
     expect(v).toBeDefined();
     expect(v?.value).toBe('<INITIAL>');
     expect(v?.frameNo).toBe(1);
@@ -51,11 +58,17 @@ describe('parseDump (synthetic minimal fixture)', () => {
   });
 });
 
-function rawText(name: string): string { return fix(name); }
+function rawText(name: string): string {
+  return fix(name);
+}
 
 describe('parseDump (real anonymized fixtures)', () => {
   describe('STRING_LENGTH_NEGATIVE — 13 frames, hex variables with continuation lines', () => {
-    const parsed = parseDump('E19.100', 'D-stringlen', fix('dump-payload.string-length.real.txt'));
+    const parsed = parseDump(
+      'E19.100',
+      'D-stringlen',
+      fix('dump-payload.string-length.real.txt'),
+    );
     test('header', () => {
       expect(parsed.header.runtimeError).toBe('STRING_LENGTH_NEGATIVE');
       expect(parsed.header.exceptionClass).toBe('CX_SY_RANGE_OUT_OF_BOUNDS');
@@ -64,8 +77,8 @@ describe('parseDump (real anonymized fixtures)', () => {
     });
     test('parses 13 call stack frames including bottom MODULE (PBO) row', () => {
       expect(parsed.callStack).toHaveLength(13);
-      const top = parsed.callStack.find(f => f.position === 13);
-      const bottom = parsed.callStack.find(f => f.position === 1);
+      const top = parsed.callStack.find((f) => f.position === 13);
+      const bottom = parsed.callStack.find((f) => f.position === 1);
       expect(top?.eventType).toBe('METHOD');
       expect(bottom?.eventType).toBe('MODULE (PBO)');
       expect(bottom?.program).toBe('SAPMHTTP');
@@ -81,7 +94,7 @@ describe('parseDump (real anonymized fixtures)', () => {
       }
     });
     test('frameNo + scope populated from frame separator', () => {
-      const v = parsed.variables.find(x => x.name === 'LS_TOKEN-STR');
+      const v = parsed.variables.find((x) => x.name === 'LS_TOKEN-STR');
       expect(v?.frameNo).toBe(13);
       expect(v?.scope).toBe('method');
     });
@@ -95,7 +108,7 @@ describe('parseDump (real anonymized fixtures)', () => {
       // Pick any variable whose raw representation had multi-line hex output
       // (LS_TOKEN-TYPE was a 1-byte char with hex follow-up rows). Value
       // must be a single line and truncated=true marks the dropped rows.
-      const v = parsed.variables.find(x => x.name === 'LS_TOKEN-TYPE');
+      const v = parsed.variables.find((x) => x.name === 'LS_TOKEN-TYPE');
       expect(v).toBeDefined();
       expect(v?.value).not.toContain('\n');
       expect(v?.truncated).toBe(true);
@@ -103,7 +116,11 @@ describe('parseDump (real anonymized fixtures)', () => {
   });
 
   describe('DATREF_NOT_ASSIGNED — workflow user, 18 frames', () => {
-    const parsed = parseDump('E19.100', 'D-nullref', fix('dump-payload.null-ref.real.txt'));
+    const parsed = parseDump(
+      'E19.100',
+      'D-nullref',
+      fix('dump-payload.null-ref.real.txt'),
+    );
     test('header', () => {
       expect(parsed.header.runtimeError).toBe('DATREF_NOT_ASSIGNED');
       expect(parsed.header.abapUser).toBe('SAP_WFRT');
@@ -115,7 +132,11 @@ describe('parseDump (real anonymized fixtures)', () => {
   });
 
   describe('COMPUTE_INT_PLUS_OVERFLOW — DDIC, 3 frames', () => {
-    const parsed = parseDump('E19.100', 'D-intover', fix('dump-payload.int-overflow.real.txt'));
+    const parsed = parseDump(
+      'E19.100',
+      'D-intover',
+      fix('dump-payload.int-overflow.real.txt'),
+    );
     test('header', () => {
       expect(parsed.header.runtimeError).toBe('COMPUTE_INT_PLUS_OVERFLOW');
       expect(parsed.header.exceptionClass).toBe('CX_SY_ARITHMETIC_OVERFLOW');
@@ -127,7 +148,7 @@ describe('parseDump (real anonymized fixtures)', () => {
       expect(parsed.callStack[0]).toMatchObject({
         position: 3,
         eventType: 'METHOD',
-        program: '/IWFND/CL_METERING_DB=========CP'
+        program: '/IWFND/CL_METERING_DB=========CP',
       });
     });
   });

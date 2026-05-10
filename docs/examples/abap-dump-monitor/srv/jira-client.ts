@@ -1,4 +1,5 @@
-import type { IJiraClient, JiraIssueRef, JiraCreateInput } from './interfaces';
+import { getDestination } from '@sap-cloud-sdk/connectivity';
+import type { IJiraClient, JiraCreateInput, JiraIssueRef } from './interfaces';
 
 export type JiraHttpFn = (
   destination: { destinationName: string },
@@ -9,11 +10,14 @@ export type JiraHttpFn = (
     params?: Record<string, string>;
     data?: unknown;
     responseType?: 'json';
-  }
+  },
 ) => Promise<{ status: number; data: any }>;
 
 export class JiraClient implements IJiraClient {
-  constructor(private destinationName: string, private http: JiraHttpFn) {}
+  constructor(
+    private destinationName: string,
+    private http: JiraHttpFn,
+  ) {}
 
   async searchByLabel(label: string): Promise<JiraIssueRef | undefined> {
     // Two Atlassian endpoints in the wild:
@@ -35,14 +39,22 @@ export class JiraClient implements IJiraClient {
             method: 'POST',
             url: endpoint,
             headers: { 'Content-Type': 'application/json' },
-            data: { jql: `labels = "${label}"`, fields: ['status'], maxResults: 1 },
-            responseType: 'json'
-          }
+            data: {
+              jql: `labels = "${label}"`,
+              fields: ['status'],
+              maxResults: 1,
+            },
+            responseType: 'json',
+          },
         );
         this.assertOk(resp, `search (${endpoint})`);
         const issue = resp.data?.issues?.[0];
         if (!issue) return undefined;
-        return { key: issue.key, statusCategoryKey: issue.fields?.status?.statusCategory?.key ?? 'undefined' };
+        return {
+          key: issue.key,
+          statusCategoryKey:
+            issue.fields?.status?.statusCategory?.key ?? 'undefined',
+        };
       } catch (e: any) {
         lastErr = e;
       }
@@ -53,10 +65,19 @@ export class JiraClient implements IJiraClient {
   async getIssue(key: string): Promise<JiraIssueRef> {
     const resp = await this.http(
       { destinationName: this.destinationName },
-      { method: 'GET', url: `/rest/api/2/issue/${encodeURIComponent(key)}`, params: { fields: 'status' }, responseType: 'json' }
+      {
+        method: 'GET',
+        url: `/rest/api/2/issue/${encodeURIComponent(key)}`,
+        params: { fields: 'status' },
+        responseType: 'json',
+      },
     );
     this.assertOk(resp, `get ${key}`);
-    return { key: resp.data.key, statusCategoryKey: resp.data.fields?.status?.statusCategory?.key ?? 'undefined' };
+    return {
+      key: resp.data.key,
+      statusCategoryKey:
+        resp.data.fields?.status?.statusCategory?.key ?? 'undefined',
+    };
   }
 
   async create(input: JiraCreateInput): Promise<string> {
@@ -66,7 +87,7 @@ export class JiraClient implements IJiraClient {
       description: input.description,
       issuetype: { name: input.issueType },
       duedate: input.duedate,
-      labels: input.labels
+      labels: input.labels,
     };
     if (input.assignee) fields.assignee = { name: input.assignee };
     const resp = await this.http(
@@ -76,8 +97,8 @@ export class JiraClient implements IJiraClient {
         url: '/rest/api/2/issue',
         headers: { 'Content-Type': 'application/json' },
         data: { fields },
-        responseType: 'json'
-      }
+        responseType: 'json',
+      },
     );
     this.assertOk(resp, 'create');
     return resp.data.key;
@@ -91,15 +112,16 @@ export class JiraClient implements IJiraClient {
         url: `/rest/api/2/issue/${encodeURIComponent(key)}/comment`,
         headers: { 'Content-Type': 'application/json' },
         data: { body },
-        responseType: 'json'
-      }
+        responseType: 'json',
+      },
     );
     this.assertOk(resp, `comment ${key}`);
   }
 
   private assertOk(resp: { status: number; data: any }, op: string): void {
     if (resp.status >= 200 && resp.status < 300) return;
-    const detail = resp.data?.errorMessages?.join('; ') ?? JSON.stringify(resp.data);
+    const detail =
+      resp.data?.errorMessages?.join('; ') ?? JSON.stringify(resp.data);
     throw new Error(`Jira ${op} failed: ${resp.status} ${detail}`);
   }
 }
@@ -108,7 +130,6 @@ export class JiraClient implements IJiraClient {
 // "Request path contains unescaped characters" errors that surface when JQL
 // params with spaces aren't auto-encoded.
 export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
-  const { getDestination } = await import('@sap-cloud-sdk/connectivity');
   const d = await getDestination({ destinationName: dest.destinationName });
   if (!d?.url) throw new Error(`Destination ${dest.destinationName} not found`);
   const baseUrl = d.url.replace(/\/+$/, '');
@@ -117,7 +138,8 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
   // refuse '+' in JQL with HTTP 406 / wrapped 500. encodeURIComponent
   // emits '%20', which both Jira and Apache always accept.
   const search = req.params
-    ? '?' + Object.entries(req.params)
+    ? '?' +
+      Object.entries(req.params)
         .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
         .join('&')
     : '';
@@ -129,25 +151,32 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
     'Content-Type': 'application/json',
     // Disable Atlassian XSRF check for REST calls.
     'X-Atlassian-Token': 'no-check',
-    ...(req.headers ?? {})
+    ...(req.headers ?? {}),
   };
   // Authentication: prefer destination authTokens, fall back to BasicAuthentication
   // user/password (most likely for Jira destinations created with type Basic).
   const tok = (d as any).authTokens?.[0];
-  if (tok?.value) headers.Authorization = `${tok.type ?? 'Bearer'} ${tok.value}`;
+  if (tok?.value)
+    headers.Authorization = `${tok.type ?? 'Bearer'} ${tok.value}`;
   else if ((d as any).username && (d as any).password) {
-    const cred = Buffer.from(`${(d as any).username}:${(d as any).password}`).toString('base64');
+    const cred = Buffer.from(
+      `${(d as any).username}:${(d as any).password}`,
+    ).toString('base64');
     headers.Authorization = `Basic ${cred}`;
   }
   const resp = await fetch(url, {
     method: req.method,
     headers,
-    body: req.data === undefined ? undefined : JSON.stringify(req.data)
+    body: req.data === undefined ? undefined : JSON.stringify(req.data),
   });
   const text = await resp.text();
-  let data: any = undefined;
+  let data: any;
   if (text) {
-    try { data = JSON.parse(text); } catch { data = text; }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
   }
   if (resp.status >= 400) {
     // Diagnose Jira-side rejections: dump the request shape (URL +
@@ -156,13 +185,16 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
     // with HTML body), and content-negotiation issues. Body capped to
     // 500 chars to keep the log readable.
     const safeHeaders = Object.fromEntries(
-      Object.entries(headers).map(([k]) => [k, k.toLowerCase() === 'authorization' ? '<redacted>' : 'set'])
+      Object.entries(headers).map(([k]) => [
+        k,
+        k.toLowerCase() === 'authorization' ? '<redacted>' : 'set',
+      ]),
     );
     const bodyPreview = String(text ?? '').slice(0, 500);
     console.error(
       `[jira-http] ${req.method} ${url} → ${resp.status} ` +
-      `content-type=${resp.headers.get('content-type')} ` +
-      `headers=${JSON.stringify(safeHeaders)} body=${JSON.stringify(bodyPreview)}`
+        `content-type=${resp.headers.get('content-type')} ` +
+        `headers=${JSON.stringify(safeHeaders)} body=${JSON.stringify(bodyPreview)}`,
     );
   }
   return { status: resp.status, data };

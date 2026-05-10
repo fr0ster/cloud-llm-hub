@@ -8,59 +8,62 @@
 
   <script>
     window['sap-ushell-config'] = {
-      defaultRenderer: 'fiori2',
-      renderers: {
-        fiori2: {
-          componentData: {
-            config: {
-              enableSearch: false
+              defaultRenderer: 'fiori2',
+              renderers: {
+                fiori2: {
+                  componentData: {
+                    config: {
+                      enableSearch: false
+                    }
+                  }
+                }
+              },
+              applications: {
+                'MonitoredDump-display': {
+                  additionalInformation: 'SAPUI5.Component=monitor',
+                  applicationType: 'URL',
+                  url: '/monitor/webapp',
+                  title: 'ABAP Dump Monitor',
+                  description: 'List and inspect monitored ABAP dumps'
+                }
+              }
             }
-          }
-        }
-      },
-      applications: {
-        'MonitoredDump-display': {
-          additionalInformation: 'SAPUI5.Component=monitor',
-          applicationType: 'URL',
-          url: '/monitor/webapp',
-          title: 'ABAP Dump Monitor',
-          description: 'List and inspect monitored ABAP dumps'
-        }
-      }
-    }
   </script>
 
   <script
     id="sap-ushell-bootstrap"
     src="https://ui5.sap.com/test-resources/sap/ushell/bootstrap/sandbox.js">
+
+
+
   </script>
 
   <script>
     // Match the theme-resolution policy of the standalone monitor app
-    // (./monitor/webapp/index.html) so the FLP sandbox shell wrapper
-    // doesn't visually drift from a deep-link open.
-    (function () {
-      var url    = new URLSearchParams(window.location.search);
-      var stored = null;
-      try { stored = window.localStorage.getItem('abap-dump-monitor-theme'); } catch (_) {}
-      var dark   = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      var theme  = url.get('sap-theme') || stored || (dark ? 'sap_horizon_dark' : 'sap_horizon');
-      document.write(
-        '<script id="sap-ui-bootstrap"' +
-        ' src="https://ui5.sap.com/resources/sap-ui-core.js"' +
-        ' data-sap-ui-libs="sap.m,sap.ushell,sap.collaboration,sap.ui.layout"' +
-        ' data-sap-ui-compatVersion="edge"' +
-        ' data-sap-ui-theme="' + theme + '"><\/script>'
-      );
-    })();
+            // (./monitor/webapp/index.html) so the FLP sandbox shell wrapper
+            // doesn't visually drift from a deep-link open.
+            (function () {
+              var url    = new URLSearchParams(window.location.search);
+              var stored = null;
+              try { stored = window.localStorage.getItem('abap-dump-monitor-theme'); } catch (_) {}
+              var dark   = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+              var theme  = url.get('sap-theme') || stored || (dark ? 'sap_horizon_dark' : 'sap_horizon');
+              document.write(
+                '<script id="sap-ui-bootstrap"' +
+                ' src="https://ui5.sap.com/resources/sap-ui-core.js"' +
+                ' data-sap-ui-libs="sap.m,sap.ushell,sap.collaboration,sap.ui.layout"' +
+                ' data-sap-ui-compatVersion="edge"' +
+                ' data-sap-ui-theme="' + theme + '"><\/script>'
+              );
+            })();
   </script>
 
   <script>
     sap.ui.getCore().attachInit(() => {
-      sap.ushell.Container
-        .createRenderer('fiori2', true)
-        .then(renderer => renderer.placeAt('content'))
-    })
+              sap.ushell.Container
+                .createRenderer('fiori2', true)
+                .then(renderer => renderer.placeAt('content'))
+            })
   </script>
 </head>
 

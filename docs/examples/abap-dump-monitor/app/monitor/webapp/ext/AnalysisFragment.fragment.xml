@@ -12,10 +12,10 @@
       <Label text="Attempts:" class="sapUiSmallMarginBegin sapUiTinyMarginEnd"/>
       <Text text="{analysisAttempts}"/>
     </HBox>
-    <Text text="{analysisError}" visible="{= !!${analysisError}}" class="sapUiSmallMarginTop"/>
-    <Title text="Recommendations" level="H4" visible="{= !!${recommendations}}" class="sapUiSmallMarginTop"/>
+    <Text text="{analysisError}" visible="{= !!${path:'analysisError',targetType:'any'} }" class="sapUiSmallMarginTop"/>
+    <Title text="Recommendations" level="H4" visible="{= !!${path:'recommendations',targetType:'any'} }" class="sapUiSmallMarginTop"/>
     <codeeditor:CodeEditor
-        visible="{= !!${recommendations}}"
+        visible="{= !!${path:'recommendations',targetType:'any'} }"
         type="markdown"
         height="600px"
         width="100%"
