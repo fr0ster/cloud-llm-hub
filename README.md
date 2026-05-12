@@ -158,9 +158,10 @@ Full documentation is organized by purpose in the **[docs/](docs/)** directory �
 
 ### 🎓 Tutorials
 
-- **[🧭 Tutorial Design Principles](docs/tutorials/TUTORIAL_DESIGN_PRINCIPLES.md)**
-- **[📦 Creating a RAP Business Object](docs/tutorials/rap-bo-creation.md)** — concrete Material Master walkthrough
-- **[📚 Building a RAP BO with AI](docs/tutorials/rap-bo-book-catalog.md)** — advanced AI-assisted Book Catalog flow
+- **[🧭 AI Pair-Programming Principles](docs/tutorials/AI_PAIR_PROGRAMMING_PRINCIPLES.md)**
+- **[📦 Creating a RAP Business Object](docs/tutorials/rap-bo-creation/README.md)** — concrete Material Master walkthrough
+- **[📚 Building a RAP BO with AI](docs/tutorials/rap-bo-book-catalog/README.md)** — advanced AI-assisted Book Catalog flow
+- **[🔎 Codebase Analysis with AI](docs/tutorials/codebase-analysis/README.md)** — analyze how a codebase implements a target mechanism
 
 ### 📁 Additional Resources
 

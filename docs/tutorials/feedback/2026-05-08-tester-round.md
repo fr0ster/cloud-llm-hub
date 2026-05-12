@@ -3,8 +3,8 @@
 > Raw notes from external testers walking through the two RAP tutorials.
 > Captured verbatim with light formatting; **interpretation / action items** appear in italics under each item so future tutorial revisions can be driven from concrete reports rather than memory.
 >
-> - **Tutorial 1** = [`rap-bo-creation.md`](../rap-bo-creation.md) — concrete Material Master walkthrough.
-> - **Tutorial 2** = [`rap-bo-book-catalog.md`](../rap-bo-book-catalog.md) — AI-assisted Book Catalog (advanced).
+> - **Tutorial 1** = [`rap-bo-creation.md`](../rap-bo-creation/README.md) — concrete Material Master walkthrough.
+> - **Tutorial 2** = [`rap-bo-book-catalog.md`](../rap-bo-book-catalog/README.md) — AI-assisted Book Catalog (advanced).
 
 ---
 
@@ -55,12 +55,12 @@
 
 *Action: the simple tutorial currently shows metadata extensions only for the root projection. Extend Step 8 (or a new Step 8b) covering metadata extensions for the child consumption views (`Z##_C_MAT_PLANT`, `_TEXT`, `_SALES`) so the app actually shows their data on the Object Page facets. Without this the runtime UI looks half-broken and the tester lands a bug they have to debug from scratch.*
 
-*Implication: the skill reference in `docs/tutorials/skills/rap-bo-creation.md` should also mention "every projection view that appears as a facet needs its own metadata extension". Currently the rule is implicit.*
+*Implication: the skill reference in `docs/tutorials/rap-bo-book-catalog/skills/rap-bo-creation.md` should also mention "every projection view that appears as a facet needs its own metadata extension". Currently the rule is implicit.*
 
 ---
 
 ## Open follow-ups (not blocking — track separately if we act)
 
 1. **Tool-routing false positives.** Two of the four items above describe the AI claiming success without invoking the creation tool. This is the same class of bug the tester hit twice on Tutorial 1 (interface views, projection views). Worth a focused investigation in `@mcp-abap-adt/llm-agent` rather than tutorial wording fixes.
-2. **Eclipse/ADT lock interplay.** Worth documenting once globally (e.g. in `TUTORIAL_DESIGN_PRINCIPLES.md` "When things go wrong" section) instead of restating in each tutorial.
+2. **Eclipse/ADT lock interplay.** Worth documenting once globally (e.g. in `AI_PAIR_PROGRAMMING_PRINCIPLES.md` "When things go wrong" section) instead of restating in each tutorial.
 3. **CRUD code that compiles but doesn't act.** Needs a concrete repro before we can say whether it's a generation problem (agent omitted `MODIFY`/`READ` handlers), an activation problem, or a binding problem. Ask the tester for the failing prompt + final code if possible.

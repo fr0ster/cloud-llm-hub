@@ -8,7 +8,7 @@ This tutorial walks through creating a complete RAP (RESTful Application Program
 **Time:** ~30-60 minutes
 **Prerequisites:** Access to cloud-llm-hub chat UI with MCP connection to an SAP system
 
-> **Use this tutorial as a fixed reference recipe.** It creates one Material Master BO from predefined prompts. If you want the phase-based learning flow with saved `business-requirements`, `tech-spec`, and `impl-plan` artifacts in RAG, use [Building a RAP BO with AI](rap-bo-book-catalog.md).
+> **Use this tutorial as a fixed reference recipe.** It creates one Material Master BO from predefined prompts. If you want the phase-based learning flow with saved `business-requirements`, `tech-spec`, and `impl-plan` artifacts in RAG, use [Building a RAP BO with AI](../rap-bo-book-catalog/README.md).
 
 ### Progress checklist
 

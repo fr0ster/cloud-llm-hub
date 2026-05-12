@@ -2,7 +2,7 @@
 
 This tutorial teaches you how to build a complete SAP Fiori application through **pair programming with AI**. You bring the business idea and make all decisions. AI proposes, implements, and checks — but never decides for you.
 
-> **Read first:** [Tutorial Design Principles](TUTORIAL_DESIGN_PRINCIPLES.md) — the method behind this tutorial. **The methodology is the lesson; the application you build is the side effect.** Book Catalog is the example domain used in every prompt below — substitute your own (warehouse stock, equipment maintenance, contact CRM, …) and the same flow applies.
+> **Read first:** [AI Pair-Programming Principles](../AI_PAIR_PROGRAMMING_PRINCIPLES.md) — the method behind this tutorial. **The methodology is the lesson; the application you build is the side effect.** Book Catalog is the example domain used in every prompt below — substitute your own (warehouse stock, equipment maintenance, contact CRM, …) and the same flow applies.
 
 **The flow is a transformation pipeline.** Each phase takes the previous phase's artifact and produces the next one:
 
@@ -91,7 +91,7 @@ This tutorial uses two RAG collections with different lifetimes — make sure bo
 
 1. Open MANAGE panel in cloud-llm-hub chat UI
 2. Create collection "RAP Skills"
-3. Upload `rap-bo-creation.md` (from SharePoint or `docs/tutorials/skills/`)
+3. Upload `rap-bo-creation.md` (from SharePoint or `docs/tutorials/rap-bo-book-catalog/skills/`)
 4. Enable the collection (checkbox ON)
 
 ### Create the working RAG collection
@@ -149,7 +149,7 @@ Rules:
 
 ### Choose your prefix
 
-Use the prefix convention from [`rap-bo-creation.md` → Naming Convention](rap-bo-creation.md#naming-convention) — `Z<II><NN>_` (your 2-char initials + 2-digit number). Verify it is unused:
+Use the prefix convention from [`rap-bo-creation.md` → Naming Convention](../rap-bo-creation/README.md#naming-convention) — `Z<II><NN>_` (your 2-char initials + 2-digit number). Verify it is unused:
 
 > Search for objects starting with `ZDEMO01_` to confirm the prefix is free.
 
