@@ -116,7 +116,7 @@ Errors found in Phase 4 (or later in Phase 2/3) often originate in an earlier ar
 
 ## User-Facing Tutorial Style
 
-The tutorial is often followed by people who are new to RAP, are reading in B1-level English, or have ADHD / limited attention for long sessions. Keep interaction short and concrete.
+The tutorial is often followed by people new to RAP and reading in B1-level English. Keep interaction short and concrete.
 
 **Rules:**
 

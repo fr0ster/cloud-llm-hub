@@ -65,11 +65,12 @@ SmartAgent configuration, integration, and testing.
 
 ### [Tutorials](tutorials/)
 
-RAP tutorials and AI-assisted learning flows.
+AI pair-programming tutorials and the principles behind them.
 
-- [Tutorial Design Principles](tutorials/TUTORIAL_DESIGN_PRINCIPLES.md)
-- [Building a RAP BO with AI](tutorials/rap-bo-book-catalog.md)
-- [Creating a RAP Business Object](tutorials/rap-bo-creation.md)
+- [AI Pair-Programming Principles](tutorials/AI_PAIR_PROGRAMMING_PRINCIPLES.md)
+- [Creating a RAP Business Object](tutorials/rap-bo-creation/README.md) — fixed-recipe walkthrough.
+- [Building a RAP BO with AI](tutorials/rap-bo-book-catalog/README.md) — phase-based AI-assisted build.
+- [Codebase Analysis with AI](tutorials/codebase-analysis/README.md) — analyze how a codebase implements a target mechanism; ABAP/SFTP worked example.
 
 ### Additional
 
