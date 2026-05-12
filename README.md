@@ -1,12 +1,13 @@
 # Cloud LLM Hub 🚀
 
-**Enterprise-ready MCP proxy** connecting SAP ABAP systems to AI assistants (Cline, Claude Desktop) and automation tools (n8n, CI/CD, custom apps).
+**Enterprise-ready intelligent agent hub** connecting SAP ABAP systems, reusable project context, MCP tools, AI assistants (Cline, Claude Desktop), and automation tools (n8n, CI/CD, custom apps).
 
 **✨ Key Features:**
 
 - ⚡ **One-command setup** - Get started in 60 seconds
 - 🔒 **Enterprise security** - XSUAA authentication, on-premise support
 - 🔌 **Stream-HTTP transport** - SSE currently disabled
+- 🧠 **Evolvable agent model** - extend capabilities through hub development or per-request client-provided tools
 - 🛠️ **Automation tools** - YAML-driven configuration, CI/CD ready
 - 🌐 **Cloud & on-premise** - Seamless SAP Cloud Connector integration
 
@@ -29,11 +30,17 @@
 - increases effectiveness of both the LLM and the developer: the LLM removes routine work, while the developer focuses on decisions that require human judgment;
 - enforces role model and function-level authorization boundaries for shared enterprise usage.
 
+It should be treated as an **evolvable intelligent agent**, not a fixed proxy. Its capability surface can grow in two ways:
+
+- by developing `cloud-llm-hub` itself: platform features, role policy, RAG behavior, SAP destination handling, built-in tool orchestration, and UI/runtime improvements;
+- by letting consuming services bring their own request-scoped tools through the OpenAI-compatible `tools` field. A service can expose domain actions or service-specific MCP-backed capabilities for a particular request, and the SmartAgent can use those alongside the hub's SAP/RAG capabilities without changing `cloud-llm-hub` code.
+
 Priority of goals in `cloud-llm-hub`:
 
 1. accumulate and reuse experience from real development/support work;
 2. improve AI-assisted outcomes from session to session;
-3. apply enterprise-grade role and function boundaries.
+3. evolve agent capabilities without fragmenting platform governance;
+4. apply enterprise-grade role and function boundaries.
 
 Target consumers are SAP technical teams:
 
