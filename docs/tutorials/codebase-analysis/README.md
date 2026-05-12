@@ -106,7 +106,7 @@ Use two channels:
 
 `03-usage-map.md` must state declared scope, channels used, search terms, and blind spots. "Complete" means complete within that scope and evidence set.
 
-Worked-example side artifact: [mcp-abap-adt code-grep issue draft](issues/mcp-abap-adt-code-grep.md).
+Worked-example upstream gap: [mcp-abap-adt#79 — Add SearchSource tool](https://github.com/fr0ster/mcp-abap-adt/issues/79) — filed during this run.
 
 Steps:
 

@@ -32,4 +32,4 @@ Rules:
 Self-check: all hits evidenced, channel recorded, truncation handled.
 ```
 
-ABAP worked-example gap: `mcp-abap-adt` lacks a dedicated source-grep tool; draft `issues/mcp-abap-adt-code-grep.md`.
+ABAP worked-example gap: `mcp-abap-adt` lacks a dedicated source-grep tool; tracked upstream as [fr0ster/mcp-abap-adt#79](https://github.com/fr0ster/mcp-abap-adt/issues/79).
