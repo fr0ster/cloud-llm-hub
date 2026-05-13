@@ -295,7 +295,44 @@ cds.on('bootstrap', (app: Application) => {
     next();
   };
 
-  app.use('/mcp', context, wrappedAuth, requireMcpRole);
+  // CAP's jwt-auth middleware calls next(401) / next(403) (passing the
+  // numeric status as the error argument) on missing/invalid/expired JWT.
+  // Without an Express error-handling middleware in the chain, the default
+  // handler turns that into "500 Internal Server Error" with an HTML body
+  // — opaque to MCP/OpenAI clients and easily mistaken for a server bug
+  // (the dump-monitor 502 Bad Gateway incident in PR #75 was exactly this).
+  // Map the auth error codes to a small JSON body so clients can react
+  // (refresh token, surface auth UI, etc.) instead of guessing.
+  const authJsonErrorHandler = (
+    err: unknown,
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    let status: number | undefined;
+    if (typeof err === 'number' && err >= 400 && err < 600) status = err;
+    else if (err && typeof err === 'object' && 'status' in err) {
+      const s = (err as { status: unknown }).status;
+      if (typeof s === 'number') status = s;
+    }
+    if (status === 401 || status === 403) {
+      res.status(status).json({
+        error: status === 401 ? 'Unauthorized' : 'Forbidden',
+        message:
+          status === 401
+            ? 'Authentication failed: token missing, invalid, or expired'
+            : 'Access denied',
+      });
+      return;
+    }
+    next(err);
+  };
+
+  app.use('/mcp', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
   // Request logger for debugging
   app.use(
@@ -363,8 +400,9 @@ cds.on('bootstrap', (app: Application) => {
   // OpenAI-compatible endpoints (/v1/*)
   // -------------------------------------------------------------------
 
-  // Reuse CAP auth + role check for /v1 routes
-  app.use('/v1', context, wrappedAuth, requireMcpRole);
+  // Reuse CAP auth + role check for /v1 routes (same auth-error JSON handler
+  // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
+  app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
   // CORS preflight for /v1/* routes
   app.options('/v1/*', (_req: Request, res: Response) => {
