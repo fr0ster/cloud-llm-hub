@@ -166,6 +166,31 @@
           </div>
         </div>
 
+        <!-- Export Collection Modal -->
+        <div id="export-modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1001">
+          <div style="max-width:480px;margin:80px auto;background:#111;border:1px solid #333;border-radius:6px;padding:20px;color:#e0e0e0;font-size:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+              <span id="export-modal-title" style="color:#00bfff;font-weight:bold">EXPORT COLLECTION</span>
+              <button onclick="closeExportModal()" style="background:none;color:#888;border:1px solid #333;padding:2px 10px;cursor:pointer;font-family:'Courier New',monospace">×</button>
+            </div>
+            <div id="export-modal-collection" style="color:#aaa;font-size:13px;margin-bottom:14px"></div>
+            <div style="margin-bottom:12px">
+              <div style="color:#888;font-size:12px;margin-bottom:6px">Format</div>
+              <label style="margin-right:14px;cursor:pointer"><input type="radio" name="export-format" value="md" checked style="accent-color:#00bfff"> Markdown (.md, front-matter for metadata)</label>
+              <br>
+              <label style="cursor:pointer"><input type="radio" name="export-format" value="txt" style="accent-color:#00bfff"> Plain text (.txt + .meta.json sidecar)</label>
+            </div>
+            <div style="margin-bottom:14px">
+              <label style="cursor:pointer"><input type="checkbox" id="export-include-deprecated" style="accent-color:#00bfff"> Include deprecated / superseded entries</label>
+            </div>
+            <div id="export-modal-status" style="color:#888;font-size:12px;min-height:18px;margin-bottom:10px"></div>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button onclick="closeExportModal()" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">CANCEL</button>
+              <button id="export-modal-download" onclick="runCollectionExport()" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">DOWNLOAD</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Help Modal -->
         <div id="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;overflow:auto">
           <div style="max-width:760px;margin:30px auto;background:#111;border:1px solid #333;border-radius:6px;padding:20px;color:#e0e0e0;font-size:14px">
@@ -266,6 +291,7 @@
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
     </div>
 
+    <script src="vendor/jszip.min.js"></script>
     <script>
         const chatWindow = document.getElementById('chat-window');
         const userInput = document.getElementById('user-input');
@@ -1426,6 +1452,7 @@
                         </div>
                         <div style="display:flex;gap:6px">
                             <button onclick="openDocPanel('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #333;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DOCS</button>
+                            <button onclick="openExportModal('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #225522;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Export all documents as ZIP">EXP</button>
                             ${c.id !== 'facts' ? `<button onclick="deleteCollection('${escapeHtml(c.id)}')" style="background:#1a1a1a;color:#ff5555;border:1px solid #552222;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>` : ''}
                         </div>
                     </div>
@@ -1625,6 +1652,243 @@
                     '<button onclick="loadDocuments()" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:4px 12px;cursor:pointer;font-family:\'Courier New\',monospace;font-size:11px;border-radius:3px;margin-top:8px">SHOW ALL</button>';
             } catch (err) {
                 list.innerHTML = `<span style="color:#ff5555">Error: ${escapeHtml(err.message)}</span>`;
+            }
+        }
+
+        // ===== Collection export (M1: read surface + pure helpers) =====
+        // The server-side /v1/rag/collections/:id/documents endpoint caps
+        // limit at 200 (srv/rag-handler.ts). Page through it until we have
+        // every entry — the visible UI panel only shows the first 100, but
+        // export must operate on the full collection.
+        async function fetchAllDocuments(collectionId) {
+            const PAGE = 200;
+            const all = [];
+            let offset = 0;
+            while (true) {
+                const res = await ragFetch(
+                    `/v1/rag/collections/${encodeURIComponent(collectionId)}/documents?offset=${offset}&limit=${PAGE}`,
+                );
+                if (!res.ok) throw new Error(`List documents failed: ${res.status}`);
+                const data = await res.json();
+                const page = Array.isArray(data.documents) ? data.documents : [];
+                all.push(...page);
+                const total = typeof data.total === 'number' ? data.total : all.length;
+                if (page.length === 0 || all.length >= total) break;
+                offset += page.length;
+            }
+            return all;
+        }
+
+        // Filesystem-safe slug from a doc id. Replaces every char outside
+        // [A-Za-z0-9._-] with '_', truncates to 120 chars, and disambiguates
+        // collisions across one export run via -1/-2/... suffix before the
+        // extension. Callers pass a Set to track names already taken.
+        function safeExportName(id, used) {
+            const base = String(id).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'entry';
+            if (!used.has(base)) { used.add(base); return base; }
+            let n = 1;
+            while (used.has(`${base}-${n}`)) n += 1;
+            const out = `${base}-${n}`;
+            used.add(out);
+            return out;
+        }
+
+        function isDeprecatedEntry(doc) {
+            const tags = doc && doc.metadata && doc.metadata.tags;
+            if (!Array.isArray(tags)) return false;
+            return tags.includes('deprecated') || tags.includes('superseded');
+        }
+
+        // Pick the subset of metadata worth writing to the export. Drops
+        // canonicalKey when it is just a duplicate of the document id;
+        // keeps chunkIndex/totalChunks because they are useful provenance
+        // for chunked uploads on the future re-import path.
+        function exportableMetadata(doc) {
+            const meta = (doc && doc.metadata && typeof doc.metadata === 'object') ? doc.metadata : {};
+            const out = {};
+            for (const [k, v] of Object.entries(meta)) {
+                if (k === 'canonicalKey' && v === doc.id) continue;
+                out[k] = v;
+            }
+            return out;
+        }
+
+        // Minimal YAML scalar emitter for the md front-matter. Metadata
+        // values in RAG collections are typically strings, numbers,
+        // booleans, or string arrays (notably tags); fall back to JSON for
+        // anything richer so we never corrupt the file.
+        function yamlEmitValue(v) {
+            if (v === null || v === undefined) return 'null';
+            if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+            if (Array.isArray(v) && v.every(x => typeof x === 'string')) {
+                return '[' + v.map(s => yamlEmitString(s)).join(', ') + ']';
+            }
+            if (typeof v === 'string') return yamlEmitString(v);
+            return JSON.stringify(v);
+        }
+        function yamlEmitString(s) {
+            // Always double-quote; escape backslashes and double quotes.
+            return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        }
+
+        // Both formatters return Array<{ ext, body }>. Caller computes the
+        // safe basename once per doc and writes one file per array entry as
+        // `<basename><ext>`. md returns one file (with optional inline
+        // front-matter); txt returns one or two (.txt + optional sidecar).
+        function formatEntryAsMd(doc) {
+            const meta = exportableMetadata(doc);
+            // Spec rule: omit front-matter entirely when no metadata
+            // survives internal-key filtering. id/createdAt are NOT enough
+            // to justify a header — they would just clutter a pure text
+            // entry. When there IS metadata, the header includes id and
+            // createdAt for round-trip provenance.
+            if (Object.keys(meta).length === 0) {
+                return [{ ext: '.md', body: doc.text }];
+            }
+            const header = { id: doc.id, createdAt: doc.createdAt, ...meta };
+            const fm = '---\n' +
+                Object.entries(header)
+                    .filter(([, v]) => v !== undefined && v !== null)
+                    .map(([k, v]) => `${k}: ${yamlEmitValue(v)}`)
+                    .join('\n') +
+                '\n---\n';
+            return [{ ext: '.md', body: fm + doc.text }];
+        }
+
+        function formatEntryAsTxt(doc) {
+            const meta = exportableMetadata(doc);
+            const files = [{ ext: '.txt', body: doc.text }];
+            if (Object.keys(meta).length > 0) {
+                const sidecar = { id: doc.id, createdAt: doc.createdAt, metadata: meta };
+                files.push({ ext: '.meta.json', body: JSON.stringify(sidecar, null, 2) + '\n' });
+            }
+            return files;
+        }
+
+        // ===== M2: ZIP builder + download =====
+        // Soft caps to keep client memory predictable. Crossing either
+        // bound aborts the export with a UI error instead of producing a
+        // half-good archive — a server-side streaming export is the right
+        // tool for huge collections (not in scope here).
+        const EXPORT_MAX_DOCS = 10000;
+        const EXPORT_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
+
+        // Build the export ZIP entirely in the browser. Filters deprecated
+        // entries up front (so the cap and the count both reflect what we
+        // actually write), formats each remaining doc with the chosen
+        // formatter, and returns a Blob ready for an <a download> click.
+        async function buildCollectionZipBlob(docs, format, opts) {
+            if (typeof JSZip === 'undefined') {
+                throw new Error('ZIP helper not loaded; reload the page and try again.');
+            }
+            const includeDeprecated = !!(opts && opts.include_deprecated);
+            const filtered = includeDeprecated
+                ? docs
+                : docs.filter(d => !isDeprecatedEntry(d));
+            if (filtered.length > EXPORT_MAX_DOCS) {
+                throw new Error(
+                    `Collection too large: ${filtered.length} documents exceeds export cap of ${EXPORT_MAX_DOCS}.`,
+                );
+            }
+            const format2formatter = { md: formatEntryAsMd, txt: formatEntryAsTxt };
+            const formatter = format2formatter[format];
+            if (!formatter) throw new Error(`Unknown format "${format}"`);
+
+            const zip = new JSZip();
+            const used = new Set();
+            let bytes = 0;
+            let fileCount = 0;
+            for (const doc of filtered) {
+                const base = safeExportName(doc.id, used);
+                for (const part of formatter(doc)) {
+                    const name = base + part.ext;
+                    bytes += new TextEncoder().encode(part.body).length;
+                    if (bytes > EXPORT_MAX_UNCOMPRESSED_BYTES) {
+                        throw new Error(
+                            `Collection too large: uncompressed size exceeds ${Math.round(EXPORT_MAX_UNCOMPRESSED_BYTES / (1024 * 1024))} MB.`,
+                        );
+                    }
+                    zip.file(name, part.body);
+                    fileCount += 1;
+                }
+            }
+            const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+            return { blob, documentCount: filtered.length, fileCount };
+        }
+
+        function exportZipFilename(collectionId) {
+            const safe = String(collectionId).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'collection';
+            const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '').replace(/Z$/, 'Z');
+            return `${safe}-${ts}.zip`;
+        }
+
+        // ===== M3: Export modal wiring =====
+        let exportModalCollectionId = null;
+
+        function openExportModal(collectionId, displayName) {
+            exportModalCollectionId = collectionId;
+            document.getElementById('export-modal-collection').textContent =
+                `${displayName} (${collectionId})`;
+            document.getElementById('export-modal-status').textContent = '';
+            // Reset to defaults each open.
+            const mdRadio = document.querySelector('input[name="export-format"][value="md"]');
+            if (mdRadio) mdRadio.checked = true;
+            document.getElementById('export-include-deprecated').checked = false;
+            document.getElementById('export-modal-download').disabled = false;
+            document.getElementById('export-modal').style.display = 'block';
+        }
+
+        function closeExportModal() {
+            exportModalCollectionId = null;
+            document.getElementById('export-modal').style.display = 'none';
+        }
+
+        async function runCollectionExport() {
+            const collectionId = exportModalCollectionId;
+            if (!collectionId) return;
+            const formatEl = document.querySelector('input[name="export-format"]:checked');
+            const format = formatEl ? formatEl.value : 'md';
+            const includeDeprecated = document.getElementById('export-include-deprecated').checked;
+            const status = document.getElementById('export-modal-status');
+            const btn = document.getElementById('export-modal-download');
+            btn.disabled = true;
+            status.style.color = '#888';
+            status.textContent = 'Reading documents...';
+            try {
+                const docs = await fetchAllDocuments(collectionId);
+                status.textContent = `Building ZIP (${docs.length} documents)...`;
+                const { blob, documentCount, fileCount } = await buildCollectionZipBlob(
+                    docs,
+                    format,
+                    { include_deprecated: includeDeprecated },
+                );
+                const filename = exportZipFilename(collectionId);
+                downloadBlob(blob, filename);
+                status.style.color = '#00ff88';
+                status.textContent = `Exported ${documentCount} documents, ${fileCount} files → ${filename}`;
+                btn.disabled = false;
+            } catch (err) {
+                status.style.color = '#ff5555';
+                status.textContent = `Error: ${err.message || err}`;
+                btn.disabled = false;
+            }
+        }
+
+        // Trigger a browser save dialog for a Blob via a temporary
+        // object-URL anchor. Used by the export modal in M3.
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            try {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            } finally {
+                // Defer revoke so the browser has a chance to start the
+                // download from the URL before we invalidate it.
+                setTimeout(() => URL.revokeObjectURL(url), 4000);
             }
         }
     </script>
