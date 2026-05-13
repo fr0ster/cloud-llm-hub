@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.6.6] - 2026-05-13
+
+Auth-error response shape fix. PR #76.
+
+### Fixed
+- **`/mcp` and `/v1` now return 401/JSON instead of 500/HTML on expired or invalid JWT.** CAP's `jwt-auth` middleware calls `next(401)` (numeric status as the error argument). Because the custom Express routes for `/mcp` and `/v1` are mounted outside CAP's service pipeline, no JSON error handler ran for them and Express's default fallback produced `500 Internal Server Error` with an HTML body. That obscured the real cause of the dump-monitor 502 Bad Gateway incident in v6.6.5 and forced clients to parse HTML to distinguish auth failures from server bugs. Added an `authJsonErrorHandler` Express middleware to both mount chains that maps 401/403 errors (numeric or `{ status: n }`) to a minimal JSON body `{ error, message }`. Other errors propagate unchanged.
+
 ## [6.6.5] - 2026-05-13
 
 Bug fix in `docs/examples/abap-dump-monitor`. PR #75. No changes to main `cloud-llm-hub` runtime.
