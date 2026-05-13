@@ -67,6 +67,15 @@ Cloud LLM Hub maintains vector-store collections that the assistant retrieves fr
 
 Collections are scoped per project / per user / per destination, so different teams keep separate context without contaminating each other.
 
+### Exporting a collection (Web UI)
+
+Each collection row in the RAG panel has an **EXP** button. It downloads every document in that collection as a ZIP, one file per entry, with two format options:
+
+- **Markdown (`.md`)** — entry text as-is. When the entry has metadata to preserve (tags, source, custom fields), the file starts with a YAML front-matter block. Best for human-readable, editor-friendly snapshots.
+- **Plain text (`.txt`)** — entry text as-is, no header. When the entry has metadata to preserve, a sibling `<id>.meta.json` is written next to the `.txt`. Best for clean paste into other tools.
+
+Optional **Include deprecated / superseded entries** checkbox: off by default (matches how the assistant retrieves), turn on to take a full snapshot before pruning. The whole operation happens in your browser — no server-side scratch files, no extra storage.
+
 ## Multi-turn session continuity
 
 The assistant carries context across turns inside a session:

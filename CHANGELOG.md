@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [Unreleased]
+
+### Added
+- **Chat UI: export RAG collection as ZIP** (#77). Each collection row in the RAG panel now has an `EXP` button. Click it, pick `md` (Markdown with optional YAML front-matter for metadata) or `txt` (plain text + optional `.meta.json` sidecar), optionally include deprecated/superseded entries, and the browser downloads a `<collection>-<UTC>.zip` containing one file per document. UI-only change: pagination, ZIP construction and download all run in the browser via a vendored `jszip.min.js` (`app/chat/webapp/vendor/`). No server-side surface — Cline / Claude Desktop already have their own filesystem tools and do not need this exposed via the MCP protocol.
+
 ## [6.6.6] - 2026-05-13
 
 Auth-error response shape fix. PR #76.
