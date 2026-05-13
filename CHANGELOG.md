@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.6.5] - 2026-05-13
+
+Bug fix in `docs/examples/abap-dump-monitor`. PR #75. No changes to main `cloud-llm-hub` runtime.
+
+### Fixed
+- **`DumpSource` MCP client no longer caches an expired JWT.** The `Client` (and its `StreamableHTTPClientTransport`) was cached for the lifetime of the process with a one-shot `Authorization: Bearer <jwt>` header captured from the first `getDestination()`. After the `client_credentials` token's ~24h TTL elapsed, every MCP call to `cloud-llm-hub` got 401 — surfaced as 500/HTML by the auth middleware and wrapped into 502 "Bad Gateway" by the approuter, breaking the entire discover → analyze → Jira pipeline. Now a fresh `Client` is built per `callTool()` and closed in `finally`; `getDestination()` returns a non-expired token from Cloud SDK's destination cache (which refreshes via destination-service on its own when the cached JWT nears expiry). Mirrors the per-call pattern already used by `McpSourceClient`.
+
 ## [6.5.5] - 2026-05-08
 
 Security maintenance release. PR #68. No functional changes.
