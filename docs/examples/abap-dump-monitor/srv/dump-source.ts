@@ -7,8 +7,6 @@ const ADT_TS = (iso: string): string =>
   iso.replace(/[-:T]/g, '').replace(/\..*$/, '').replace('Z', '').slice(0, 14);
 
 export class DumpSource implements IDumpSource {
-  private client?: Client;
-
   constructor(
     private destinationName: string,
     private sapDestination: string,
@@ -72,18 +70,26 @@ export class DumpSource implements IDumpSource {
     name: string,
     args: Record<string, unknown>,
   ): Promise<any> {
-    const client = await this.ensureClient();
-    const result = await client.callTool({ name, arguments: args });
-    if ((result as any).isError)
-      throw new Error(
-        `MCP ${name} returned error: ${JSON.stringify((result as any).content)}`,
-      );
-    return result;
+    // Build a fresh client per call so getDestination() pulls a non-expired
+    // JWT from Cloud SDK's destination cache. Caching the client wires a
+    // one-shot snapshot token into the transport Authorization header — once
+    // that JWT's ~24h lifetime ends, every subsequent MCP call gets 401 from
+    // cloud-llm-hub (which currently surfaces as 500/HTML, hence the 502
+    // BadGateway observed at the approuter).
+    const client = await this.newClient();
+    try {
+      const result = await client.callTool({ name, arguments: args });
+      if ((result as any).isError)
+        throw new Error(
+          `MCP ${name} returned error: ${JSON.stringify((result as any).content)}`,
+        );
+      return result;
+    } finally {
+      await client.close().catch(() => {});
+    }
   }
 
-  private async ensureClient(): Promise<Client> {
-    if (this.client) return this.client;
-
+  private async newClient(): Promise<Client> {
     const destination = await getDestination({
       destinationName: this.destinationName,
     });
@@ -116,7 +122,6 @@ export class DumpSource implements IDumpSource {
       { capabilities: {} },
     );
     await client.connect(transport);
-    this.client = client;
     return client;
   }
 }
