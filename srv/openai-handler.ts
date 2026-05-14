@@ -464,11 +464,39 @@ export async function handleChatCompletions(
     handle = await getSmartAgent(requestedModel, requestedDestination);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log.error('Failed to initialize SmartAgent', { error: message });
-    res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(
-      jsonError(`Agent initialization failed: ${message}`, 'server_error'),
-    );
+    // Propagate the structured destination_unreachable error from getSmartAgent
+    // so clients can distinguish "your SAP system isn't reachable" from generic
+    // server faults (see issue #83). Falls through to generic 503 otherwise.
+    const errObj = err as {
+      statusCode?: number;
+      code?: string;
+      destination?: string;
+      destinationStatus?: string;
+    };
+    log.error('Failed to initialize SmartAgent', {
+      error: message,
+      code: errObj.code,
+      destination: errObj.destination,
+      destinationStatus: errObj.destinationStatus,
+    });
+    const status = errObj.statusCode ?? 503;
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    if (errObj.code === 'destination_unreachable') {
+      res.end(
+        JSON.stringify({
+          error: {
+            type: 'destination_unreachable',
+            message,
+            destination: errObj.destination,
+            destination_status: errObj.destinationStatus,
+          },
+        }),
+      );
+    } else {
+      res.end(
+        jsonError(`Agent initialization failed: ${message}`, 'server_error'),
+      );
+    }
     return;
   }
 
