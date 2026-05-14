@@ -482,6 +482,31 @@ export async function handleChatCompletions(
     const status = errObj.statusCode ?? 503;
     res.writeHead(status, { 'Content-Type': 'application/json' });
     if (errObj.code === 'destination_unreachable') {
+      // Run the shared classifier (#85) on the last-known probe error so
+      // non-UI clients (curl, MCP, IDE integrations) get the same triage
+      // info the WebUI DIAG button shows — without paying for a live probe.
+      let classified: { status: string; hint: string } = {
+        status: 'unknown',
+        hint: '',
+      };
+      try {
+        const { classifyProbe } = await import('./lib/probe-classifier');
+        // Pull the cached destination state through the public listing so
+        // we don't widen agent-manager's surface; status carries the
+        // last-known raw error if any.
+        const { getDestinationStates } = await import('./agent-manager');
+        const states = getDestinationStates();
+        const state = states.find((s) => s.name === errObj.destination);
+        classified = classifyProbe(
+          0,
+          state?.error || message,
+          // proxyType not exposed on state; default to onpremise hint set
+          // which is the common case for this product.
+          'OnPremise',
+        );
+      } catch {
+        // classification is best-effort; never block the error response
+      }
       res.end(
         JSON.stringify({
           error: {
@@ -489,6 +514,9 @@ export async function handleChatCompletions(
             message,
             destination: errObj.destination,
             destination_status: errObj.destinationStatus,
+            classified_status: classified.status,
+            hint: classified.hint,
+            diagnose_url: '/odata/v4/mcp-proxy/DiagnoseDestinations()',
           },
         }),
       );
