@@ -592,6 +592,46 @@ export class CloudSdkAbapConnection implements AbapConnection {
         }
       }
 
+      // Enrich the error message with the shared connectivity-proxy classifier
+      // so MCP clients (curl, Cline, goose, IDE integrations) see "tunnel_timeout
+      // — SCC registered but handshake fails" etc. directly in the tool error
+      // envelope, not just an opaque 503. See issues #83 / #85.
+      try {
+        const errObj = error as {
+          response?: { status?: number; data?: unknown };
+          message?: string;
+        };
+        const httpCode = errObj?.response?.status || 0;
+        const respData = errObj?.response?.data;
+        const rawMessage =
+          typeof respData === 'string' ? respData : (errObj?.message ?? '');
+        const looksTunnelRelated =
+          httpCode >= 500 ||
+          /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage);
+        if (looksTunnelRelated && error instanceof Error) {
+          let classifier: typeof import('../lib/probe-classifier');
+          try {
+            // @ts-expect-error — .ts extension for cds-watch dev mode
+            classifier = await import('../lib/probe-classifier.ts');
+          } catch {
+            classifier = await import('../lib/probe-classifier.js');
+          }
+          const { status, hint } = classifier.classifyProbe(
+            httpCode,
+            rawMessage,
+            'OnPremise',
+          );
+          if (status !== 'ok' && status !== 'unknown') {
+            const tag = `[${status}]`;
+            if (!error.message.includes(tag)) {
+              error.message = `${error.message} ${tag}${hint ? ' ' + hint : ''}`;
+            }
+          }
+        }
+      } catch {
+        // classifier enrichment is best-effort; never block the original error
+      }
+
       throw error;
     }
   }
