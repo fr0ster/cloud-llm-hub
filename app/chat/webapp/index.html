@@ -394,26 +394,61 @@
             const a = document.createElement('a');
             const basename = filename.split('/').pop() || filename;
             a.href = url; a.download = basename;
-            document.body.appendChild(a); a.click();
+            a.rel = 'noopener';
+            // Some browsers ignore programmatic `<a download>` for blob: URLs
+            // unless the anchor is part of the document. Append → click → remove
+            // synchronously; revoke the URL after the click event has dispatched.
+            document.body.appendChild(a);
+            try { a.click(); } catch (e) { console.error('a.click() threw', e); }
             document.body.removeChild(a);
-            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 4000);
         }
 
-        function downloadArtifact(cardId) {
+        // Rename text file to a different extension (md / txt / original).
+        // Adjusts both the basename and the MIME type used for the Blob.
+        function downloadArtifact(cardId, formatExt) {
             const art = fileArtifacts[cardId];
-            if (!art) return;
+            if (!art) {
+                console.warn('downloadArtifact: no artifact for cardId', cardId);
+                return;
+            }
             try {
                 if (art.encoding === 'base64') {
                     const bin = atob(art.content.replace(/\s/g, ''));
                     const bytes = new Uint8Array(bin.length);
                     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
                     downloadBlob(art.path, new Blob([bytes], { type: getFileMime(art.path) }));
-                } else {
-                    downloadBlob(art.path, new Blob([art.content], { type: getFileMime(art.path) }));
+                    return;
                 }
+                let filename = art.path;
+                let mime = getFileMime(art.path);
+                if (formatExt) {
+                    const currentExt = getFileExt(art.path);
+                    if (formatExt !== currentExt) {
+                        const stem = filename.replace(/\.[^./]+$/, '');
+                        filename = stem + '.' + formatExt;
+                        mime = FILE_MIME_TYPES[formatExt] || 'text/plain';
+                    }
+                }
+                downloadBlob(filename, new Blob([art.content], { type: mime }));
             } catch (e) {
-                console.error('Download failed:', e);
+                console.error('Download failed', { error: e, cardId: cardId, art: art });
+                alert('Download failed: ' + (e && e.message ? e.message : e));
             }
+        }
+
+        // Build the format-picker buttons for a file card.
+        // Binary (base64): single DOWNLOAD button.
+        // Text: <.EXT> button (original) + .MD and .TXT alternates when different.
+        function buildDownloadButtons(cardId, path, encoding) {
+            if (encoding === 'base64') {
+                return '<button class="file-card-btn" onclick="downloadArtifact(\'' + cardId + '\')">DOWNLOAD</button>';
+            }
+            const ext = (getFileExt(path) || 'txt').toLowerCase();
+            const out = ['<button class="file-card-btn" onclick="downloadArtifact(\'' + cardId + '\', \'' + ext + '\')" title="Download as ' + ext + '">.' + ext.toUpperCase() + '</button>'];
+            if (ext !== 'md') out.push('<button class="file-card-btn" onclick="downloadArtifact(\'' + cardId + '\', \'md\')" title="Download as Markdown">.MD</button>');
+            if (ext !== 'txt') out.push('<button class="file-card-btn" onclick="downloadArtifact(\'' + cardId + '\', \'txt\')" title="Download as plain text">.TXT</button>');
+            return out.join('');
         }
 
         function copyArtifact(cardId) {
@@ -474,7 +509,7 @@
                 '<div class="file-card-header">' +
                     '<span class="file-card-name">' + escapeHtml(path) + '</span>' +
                     '<div class="file-card-actions">' + copyBtn + extraButtons +
-                        '<button class="file-card-btn" onclick="downloadArtifact(\'' + cardId + '\')">DOWNLOAD</button>' +
+                        buildDownloadButtons(cardId, path, encoding) +
                     '</div>' +
                 '</div>' +
                 '<div class="file-card-toggle" onclick="document.getElementById(\'' + bodyId + '\').classList.toggle(\'open\')">&#9654; Preview</div>' +
