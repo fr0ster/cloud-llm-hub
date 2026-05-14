@@ -20,14 +20,40 @@
 #   PORT          — local HTTP port (default: 3001)
 #   DESTINATION   — fallback when no CLI arg is provided
 #
+# Per-worktree config:
+#   ./proxy.yaml at repo root (deploy branches commit their own).
+#   Recognised keys: httpPort, btpDestination, x-sap-destination, consumer,
+#   consumer_key, app. Env vars + CLI args still win over yaml.
+#
 set -euo pipefail
 
-DEST="${1:-${DESTINATION:-}}"
-APP="${APP:-cloud-llm-hub-srv}"
-BTP="${BTP:-mcp}"
-CONSUMER="${CONSUMER:-cloud-llm-hub-auth}"
-CONSUMER_KEY="${CONSUMER_KEY:-mcp}"
-PORT="${PORT:-3001}"
+# 0. Load per-worktree proxy.yaml if present (deploy branches keep their own).
+#    Parsed with grep/awk — no yaml dep. Keys at root level only.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+YAML="$REPO_ROOT/proxy.yaml"
+yaml_get() { grep -E "^${1}:" "$YAML" 2>/dev/null | head -1 | awk -F': *' '{print $2}' | tr -d '"' | tr -d "'" | xargs; }
+YAML_PORT=""
+YAML_BTP=""
+YAML_DEST=""
+YAML_CONSUMER=""
+YAML_CONSUMER_KEY=""
+YAML_APP=""
+if [[ -f "$YAML" ]]; then
+  YAML_PORT=$(yaml_get httpPort)
+  YAML_BTP=$(yaml_get btpDestination)
+  YAML_DEST=$(grep -E '^[[:space:]]*x-sap-destination:' "$YAML" | head -1 | awk -F': *' '{print $2}' | tr -d '"' | tr -d "'" | xargs)
+  YAML_CONSUMER=$(yaml_get consumer)
+  YAML_CONSUMER_KEY=$(yaml_get consumerKey)
+  YAML_APP=$(yaml_get app)
+  echo "✓ Loaded $YAML"
+fi
+
+DEST="${1:-${DESTINATION:-${YAML_DEST:-}}}"
+APP="${APP:-${YAML_APP:-cloud-llm-hub-srv}}"
+BTP="${BTP:-${YAML_BTP:-mcp}}"
+CONSUMER="${CONSUMER:-${YAML_CONSUMER:-cloud-llm-hub-auth}}"
+CONSUMER_KEY="${CONSUMER_KEY:-${YAML_CONSUMER_KEY:-mcp}}"
+PORT="${PORT:-${YAML_PORT:-3001}}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 have cf                  || { echo "ERROR: cf CLI not installed" >&2; exit 1; }
@@ -92,18 +118,30 @@ SESSION_DIR="$HOME/.config/mcp-abap-adt/sessions"
 mkdir -p "$KEY_DIR" "$SESSION_DIR"
 KEY_PATH="$KEY_DIR/${BTP}.json"
 
-KEY_RAW=$(cf service-key "$CONSUMER" "$CONSUMER_KEY" 2>&1) || {
-  echo "ERROR: cannot fetch CF service-key '$CONSUMER_KEY' from '$CONSUMER':" >&2
-  printf '%s\n' "$KEY_RAW" | head -3 >&2
-  echo "       Create one with:" >&2
-  echo "         cf create-service-key $CONSUMER $CONSUMER_KEY" >&2
-  exit 1
-}
-KEY_JSON=$(printf '%s\n' "$KEY_RAW" | sed -n '/^{/,$p')
-[[ "$KEY_JSON" == \{* ]] || {
-  echo "ERROR: CF service-key output for '$CONSUMER/$CONSUMER_KEY' did not contain a JSON body." >&2
-  exit 1
-}
+fetch_key() { cf service-key "$CONSUMER" "$CONSUMER_KEY" 2>&1; }
+extract_json() { printf '%s\n' "$1" | sed -n '/^{/,$p'; }
+
+KEY_RAW=$(fetch_key) || true
+KEY_JSON=$(extract_json "$KEY_RAW")
+if [[ "$KEY_JSON" != \{* ]]; then
+  # Key not yet created in this subaccount — try to create it on demand.
+  echo "→ service-key '$CONSUMER_KEY' on '$CONSUMER' missing — creating…"
+  if ! cf create-service-key "$CONSUMER" "$CONSUMER_KEY" >/dev/null 2>&1; then
+    echo "ERROR: cf create-service-key '$CONSUMER' '$CONSUMER_KEY' failed." >&2
+    echo "       Check that service instance '$CONSUMER' exists in this space." >&2
+    exit 1
+  fi
+  KEY_RAW=$(fetch_key) || {
+    echo "ERROR: still cannot fetch CF service-key '$CONSUMER_KEY' from '$CONSUMER' after create:" >&2
+    printf '%s\n' "$KEY_RAW" | head -3 >&2
+    exit 1
+  }
+  KEY_JSON=$(extract_json "$KEY_RAW")
+  [[ "$KEY_JSON" == \{* ]] || {
+    echo "ERROR: CF service-key output for '$CONSUMER/$CONSUMER_KEY' did not contain a JSON body after create." >&2
+    exit 1
+  }
+fi
 NEW_ZONE=$(printf '%s\n' "$KEY_JSON" | grep -m1 '"identityzone"' | sed 's/.*"identityzone":[[:space:]]*"\([^"]*\)".*/\1/')
 OLD_ZONE=""
 [[ -f "$KEY_PATH" ]] && OLD_ZONE=$(grep -m1 '"identityzone"' "$KEY_PATH" 2>/dev/null | sed 's/.*"identityzone":[[:space:]]*"\([^"]*\)".*/\1/')
