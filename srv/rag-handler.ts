@@ -102,7 +102,12 @@ export function registerRagRoutes(
   // GET /v1/rag/collections
   router.get('/rag/collections', (_req: Request, res: Response) => {
     const userId = getUserId();
-    const collections = registry.listCollections(userId);
+    // Hide user-scoped collections from anonymous callers — only show globals.
+    // listCollections() filters by owner === userId, so an 'anonymous' userId
+    // would match every anonymous-owned legacy collection (cross-user leak).
+    const effectiveUserId =
+      userId && userId !== 'anonymous' ? userId : undefined;
+    const collections = registry.listCollections(effectiveUserId);
     json(res, 200, { collections });
   });
 
@@ -121,13 +126,24 @@ export function registerRagRoutes(
         return;
       }
 
+      const effectiveScope = scope || 'user';
+      const userId = getUserId();
+      if (effectiveScope === 'user' && (!userId || userId === 'anonymous')) {
+        error(
+          res,
+          401,
+          'Authenticated user required for user-scoped collections',
+        );
+        return;
+      }
+
       const meta = registry.createCollection({
         id,
         displayName,
         description: description || '',
-        scope: scope || 'user',
+        scope: effectiveScope,
         backend,
-        owner: scope === 'user' ? getUserId() : undefined,
+        owner: effectiveScope === 'user' ? userId : undefined,
       });
 
       log.info('Collection created via API', { id, scope, user: getUserId() });
@@ -137,6 +153,52 @@ export function registerRagRoutes(
     }
   });
 
+  // Visibility/mutation guard.
+  // Global: read open, write requires MCP_Admin.
+  // User-scoped: only owner (or MCP_Admin) sees and mutates it.
+  // Returns null if the caller is allowed; otherwise sends a response and
+  // returns a sentinel so the caller can early-return.
+  const canAccess = (
+    meta: { scope?: string; owner?: string },
+    mode: 'read' | 'write',
+    res: Response,
+  ): boolean => {
+    const userId = getUserId();
+    // 'anonymous' is the getUserId() fallback when no JWT user is in context.
+    // We never grant ownership matches on that fallback — a stray unauthenticated
+    // request must not align with another caller's 'anonymous'-owned collection.
+    const hasIdentity = !!userId && userId !== 'anonymous';
+    if (meta.scope === 'global') {
+      if (mode === 'write' && !isAdmin()) {
+        error(res, 403, 'MCP_Admin role required for global collections');
+        return false;
+      }
+      return true;
+    }
+    if (hasIdentity && meta.owner && meta.owner === userId) return true;
+    if (isAdmin()) return true;
+    // 404 — do NOT leak existence to non-owners
+    error(res, 404, 'Collection not found');
+    return false;
+  };
+
+  // Gate all /rag/collections/:id* sub-paths (collection by id, documents,
+  // upload, query). canAccess returns 404 for non-owner access so we don't
+  // leak the existence of other users' collections via timing or messages.
+  // GET / POST /query → 'read'; everything else → 'write'.
+  router.use('/rag/collections/:id', (req: Request, res: Response, next) => {
+    const meta = registry.getCollection(req.params.id);
+    if (!meta) {
+      error(res, 404, `Collection "${req.params.id}" not found`);
+      return;
+    }
+    const isQuery = req.path.endsWith('/query');
+    const mode: 'read' | 'write' =
+      req.method === 'GET' || isQuery ? 'read' : 'write';
+    if (!canAccess(meta, mode, res)) return;
+    next();
+  });
+
   // GET /v1/rag/collections/:id
   router.get('/rag/collections/:id', (req: Request, res: Response) => {
     const meta = registry.getCollection(req.params.id);
@@ -144,6 +206,7 @@ export function registerRagRoutes(
       error(res, 404, `Collection "${req.params.id}" not found`);
       return;
     }
+    if (!canAccess(meta, 'read', res)) return;
     json(res, 200, meta);
   });
 
@@ -154,11 +217,7 @@ export function registerRagRoutes(
       error(res, 404, `Collection "${req.params.id}" not found`);
       return;
     }
-
-    if (meta.scope === 'global' && !isAdmin()) {
-      error(res, 403, 'MCP_Admin role required for global collections');
-      return;
-    }
+    if (!canAccess(meta, 'write', res)) return;
 
     const updated = registry.updateCollection(req.params.id, req.body);
     json(res, 200, updated);
@@ -171,11 +230,7 @@ export function registerRagRoutes(
       error(res, 404, `Collection "${req.params.id}" not found`);
       return;
     }
-
-    if (meta.scope === 'global' && !isAdmin()) {
-      error(res, 403, 'MCP_Admin role required');
-      return;
-    }
+    if (!canAccess(meta, 'write', res)) return;
 
     try {
       registry.deleteCollection(req.params.id);
