@@ -11,6 +11,7 @@ const path = require('node:path');
 
 const packageJsonPath = path.join(__dirname, '..', 'package.json');
 const mtaYamlPath = path.join(__dirname, '..', 'mta.yaml');
+const mtaStagingYamlPath = path.join(__dirname, '..', 'mta-staging.yaml');
 
 // Get version from package.json or command line argument
 let version;
@@ -28,17 +29,35 @@ if (!version) {
   process.exit(1);
 }
 
-// Read mta.yaml
-let mtaContent = fs.readFileSync(mtaYamlPath, 'utf8');
+// Match: version: 1.0.0 / 1.0.0-rc / 1.0.0-rc.2 etc.
+// SemVer pre-release suffix is letters/digits/dots/hyphens after a hyphen.
+const versionRegex = /^version:\s*[\d.]+(?:-[A-Za-z0-9.-]+)?/m;
 
-// Update version in mta.yaml
-// Match: version: 1.0.0 (with optional whitespace)
-const versionRegex = /^version:\s*[\d.]+/m;
-if (versionRegex.test(mtaContent)) {
-  mtaContent = mtaContent.replace(versionRegex, `version: ${version}`);
-  fs.writeFileSync(mtaYamlPath, mtaContent, 'utf8');
-  console.log(`✅ Updated version in mta.yaml to ${version}`);
-} else {
-  console.error('❌ Could not find version field in mta.yaml');
-  process.exit(1);
+function syncYamlVersion(filePath, targetVersion) {
+  if (!fs.existsSync(filePath)) return false;
+  const original = fs.readFileSync(filePath, 'utf8');
+  if (!versionRegex.test(original)) {
+    console.error(
+      `❌ Could not find version field in ${path.basename(filePath)}`,
+    );
+    process.exit(1);
+  }
+  const updated = original.replace(versionRegex, `version: ${targetVersion}`);
+  fs.writeFileSync(filePath, updated, 'utf8');
+  console.log(
+    `✅ Updated version in ${path.basename(filePath)} to ${targetVersion}`,
+  );
+  return true;
+}
+
+// Production MTA: same version as package.json.
+syncYamlVersion(mtaYamlPath, version);
+
+// Staging MTA: <prod-version>-rc so it's visibly a pre-release of the same
+// cycle. Only suffix when prod is a clean release; if package.json itself
+// already carries a pre-release suffix, reuse it verbatim to avoid double
+// "-rc.rc"-style stacking.
+if (fs.existsSync(mtaStagingYamlPath)) {
+  const stagingVersion = /-/.test(version) ? version : `${version}-rc`;
+  syncYamlVersion(mtaStagingYamlPath, stagingVersion);
 }
