@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.6.8] - 2026-05-14
+
+Diagnostic + trust hardening release. Closes #81, #82, #83, #85.
+
+### Added
+- **`DiagnoseDestinations` CAP function + WebUI DIAG button** (#85). New endpoint `GET /odata/v4/mcp-proxy/DiagnoseDestinations()` probes every configured destination through the connectivity proxy with a short timeout and classifies the raw response into a stable enum: `ok` / `tunnel_timeout` / `no_scc_registration` / `wrong_location_id` / `backend_auth_failed` / `backend_reachable_path_error` / `backend_error` / `dns_or_network` / `unknown`. Each row carries the raw connectivity-proxy body (first 500 chars), latency, and a one-line operator hint pointing at the side to escalate to. UI: new `DIAG` button next to DEST-refresh opens a colour-coded sortable modal.
+- **Classified destination errors for non-UI clients.** The `destination_unreachable` 503 from `/v1/chat/completions` and the tool error envelope from `/mcp/stream/http` now carry the same classifier (`classified_status`, `hint`, `diagnose_url`) so curl / Cline / goose / IDE integrations get the same triage info the WebUI shows. Classifier lives in `srv/lib/probe-classifier.ts` and is shared across endpoints.
+- **Per-worktree `proxy.yaml`** for `scripts/start-proxy.sh`. Each deploy branch keeps its own port + service-key under `./proxy.yaml`; `npm run proxy` from a worktree auto-detects the branch and uses the right subaccount without env overrides. `scripts/start-proxy.sh` also auto-creates the CF service-key on demand when missing, removing the manual `cf create-service-key` first-run step.
+
+### Fixed
+- **Agent no longer silently falls back to LLM-only when the caller named an unreachable destination explicitly** (#83). Previously `/v1/chat/completions` with `x-sap-destination: ...` to an `unreachable` destination would route to `llmOnlyHandle` and the LLM would answer from training data — fluent and confidently wrong about the user's actual SAP system. Now returns a structured `503 destination_unreachable` JSON with `destination`, `destination_status`, `classified_status`, `hint`, `diagnose_url`. Default behaviour can be restored with `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true`. Implicit fallback (no header → default destination) still works.
+- **RAG collections enforce BTP-user ownership on read AND write** (#82). `/v1/rag/collections/:id*` (including documents, upload, query) now gated by a `router.use` middleware that runs `canAccess(meta, mode)`; non-owners get 404 (existence is not leaked). `listCollections` hardened so the `'anonymous'` fallback userId doesn't match other anonymous-owned legacy collections. `POST /collections` with `scope='user'` refuses to create when the caller has no real BTP identity. `MCP_Admin` keeps full visibility.
+- **WebUI file Download button** (#81). `GenerateFile` artifact card now exposes per-format buttons — `.MD` / `.TXT` / `.<ORIG>` — that rename the file and adjust MIME type. `downloadBlob` falls back to a `data:` URL when `URL.createObjectURL` refuses the blob (extension / sandbox), recovering from the silent "Overload resolution failed" failure mode. Hard failures now surface in console + alert instead of silently no-op'ing.
+
 ## [6.6.7] - 2026-05-14
 
 ### Added
