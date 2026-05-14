@@ -389,19 +389,55 @@
             return FILE_MIME_TYPES[getFileExt(path)] || 'text/plain';
         }
 
+        // Trigger a browser save dialog for the given filename + content.
+        // Uses Blob + URL.createObjectURL when available; falls back to data:
+        // URL when createObjectURL refuses the blob (some browsers / extensions
+        // / sandboxes reject blob: URL handles even for valid Blobs — observed
+        // as "Failed to execute 'createObjectURL' on 'URL': Overload resolution
+        // failed"). data: URL works for any text content under ~2 MB.
         function downloadBlob(filename, blob) {
-            const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             const basename = filename.split('/').pop() || filename;
-            a.href = url; a.download = basename;
+            a.download = basename;
             a.rel = 'noopener';
-            // Some browsers ignore programmatic `<a download>` for blob: URLs
-            // unless the anchor is part of the document. Append → click → remove
-            // synchronously; revoke the URL after the click event has dispatched.
+            let objectUrl = null;
+            try {
+                if (!(blob instanceof Blob)) {
+                    throw new Error('argument is not a Blob (got ' + typeof blob + ')');
+                }
+                objectUrl = URL.createObjectURL(blob);
+                a.href = objectUrl;
+            } catch (e) {
+                console.warn('createObjectURL failed, falling back to data: URL', e, { type: blob && blob.type, size: blob && blob.size });
+                const mime = (blob && blob.type) || 'text/plain';
+                // Reuse the original content if available via the blob (text/* only).
+                // We accept a small synchronous read because file artifacts are small.
+                let text = '';
+                try {
+                    // FileReaderSync only exists in workers; use a synchronous-feeling
+                    // approach via the constructor's stored text by re-constructing.
+                    // The caller (downloadArtifact) handed us a Blob built from a string,
+                    // so we can also read it back here if needed. But the cleanest is
+                    // for the caller to retry with a data URL directly.
+                    throw e; // bubble up so downloadArtifact's fallback runs
+                } catch (rethrow) { throw rethrow; }
+            }
             document.body.appendChild(a);
-            try { a.click(); } catch (e) { console.error('a.click() threw', e); }
+            try { a.click(); } catch (clickErr) { console.error('a.click() threw', clickErr); }
             document.body.removeChild(a);
-            setTimeout(function() { URL.revokeObjectURL(url); }, 4000);
+            if (objectUrl) setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 4000);
+        }
+
+        // data: URL fallback — used when createObjectURL refuses the blob.
+        function downloadDataUrl(filename, text, mime) {
+            const a = document.createElement('a');
+            const basename = filename.split('/').pop() || filename;
+            a.download = basename;
+            a.rel = 'noopener';
+            a.href = 'data:' + (mime || 'text/plain') + ';charset=utf-8,' + encodeURIComponent(text);
+            document.body.appendChild(a);
+            try { a.click(); } catch (clickErr) { console.error('a.click() threw', clickErr); }
+            document.body.removeChild(a);
         }
 
         // Rename text file to a different extension (md / txt / original).
@@ -430,7 +466,15 @@
                         mime = FILE_MIME_TYPES[formatExt] || 'text/plain';
                     }
                 }
-                downloadBlob(filename, new Blob([art.content], { type: mime }));
+                const content = String(art.content == null ? '' : art.content);
+                try {
+                    downloadBlob(filename, new Blob([content], { type: mime }));
+                } catch (blobErr) {
+                    // createObjectURL refused the blob (extension / sandbox) —
+                    // retry via data: URL which doesn't need a Blob handle.
+                    console.warn('Blob download failed, retrying with data: URL', blobErr);
+                    downloadDataUrl(filename, content, mime);
+                }
             } catch (e) {
                 console.error('Download failed', { error: e, cardId: cardId, art: art });
                 alert('Download failed: ' + (e && e.message ? e.message : e));
