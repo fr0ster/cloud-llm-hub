@@ -58,6 +58,7 @@ submodules/llm-agent/
 !**/*.yaml.template
 !**/*.template.yaml
 !mta-staging.yaml
+!proxy.yaml
 mdd.env
 *.env
 !.env.example
