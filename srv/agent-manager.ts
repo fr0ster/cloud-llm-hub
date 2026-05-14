@@ -1443,12 +1443,45 @@ export async function getSmartAgent(
     return handle;
   }
 
-  // Destination not ready — fall back to LLM-only agent
+  // Destination not ready — decide whether to hard-fail or fall back.
+  // Hard fail when the caller named the destination explicitly via header
+  // (e.g. x-sap-destination); silently degrading to LLM-only means the
+  // user gets a confident answer fabricated from training data instead of
+  // hitting their actual SAP system — see issue #83.
+  // Set LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true to restore the legacy
+  // permissive behavior for any deploy that relies on it.
   const destState = destinationStates.get(destName);
   const status = destState?.status ?? 'unknown';
+  const isExplicit = !!requestedDestination;
+  const allowFallback =
+    process.env.LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK === 'true';
+
+  if (isExplicit && !allowFallback) {
+    const destError = new Error(
+      `Destination "${destName}" is ${status}: ${
+        destState?.error || 'agent not initialized'
+      }`,
+    ) as Error & {
+      statusCode?: number;
+      code?: string;
+      destinationStatus?: string;
+      destination?: string;
+    };
+    destError.statusCode = 503;
+    destError.code = 'destination_unreachable';
+    destError.destinationStatus = status;
+    destError.destination = destName;
+    log.warn('Refusing LLM-only fallback for explicit destination request', {
+      destination: destName,
+      status,
+    });
+    throw destError;
+  }
+
   log.warn('Requested destination has no agent — using LLM-only fallback', {
     destination: destName,
     status,
+    explicit: isExplicit,
   });
 
   if (!llmOnlyHandle) {
