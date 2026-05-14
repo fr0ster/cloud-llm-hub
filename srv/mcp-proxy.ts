@@ -322,6 +322,177 @@ export default async function registerMcpProxyHandlers(
     return results;
   });
 
+  // Classifier helpers — keep close to the handler so the rules stay
+  // grounded in the strings the connectivity proxy actually emits.
+  const classifyProbe = (
+    httpCode: number,
+    rawMessage: string,
+    proxyType: string,
+  ): { status: string; hint: string } => {
+    const msg = rawMessage || '';
+    const isOnprem = proxyType.toLowerCase() === 'onpremise';
+    if (httpCode >= 200 && httpCode < 300) {
+      return { status: 'ok', hint: '' };
+    }
+    if (/Timed out waiting for tunnel to open/i.test(msg)) {
+      return {
+        status: 'tunnel_timeout',
+        hint: 'SCC registered for this subaccount but tunnel handshake fails — check SCC admin → subaccount status / reload subaccount; or the on-premise host is offline.',
+      };
+    }
+    if (
+      /no SAP Cloud Connector \(SCC\) connected.*SCC location ID/i.test(msg)
+    ) {
+      return {
+        status: 'wrong_location_id',
+        hint: 'A SCC is registered to this subaccount, but not under the location id this destination uses — align destination CloudConnectorLocationId with a registered location, or add a new SCC subaccount registration with this location id.',
+      };
+    }
+    if (/no SAP Cloud Connector \(SCC\) connected/i.test(msg)) {
+      return {
+        status: 'no_scc_registration',
+        hint: 'No SCC is registered for this subaccount at all — add it via SCC admin → Configuration → Cloud → Add Subaccount.',
+      };
+    }
+    if (
+      httpCode === 401 ||
+      /Anmeldung fehlgeschlagen|Unauthorized|Logon failed|invalid_grant/i.test(
+        msg,
+      )
+    ) {
+      return {
+        status: 'backend_auth_failed',
+        hint: isOnprem
+          ? 'Tunnel works; backend ABAP rejected credentials. Check destination User/Password (or override via x-sap-login/x-sap-password).'
+          : 'Backend returned 401 — credentials in the destination are stale.',
+      };
+    }
+    if (httpCode === 403) {
+      return {
+        status: 'backend_reachable_path_error',
+        hint: 'Tunnel works but backend forbids the probe path (often benign — destination is technically reachable).',
+      };
+    }
+    if (httpCode >= 400 && httpCode < 500) {
+      return {
+        status: 'backend_reachable_path_error',
+        hint: 'Tunnel works; backend returned a 4xx on the probe path. Usually benign for diagnostic purposes.',
+      };
+    }
+    if (httpCode >= 500 && httpCode < 600) {
+      return {
+        status: 'backend_error',
+        hint: 'Tunnel works; backend returned 5xx. Inspect ABAP system / on-premise service health.',
+      };
+    }
+    if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo/i.test(msg)) {
+      return {
+        status: 'dns_or_network',
+        hint: 'Backend host is unresolvable or refuses TCP — check destination URL and on-premise network.',
+      };
+    }
+    return {
+      status: 'unknown',
+      hint: 'Unrecognised connectivity-proxy response. See rawMessage for details.',
+    };
+  };
+
+  // Independent destination diagnostic probe (#85). Surfaces raw
+  // connectivity-proxy errors and classifies them so operators don't have
+  // to cf-ssh and curl by hand to tell apart "SCC offline" from
+  // "wrong location id" etc.
+  srv.on('DiagnoseDestinations', async (_req: Request) => {
+    const { getAvailableDestinations } = await import('./lib/btp-destinations');
+    const destinations = await getAvailableDestinations();
+    const now = new Date().toISOString();
+
+    const results = await Promise.all(
+      destinations.map(async (dest) => {
+        let destConfig: Awaited<ReturnType<typeof getDestination>> | undefined;
+        try {
+          destConfig = await getDestination({ destinationName: dest.name });
+        } catch (err) {
+          destConfig = undefined;
+        }
+        const originalProps = destConfig?.originalProperties as
+          | Record<string, unknown>
+          | undefined;
+        const locationId =
+          (originalProps?.CloudConnectorLocationId as string) ||
+          (originalProps?.cloudConnectorLocationId as string) ||
+          '';
+        const proxyType =
+          (destConfig?.proxyType && String(destConfig.proxyType)) ||
+          dest.proxyType ||
+          '';
+
+        const t0 = Date.now();
+        let httpCode = 0;
+        let rawMessage = '';
+        try {
+          // ADT-specific endpoint — same as agent-manager probe — surfaces
+          // both connectivity and backend-side ABAP issues.
+          const response = await executeHttpRequest(
+            { destinationName: dest.name },
+            {
+              method: 'GET',
+              url: '/sap/bc/adt/discovery',
+              timeout: 12_000,
+            },
+          );
+          httpCode = response.status || 200;
+          rawMessage =
+            typeof response.data === 'string'
+              ? response.data.slice(0, 500)
+              : '';
+          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK error type
+        } catch (probeErr: any) {
+          httpCode =
+            probeErr?.response?.status ||
+            probeErr?.statusCode ||
+            (probeErr?.code === 'ENOTFOUND' ? 0 : 0);
+          const respData = probeErr?.response?.data;
+          if (typeof respData === 'string') {
+            rawMessage = respData.slice(0, 500);
+          } else if (respData && typeof respData === 'object') {
+            try {
+              rawMessage = JSON.stringify(respData).slice(0, 500);
+            } catch {
+              rawMessage = String(respData).slice(0, 500);
+            }
+          } else {
+            rawMessage = (probeErr?.message || 'Unknown error').slice(0, 500);
+          }
+        }
+        const latencyMs = Date.now() - t0;
+        const { status, hint } = classifyProbe(httpCode, rawMessage, proxyType);
+
+        return {
+          name: dest.name,
+          url: dest.url,
+          proxyType,
+          locationId,
+          status,
+          httpCode,
+          latencyMs,
+          rawMessage,
+          hint,
+          timestamp: now,
+        };
+      }),
+    );
+
+    log.info('DiagnoseDestinations completed', {
+      total: results.length,
+      byStatus: results.reduce<Record<string, number>>((acc, r) => {
+        acc[r.status] = (acc[r.status] || 0) + 1;
+        return acc;
+      }, {}),
+    });
+
+    return results;
+  });
+
   // Legacy action for backward compatibility
   srv.on('InvokeTool', async (req: Request<ProxyInvocation>) => {
     const { toolId, mode = DEFAULT_MODE } = req.data;

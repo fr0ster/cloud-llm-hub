@@ -3,6 +3,7 @@ service McpProxyService {
   function Health() returns HealthStatus;
   function ProbeDestination(destination: String) returns DestinationProbeResult;
   function ListDestinations() returns array of DestinationStatus;
+  function DiagnoseDestinations() returns array of DestinationDiagnostic;
   action InvokeTool(request: ProxyInvocation) returns ProxyResult;
 }
 
@@ -52,4 +53,21 @@ type DestinationStatus {
   probeStatus    : Integer;
   probeStatusText: String;
   timestamp      : DateTime;
+}
+
+// Independent diagnostic probe — classifies raw connectivity-proxy
+// responses instead of hiding them behind a generic 503. Helps operators
+// tell apart "SCC offline", "no SCC for this subaccount", "wrong location
+// id", "tunnel up but ABAP auth failed", etc. (see issue #85).
+type DestinationDiagnostic {
+  name             : String;
+  url              : String;
+  proxyType        : String;
+  locationId       : String;
+  status           : String; // classified: ok | tunnel_timeout | no_scc_registration | wrong_location_id | backend_auth_failed | backend_reachable_path_error | backend_error | dns_or_network | unknown
+  httpCode         : Integer;
+  latencyMs        : Integer;
+  rawMessage       : String;
+  hint             : String;
+  timestamp        : DateTime;
 }
