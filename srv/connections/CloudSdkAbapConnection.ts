@@ -624,7 +624,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           if (status !== 'ok' && status !== 'unknown') {
             const tag = `[${status}]`;
             if (!error.message.includes(tag)) {
-              error.message = `${error.message} ${tag}${hint ? ' ' + hint : ''}`;
+              error.message = `${error.message} ${tag}${hint ? ` ${hint}` : ''}`;
             }
           }
         }
