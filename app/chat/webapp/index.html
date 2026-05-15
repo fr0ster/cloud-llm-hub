@@ -1954,7 +1954,15 @@
             if (typeof JSZip === 'undefined') {
                 throw new Error('ZIP helper not loaded; reload the page and try again.');
             }
+            if (typeof RagExport === 'undefined') {
+                throw new Error('rag-export helper not loaded; reload the page and try again.');
+            }
             const includeDeprecated = !!(opts && opts.include_deprecated);
+            const includeReassembled = !(opts && opts.include_reassembled === false);
+            const includeChunks = !(opts && opts.include_chunks === false);
+            if (!includeReassembled && !includeChunks) {
+                throw new Error('Pick at least one of reassembled / chunks.');
+            }
             const filtered = includeDeprecated
                 ? docs
                 : docs.filter(d => !isDeprecatedEntry(d));
@@ -1967,26 +1975,60 @@
             const formatter = format2formatter[format];
             if (!formatter) throw new Error(`Unknown format "${format}"`);
 
+            const { groups, orphans, warningsBySource } = RagExport.groupChunksBySource(filtered);
+
             const zip = new JSZip();
-            const used = new Set();
             let bytes = 0;
             let fileCount = 0;
-            for (const doc of filtered) {
-                const base = safeExportName(doc.id, used);
-                for (const part of formatter(doc)) {
-                    const name = base + part.ext;
-                    bytes += new TextEncoder().encode(part.body).length;
-                    if (bytes > EXPORT_MAX_UNCOMPRESSED_BYTES) {
-                        throw new Error(
-                            `Collection too large: uncompressed size exceeds ${Math.round(EXPORT_MAX_UNCOMPRESSED_BYTES / (1024 * 1024))} MB.`,
-                        );
-                    }
-                    zip.file(name, part.body);
-                    fileCount += 1;
+            let sourceFileCount = 0;
+            let chunkCount = 0;
+
+            function accountAndPut(path, body) {
+                bytes += new TextEncoder().encode(body).length;
+                if (bytes > EXPORT_MAX_UNCOMPRESSED_BYTES) {
+                    throw new Error(
+                        'Collection too large for selected export contents. Try disabling raw chunks or reassembled files.',
+                    );
+                }
+                zip.file(path, body);
+                fileCount += 1;
+            }
+
+            if (includeReassembled) {
+                const usedSourceNames = new Set();
+                for (const [source, group] of groups.entries()) {
+                    const safeName = RagExport.safeSourceExportName(source, usedSourceNames);
+                    const ws = warningsBySource.get(source) || [];
+                    const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+                    accountAndPut('reassembled/' + name, body);
+                    accountAndPut('reassembled/' + sidecar.name, sidecar.body);
+                    sourceFileCount += 1;
                 }
             }
+
+            if (includeChunks) {
+                const usedChunkNames = new Set();
+                for (const doc of filtered) {
+                    const base = safeExportName(doc.id, usedChunkNames);
+                    for (const part of formatter(doc)) {
+                        accountAndPut('chunks/' + base + part.ext, part.body);
+                    }
+                    chunkCount += 1;
+                }
+            }
+
             const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-            return { blob, documentCount: filtered.length, fileCount };
+            return {
+                blob,
+                documentCount: filtered.length,
+                fileCount,
+                sourceFileCount,
+                orphanCount: orphans.length,
+                chunkCount,
+                warningsBySource,
+                includedChunks: includeChunks,
+                includedReassembled: includeReassembled,
+            };
         }
 
         function exportZipFilename(collectionId) {
