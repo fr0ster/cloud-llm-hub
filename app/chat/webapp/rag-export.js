@@ -64,8 +64,48 @@
     }
     return { groups, orphans, warningsBySource };
   }
-  function safeSourceExportName(_sourceName, _used) {
-    throw new Error('not implemented');
+  function safeSourceExportName(sourceName, used) {
+    const raw = String(sourceName == null ? '' : sourceName);
+
+    // Strip directory components: last segment after the rightmost / or \
+    const lastSlash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
+    let leaf = lastSlash >= 0 ? raw.slice(lastSlash + 1) : raw;
+
+    // Reject pure-dot leftovers (".", "..") — they have no real name
+    if (leaf === '' || leaf === '.' || leaf === '..') {
+      leaf = '';
+    }
+
+    // Split extension off (.md / .txt / .json / .markdown / etc.).
+    // Preserve everything after the final dot as the extension when the
+    // dot is neither first nor last.
+    let base = leaf;
+    let ext = '';
+    const dot = leaf.lastIndexOf('.');
+    if (dot > 0 && dot < leaf.length - 1) {
+      base = leaf.slice(0, dot);
+      ext = '.' + leaf.slice(dot + 1);
+    }
+
+    // Sanitize basename: replace each unsafe character with underscore individually
+    base = base.replace(/[^A-Za-z0-9._-]/g, '_');
+    ext = ext.replace(/[^A-Za-z0-9.]+/g, '');
+
+    // Truncate basename to the same practical limit safeExportName uses (120 chars)
+    if (base.length > 120) base = base.slice(0, 120);
+
+    if (!base) return 'source.txt';
+
+    let candidate = base + ext;
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+    let n = 1;
+    while (used.has(base + '-' + n + ext)) n += 1;
+    candidate = base + '-' + n + ext;
+    used.add(candidate);
+    return candidate;
   }
   function reassembleSource(_group, _safeName, _warnings) {
     throw new Error('not implemented');
