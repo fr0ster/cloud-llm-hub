@@ -83,7 +83,7 @@ describe('rag-export module', () => {
 
 - [ ] **Step 3: Run the test and confirm it passes**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: `1 passed`. The three exports exist, even though each throws when called.
 
 - [ ] **Step 4: Commit**
@@ -142,7 +142,7 @@ describe('groupChunksBySource', () => {
 
 - [ ] **Step 2: Run the new tests to confirm they fail**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 3 failures with `Error: not implemented` for the three new tests.
 
 - [ ] **Step 3: Implement `groupChunksBySource` (happy path only — warnings come later)**
@@ -177,7 +177,7 @@ function groupChunksBySource(docs) {
 
 - [ ] **Step 4: Run the tests to confirm they pass**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 4 passed (1 sanity + 3 grouping).
 
 - [ ] **Step 5: Commit**
@@ -245,7 +245,7 @@ Append to the `describe('groupChunksBySource', ...)` block in `test/unit/rag-exp
 
 - [ ] **Step 2: Run the new tests to confirm they fail**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 4 failures (`warningsBySource.get('a.md')` is undefined).
 
 - [ ] **Step 3: Add warning collection to `groupChunksBySource`**
@@ -309,7 +309,7 @@ function groupChunksBySource(docs) {
 
 - [ ] **Step 4: Run the tests to confirm they pass**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 8 passed (1 sanity + 7 grouping). If a "duplicate" test surfaces *both* the duplicate warning and a spurious "missing" warning, that's expected behavior — duplicates raise contiguity questions and surfacing both is the safer signal.
 
 - [ ] **Step 5: Commit**
@@ -353,6 +353,8 @@ describe('safeSourceExportName', () => {
     expect(RagExport.safeSourceExportName('schema.xml', new Set())).toBe('schema.xml');
     expect(RagExport.safeSourceExportName('report.csv', new Set())).toBe('report.csv');
     expect(RagExport.safeSourceExportName('zcl_foo.abap', new Set())).toBe('zcl_foo.abap');
+    expect(RagExport.safeSourceExportName('README.markdown', new Set())).toBe('README.markdown');
+    expect(RagExport.safeSourceExportName('app.properties', new Set())).toBe('app.properties');
   });
 
   it('disambiguates collisions before the extension', () => {
@@ -379,7 +381,7 @@ describe('safeSourceExportName', () => {
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 7 failures from this describe block (current impl throws).
 
 - [ ] **Step 3: Implement `safeSourceExportName`**
@@ -399,17 +401,15 @@ function safeSourceExportName(sourceName, used) {
     leaf = '';
   }
 
-  // Split extension off (.md / .txt / .json / etc.). Allow up to 6
-  // alphanumerics after the final dot to count as an extension.
+  // Split extension off (.md / .txt / .json / .markdown / etc.).
+  // Preserve everything after the final dot as the extension when the
+  // dot is neither first nor last.
   let base = leaf;
   let ext = '';
   const dot = leaf.lastIndexOf('.');
   if (dot > 0 && dot < leaf.length - 1) {
-    const tail = leaf.slice(dot + 1);
-    if (/^[A-Za-z0-9]{1,6}$/.test(tail)) {
-      base = leaf.slice(0, dot);
-      ext = '.' + tail;
-    }
+    base = leaf.slice(0, dot);
+    ext = '.' + leaf.slice(dot + 1);
   }
 
   // Sanitize basename and extension
@@ -436,7 +436,7 @@ function safeSourceExportName(sourceName, used) {
 
 - [ ] **Step 4: Run tests to confirm they pass**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 15 passed (8 prior + 7 sanitization).
 
 - [ ] **Step 5: Commit**
@@ -527,7 +527,7 @@ describe('reassembleSource', () => {
 
 - [ ] **Step 2: Run tests to confirm they fail**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 6 failures from this describe block.
 
 - [ ] **Step 3: Implement `reassembleSource`**
@@ -577,7 +577,7 @@ function reassembleSource(group, safeName, warnings) {
 
 - [ ] **Step 4: Run tests to confirm they pass**
 
-Run: `npm run test:unit -- --testPathPattern=rag-export`
+Run: `npm run test:unit -- --testPathPatterns=rag-export`
 Expected: 21 passed (15 prior + 6 reassembly).
 
 - [ ] **Step 5: Commit**
@@ -800,7 +800,16 @@ const result = await buildCollectionZipBlob(
         include_chunks: includeChunks,
     },
 );
-const { blob, sourceFileCount, chunkCount, orphanCount, warningsBySource, includedChunks } = result;
+const {
+    blob,
+    documentCount,
+    fileCount,
+    sourceFileCount,
+    chunkCount,
+    orphanCount,
+    warningsBySource,
+    includedChunks,
+} = result;
 ```
 
 - [ ] **Step 3: Type-check and smoke-test in the browser**
