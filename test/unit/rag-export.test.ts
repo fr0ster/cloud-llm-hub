@@ -62,4 +62,92 @@ describe('groupChunksBySource', () => {
     const { orphans } = RagExport.groupChunksBySource(docs as any);
     expect(orphans.map((d: any) => d.id)).toEqual(['bad']);
   });
+
+  it('warns on missing chunk indices (gap)', () => {
+    const docs = [
+      {
+        id: 'a-0',
+        text: 'A',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 4 },
+      },
+      {
+        id: 'a-1',
+        text: 'B',
+        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 4 },
+      },
+      {
+        id: 'a-3',
+        text: 'D',
+        metadata: { source: 'a.md', chunkIndex: 3, totalChunks: 4 },
+      },
+    ];
+    const { warningsBySource } = RagExport.groupChunksBySource(docs);
+    const ws = warningsBySource.get('a.md');
+    expect(ws.some((w: string) => /missing.*2/.test(w))).toBe(true);
+  });
+
+  it('warns on inconsistent totalChunks within a group', () => {
+    const docs = [
+      {
+        id: 'a-0',
+        text: 'A',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 3 },
+      },
+      {
+        id: 'a-1',
+        text: 'B',
+        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 4 },
+      },
+    ];
+    const { warningsBySource } = RagExport.groupChunksBySource(docs);
+    const ws = warningsBySource.get('a.md');
+    expect(ws.some((w: string) => /inconsistent totalChunks/.test(w))).toBe(
+      true,
+    );
+  });
+
+  it('warns on duplicate chunkIndex', () => {
+    const docs = [
+      {
+        id: 'a-0',
+        text: 'A',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 2 },
+      },
+      {
+        id: 'a-0b',
+        text: 'A2',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 2 },
+      },
+      {
+        id: 'a-1',
+        text: 'B',
+        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 2 },
+      },
+    ];
+    const { warningsBySource } = RagExport.groupChunksBySource(docs);
+    const ws = warningsBySource.get('a.md');
+    expect(ws.some((w: string) => /duplicate chunk index 0/.test(w))).toBe(
+      true,
+    );
+  });
+
+  it('warns when group length differs from consistent totalChunks', () => {
+    const docs = [
+      {
+        id: 'a-0',
+        text: 'A',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 5 },
+      },
+      {
+        id: 'a-1',
+        text: 'B',
+        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 5 },
+      },
+    ];
+    const { warningsBySource } = RagExport.groupChunksBySource(docs);
+    const ws = warningsBySource.get('a.md');
+    expect(ws.some((w: string) => /expected 5 chunks, found 2/.test(w))).toBe(
+      true,
+    );
+  });
 });
