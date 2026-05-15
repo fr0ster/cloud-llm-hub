@@ -161,13 +161,15 @@ if opts.include_chunks:
 return { blob, documentCount, fileCount, sourceFileCount, orphanCount, chunkCount, warnings }
 ```
 
-**Cap accounting.** `EXPORT_MAX_UNCOMPRESSED_BYTES` counts only the `chunks/` folder (existing behavior) and does **not** count `reassembled/` or its sidecars. Rationale:
+**Cap accounting.** `EXPORT_MAX_UNCOMPRESSED_BYTES` counts every text payload written to the zip: `chunks/`, `reassembled/`, and `.meta.json` sidecars. This preserves the existing meaning of the cap as a browser-memory guard for the actual archive being built.
 
-- Reassembled body bytes are bounded by chunks bytes: `reassembled.body = chunks.map(c => c.text).join('\n\n')`, and chunks are already `.trim()`-ed at ingest. The reassembled total never exceeds the chunks total by more than `(N-1) * 2` bytes per source for the joining newlines.
-- Sidecars are small (a few hundred bytes each, dominated by chunk-id lists).
-- Counting both folders would silently break collections that currently export successfully: a 9 MB collection (against a 10 MB cap) would become ~18 MB and abort, with no obvious user-facing explanation that "the new feature broke the old path".
+Because the default export now includes both `chunks/` and `reassembled/`, some collections near the existing cap may exceed it. The error should name the selected folders and suggest reducing the export surface:
 
-If a single chunk would itself cross the cap, the existing "Collection too large" error fires before reassembly is attempted. The cap therefore remains a true upper bound on the original (chunks) content, and reassembled output rides on top without changing the regression surface.
+```
+Collection too large for selected export contents. Try disabling raw chunks or reassembled files.
+```
+
+When only `include_chunks` is selected, behavior remains equivalent to the current exporter.
 
 ### Export modal
 
@@ -183,7 +185,13 @@ If both off → Download button disabled with tooltip `"Pick at least one of rea
 Status message after a successful export:
 
 ```
-Exported {sourceFileCount} source files (reassembled/), {chunkCount} chunks (chunks/), {orphanCount} orphans → {filename}
+Exported {sourceFileCount} source files (reassembled/), {chunkCount} chunks (chunks/, including {orphanCount} orphans) → {filename}
+```
+
+If `include_chunks` is off, orphans are not exported and the status must say so:
+
+```
+Exported {sourceFileCount} source files (reassembled/), skipped {orphanCount} orphans because raw chunks are disabled → {filename}
 ```
 
 If warnings are present, append a compact warning summary in the existing status line and expose the full warning list in the same UI area (for example as newline text or a collapsible details block).
@@ -215,12 +223,15 @@ New layout:
 4. group = groups.get(doc.metadata.source)
 5. safeName = safeSourceExportName(doc.metadata.source, new Set())
 6. reassembleSource(group, safeName)
-7. downloadBlob(...)                  // existing helper
+7. build a mini zip containing:
+   - <name>
+   - <name>.meta.json
+8. downloadBlob(...)                  // existing helper
 ```
 
 Edge case: if after filtering `group.length === 1` (this entry is its own source), still produce the reassembled file (same as a 1-chunk source). Toast: `"This entry is the only chunk for <source>."`
 
-Per-entry `⬇ source` should match the default bulk export result for the same source. It excludes deprecated/superseded chunks by default; if the clicked row is excluded by that policy or no group remains after filtering, show a toast explaining that the source is deprecated/superseded and use raw `⬇ chunk` for that record.
+Per-entry `⬇ source` should match the default bulk export result for the same source, including the sidecar. It downloads a small zip named `<safeBasename>.zip` (basename of `safeName` without the original extension) so the source body and provenance stay together. It excludes deprecated/superseded chunks by default; if the clicked row is excluded by that policy or no group remains after filtering, show a toast explaining that the source is deprecated/superseded and use raw `⬇ chunk` for that record.
 
 ## Error handling
 
@@ -234,7 +245,7 @@ Surfaced in the existing modal status line (bulk) or as a toast (per-entry):
 | Group length differs from consistent `totalChunks` | Continue + ⚠ warning per source |
 | Unsafe or duplicate source filenames | Sanitize and disambiguate before writing to zip |
 | Both `include_reassembled` and `include_chunks` off | Button disabled |
-| Single reassembled file exceeds `EXPORT_MAX_UNCOMPRESSED_BYTES` | Abort with existing "Collection too large" error |
+| Selected export contents exceed `EXPORT_MAX_UNCOMPRESSED_BYTES` | Abort with "Collection too large for selected export contents"; suggest disabling raw chunks or reassembled files |
 | Per-entry button on an orphan | Button not rendered — no error path |
 
 ## Testing
@@ -264,7 +275,8 @@ Surfaced in the existing modal status line (bulk) or as a toast (per-entry):
 - Upload `tutorials/rap-bo-creation.md` (real chunked file) → export → diff `reassembled/rap-bo-creation.md` against original (modulo `.trim()` whitespace and `\n\n` join behavior). Verify metadata is only in `reassembled/rap-bo-creation.md.meta.json`.
 - Add a single entry via `rag_add` to the same collection → verify it lands in `chunks/` only.
 - Toggle off `Include chunks` → only `reassembled/` in zip.
-- Click `⬇ source` on a chunk → file matches the corresponding bulk reassembly.
+- Toggle off `Include chunks` with an orphan present → orphan is skipped and status says it was skipped.
+- Click `⬇ source` on a chunk → mini zip contains the source file and `.meta.json`; source body matches the corresponding bulk reassembly.
 - Upload a file with a path-like or unsafe filename → verify `reassembled/` uses a sanitized basename and cannot create unexpected zip paths.
 
 ## File touch list
