@@ -217,3 +217,86 @@ describe('safeSourceExportName', () => {
     expect(out.endsWith('.md')).toBe(true);
   });
 });
+
+describe('reassembleSource', () => {
+  function chunk(
+    id: string,
+    source: string,
+    idx: number,
+    total: number,
+    text: string,
+    extra: any = {},
+  ) {
+    return {
+      id,
+      text,
+      createdAt: extra.createdAt,
+      metadata: {
+        source,
+        chunkIndex: idx,
+        totalChunks: total,
+        description: extra.description,
+      },
+    };
+  }
+
+  it('joins chunk text with \\n\\n in chunkIndex order', () => {
+    const group = [
+      chunk('a-0', 'a.md', 0, 3, 'Hello'),
+      chunk('a-1', 'a.md', 1, 3, 'World'),
+      chunk('a-2', 'a.md', 2, 3, 'Bye'),
+    ];
+    const { name, body } = RagExport.reassembleSource(group, 'a.md', []);
+    expect(name).toBe('a.md');
+    expect(body).toBe('Hello\n\nWorld\n\nBye');
+  });
+
+  it('produces a sidecar with provenance for md sources', () => {
+    const group = [
+      chunk('a-0', 'a.md', 0, 2, 'X', {
+        createdAt: '2026-05-15T10:00:00Z',
+        description: 'desc',
+      }),
+      chunk('a-1', 'a.md', 1, 2, 'Y', {
+        createdAt: '2026-05-15T10:00:01Z',
+        description: 'desc',
+      }),
+    ];
+    const { sidecar } = RagExport.reassembleSource(group, 'a.md', []);
+    expect(sidecar.name).toBe('a.md.meta.json');
+    const parsed = JSON.parse(sidecar.body);
+    expect(parsed.source).toBe('a.md');
+    expect(parsed.exportName).toBe('a.md');
+    expect(parsed.description).toBe('desc');
+    expect(parsed.totalChunks).toBe(2);
+    expect(parsed.reassembledFrom).toEqual(['a-0', 'a-1']);
+    expect(parsed.createdAt).toBe('2026-05-15T10:00:00Z');
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it('passes per-source warnings through to the sidecar', () => {
+    const group = [chunk('a-0', 'a.md', 0, 2, 'X')];
+    const warnings = ['⚠ a.md: expected 2 chunks, found 1'];
+    const { sidecar } = RagExport.reassembleSource(group, 'a.md', warnings);
+    const parsed = JSON.parse(sidecar.body);
+    expect(parsed.warnings).toEqual(warnings);
+  });
+
+  it('omits description from the sidecar when absent', () => {
+    const group = [chunk('a-0', 'a.md', 0, 1, 'X')];
+    const { sidecar } = RagExport.reassembleSource(group, 'a.md', []);
+    const parsed = JSON.parse(sidecar.body);
+    expect('description' in parsed).toBe(false);
+  });
+
+  it('preserves the safeName extension for txt and other formats', () => {
+    const group = [chunk('a-0', 'a.txt', 0, 1, 'X')];
+    const out = RagExport.reassembleSource(group, 'a.txt', []);
+    expect(out.name).toBe('a.txt');
+    expect(out.sidecar.name).toBe('a.txt.meta.json');
+  });
+
+  it('throws on an empty group', () => {
+    expect(() => RagExport.reassembleSource([], 'a.md', [])).toThrow();
+  });
+});

@@ -107,8 +107,43 @@
     used.add(candidate);
     return candidate;
   }
-  function reassembleSource(_group, _safeName, _warnings) {
-    throw new Error('not implemented');
+  function reassembleSource(group, safeName, warnings) {
+    if (!Array.isArray(group) || group.length === 0) {
+      throw new Error('reassembleSource: group must be a non-empty array');
+    }
+    const ws = Array.isArray(warnings) ? warnings : [];
+    const sourceName = (group[0].metadata && group[0].metadata.source) || safeName;
+    const joined = group.map((d) => d.text == null ? '' : String(d.text)).join('\n\n');
+
+    // createdAt: earliest among chunks (defensive — chunks of one upload share it)
+    let createdAt;
+    for (const d of group) {
+      if (d.createdAt && (!createdAt || d.createdAt < createdAt)) createdAt = d.createdAt;
+    }
+
+    const description = group[0].metadata && group[0].metadata.description;
+    const totalChunks = group[0].metadata && group[0].metadata.totalChunks;
+
+    const sidecarObj = {
+      source: sourceName,
+      exportName: safeName,
+      totalChunks: Number.isInteger(totalChunks) ? totalChunks : group.length,
+      reassembledFrom: group.map((d) => d.id),
+      warnings: ws.slice(),
+    };
+    if (description !== undefined && description !== null && description !== '') {
+      sidecarObj.description = description;
+    }
+    if (createdAt) sidecarObj.createdAt = createdAt;
+
+    return {
+      name: safeName,
+      body: joined,
+      sidecar: {
+        name: safeName + '.meta.json',
+        body: JSON.stringify(sidecarObj, null, 2) + '\n',
+      },
+    };
   }
   return { groupChunksBySource, safeSourceExportName, reassembleSource };
 });
