@@ -151,3 +151,69 @@ describe('groupChunksBySource', () => {
     );
   });
 });
+
+describe('safeSourceExportName', () => {
+  it('passes through a clean filename', () => {
+    const out = RagExport.safeSourceExportName('rap-bo-creation.md', new Set());
+    expect(out).toBe('rap-bo-creation.md');
+  });
+
+  it('strips directory components and parent-dir traversal', () => {
+    expect(RagExport.safeSourceExportName('foo/bar.md', new Set())).toBe(
+      'bar.md',
+    );
+    expect(RagExport.safeSourceExportName('../../etc/passwd', new Set())).toBe(
+      'passwd',
+    );
+    expect(RagExport.safeSourceExportName('a\\b\\c.md', new Set())).toBe(
+      'c.md',
+    );
+  });
+
+  it('replaces unsafe characters with underscore', () => {
+    expect(RagExport.safeSourceExportName('foo bar (1).md', new Set())).toBe(
+      'foo_bar__1_.md',
+    );
+  });
+
+  it('preserves the original extension', () => {
+    expect(RagExport.safeSourceExportName('data.json', new Set())).toBe(
+      'data.json',
+    );
+    expect(RagExport.safeSourceExportName('schema.xml', new Set())).toBe(
+      'schema.xml',
+    );
+    expect(RagExport.safeSourceExportName('report.csv', new Set())).toBe(
+      'report.csv',
+    );
+    expect(RagExport.safeSourceExportName('zcl_foo.abap', new Set())).toBe(
+      'zcl_foo.abap',
+    );
+    expect(RagExport.safeSourceExportName('README.markdown', new Set())).toBe(
+      'README.markdown',
+    );
+    expect(RagExport.safeSourceExportName('app.properties', new Set())).toBe(
+      'app.properties',
+    );
+  });
+
+  it('disambiguates collisions before the extension', () => {
+    const used = new Set<string>();
+    expect(RagExport.safeSourceExportName('a.md', used)).toBe('a.md');
+    expect(RagExport.safeSourceExportName('a.md', used)).toBe('a-1.md');
+    expect(RagExport.safeSourceExportName('a.md', used)).toBe('a-2.md');
+  });
+
+  it('falls back to source.txt when sanitization empties the name', () => {
+    expect(RagExport.safeSourceExportName('', new Set())).toBe('source.txt');
+    expect(RagExport.safeSourceExportName('/', new Set())).toBe('source.txt');
+    expect(RagExport.safeSourceExportName('..', new Set())).toBe('source.txt');
+  });
+
+  it('truncates an overly long basename', () => {
+    const longName = `${'x'.repeat(500)}.md`;
+    const out = RagExport.safeSourceExportName(longName, new Set());
+    expect(out.length).toBeLessThanOrEqual(123); // 120 basename cap + '.md'
+    expect(out.endsWith('.md')).toBe(true);
+  });
+});
