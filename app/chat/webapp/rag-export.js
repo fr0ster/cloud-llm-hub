@@ -12,8 +12,28 @@
     root.RagExport = factory();
   }
 })(typeof self !== 'undefined' ? self : this, function () {
-  function groupChunksBySource(_docs) {
-    throw new Error('not implemented');
+  function groupChunksBySource(docs) {
+    const groups = new Map();
+    const orphans = [];
+    for (const doc of docs) {
+      const md = doc && doc.metadata;
+      const src = md && md.source;
+      const idx = md && md.chunkIndex;
+      if (src && Number.isInteger(idx)) {
+        let arr = groups.get(src);
+        if (!arr) {
+          arr = [];
+          groups.set(src, arr);
+        }
+        arr.push(doc);
+      } else {
+        orphans.push(doc);
+      }
+    }
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex);
+    }
+    return { groups, orphans, warningsBySource: new Map() };
   }
   function safeSourceExportName(_sourceName, _used) {
     throw new Error('not implemented');
