@@ -181,6 +181,12 @@
               <label style="cursor:pointer"><input type="radio" name="export-format" value="txt" style="accent-color:#00bfff"> Plain text (.txt + .meta.json sidecar)</label>
             </div>
             <div style="margin-bottom:14px">
+              <label style="margin-right:14px;cursor:pointer;display:block;margin-bottom:6px">
+                <input type="checkbox" id="export-include-reassembled" checked style="accent-color:#00bfff"> Include reassembled source files
+              </label>
+              <label style="margin-right:14px;cursor:pointer;display:block;margin-bottom:6px">
+                <input type="checkbox" id="export-include-chunks" checked style="accent-color:#00bfff"> Include raw chunks
+              </label>
               <label style="cursor:pointer"><input type="checkbox" id="export-include-deprecated" style="accent-color:#00bfff"> Include deprecated / superseded entries</label>
             </div>
             <div id="export-modal-status" style="color:#888;font-size:12px;min-height:18px;margin-bottom:10px"></div>
@@ -2049,6 +2055,8 @@
             const mdRadio = document.querySelector('input[name="export-format"][value="md"]');
             if (mdRadio) mdRadio.checked = true;
             document.getElementById('export-include-deprecated').checked = false;
+            document.getElementById('export-include-reassembled').checked = true;
+            document.getElementById('export-include-chunks').checked = true;
             document.getElementById('export-modal-download').disabled = false;
             document.getElementById('export-modal').style.display = 'block';
         }
@@ -2072,11 +2080,34 @@
             try {
                 const docs = await fetchAllDocuments(collectionId);
                 status.textContent = `Building ZIP (${docs.length} documents)...`;
-                const { blob, documentCount, fileCount } = await buildCollectionZipBlob(
+                const includeReassembled = document.getElementById('export-include-reassembled').checked;
+                const includeChunks = document.getElementById('export-include-chunks').checked;
+                const downloadBtn = document.getElementById('export-modal-download');
+                if (!includeReassembled && !includeChunks) {
+                    status.style.color = '#ff5555';
+                    status.textContent = 'Pick at least one of reassembled / chunks';
+                    downloadBtn.disabled = false;
+                    return;
+                }
+                const result = await buildCollectionZipBlob(
                     docs,
-                    format,
-                    { include_deprecated: includeDeprecated },
+                    formatEl.value,
+                    {
+                        include_deprecated: document.getElementById('export-include-deprecated').checked,
+                        include_reassembled: includeReassembled,
+                        include_chunks: includeChunks,
+                    },
                 );
+                const {
+                    blob,
+                    documentCount,
+                    fileCount,
+                    sourceFileCount,
+                    chunkCount,
+                    orphanCount,
+                    warningsBySource,
+                    includedChunks,
+                } = result;
                 const filename = exportZipFilename(collectionId);
                 downloadBlob(blob, filename);
                 status.style.color = '#00ff88';
