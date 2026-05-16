@@ -2111,7 +2111,18 @@
                 const filename = exportZipFilename(collectionId);
                 downloadBlob(blob, filename);
                 status.style.color = '#00ff88';
-                status.textContent = `Exported ${documentCount} documents, ${fileCount} files → ${filename}`;
+                let msg;
+                if (includedChunks) {
+                    msg = `Exported ${sourceFileCount} source files (reassembled/), ${chunkCount} chunks (chunks/, including ${orphanCount} orphans) → ${filename}`;
+                } else {
+                    msg = `Exported ${sourceFileCount} source files (reassembled/), skipped ${orphanCount} orphans because raw chunks are disabled → ${filename}`;
+                }
+                if (warningsBySource && warningsBySource.size) {
+                    const flat = [];
+                    for (const ws of warningsBySource.values()) for (const w of ws) flat.push(w);
+                    msg += `\n${flat.length} warning(s):\n${flat.join('\n')}`;
+                }
+                status.textContent = msg;
                 btn.disabled = false;
             } catch (err) {
                 status.style.color = '#ff5555';
