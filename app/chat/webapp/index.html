@@ -1804,6 +1804,54 @@
             } catch (err) { alert(err.message); }
         }
 
+        async function downloadSourceFile(collection, docId) {
+            try {
+                if (typeof JSZip === 'undefined' || typeof RagExport === 'undefined') {
+                    alert('Export helpers not loaded; reload the page and try again.');
+                    return;
+                }
+                const all = await fetchAllDocuments(collection);
+                // Same deprecated/superseded filtering policy as the default bulk export
+                const filtered = all.filter(d => !isDeprecatedEntry(d));
+
+                const clicked = filtered.find(d => d.id === docId)
+                    || all.find(d => d.id === docId);
+                if (!clicked || !clicked.metadata || !clicked.metadata.source
+                    || !Number.isInteger(clicked.metadata.chunkIndex)) {
+                    alert('This record is not part of a chunked source.');
+                    return;
+                }
+                if (isDeprecatedEntry(clicked)) {
+                    alert('This source is deprecated/superseded. Use DL to download the raw chunk.');
+                    return;
+                }
+
+                const { groups, warningsBySource } = RagExport.groupChunksBySource(filtered);
+                const sourceName = clicked.metadata.source;
+                const group = groups.get(sourceName);
+                if (!group || group.length === 0) {
+                    alert('No active chunks remain for this source after filtering.');
+                    return;
+                }
+                const safeName = RagExport.safeSourceExportName(sourceName, new Set());
+                const ws = warningsBySource.get(sourceName) || [];
+                const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+
+                // Mini zip: <safeBasename>.zip containing body + meta.json
+                const zip = new JSZip();
+                zip.file(name, body);
+                zip.file(sidecar.name, sidecar.body);
+                const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+
+                // Strip the original extension to build the zip name
+                const dot = name.lastIndexOf('.');
+                const baseForZip = (dot > 0 ? name.slice(0, dot) : name) || 'source';
+                downloadBlob(blob, baseForZip + '.zip');
+            } catch (err) {
+                alert(err.message || String(err));
+            }
+        }
+
         async function searchCollection() {
             const text = document.getElementById('rag-search-text').value.trim();
             if (!text) return;
