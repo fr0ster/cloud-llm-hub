@@ -189,7 +189,7 @@
               </label>
               <label style="cursor:pointer"><input type="checkbox" id="export-include-deprecated" style="accent-color:#00bfff"> Include deprecated / superseded entries</label>
             </div>
-            <div id="export-modal-status" style="color:#888;font-size:12px;min-height:18px;margin-bottom:10px"></div>
+            <div id="export-modal-status" style="color:#888;font-size:12px;min-height:18px;margin-bottom:10px;white-space:pre-line"></div>
             <div style="display:flex;justify-content:flex-end;gap:8px">
               <button onclick="closeExportModal()" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">CANCEL</button>
               <button id="export-modal-download" onclick="runCollectionExport()" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">DOWNLOAD</button>
@@ -2158,15 +2158,18 @@
                     orphanCount,
                     warningsBySource,
                     includedChunks,
+                    includedReassembled,
                 } = result;
                 const filename = exportZipFilename(collectionId);
                 downloadBlob(blob, filename);
                 status.style.color = '#00ff88';
                 let msg;
-                if (includedChunks) {
+                if (includedReassembled && includedChunks) {
                     msg = `Exported ${sourceFileCount} source files (reassembled/), ${chunkCount} chunks (chunks/, including ${orphanCount} orphans) → ${filename}`;
-                } else {
+                } else if (includedReassembled) {
                     msg = `Exported ${sourceFileCount} source files (reassembled/), skipped ${orphanCount} orphans because raw chunks are disabled → ${filename}`;
+                } else {
+                    msg = `Exported ${chunkCount} chunks (chunks/, including ${orphanCount} orphans) → ${filename}`;
                 }
                 if (warningsBySource && warningsBySource.size) {
                     const flat = [];
