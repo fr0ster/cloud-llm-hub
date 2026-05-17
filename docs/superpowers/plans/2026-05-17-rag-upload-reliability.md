@@ -564,6 +564,8 @@ describe('addDocumentsBulk integration', () => {
   });
 
   it('transient failures eventually succeed via retry', async () => {
+    // Inject instant sleep so the test doesn't wait ~1.4s of real backoff.
+    const instantSleep = (_ms: number) => Promise.resolve();
     const byId = new Map<string, WriterScript>();
     // chunks 1 and 3 fail twice with a transient error, then succeed
     byId.set('chunk-1', [
@@ -577,7 +579,9 @@ describe('addDocumentsBulk integration', () => {
       { ok: true },
     ]);
     const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
-    const res = await (registry as any).addDocumentsBulk('test', docs(5));
+    const res = await (registry as any).addDocumentsBulk('test', docs(5), undefined, {
+      sleep: instantSleep,
+    });
     expect(res.added).toBe(5);
     expect(res.errors).toEqual([]);
     expect(callsById.get('chunk-1')).toBe(3);
