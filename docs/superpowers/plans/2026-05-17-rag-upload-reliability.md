@@ -73,17 +73,23 @@ This is the standalone fix that lets retry (Task 4) actually see failures. We pa
 Create `test/unit/rag-collections-bulk.test.ts`:
 
 ```typescript
-jest.mock('@sap/cds', () => ({
-  __esModule: true,
-  default: {
-    log: jest.fn(() => ({
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    })),
-  },
-}));
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: {
+      log: jest.fn(() => ({
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      })),
+    },
+  }),
+  // jest.config.ts maps @sap/cds to a types-only package. Keep this mock
+  // virtual so Jest does not try to resolve that package at runtime.
+  { virtual: true },
+);
 
 import cds from '@sap/cds';
 import { CollectionRegistry } from '../../srv/rag-collections';
@@ -677,7 +683,7 @@ describe('addDocumentsBulk integration', () => {
 
 Notes about the warn-log test:
 - Replacing `cds.log` globally before constructing the registry is necessary because the registry / bulk loop will reference `cds.log('rag-collections')` at call time. The `try/finally` ensures other tests aren't affected.
-- The file-level `jest.mock('@sap/cds', ...)` supplies a runtime mock for `rag-collections.ts`; the warn-log test temporarily replaces that mocked `cds.log` implementation.
+- The file-level virtual `jest.mock('@sap/cds', ..., { virtual: true })` supplies a runtime mock for `rag-collections.ts`; the warn-log test temporarily replaces that mocked `cds.log` implementation. The virtual flag is intentional because this repo's Jest config maps `@sap/cds` to a types-only package.
 
 - [ ] **Step 2: Run tests — expect 3 of the 6 to fail**
 
