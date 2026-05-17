@@ -66,8 +66,14 @@ This is required for the retry loop below to see vector/embedder failures. Witho
 `srv/rag-collections.ts` — change the loop in `addDocumentsBulk` to:
 
 ```
+RETRY_BUDGET_MS = 30_000   // module-level constant — keep magic number named
+retrySleepSpentMs = 0      // closure over the bulk call only
+
 for each doc:
-  result = await tryWithRetry(() => addDocument(...))
+  result = await tryWithRetry(() => addDocument(...), {
+    canSleep: (delay) => retrySleepSpentMs + delay <= RETRY_BUDGET_MS,
+    onSleep:  (delay) => { retrySleepSpentMs += delay },
+  })
   if result.ok:    added++; throttle every 10
   else:            errors.push(`${doc.id}: ${result.error.message}`)
 ```
@@ -82,14 +88,20 @@ attempts = [
   { delay: 1500 },  // retry 3
 ]
 
-for each attempt:
-  if attempt.delay > 0: sleep(attempt.delay)
+for i in 0..attempts.length - 1:
+  if attempts[i].delay > 0:
+    onSleep(attempts[i].delay)
+    sleep(attempts[i].delay)
   try:
     return { ok: true, value: await fn() }
   catch (err):
-    if isTransient(err) and not last attempt: continue
+    isLast = (i === attempts.length - 1)
+    nextDelay = isLast ? 0 : attempts[i + 1].delay
+    if isTransient(err) and not isLast and canSleep(nextDelay): continue
     return { ok: false, error: err }
 ```
+
+When the caller omits the budget callbacks, `canSleep` defaults to `() => true` and `onSleep` to `() => undefined` — `tryWithRetry` then stays budget-naive (used directly by the helper unit tests). The budget is shared by the whole bulk call, not reset per document.
 
 `isTransient(err)`:
 
@@ -97,7 +109,7 @@ Check fields in this order (first match wins):
 
 1. **Numeric status fields** — `err.status` or `err.statusCode` equal to `429` or in `[500, 599]` → transient.
 2. **String code field** — `err.code === 'ETIMEDOUT'` or `'ECONNRESET'` → transient.
-3. **Message substring** — `err.message` matches `\b(429|503|504)\b` or contains `rate-limit` / `timeout` / `ECONNRESET` / `ETIMEDOUT` / `network` (case-insensitive) → transient.
+3. **Message substring** — `err.message` matches `\b(429|5\d\d)\b` or contains `rate-limit` / `timeout` / `ECONNRESET` / `ETIMEDOUT` / `network` (case-insensitive) → transient.
 4. **Anything else** — permanent (don't retry).
 
 Notes:
@@ -106,7 +118,7 @@ Notes:
 
 The current throttle (`if (added % 10 === 0) sleep(100)`) stays as-is — it's a load-shaping measure, distinct from retry. Note: the throttle fires only on successful completions, so retries already provide spacing during failure runs; the two mechanisms do not double up.
 
-**Total worst-case delay:** with `[200, 500, 1500]` backoff and 3 retries, each failing chunk adds at most 2.2 s of waiting. For a 30-chunk file where every chunk transiently fails once, the bulk takes ~6 s longer than today. Bounded enough not to balloon upload time.
+**Retry budget:** with `[200, 500, 1500]` backoff and 3 retries, each chunk can add up to 2.2 s of waiting when all retry attempts fail. To avoid holding a large upload open for minutes during a provider outage, stop retrying new chunks after the bulk has spent 30 s sleeping in retry backoff. Once that per-call retry budget is exhausted, remaining failures are counted once without retry; successful chunks still continue. This keeps one HTTP upload bounded while preserving retry for the common small/transient case.
 
 Implementation notes:
 
@@ -163,7 +175,7 @@ The Manage `uploadFile` status already surfaces both numbers, but should also co
 | Condition | Behavior |
 |---|---|
 | RAG write returns `{ ok: false }` from `stored.rag.upsert(...)` | `addDocument` throws before persisting the document; `addDocumentsBulk` retry/error handling owns the outcome. |
-| Transient embedder error on chunk N (HTTP 429, 5xx, network) | Retry up to 3 times with backoff. If all retries fail, count as failed, continue. |
+| Transient embedder error on chunk N (HTTP 429, 5xx, network) | Retry up to 3 times with backoff while the bulk retry sleep budget has room. If retries fail or the budget is exhausted, count as failed, continue. |
 | Permanent error (4xx ≠ 429, validation) | Don't retry. Count as failed, continue. |
 | Total `added < docs.length` | Warn log on server. Red counter in chat-📎 UI. Alert toast in chat-📎. |
 | Manage upload partial | Already surfaces `Uploaded: N chunks, M added`. Add a `color:#ff5555` style when `added < chunks`. |
@@ -181,9 +193,14 @@ The Manage `uploadFile` status already surfaces both numbers, but should also co
 - `isTransient`:
   - HTTP 429 / 503 / 504 / network errors → true
   - wrapped `RagError('Error: Request failed with status code 503', 'UPSERT_ERROR')` → true
+  - wrapped `RagError('Error: Request failed with status code 500', 'UPSERT_ERROR')` → true
+  - wrapped `RagError('502 Bad Gateway', 'UPSERT_ERROR')` → true
   - wrapped `RagError('validation failed', 'UPSERT_ERROR')` → false
   - HTTP 400 / 401 / 403 / 404 → false
   - Errors with no recognizable signal → false (conservative)
+- `addDocumentsBulk` retry budget:
+  - once cumulative retry sleep reaches 30 s, later transient failures are not retried
+  - successful chunks continue to be added after the retry budget is exhausted
 - `addDocumentsBulk` integration (use `VectorRag` with a mock embedder, or a fake editable `IRag` whose `writer().upsertRaw()` returns scripted `Result` values; do not use `InMemoryRag` with a mock embedder because `InMemoryRag` never calls the embedder):
   - All succeed → `added === docs.length`, `errors === []`
   - 2 chunks fail transiently → all eventually added
