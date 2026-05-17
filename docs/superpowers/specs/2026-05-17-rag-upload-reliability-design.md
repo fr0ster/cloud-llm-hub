@@ -168,7 +168,23 @@ const countLabel = f.failed > 0
   : `<span style="color:#555">${f.chunks} chunks</span>`;
 ```
 
-The Manage `uploadFile` status already surfaces both numbers, but should also color the status red when `added < chunks` so both upload paths use the same partial-failure signal.
+The Manage `uploadFile` status already surfaces both numbers, but should also color the status red when `added < chunks` so both upload paths use the same partial-failure signal. Today the success block in `uploadFile` (`app/chat/webapp/index.html:1741`) reads:
+
+```javascript
+statusEl.textContent = `Uploaded: ${data.chunks} chunks, ${data.added} added`;
+statusEl.style.color = '#00ff00';
+```
+
+Replace it with:
+
+```javascript
+const chunks = data.chunks;
+const added = typeof data.added === 'number' ? data.added : chunks;
+statusEl.textContent = `Uploaded: ${chunks} chunks, ${added} added`;
+statusEl.style.color = added < chunks ? '#ff5555' : '#00ff00';
+```
+
+No alert is shown in the Manage flow — the status line is already in view of the user pressing the Upload button, so a modal interruption would be redundant. The red status alone communicates the partial failure; chat-📎 gets a toast because its bar is peripheral to the chat focus.
 
 ## Error handling
 
