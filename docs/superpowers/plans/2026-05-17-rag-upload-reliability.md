@@ -73,6 +73,19 @@ This is the standalone fix that lets retry (Task 4) actually see failures. We pa
 Create `test/unit/rag-collections-bulk.test.ts`:
 
 ```typescript
+jest.mock('@sap/cds', () => ({
+  __esModule: true,
+  default: {
+    log: jest.fn(() => ({
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+      debug: jest.fn(),
+    })),
+  },
+}));
+
+import cds from '@sap/cds';
 import { CollectionRegistry } from '../../srv/rag-collections';
 
 type WriterScript = Array<{ ok: true } | { ok: false; error: Error }>;
@@ -112,9 +125,10 @@ async function makeRegistry(script: WriterScript, byId?: Map<string, WriterScrip
   };
   const registry = new CollectionRegistry(undefined as any);
   (registry as any).createRagStore = () => ragStub;
-  await registry.upsertCollection({
+  registry.createCollection({
     id: 'test',
     displayName: 'Test',
+    description: 'Test collection',
     scope: 'user',
     backend: 'mem',
   } as any);
@@ -135,7 +149,7 @@ describe('addDocument (Result-aware)', () => {
 
   it('throws when upsert returns Result.ok=false', async () => {
     const { registry } = await makeRegistry([
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
     ]);
     await expect(
       (registry as any).addDocument('test', {
@@ -343,7 +357,7 @@ describe('tryWithRetry', () => {
 
   it('exhausts retries on persistent transient — returns failure', async () => {
     const { sleep, sleeps } = sleeper();
-    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503'));
+    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503 Service Unavailable'));
     const res = await tryWithRetry(fn, { sleep });
     expect(res.ok).toBe(false);
     expect(fn).toHaveBeenCalledTimes(4);
@@ -362,7 +376,7 @@ describe('tryWithRetry', () => {
   it('canSleep=false blocks further retry without calling onSleep', async () => {
     const { sleep, sleeps } = sleeper();
     const onSleep = jest.fn();
-    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503'));
+    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503 Service Unavailable'));
     const res = await tryWithRetry(fn, {
       sleep,
       canSleep: () => false,
@@ -378,7 +392,7 @@ describe('tryWithRetry', () => {
     const { sleep, sleeps } = sleeper();
     const onSleepCalls: number[] = [];
     const onSleep = (ms: number) => onSleepCalls.push(ms);
-    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503'));
+    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503 Service Unavailable'));
     const res = await tryWithRetry(fn, { sleep, onSleep });
     expect(res.ok).toBe(false);
     expect(onSleepCalls).toEqual([200, 500, 1500]);
@@ -399,13 +413,14 @@ Open `srv/rag-collections.ts`. At the top level (after the imports, before the f
 ```typescript
 /**
  * HTTP/status-context regex used by isTransient — matches "status 503",
- * "HTTP 502", "status code 429", "503 Service Unavailable", etc.
+ * "HTTP 502", "status code 429", "429 Too Many Requests",
+ * "503 Service Unavailable", etc.
  * Deliberately does NOT match bare 3-digit numbers like "max length 500"
  * because that triggered false positives against UPSERT_ERROR-wrapped
  * validation errors.
  */
 const TRANSIENT_HTTP_RE =
-  /\b(?:status(?: code)?|http)\s*:?\s*(?:429|5\d\d)\b|\b5\d\d\s+(?:bad gateway|service unavailable|gateway timeout|internal server error)\b/i;
+  /\b(?:status(?: code)?|http)\s*:?\s*(?:429|5\d\d)\b|\b429\s+too many requests\b|\b5\d\d\s+(?:bad gateway|service unavailable|gateway timeout|internal server error)\b/i;
 
 const TRANSIENT_NETWORK_RE =
   /(rate[\s-]?limit|timeout|ECONNRESET|ETIMEDOUT|network)/i;
@@ -543,13 +558,13 @@ describe('addDocumentsBulk integration', () => {
     const byId = new Map<string, WriterScript>();
     // chunks 1 and 3 fail twice with a transient error, then succeed
     byId.set('chunk-1', [
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
       { ok: true },
     ]);
     byId.set('chunk-3', [
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
       { ok: true },
     ]);
     const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
@@ -578,10 +593,9 @@ describe('addDocumentsBulk integration', () => {
     byId.set('chunk-2', [
       { ok: false, error: new Error('Qdrant upsert failed: 401 Unauthorized') },
     ]);
-    const cds = require('@sap/cds');
     const warns: any[] = [];
     const originalLog = cds.log;
-    cds.log = (_name: string) => ({
+    (cds as any).log = (_name: string) => ({
       info: () => undefined,
       warn: (msg: string, ctx?: unknown) => warns.push({ msg, ctx }),
       error: () => undefined,
@@ -591,7 +605,7 @@ describe('addDocumentsBulk integration', () => {
       const { registry } = await makeRegistry([{ ok: true }], byId);
       await (registry as any).addDocumentsBulk('test', docs(5));
     } finally {
-      cds.log = originalLog;
+      (cds as any).log = originalLog;
     }
     expect(warns.length).toBeGreaterThanOrEqual(1);
     const partial = warns.find((w) => /partial/i.test(w.msg));
@@ -606,9 +620,9 @@ describe('addDocumentsBulk integration', () => {
     // and an instant sleep so the test is fast.
     const instantSleep = (_ms: number) => Promise.resolve();
     const transient = (): WriterScript => [
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
       { ok: true },
     ];
     const byId = new Map<string, WriterScript>();
@@ -639,7 +653,7 @@ describe('addDocumentsBulk integration', () => {
     // First 2 chunks always fail transiently (exhaust budget quickly).
     // chunks 2..4 succeed on first try.
     const exhaust: WriterScript = [
-      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503 Service Unavailable') },
     ];
     const byId = new Map<string, WriterScript>();
     byId.set('chunk-0', exhaust);
@@ -663,9 +677,9 @@ describe('addDocumentsBulk integration', () => {
 
 Notes about the warn-log test:
 - Replacing `cds.log` globally before constructing the registry is necessary because the registry / bulk loop will reference `cds.log('rag-collections')` at call time. The `try/finally` ensures other tests aren't affected.
-- The cds module is dynamically required to keep the mock setup colocated with the test that needs it.
+- The file-level `jest.mock('@sap/cds', ...)` supplies a runtime mock for `rag-collections.ts`; the warn-log test temporarily replaces that mocked `cds.log` implementation.
 
-- [ ] **Step 2: Run tests — expect 5 of the 6 to fail**
+- [ ] **Step 2: Run tests — expect 3 of the 6 to fail**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
 Expected:
@@ -673,8 +687,8 @@ Expected:
 - "transient failures eventually succeed via retry" — fails (no retry yet).
 - "permanent failures count as failed without retry" — passes (current swallow-errors loop already counts as 4 added, 1 errors; 401 isn't transient anyway). Verify this.
 - "emits a warn log when added < total" — fails (no log today).
-- "stops retrying once the shared retry-sleep budget is exhausted" — fails (no budget plumbing; also the test passes `options` which the current signature doesn't accept → TS compile error). Expected.
-- "successful chunks continue after budget is exhausted" — same as above.
+- "stops retrying once the shared retry-sleep budget is exhausted" — fails because the current loop does not call `tryWithRetry` or account for retry sleeps. The fourth arg is passed through `(registry as any)`, so TypeScript will not catch the signature mismatch in this red phase.
+- "successful chunks continue after budget is exhausted" — passes even before budget plumbing because chunks 2..4 succeed on their first attempt. It remains useful as a regression test after the refactor.
 
 Confirm exact failures before continuing.
 
