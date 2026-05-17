@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stop silently losing RAG chunks under embedder load. Make `addDocument` honor RAG-write failures, retry transient errors in `addDocumentsBulk`, log partial bulk results, and surface the result in the chat-📎 UI.
+**Goal:** Stop silently losing RAG chunks under embedder load. Make `addDocument` honor RAG-write failures (root cause), retry transient errors in `addDocumentsBulk`, log partial bulk results, and surface the result in the chat-📎 UI.
 
-**Architecture:** Pure server-side fix on `srv/rag-collections.ts` (two new helpers + two changed methods) + one log line + small client UX patch in `app/chat/webapp/index.html`. No new endpoints, no schema changes.
+**Architecture:** Pure server-side fix on `srv/rag-collections.ts` (Result-aware `addDocument`, two new helpers, refactored `addDocumentsBulk`) + one warn log + small client UX patch in `app/chat/webapp/index.html`. No new endpoints, no schema changes.
 
 **Tech Stack:** TypeScript (strict), Jest + ts-jest for unit tests, `@mcp-abap-adt/llm-agent` `Result<T, E>` type for return-style errors.
 
@@ -12,61 +12,234 @@
 
 ## File Structure
 
-- `srv/rag-collections.ts` (modify) — fix `addDocument` to throw on `Result.ok === false`; refactor `addDocumentsBulk` to use a new `tryWithRetry` helper + `isTransient` classifier; add warn log on partial.
+- `srv/rag-collections.ts` (modify) — `addDocument` inspects `Result.ok` and throws on `!ok`; add exported `isTransient` + `tryWithRetry`; `addDocumentsBulk` uses retry + emits a warn log on partial completion.
 - `app/chat/webapp/index.html` (modify) — `handleQuickFileAttach` reads `data.added`; `renderAttachedFiles` flags loss red; alert toast when failed > 0.
-- `test/unit/rag-collections-bulk.test.ts` (create) — unit tests for `isTransient`, `tryWithRetry`, and the end-to-end loop behavior with a mock store.
+- `test/unit/rag-collections-bulk.test.ts` (create) — unit tests for `isTransient`, `tryWithRetry`, plus integration tests against a stubbed RAG backend covering `addDocument` and `addDocumentsBulk` behavior under success / retry / permanent failure paths.
 
 Spec reference: `docs/superpowers/specs/2026-05-17-rag-upload-reliability-design.md`.
 
 ---
 
-## Task 1: Read helper context, plan signatures
+## Task 1: Read helper context (orientation, no commit)
 
-**Files:** none (read-only orientation, no commit).
+**Files:** none.
 
-- [ ] **Step 1: Confirm the `Result<T, E>` type shape**
-
-Run:
+- [ ] **Step 1: Confirm the `Result<T, E>` shape**
 
 ```bash
 sed -n '5,15p' node_modules/@mcp-abap-adt/llm-agent/dist/interfaces/types.d.ts
 ```
 
-Expected output: a discriminated union `{ ok: true; value: T } | { ok: false; error: E }`. The helpers in Task 2 reuse this exact shape so they compose with `IRagEditor.upsert` returns. If the actual type differs, stop and report — the plan needs to be revised before writing code.
+Expected: discriminated union `{ ok: true; value: T } | { ok: false; error: E }`. The fix in Task 2 destructures on `.ok`; if the actual type differs, stop and report.
 
 - [ ] **Step 2: Confirm `addDocument` currently ignores the Result**
-
-Run:
 
 ```bash
 sed -n '367,395p' srv/rag-collections.ts
 ```
 
-Expected: lines 381–387 call `await stored.rag.upsert(...)` and immediately persist without inspecting the return value. This is the bug Task 3 fixes.
+Expected: lines 381–387 do `await stored.rag.upsert(...)` and immediately persist without inspecting the return. This is the root cause Task 2 fixes.
 
-- [ ] **Step 3: Confirm RagError code shape**
+- [ ] **Step 3: Confirm `RecencyBoostedRag` returns the Result instead of throwing**
 
-Run:
+```bash
+sed -n '99,116p' srv/rag-collections.ts
+```
+
+Expected: `upsert` returns the result object from `writer.upsertRaw(...)` (or wraps it). No `throw` on `!res.ok` — that's why `addDocument` swallows failures today.
+
+- [ ] **Step 4: Confirm RagError classification surface**
 
 ```bash
 grep -n "UPSERT_ERROR\|ABORTED" node_modules/@mcp-abap-adt/qdrant-rag/dist/qdrant-rag.js | head -10
 ```
 
-Expected: codes like `UPSERT_ERROR`, `ABORTED` — the HTTP status is embedded in `.message`, not in `.code`. `isTransient` in Task 2 classifies on `.message` substrings.
+Expected: codes like `UPSERT_ERROR`, `ABORTED` — the HTTP status is embedded in `.message`, not in `.code`. `isTransient` in Task 3 classifies on `.message` substrings.
 
-No commit. Move on to Task 2.
+No commit. Move on.
 
 ---
 
-## Task 2: Add `isTransient` + `tryWithRetry` helpers (TDD)
+## Task 2: `addDocument` honors `Result.ok` (root cause fix, TDD)
 
 **Files:**
 - Modify: `srv/rag-collections.ts`
 - Create: `test/unit/rag-collections-bulk.test.ts`
 
-- [ ] **Step 1: Create the test file with failing tests**
+This is the standalone fix that lets retry (Task 4) actually see failures. We pair it with a working integration test against a stubbed backend so future tasks reuse the same infrastructure.
+
+- [ ] **Step 1: Create the test file with a failing integration test**
 
 Create `test/unit/rag-collections-bulk.test.ts`:
+
+```typescript
+import { CollectionRegistry } from '../../srv/rag-collections';
+
+type WriterScript = Array<{ ok: true } | { ok: false; error: Error }>;
+
+/**
+ * Build a CollectionRegistry whose RAG backend is a tiny scripted stub.
+ * Each call to upsertRaw consumes the next entry from `script` (last entry
+ * is reused if exhausted). Counters of upsertRaw calls are exposed for
+ * assertions.
+ */
+async function makeRegistry(script: WriterScript, byId?: Map<string, WriterScript>) {
+  const callsById = new Map<string, number>();
+  const writer = {
+    upsertRaw: async (id: string, _text: string, _meta: unknown) => {
+      callsById.set(id, (callsById.get(id) ?? 0) + 1);
+      // Per-id script wins over global script
+      const perId = byId?.get(id);
+      const s = perId ?? script;
+      const idx = Math.min((callsById.get(id) ?? 1) - 1, s.length - 1);
+      const next = s[idx];
+      if (next.ok) return { ok: true as const, value: undefined };
+      return { ok: false as const, error: next.error };
+    },
+    deleteByIdRaw: async () => ({ ok: true as const, value: true }),
+  };
+  const ragStub = {
+    writer: () => writer,
+    upsert: async (text: string, metadata: any) => {
+      const { id, ...rest } = metadata;
+      const r = await writer.upsertRaw(id, text, rest);
+      return r.ok ? { ok: true as const, value: { id } } : r;
+    },
+    query: async () => ({ ok: true as const, value: [] }),
+    getById: async () => ({ ok: true as const, value: null }),
+    healthCheck: async () => ({ ok: true as const, value: undefined }),
+    deleteById: async () => ({ ok: true as const, value: true }),
+  };
+  const registry = new CollectionRegistry(undefined as any);
+  (registry as any).createRagStore = () => ragStub;
+  await registry.upsertCollection({
+    id: 'test',
+    displayName: 'Test',
+    scope: 'user',
+    backend: 'mem',
+  } as any);
+  return { registry, callsById };
+}
+
+describe('addDocument (Result-aware)', () => {
+  it('persists the document when upsert succeeds', async () => {
+    const { registry } = await makeRegistry([{ ok: true }]);
+    const doc = await (registry as any).addDocument('test', {
+      id: 'a-0',
+      text: 'hello',
+      metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+    });
+    expect(doc.id).toBe('a-0');
+    expect(doc.createdAt).toBeDefined();
+  });
+
+  it('throws when upsert returns Result.ok=false', async () => {
+    const { registry } = await makeRegistry([
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+    ]);
+    await expect(
+      (registry as any).addDocument('test', {
+        id: 'a-0',
+        text: 'hello',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+      }),
+    ).rejects.toThrow(/503/);
+  });
+
+  it('does NOT persist the document when upsert fails', async () => {
+    const { registry } = await makeRegistry([
+      { ok: false, error: new Error('Qdrant upsert failed: 401') },
+    ]);
+    await expect(
+      (registry as any).addDocument('test', {
+        id: 'a-0',
+        text: 'hello',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+      }),
+    ).rejects.toThrow();
+    // The stored.documents map must not contain a-0
+    const stored = (registry as any).collections.get('test');
+    expect(stored.documents.has('a-0')).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests — expect 2 of the 3 to fail**
+
+Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
+Expected: "persists when upsert succeeds" passes (current behavior already allows that). The "throws when..." and "does NOT persist when..." tests fail because `addDocument` currently ignores `.ok`.
+
+- [ ] **Step 3: Fix `addDocument` in `srv/rag-collections.ts`**
+
+Find `addDocument` (~line 367). Replace the existing upsert block:
+
+```typescript
+    // Upsert into RAG store
+    await stored.rag.upsert(doc.text, {
+      id: `doc:${collectionId}:${doc.id}`,
+      namespace:
+        namespace ??
+        (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
+      ...doc.metadata,
+    });
+
+    stored.documents.set(doc.id, full);
+    stored.meta.documentCount = stored.documents.size;
+    this.persistDocument(collectionId, full);
+    return full;
+```
+
+with:
+
+```typescript
+    // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
+    // a backend rejection comes back as { ok: false }, NOT a thrown error.
+    // We must inspect .ok and throw on failure or chunks vanish silently.
+    const result = await stored.rag.upsert(doc.text, {
+      id: `doc:${collectionId}:${doc.id}`,
+      namespace:
+        namespace ??
+        (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
+      ...doc.metadata,
+    });
+    if (!result.ok) {
+      throw result.error instanceof Error
+        ? result.error
+        : new Error(String(result.error));
+    }
+
+    stored.documents.set(doc.id, full);
+    stored.meta.documentCount = stored.documents.size;
+    this.persistDocument(collectionId, full);
+    return full;
+```
+
+- [ ] **Step 4: Run tests + type check**
+
+Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
+Expected: all 3 tests pass.
+
+Run: `npx tsc --noEmit`
+Expected: clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add srv/rag-collections.ts test/unit/rag-collections-bulk.test.ts
+git commit -m "fix(rag): addDocument throws when stored.rag.upsert returns !ok"
+```
+
+---
+
+## Task 3: `isTransient` + `tryWithRetry` helpers (TDD)
+
+**Files:**
+- Modify: `srv/rag-collections.ts`
+- Modify: `test/unit/rag-collections-bulk.test.ts`
+
+- [ ] **Step 1: Add helper unit tests**
+
+Append to `test/unit/rag-collections-bulk.test.ts`:
 
 ```typescript
 import { isTransient, tryWithRetry } from '../../srv/rag-collections';
@@ -98,7 +271,7 @@ describe('isTransient', () => {
     expect(isTransient(null as unknown as Error)).toBe(false);
     expect(isTransient(undefined as unknown as Error)).toBe(false);
   });
-  it('considers err.code / err.status fields too', () => {
+  it('considers err.code / err.status / err.statusCode fields', () => {
     const e1 = Object.assign(new Error('boom'), { code: 'ETIMEDOUT' });
     expect(isTransient(e1)).toBe(true);
     const e2 = Object.assign(new Error('boom'), { status: 503 });
@@ -161,20 +334,24 @@ describe('tryWithRetry', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests — expect them to fail with "module export not found"**
+- [ ] **Step 2: Run the tests — expect them to fail with "module export not found"**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
-Expected: TypeScript / import error — `isTransient` and `tryWithRetry` are not yet exported from `srv/rag-collections.ts`. That's the red phase.
+Expected: TypeScript / import error — `isTransient` and `tryWithRetry` are not yet exported. Red phase.
 
 - [ ] **Step 3: Add the helpers to `srv/rag-collections.ts`**
 
-Open `srv/rag-collections.ts`. Find the top-level imports/`cds.log` block (near the top of the file, before any class declaration). After the imports and any utility constants, before the first class, add:
+Open `srv/rag-collections.ts`. At the top level (after the imports, before the first class declaration), add:
 
 ```typescript
 /**
- * Classify an embedder/RAG-write error as transient (worth retrying) or permanent.
- * Conservative: anything unrecognized is treated as permanent so we don't burn
- * retry budget on validation errors.
+ * Classify an embedder/RAG-write error as transient (worth retrying) or
+ * permanent. Conservative: anything unrecognized is treated as permanent
+ * so we don't burn retry budget on validation errors.
+ *
+ * RagError wrappers (e.g. UPSERT_ERROR) carry the HTTP status in `.message`
+ * rather than `.code`, so we classify on substrings in `.message` as well
+ * as the structured `.code` / `.status` / `.statusCode` fields.
  */
 export function isTransient(err: unknown): boolean {
   if (!err) return false;
@@ -200,7 +377,8 @@ export interface TryWithRetryOptions {
 }
 
 /**
- * Run `fn`. On transient failure, retry with [200ms, 500ms, 1500ms] backoff.
+ * Run `fn`. On transient failure, retry with [200ms, 500ms, 1500ms] backoff
+ * (max 3 retries, total worst-case ~2.2s of delay per failing call).
  * Returns `{ ok: true, value }` or `{ ok: false, error }`.
  */
 export async function tryWithRetry<T>(
@@ -222,14 +400,17 @@ export async function tryWithRetry<T>(
       }
     }
   }
-  return { ok: false, error: lastErr ?? new Error('tryWithRetry: unreachable') };
+  return {
+    ok: false,
+    error: lastErr ?? new Error('tryWithRetry: unreachable'),
+  };
 }
 ```
 
 - [ ] **Step 4: Run tests — expect green**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
-Expected: 11 tests pass (7 `isTransient` + 4 `tryWithRetry`).
+Expected: 11 helper tests pass on top of the 3 from Task 2 → 14 total in this suite.
 
 - [ ] **Step 5: Commit**
 
@@ -240,250 +421,115 @@ git commit -m "feat(rag): add isTransient + tryWithRetry helpers"
 
 ---
 
-## Task 3: Make `addDocument` fail on RAG-write failure
+## Task 4: Wire retry into `addDocumentsBulk` + warn log on partial
 
 **Files:**
 - Modify: `srv/rag-collections.ts`
 - Modify: `test/unit/rag-collections-bulk.test.ts`
 
-- [ ] **Step 1: Add tests for the new behavior**
+- [ ] **Step 1: Add integration tests for the bulk loop**
 
 Append to `test/unit/rag-collections-bulk.test.ts`:
 
 ```typescript
-import { CollectionRegistry } from '../../srv/rag-collections';
-
-// Smallest possible IRag stub: records upsert calls, returns Result by script.
-function makeMockRagFactory(scripted: Array<{ ok: true } | { ok: false; error: Error }>) {
-  let i = 0;
-  const calls: Array<{ id: string; text: string }> = [];
-  const writer = {
-    upsertRaw: async (id: string, text: string) => {
-      calls.push({ id, text });
-      const r = scripted[Math.min(i, scripted.length - 1)];
-      i += 1;
-      if (r.ok) return { ok: true as const, value: undefined };
-      return { ok: false as const, error: r.error };
-    },
-    deleteByIdRaw: async () => ({ ok: true as const, value: true }),
-  };
-  const rag = {
-    writer: () => writer,
-    upsert: undefined,        // RecencyBoostedRag.upsert calls writer.upsertRaw
-    query: async () => ({ ok: true as const, value: [] }),
-    getById: async () => ({ ok: true as const, value: null }),
-    healthCheck: async () => ({ ok: true as const, value: undefined }),
-    deleteById: async () => ({ ok: true as const, value: true }),
-  };
-  return { rag, calls, writer };
-}
-
-describe('addDocument (Result-aware)', () => {
-  it('throws when stored.rag.upsert returns Result.ok=false', async () => {
-    // This test is illustrative — exercising addDocument requires a full
-    // CollectionRegistry plus a backend factory. See the addDocumentsBulk
-    // integration block below for the real coverage of this behavior.
-    expect(true).toBe(true);
-  });
-});
-```
-
-Note: the line `expect(true).toBe(true)` is a placeholder so the suite registers — direct testing of `addDocument` requires constructing a `CollectionRegistry` with a backend factory that is more invasive than a stubbed write. The real coverage of "throws on `Result.ok=false`" comes from the `addDocumentsBulk` integration tests in Task 4, which observe that a failed upsert leads to `added < docs.length` instead of `added === docs.length`.
-
-- [ ] **Step 2: Run tests — placeholder passes**
-
-Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
-Expected: 12 tests pass (11 prior + 1 placeholder).
-
-- [ ] **Step 3: Modify `addDocument`**
-
-In `srv/rag-collections.ts`, find `addDocument` (~line 367). Replace the body that currently reads:
-
-```typescript
-    // Upsert into RAG store
-    await stored.rag.upsert(doc.text, {
-      id: `doc:${collectionId}:${doc.id}`,
-      namespace:
-        namespace ??
-        (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
-      ...doc.metadata,
-    });
-
-    stored.documents.set(doc.id, full);
-    stored.meta.documentCount = stored.documents.size;
-    this.persistDocument(collectionId, full);
-    return full;
-```
-
-with:
-
-```typescript
-    // Upsert into RAG store. The backend returns a Result<T, RagError>; we
-    // must inspect it and throw on failure or chunks will be silently lost.
-    const result = await stored.rag.upsert(doc.text, {
-      id: `doc:${collectionId}:${doc.id}`,
-      namespace:
-        namespace ??
-        (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
-      ...doc.metadata,
-    });
-    if (!result.ok) {
-      throw result.error instanceof Error
-        ? result.error
-        : new Error(String(result.error));
-    }
-
-    stored.documents.set(doc.id, full);
-    stored.meta.documentCount = stored.documents.size;
-    this.persistDocument(collectionId, full);
-    return full;
-```
-
-- [ ] **Step 4: Run type-check + tests**
-
-Run: `npx tsc --noEmit`
-Expected: clean.
-
-Run: `npm run test:unit`
-Expected: all existing tests still pass; the new placeholder passes too.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add srv/rag-collections.ts test/unit/rag-collections-bulk.test.ts
-git commit -m "fix(rag): addDocument throws when stored.rag.upsert returns !ok"
-```
-
----
-
-## Task 4: Wire retry into `addDocumentsBulk` + warn log
-
-**Files:**
-- Modify: `srv/rag-collections.ts`
-- Modify: `test/unit/rag-collections-bulk.test.ts`
-
-- [ ] **Step 1: Add integration test using the mock backend**
-
-Append to `test/unit/rag-collections-bulk.test.ts` (inside file but as a new `describe` block):
-
-```typescript
-import * as cds from '@sap/cds';
-
-// Helper: build a registry with a stubbed backend factory whose writer
-// behavior is controlled by the test.
-async function makeRegistry(writerImpl: {
-  upsertRaw: (id: string, text: string) => Promise<{ ok: true; value: void } | { ok: false; error: Error }>;
-}) {
-  // Avoid logging noise during tests
-  (cds as any).log = () => ({
-    info: () => undefined,
-    warn: () => undefined,
-    error: () => undefined,
-  });
-  const { CollectionRegistry } = require('../../srv/rag-collections');
-  const registry = new CollectionRegistry(undefined);
-  // Stub createRagStore so getById/upsert go through our writer
-  (registry as any).createRagStore = () => ({
-    writer: () => ({
-      upsertRaw: writerImpl.upsertRaw,
-      deleteByIdRaw: async () => ({ ok: true, value: true }),
-    }),
-    upsert: async (text: string, metadata: any) => {
-      const w = (registry as any).createRagStore().writer();
-      const { id, ...rest } = metadata;
-      const r = await w.upsertRaw(id, text, rest);
-      return r.ok ? { ok: true, value: { id } } : r;
-    },
-    query: async () => ({ ok: true, value: [] }),
-    getById: async () => ({ ok: true, value: null }),
-    healthCheck: async () => ({ ok: true, value: undefined }),
-    deleteById: async () => ({ ok: true, value: true }),
-  });
-  // Create a synthetic collection
-  await registry.upsertCollection({
-    id: 'test',
-    displayName: 'Test',
-    scope: 'user',
-    backend: 'mem',
-  } as any);
-  return registry;
-}
-
 describe('addDocumentsBulk integration', () => {
-  it('all chunks succeed → added equals total, errors empty', async () => {
-    const registry = await makeRegistry({
-      upsertRaw: async () => ({ ok: true, value: undefined }),
-    });
-    const docs = Array.from({ length: 5 }, (_, i) => ({
+  function docs(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
       id: `chunk-${i}`,
       text: 'x',
-      metadata: { source: 'a.md', chunkIndex: i, totalChunks: 5 },
+      metadata: { source: 'a.md', chunkIndex: i, totalChunks: n },
     }));
-    const res = await registry.addDocumentsBulk('test', docs);
+  }
+
+  it('all chunks succeed → added equals total, errors empty', async () => {
+    const { registry } = await makeRegistry([{ ok: true }]);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5));
     expect(res.added).toBe(5);
     expect(res.errors).toEqual([]);
   });
 
   it('transient failures eventually succeed via retry', async () => {
-    let attemptsPerChunk = new Map<string, number>();
-    const registry = await makeRegistry({
-      upsertRaw: async (id) => {
-        const n = (attemptsPerChunk.get(id) ?? 0) + 1;
-        attemptsPerChunk.set(id, n);
-        // chunks 1 and 3 fail twice with a transient error, then succeed
-        if ((id.endsWith('-1') || id.endsWith('-3')) && n < 3) {
-          return { ok: false, error: new Error('Qdrant upsert failed: 503') };
-        }
-        return { ok: true, value: undefined };
-      },
-    });
-    const docs = Array.from({ length: 5 }, (_, i) => ({
-      id: `chunk-${i}`,
-      text: 'x',
-      metadata: { source: 'a.md', chunkIndex: i, totalChunks: 5 },
-    }));
-    const res = await registry.addDocumentsBulk('test', docs);
+    const byId = new Map<string, WriterScript>();
+    // chunks 1 and 3 fail twice with a transient error, then succeed
+    byId.set('chunk-1', [
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: true },
+    ]);
+    byId.set('chunk-3', [
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: true },
+    ]);
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5));
     expect(res.added).toBe(5);
     expect(res.errors).toEqual([]);
-    expect(attemptsPerChunk.get('chunk-1')).toBe(3);
-    expect(attemptsPerChunk.get('chunk-3')).toBe(3);
+    expect(callsById.get('chunk-1')).toBe(3);
+    expect(callsById.get('chunk-3')).toBe(3);
   });
 
   it('permanent failures count as failed without retry', async () => {
-    let attempts = 0;
-    const registry = await makeRegistry({
-      upsertRaw: async (id) => {
-        if (id.endsWith('-2')) {
-          attempts += 1;
-          return { ok: false, error: new Error('Qdrant upsert failed: 401 Unauthorized') };
-        }
-        return { ok: true, value: undefined };
-      },
-    });
-    const docs = Array.from({ length: 5 }, (_, i) => ({
-      id: `chunk-${i}`,
-      text: 'x',
-      metadata: { source: 'a.md', chunkIndex: i, totalChunks: 5 },
-    }));
-    const res = await registry.addDocumentsBulk('test', docs);
+    const byId = new Map<string, WriterScript>();
+    byId.set('chunk-2', [
+      { ok: false, error: new Error('Qdrant upsert failed: 401 Unauthorized') },
+    ]);
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5));
     expect(res.added).toBe(4);
-    expect(attempts).toBe(1);
+    expect(callsById.get('chunk-2')).toBe(1);
     expect(res.errors.length).toBe(1);
     expect(res.errors[0]).toMatch(/chunk-2/);
+  });
+
+  it('emits a warn log when added < total', async () => {
+    const byId = new Map<string, WriterScript>();
+    byId.set('chunk-2', [
+      { ok: false, error: new Error('Qdrant upsert failed: 401 Unauthorized') },
+    ]);
+    const cds = require('@sap/cds');
+    const warns: any[] = [];
+    const originalLog = cds.log;
+    cds.log = (_name: string) => ({
+      info: () => undefined,
+      warn: (msg: string, ctx?: unknown) => warns.push({ msg, ctx }),
+      error: () => undefined,
+      debug: () => undefined,
+    });
+    try {
+      const { registry } = await makeRegistry([{ ok: true }], byId);
+      await (registry as any).addDocumentsBulk('test', docs(5));
+    } finally {
+      cds.log = originalLog;
+    }
+    expect(warns.length).toBeGreaterThanOrEqual(1);
+    const partial = warns.find((w) => /partial/i.test(w.msg));
+    expect(partial).toBeDefined();
+    expect(partial.ctx.total).toBe(5);
+    expect(partial.ctx.added).toBe(4);
+    expect(partial.ctx.failed).toBe(1);
   });
 });
 ```
 
-- [ ] **Step 2: Run tests — expect 3 failures**
+Notes about the warn-log test:
+- Replacing `cds.log` globally before constructing the registry is necessary because the registry / bulk loop will reference `cds.log('rag-collections')` at call time. The `try/finally` ensures other tests aren't affected.
+- The cds module is dynamically required to keep the mock setup colocated with the test that needs it.
+
+- [ ] **Step 2: Run tests — expect 3 of the 4 to fail**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
-Expected: 2 of the 3 new tests fail (no retry today) — first one passes (it's a happy path), retry test fails because there's no retry, permanent-fail test fails because addDocument currently throws on Result.ok=false (Task 3) AND `addDocumentsBulk` will catch and continue → actually after Task 3, *that* test passes; the retry test is the one that needs Task 4. Confirm exactly which fail before continuing.
+Expected:
+- "all chunks succeed" — passes (no retry needed).
+- "transient failures eventually succeed via retry" — fails (no retry yet, only 1 attempt per chunk).
+- "permanent failures count as failed without retry" — passes (current swallow-errors loop already counts as 4 added, 1 errors; retry would only matter if 401 was transient, which it isn't). Verify this.
+- "emits a warn log when added < total" — fails (no log today).
 
-(If "all 5 chunks succeed" fails because of the registry stub not wiring through properly, debug the stub first — it should not require the retry change.)
+Confirm exact failures before continuing.
 
 - [ ] **Step 3: Refactor `addDocumentsBulk`**
 
-In `srv/rag-collections.ts`, find `addDocumentsBulk` (~line 395). Replace the body that currently reads:
+Find `addDocumentsBulk` (~line 395) in `srv/rag-collections.ts`. Replace the body:
 
 ```typescript
     const errors: string[] = [];
@@ -540,16 +586,16 @@ with:
 ```
 
 Notes:
-- `cds.log('rag-collections')` is the standard CAP logger. If the file already imports a `log` via `cds.log(...)` at module level (check the top of `srv/rag-collections.ts`), reuse that handle instead of creating a new one inline. The intent is one warn-log per partial bulk, with the listed fields.
-- The `tryWithRetry` import needs to live at the top of the module (or already be in scope since the helpers are exported from the same file). If TypeScript complains, add the import line `import { tryWithRetry } from './rag-collections';` only if the helpers are split into a separate file; in this plan they live in the SAME file, so no import is needed — call them directly.
+- `tryWithRetry` is exported from the same file (Task 3); no import needed.
+- `cds.log('rag-collections')` is the standard CAP logger handle. If the file already defines a module-level `log = cds.log(...)`, reuse it. Otherwise the inline call is fine — it's per-bulk, not hot path.
 
-- [ ] **Step 4: Type-check + run tests**
+- [ ] **Step 4: Run tests + type check**
+
+Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
+Expected: 18 tests pass (3 addDocument + 11 helpers + 4 bulk integration).
 
 Run: `npx tsc --noEmit`
 Expected: clean.
-
-Run: `npm run test:unit`
-Expected: all tests pass (15 in the rag-collections-bulk suite, plus the pre-existing tests from earlier features).
 
 - [ ] **Step 5: Commit**
 
@@ -567,9 +613,13 @@ git commit -m "feat(rag): retry transient bulk failures + log partial completion
 
 - [ ] **Step 1: Update `handleQuickFileAttach`**
 
-In `app/chat/webapp/index.html`, find `handleQuickFileAttach` (use `grep -n "function handleQuickFileAttach" app/chat/webapp/index.html`).
+Find `handleQuickFileAttach`:
 
-Locate this block (current):
+```bash
+grep -n "function handleQuickFileAttach" app/chat/webapp/index.html
+```
+
+Locate the current success block:
 
 ```javascript
                 attachedFiles.push({ name: file.name, chunks: data.chunks });
@@ -595,9 +645,7 @@ Replace with:
 
 - [ ] **Step 2: Update `renderAttachedFiles`**
 
-Find `renderAttachedFiles` (immediately after `handleQuickFileAttach`).
-
-Locate this block (current):
+Immediately after `handleQuickFileAttach`. Replace the current block:
 
 ```javascript
             bar.innerHTML = attachedFiles.map((f, i) =>
@@ -605,7 +653,7 @@ Locate this block (current):
             ).join(' &nbsp; ');
 ```
 
-Replace with:
+with:
 
 ```javascript
             bar.innerHTML = attachedFiles.map((f, i) => {
@@ -630,14 +678,14 @@ git commit -m "feat(chat-ui): chat-📎 shows added/chunks parity, flags loss re
 
 ---
 
-## Task 6: Final verification
+## Task 6: Final verification + cleanup + PR
 
 **Files:** none.
 
-- [ ] **Step 1: Unit-test pass**
+- [ ] **Step 1: Full unit-test pass**
 
 Run: `npm run test:unit`
-Expected: full suite green, including the new rag-collections-bulk tests.
+Expected: full suite green, including the 18 rag-collections-bulk tests.
 
 - [ ] **Step 2: Lint + tsc**
 
@@ -648,21 +696,39 @@ Both: clean.
 - [ ] **Step 3: Manual smoke against deploy**
 
 After deploy to `deploy/acme-sandbox/dev`:
-1. Upload a small file via chat-📎 → expect green `(N chunks)` in the bar; no alert.
-2. Upload a large file (e.g., 50+ chunks) while sending a chat message simultaneously → expect `(N/N chunks)` green if retry recovered everything; red `(M/N chunks)` if some chunks couldn't be saved even after 3 retries.
-3. Check `cf logs cloud-llm-hub-srv --recent | grep "Bulk add partial"` — verify the warn log is emitted when partial.
-4. Manage panel upload of the same large file → still shows `Uploaded: N chunks, M added`; should match chat-📎 behavior (this PR doesn't change that path).
+1. Small chat-📎 upload → green `(N chunks)`, no alert.
+2. Large chat-📎 upload during active chat session → expect `(N/N chunks)` green if retry recovered everything, red `(M/N chunks)` if some chunks couldn't be saved.
+3. `cf logs cloud-llm-hub-srv --recent | grep "Bulk add partial"` — verify warn log emitted on partial.
+4. Manage panel upload of the same large file → still shows `Uploaded: N chunks, M added` (this PR doesn't change that path; M should equal N more often than before because retry helps both paths).
 
-- [ ] **Step 4: Delete spec + plan, open PR**
+- [ ] **Step 4: Delete spec + plan**
 
-Per `CLAUDE.md`: delete spec and plan once implemented.
+Per `CLAUDE.md` rule: drop spec/plan once implemented.
 
 ```bash
 git rm docs/superpowers/specs/2026-05-17-rag-upload-reliability-design.md \
        docs/superpowers/plans/2026-05-17-rag-upload-reliability.md
 git commit -m "chore: remove implemented spec/plan for RAG upload reliability"
+```
+
+- [ ] **Step 5: Push + PR**
+
+```bash
 git push -u origin rag-upload-reliability
 gh pr create --base main --head rag-upload-reliability \
   --title "fix(rag): silent chunk loss — Result-aware addDocument, retry, observability, chat-📎 feedback" \
-  --body "Closes #90."
+  --body "Closes #90.
+
+## Summary
+- \`addDocument\` now inspects \`Result.ok\` from \`stored.rag.upsert\` and throws on failure (root cause of silent loss).
+- \`addDocumentsBulk\` wraps each chunk in \`tryWithRetry\` with [200ms, 500ms, 1500ms] backoff. Transient errors (HTTP 429/5xx, ECONNRESET/ETIMEDOUT, rate-limit) get up to 3 retries; permanent errors fail fast.
+- A warn log fires on partial bulks with collection/total/added/failed/firstErrors.
+- chat-📎 attached-files bar now shows \`added/chunks\` parity and turns red with an alert when chunks were lost.
+
+## Test plan
+- [x] 18 unit/integration tests in test/unit/rag-collections-bulk.test.ts
+- [x] tsc + lint clean
+- [ ] Manual smoke against acme-sandbox/dev: large chat-📎 upload, retry recovery, warn log present
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 ```
