@@ -109,7 +109,7 @@ Check fields in this order (first match wins):
 
 1. **Numeric status fields** — `err.status` or `err.statusCode` equal to `429` or in `[500, 599]` → transient.
 2. **String code field** — `err.code === 'ETIMEDOUT'` or `'ECONNRESET'` → transient.
-3. **Message substring** — `err.message` matches `\b(429|5\d\d)\b` or contains `rate-limit` / `timeout` / `ECONNRESET` / `ETIMEDOUT` / `network` (case-insensitive) → transient.
+3. **Message substring** — `err.message` matches an HTTP/status-context signal such as `status code 429`, `HTTP 5xx`, `5xx Bad Gateway`, `5xx Service Unavailable`, `5xx Gateway Timeout`, or `5xx Internal Server Error`; or contains `rate-limit` / `timeout` / `ECONNRESET` / `ETIMEDOUT` / `network` (case-insensitive) → transient. Recommended HTTP regex: `/\b(?:status(?: code)?|http)\s*:?\s*(?:429|5\d\d)\b|\b5\d\d\s+(?:bad gateway|service unavailable|gateway timeout|internal server error)\b/i`.
 4. **Anything else** — permanent (don't retry).
 
 Notes:
@@ -195,6 +195,7 @@ The Manage `uploadFile` status already surfaces both numbers, but should also co
   - wrapped `RagError('Error: Request failed with status code 503', 'UPSERT_ERROR')` → true
   - wrapped `RagError('Error: Request failed with status code 500', 'UPSERT_ERROR')` → true
   - wrapped `RagError('502 Bad Gateway', 'UPSERT_ERROR')` → true
+  - wrapped `RagError('validation failed: max length 500', 'UPSERT_ERROR')` → false
   - wrapped `RagError('validation failed', 'UPSERT_ERROR')` → false
   - HTTP 400 / 401 / 403 / 404 → false
   - Errors with no recognizable signal → false (conservative)
@@ -227,4 +228,4 @@ The Manage `uploadFile` status already surfaces both numbers, but should also co
 
 ## Open questions
 
-None. Retry counts (`[200, 500, 1500]`) chosen as the conventional short/medium/long backoff and total ~2.2s worst-case delay per failing chunk — bounded enough not to balloon upload time when many chunks transiently fail.
+None. Retry counts (`[200, 500, 1500]`) give each failing chunk up to 2.2 s of backoff, but the shared 30 s per-bulk retry-sleep budget is the real upload bound. After the budget is exhausted, later transient failures are counted without retry.
