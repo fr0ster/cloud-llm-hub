@@ -956,13 +956,13 @@ gh pr create --base main --head rag-upload-reliability \
 
 ## Summary
 - \`addDocument\` now inspects \`Result.ok\` from \`stored.rag.upsert\` and throws on failure (root cause of silent loss).
-- \`addDocumentsBulk\` wraps each chunk in \`tryWithRetry\` with [200ms, 500ms, 1500ms] backoff. Transient errors (HTTP 429/5xx, ECONNRESET/ETIMEDOUT, rate-limit) get up to 3 retries; permanent errors fail fast.
+- \`addDocumentsBulk\` wraps each chunk in \`tryWithRetry\` with [200ms, 500ms, 1500ms] backoff. Transient errors (HTTP 429/5xx, ECONNRESET/ETIMEDOUT, rate-limit) get up to 3 retries, bounded by a shared 30s per-bulk retry-sleep budget; permanent errors fail fast.
 - A warn log fires on partial bulks with collection/total/added/failed/firstErrors.
 - chat-📎 attached-files bar now shows \`added/chunks\` parity and turns red with an alert when chunks were lost.
 
 ## Test plan
 - [x] 23 unit/integration tests in test/unit/rag-collections-bulk.test.ts
-- [x] tsc + lint clean
+- [x] root tsc + test tsc + lint clean
 - [ ] Manual smoke against acme-sandbox/dev: large chat-📎 upload, retry recovery, warn log present
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
