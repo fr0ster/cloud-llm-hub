@@ -46,7 +46,11 @@ const result = await stored.rag.upsert(doc.text, {
 });
 
 if (!result.ok) {
-  throw result.error;
+  // result.error is typed as RagError (extends Error) today, but guard for
+  // safety: throwing a non-Error value would lose the stack trace.
+  throw result.error instanceof Error
+    ? result.error
+    : new Error(String(result.error));
 }
 
 stored.documents.set(doc.id, full);
@@ -89,12 +93,20 @@ for each attempt:
 
 `isTransient(err)`:
 
-- HTTP 429, 5xx in `err.message`, `err.status`, `err.statusCode`, or `err.cause` — transient.
-- `ETIMEDOUT` / `ECONNRESET` / `network` substrings in `err.message` — transient.
-- `RagError` wrappers such as `UPSERT_ERROR` should be classified by their message/cause because `VectorRag` may wrap the original embedder error and drop structured HTTP fields.
-- Anything else — permanent (don't retry).
+Check fields in this order (first match wins):
 
-The current throttle (`if (added % 10 === 0) sleep(100)`) stays as-is — it's a load-shaping measure, distinct from retry.
+1. **Numeric status fields** — `err.status` or `err.statusCode` equal to `429` or in `[500, 599]` → transient.
+2. **String code field** — `err.code === 'ETIMEDOUT'` or `'ECONNRESET'` → transient.
+3. **Message substring** — `err.message` matches `\b(429|503|504)\b` or contains `rate-limit` / `timeout` / `ECONNRESET` / `ETIMEDOUT` / `network` (case-insensitive) → transient.
+4. **Anything else** — permanent (don't retry).
+
+Notes:
+- The current `RagError` (`@mcp-abap-adt/llm-agent` interfaces/types.d.ts) takes `(message, code)` and does NOT carry `cause`, `status`, or `statusCode`. Today classification reduces to step 3 (message substring) for `RagError` instances. Steps 1 and 2 are forward-compatible for when `RagError` (or its replacements) gain structured HTTP fields, and they already cover plain `Error` shapes thrown by lower-level HTTP clients.
+- `RagError` wrappers such as `UPSERT_ERROR` must be classified by message, not by code: the `UPSERT_ERROR` code covers both transient (HTTP 503 in body) and permanent (validation failure) cases.
+
+The current throttle (`if (added % 10 === 0) sleep(100)`) stays as-is — it's a load-shaping measure, distinct from retry. Note: the throttle fires only on successful completions, so retries already provide spacing during failure runs; the two mechanisms do not double up.
+
+**Total worst-case delay:** with `[200, 500, 1500]` backoff and 3 retries, each failing chunk adds at most 2.2 s of waiting. For a 30-chunk file where every chunk transiently fails once, the bulk takes ~6 s longer than today. Bounded enough not to balloon upload time.
 
 Implementation notes:
 
@@ -177,12 +189,17 @@ The Manage `uploadFile` status already surfaces both numbers, but should also co
   - 2 chunks fail transiently → all eventually added
   - 1 chunk fails permanently → `added === docs.length - 1`, `errors` non-empty
 
-**Manual (after deploy):**
+**Manual (after deploy, passive observations):**
 
-- Upload a large file via chat-📎 while sending chat messages → verify `added === chunks` in the attached-files bar.
-- Force a failure: stub the embedder to return 503 on chunk index 3 once → verify the row stays neutral (not red) because retry succeeds.
-- Force permanent failure: stub the embedder to return 401 on chunk index 5 → verify the row turns red with `4/5 chunks` count and the alert appears.
-- Manage upload: same large file → `Uploaded: N chunks, N added` (green), no regression.
+- Upload a large file (≥30 chunks) via chat-📎 while a chat session is actively generating against AI Core → verify `added === chunks` in the attached-files bar far more reliably than today. Target from issue #90: ≥95% of uploads should report `added === chunks`.
+- `cf logs cloud-llm-hub-srv --recent | grep "Bulk add partial"` — when a partial does occur, verify the warn line is present with `collection`, `total`, `added`, `failed`, `firstErrors`.
+- When `added < chunks` is observed: the chat-📎 bar must show `(M/N chunks)` in red and an alert must fire once.
+- Manage upload: same large file → `Uploaded: N chunks, M added` styled red if `added < chunks`, green otherwise. Confirms upload-path parity.
+
+**Fault-injection (dev only, against `cds watch --profile development`):**
+
+- Monkey-patch the local `IRag.writer().upsertRaw` to return `{ ok: false, error: new RagError('Qdrant upsert failed: 503', 'UPSERT_ERROR') }` on chunk index 3 once, then succeed → row stays neutral (retry consumes the failure).
+- Same patch but `401 Unauthorized` (permanent) on chunk index 5 → row turns red with `4/5 chunks` and the alert appears.
 
 ## File touch list
 
