@@ -6,17 +6,19 @@
 
 ## TL;DR
 
-`addDocumentsBulk` silently drops chunks when the embedder returns transient errors. The chat-📎 upload path is the most visible victim because it runs concurrently with active chat sessions (AI Core embedder under load), and its UI also hides the loss by showing only the splitter's `chunks` count instead of the server's `added` count. Fix:
+`addDocumentsBulk` silently drops chunks when the embedder returns transient errors. The current write path also treats `IRag` write failures as success because `stored.rag.upsert(...)` returns a `Result` (`{ ok: false, error }`) for many backend failures instead of throwing, and `addDocument` does not inspect that result before persisting the document and incrementing `added`. The chat-📎 upload path is the most visible victim because it runs concurrently with active chat sessions (AI Core embedder under load), and its UI also hides the loss by showing only the splitter's `chunks` count instead of the server's `added` count. Fix:
 
-1. **Retry transient errors** in `addDocumentsBulk` with `[200ms, 500ms, 1500ms]` backoff before declaring a chunk failed.
-2. **Log a warn line** when `added < docs.length` so the failure is visible in logs even when callers swallow the response body.
-3. **Surface `added/chunks` parity** in the chat-📎 attached-files bar, and flag the row red with a one-line toast when `added < chunks`.
+1. **Honor RAG write failures** in `addDocument`: check the `upsert` `Result`, throw on `!ok`, and persist only after a successful RAG write.
+2. **Retry transient errors** in `addDocumentsBulk` with `[200ms, 500ms, 1500ms]` backoff before declaring a chunk failed.
+3. **Log a warn line** when `added < docs.length` so the failure is visible in logs even when callers swallow the response body.
+4. **Surface `added/chunks` parity** in the chat-📎 attached-files bar, and flag the row red with a one-line toast when `added < chunks`.
 
 No metadata schema changes, no new endpoints.
 
 ## What's already in place
 
-- `srv/rag-collections.ts:395` — `addDocumentsBulk` loops chunks serially, catches errors into a string array, returns `{ added, errors }`. No retry.
+- `srv/rag-collections.ts:381` — `addDocument` awaits `stored.rag.upsert(...)` but does not inspect the returned `Result`; a backend `{ ok: false }` can still be persisted and counted as added.
+- `srv/rag-collections.ts:395` — `addDocumentsBulk` loops chunks serially, catches thrown errors into a string array, returns `{ added, errors }`. No retry.
 - `srv/rag-handler.ts:459` — upload handler returns `{ filename, chunks, added, errors }` to the client.
 - `app/chat/webapp/index.html:1741` — Manage `uploadFile` status: `Uploaded: N chunks, M added`. Correct.
 - `app/chat/webapp/index.html:1484` — chat-📎 `handleQuickFileAttach` status: only `data.chunks`, no `added`. Misleading on partial success.
@@ -30,7 +32,32 @@ No metadata schema changes, no new endpoints.
 
 ## Components
 
-### 1. Server: `addDocumentsBulk` with retry
+### 1. Server: make `addDocument` fail on RAG write failure
+
+`srv/rag-collections.ts` — change `addDocument` so the document is persisted only after the RAG store confirms the write:
+
+```ts
+const result = await stored.rag.upsert(doc.text, {
+  id: `doc:${collectionId}:${doc.id}`,
+  namespace:
+    namespace ??
+    (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
+  ...doc.metadata,
+});
+
+if (!result.ok) {
+  throw result.error;
+}
+
+stored.documents.set(doc.id, full);
+stored.meta.documentCount = stored.documents.size;
+this.persistDocument(collectionId, full);
+return full;
+```
+
+This is required for the retry loop below to see vector/embedder failures. Without it, `addDocumentsBulk` can still report `added === docs.length` even when the vector backend rejected a chunk.
+
+### 2. Server: `addDocumentsBulk` with retry
 
 `srv/rag-collections.ts` — change the loop in `addDocumentsBulk` to:
 
@@ -62,13 +89,16 @@ for each attempt:
 
 `isTransient(err)`:
 
-- HTTP 429, 5xx in `err.message` or `err.status` — transient.
+- HTTP 429, 5xx in `err.message`, `err.status`, `err.statusCode`, or `err.cause` — transient.
 - `ETIMEDOUT` / `ECONNRESET` / `network` substrings in `err.message` — transient.
+- `RagError` wrappers such as `UPSERT_ERROR` should be classified by their message/cause because `VectorRag` may wrap the original embedder error and drop structured HTTP fields.
 - Anything else — permanent (don't retry).
 
 The current throttle (`if (added % 10 === 0) sleep(100)`) stays as-is — it's a load-shaping measure, distinct from retry.
 
-### 2. Server: warn log when added < total
+Implementation note: export `isTransient` and `tryWithRetry` from `srv/rag-collections.ts` (or move them into a small local helper module) so the unit tests can cover them directly without reaching through private module state.
+
+### 3. Server: warn log when added < total
 
 After the loop, if `added < docs.length`:
 
@@ -84,7 +114,7 @@ log.warn('Bulk add partial', {
 
 Reuses the existing `cds.log()` infrastructure (look at how `rag-handler.ts` already calls `log.info('File uploaded', ...)` for the upload event).
 
-### 3. Client: chat-📎 surfaces parity, flags loss
+### 4. Client: chat-📎 surfaces parity, flags loss
 
 `app/chat/webapp/index.html:handleQuickFileAttach` — after the upload response:
 
@@ -117,6 +147,7 @@ The Manage `uploadFile` status already surfaces both numbers — no change neede
 
 | Condition | Behavior |
 |---|---|
+| RAG write returns `{ ok: false }` from `stored.rag.upsert(...)` | `addDocument` throws before persisting the document; `addDocumentsBulk` retry/error handling owns the outcome. |
 | Transient embedder error on chunk N (HTTP 429, 5xx, network) | Retry up to 3 times with backoff. If all retries fail, count as failed, continue. |
 | Permanent error (4xx ≠ 429, validation) | Don't retry. Count as failed, continue. |
 | Total `added < docs.length` | Warn log on server. Red counter in chat-📎 UI. Alert toast in chat-📎. |
@@ -150,7 +181,7 @@ The Manage `uploadFile` status already surfaces both numbers — no change neede
 
 ## File touch list
 
-- `srv/rag-collections.ts` — extract `isTransient`, `tryWithRetry`, refactor `addDocumentsBulk` to use them; add the warn log.
+- `srv/rag-collections.ts` — make `addDocument` throw on failed RAG `Result`; extract/export `isTransient`, `tryWithRetry`; refactor `addDocumentsBulk` to use them; add the warn log.
 - `srv/rag-handler.ts` — no functional change needed (response already exposes `added`, `errors`).
 - `app/chat/webapp/index.html` — `handleQuickFileAttach` + `renderAttachedFiles` + (optional) red styling on `uploadFile` status when partial.
 - `test/unit/rag-collections-bulk.test.ts` (new) — unit tests for retry, isTransient, integration with in-memory store.
