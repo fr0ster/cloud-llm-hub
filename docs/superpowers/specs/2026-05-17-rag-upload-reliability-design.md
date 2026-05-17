@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-17
 **Issue:** [cloud-llm-hub#90](https://github.com/fr0ster/cloud-llm-hub/issues/90)
-**Scope:** Three coordinated fixes (1 server-logic, 1 server-observability, 1 client-UX) in a single PR.
+**Scope:** Four coordinated fixes (2 server-logic, 1 server-observability, 1 client-UX) in a single PR.
 
 ## TL;DR
 
@@ -96,7 +96,10 @@ for each attempt:
 
 The current throttle (`if (added % 10 === 0) sleep(100)`) stays as-is — it's a load-shaping measure, distinct from retry.
 
-Implementation note: export `isTransient` and `tryWithRetry` from `srv/rag-collections.ts` (or move them into a small local helper module) so the unit tests can cover them directly without reaching through private module state.
+Implementation notes:
+
+- Export `isTransient` and `tryWithRetry` from `srv/rag-collections.ts` (or move them into a small local helper module) so the unit tests can cover them directly without reaching through private module state.
+- Preserve transient signals when converting failed `Result` values into thrown errors. If the RAG layer returns a wrapped `RagError`, keep `error.cause`, `status`, or `statusCode` when available; otherwise ensure the wrapper message still contains a recognizable HTTP/status signal. Do not rely on `UPSERT_ERROR` alone because it can also represent permanent write failures.
 
 ### 3. Server: warn log when added < total
 
@@ -141,7 +144,7 @@ const countLabel = f.failed > 0
   : `<span style="color:#555">${f.chunks} chunks</span>`;
 ```
 
-The Manage `uploadFile` status already surfaces both numbers — no change needed there.
+The Manage `uploadFile` status already surfaces both numbers, but should also color the status red when `added < chunks` so both upload paths use the same partial-failure signal.
 
 ## Error handling
 
@@ -165,9 +168,11 @@ The Manage `uploadFile` status already surfaces both numbers — no change neede
   - first attempt throws permanent → 1 call, not ok, no retry
 - `isTransient`:
   - HTTP 429 / 503 / 504 / network errors → true
+  - wrapped `RagError('Error: Request failed with status code 503', 'UPSERT_ERROR')` → true
+  - wrapped `RagError('validation failed', 'UPSERT_ERROR')` → false
   - HTTP 400 / 401 / 403 / 404 → false
   - Errors with no recognizable signal → false (conservative)
-- `addDocumentsBulk` integration (in-memory rag store with mock embedder):
+- `addDocumentsBulk` integration (use `VectorRag` with a mock embedder, or a fake editable `IRag` whose `writer().upsertRaw()` returns scripted `Result` values; do not use `InMemoryRag` with a mock embedder because `InMemoryRag` never calls the embedder):
   - All succeed → `added === docs.length`, `errors === []`
   - 2 chunks fail transiently → all eventually added
   - 1 chunk fails permanently → `added === docs.length - 1`, `errors` non-empty
@@ -183,8 +188,8 @@ The Manage `uploadFile` status already surfaces both numbers — no change neede
 
 - `srv/rag-collections.ts` — make `addDocument` throw on failed RAG `Result`; extract/export `isTransient`, `tryWithRetry`; refactor `addDocumentsBulk` to use them; add the warn log.
 - `srv/rag-handler.ts` — no functional change needed (response already exposes `added`, `errors`).
-- `app/chat/webapp/index.html` — `handleQuickFileAttach` + `renderAttachedFiles` + (optional) red styling on `uploadFile` status when partial.
-- `test/unit/rag-collections-bulk.test.ts` (new) — unit tests for retry, isTransient, integration with in-memory store.
+- `app/chat/webapp/index.html` — `handleQuickFileAttach` + `renderAttachedFiles` + red styling on `uploadFile` status when partial.
+- `test/unit/rag-collections-bulk.test.ts` (new) — unit tests for retry, isTransient, and bulk integration with `VectorRag` + mock embedder or a scripted fake editable `IRag`.
 
 ## Open questions
 
