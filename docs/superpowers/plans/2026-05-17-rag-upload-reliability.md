@@ -242,6 +242,9 @@ Expected: all 3 tests pass.
 Run: `npx tsc --noEmit`
 Expected: clean.
 
+Run: `npx tsc --noEmit --project tsconfig.test.json`
+Expected: clean, including `test/**/*.ts`.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -797,6 +800,9 @@ Expected: 23 tests pass (3 addDocument + 14 helpers + 6 bulk integration).
 Run: `npx tsc --noEmit`
 Expected: clean.
 
+Run: `npx tsc --noEmit --project tsconfig.test.json`
+Expected: clean, including `test/**/*.ts`.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -917,7 +923,8 @@ Expected: full suite green, including the 23 rag-collections-bulk tests (3 addDo
 
 Run: `npm run lint:check`
 Run: `npx tsc --noEmit`
-Both: clean.
+Run: `npx tsc --noEmit --project tsconfig.test.json`
+All: clean. Root `tsconfig.json` does not include `test/**/*.ts`, so the `tsconfig.test.json` pass is the explicit type-check gate for the new Jest suite.
 
 - [ ] **Step 3: Manual smoke against deploy (passive observations)**
 
