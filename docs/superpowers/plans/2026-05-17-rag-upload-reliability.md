@@ -697,7 +697,7 @@ Notes about the warn-log test:
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
 Expected:
 - "all chunks succeed" — passes (no retry needed).
-- "transient failures eventually succeed via retry" — fails (no retry yet).
+- "transient failures eventually succeed via retry" — fails (no retry yet; the injected `sleep` option is passed through `(registry as any)` and ignored until Task 4 adds the optional `options` arg).
 - "permanent failures count as failed without retry" — passes (current swallow-errors loop already counts as 4 added, 1 errors; 401 isn't transient anyway). Verify this.
 - "emits a warn log when added < total" — fails (no log today).
 - "stops retrying once the shared retry-sleep budget is exhausted" — fails because the current loop does not call `tryWithRetry` or account for retry sleeps. The fourth arg is passed through `(registry as any)`, so TypeScript will not catch the signature mismatch in this red phase.
