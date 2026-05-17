@@ -279,6 +279,33 @@ describe('isTransient', () => {
     const e3 = Object.assign(new Error('boom'), { statusCode: 429 });
     expect(isTransient(e3)).toBe(true);
   });
+  it('classifies wrapped RagError by message — UPSERT_ERROR code alone is not enough', () => {
+    // The UPSERT_ERROR code covers both transient (HTTP 5xx in body) and
+    // permanent (validation) cases — classification must come from message.
+    const t1 = Object.assign(
+      new Error('Error: Request failed with status code 503'),
+      { code: 'UPSERT_ERROR' },
+    );
+    const t2 = Object.assign(
+      new Error('Error: Request failed with status code 500'),
+      { code: 'UPSERT_ERROR' },
+    );
+    const t3 = Object.assign(new Error('502 Bad Gateway'), {
+      code: 'UPSERT_ERROR',
+    });
+    expect(isTransient(t1)).toBe(true);
+    expect(isTransient(t2)).toBe(true);
+    expect(isTransient(t3)).toBe(true);
+
+    const p1 = Object.assign(new Error('validation failed: max length 500'), {
+      code: 'UPSERT_ERROR',
+    });
+    const p2 = Object.assign(new Error('validation failed'), {
+      code: 'UPSERT_ERROR',
+    });
+    expect(isTransient(p1)).toBe(false);
+    expect(isTransient(p2)).toBe(false);
+  });
 });
 
 describe('tryWithRetry', () => {
@@ -331,6 +358,32 @@ describe('tryWithRetry', () => {
     expect(fn).toHaveBeenCalledTimes(1);
     expect(sleeps).toEqual([]);
   });
+
+  it('canSleep=false blocks further retry without calling onSleep', async () => {
+    const { sleep, sleeps } = sleeper();
+    const onSleep = jest.fn();
+    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503'));
+    const res = await tryWithRetry(fn, {
+      sleep,
+      canSleep: () => false,
+      onSleep,
+    });
+    expect(res.ok).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(1); // only initial attempt
+    expect(sleeps).toEqual([]);
+    expect(onSleep).not.toHaveBeenCalled();
+  });
+
+  it('onSleep is called before each backoff sleep', async () => {
+    const { sleep, sleeps } = sleeper();
+    const onSleepCalls: number[] = [];
+    const onSleep = (ms: number) => onSleepCalls.push(ms);
+    const fn = jest.fn().mockRejectedValue(new Error('Qdrant upsert failed: 503'));
+    const res = await tryWithRetry(fn, { sleep, onSleep });
+    expect(res.ok).toBe(false);
+    expect(onSleepCalls).toEqual([200, 500, 1500]);
+    expect(sleeps).toEqual([200, 500, 1500]);
+  });
 });
 ```
 
@@ -345,13 +398,33 @@ Open `srv/rag-collections.ts`. At the top level (after the imports, before the f
 
 ```typescript
 /**
+ * HTTP/status-context regex used by isTransient — matches "status 503",
+ * "HTTP 502", "status code 429", "503 Service Unavailable", etc.
+ * Deliberately does NOT match bare 3-digit numbers like "max length 500"
+ * because that triggered false positives against UPSERT_ERROR-wrapped
+ * validation errors.
+ */
+const TRANSIENT_HTTP_RE =
+  /\b(?:status(?: code)?|http)\s*:?\s*(?:429|5\d\d)\b|\b5\d\d\s+(?:bad gateway|service unavailable|gateway timeout|internal server error)\b/i;
+
+const TRANSIENT_NETWORK_RE =
+  /(rate[\s-]?limit|timeout|ECONNRESET|ETIMEDOUT|network)/i;
+
+/**
  * Classify an embedder/RAG-write error as transient (worth retrying) or
  * permanent. Conservative: anything unrecognized is treated as permanent
  * so we don't burn retry budget on validation errors.
  *
- * RagError wrappers (e.g. UPSERT_ERROR) carry the HTTP status in `.message`
- * rather than `.code`, so we classify on substrings in `.message` as well
- * as the structured `.code` / `.status` / `.statusCode` fields.
+ * Check order (first match wins):
+ *  1. err.status / err.statusCode (429 or 5xx) → transient
+ *  2. err.code === ETIMEDOUT or ECONNRESET → transient
+ *  3. err.message matches an HTTP/status-context signal or a network
+ *     keyword (rate-limit, timeout, ECONNRESET, ETIMEDOUT, network)
+ *  4. everything else → permanent
+ *
+ * Today's RagError carries (message, code) only — no structured HTTP
+ * fields — so for RagError instances step 3 is what gets used. Steps 1
+ * and 2 are forward-compat for plain Error shapes from HTTP clients.
  */
 export function isTransient(err: unknown): boolean {
   if (!err) return false;
@@ -363,23 +436,33 @@ export function isTransient(err: unknown): boolean {
     0;
   if (status === 429 || (status >= 500 && status < 600)) return true;
   if (code === 'ETIMEDOUT' || code === 'ECONNRESET') return true;
-  if (/\b(429|503|504)\b/.test(msg)) return true;
-  if (/(rate[\s-]?limit|timeout|ECONNRESET|ETIMEDOUT|network)/i.test(msg))
-    return true;
+  if (TRANSIENT_HTTP_RE.test(msg)) return true;
+  if (TRANSIENT_NETWORK_RE.test(msg)) return true;
   return false;
 }
 
 const RETRY_BACKOFFS_MS = [200, 500, 1500] as const;
 
+/** Max total ms a single bulk call may spend sleeping in retry backoff. */
+export const RETRY_BUDGET_MS = 30_000;
+
 export interface TryWithRetryOptions {
   /** Override the sleep function (tests inject a fake to avoid real waits). */
   sleep?: (ms: number) => Promise<void>;
+  /** Predicate: may the helper sleep `delay` ms now? Defaults to () => true. */
+  canSleep?: (delay: number) => boolean;
+  /** Notification: account for a sleep that's about to happen. Defaults to noop. */
+  onSleep?: (delay: number) => void;
 }
 
 /**
  * Run `fn`. On transient failure, retry with [200ms, 500ms, 1500ms] backoff
  * (max 3 retries, total worst-case ~2.2s of delay per failing call).
  * Returns `{ ok: true, value }` or `{ ok: false, error }`.
+ *
+ * `canSleep` / `onSleep` let a caller (e.g. addDocumentsBulk) impose a
+ * shared retry-sleep budget across multiple invocations. When omitted the
+ * helper is budget-naive.
  */
 export async function tryWithRetry<T>(
   fn: () => Promise<T>,
@@ -387,15 +470,23 @@ export async function tryWithRetry<T>(
 ): Promise<{ ok: true; value: T } | { ok: false; error: Error }> {
   const sleep =
     opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const canSleep = opts.canSleep ?? (() => true);
+  const onSleep = opts.onSleep ?? (() => undefined);
   let lastErr: Error | undefined;
   for (let i = 0; i <= RETRY_BACKOFFS_MS.length; i += 1) {
-    if (i > 0) await sleep(RETRY_BACKOFFS_MS[i - 1]);
+    if (i > 0) {
+      const delay = RETRY_BACKOFFS_MS[i - 1];
+      onSleep(delay);
+      await sleep(delay);
+    }
     try {
       const value = await fn();
       return { ok: true, value };
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
-      if (!isTransient(lastErr) || i === RETRY_BACKOFFS_MS.length) {
+      const isLast = i === RETRY_BACKOFFS_MS.length;
+      const nextDelay = isLast ? 0 : RETRY_BACKOFFS_MS[i];
+      if (!isTransient(lastErr) || isLast || !canSleep(nextDelay)) {
         return { ok: false, error: lastErr };
       }
     }
@@ -410,7 +501,7 @@ export async function tryWithRetry<T>(
 - [ ] **Step 4: Run tests — expect green**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
-Expected: 11 helper tests pass on top of the 3 from Task 2 → 14 total in this suite.
+Expected: 14 helper tests pass (8 `isTransient` + 6 `tryWithRetry`) on top of the 3 from Task 2 → 17 total in this suite.
 
 - [ ] **Step 5: Commit**
 
@@ -509,6 +600,64 @@ describe('addDocumentsBulk integration', () => {
     expect(partial.ctx.added).toBe(4);
     expect(partial.ctx.failed).toBe(1);
   });
+
+  it('stops retrying once the shared retry-sleep budget is exhausted', async () => {
+    // Use a tiny budget (1000 ms) so 1 full chunk-retry (2200 ms) blows it,
+    // and an instant sleep so the test is fast.
+    const instantSleep = (_ms: number) => Promise.resolve();
+    const transient = (): WriterScript => [
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: true },
+    ];
+    const byId = new Map<string, WriterScript>();
+    for (let i = 0; i < 5; i += 1) byId.set(`chunk-${i}`, transient());
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5), undefined, {
+      sleep: instantSleep,
+      budgetMs: 1000,
+    });
+    // chunk-0 spends 200+500=700ms in retry (budget left: 300), tries 1500
+    // backoff → canSleep(1500) === false → stops on 3rd attempt. Other
+    // chunks: budget already > 700 used; canSleep(200) checks 700+200<=1000
+    // → true for chunk-1 1st retry. After chunk-1's 200ms retry budget=900;
+    // canSleep(500) returns 900+500<=1000 → false. Chunk-1 stops there.
+    // Subsequent chunks have budget ≥ 900 used, canSleep(200) false → no
+    // retry, single attempt each.
+    expect(callsById.get('chunk-0')).toBe(3); // initial + 2 retries
+    expect(callsById.get('chunk-1')).toBe(2); // initial + 1 retry
+    expect(callsById.get('chunk-2')).toBe(1); // initial only
+    expect(callsById.get('chunk-3')).toBe(1);
+    expect(callsById.get('chunk-4')).toBe(1);
+    expect(res.added).toBe(0); // all transient-failing, none recovered
+    expect(res.errors.length).toBe(5);
+  });
+
+  it('successful chunks continue after budget is exhausted', async () => {
+    const instantSleep = (_ms: number) => Promise.resolve();
+    // First 2 chunks always fail transiently (exhaust budget quickly).
+    // chunks 2..4 succeed on first try.
+    const exhaust: WriterScript = [
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+    ];
+    const byId = new Map<string, WriterScript>();
+    byId.set('chunk-0', exhaust);
+    byId.set('chunk-1', exhaust);
+    for (let i = 2; i < 5; i += 1) byId.set(`chunk-${i}`, [{ ok: true }]);
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5), undefined, {
+      sleep: instantSleep,
+      budgetMs: 500, // less than even 1 full retry chain
+    });
+    // chunks 0..1 each consumed enough budget that chunks 2..4 still got
+    // attempted once and succeeded.
+    expect(callsById.get('chunk-2')).toBe(1);
+    expect(callsById.get('chunk-3')).toBe(1);
+    expect(callsById.get('chunk-4')).toBe(1);
+    expect(res.added).toBe(3); // chunks 2..4
+    expect(res.errors.length).toBe(2); // chunks 0..1
+  });
 });
 ```
 
@@ -516,14 +665,16 @@ Notes about the warn-log test:
 - Replacing `cds.log` globally before constructing the registry is necessary because the registry / bulk loop will reference `cds.log('rag-collections')` at call time. The `try/finally` ensures other tests aren't affected.
 - The cds module is dynamically required to keep the mock setup colocated with the test that needs it.
 
-- [ ] **Step 2: Run tests — expect 3 of the 4 to fail**
+- [ ] **Step 2: Run tests — expect 5 of the 6 to fail**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
 Expected:
 - "all chunks succeed" — passes (no retry needed).
-- "transient failures eventually succeed via retry" — fails (no retry yet, only 1 attempt per chunk).
-- "permanent failures count as failed without retry" — passes (current swallow-errors loop already counts as 4 added, 1 errors; retry would only matter if 401 was transient, which it isn't). Verify this.
+- "transient failures eventually succeed via retry" — fails (no retry yet).
+- "permanent failures count as failed without retry" — passes (current swallow-errors loop already counts as 4 added, 1 errors; 401 isn't transient anyway). Verify this.
 - "emits a warn log when added < total" — fails (no log today).
+- "stops retrying once the shared retry-sleep budget is exhausted" — fails (no budget plumbing; also the test passes `options` which the current signature doesn't accept → TS compile error). Expected.
+- "successful chunks continue after budget is exhausted" — same as above.
 
 Confirm exact failures before continuing.
 
@@ -550,15 +701,43 @@ Find `addDocumentsBulk` (~line 395) in `srv/rag-collections.ts`. Replace the bod
     return { added, errors };
 ```
 
-with:
+with (adding an optional fourth `options` arg for budget+sleep injection — backward compatible because the existing call sites don't pass it):
+
+Update the method signature in `srv/rag-collections.ts`:
+
+```typescript
+  async addDocumentsBulk(
+    collectionId: string,
+    docs: Omit<RagDocument, 'createdAt'>[],
+    namespace?: string,
+    options?: {
+      /** Override sleep — tests inject instant resolve to avoid real waits. */
+      sleep?: (ms: number) => Promise<void>;
+      /** Override the shared retry-sleep budget (ms). Defaults to RETRY_BUDGET_MS. */
+      budgetMs?: number;
+    },
+  ): Promise<{ added: number; errors: string[] }> {
+```
+
+And the body:
 
 ```typescript
     const errors: string[] = [];
     let added = 0;
+    const budgetMs = options?.budgetMs ?? RETRY_BUDGET_MS;
+    const sleep = options?.sleep;
+    let retrySleepSpentMs = 0;
 
     for (const doc of docs) {
-      const result = await tryWithRetry(() =>
-        this.addDocument(collectionId, doc, namespace),
+      const result = await tryWithRetry(
+        () => this.addDocument(collectionId, doc, namespace),
+        {
+          sleep,
+          canSleep: (delay) => retrySleepSpentMs + delay <= budgetMs,
+          onSleep: (delay) => {
+            retrySleepSpentMs += delay;
+          },
+        },
       );
       if (result.ok) {
         added += 1;
@@ -586,13 +765,14 @@ with:
 ```
 
 Notes:
-- `tryWithRetry` is exported from the same file (Task 3); no import needed.
+- `tryWithRetry` and `RETRY_BUDGET_MS` are exported from the same file (Task 3); no import needed.
 - `cds.log('rag-collections')` is the standard CAP logger handle. If the file already defines a module-level `log = cds.log(...)`, reuse it. Otherwise the inline call is fine — it's per-bulk, not hot path.
+- The new `options` arg is optional and not passed by any production caller in this PR — the budget-exhaustion tests use it to keep runtime sub-second. Production paths fall through to the real setTimeout-backed sleep and the full 30s budget.
 
 - [ ] **Step 4: Run tests + type check**
 
 Run: `npm run test:unit -- --testPathPatterns="rag-collections-bulk"`
-Expected: 18 tests pass (3 addDocument + 11 helpers + 4 bulk integration).
+Expected: 23 tests pass (3 addDocument + 14 helpers + 6 bulk integration).
 
 Run: `npx tsc --noEmit`
 Expected: clean.
@@ -601,7 +781,7 @@ Expected: clean.
 
 ```bash
 git add srv/rag-collections.ts test/unit/rag-collections-bulk.test.ts
-git commit -m "feat(rag): retry transient bulk failures + log partial completion"
+git commit -m "feat(rag): retry transient bulk failures with budget + warn log on partial"
 ```
 
 ---
@@ -664,16 +844,42 @@ with:
             }).join(' &nbsp; ');
 ```
 
-- [ ] **Step 3: Type-check**
+- [ ] **Step 3: Update Manage `uploadFile` status to also color red on partial**
+
+Find the Manage upload success block:
+
+```bash
+grep -n "Uploaded:" app/chat/webapp/index.html
+```
+
+Locate (around line 1741):
+
+```javascript
+                statusEl.textContent = `Uploaded: ${data.chunks} chunks, ${data.added} added`;
+                statusEl.style.color = '#00ff00';
+```
+
+Replace with:
+
+```javascript
+                const chunks = data.chunks;
+                const added = typeof data.added === 'number' ? data.added : chunks;
+                statusEl.textContent = `Uploaded: ${chunks} chunks, ${added} added`;
+                statusEl.style.color = added < chunks ? '#ff5555' : '#00ff00';
+```
+
+No alert is added in the Manage flow — the status line is already in the user's focus when they pressed Upload, so a modal would be redundant. Chat-📎 gets a toast because its bar is peripheral to chat activity.
+
+- [ ] **Step 4: Type-check**
 
 Run: `npx tsc --noEmit`
 Expected: clean.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add app/chat/webapp/index.html
-git commit -m "feat(chat-ui): chat-📎 shows added/chunks parity, flags loss red"
+git commit -m "feat(chat-ui): both upload paths surface added/chunks; partial = red"
 ```
 
 ---
@@ -685,7 +891,7 @@ git commit -m "feat(chat-ui): chat-📎 shows added/chunks parity, flags loss re
 - [ ] **Step 1: Full unit-test pass**
 
 Run: `npm run test:unit`
-Expected: full suite green, including the 18 rag-collections-bulk tests.
+Expected: full suite green, including the 23 rag-collections-bulk tests (3 addDocument + 14 helpers + 6 bulk integration).
 
 - [ ] **Step 2: Lint + tsc**
 
@@ -693,13 +899,15 @@ Run: `npm run lint:check`
 Run: `npx tsc --noEmit`
 Both: clean.
 
-- [ ] **Step 3: Manual smoke against deploy**
+- [ ] **Step 3: Manual smoke against deploy (passive observations)**
 
 After deploy to `deploy/acme-sandbox/dev`:
+
 1. Small chat-📎 upload → green `(N chunks)`, no alert.
-2. Large chat-📎 upload during active chat session → expect `(N/N chunks)` green if retry recovered everything, red `(M/N chunks)` if some chunks couldn't be saved.
-3. `cf logs cloud-llm-hub-srv --recent | grep "Bulk add partial"` — verify warn log emitted on partial.
-4. Manage panel upload of the same large file → still shows `Uploaded: N chunks, M added` (this PR doesn't change that path; M should equal N more often than before because retry helps both paths).
+2. Large chat-📎 upload (≥30 chunks) **during an active chat session** that's actively hitting AI Core → expect `(N/N chunks)` green far more reliably than before. Per issue #90 acceptance: **≥95% of uploads should report `added === chunks`**. Repeat a handful of times if needed to sample.
+3. When `added < chunks` is observed: chat-📎 bar shows `(M/N chunks)` in red, alert fires once. Manage upload of the same file shows `Uploaded: N chunks, M added` styled red.
+4. `cf logs cloud-llm-hub-srv --recent | grep "Bulk add partial"` — every partial bulk must have a warn line with `collection`, `total`, `added`, `failed`, `firstErrors`.
+5. Manage panel upload of a healthy large file → `Uploaded: N chunks, N added` green; no regression.
 
 - [ ] **Step 4: Delete spec + plan**
 
@@ -726,7 +934,7 @@ gh pr create --base main --head rag-upload-reliability \
 - chat-📎 attached-files bar now shows \`added/chunks\` parity and turns red with an alert when chunks were lost.
 
 ## Test plan
-- [x] 18 unit/integration tests in test/unit/rag-collections-bulk.test.ts
+- [x] 23 unit/integration tests in test/unit/rag-collections-bulk.test.ts
 - [x] tsc + lint clean
 - [ ] Manual smoke against acme-sandbox/dev: large chat-📎 upload, retry recovery, warn log present
 
