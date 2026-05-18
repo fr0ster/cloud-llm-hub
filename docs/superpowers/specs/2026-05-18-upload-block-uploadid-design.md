@@ -38,9 +38,11 @@ No new endpoints, no schema migrations.
 
 The existing `setInputEnabled(enabled)` (`index.html:776-779`) only toggles `#user-input` and `#send-btn`. The Send-cycle of `sendMessage()` already uses it: disable on submit, re-enable when the stream completes. `#attach-btn` is NOT covered, so today a user can click attach while the agent is processing.
 
-The naive `setChatBusy(true)` / `setChatBusy(false)` pair from the first draft would create a **reverse race**: user attaches during agent processing → upload `finally` re-enables Send before the agent finishes.
+The naive `setChatBusy(true)` / `setChatBusy(false)` pair would create a **reverse race**: user attaches during agent processing → upload `finally` re-enables Send before the agent finishes.
 
-Fix: replace the boolean toggle with a ref-counted reason-set, and put attach inside the same lock surface.
+A `Set<reason>` ALSO doesn't ref-count if two code paths use the same reason string — `Set` dedupes silently, so the first `unlockInput('upload')` clears the only token while a second upload is still running. Two fixes are equivalent for our use case; we pick the one with smaller surface:
+
+**Distinct reason strings, one per call site.** Every lock owner uses a unique reason — the Set then accurately models which owners are currently holding the lock.
 
 ```javascript
 const inputLockReasons = new Set();
@@ -57,46 +59,44 @@ function unlockInput(reason) {
 
 function applyInputLock() {
   const locked = inputLockReasons.size > 0;
-  const ids = ['user-input', 'send-btn', 'attach-btn'];
-  for (const id of ids) {
+  // Chat surface — always locked when any reason is present
+  for (const id of ['user-input', 'send-btn', 'attach-btn']) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
+  // Manage Upload button — locked specifically when an upload is in flight
+  // so the user can't fire a second concurrent upload from the other entry
+  // point. Form fields stay governed by setManageFormBusy independently.
+  const anyUpload =
+    inputLockReasons.has('upload:quick') ||
+    inputLockReasons.has('upload:manage');
+  const manageBtn = document.querySelector('button[onclick="uploadFile()"]');
+  if (manageBtn) manageBtn.disabled = anyUpload || locked;
 }
 ```
 
-Migrate existing call sites:
+Reason vocabulary (closed set — each used by exactly one site):
+
+| reason | owner | acquired | released |
+|---|---|---|---|
+| `'bootstrap'` | initial page load | before models fetch | after dest list loads |
+| `'chat-pending'` | `sendMessage()` | submit | stream end |
+| `'upload:quick'` | `handleQuickFileAttach()` | enter `try` | `finally` |
+| `'upload:manage'` | `uploadFile()` | enter `try` | `finally` |
+
+Migration of existing call sites:
 
 - `setInputEnabled(false)` in `sendMessage()` → `lockInput('chat-pending')`.
-- `setInputEnabled(true)` after agent stream completes (look around `index.html:889/896`) → `unlockInput('chat-pending')`.
-- The initial `setInputEnabled(false)` during page bootstrap (waiting for models to load) → `lockInput('bootstrap')`; the matching enable after dest list arrives → `unlockInput('bootstrap')`.
+- `setInputEnabled(true)` after agent stream completes (around `index.html:889/896`) → `unlockInput('chat-pending')`.
+- The bootstrap `setInputEnabled(false)` (waiting for models) → `lockInput('bootstrap')`; matching enable after dest list arrives → `unlockInput('bootstrap')`.
 
-Then `handleQuickFileAttach` uses the same lock:
+Overlap composition is now correct:
 
-```javascript
-async function handleQuickFileAttach(input) {
-  const file = input.files?.[0];
-  if (!file) return;
-  input.value = '';
-  const description = prompt(...);
-  if (description === null) return;
+- chat-📎 starts (upload:quick) + Manage Upload starts (upload:manage) → Set has both → either's `finally` only removes its own token, the other keeps the lock alive. Chat input + Send + attach + Manage button stay disabled until BOTH uploads complete.
+- chat-📎 starts + chat agent already busy (chat-pending) → both reasons present; upload `finally` removes only `'upload:quick'`, agent stream still owns `'chat-pending'`.
+- Concurrent uploads (chat-📎 then Manage during it, or vice versa) — Manage button is disabled via `anyUpload` check, so the second one cannot be triggered from UI. The reason set still composes correctly if it ever does happen (e.g. via console).
 
-  lockInput('upload');
-  try {
-    // existing upload flow ...
-  } finally {
-    unlockInput('upload');
-  }
-}
-```
-
-Now overlapping reasons compose correctly:
-
-- Agent busy + user attaches → both reasons set; upload `finally` removes only `'upload'`, leaves `'chat-pending'`. Input stays disabled until agent completes.
-- Agent idle + user attaches → only `'upload'` set; upload `finally` clears, input enabled.
-- Reverse order (attach starts, then agent somehow starts — guarded by lock, so impossible) is closed by construction.
-
-`setInputEnabled` itself stays as a one-line `applyInputLock`-equivalent wrapper for backward compatibility with any other call sites we miss, or — preferred — remove it entirely after migrating the two known consumers.
+`setInputEnabled` stays as a thin one-line wrapper for backward compat (or is removed entirely after migrating the two known consumers — preference: remove).
 
 ### 2. UI: block Manage upload form AND chat input
 
@@ -190,11 +190,15 @@ function groupKey(metadata) {
   const source = metadata && metadata.source;
   if (!source) return null; // orphan
   const uploadId = (metadata && metadata.uploadId) || '_legacy';
-  return source + '|' + uploadId;
+  // JSON-encode the pair so a `|` (or any other char) inside the source
+  // filename can't create a collision with a different (source, uploadId).
+  // metadata.source is the original filename, NOT slugified, so we can't
+  // assume it's safe for a string separator.
+  return JSON.stringify([source, uploadId]);
 }
 ```
 
-(`|` is safe — filenames are sanitized; UUIDs and `_legacy` don't contain it.)
+The encoded form (`'["foo|bar.md","8f2c1a30"]'`) is opaque, unambiguous, and never reaches user-visible text — the renderer always derives `source` from the group value.
 
 `RagExport` now exports `groupKey` alongside `groupChunksBySource`, `safeSourceExportName`, `reassembleSource`.
 
