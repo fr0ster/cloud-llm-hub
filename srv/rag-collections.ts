@@ -477,14 +477,8 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
 
-    const full: RagDocument = {
-      ...doc,
-      createdAt: new Date().toISOString(),
-    };
-
     // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
-    // We must inspect .ok and throw on failure or chunks vanish silently.
     const result = await stored.rag.upsert(doc.text, {
       id: `doc:${collectionId}:${doc.id}`,
       namespace:
@@ -492,16 +486,34 @@ export class CollectionRegistry {
         (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
       ...doc.metadata,
     });
+
+    // Persist locally REGARDLESS of Qdrant outcome so export/reassembly can
+    // recover the chunk even when the vector backend rejected it. On failure
+    // we stamp `unindexed: true` so callers (search, future re-index job)
+    // can tell which entries are missing from the vector index. On retry
+    // success this method is invoked again with the same id and overwrites
+    // without the flag.
+    const persisted: RagDocument = {
+      ...doc,
+      createdAt: new Date().toISOString(),
+      metadata: result.ok
+        ? doc.metadata
+        : { ...(doc.metadata ?? {}), unindexed: true },
+    };
+    stored.documents.set(doc.id, persisted);
+    stored.meta.documentCount = stored.documents.size;
+    this.persistDocument(collectionId, persisted);
+
     if (!result.ok) {
+      // Throw so addDocumentsBulk's tryWithRetry can retry transient failures.
+      // The local copy is already safe — retries that eventually succeed will
+      // clear the `unindexed` flag via the overwrite above.
       throw result.error instanceof Error
         ? result.error
         : new Error(String(result.error));
     }
 
-    stored.documents.set(doc.id, full);
-    stored.meta.documentCount = stored.documents.size;
-    this.persistDocument(collectionId, full);
-    return full;
+    return persisted;
   }
 
   async addDocumentsBulk(
