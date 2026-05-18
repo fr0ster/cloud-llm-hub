@@ -5,11 +5,15 @@ const config: Config = {
   roots: ['<rootDir>/test'],
   testMatch: ['**/test/unit/**/*.test.ts'],
   moduleNameMapper: {
-    '^@sap/cds$': '<rootDir>/node_modules/@cap-js/cds-types',
+    '^@sap/cds$': '<rootDir>/node_modules/@sap/cds',
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
+    '^.+\\.js$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
   },
+  transformIgnorePatterns: [
+    'node_modules/(?!(@mcp-abap-adt)/)',
+  ],
 };
 
 export default config;
