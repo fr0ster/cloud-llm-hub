@@ -508,22 +508,52 @@ export class CollectionRegistry {
     collectionId: string,
     docs: Omit<RagDocument, 'createdAt'>[],
     namespace?: string,
+    options?: {
+      /** Override sleep — tests inject instant resolve to avoid real waits. */
+      sleep?: (ms: number) => Promise<void>;
+      /** Override the shared retry-sleep budget (ms). Defaults to RETRY_BUDGET_MS. */
+      budgetMs?: number;
+    },
   ): Promise<{ added: number; errors: string[] }> {
     const errors: string[] = [];
     let added = 0;
+    const budgetMs = options?.budgetMs ?? RETRY_BUDGET_MS;
+    const sleep = options?.sleep;
+    let retrySleepSpentMs = 0;
 
     for (const doc of docs) {
-      try {
-        await this.addDocument(collectionId, doc, namespace);
-        added++;
-        // Throttle to avoid embedder rate limits
+      const result = await tryWithRetry(
+        () => this.addDocument(collectionId, doc, namespace),
+        {
+          sleep,
+          canSleep: (delay) => retrySleepSpentMs + delay <= budgetMs,
+          onSleep: (delay) => {
+            retrySleepSpentMs += delay;
+          },
+        },
+      );
+      if (result.ok) {
+        added += 1;
+        // Throttle to avoid embedder rate limits (load shaping, not retry)
         if (added % 10 === 0) {
           await new Promise((r) => setTimeout(r, 100));
         }
-      } catch (err) {
-        errors.push(`${doc.id}: ${(err as Error).message}`);
+      } else {
+        errors.push(`${doc.id}: ${result.error.message}`);
       }
     }
+
+    if (added < docs.length) {
+      const log = cds.log('rag-collections');
+      log.warn('Bulk add partial', {
+        collection: collectionId,
+        total: docs.length,
+        added,
+        failed: docs.length - added,
+        firstErrors: errors.slice(0, 5),
+      });
+    }
+
     return { added, errors };
   }
 
