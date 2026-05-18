@@ -181,9 +181,15 @@
               <label style="cursor:pointer"><input type="radio" name="export-format" value="txt" style="accent-color:#00bfff"> Plain text (.txt + .meta.json sidecar)</label>
             </div>
             <div style="margin-bottom:14px">
+              <label style="margin-right:14px;cursor:pointer;display:block;margin-bottom:6px">
+                <input type="checkbox" id="export-include-reassembled" checked style="accent-color:#00bfff"> Include reassembled source files
+              </label>
+              <label style="margin-right:14px;cursor:pointer;display:block;margin-bottom:6px">
+                <input type="checkbox" id="export-include-chunks" checked style="accent-color:#00bfff"> Include raw chunks
+              </label>
               <label style="cursor:pointer"><input type="checkbox" id="export-include-deprecated" style="accent-color:#00bfff"> Include deprecated / superseded entries</label>
             </div>
-            <div id="export-modal-status" style="color:#888;font-size:12px;min-height:18px;margin-bottom:10px"></div>
+            <div id="export-modal-status" style="color:#888;font-size:12px;min-height:18px;margin-bottom:10px;white-space:pre-line"></div>
             <div style="display:flex;justify-content:flex-end;gap:8px">
               <button onclick="closeExportModal()" style="background:#1a1a1a;color:#888;border:1px solid #333;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">CANCEL</button>
               <button id="export-modal-download" onclick="runCollectionExport()" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:4px 14px;cursor:pointer;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">DOWNLOAD</button>
@@ -292,6 +298,7 @@
     </div>
 
     <script src="vendor/jszip.min.js"></script>
+    <script src="rag-export.js"></script>
     <script>
         const chatWindow = document.getElementById('chat-window');
         const userInput = document.getElementById('user-input');
@@ -1695,7 +1702,10 @@
                         <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
                             <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
                                 <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(d.id)}</span>${source}
-                                <button onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download record as text file">DL</button>
+                                ${d.metadata && d.metadata.source && Number.isInteger(d.metadata.chunkIndex)
+                                  ? `<button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>`
+                                  : ''}
+                                <button onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download this chunk only as text file">DL</button>
                                 <button onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
                             </div>
                             <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
@@ -1792,6 +1802,54 @@
                 document.body.appendChild(a); a.click(); a.remove();
                 URL.revokeObjectURL(url);
             } catch (err) { alert(err.message); }
+        }
+
+        async function downloadSourceFile(collection, docId) {
+            try {
+                if (typeof JSZip === 'undefined' || typeof RagExport === 'undefined') {
+                    alert('Export helpers not loaded; reload the page and try again.');
+                    return;
+                }
+                const all = await fetchAllDocuments(collection);
+                // Same deprecated/superseded filtering policy as the default bulk export
+                const filtered = all.filter(d => !isDeprecatedEntry(d));
+
+                const clicked = filtered.find(d => d.id === docId)
+                    || all.find(d => d.id === docId);
+                if (!clicked || !clicked.metadata || !clicked.metadata.source
+                    || !Number.isInteger(clicked.metadata.chunkIndex)) {
+                    alert('This record is not part of a chunked source.');
+                    return;
+                }
+                if (isDeprecatedEntry(clicked)) {
+                    alert('This source is deprecated/superseded. Use DL to download the raw chunk.');
+                    return;
+                }
+
+                const { groups, warningsBySource } = RagExport.groupChunksBySource(filtered);
+                const sourceName = clicked.metadata.source;
+                const group = groups.get(sourceName);
+                if (!group || group.length === 0) {
+                    alert('No active chunks remain for this source after filtering.');
+                    return;
+                }
+                const safeName = RagExport.safeSourceExportName(sourceName, new Set());
+                const ws = warningsBySource.get(sourceName) || [];
+                const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+
+                // Mini zip: <safeBasename>.zip containing body + meta.json
+                const zip = new JSZip();
+                zip.file(name, body);
+                zip.file(sidecar.name, sidecar.body);
+                const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+
+                // Strip the original extension to build the zip name
+                const dot = name.lastIndexOf('.');
+                const baseForZip = (dot > 0 ? name.slice(0, dot) : name) || 'source';
+                downloadBlob(blob, baseForZip + '.zip');
+            } catch (err) {
+                alert(err.message || String(err));
+            }
         }
 
         async function searchCollection() {
@@ -1953,7 +2011,15 @@
             if (typeof JSZip === 'undefined') {
                 throw new Error('ZIP helper not loaded; reload the page and try again.');
             }
+            if (typeof RagExport === 'undefined') {
+                throw new Error('rag-export helper not loaded; reload the page and try again.');
+            }
             const includeDeprecated = !!(opts && opts.include_deprecated);
+            const includeReassembled = !(opts && opts.include_reassembled === false);
+            const includeChunks = !(opts && opts.include_chunks === false);
+            if (!includeReassembled && !includeChunks) {
+                throw new Error('Pick at least one of reassembled / chunks.');
+            }
             const filtered = includeDeprecated
                 ? docs
                 : docs.filter(d => !isDeprecatedEntry(d));
@@ -1966,26 +2032,60 @@
             const formatter = format2formatter[format];
             if (!formatter) throw new Error(`Unknown format "${format}"`);
 
+            const { groups, orphans, warningsBySource } = RagExport.groupChunksBySource(filtered);
+
             const zip = new JSZip();
-            const used = new Set();
             let bytes = 0;
             let fileCount = 0;
-            for (const doc of filtered) {
-                const base = safeExportName(doc.id, used);
-                for (const part of formatter(doc)) {
-                    const name = base + part.ext;
-                    bytes += new TextEncoder().encode(part.body).length;
-                    if (bytes > EXPORT_MAX_UNCOMPRESSED_BYTES) {
-                        throw new Error(
-                            `Collection too large: uncompressed size exceeds ${Math.round(EXPORT_MAX_UNCOMPRESSED_BYTES / (1024 * 1024))} MB.`,
-                        );
-                    }
-                    zip.file(name, part.body);
-                    fileCount += 1;
+            let sourceFileCount = 0;
+            let chunkCount = 0;
+
+            function accountAndPut(path, body) {
+                bytes += new TextEncoder().encode(body).length;
+                if (bytes > EXPORT_MAX_UNCOMPRESSED_BYTES) {
+                    throw new Error(
+                        'Collection too large for selected export contents. Try disabling raw chunks or reassembled files.',
+                    );
+                }
+                zip.file(path, body);
+                fileCount += 1;
+            }
+
+            if (includeReassembled) {
+                const usedSourceNames = new Set();
+                for (const [source, group] of groups.entries()) {
+                    const safeName = RagExport.safeSourceExportName(source, usedSourceNames);
+                    const ws = warningsBySource.get(source) || [];
+                    const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+                    accountAndPut('reassembled/' + name, body);
+                    accountAndPut('reassembled/' + sidecar.name, sidecar.body);
+                    sourceFileCount += 1;
                 }
             }
+
+            if (includeChunks) {
+                const usedChunkNames = new Set();
+                for (const doc of filtered) {
+                    const base = safeExportName(doc.id, usedChunkNames);
+                    for (const part of formatter(doc)) {
+                        accountAndPut('chunks/' + base + part.ext, part.body);
+                    }
+                    chunkCount += 1;
+                }
+            }
+
             const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-            return { blob, documentCount: filtered.length, fileCount };
+            return {
+                blob,
+                documentCount: filtered.length,
+                fileCount,
+                sourceFileCount,
+                orphanCount: orphans.length,
+                chunkCount,
+                warningsBySource,
+                includedChunks: includeChunks,
+                includedReassembled: includeReassembled,
+            };
         }
 
         function exportZipFilename(collectionId) {
@@ -2006,6 +2106,8 @@
             const mdRadio = document.querySelector('input[name="export-format"][value="md"]');
             if (mdRadio) mdRadio.checked = true;
             document.getElementById('export-include-deprecated').checked = false;
+            document.getElementById('export-include-reassembled').checked = true;
+            document.getElementById('export-include-chunks').checked = true;
             document.getElementById('export-modal-download').disabled = false;
             document.getElementById('export-modal').style.display = 'block';
         }
@@ -2029,15 +2131,52 @@
             try {
                 const docs = await fetchAllDocuments(collectionId);
                 status.textContent = `Building ZIP (${docs.length} documents)...`;
-                const { blob, documentCount, fileCount } = await buildCollectionZipBlob(
+                const includeReassembled = document.getElementById('export-include-reassembled').checked;
+                const includeChunks = document.getElementById('export-include-chunks').checked;
+                const downloadBtn = document.getElementById('export-modal-download');
+                if (!includeReassembled && !includeChunks) {
+                    status.style.color = '#ff5555';
+                    status.textContent = 'Pick at least one of reassembled / chunks';
+                    downloadBtn.disabled = false;
+                    return;
+                }
+                const result = await buildCollectionZipBlob(
                     docs,
-                    format,
-                    { include_deprecated: includeDeprecated },
+                    formatEl.value,
+                    {
+                        include_deprecated: document.getElementById('export-include-deprecated').checked,
+                        include_reassembled: includeReassembled,
+                        include_chunks: includeChunks,
+                    },
                 );
+                const {
+                    blob,
+                    documentCount,
+                    fileCount,
+                    sourceFileCount,
+                    chunkCount,
+                    orphanCount,
+                    warningsBySource,
+                    includedChunks,
+                    includedReassembled,
+                } = result;
                 const filename = exportZipFilename(collectionId);
                 downloadBlob(blob, filename);
                 status.style.color = '#00ff88';
-                status.textContent = `Exported ${documentCount} documents, ${fileCount} files → ${filename}`;
+                let msg;
+                if (includedReassembled && includedChunks) {
+                    msg = `Exported ${sourceFileCount} source files (reassembled/), ${chunkCount} chunks (chunks/, including ${orphanCount} orphans) → ${filename}`;
+                } else if (includedReassembled) {
+                    msg = `Exported ${sourceFileCount} source files (reassembled/), skipped ${orphanCount} orphans because raw chunks are disabled → ${filename}`;
+                } else {
+                    msg = `Exported ${chunkCount} chunks (chunks/, including ${orphanCount} orphans) → ${filename}`;
+                }
+                if (warningsBySource && warningsBySource.size) {
+                    const flat = [];
+                    for (const ws of warningsBySource.values()) for (const w of ws) flat.push(w);
+                    msg += `\n${flat.length} warning(s):\n${flat.join('\n')}`;
+                }
+                status.textContent = msg;
                 btn.disabled = false;
             } catch (err) {
                 status.style.color = '#ff5555';

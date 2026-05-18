@@ -340,7 +340,7 @@ export default async function registerMcpProxyHandlers(
         let destConfig: Awaited<ReturnType<typeof getDestination>> | undefined;
         try {
           destConfig = await getDestination({ destinationName: dest.name });
-        } catch (err) {
+        } catch (_err) {
           destConfig = undefined;
         }
         const originalProps = destConfig?.originalProperties as
