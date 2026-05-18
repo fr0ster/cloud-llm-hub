@@ -74,6 +74,111 @@ interface StoredCollection {
 }
 
 // ---------------------------------------------------------------------------
+// isTransient + tryWithRetry — retry helpers for embedder/RAG-write errors
+// ---------------------------------------------------------------------------
+
+/**
+ * HTTP/status-context regex used by isTransient — matches "status 503",
+ * "HTTP 502", "status code 429", "429 Too Many Requests",
+ * "503 Service Unavailable", etc.
+ * Deliberately does NOT match bare 3-digit numbers like "max length 500"
+ * because that triggered false positives against UPSERT_ERROR-wrapped
+ * validation errors.
+ */
+const TRANSIENT_HTTP_RE =
+  /\b(?:status(?: code)?|http)\s*:?\s*(?:429|5\d\d)\b|\b429\s+too many requests\b|\b5\d\d\s+(?:bad gateway|service unavailable|gateway timeout|internal server error)\b/i;
+
+const TRANSIENT_NETWORK_RE =
+  /(rate[\s-]?limit|timeout|ECONNRESET|ETIMEDOUT|network)/i;
+
+/**
+ * Classify an embedder/RAG-write error as transient (worth retrying) or
+ * permanent. Conservative: anything unrecognized is treated as permanent
+ * so we don't burn retry budget on validation errors.
+ *
+ * Check order (first match wins):
+ *  1. err.status / err.statusCode (429 or 5xx) → transient
+ *  2. err.code === ETIMEDOUT or ECONNRESET → transient
+ *  3. err.message matches an HTTP/status-context signal or a network
+ *     keyword (rate-limit, timeout, ECONNRESET, ETIMEDOUT, network)
+ *  4. everything else → permanent
+ *
+ * Today's RagError carries (message, code) only — no structured HTTP
+ * fields — so for RagError instances step 3 is what gets used. Steps 1
+ * and 2 are forward-compat for plain Error shapes from HTTP clients.
+ */
+export function isTransient(err: unknown): boolean {
+  if (!err) return false;
+  const msg = (err as { message?: string })?.message ?? '';
+  const code = (err as { code?: string })?.code ?? '';
+  const status =
+    (err as { status?: number; statusCode?: number })?.status ??
+    (err as { status?: number; statusCode?: number })?.statusCode ??
+    0;
+  if (status === 429 || (status >= 500 && status < 600)) return true;
+  if (code === 'ETIMEDOUT' || code === 'ECONNRESET') return true;
+  if (TRANSIENT_HTTP_RE.test(msg)) return true;
+  if (TRANSIENT_NETWORK_RE.test(msg)) return true;
+  return false;
+}
+
+const RETRY_BACKOFFS_MS = [200, 500, 1500] as const;
+
+/** Max total ms a single bulk call may spend sleeping in retry backoff. */
+export const RETRY_BUDGET_MS = 30_000;
+
+export interface TryWithRetryOptions {
+  /** Override the sleep function (tests inject a fake to avoid real waits). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Predicate: may the helper sleep `delay` ms now? Defaults to () => true. */
+  canSleep?: (delay: number) => boolean;
+  /** Notification: account for a sleep that's about to happen. Defaults to noop. */
+  onSleep?: (delay: number) => void;
+}
+
+/**
+ * Run `fn`. On transient failure, retry with [200ms, 500ms, 1500ms] backoff
+ * (max 3 retries, total worst-case ~2.2s of delay per failing call).
+ * Returns `{ ok: true, value }` or `{ ok: false, error }`.
+ *
+ * `canSleep` / `onSleep` let a caller (e.g. addDocumentsBulk) impose a
+ * shared retry-sleep budget across multiple invocations. When omitted the
+ * helper is budget-naive.
+ */
+export async function tryWithRetry<T>(
+  fn: () => Promise<T>,
+  opts: TryWithRetryOptions = {},
+): Promise<{ ok: true; value: T } | { ok: false; error: Error }> {
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const canSleep = opts.canSleep ?? (() => true);
+  const onSleep = opts.onSleep ?? (() => undefined);
+  let lastErr: Error | undefined;
+  for (let i = 0; i <= RETRY_BACKOFFS_MS.length; i += 1) {
+    if (i > 0) {
+      const delay = RETRY_BACKOFFS_MS[i - 1];
+      onSleep(delay);
+      await sleep(delay);
+    }
+    try {
+      const value = await fn();
+      return { ok: true, value };
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const isLast = i === RETRY_BACKOFFS_MS.length;
+      const nextDelay = isLast ? 0 : RETRY_BACKOFFS_MS[i];
+      if (!isTransient(lastErr) || isLast || !canSleep(nextDelay)) {
+        return { ok: false, error: lastErr };
+      }
+    }
+  }
+  return {
+    ok: false,
+    error: lastErr ?? new Error('tryWithRetry: unreachable'),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // RecencyBoostedRag — wraps IRag and boosts score of newer documents
 // ---------------------------------------------------------------------------
 // Formula: finalScore = baseScore * (1 + recencyBoost * recencyFactor)
