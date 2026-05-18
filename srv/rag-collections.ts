@@ -377,14 +377,21 @@ export class CollectionRegistry {
       createdAt: new Date().toISOString(),
     };
 
-    // Upsert into RAG store
-    await stored.rag.upsert(doc.text, {
+    // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
+    // a backend rejection comes back as { ok: false }, NOT a thrown error.
+    // We must inspect .ok and throw on failure or chunks vanish silently.
+    const result = await stored.rag.upsert(doc.text, {
       id: `doc:${collectionId}:${doc.id}`,
       namespace:
         namespace ??
         (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
       ...doc.metadata,
     });
+    if (!result.ok) {
+      throw result.error instanceof Error
+        ? result.error
+        : new Error(String(result.error));
+    }
 
     stored.documents.set(doc.id, full);
     stored.meta.documentCount = stored.documents.size;
