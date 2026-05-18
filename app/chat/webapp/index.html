@@ -778,15 +778,32 @@
         function unlockInput(reason) { inputLockReasons.delete(reason); applyInputLock(); }
         function applyInputLock() {
           const locked = inputLockReasons.size > 0;
+          const anyUpload =
+            inputLockReasons.has('upload:quick') ||
+            inputLockReasons.has('upload:manage');
+
+          // Chat surface: locked under any reason.
           for (const id of ['user-input', 'send-btn', 'attach-btn']) {
             const el = document.getElementById(id);
             if (el) el.disabled = locked;
           }
-          const anyUpload =
-            inputLockReasons.has('upload:quick') ||
-            inputLockReasons.has('upload:manage');
-          const manageBtn = document.querySelector('button[onclick="uploadFile()"]');
-          if (manageBtn) manageBtn.disabled = anyUpload || locked;
+
+          // RAG-write entry points: locked only while an upload is in flight.
+          // Includes the toolbar MANAGE button (opens panel) and every in-panel
+          // write button. Closes the concurrent-upload class of bugs:
+          // a chat-📎 upload locks Manage too; a Manage upload locks chat-📎 too.
+          const ragWriteSelectors = [
+            '#rag-manage-btn', // toolbar MANAGE — opens panel
+            'button[onclick="uploadFile()"]',
+            'button[onclick="addDocument()"]',
+            'button[onclick="createCollection()"]',
+            'button[onclick="showUploadForm()"]',
+            'button[onclick="showAddDocForm()"]',
+          ];
+          for (const sel of ragWriteSelectors) {
+            const btn = document.querySelector(sel);
+            if (btn) btn.disabled = anyUpload;
+          }
         }
 
         // Bootstrap state — locked from script-load time until /v1/models gives the green light.
