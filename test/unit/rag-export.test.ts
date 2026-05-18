@@ -77,10 +77,11 @@ describe('groupChunksBySource', () => {
     expect(groups.size).toBe(1);
     const entry = groups.get(JSON.stringify(['a.md', 'u1']));
     expect(entry).toBeDefined();
-    expect(entry!.source).toBe('a.md');
-    expect(entry!.uploadId).toBe('u1');
-    expect(entry!.docs.map((d: any) => d.id)).toEqual(['a-0', 'a-1']);
-    expect(entry!.warnings).toEqual([]);
+    if (!entry) return;
+    expect(entry.source).toBe('a.md');
+    expect(entry.uploadId).toBe('u1');
+    expect(entry.docs.map((d: any) => d.id)).toEqual(['a-0', 'a-1']);
+    expect(entry.warnings).toEqual([]);
   });
 
   it('groups two uploads of the same source into separate entries', () => {
@@ -92,8 +93,8 @@ describe('groupChunksBySource', () => {
     ];
     const { groups } = RagExport.groupChunksBySource(docs);
     expect(groups.size).toBe(2);
-    expect(groups.get(JSON.stringify(['a.md', 'u1']))!.docs.length).toBe(2);
-    expect(groups.get(JSON.stringify(['a.md', 'u2']))!.docs.length).toBe(2);
+    expect(groups.get(JSON.stringify(['a.md', 'u1']))?.docs.length).toBe(2);
+    expect(groups.get(JSON.stringify(['a.md', 'u2']))?.docs.length).toBe(2);
   });
 
   it('legacy entries (no uploadId) fall under _legacy group', () => {
@@ -105,8 +106,9 @@ describe('groupChunksBySource', () => {
     expect(groups.size).toBe(1);
     const entry = groups.get(JSON.stringify(['a.md', '_legacy']));
     expect(entry).toBeDefined();
-    expect(entry!.uploadId).toBe('_legacy');
-    expect(entry!.docs.length).toBe(2);
+    if (!entry) return;
+    expect(entry.uploadId).toBe('_legacy');
+    expect(entry.docs.length).toBe(2);
   });
 
   it('mixes uploadId-stamped and legacy in separate entries', () => {
@@ -148,7 +150,9 @@ describe('groupChunksBySource', () => {
     ];
     const { groups } = RagExport.groupChunksBySource(docs);
     const entry = groups.get(JSON.stringify(['a.md', 'u1']));
-    expect(entry!.docs.map((d: any) => d.id)).toEqual(['a-0', 'a-1', 'a-2']);
+    expect(entry).toBeDefined();
+    if (!entry) return;
+    expect(entry.docs.map((d: any) => d.id)).toEqual(['a-0', 'a-1', 'a-2']);
   });
 
   it('collects per-source warnings into the entry.warnings field', () => {
@@ -158,7 +162,9 @@ describe('groupChunksBySource', () => {
     ];
     const { groups } = RagExport.groupChunksBySource(docs);
     const entry = groups.get(JSON.stringify(['a.md', 'u1']));
-    expect(entry!.warnings.length).toBeGreaterThan(0);
+    expect(entry).toBeDefined();
+    if (!entry) return;
+    expect(entry.warnings.length).toBeGreaterThan(0);
   });
 
   it('keeps duplicate chunkIndex and inconsistent totalChunks warnings', () => {
@@ -168,11 +174,13 @@ describe('groupChunksBySource', () => {
     ];
     const { groups } = RagExport.groupChunksBySource(docs);
     const entry = groups.get(JSON.stringify(['a.md', 'u1']));
+    expect(entry).toBeDefined();
+    if (!entry) return;
     expect(
-      entry!.warnings.some((w: string) => /duplicate chunk index 0/.test(w)),
+      entry.warnings.some((w: string) => /duplicate chunk index 0/.test(w)),
     ).toBe(true);
     expect(
-      entry!.warnings.some((w: string) => /inconsistent totalChunks/.test(w)),
+      entry.warnings.some((w: string) => /inconsistent totalChunks/.test(w)),
     ).toBe(true);
   });
 });
