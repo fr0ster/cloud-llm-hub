@@ -1841,16 +1841,25 @@
                     return;
                 }
 
-                const { groups, warningsBySource } = RagExport.groupChunksBySource(filtered);
-                const sourceName = clicked.metadata.source;
-                const group = groups.get(sourceName);
-                if (!group || group.length === 0) {
-                    alert('No active chunks remain for this source after filtering.');
+                const key = RagExport.groupKey(clicked.metadata);
+                if (!key) {
+                    alert('This entry is an orphan — cannot reassemble a source file.');
                     return;
                 }
-                const safeName = RagExport.safeSourceExportName(sourceName, new Set());
-                const ws = warningsBySource.get(sourceName) || [];
-                const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+                const { groups } = RagExport.groupChunksBySource(filtered);
+                const entry = groups.get(key);
+                if (!entry) {
+                    alert('No active group remains for this entry.');
+                    return;
+                }
+                const { source, uploadId, docs: groupDocs, warnings } = entry;
+                const safeName = RagExport.safeSourceExportName(source, new Set());
+                const { name, body, sidecar } = RagExport.reassembleSource(
+                    groupDocs,
+                    safeName,
+                    uploadId === '_legacy' ? undefined : uploadId,
+                    warnings,
+                );
 
                 // Mini zip: <safeBasename>.zip containing body + meta.json
                 const zip = new JSZip();
@@ -2047,7 +2056,8 @@
             const formatter = format2formatter[format];
             if (!formatter) throw new Error(`Unknown format "${format}"`);
 
-            const { groups, orphans, warningsBySource } = RagExport.groupChunksBySource(filtered);
+            const { groups, orphans } = RagExport.groupChunksBySource(filtered);
+            const warningsBySource = new Map(); // keyed by groupKey; flatten in the renderer
 
             const zip = new JSZip();
             let bytes = 0;
@@ -2066,12 +2076,20 @@
                 fileCount += 1;
             }
 
-            if (includeReassembled) {
-                const usedSourceNames = new Set();
-                for (const [source, group] of groups.entries()) {
-                    const safeName = RagExport.safeSourceExportName(source, usedSourceNames);
-                    const ws = warningsBySource.get(source) || [];
-                    const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+            const used = new Set();
+            for (const [key, entry] of groups.entries()) {
+                const { source, uploadId, docs: groupDocs, warnings } = entry;
+                if (warnings && warnings.length) warningsBySource.set(key, warnings);
+                if (includeReassembled) {
+                    const safeName = RagExport.safeSourceExportName(source, used);
+                    const { name, body, sidecar } = RagExport.reassembleSource(
+                        groupDocs,
+                        safeName,
+                        uploadId === '_legacy' ? undefined : uploadId,
+                        warnings,
+                    );
+                    // Use accountAndPut so the 50 MB cap (EXPORT_MAX_UNCOMPRESSED_BYTES)
+                    // and the `fileCount` counter stay accurate.
                     accountAndPut('reassembled/' + name, body);
                     accountAndPut('reassembled/' + sidecar.name, sidecar.body);
                     sourceFileCount += 1;
