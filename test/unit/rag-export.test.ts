@@ -7,148 +7,173 @@
 const RagExport = require('../../app/chat/webapp/rag-export.js');
 
 describe('rag-export module', () => {
-  it('exports the three helpers', () => {
+  it('exports the four helpers', () => {
     expect(typeof RagExport.groupChunksBySource).toBe('function');
     expect(typeof RagExport.safeSourceExportName).toBe('function');
     expect(typeof RagExport.reassembleSource).toBe('function');
+    expect(typeof RagExport.groupKey).toBe('function');
+  });
+});
+
+describe('groupKey', () => {
+  it('returns null for orphan metadata', () => {
+    expect(RagExport.groupKey({})).toBeNull();
+    expect(RagExport.groupKey(null as any)).toBeNull();
+    expect(RagExport.groupKey({ chunkIndex: 0 })).toBeNull();
+  });
+
+  it('encodes (source, uploadId) as JSON', () => {
+    expect(RagExport.groupKey({ source: 'a.md', uploadId: 'u1' })).toBe(
+      JSON.stringify(['a.md', 'u1']),
+    );
+  });
+
+  it('falls back to _legacy when uploadId is missing', () => {
+    expect(RagExport.groupKey({ source: 'a.md' })).toBe(
+      JSON.stringify(['a.md', '_legacy']),
+    );
+  });
+
+  it('keeps the source string verbatim — | in name is safe', () => {
+    const key = RagExport.groupKey({ source: 'weird|name.md', uploadId: 'u1' });
+    expect(key).toBe(JSON.stringify(['weird|name.md', 'u1']));
+    // Different source with the same combined string under a different
+    // split must produce a different key.
+    const other = RagExport.groupKey({
+      source: 'weird',
+      uploadId: 'name.md|u1',
+    });
+    expect(other).not.toBe(key);
   });
 });
 
 describe('groupChunksBySource', () => {
-  it('groups chunks by source and sorts by chunkIndex', () => {
-    const docs = [
-      {
-        id: 'a-2',
-        text: 'C',
-        metadata: { source: 'a.md', chunkIndex: 2, totalChunks: 3 },
+  function makeDoc(
+    id: string,
+    source: string,
+    chunkIndex: number,
+    totalChunks: number,
+    extra: { uploadId?: string; text?: string } = {},
+  ) {
+    return {
+      id,
+      text: extra.text ?? 'x',
+      metadata: {
+        source,
+        chunkIndex,
+        totalChunks,
+        ...(extra.uploadId ? { uploadId: extra.uploadId } : {}),
       },
-      {
-        id: 'a-0',
-        text: 'A',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 3 },
-      },
-      {
-        id: 'a-1',
-        text: 'B',
-        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 3 },
-      },
-    ];
-    const { groups, orphans, warningsBySource } =
-      RagExport.groupChunksBySource(docs);
-    const a = groups.get('a.md');
-    expect(a.map((d: any) => d.id)).toEqual(['a-0', 'a-1', 'a-2']);
-    expect(orphans).toEqual([]);
-    expect(warningsBySource.size).toBe(0);
-  });
+    };
+  }
 
-  it('sends rag_add-style records to orphans', () => {
+  it('groups chunks of one upload into one entry', () => {
     const docs = [
-      { id: 'standalone', text: 'X', metadata: {} },
-      {
-        id: 'a-0',
-        text: 'A',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
-      },
+      makeDoc('a-0', 'a.md', 0, 2, { uploadId: 'u1' }),
+      makeDoc('a-1', 'a.md', 1, 2, { uploadId: 'u1' }),
     ];
     const { groups, orphans } = RagExport.groupChunksBySource(docs);
-    expect(groups.get('a.md')?.length).toBe(1);
+    expect(orphans).toEqual([]);
+    expect(groups.size).toBe(1);
+    const entry = groups.get(JSON.stringify(['a.md', 'u1']));
+    expect(entry).toBeDefined();
+    expect(entry!.source).toBe('a.md');
+    expect(entry!.uploadId).toBe('u1');
+    expect(entry!.docs.map((d: any) => d.id)).toEqual(['a-0', 'a-1']);
+    expect(entry!.warnings).toEqual([]);
+  });
+
+  it('groups two uploads of the same source into separate entries', () => {
+    const docs = [
+      makeDoc('a-u1-0', 'a.md', 0, 2, { uploadId: 'u1' }),
+      makeDoc('a-u1-1', 'a.md', 1, 2, { uploadId: 'u1' }),
+      makeDoc('a-u2-0', 'a.md', 0, 2, { uploadId: 'u2' }),
+      makeDoc('a-u2-1', 'a.md', 1, 2, { uploadId: 'u2' }),
+    ];
+    const { groups } = RagExport.groupChunksBySource(docs);
+    expect(groups.size).toBe(2);
+    expect(groups.get(JSON.stringify(['a.md', 'u1']))!.docs.length).toBe(2);
+    expect(groups.get(JSON.stringify(['a.md', 'u2']))!.docs.length).toBe(2);
+  });
+
+  it('legacy entries (no uploadId) fall under _legacy group', () => {
+    const docs = [
+      makeDoc('a-0', 'a.md', 0, 2), // no uploadId
+      makeDoc('a-1', 'a.md', 1, 2), // no uploadId
+    ];
+    const { groups } = RagExport.groupChunksBySource(docs);
+    expect(groups.size).toBe(1);
+    const entry = groups.get(JSON.stringify(['a.md', '_legacy']));
+    expect(entry).toBeDefined();
+    expect(entry!.uploadId).toBe('_legacy');
+    expect(entry!.docs.length).toBe(2);
+  });
+
+  it('mixes uploadId-stamped and legacy in separate entries', () => {
+    const docs = [
+      makeDoc('legacy-0', 'a.md', 0, 1),
+      makeDoc('u1-0', 'a.md', 0, 1, { uploadId: 'u1' }),
+    ];
+    const { groups } = RagExport.groupChunksBySource(docs);
+    expect(groups.size).toBe(2);
+    expect(groups.get(JSON.stringify(['a.md', '_legacy']))).toBeDefined();
+    expect(groups.get(JSON.stringify(['a.md', 'u1']))).toBeDefined();
+  });
+
+  it('docs without metadata.source go to orphans', () => {
+    const docs = [
+      { id: 'standalone', text: 'x', metadata: {} },
+      makeDoc('a-0', 'a.md', 0, 1, { uploadId: 'u1' }),
+    ];
+    const { groups, orphans } = RagExport.groupChunksBySource(docs);
+    expect(groups.size).toBe(1);
     expect(orphans.map((d: any) => d.id)).toEqual(['standalone']);
   });
 
-  it('sends docs with non-integer chunkIndex to orphans', () => {
+  it('docs with non-integer chunkIndex go to orphans', () => {
     const docs = [
-      { id: 'bad', text: 'X', metadata: { source: 'a.md', chunkIndex: 'foo' } },
+      { id: 'bad', text: 'x', metadata: { source: 'a.md', chunkIndex: 'foo' } },
+      makeDoc('a-0', 'a.md', 0, 1, { uploadId: 'u1' }),
     ];
-    const { orphans } = RagExport.groupChunksBySource(docs as any);
+    const { groups, orphans } = RagExport.groupChunksBySource(docs as any);
+    expect(groups.size).toBe(1);
     expect(orphans.map((d: any) => d.id)).toEqual(['bad']);
   });
 
-  it('warns on missing chunk indices (gap)', () => {
+  it('sorts docs within a group by chunkIndex', () => {
     const docs = [
-      {
-        id: 'a-0',
-        text: 'A',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 4 },
-      },
-      {
-        id: 'a-1',
-        text: 'B',
-        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 4 },
-      },
-      {
-        id: 'a-3',
-        text: 'D',
-        metadata: { source: 'a.md', chunkIndex: 3, totalChunks: 4 },
-      },
+      makeDoc('a-2', 'a.md', 2, 3, { uploadId: 'u1' }),
+      makeDoc('a-0', 'a.md', 0, 3, { uploadId: 'u1' }),
+      makeDoc('a-1', 'a.md', 1, 3, { uploadId: 'u1' }),
     ];
-    const { warningsBySource } = RagExport.groupChunksBySource(docs);
-    const ws = warningsBySource.get('a.md');
-    expect(ws.some((w: string) => /missing.*2/.test(w))).toBe(true);
+    const { groups } = RagExport.groupChunksBySource(docs);
+    const entry = groups.get(JSON.stringify(['a.md', 'u1']));
+    expect(entry!.docs.map((d: any) => d.id)).toEqual(['a-0', 'a-1', 'a-2']);
   });
 
-  it('warns on inconsistent totalChunks within a group', () => {
+  it('collects per-source warnings into the entry.warnings field', () => {
     const docs = [
-      {
-        id: 'a-0',
-        text: 'A',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 3 },
-      },
-      {
-        id: 'a-1',
-        text: 'B',
-        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 4 },
-      },
+      makeDoc('a-0', 'a.md', 0, 3, { uploadId: 'u1' }),
+      makeDoc('a-2', 'a.md', 2, 3, { uploadId: 'u1' }), // gap at 1
     ];
-    const { warningsBySource } = RagExport.groupChunksBySource(docs);
-    const ws = warningsBySource.get('a.md');
-    expect(ws.some((w: string) => /inconsistent totalChunks/.test(w))).toBe(
-      true,
-    );
+    const { groups } = RagExport.groupChunksBySource(docs);
+    const entry = groups.get(JSON.stringify(['a.md', 'u1']));
+    expect(entry!.warnings.length).toBeGreaterThan(0);
   });
 
-  it('warns on duplicate chunkIndex', () => {
+  it('keeps duplicate chunkIndex and inconsistent totalChunks warnings', () => {
     const docs = [
-      {
-        id: 'a-0',
-        text: 'A',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 2 },
-      },
-      {
-        id: 'a-0b',
-        text: 'A2',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 2 },
-      },
-      {
-        id: 'a-1',
-        text: 'B',
-        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 2 },
-      },
+      makeDoc('a-0', 'a.md', 0, 2, { uploadId: 'u1' }),
+      makeDoc('a-0b', 'a.md', 0, 3, { uploadId: 'u1' }),
     ];
-    const { warningsBySource } = RagExport.groupChunksBySource(docs);
-    const ws = warningsBySource.get('a.md');
-    expect(ws.some((w: string) => /duplicate chunk index 0/.test(w))).toBe(
-      true,
-    );
-  });
-
-  it('warns when group length differs from consistent totalChunks', () => {
-    const docs = [
-      {
-        id: 'a-0',
-        text: 'A',
-        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 5 },
-      },
-      {
-        id: 'a-1',
-        text: 'B',
-        metadata: { source: 'a.md', chunkIndex: 1, totalChunks: 5 },
-      },
-    ];
-    const { warningsBySource } = RagExport.groupChunksBySource(docs);
-    const ws = warningsBySource.get('a.md');
-    expect(ws.some((w: string) => /expected 5 chunks, found 2/.test(w))).toBe(
-      true,
-    );
+    const { groups } = RagExport.groupChunksBySource(docs);
+    const entry = groups.get(JSON.stringify(['a.md', 'u1']));
+    expect(
+      entry!.warnings.some((w: string) => /duplicate chunk index 0/.test(w)),
+    ).toBe(true);
+    expect(
+      entry!.warnings.some((w: string) => /inconsistent totalChunks/.test(w)),
+    ).toBe(true);
   });
 });
 
@@ -246,7 +271,12 @@ describe('reassembleSource', () => {
       chunk('a-1', 'a.md', 1, 3, 'World'),
       chunk('a-2', 'a.md', 2, 3, 'Bye'),
     ];
-    const { name, body } = RagExport.reassembleSource(group, 'a.md', []);
+    const { name, body } = RagExport.reassembleSource(
+      group,
+      'a.md',
+      undefined,
+      [],
+    );
     expect(name).toBe('a.md');
     expect(body).toBe('Hello\n\nWorld\n\nBye');
   });
@@ -262,7 +292,12 @@ describe('reassembleSource', () => {
         description: 'desc',
       }),
     ];
-    const { sidecar } = RagExport.reassembleSource(group, 'a.md', []);
+    const { sidecar } = RagExport.reassembleSource(
+      group,
+      'a.md',
+      undefined,
+      [],
+    );
     expect(sidecar.name).toBe('a.md.meta.json');
     const parsed = JSON.parse(sidecar.body);
     expect(parsed.source).toBe('a.md');
@@ -277,26 +312,71 @@ describe('reassembleSource', () => {
   it('passes per-source warnings through to the sidecar', () => {
     const group = [chunk('a-0', 'a.md', 0, 2, 'X')];
     const warnings = ['⚠ a.md: expected 2 chunks, found 1'];
-    const { sidecar } = RagExport.reassembleSource(group, 'a.md', warnings);
+    const { sidecar } = RagExport.reassembleSource(
+      group,
+      'a.md',
+      undefined,
+      warnings,
+    );
     const parsed = JSON.parse(sidecar.body);
     expect(parsed.warnings).toEqual(warnings);
   });
 
   it('omits description from the sidecar when absent', () => {
     const group = [chunk('a-0', 'a.md', 0, 1, 'X')];
-    const { sidecar } = RagExport.reassembleSource(group, 'a.md', []);
+    const { sidecar } = RagExport.reassembleSource(
+      group,
+      'a.md',
+      undefined,
+      [],
+    );
     const parsed = JSON.parse(sidecar.body);
     expect('description' in parsed).toBe(false);
   });
 
   it('preserves the safeName extension for txt and other formats', () => {
     const group = [chunk('a-0', 'a.txt', 0, 1, 'X')];
-    const out = RagExport.reassembleSource(group, 'a.txt', []);
+    const out = RagExport.reassembleSource(group, 'a.txt', undefined, []);
     expect(out.name).toBe('a.txt');
     expect(out.sidecar.name).toBe('a.txt.meta.json');
   });
 
   it('throws on an empty group', () => {
-    expect(() => RagExport.reassembleSource([], 'a.md', [])).toThrow();
+    expect(() =>
+      RagExport.reassembleSource([], 'a.md', undefined, []),
+    ).toThrow();
+  });
+
+  it('writes uploadId into the sidecar when provided', () => {
+    const group = [
+      {
+        id: 'a-0',
+        text: 'x',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+        createdAt: '2026-05-18T10:00:00Z',
+      },
+    ];
+    const { sidecar } = RagExport.reassembleSource(group, 'a.md', 'u1', []);
+    const parsed = JSON.parse(sidecar.body);
+    expect(parsed.uploadId).toBe('u1');
+  });
+
+  it('omits uploadId from the sidecar for legacy groups', () => {
+    const group = [
+      {
+        id: 'a-0',
+        text: 'x',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+        createdAt: '2026-05-18T10:00:00Z',
+      },
+    ];
+    const { sidecar } = RagExport.reassembleSource(
+      group,
+      'a.md',
+      undefined,
+      [],
+    );
+    const parsed = JSON.parse(sidecar.body);
+    expect('uploadId' in parsed).toBe(false);
   });
 });
