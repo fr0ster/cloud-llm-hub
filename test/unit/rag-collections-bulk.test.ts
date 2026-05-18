@@ -99,7 +99,7 @@ describe('addDocument (Result-aware)', () => {
     ).rejects.toThrow(/503/);
   });
 
-  it('does NOT persist the document when upsert fails', async () => {
+  it('persists with unindexed=true flag when upsert fails', async () => {
     const { registry } = await makeRegistry([
       { ok: false, error: new Error('Qdrant upsert failed: 401') },
     ]);
@@ -110,9 +110,42 @@ describe('addDocument (Result-aware)', () => {
         metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
       }),
     ).rejects.toThrow();
-    // The stored.documents map must not contain a-0
+    // The local map MUST contain the doc — export/reassembly recovers it
+    // even though Qdrant rejected the vector write.
     const stored = (registry as any).collections.get('test');
-    expect(stored.documents.has('a-0')).toBe(false);
+    expect(stored.documents.has('a-0')).toBe(true);
+    const persisted = stored.documents.get('a-0');
+    expect(persisted.metadata.unindexed).toBe(true);
+    expect(persisted.text).toBe('hello');
+    expect(persisted.metadata.source).toBe('a.md');
+  });
+
+  it('retry success clears the unindexed flag', async () => {
+    // First call fails, second succeeds — simulates tryWithRetry retry path.
+    const { registry } = await makeRegistry([
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: true },
+    ]);
+    // First call throws — but leaves unindexed=true in the local map
+    await expect(
+      (registry as any).addDocument('test', {
+        id: 'a-0',
+        text: 'hello',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+      }),
+    ).rejects.toThrow();
+    const storedBefore = (registry as any).collections.get('test');
+    expect(storedBefore.documents.get('a-0').metadata.unindexed).toBe(true);
+    // Retry: same id, second mock response is ok → addDocument re-persists
+    // the document without the unindexed flag.
+    const doc = await (registry as any).addDocument('test', {
+      id: 'a-0',
+      text: 'hello',
+      metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+    });
+    expect(doc.metadata.unindexed).toBeUndefined();
+    const storedAfter = (registry as any).collections.get('test');
+    expect(storedAfter.documents.get('a-0').metadata.unindexed).toBeUndefined();
   });
 });
 
