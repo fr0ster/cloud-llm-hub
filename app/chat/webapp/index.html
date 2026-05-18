@@ -789,6 +789,16 @@
           if (manageBtn) manageBtn.disabled = anyUpload || locked;
         }
 
+        function setManageFormBusy(busy) {
+          const ids = ['rag-file-input', 'rag-chunk-size', 'rag-file-desc'];
+          for (const id of ids) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = busy;
+          }
+          const btn = document.querySelector('button[onclick="uploadFile()"]');
+          if (btn) btn.disabled = busy;
+        }
+
         function setInputEnabled(enabled) {
             if (enabled) {
                 unlockInput('legacy-setInputEnabled');
@@ -1482,6 +1492,7 @@
             bar.style.display = 'block';
             bar.innerHTML = `<span style="color:#ffcc00">Uploading ${escapeHtml(file.name)}...</span>`;
 
+            lockInput('upload:quick');
             try {
                 const content = await file.text();
                 // Ensure "uploads" collection exists
@@ -1515,6 +1526,8 @@
             } catch (err) {
                 bar.innerHTML = `<span style="color:#ff5555">Failed: ${escapeHtml(err.message)}</span>`;
                 setTimeout(() => { if (!attachedFiles.length) bar.style.display = 'none'; }, 3000);
+            } finally {
+                unlockInput('upload:quick');
             }
         }
 
@@ -1767,6 +1780,8 @@
 
             statusEl.textContent = 'Reading file...';
             statusEl.style.color = '#ffcc00';
+            setManageFormBusy(true);
+            lockInput('upload:manage');
             try {
                 const content = await file.text();
                 const chunkSize = Number(document.getElementById('rag-chunk-size').value) || 2000;
@@ -1790,6 +1805,9 @@
             } catch (err) {
                 statusEl.textContent = err.message;
                 statusEl.style.color = '#ff5555';
+            } finally {
+                setManageFormBusy(false);
+                unlockInput('upload:manage');
             }
         }
 
