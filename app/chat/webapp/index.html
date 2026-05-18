@@ -287,7 +287,7 @@
             <input type="text" id="user-input" autocomplete="off" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
                    onkeydown="handleInputKeydown(event)">
             <input type="file" id="quick-file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="display:none" onchange="handleQuickFileAttach(this)">
-            <button id="attach-btn" onclick="document.getElementById('quick-file-input').click()" title="Attach file to RAG" style="padding:0 12px;font-size:16px">&#x1F4CE;</button>
+            <button id="attach-btn" onclick="document.getElementById('quick-file-input').click()" title="Attach file to RAG" style="padding:0 12px;font-size:16px" disabled>&#x1F4CE;</button>
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
             <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
@@ -773,9 +773,41 @@
             statusText.className = cls;
         }
 
+        const inputLockReasons = new Set();
+        function lockInput(reason) { inputLockReasons.add(reason); applyInputLock(); }
+        function unlockInput(reason) { inputLockReasons.delete(reason); applyInputLock(); }
+        function applyInputLock() {
+          const locked = inputLockReasons.size > 0;
+          for (const id of ['user-input', 'send-btn', 'attach-btn']) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = locked;
+          }
+          const anyUpload =
+            inputLockReasons.has('upload:quick') ||
+            inputLockReasons.has('upload:manage');
+          const manageBtn = document.querySelector('button[onclick="uploadFile()"]');
+          if (manageBtn) manageBtn.disabled = anyUpload || locked;
+        }
+
+        // Bootstrap state — locked from script-load time until /v1/models gives the green light.
+        lockInput('bootstrap');
+
+        function setManageFormBusy(busy) {
+          const ids = ['rag-file-input', 'rag-chunk-size', 'rag-file-desc'];
+          for (const id of ids) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = busy;
+          }
+          const btn = document.querySelector('button[onclick="uploadFile()"]');
+          if (btn) btn.disabled = busy;
+        }
+
         function setInputEnabled(enabled) {
-            userInput.disabled = !enabled;
-            sendBtn.disabled = !enabled;
+            if (enabled) {
+                unlockInput('legacy-setInputEnabled');
+            } else {
+                lockInput('legacy-setInputEnabled');
+            }
         }
 
         function escapeHtml(str) {
@@ -886,14 +918,14 @@
                     if (!agentReady) {
                         // Agent is initializing (vectorization in progress) — keep polling
                         setStatus('INITIALIZING...', 'status-connecting');
-                        setInputEnabled(false);
+                        lockInput('bootstrap');
                         setTimeout(checkReady, 3000);
                         return;
                     }
 
                     ready = true;
                     setStatus('READY', 'status-ready');
-                    setInputEnabled(true);
+                    unlockInput('bootstrap');
                     destRefreshBtn.disabled = false;
                     refreshActiveCollections();
                     userInput.focus();
@@ -1147,7 +1179,7 @@
 
             chatWindow.innerHTML += `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`;
             userInput.value = '';
-            setInputEnabled(false);
+            lockInput('chat-pending');
 
             conversationHistory.push({ role: 'user', content: text });
 
@@ -1434,14 +1466,14 @@
                     placeholder.className = 'message';
                 }
                 setStatus('ERROR', 'status-error');
-                setInputEnabled(true);
+                unlockInput('chat-pending');
                 userInput.focus();
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 return;
             }
 
             setStatus('READY', 'status-ready');
-            setInputEnabled(true);
+            unlockInput('chat-pending');
             userInput.focus();
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
@@ -1463,6 +1495,7 @@
             bar.style.display = 'block';
             bar.innerHTML = `<span style="color:#ffcc00">Uploading ${escapeHtml(file.name)}...</span>`;
 
+            lockInput('upload:quick');
             try {
                 const content = await file.text();
                 // Ensure "uploads" collection exists
@@ -1496,6 +1529,8 @@
             } catch (err) {
                 bar.innerHTML = `<span style="color:#ff5555">Failed: ${escapeHtml(err.message)}</span>`;
                 setTimeout(() => { if (!attachedFiles.length) bar.style.display = 'none'; }, 3000);
+            } finally {
+                unlockInput('upload:quick');
             }
         }
 
@@ -1748,6 +1783,8 @@
 
             statusEl.textContent = 'Reading file...';
             statusEl.style.color = '#ffcc00';
+            setManageFormBusy(true);
+            lockInput('upload:manage');
             try {
                 const content = await file.text();
                 const chunkSize = Number(document.getElementById('rag-chunk-size').value) || 2000;
@@ -1771,6 +1808,9 @@
             } catch (err) {
                 statusEl.textContent = err.message;
                 statusEl.style.color = '#ff5555';
+            } finally {
+                setManageFormBusy(false);
+                unlockInput('upload:manage');
             }
         }
 
@@ -1841,16 +1881,25 @@
                     return;
                 }
 
-                const { groups, warningsBySource } = RagExport.groupChunksBySource(filtered);
-                const sourceName = clicked.metadata.source;
-                const group = groups.get(sourceName);
-                if (!group || group.length === 0) {
-                    alert('No active chunks remain for this source after filtering.');
+                const key = RagExport.groupKey(clicked.metadata);
+                if (!key) {
+                    alert('This entry is an orphan — cannot reassemble a source file.');
                     return;
                 }
-                const safeName = RagExport.safeSourceExportName(sourceName, new Set());
-                const ws = warningsBySource.get(sourceName) || [];
-                const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+                const { groups } = RagExport.groupChunksBySource(filtered);
+                const entry = groups.get(key);
+                if (!entry) {
+                    alert('No active group remains for this entry.');
+                    return;
+                }
+                const { source, uploadId, docs: groupDocs, warnings } = entry;
+                const safeName = RagExport.safeSourceExportName(source, new Set());
+                const { name, body, sidecar } = RagExport.reassembleSource(
+                    groupDocs,
+                    safeName,
+                    uploadId === '_legacy' ? undefined : uploadId,
+                    warnings,
+                );
 
                 // Mini zip: <safeBasename>.zip containing body + meta.json
                 const zip = new JSZip();
@@ -2047,7 +2096,8 @@
             const formatter = format2formatter[format];
             if (!formatter) throw new Error(`Unknown format "${format}"`);
 
-            const { groups, orphans, warningsBySource } = RagExport.groupChunksBySource(filtered);
+            const { groups, orphans } = RagExport.groupChunksBySource(filtered);
+            const warningsBySource = new Map(); // keyed by groupKey; flatten in the renderer
 
             const zip = new JSZip();
             let bytes = 0;
@@ -2066,12 +2116,20 @@
                 fileCount += 1;
             }
 
-            if (includeReassembled) {
-                const usedSourceNames = new Set();
-                for (const [source, group] of groups.entries()) {
-                    const safeName = RagExport.safeSourceExportName(source, usedSourceNames);
-                    const ws = warningsBySource.get(source) || [];
-                    const { name, body, sidecar } = RagExport.reassembleSource(group, safeName, ws);
+            const used = new Set();
+            for (const [key, entry] of groups.entries()) {
+                const { source, uploadId, docs: groupDocs, warnings } = entry;
+                if (warnings && warnings.length) warningsBySource.set(key, warnings);
+                if (includeReassembled) {
+                    const safeName = RagExport.safeSourceExportName(source, used);
+                    const { name, body, sidecar } = RagExport.reassembleSource(
+                        groupDocs,
+                        safeName,
+                        uploadId === '_legacy' ? undefined : uploadId,
+                        warnings,
+                    );
+                    // Use accountAndPut so the 50 MB cap (EXPORT_MAX_UNCOMPRESSED_BYTES)
+                    // and the `fileCount` counter stay accurate.
                     accountAndPut('reassembled/' + name, body);
                     accountAndPut('reassembled/' + sidecar.name, sidecar.body);
                     sourceFileCount += 1;

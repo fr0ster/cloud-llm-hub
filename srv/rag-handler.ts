@@ -5,6 +5,8 @@
  * Authorization: MCP_Admin for global collections, MCP_Connector for user-scoped.
  */
 
+import crypto from 'node:crypto';
+
 import cds from '@sap/cds';
 import type { Request, Response, Router } from 'express';
 import type { CollectionRegistry } from './rag-collections';
@@ -430,11 +432,14 @@ export function registerRagRoutes(
         // for traceability; prepending them into the chunk text accumulates
         // noise across DL → re-UPLOAD cycles and the auto-generated
         // download filename (`<id>.txt`) carries no semantic value anyway.
+        const uploadId = crypto.randomUUID();
+        const uploadIdShort = uploadId.slice(0, 8);
         const docs = chunks.map((text, i) => ({
-          id: `${slugify(name)}-chunk-${String(i + 1).padStart(3, '0')}`,
+          id: `${slugify(name)}-${uploadIdShort}-chunk-${String(i + 1).padStart(3, '0')}`,
           text,
           metadata: {
             source: name,
+            uploadId,
             description: description || undefined,
             chunkIndex: i,
             totalChunks: chunks.length,
