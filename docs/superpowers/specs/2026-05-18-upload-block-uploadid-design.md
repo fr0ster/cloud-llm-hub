@@ -98,31 +98,48 @@ Now overlapping reasons compose correctly:
 
 `setInputEnabled` itself stays as a one-line `applyInputLock`-equivalent wrapper for backward compatibility with any other call sites we miss, or — preferred — remove it entirely after migrating the two known consumers.
 
-### 2. UI: block Manage upload form
+### 2. UI: block Manage upload form AND chat input
 
 `app/chat/webapp/index.html:uploadFile`
 
-Disable:
+Manage upload competes for the same embedder as chat (one user, same session). If we only lock the Manage form, the user can still hit Send → false-positive bug re-emerges. Manage upload must also hold the **shared** `inputLock` from section 1.
 
-- The file-input (`#rag-file-input`)
-- The Upload button (search by handler `onclick="uploadFile()"`)
-- The chunk-size input (`#rag-chunk-size`)
-- The description input (`#rag-file-desc`)
+Two-part lock:
 
-Same `try/finally` pattern. Status line is already in focus — no alert needed.
+1. Manage-form fields (so the user can't restart the upload mid-flight):
+   - `#rag-file-input`
+   - The Upload button (`button[onclick="uploadFile()"]`)
+   - `#rag-chunk-size`
+   - `#rag-file-desc`
+2. Shared chat lock (`lockInput('upload')` / `unlockInput('upload')`) — same reason as chat-📎. The chat surface stays disabled until upload completes.
 
 ```javascript
-function setManageUploadBusy(busy) {
+function setManageFormBusy(busy) {
   const ids = ['rag-file-input', 'rag-chunk-size', 'rag-file-desc'];
   for (const id of ids) {
     const el = document.getElementById(id);
     if (el) el.disabled = busy;
   }
-  // Find the upload button — only one with onclick="uploadFile()"
   const btn = document.querySelector('button[onclick="uploadFile()"]');
   if (btn) btn.disabled = busy;
 }
+
+async function uploadFile() {
+  // ... existing validation ...
+  setManageFormBusy(true);
+  lockInput('upload');
+  try {
+    // existing upload flow ...
+  } finally {
+    setManageFormBusy(false);
+    unlockInput('upload');
+  }
+}
 ```
+
+The `lockInput`/`unlockInput` calls use the **same** `'upload'` reason as chat-📎. Concurrent chat-📎 and Manage uploads are physically impossible (different forms), but the reason-set correctly handles them with refcount semantics if they ever overlap.
+
+Status line is in focus during Manage upload — no alert needed (#93's red status on partial still fires).
 
 ### 3. Server: uploadId in doc.id and metadata
 
@@ -183,16 +200,21 @@ function groupKey(metadata) {
 
 Consumer migration (within `index.html`):
 
-- Bulk export loop:
+- Bulk export loop in `buildCollectionZipBlob` — also rebuild the aggregate warning map for the existing status renderer (see "Bulk export return shape" below):
 
   ```javascript
-  for (const [, { source, uploadId, docs, warnings }] of groups.entries()) {
+  const { groups, orphans } = RagExport.groupChunksBySource(docs);
+  const warningsBySource = new Map(); // keyed by groupKey for the UI renderer
+  const used = new Set();
+  for (const [key, { source, uploadId, docs: groupDocs, warnings }] of groups.entries()) {
     const safeName = RagExport.safeSourceExportName(source, used);
     const { name, body, sidecar } = RagExport.reassembleSource(
-      docs, safeName, uploadId, warnings,
+      groupDocs, safeName, uploadId, warnings,
     );
-    // ...
+    if (warnings && warnings.length) warningsBySource.set(key, warnings);
+    // zip.file(...) as before
   }
+  // include warningsBySource in the returned shape
   ```
 
 - Per-entry `downloadSourceFile`:
@@ -201,11 +223,15 @@ Consumer migration (within `index.html`):
   const key = RagExport.groupKey(clicked.metadata);
   const group = groups.get(key);
   if (!group) { ... }
-  const { source, uploadId, docs, warnings } = group;
+  const { source, uploadId, docs: groupDocs, warnings } = group;
   // ...
   ```
 
 Map keys never escape into user-visible text. The `source` value (raw filename) is what reaches `safeSourceExportName`, the warning strings, and the sidecar.
+
+#### Bulk export return shape
+
+`buildCollectionZipBlob`'s public return shape is unchanged from #89 — `{ blob, documentCount, fileCount, sourceFileCount, orphanCount, chunkCount, warningsBySource, includedChunks, includedReassembled }`. The `warningsBySource` Map keyed by the new composite `groupKey` keeps `runCollectionExport`'s existing flatten-and-render path (`for (const ws of warningsBySource.values()) for (const w of ws) flat.push(w)`) working unchanged — the renderer never read the key anyway, only the values. No new fields needed in the result.
 
 Sidecar adds `uploadId`:
 
@@ -247,7 +273,8 @@ User clicking SRC on a chunk of upload-A only reassembles that upload's chunks, 
 
 | Condition | Behavior |
 |---|---|
-| Upload starts | UI elements disabled via `setChatBusy(true)` or `setManageUploadBusy(true)` |
+| Upload starts (chat-📎) | `lockInput('upload')` disables `#user-input` + Send + attach via the shared ref-counted lock |
+| Upload starts (Manage) | `setManageFormBusy(true)` disables Manage form fields; `lockInput('upload')` additionally locks the shared chat surface |
 | Upload returns 2xx with `added === chunks` | UI re-enabled, green status, no alert |
 | Upload returns 2xx with `added < chunks` (v6.8.1 path) | UI re-enabled, red status with `(M/N chunks)`, alert (chat-📎) |
 | Upload throws / network error | UI re-enabled in `finally`, red status with error message |
@@ -278,7 +305,7 @@ User clicking SRC on a chunk of upload-A only reassembles that upload's chunks, 
 ## File touch list
 
 - `srv/rag-handler.ts` — `uploadId` generation + metadata stamping in the upload handler.
-- `app/chat/webapp/index.html` — `setChatBusy` / `setManageUploadBusy` helpers + `try/finally` around upload paths.
+- `app/chat/webapp/index.html` — new `lockInput` / `unlockInput` / `applyInputLock` shared lock; `setManageFormBusy` helper for Manage-form-only fields; migrate `setInputEnabled` call sites (`sendMessage` chat-pending lock, bootstrap lock) to the new API; `try/finally` around both upload paths.
 - `app/chat/webapp/rag-export.js` — composite groupKey, sidecar field, backward-compat `_legacy` token.
 - `test/unit/rag-export.test.ts` — uploadId grouping tests and reassembly sidecar field tests.
 
