@@ -1481,8 +1481,18 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error?.message || 'Upload failed');
 
-                attachedFiles.push({ name: file.name, chunks: data.chunks });
+                const chunks = data.chunks;
+                const added = typeof data.added === 'number' ? data.added : chunks;
+                const failed = chunks - added;
+                attachedFiles.push({ name: file.name, chunks, added, failed });
                 renderAttachedFiles();
+                if (failed > 0) {
+                    alert(
+                        `${file.name}: ${added}/${chunks} chunks indexed.\n` +
+                        `${failed} chunk(s) failed — some content may be missing from search/export. ` +
+                        `Try re-uploading or check server logs.`,
+                    );
+                }
             } catch (err) {
                 bar.innerHTML = `<span style="color:#ff5555">Failed: ${escapeHtml(err.message)}</span>`;
                 setTimeout(() => { if (!attachedFiles.length) bar.style.display = 'none'; }, 3000);
@@ -1493,9 +1503,12 @@
             const bar = document.getElementById('attached-files');
             if (!attachedFiles.length) { bar.style.display = 'none'; return; }
             bar.style.display = 'block';
-            bar.innerHTML = attachedFiles.map((f, i) =>
-                `<span style="color:#00bfff">&#x1F4CE; ${escapeHtml(f.name)}</span> <span style="color:#555">(${f.chunks} chunks)</span> <button onclick="removeAttachedFile(${i})" style="background:none;border:none;color:#ff5555;cursor:pointer;font-size:11px;font-family:'Courier New',monospace">[x]</button>`
-            ).join(' &nbsp; ');
+            bar.innerHTML = attachedFiles.map((f, i) => {
+                const countSpan = f.failed > 0
+                    ? `<span style="color:#ff5555" title="${f.failed} chunk(s) failed — some content may be missing">(${f.added}/${f.chunks} chunks)</span>`
+                    : `<span style="color:#555">(${f.chunks} chunks)</span>`;
+                return `<span style="color:#00bfff">&#x1F4CE; ${escapeHtml(f.name)}</span> ${countSpan} <button onclick="removeAttachedFile(${i})" style="background:none;border:none;color:#ff5555;cursor:pointer;font-size:11px;font-family:'Courier New',monospace">[x]</button>`;
+            }).join(' &nbsp; ');
         }
 
         function removeAttachedFile(index) {
@@ -1748,8 +1761,10 @@
                 const data = await res.json();
                 if (!res.ok) { statusEl.textContent = data.error?.message || 'Upload failed'; statusEl.style.color = '#ff5555'; return; }
 
-                statusEl.textContent = `Uploaded: ${data.chunks} chunks, ${data.added} added`;
-                statusEl.style.color = '#00ff00';
+                const chunks = data.chunks;
+                const added = typeof data.added === 'number' ? data.added : chunks;
+                statusEl.textContent = `Uploaded: ${chunks} chunks, ${added} added`;
+                statusEl.style.color = added < chunks ? '#ff5555' : '#00ff00';
                 fileInput.value = '';
                 loadDocuments();
                 loadCollections(); // refresh doc count
