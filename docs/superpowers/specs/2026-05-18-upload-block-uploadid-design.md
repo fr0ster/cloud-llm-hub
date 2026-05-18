@@ -64,9 +64,9 @@ function applyInputLock() {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
-  // Manage Upload button — locked specifically when an upload is in flight
-  // so the user can't fire a second concurrent upload from the other entry
-  // point. Form fields stay governed by setManageFormBusy independently.
+  // Manage Upload button follows the shared lock too, so chat processing,
+  // bootstrap, or an upload from either entry point cannot overlap with a
+  // second upload. Form fields stay governed by setManageFormBusy independently.
   const anyUpload =
     inputLockReasons.has('upload:quick') ||
     inputLockReasons.has('upload:manage');
@@ -111,7 +111,7 @@ Two-part lock:
    - The Upload button (`button[onclick="uploadFile()"]`)
    - `#rag-chunk-size`
    - `#rag-file-desc`
-2. Shared chat lock (`lockInput('upload')` / `unlockInput('upload')`) — same reason as chat-📎. The chat surface stays disabled until upload completes.
+2. Shared chat lock (`lockInput('upload:manage')` / `unlockInput('upload:manage')`). The chat surface stays disabled until Manage upload completes; chat-📎 uses its own distinct `'upload:quick'` reason.
 
 ```javascript
 function setManageFormBusy(busy) {
@@ -127,17 +127,17 @@ function setManageFormBusy(busy) {
 async function uploadFile() {
   // ... existing validation ...
   setManageFormBusy(true);
-  lockInput('upload');
+  lockInput('upload:manage');
   try {
     // existing upload flow ...
   } finally {
     setManageFormBusy(false);
-    unlockInput('upload');
+    unlockInput('upload:manage');
   }
 }
 ```
 
-The `lockInput`/`unlockInput` calls use the **same** `'upload'` reason as chat-📎. Concurrent chat-📎 and Manage uploads are physically impossible (different forms), but the reason-set correctly handles them with refcount semantics if they ever overlap.
+The `lockInput`/`unlockInput` calls use the **distinct** `'upload:manage'` reason; chat-📎 uses `'upload:quick'`. Concurrent uploads are blocked by the disabled upload entry points, and the reason-set still composes correctly if overlap ever happens through a non-UI path.
 
 Status line is in focus during Manage upload — no alert needed (#93's red status on partial still fires).
 
@@ -277,8 +277,8 @@ User clicking SRC on a chunk of upload-A only reassembles that upload's chunks, 
 
 | Condition | Behavior |
 |---|---|
-| Upload starts (chat-📎) | `lockInput('upload')` disables `#user-input` + Send + attach via the shared ref-counted lock |
-| Upload starts (Manage) | `setManageFormBusy(true)` disables Manage form fields; `lockInput('upload')` additionally locks the shared chat surface |
+| Upload starts (chat-📎) | `lockInput('upload:quick')` disables `#user-input` + Send + attach via the shared reason-set lock |
+| Upload starts (Manage) | `setManageFormBusy(true)` disables Manage form fields; `lockInput('upload:manage')` additionally locks the shared chat surface |
 | Upload returns 2xx with `added === chunks` | UI re-enabled, green status, no alert |
 | Upload returns 2xx with `added < chunks` (v6.8.1 path) | UI re-enabled, red status with `(M/N chunks)`, alert (chat-📎) |
 | Upload throws / network error | UI re-enabled in `finally`, red status with error message |
