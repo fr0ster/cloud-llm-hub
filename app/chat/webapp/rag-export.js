@@ -12,57 +12,81 @@
     root.RagExport = factory();
   }
 })(typeof self !== 'undefined' ? self : this, function () {
+  function groupKey(metadata) {
+    const source = metadata && metadata.source;
+    if (!source) return null;
+    const uploadId = (metadata && metadata.uploadId) || '_legacy';
+    // JSON-encode so any character in `source` (e.g. `|`) is unambiguous.
+    return JSON.stringify([source, uploadId]);
+  }
+
   function groupChunksBySource(docs) {
     const groups = new Map();
     const orphans = [];
     for (const doc of docs) {
       const md = doc && doc.metadata;
-      const src = md && md.source;
+      const key = groupKey(md);
       const idx = md && md.chunkIndex;
-      if (src && Number.isInteger(idx)) {
-        let arr = groups.get(src);
-        if (!arr) {
-          arr = [];
-          groups.set(src, arr);
-        }
-        arr.push(doc);
-      } else {
+      if (!key || !Number.isInteger(idx)) {
         orphans.push(doc);
+        continue;
       }
+      let entry = groups.get(key);
+      if (!entry) {
+        entry = {
+          source: md.source,
+          uploadId: md.uploadId || '_legacy',
+          docs: [],
+          warnings: [],
+        };
+        groups.set(key, entry);
+      }
+      entry.docs.push(doc);
     }
-    const warningsBySource = new Map();
-    for (const [src, arr] of groups.entries()) {
-      arr.sort((a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex);
-      const ws = [];
+    for (const entry of groups.values()) {
+      entry.docs.sort(
+        (a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex,
+      );
 
-      // Duplicate chunkIndex
+      // Preserve the old integrity checks, but attach warnings to this
+      // upload-specific entry instead of warningsBySource.
       const seen = new Set();
-      for (const d of arr) {
+      for (const d of entry.docs) {
         const i = d.metadata.chunkIndex;
-        if (seen.has(i)) ws.push('⚠ ' + src + ': duplicate chunk index ' + i);
+        if (seen.has(i)) {
+          entry.warnings.push('⚠ ' + entry.source + ': duplicate chunk index ' + i);
+        }
         seen.add(i);
       }
 
-      // Contiguity 0..N-1 against the highest index present
-      const present = new Set(arr.map((d) => d.metadata.chunkIndex));
-      const max = Math.max(...arr.map((d) => d.metadata.chunkIndex));
+      const present = new Set(entry.docs.map((d) => d.metadata.chunkIndex));
+      const max = Math.max(...entry.docs.map((d) => d.metadata.chunkIndex));
       const missing = [];
       for (let i = 0; i <= max; i += 1) if (!present.has(i)) missing.push(i);
       if (missing.length) {
-        ws.push('⚠ ' + src + ': ' + missing.length + ' chunks missing (indices ' + missing.join(',') + ')');
+        entry.warnings.push(
+          '⚠ ' + entry.source + ': ' + missing.length + ' chunks missing (indices ' + missing.join(',') + ')',
+        );
       }
 
-      // totalChunks consistency
-      const totals = Array.from(new Set(arr.map((d) => d.metadata.totalChunks).filter((v) => Number.isInteger(v))));
+      const totals = Array.from(
+        new Set(
+          entry.docs
+            .map((d) => d.metadata.totalChunks)
+            .filter((v) => Number.isInteger(v)),
+        ),
+      );
       if (totals.length > 1) {
-        ws.push('⚠ ' + src + ': inconsistent totalChunks (' + totals.join(' vs ') + ')');
-      } else if (totals.length === 1 && totals[0] !== arr.length) {
-        ws.push('⚠ ' + src + ': expected ' + totals[0] + ' chunks, found ' + arr.length);
+        entry.warnings.push(
+          '⚠ ' + entry.source + ': inconsistent totalChunks (' + totals.join(' vs ') + ')',
+        );
+      } else if (totals.length === 1 && totals[0] !== entry.docs.length) {
+        entry.warnings.push(
+          '⚠ ' + entry.source + ': expected ' + totals[0] + ' chunks, found ' + entry.docs.length,
+        );
       }
-
-      if (ws.length) warningsBySource.set(src, ws);
     }
-    return { groups, orphans, warningsBySource };
+    return { groups, orphans };
   }
   function safeSourceExportName(sourceName, used) {
     const raw = String(sourceName == null ? '' : sourceName);
@@ -107,43 +131,45 @@
     used.add(candidate);
     return candidate;
   }
-  function reassembleSource(group, safeName, warnings) {
+  function reassembleSource(group, safeName, uploadId, warnings) {
     if (!Array.isArray(group) || group.length === 0) {
-      throw new Error('reassembleSource: group must be a non-empty array');
+      throw new Error('reassembleSource: group cannot be empty');
     }
-    const ws = Array.isArray(warnings) ? warnings : [];
-    const sourceName = (group[0].metadata && group[0].metadata.source) || safeName;
-    const joined = group.map((d) => d.text == null ? '' : String(d.text)).join('\n\n');
-
-    // createdAt: earliest among chunks (defensive — chunks of one upload share it)
-    let createdAt;
-    for (const d of group) {
-      if (d.createdAt && (!createdAt || d.createdAt < createdAt)) createdAt = d.createdAt;
-    }
-
-    const description = group[0].metadata && group[0].metadata.description;
-    const totalChunks = group[0].metadata && group[0].metadata.totalChunks;
-
-    const sidecarObj = {
-      source: sourceName,
+    const docs = group.slice().sort(
+      (a, b) =>
+        ((a.metadata && a.metadata.chunkIndex) || 0) -
+        ((b.metadata && b.metadata.chunkIndex) || 0),
+    );
+    const body = docs.map((d) => d.text).join('\n\n');
+    const description =
+      docs[0] && docs[0].metadata && docs[0].metadata.description;
+    const totalChunks =
+      docs[0] && docs[0].metadata && docs[0].metadata.totalChunks;
+    const createdAt = docs.reduce((min, d) => {
+      const cur = d.createdAt;
+      if (!cur) return min;
+      return !min || cur < min ? cur : min;
+    }, null);
+    const provenance = {
+      source: docs[0].metadata.source,
       exportName: safeName,
-      totalChunks: Number.isInteger(totalChunks) ? totalChunks : group.length,
-      reassembledFrom: group.map((d) => d.id),
-      warnings: ws.slice(),
     };
-    if (description !== undefined && description !== null && description !== '') {
-      sidecarObj.description = description;
-    }
-    if (createdAt) sidecarObj.createdAt = createdAt;
-
+    if (uploadId) provenance.uploadId = uploadId;
+    if (description) provenance.description = description;
+    if (typeof totalChunks === 'number') provenance.totalChunks = totalChunks;
+    provenance.reassembledFrom = docs.map((d) => d.id);
+    if (createdAt) provenance.createdAt = createdAt;
+    // Sidecar always carries a `warnings` array (possibly empty) — preserves
+    // the pre-existing #89 contract that downstream tests assert against.
+    provenance.warnings = warnings ? warnings.slice() : [];
     return {
       name: safeName,
-      body: joined,
+      body,
       sidecar: {
         name: safeName + '.meta.json',
-        body: JSON.stringify(sidecarObj, null, 2) + '\n',
+        body: JSON.stringify(provenance, null, 2),
       },
     };
   }
-  return { groupChunksBySource, safeSourceExportName, reassembleSource };
+  return { groupChunksBySource, safeSourceExportName, reassembleSource, groupKey };
 });
