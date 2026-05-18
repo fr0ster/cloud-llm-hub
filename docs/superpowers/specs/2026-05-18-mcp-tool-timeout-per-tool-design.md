@@ -1,138 +1,101 @@
-# MCP tool timeout — per-tool overrides
+# SearchSource timeout — minimal default bump
 
 **Date:** 2026-05-18
 **Issue:** [cloud-llm-hub#97](https://github.com/fr0ster/cloud-llm-hub/issues/97)
-**Scope:** Single small server-side change shipping as v6.8.4. Plus `.mtaext` config rollout per deploy.
+**Scope:** One conditional in `srv/agent-manager.ts`. Shipping as v6.8.4.
 
 ## TL;DR
 
-`srv/agent-manager.ts:1148-1163` enforces a global 2-minute timeout on every MCP tool call via `Promise.race`. Heavy tools (most notably `SearchSource` scanning hundreds of ABAP objects) exceed it; raising the global default would penalise every quick tool. Fix: extract the timeout resolution into a small helper that consults a 3-tier lookup chain:
+`srv/agent-manager.ts:1148-1163` races every MCP tool call against a 2-minute timeout. SearchSource over moderate Z-namespaces blows past it routinely — the rest of the tool surface (~200 handlers) doesn't. **YAGNI on weight maps, per-tool env vars, AbortSignal**: just give SearchSource a longer default in the same block. Everything else stays at 2 min. Global env override still works.
 
-1. `process.env[\`LLM_AGENT_MCP_TOOL_TIMEOUT_MS_${toolName}\`]` (per-tool override, env-var name case-sensitive)
-2. `process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS` (global override, existing knob)
-3. `120_000` (built-in default, unchanged)
-
-Plus `.mtaext` for each deploy-target gets a starter override:
-
-```yaml
-LLM_AGENT_MCP_TOOL_TIMEOUT_MS_SearchSource: "600000"   # 10 min
+```ts
+const DEFAULT_TIMEOUT_MS = name === 'SearchSource' ? 600_000 : 120_000;
+const MCP_TOOL_TIMEOUT_MS =
+  Number(process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 ```
 
-No new endpoints, no schema changes, no client changes. Promise.race semantics unchanged — this only widens the deadline, not the cancellation behaviour.
+When the next tool needs special-casing, we add another branch. Until then, no infrastructure.
 
 ## What's already in place
 
-- `srv/agent-manager.ts:1142-1163` — the existing `Promise.race` block that races `toolCall` against a `setTimeout` reject.
-- `.mtaext` files per deploy-target — already pass `LLM_AGENT_*` env vars verbatim into the `cloud-llm-hub-srv` Cloud Foundry app.
+- `srv/agent-manager.ts:1148-1163` — the `Promise.race` block with the inline timeout lookup.
+- `process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS` — existing global knob; left intact.
 
 ## Out of scope
 
-- **AbortSignal propagation.** `Promise.race` only stops awaiting the result — the underlying ADT HTTP request keeps running until it returns naturally. Worth a follow-up issue but not in this one; the user-facing symptom (timeout error in chat) is fixed by widening the deadline, even if a stale request leaks server-side for a bit longer.
-- **Tool-self-declared default timeout** (each tool exporting its expected max). Couples cloud-llm-hub to `@mcp-abap-adt` release cycle. Not needed for the SearchSource pain point.
-- **Streaming progress / heartbeat extensions.** Same — not needed for this fix.
-- **Per-collection or per-user timeouts.** Env-var-per-tool is enough granularity.
+- **Weight maps / categories.** Speculative — only one tool currently needs an override.
+- **Per-tool env-var vocabulary.** 200+ tools × env-var = noise; we have one outlier today, hardcode it.
+- **AbortSignal propagation.** `Promise.race` still abandons the underlying ADT request when the timer fires. Not in scope; widening the deadline removes the user-visible error, and the leak is a separate concern worth a follow-up issue if observed in production.
+- **`.mtaext` per-deploy overrides.** Not needed — the new default already fits the SearchSource workload. Operators can still set `LLM_AGENT_MCP_TOOL_TIMEOUT_MS` globally if they want.
 
-## Components
+## The change
 
-### 1. Server: timeout resolver helper
-
-Inside `srv/agent-manager.ts` (or extracted to `srv/lib/mcp-tool-timeout.ts` if it grows), add:
+Inside `srv/agent-manager.ts`, the existing block:
 
 ```ts
-/**
- * Resolve the MCP tool timeout for a given tool name.
- *
- * Lookup order (first non-empty, valid positive integer wins):
- *   1. process.env[`LLM_AGENT_MCP_TOOL_TIMEOUT_MS_${toolName}`]
- *   2. process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS
- *   3. 120_000 (default)
- *
- * Tool names are case-sensitive. Malformed values (NaN, non-positive, non-numeric)
- * fall through to the next tier rather than being silently treated as 0.
- */
-export function resolveMcpToolTimeoutMs(
-  toolName: string,
-  env: NodeJS.ProcessEnv = process.env,
-  defaultMs = 120_000,
-): number {
-  const perTool = env[`LLM_AGENT_MCP_TOOL_TIMEOUT_MS_${toolName}`];
-  const global = env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS;
-  const parsed = (v: string | undefined): number | null => {
-    if (!v) return null;
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  };
-  return parsed(perTool) ?? parsed(global) ?? defaultMs;
-}
+const MCP_TOOL_TIMEOUT_MS =
+  Number(process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS) || 120_000;
 ```
 
-Replace the inline lookup at `agent-manager.ts:1148-1149` with a call to this helper:
+Becomes:
 
 ```ts
-const MCP_TOOL_TIMEOUT_MS = resolveMcpToolTimeoutMs(name);
+// Default 2 min for most tools; SearchSource scans whole packages over
+// ADT and routinely exceeds that on real Z-namespaces. Other tools that
+// hit the same wall in the future get their own branch here.
+const DEFAULT_TIMEOUT_MS = name === 'SearchSource' ? 600_000 : 120_000;
+const MCP_TOOL_TIMEOUT_MS =
+  Number(process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 ```
 
-The rest of the `Promise.race` block stays unchanged.
-
-### 2. `.mtaext` overrides per deploy
-
-Add to each `.mtaext` `parameters:` block (and `.mtaext.staging` where applicable):
-
-```yaml
-LLM_AGENT_MCP_TOOL_TIMEOUT_MS_SearchSource: "600000"   # 10 min — large packages
-```
-
-Targets: `deploy/acme-sandbox`, `deploy/acme-prod`, `deploy/acme-prod-stg`, `deploy/customer-b`. Each branch carries its own `.mtaext`. The new key sits next to the existing `LLM_AGENT_MODEL` / `LLM_AGENT_MCP_DESTINATION` / etc.
-
-`mta.yaml` and `mta-staging.yaml` are cross-branch invariants — they do NOT get the new key. Per-deploy values stay in `.mtaext` per the project's existing config-layering rule.
-
-### 3. Tests
-
-Unit test for `resolveMcpToolTimeoutMs` in `test/unit/`:
-
-- per-tool wins over global wins over default
-- malformed values (empty string, `"abc"`, `"0"`, `"-1"`) fall through to next tier
-- missing env returns default
-- explicit `env` arg lets the test inject without mutating `process.env`
+Three lines added, one line replaced. No new function, no new file.
 
 ## Error handling
 
 | Condition | Behavior |
 |---|---|
-| Per-tool env set, valid positive integer | Use that value |
-| Per-tool env set, invalid (NaN, ≤0, empty) | Fall through to global, then default |
-| Global env set, invalid | Fall through to default |
-| No env vars set | 120_000 ms default — unchanged from today |
-| Tool times out | Same as today: `Promise.race` rejects, agent surfaces the message; underlying request remains in flight server-side (Out of scope to fix here) |
+| `LLM_AGENT_MCP_TOOL_TIMEOUT_MS` is set to a valid positive number | Use it (current behavior — global override wins) |
+| `LLM_AGENT_MCP_TOOL_TIMEOUT_MS` is unset, tool is SearchSource | 600_000 ms (10 min) |
+| `LLM_AGENT_MCP_TOOL_TIMEOUT_MS` is unset, any other tool | 120_000 ms (2 min — unchanged) |
+| Tool times out | Same as today — race rejects, agent surfaces "MCP tool ... timed out after Ns" |
 
 ## Testing
 
-**Unit (Jest with ts-jest):**
+**Unit:**
 
-- `resolveMcpToolTimeoutMs`:
-  - per-tool override wins (`SearchSource` env, no global) → returns override
-  - global override wins when no per-tool (`SearchSource` env absent, `LLM_AGENT_MCP_TOOL_TIMEOUT_MS` set) → returns global
-  - default applies when both empty → returns 120_000
-  - per-tool invalid → falls through to global
-  - global invalid → falls through to default
-  - `"0"` and `"-100"` treated as invalid (positive-int gate)
-  - non-numeric (`"abc"`, `""`) treated as invalid
+The block is small enough that a focused test on a tiny extracted function reads cleaner than testing through the full `agent-manager` stack. Promote the timeout-resolution to a private helper inside `agent-manager.ts` (or `srv/lib/mcp-tool-timeout.ts` if more readability is needed):
+
+```ts
+export function resolveMcpToolTimeoutMs(
+  toolName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const override = Number(env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) return override;
+  return toolName === 'SearchSource' ? 600_000 : 120_000;
+}
+```
+
+Tests:
+
+- No env set, SearchSource → 600_000
+- No env set, RuntimeListFeeds → 120_000
+- Env set to `"900000"`, SearchSource → 900_000 (global override wins)
+- Env set to `"abc"`, SearchSource → 600_000 (NaN falls through)
+- Env set to `"0"`, SearchSource → 600_000 (non-positive falls through)
+- Env set to `"-1"`, SearchSource → 600_000
 
 **Manual (post-deploy):**
 
-- Issue a `SearchSource` call on `ZABAPGIT` recursively via chat-📎. Before fix: 2-min timeout. After fix: completes successfully within 10 min for typical workloads.
-- `cf logs cloud-llm-hub-srv --recent | grep "MCP tool"` — verify the timeout messages mention the new value for SearchSource specifically; other tools still log 120s.
+- `SearchSource` on `ZABAPGIT` recursive → completes (was: 2-min timeout).
+- Any other tool (e.g. `GetClass` on a small object) → completes quickly; timeout still 2 min.
+- Set `LLM_AGENT_MCP_TOOL_TIMEOUT_MS=300000` env override → both SearchSource and other tools use 5 min.
 
 ## File touch list
 
-- `srv/agent-manager.ts` — extract `resolveMcpToolTimeoutMs`, swap the inline lookup for the helper call.
-- `test/unit/mcp-tool-timeout.test.ts` (new) — unit tests for the helper.
-- `.mtaext` (deploy/acme-sandbox branch) — add SearchSource override.
-- `.mtaext` (deploy/acme-prod), `.mtaext.staging` (deploy/acme-prod-stg) — same.
-- `.mtaext` (deploy/customer-b) — same.
-
-Each deploy-branch update can happen on a separate commit during rollout (after main merge) — they don't conflict.
+- `srv/agent-manager.ts` — three-line conditional + helper extraction.
+- `test/unit/mcp-tool-timeout.test.ts` (new) — 6 small tests for `resolveMcpToolTimeoutMs`.
 
 ## Open questions
 
-None. The 10-minute SearchSource value matches typical observed durations for moderate Z-namespace scans; deploy operators can raise/lower per subaccount without code change.
+None. If a second tool turns out to need its own default in production, we add a second branch (or graduate to a map at that point) — but not pre-emptively.
