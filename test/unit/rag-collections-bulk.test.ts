@@ -286,3 +286,188 @@ describe('tryWithRetry', () => {
     expect(sleeps).toEqual([200, 500, 1500]);
   });
 });
+
+describe('addDocumentsBulk integration', () => {
+  function docs(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `chunk-${i}`,
+      text: 'x',
+      metadata: { source: 'a.md', chunkIndex: i, totalChunks: n },
+    }));
+  }
+
+  it('all chunks succeed → added equals total, errors empty', async () => {
+    const { registry } = await makeRegistry([{ ok: true }]);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5));
+    expect(res.added).toBe(5);
+    expect(res.errors).toEqual([]);
+  });
+
+  it('transient failures eventually succeed via retry', async () => {
+    // Inject instant sleep so the test doesn't wait ~1.4s of real backoff.
+    const instantSleep = (_ms: number) => Promise.resolve();
+    const byId = new Map<string, WriterScript>();
+    // chunks 1 and 3 fail twice with a transient error, then succeed
+    // addDocument prefixes the id as doc:<collectionId>:<docId>
+    byId.set('doc:test:chunk-1', [
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      { ok: true },
+    ]);
+    byId.set('doc:test:chunk-3', [
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      { ok: true },
+    ]);
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk(
+      'test',
+      docs(5),
+      undefined,
+      {
+        sleep: instantSleep,
+      },
+    );
+    expect(res.added).toBe(5);
+    expect(res.errors).toEqual([]);
+    expect(callsById.get('doc:test:chunk-1')).toBe(3);
+    expect(callsById.get('doc:test:chunk-3')).toBe(3);
+  });
+
+  it('permanent failures count as failed without retry', async () => {
+    const byId = new Map<string, WriterScript>();
+    // addDocument prefixes the id as doc:<collectionId>:<docId>
+    byId.set('doc:test:chunk-2', [
+      { ok: false, error: new Error('Qdrant upsert failed: 401 Unauthorized') },
+    ]);
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk('test', docs(5));
+    expect(res.added).toBe(4);
+    expect(callsById.get('doc:test:chunk-2')).toBe(1);
+    expect(res.errors.length).toBe(1);
+    expect(res.errors[0]).toMatch(/chunk-2/);
+  });
+
+  it('emits a warn log when added < total', async () => {
+    const byId = new Map<string, WriterScript>();
+    // addDocument prefixes the id as doc:<collectionId>:<docId>
+    byId.set('doc:test:chunk-2', [
+      { ok: false, error: new Error('Qdrant upsert failed: 401 Unauthorized') },
+    ]);
+    const warns: any[] = [];
+    const originalLog = cds.log;
+    (cds as any).log = (_name: string) => ({
+      info: () => undefined,
+      warn: (msg: string, ctx?: unknown) => warns.push({ msg, ctx }),
+      error: () => undefined,
+      debug: () => undefined,
+    });
+    try {
+      const { registry } = await makeRegistry([{ ok: true }], byId);
+      await (registry as any).addDocumentsBulk('test', docs(5));
+    } finally {
+      (cds as any).log = originalLog;
+    }
+    expect(warns.length).toBeGreaterThanOrEqual(1);
+    const partial = warns.find((w) => /partial/i.test(w.msg));
+    expect(partial).toBeDefined();
+    expect(partial.ctx.total).toBe(5);
+    expect(partial.ctx.added).toBe(4);
+    expect(partial.ctx.failed).toBe(1);
+  });
+
+  it('stops retrying once the shared retry-sleep budget is exhausted', async () => {
+    // Use a tiny budget (1000 ms) so 1 full chunk-retry (2200 ms) blows it,
+    // and an instant sleep so the test is fast.
+    const instantSleep = (_ms: number) => Promise.resolve();
+    const transient = (): WriterScript => [
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+      { ok: true },
+    ];
+    const byId = new Map<string, WriterScript>();
+    // addDocument prefixes the id as doc:<collectionId>:<docId>
+    for (let i = 0; i < 5; i += 1) byId.set(`doc:test:chunk-${i}`, transient());
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk(
+      'test',
+      docs(5),
+      undefined,
+      {
+        sleep: instantSleep,
+        budgetMs: 1000,
+      },
+    );
+    // chunk-0 spends 200+500=700ms in retry (budget left: 300), tries 1500
+    // backoff → canSleep(1500) === false → stops on 3rd attempt. Other
+    // chunks: budget already > 700 used; canSleep(200) checks 700+200<=1000
+    // → true for chunk-1 1st retry. After chunk-1's 200ms retry budget=900;
+    // canSleep(500) returns 900+500<=1000 → false. Chunk-1 stops there.
+    // Subsequent chunks have budget ≥ 900 used, canSleep(200) false → no
+    // retry, single attempt each.
+    expect(callsById.get('doc:test:chunk-0')).toBe(3); // initial + 2 retries
+    expect(callsById.get('doc:test:chunk-1')).toBe(2); // initial + 1 retry
+    expect(callsById.get('doc:test:chunk-2')).toBe(1); // initial only
+    expect(callsById.get('doc:test:chunk-3')).toBe(1);
+    expect(callsById.get('doc:test:chunk-4')).toBe(1);
+    expect(res.added).toBe(0); // all transient-failing, none recovered
+    expect(res.errors.length).toBe(5);
+  });
+
+  it('successful chunks continue after budget is exhausted', async () => {
+    const instantSleep = (_ms: number) => Promise.resolve();
+    // First 2 chunks always fail transiently (exhaust budget quickly).
+    // chunks 2..4 succeed on first try.
+    const exhaust: WriterScript = [
+      {
+        ok: false,
+        error: new Error('Qdrant upsert failed: 503 Service Unavailable'),
+      },
+    ];
+    const byId = new Map<string, WriterScript>();
+    // addDocument prefixes the id as doc:<collectionId>:<docId>
+    byId.set('doc:test:chunk-0', exhaust);
+    byId.set('doc:test:chunk-1', exhaust);
+    for (let i = 2; i < 5; i += 1)
+      byId.set(`doc:test:chunk-${i}`, [{ ok: true }]);
+    const { registry, callsById } = await makeRegistry([{ ok: true }], byId);
+    const res = await (registry as any).addDocumentsBulk(
+      'test',
+      docs(5),
+      undefined,
+      {
+        sleep: instantSleep,
+        budgetMs: 500, // less than even 1 full retry chain
+      },
+    );
+    // chunks 0..1 each consumed enough budget that chunks 2..4 still got
+    // attempted once and succeeded.
+    expect(callsById.get('doc:test:chunk-2')).toBe(1);
+    expect(callsById.get('doc:test:chunk-3')).toBe(1);
+    expect(callsById.get('doc:test:chunk-4')).toBe(1);
+    expect(res.added).toBe(3); // chunks 2..4
+    expect(res.errors.length).toBe(2); // chunks 0..1
+  });
+});
