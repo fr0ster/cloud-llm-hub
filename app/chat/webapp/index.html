@@ -773,9 +773,28 @@
             statusText.className = cls;
         }
 
+        const inputLockReasons = new Set();
+        function lockInput(reason) { inputLockReasons.add(reason); applyInputLock(); }
+        function unlockInput(reason) { inputLockReasons.delete(reason); applyInputLock(); }
+        function applyInputLock() {
+          const locked = inputLockReasons.size > 0;
+          for (const id of ['user-input', 'send-btn', 'attach-btn']) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = locked;
+          }
+          const anyUpload =
+            inputLockReasons.has('upload:quick') ||
+            inputLockReasons.has('upload:manage');
+          const manageBtn = document.querySelector('button[onclick="uploadFile()"]');
+          if (manageBtn) manageBtn.disabled = anyUpload || locked;
+        }
+
         function setInputEnabled(enabled) {
-            userInput.disabled = !enabled;
-            sendBtn.disabled = !enabled;
+            if (enabled) {
+                unlockInput('legacy-setInputEnabled');
+            } else {
+                lockInput('legacy-setInputEnabled');
+            }
         }
 
         function escapeHtml(str) {
@@ -886,14 +905,14 @@
                     if (!agentReady) {
                         // Agent is initializing (vectorization in progress) — keep polling
                         setStatus('INITIALIZING...', 'status-connecting');
-                        setInputEnabled(false);
+                        lockInput('bootstrap');
                         setTimeout(checkReady, 3000);
                         return;
                     }
 
                     ready = true;
                     setStatus('READY', 'status-ready');
-                    setInputEnabled(true);
+                    unlockInput('bootstrap');
                     destRefreshBtn.disabled = false;
                     refreshActiveCollections();
                     userInput.focus();
@@ -1147,7 +1166,7 @@
 
             chatWindow.innerHTML += `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`;
             userInput.value = '';
-            setInputEnabled(false);
+            lockInput('chat-pending');
 
             conversationHistory.push({ role: 'user', content: text });
 
@@ -1434,14 +1453,14 @@
                     placeholder.className = 'message';
                 }
                 setStatus('ERROR', 'status-error');
-                setInputEnabled(true);
+                unlockInput('chat-pending');
                 userInput.focus();
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 return;
             }
 
             setStatus('READY', 'status-ready');
-            setInputEnabled(true);
+            unlockInput('chat-pending');
             userInput.focus();
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
