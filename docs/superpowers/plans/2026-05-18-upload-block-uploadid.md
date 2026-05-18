@@ -261,6 +261,16 @@ describe('groupChunksBySource', () => {
     expect(orphans.map((d: any) => d.id)).toEqual(['standalone']);
   });
 
+  it('docs with non-integer chunkIndex go to orphans', () => {
+    const docs = [
+      { id: 'bad', text: 'x', metadata: { source: 'a.md', chunkIndex: 'foo' } },
+      makeDoc('a-0', 'a.md', 0, 1, { uploadId: 'u1' }),
+    ];
+    const { groups, orphans } = RagExport.groupChunksBySource(docs as any);
+    expect(groups.size).toBe(1);
+    expect(orphans.map((d: any) => d.id)).toEqual(['bad']);
+  });
+
   it('sorts docs within a group by chunkIndex', () => {
     const docs = [
       makeDoc('a-2', 'a.md', 2, 3, { uploadId: 'u1' }),
@@ -280,6 +290,17 @@ describe('groupChunksBySource', () => {
     const { groups } = RagExport.groupChunksBySource(docs);
     const entry = groups.get(JSON.stringify(['a.md', 'u1']));
     expect(entry!.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('keeps duplicate chunkIndex and inconsistent totalChunks warnings', () => {
+    const docs = [
+      makeDoc('a-0', 'a.md', 0, 2, { uploadId: 'u1' }),
+      makeDoc('a-0b', 'a.md', 0, 3, { uploadId: 'u1' }),
+    ];
+    const { groups } = RagExport.groupChunksBySource(docs);
+    const entry = groups.get(JSON.stringify(['a.md', 'u1']));
+    expect(entry!.warnings.some((w: string) => /duplicate chunk index 0/.test(w))).toBe(true);
+    expect(entry!.warnings.some((w: string) => /inconsistent totalChunks/.test(w))).toBe(true);
   });
 });
 ```
@@ -348,14 +369,15 @@ Replace `groupChunksBySource` (find the existing `function groupChunksBySource(d
     const groups = new Map();
     const orphans = [];
     for (const doc of docs) {
-      const key = groupKey(doc && doc.metadata);
-      if (!key) {
+      const md = doc && doc.metadata;
+      const key = groupKey(md);
+      const idx = md && md.chunkIndex;
+      if (!key || !Number.isInteger(idx)) {
         orphans.push(doc);
         continue;
       }
       let entry = groups.get(key);
       if (!entry) {
-        const md = doc.metadata;
         entry = {
           source: md.source,
           uploadId: md.uploadId || '_legacy',
@@ -368,29 +390,45 @@ Replace `groupChunksBySource` (find the existing `function groupChunksBySource(d
     }
     for (const entry of groups.values()) {
       entry.docs.sort(
-        (a, b) =>
-          ((a.metadata && a.metadata.chunkIndex) || 0) -
-          ((b.metadata && b.metadata.chunkIndex) || 0),
+        (a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex,
       );
-      // Re-run the same integrity checks that lived in the old impl.
-      const total = entry.docs.length;
-      const declared =
-        entry.docs[0] &&
-        entry.docs[0].metadata &&
-        entry.docs[0].metadata.totalChunks;
-      if (typeof declared === 'number' && declared !== total) {
+
+      // Preserve the old integrity checks, but attach warnings to this
+      // upload-specific entry instead of warningsBySource.
+      const seen = new Set();
+      for (const d of entry.docs) {
+        const i = d.metadata.chunkIndex;
+        if (seen.has(i)) {
+          entry.warnings.push('⚠ ' + entry.source + ': duplicate chunk index ' + i);
+        }
+        seen.add(i);
+      }
+
+      const present = new Set(entry.docs.map((d) => d.metadata.chunkIndex));
+      const max = Math.max(...entry.docs.map((d) => d.metadata.chunkIndex));
+      const missing = [];
+      for (let i = 0; i <= max; i += 1) if (!present.has(i)) missing.push(i);
+      if (missing.length) {
         entry.warnings.push(
-          `Source ${entry.source} (${entry.uploadId}): expected ${declared} chunks, found ${total}.`,
+          '⚠ ' + entry.source + ': ' + missing.length + ' chunks missing (indices ' + missing.join(',') + ')',
         );
       }
-      const indices = entry.docs.map((d) => d.metadata.chunkIndex);
-      for (let i = 0; i < indices.length; i += 1) {
-        if (indices[i] !== i) {
-          entry.warnings.push(
-            `Source ${entry.source} (${entry.uploadId}): chunk ${i} missing (saw index ${indices[i]} at position ${i}).`,
-          );
-          break;
-        }
+
+      const totals = Array.from(
+        new Set(
+          entry.docs
+            .map((d) => d.metadata.totalChunks)
+            .filter((v) => Number.isInteger(v)),
+        ),
+      );
+      if (totals.length > 1) {
+        entry.warnings.push(
+          '⚠ ' + entry.source + ': inconsistent totalChunks (' + totals.join(' vs ') + ')',
+        );
+      } else if (totals.length === 1 && totals[0] !== entry.docs.length) {
+        entry.warnings.push(
+          '⚠ ' + entry.source + ': expected ' + totals[0] + ' chunks, found ' + entry.docs.length,
+        );
       }
     }
     return { groups, orphans };
@@ -428,7 +466,9 @@ Replace `reassembleSource` (find the existing function) with this updated signat
     if (typeof totalChunks === 'number') provenance.totalChunks = totalChunks;
     provenance.reassembledFrom = docs.map((d) => d.id);
     if (createdAt) provenance.createdAt = createdAt;
-    if (warnings && warnings.length) provenance.warnings = warnings;
+    // Sidecar always carries a `warnings` array (possibly empty) — preserves
+    // the pre-existing #89 contract that downstream tests assert against.
+    provenance.warnings = warnings ? warnings.slice() : [];
     return {
       name: safeName,
       body,
@@ -486,10 +526,10 @@ Find the function:
 grep -n "function buildCollectionZipBlob\|buildCollectionZipBlob =" app/chat/webapp/index.html
 ```
 
-The function destructures `{ groups, orphans, warningsBySource }` from `RagExport.groupChunksBySource(filteredDocs)`. Update to:
+The function currently destructures `{ groups, orphans, warningsBySource }` from `RagExport.groupChunksBySource(filtered)`, where `filtered` is the existing local variable created earlier in `buildCollectionZipBlob`. Keep using that existing `filtered` variable; do not introduce `filteredDocs`.
 
 ```javascript
-const { groups, orphans } = RagExport.groupChunksBySource(filteredDocs);
+const { groups, orphans } = RagExport.groupChunksBySource(filtered);
 const warningsBySource = new Map(); // keyed by groupKey; flatten in the renderer
 const used = new Set();
 
@@ -504,21 +544,24 @@ for (const [key, entry] of groups.entries()) {
       uploadId === '_legacy' ? undefined : uploadId,
       warnings,
     );
-    zip.file('reassembled/' + name, body);
-    zip.file('reassembled/' + sidecar.name, sidecar.body);
+    // Use accountAndPut so the 50 MB cap (EXPORT_MAX_UNCOMPRESSED_BYTES)
+    // and the `fileCount` counter stay accurate — the inner helper
+    // increments both before delegating to zip.file().
+    accountAndPut('reassembled/' + name, body);
+    accountAndPut('reassembled/' + sidecar.name, sidecar.body);
     sourceFileCount += 1;
   }
 }
 ```
 
-The original iteration of `filteredDocs` for the `chunks/` folder stays unchanged — that loop emits one zip entry per individual chunk regardless of grouping.
+The original iteration of `filtered` for the `chunks/` folder stays unchanged — that loop emits one zip entry per individual chunk regardless of grouping.
 
 Return value still includes `warningsBySource` so `runCollectionExport`'s existing renderer keeps working:
 
 ```javascript
 return {
   blob,
-  documentCount: filteredDocs.length,
+  documentCount: filtered.length,
   fileCount,
   sourceFileCount,
   orphanCount: orphans.length,
