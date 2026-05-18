@@ -473,18 +473,23 @@ export class CollectionRegistry {
     collectionId: string,
     doc: Omit<RagDocument, 'createdAt'>,
     namespace?: string,
+    options?: {
+      /**
+       * When true, persist the document locally even if the RAG upsert
+       * fails (stamping `metadata.unindexed = true`). Used by bulk/file
+       * upload paths so reassembly export can recover chunks that the
+       * vector backend rejected. Default false — single-document API
+       * callers keep the atomic "either fully written or fully failed"
+       * contract so a 4xx response means nothing was created.
+       */
+      persistOnFail?: boolean;
+    },
   ): Promise<RagDocument> {
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
 
-    const full: RagDocument = {
-      ...doc,
-      createdAt: new Date().toISOString(),
-    };
-
     // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
-    // We must inspect .ok and throw on failure or chunks vanish silently.
     const result = await stored.rag.upsert(doc.text, {
       id: `doc:${collectionId}:${doc.id}`,
       namespace:
@@ -492,16 +497,43 @@ export class CollectionRegistry {
         (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
       ...doc.metadata,
     });
-    if (!result.ok) {
+
+    if (!result.ok && !options?.persistOnFail) {
+      // Single-document API contract: failure leaves nothing behind, so a
+      // retry against the same endpoint won't accidentally create a
+      // duplicate "ghost" record.
       throw result.error instanceof Error
         ? result.error
         : new Error(String(result.error));
     }
 
-    stored.documents.set(doc.id, full);
+    // Bulk/file path (persistOnFail=true): persist locally regardless of
+    // Qdrant outcome so export/reassembly recovers the chunk even when the
+    // vector backend rejected it. On failure stamp `unindexed: true` so
+    // callers (search, future re-index job) can tell which entries are
+    // missing from the vector index. On retry success this method is
+    // invoked again with the same id and overwrites without the flag.
+    const persisted: RagDocument = {
+      ...doc,
+      createdAt: new Date().toISOString(),
+      metadata: result.ok
+        ? doc.metadata
+        : { ...(doc.metadata ?? {}), unindexed: true },
+    };
+    stored.documents.set(doc.id, persisted);
     stored.meta.documentCount = stored.documents.size;
-    this.persistDocument(collectionId, full);
-    return full;
+    this.persistDocument(collectionId, persisted);
+
+    if (!result.ok) {
+      // Throw so addDocumentsBulk's tryWithRetry can retry transient failures.
+      // The local copy is already safe — retries that eventually succeed
+      // will clear the `unindexed` flag via the overwrite above.
+      throw result.error instanceof Error
+        ? result.error
+        : new Error(String(result.error));
+    }
+
+    return persisted;
   }
 
   async addDocumentsBulk(
@@ -523,7 +555,10 @@ export class CollectionRegistry {
 
     for (const doc of docs) {
       const result = await tryWithRetry(
-        () => this.addDocument(collectionId, doc, namespace),
+        () =>
+          this.addDocument(collectionId, doc, namespace, {
+            persistOnFail: true,
+          }),
         {
           sleep,
           canSleep: (delay) => retrySleepSpentMs + delay <= budgetMs,

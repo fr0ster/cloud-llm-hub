@@ -99,7 +99,12 @@ describe('addDocument (Result-aware)', () => {
     ).rejects.toThrow(/503/);
   });
 
-  it('does NOT persist the document when upsert fails', async () => {
+  it('does NOT persist when upsert fails (single-doc API contract)', async () => {
+    // Without persistOnFail (default), addDocument behaves atomically:
+    // failure leaves nothing behind. Single-doc API callers (POST
+    // /v1/rag/collections/:id/documents) rely on this so a 4xx response
+    // means nothing was created — retrying with a new generated id won't
+    // produce hidden duplicate records.
     const { registry } = await makeRegistry([
       { ok: false, error: new Error('Qdrant upsert failed: 401') },
     ]);
@@ -110,9 +115,70 @@ describe('addDocument (Result-aware)', () => {
         metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
       }),
     ).rejects.toThrow();
-    // The stored.documents map must not contain a-0
     const stored = (registry as any).collections.get('test');
     expect(stored.documents.has('a-0')).toBe(false);
+  });
+
+  it('persists with unindexed=true when persistOnFail=true and upsert fails', async () => {
+    // Bulk/file path opt-in: addDocumentsBulk passes persistOnFail:true so
+    // export/reassembly can recover chunks the vector backend rejected.
+    const { registry } = await makeRegistry([
+      { ok: false, error: new Error('Qdrant upsert failed: 401') },
+    ]);
+    await expect(
+      (registry as any).addDocument(
+        'test',
+        {
+          id: 'a-0',
+          text: 'hello',
+          metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+        },
+        undefined,
+        { persistOnFail: true },
+      ),
+    ).rejects.toThrow();
+    const stored = (registry as any).collections.get('test');
+    expect(stored.documents.has('a-0')).toBe(true);
+    const persisted = stored.documents.get('a-0');
+    expect(persisted.metadata.unindexed).toBe(true);
+    expect(persisted.text).toBe('hello');
+    expect(persisted.metadata.source).toBe('a.md');
+  });
+
+  it('persistOnFail retry success clears the unindexed flag', async () => {
+    // Simulates tryWithRetry's overwrite: first persistOnFail call fails,
+    // second succeeds — the re-persisted doc must NOT carry the flag.
+    const { registry } = await makeRegistry([
+      { ok: false, error: new Error('Qdrant upsert failed: 503') },
+      { ok: true },
+    ]);
+    await expect(
+      (registry as any).addDocument(
+        'test',
+        {
+          id: 'a-0',
+          text: 'hello',
+          metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+        },
+        undefined,
+        { persistOnFail: true },
+      ),
+    ).rejects.toThrow();
+    const storedBefore = (registry as any).collections.get('test');
+    expect(storedBefore.documents.get('a-0').metadata.unindexed).toBe(true);
+    const doc = await (registry as any).addDocument(
+      'test',
+      {
+        id: 'a-0',
+        text: 'hello',
+        metadata: { source: 'a.md', chunkIndex: 0, totalChunks: 1 },
+      },
+      undefined,
+      { persistOnFail: true },
+    );
+    expect(doc.metadata.unindexed).toBeUndefined();
+    const storedAfter = (registry as any).collections.get('test');
+    expect(storedAfter.documents.get('a-0').metadata.unindexed).toBeUndefined();
   });
 });
 
