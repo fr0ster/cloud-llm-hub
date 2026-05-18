@@ -34,29 +34,44 @@ No new endpoints, no schema migrations.
 
 ## Components
 
-### 1. UI: block chat-📎 upload
+### 1. UI: shared input-lock with ref-count
 
-`app/chat/webapp/index.html:handleQuickFileAttach`
+The existing `setInputEnabled(enabled)` (`index.html:776-779`) only toggles `#user-input` and `#send-btn`. The Send-cycle of `sendMessage()` already uses it: disable on submit, re-enable when the stream completes. `#attach-btn` is NOT covered, so today a user can click attach while the agent is processing.
 
-At the moment the user accepts the description prompt (just before the first `ragFetch`), disable:
+The naive `setChatBusy(true)` / `setChatBusy(false)` pair from the first draft would create a **reverse race**: user attaches during agent processing → upload `finally` re-enables Send before the agent finishes.
 
-- `document.getElementById('user-input')`
-- `document.getElementById('send-btn')` (or whatever the Send button id is — confirm via `grep -n 'id="send' index.html`)
-- `document.getElementById('attach-btn')`
-
-Track this with a small helper:
+Fix: replace the boolean toggle with a ref-counted reason-set, and put attach inside the same lock surface.
 
 ```javascript
-function setChatBusy(busy) {
+const inputLockReasons = new Set();
+
+function lockInput(reason) {
+  inputLockReasons.add(reason);
+  applyInputLock();
+}
+
+function unlockInput(reason) {
+  inputLockReasons.delete(reason);
+  applyInputLock();
+}
+
+function applyInputLock() {
+  const locked = inputLockReasons.size > 0;
   const ids = ['user-input', 'send-btn', 'attach-btn'];
   for (const id of ids) {
     const el = document.getElementById(id);
-    if (el) el.disabled = busy;
+    if (el) el.disabled = locked;
   }
 }
 ```
 
-Wrap the upload work in `try / finally`:
+Migrate existing call sites:
+
+- `setInputEnabled(false)` in `sendMessage()` → `lockInput('chat-pending')`.
+- `setInputEnabled(true)` after agent stream completes (look around `index.html:889/896`) → `unlockInput('chat-pending')`.
+- The initial `setInputEnabled(false)` during page bootstrap (waiting for models to load) → `lockInput('bootstrap')`; the matching enable after dest list arrives → `unlockInput('bootstrap')`.
+
+Then `handleQuickFileAttach` uses the same lock:
 
 ```javascript
 async function handleQuickFileAttach(input) {
@@ -66,16 +81,22 @@ async function handleQuickFileAttach(input) {
   const description = prompt(...);
   if (description === null) return;
 
-  setChatBusy(true);
+  lockInput('upload');
   try {
     // existing upload flow ...
   } finally {
-    setChatBusy(false);
+    unlockInput('upload');
   }
 }
 ```
 
-Idempotency: if `setChatBusy(true)` runs twice (impossible today because we just blocked the input, but defensive), both re-enables still leave the page usable.
+Now overlapping reasons compose correctly:
+
+- Agent busy + user attaches → both reasons set; upload `finally` removes only `'upload'`, leaves `'chat-pending'`. Input stays disabled until agent completes.
+- Agent idle + user attaches → only `'upload'` set; upload `finally` clears, input enabled.
+- Reverse order (attach starts, then agent somehow starts — guarded by lock, so impossible) is closed by construction.
+
+`setInputEnabled` itself stays as a one-line `applyInputLock`-equivalent wrapper for backward compatibility with any other call sites we miss, or — preferred — remove it entirely after migrating the two known consumers.
 
 ### 2. UI: block Manage upload form
 
@@ -132,7 +153,20 @@ The response shape (`{ filename, chunks, added, errors }`) stays unchanged — c
 
 `app/chat/webapp/rag-export.js`
 
-Change the grouping map key to a composite. Internal Map keys can be strings; pick a simple separator that can't appear in either side:
+Old return shape: `{ groups: Map<source, doc[]>, orphans, warningsBySource: Map<source, string[]> }`. Consumers iterated the Map and used the **map key as the source filename**. That breaks once the key becomes a composite — `safeSourceExportName("rap-bo-creation.md|8f2c1a30")` would put the literal composite into the zip path.
+
+New return shape — explicit value object per group:
+
+```javascript
+{
+  groups: Map<groupKey, { source, uploadId, docs, warnings }>,
+  orphans: doc[],
+}
+```
+
+`warningsBySource` is folded into the group object (one warning array per upload group). The map key is internal/opaque; the `source` and `uploadId` come from the value.
+
+`groupKey(metadata)` helper, **exported** so consumers in `index.html` can compute the same key for lookups:
 
 ```javascript
 function groupKey(metadata) {
@@ -145,7 +179,33 @@ function groupKey(metadata) {
 
 (`|` is safe — filenames are sanitized; UUIDs and `_legacy` don't contain it.)
 
-Change the `groups` and `warningsBySource` Maps to use this composite key. The Map still exposes `source` for messages and sidecar, but disambiguates uploads.
+`RagExport` now exports `groupKey` alongside `groupChunksBySource`, `safeSourceExportName`, `reassembleSource`.
+
+Consumer migration (within `index.html`):
+
+- Bulk export loop:
+
+  ```javascript
+  for (const [, { source, uploadId, docs, warnings }] of groups.entries()) {
+    const safeName = RagExport.safeSourceExportName(source, used);
+    const { name, body, sidecar } = RagExport.reassembleSource(
+      docs, safeName, uploadId, warnings,
+    );
+    // ...
+  }
+  ```
+
+- Per-entry `downloadSourceFile`:
+
+  ```javascript
+  const key = RagExport.groupKey(clicked.metadata);
+  const group = groups.get(key);
+  if (!group) { ... }
+  const { source, uploadId, docs, warnings } = group;
+  // ...
+  ```
+
+Map keys never escape into user-visible text. The `source` value (raw filename) is what reaches `safeSourceExportName`, the warning strings, and the sidecar.
 
 Sidecar adds `uploadId`:
 
@@ -158,17 +218,27 @@ Sidecar adds `uploadId`:
 }
 ```
 
-Multiple uploads of the same filename → multiple sidecars with different `uploadId`s. The `safeSourceExportName` collision logic (`-1`, `-2`, ...) already handles two files with the same sanitized name in the zip, so the second upload's reassembled output lands at `rap-bo-creation-1.md` automatically. Spec change: pass uploadId to the reassembler so the warning messages reference the right upload (no behaviour change otherwise — collision suffix is what disambiguates filenames).
+Multiple uploads of the same filename → multiple sidecars with different `uploadId`s. The `safeSourceExportName` collision suffix (`-1`, `-2`, ...) already handles same-sanitized-name conflicts within the export, so the second upload's reassembled body lands at `rap-bo-creation-1.md` automatically. `reassembleSource` gains a 4th positional arg `uploadId` (string or undefined for legacy); the sidecar omits the field when undefined.
 
-Backward compatibility: existing entries without `metadata.uploadId` get the `_legacy` token. Old collections still reassemble correctly; all pre-fix chunks of the same source group together under one `_legacy` group.
+Backward compatibility: existing entries without `metadata.uploadId` get the `_legacy` token in the composite key. Old collections still reassemble correctly — all pre-fix chunks of one source group under one `(source, '_legacy')` entry. Sidecar's `uploadId` field is omitted in that case so the marker doesn't leak into provenance.
 
 ### 5. Client: per-entry SRC button uses uploadId
 
-`downloadSourceFile(collection, docId)` already filters `groups.get(sourceName)`. Update to use the composite key from the clicked doc:
+`downloadSourceFile(collection, docId)` currently does `groups.get(sourceName)`. After the new return shape it uses the exported `RagExport.groupKey` helper:
 
 ```javascript
-const sourceKey = groupKey(clicked.metadata);
-const group = groups.get(sourceKey);
+const key = RagExport.groupKey(clicked.metadata);
+const group = groups.get(key);
+if (!group) {
+  alert('No active group found for this entry.');
+  return;
+}
+const { source, uploadId, docs, warnings } = group;
+const safeName = RagExport.safeSourceExportName(source, new Set());
+const { name, body, sidecar } = RagExport.reassembleSource(
+  docs, safeName, uploadId, warnings,
+);
+// build mini-zip as before
 ```
 
 User clicking SRC on a chunk of upload-A only reassembles that upload's chunks, not chunks from another upload of the same source.
