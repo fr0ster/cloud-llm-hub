@@ -12,7 +12,7 @@ const config: Config = {
     '^.+\\.js$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
   },
   transformIgnorePatterns: [
-    'node_modules/(?!(@mcp-abap-adt)/)',
+    'node_modules/(?!(@mcp-abap-adt|@sap-ai-sdk)/)',
   ],
 };
 
