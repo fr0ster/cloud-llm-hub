@@ -18,11 +18,25 @@ Reference: comparable manual review by a senior ABAP engineer is estimated at 1�
 
 ## Token accounting
 
+### Executor side — cloud-llm-hub (SmartAgent + RAG embedder)
+
 | Model | prompt | completion | total | requests |
 |---|---|---|---|---|
 | gpt-5.2 | 362,555 | 14,695 | 377,250 | 74 |
 | embedder | 3,536 | 0 | 3,536 | 16 |
-| **GRAND** | | | **380,786** | **90** |
+| **GRAND (executor)** | | | **380,786** | **90** |
+
+### Controller side — this Claude Code session (Claude Opus 4.7)
+
+Captured at end of the combined sFTP + code-review work, ~30% of session attributed to this code-review task by wall-clock (sFTP was the larger / longer task and gets the remaining ~70%):
+
+| Model | input | output | cache read | cache write | session cost (combined) |
+|---|---|---|---|---|---|
+| `claude-opus-4-7` | 13.0k | 518.0k | 138.7M | 1.9M | $94.53 |
+
+Approximate share for THIS code-review task: ~156k output + ~5.3k input + ~42M cache-read ≈ **$28.36**.
+
+Splitting limitation: `/cost` is session-cumulative, not per-task. Future runs should capture `/cost` baseline before each task — see `feedback-token-accounting-both-sides` in memory.
 
 Per-check token cost was uniform — each ran the same source-read sequence (ReadProgram + GetIncludesList + GetInclude × 1) and produced a similar-shaped output. Maintainability was the largest individual response (16 findings, 9.6k SSE bytes) but token-wise stayed in the same band as the others.
 

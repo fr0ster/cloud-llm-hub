@@ -26,11 +26,30 @@ Reference point: a comparable manual analysis through the cloud-llm-hub UI is es
 
 Computed from `usage.models.*` across every SSE response in `curl/`.
 
+### Executor side — cloud-llm-hub (SmartAgent + RAG embedder)
+
 | Model | prompt tokens | completion tokens | total | requests |
 |---|---|---|---|---|
 | `gpt-5.2` | ~993k | ~49k | **1,042,135** | 212 |
 | `embedder` | 11,998 | 0 | 11,998 | 52 |
-| **GRAND** | | | **1,054,133** | **264** |
+| **GRAND (executor)** | | | **1,054,133** | **264** |
+
+### Controller side — this Claude Code session (Claude Opus 4.7)
+
+Captured at end of the combined sFTP + code-review work, split ~70/30 between the two tutorials by wall-clock estimation (sFTP was the larger / longer task):
+
+| Model | input | output | cache read | cache write | session cost (combined) |
+|---|---|---|---|---|---|
+| `claude-opus-4-7` | 13.0k | 518.0k | 138.7M | 1.9M | $94.53 |
+| `claude-haiku-4-5` | 4.8k | 18 | 0 | 0 | $0.005 |
+| **GRAND (combined session)** | | | | | **$94.53** |
+
+Approximate per-tutorial split (70% sFTP / 30% code-review by wall-clock):
+
+- **sFTP controller share:** ~363k output + ~12.5k input + ~97M cache-read ≈ **$66.17**
+- code-review controller share: ~156k output + ~5.3k input + ~42M cache-read ≈ $28.36 (see code-review/examples/ZDMS_UPLOAD_FILES/RETRO.md)
+
+Splitting limitation: `/cost` is session-cumulative, not per-task. Future runs should capture `/cost` baseline before each task — see `feedback-token-accounting-both-sides` in memory.
 
 Largest single consumer was Stage 2 (the 13-seed verdict batch — ~400k tokens). Stage 3 SearchSource sweeps were each ~30–50k due to large source-text echoed back from the backend.
 
