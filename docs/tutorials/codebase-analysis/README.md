@@ -12,12 +12,19 @@ Pipeline:
 
 ```text
 informal stakeholder ask
-  -> Stage 1 -> 01-task.md        (formal task, goal, measurement)
-  -> Stage 2 -> 02-methods.md     (SFTP methods used in declared scope)
-  -> Stage 3 -> 03-usage-map.md   (usage sites, channels, blind spots)
-  -> Stage 4 -> 04-analysis.md    (where/how/why interpretation)
-  -> Stage 5 -> 05-result.md      (goal answer + migration handoff)
+  -> Stage 1  -> 01-task.md            (formal task, goal, measurement)
+  -> Stage 2  -> 02-methods.md         (per-seed verdict with source evidence)
+  -> Stage 2b -> 02b-methods-deep.md   (open-ended method enumeration per "yes" seed)
+  -> Stage 2c -> 02c-code-extracts.md  (verbatim ABAP snippet per distinct mechanism)
+  -> Stage 3  -> 03-usage-map.md       (where every consumer lives, evidence-backed)
+  -> Stage 4  -> 04-analysis.md        (where/how/why per business domain + completeness)
+  -> Stage 5  -> 05-result.md          (goal answer + migration handoff)
+  + manager  -> report.pptx            (slide deck — concrete consumers, code, proposal)
+  + retro    -> RETRO.md               (token cost, wall-clock, failure modes, lessons)
+  + log      -> session-log.md         (UI-style render of every agent interaction)
 ```
+
+The 02b / 02c / pptx / RETRO / session-log additions came out of the 2026-05-19 worked example and folded back into the tutorial. Stage 2b unblocks "wrong-mechanism bias" (Stage 2's verdict is shaped by your rules; 2b is open-ended to surface variants). Stage 2c captures verbatim code per mechanism for the handoff. The deck + retro + log are deliverables shipping next to the artifacts.
 
 ## Anti-pattern we critique
 
@@ -30,9 +37,11 @@ A real customer asked the question through one dense prompt: a baseline program,
 
 This tutorial decomposes that prompt into five staged checkpoints.
 
-## Anonymization
+## On the worked example in `examples/`
 
-Every identifier in example artifacts is an anonymized stand-in. The real-name → stand-in mapping lives in private notes **outside this repository**. Never commit a customer-specific name.
+The artifacts under `examples/` are from a real 2026-05-19 sFTP analysis run, with real customer object names (`Z*`, `ZDEMO_FT_*`, `ZDEMO_MD_*`, etc.) preserved. This repository is private and serves one customer; we don't carry an anonymization layer here. If you ever copy these examples to a public repo or share with a third party, anonymize first.
+
+Why keep real names: the tutorial is more credible as evidence ("we actually ran this against a real estate and got these 19 objects"), not as theory.
 
 ## Progress
 
