@@ -1,0 +1,8 @@
+data: {"id":"chatcmpl-3fa7c588-0e5a-4509-95bf-1e62b741d7d4","object":"chat.completion.chunk","created":1779190067,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"I can’t do that with the tools actually available to me in this session.\n\n- I **do** have: `ReadProgram`, `GetProgram`, `SearchObject`, `SearchSource`, `CheckProgram`, etc.\n- I **do not** have: `GetIncludesList` or `GetInclude` (they’re not present in the toolset I can call), so I can’t enumerate and read includes the way you requested.\n\nIf you want, I can still verify whether `ZSFTP_BNP_PARIBAS` is an SFTP usage site by:\n1) `ReadProgram( 'ZSFTP_BNP_PARIBAS' )` (main include)  \n2) then using `SearchSource` in the program’s package to find:\n   - `SXPG_COMMAND_EXECUTE`\n   - `SM69`\n   - `SFTP`, `SSH`, `scp`, `psftp`, `sftp.exe`\n   - constant keys like `PRIVATE_KEY_PATH`, `FTP_PSWD`, and `zfi_constants=>*`\n\nTell me if that alternative is acceptable, and (optionally) which package/devclass the program belongs to (or I can infer it from `ReadProgram`)."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3fa7c588-0e5a-4509-95bf-1e62b741d7d4","object":"chat.completion.chunk","created":1779190067,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-3fa7c588-0e5a-4509-95bf-1e62b741d7d4","object":"chat.completion.chunk","created":1779190067,"model":"x","choices":[],"usage":{"prompt_tokens":2662,"completion_tokens":248,"total_tokens":2910,"models":{"gpt-5.2":{"promptTokens":6381,"completionTokens":521,"totalTokens":6902,"requests":4},"embedder":{"promptTokens":197,"completionTokens":0,"totalTokens":197,"requests":2}}}}
+
+data: [DONE]
+

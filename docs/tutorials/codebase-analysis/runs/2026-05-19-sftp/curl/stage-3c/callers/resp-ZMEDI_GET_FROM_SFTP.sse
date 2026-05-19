@@ -1,0 +1,248 @@
+data: {"id":"chatcmpl-48261a38-ff80-4a71-858e-270023b29577","object":"chat.completion.chunk","created":1779190976,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n[SmartAgent: Executing SearchSource...]\n"},"finish_reason":null}]}
+
+: heartbeat {"tool":"SearchSource","elapsed":5000}
+
+: heartbeat {"tool":"SearchSource","elapsed":10000}
+
+: heartbeat {"tool":"SearchSource","elapsed":15005}
+
+: heartbeat {"tool":"SearchSource","elapsed":20005}
+
+: heartbeat {"tool":"SearchSource","elapsed":25005}
+
+: heartbeat {"tool":"SearchSource","elapsed":30006}
+
+: heartbeat {"tool":"SearchSource","elapsed":35005}
+
+: heartbeat {"tool":"SearchSource","elapsed":40005}
+
+: heartbeat {"tool":"SearchSource","elapsed":45006}
+
+: heartbeat {"tool":"SearchSource","elapsed":50005}
+
+: heartbeat {"tool":"SearchSource","elapsed":55006}
+
+: heartbeat {"tool":"SearchSource","elapsed":60006}
+
+: heartbeat {"tool":"SearchSource","elapsed":65013}
+
+: heartbeat {"tool":"SearchSource","elapsed":70014}
+
+: heartbeat {"tool":"SearchSource","elapsed":75013}
+
+: heartbeat {"tool":"SearchSource","elapsed":80013}
+
+: heartbeat {"tool":"SearchSource","elapsed":85014}
+
+: heartbeat {"tool":"SearchSource","elapsed":90014}
+
+: heartbeat {"tool":"SearchSource","elapsed":95014}
+
+: heartbeat {"tool":"SearchSource","elapsed":100015}
+
+: heartbeat {"tool":"SearchSource","elapsed":105014}
+
+: heartbeat {"tool":"SearchSource","elapsed":110015}
+
+: heartbeat {"tool":"SearchSource","elapsed":115015}
+
+: heartbeat {"tool":"SearchSource","elapsed":120015}
+
+: heartbeat {"tool":"SearchSource","elapsed":125016}
+
+: heartbeat {"tool":"SearchSource","elapsed":130016}
+
+: heartbeat {"tool":"SearchSource","elapsed":135017}
+
+: heartbeat {"tool":"SearchSource","elapsed":140017}
+
+: heartbeat {"tool":"SearchSource","elapsed":145018}
+
+: heartbeat {"tool":"SearchSource","elapsed":150017}
+
+: heartbeat {"tool":"SearchSource","elapsed":155018}
+
+: heartbeat {"tool":"SearchSource","elapsed":160017}
+
+: heartbeat {"tool":"SearchSource","elapsed":165018}
+
+: heartbeat {"tool":"SearchSource","elapsed":170018}
+
+: heartbeat {"tool":"SearchSource","elapsed":175019}
+
+: heartbeat {"tool":"SearchSource","elapsed":180019}
+
+: heartbeat {"tool":"SearchSource","elapsed":185018}
+
+: heartbeat {"tool":"SearchSource","elapsed":190018}
+
+: heartbeat {"tool":"SearchSource","elapsed":195019}
+
+: heartbeat {"tool":"SearchSource","elapsed":200018}
+
+: heartbeat {"tool":"SearchSource","elapsed":205019}
+
+: heartbeat {"tool":"SearchSource","elapsed":210019}
+
+: heartbeat {"tool":"SearchSource","elapsed":215020}
+
+: heartbeat {"tool":"SearchSource","elapsed":220019}
+
+: heartbeat {"tool":"SearchSource","elapsed":225019}
+
+: heartbeat {"tool":"SearchSource","elapsed":230020}
+
+: heartbeat {"tool":"SearchSource","elapsed":235021}
+
+: heartbeat {"tool":"SearchSource","elapsed":240022}
+
+: heartbeat {"tool":"SearchSource","elapsed":245022}
+
+: heartbeat {"tool":"SearchSource","elapsed":250022}
+
+: heartbeat {"tool":"SearchSource","elapsed":255023}
+
+: heartbeat {"tool":"SearchSource","elapsed":260024}
+
+: heartbeat {"tool":"SearchSource","elapsed":265023}
+
+: heartbeat {"tool":"SearchSource","elapsed":270024}
+
+: heartbeat {"tool":"SearchSource","elapsed":275024}
+
+: heartbeat {"tool":"SearchSource","elapsed":280024}
+
+: heartbeat {"tool":"SearchSource","elapsed":285025}
+
+: heartbeat {"tool":"SearchSource","elapsed":290025}
+
+: heartbeat {"tool":"SearchSource","elapsed":295025}
+
+: heartbeat {"tool":"SearchSource","elapsed":300025}
+
+: heartbeat {"tool":"SearchSource","elapsed":305025}
+
+: heartbeat {"tool":"SearchSource","elapsed":310025}
+
+: heartbeat {"tool":"SearchSource","elapsed":315025}
+
+: heartbeat {"tool":"SearchSource","elapsed":320025}
+
+: heartbeat {"tool":"SearchSource","elapsed":325026}
+
+: heartbeat {"tool":"SearchSource","elapsed":330027}
+
+: heartbeat {"tool":"SearchSource","elapsed":335027}
+
+: heartbeat {"tool":"SearchSource","elapsed":340028}
+
+: heartbeat {"tool":"SearchSource","elapsed":345027}
+
+: heartbeat {"tool":"SearchSource","elapsed":350027}
+
+: heartbeat {"tool":"SearchSource","elapsed":355028}
+
+: heartbeat {"tool":"SearchSource","elapsed":360028}
+
+: heartbeat {"tool":"SearchSource","elapsed":365027}
+
+: heartbeat {"tool":"SearchSource","elapsed":370027}
+
+: heartbeat {"tool":"SearchSource","elapsed":375027}
+
+: heartbeat {"tool":"SearchSource","elapsed":380028}
+
+: heartbeat {"tool":"SearchSource","elapsed":385027}
+
+: heartbeat {"tool":"SearchSource","elapsed":390027}
+
+: heartbeat {"tool":"SearchSource","elapsed":395027}
+
+: heartbeat {"tool":"SearchSource","elapsed":400027}
+
+: heartbeat {"tool":"SearchSource","elapsed":405028}
+
+: heartbeat {"tool":"SearchSource","elapsed":410029}
+
+: heartbeat {"tool":"SearchSource","elapsed":415028}
+
+: heartbeat {"tool":"SearchSource","elapsed":420029}
+
+: heartbeat {"tool":"SearchSource","elapsed":425028}
+
+: heartbeat {"tool":"SearchSource","elapsed":430029}
+
+: heartbeat {"tool":"SearchSource","elapsed":435030}
+
+: heartbeat {"tool":"SearchSource","elapsed":440029}
+
+: heartbeat {"tool":"SearchSource","elapsed":445029}
+
+: heartbeat {"tool":"SearchSource","elapsed":450030}
+
+: heartbeat {"tool":"SearchSource","elapsed":455030}
+
+: heartbeat {"tool":"SearchSource","elapsed":460031}
+
+: heartbeat {"tool":"SearchSource","elapsed":465031}
+
+: heartbeat {"tool":"SearchSource","elapsed":470032}
+
+: heartbeat {"tool":"SearchSource","elapsed":475032}
+
+: heartbeat {"tool":"SearchSource","elapsed":480033}
+
+: heartbeat {"tool":"SearchSource","elapsed":485032}
+
+: heartbeat {"tool":"SearchSource","elapsed":490033}
+
+: heartbeat {"tool":"SearchSource","elapsed":495032}
+
+: heartbeat {"tool":"SearchSource","elapsed":500033}
+
+: heartbeat {"tool":"SearchSource","elapsed":505033}
+
+: heartbeat {"tool":"SearchSource","elapsed":510033}
+
+: heartbeat {"tool":"SearchSource","elapsed":515033}
+
+: heartbeat {"tool":"SearchSource","elapsed":520033}
+
+: heartbeat {"tool":"SearchSource","elapsed":525033}
+
+: heartbeat {"tool":"SearchSource","elapsed":530033}
+
+: heartbeat {"tool":"SearchSource","elapsed":535033}
+
+: heartbeat {"tool":"SearchSource","elapsed":540034}
+
+: heartbeat {"tool":"SearchSource","elapsed":545035}
+
+: heartbeat {"tool":"SearchSource","elapsed":550035}
+
+: heartbeat {"tool":"SearchSource","elapsed":555035}
+
+: heartbeat {"tool":"SearchSource","elapsed":560035}
+
+: heartbeat {"tool":"SearchSource","elapsed":565034}
+
+: heartbeat {"tool":"SearchSource","elapsed":570034}
+
+: heartbeat {"tool":"SearchSource","elapsed":575035}
+
+: heartbeat {"tool":"SearchSource","elapsed":580035}
+
+: heartbeat {"tool":"SearchSource","elapsed":585036}
+
+: heartbeat {"tool":"SearchSource","elapsed":590037}
+
+: heartbeat {"tool":"SearchSource","elapsed":595036}
+
+data: {"id":"chatcmpl-48261a38-ff80-4a71-858e-270023b29577","object":"chat.completion.chunk","created":1779190976,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"I can’t produce the requested caller list because the **single allowed** `SearchSource` run **timed out** (after 600s). Per your constraint (“Do not call SearchSource more than once”), I will not retry.\n\n**SearchSource result:**\n- total_hits: *unavailable (timeout)*\n- scanned: { packages: *unavailable*, objects: *unavailable*, sources: *unavailable* }\n- truncated: { by_object_cap: *unavailable*, by_max_objects: *unavailable* }\n\n**Callers of ZMEDI_GET_FROM_SFTP:**\n- *unavailable (SearchSource timeout)*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-48261a38-ff80-4a71-858e-270023b29577","object":"chat.completion.chunk","created":1779190976,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-48261a38-ff80-4a71-858e-270023b29577","object":"chat.completion.chunk","created":1779190976,"model":"x","choices":[],"usage":{"prompt_tokens":7148,"completion_tokens":212,"total_tokens":7360,"models":{"gpt-5.2":{"promptTokens":26623,"completionTokens":1096,"totalTokens":27719,"requests":7},"embedder":{"promptTokens":206,"completionTokens":0,"totalTokens":206,"requests":1}}}}
+
+data: [DONE]
+

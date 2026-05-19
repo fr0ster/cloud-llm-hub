@@ -1,0 +1,76 @@
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n[SmartAgent: Executing SearchObject...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing ReadProgram...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetIncludesList...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetInclude...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetInclude...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetInclude...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0c840fe7-e7f9-4e46-905b-c275437708ff","object":"chat.completion.chunk","created":1779176815,"model":"anthropic--claude-4.5-sonnet","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing SearchSource...]\n"},"finish_reason":null}]}
+
+: heartbeat {"tool":"SearchSource","elapsed":5000}
+
+: heartbeat {"tool":"SearchSource","elapsed":10000}
+
+: heartbeat {"tool":"SearchSource","elapsed":15001}
+
+: heartbeat {"tool":"SearchSource","elapsed":20002}
+
+: heartbeat {"tool":"SearchSource","elapsed":25002}
+
+: heartbeat {"tool":"SearchSource","elapsed":30002}
+
+: heartbeat {"tool":"SearchSource","elapsed":35001}
+
+: heartbeat {"tool":"SearchSource","elapsed":40001}
+
+: heartbeat {"tool":"SearchSource","elapsed":45001}
+
+: heartbeat {"tool":"SearchSource","elapsed":50005}
+
+: heartbeat {"tool":"SearchSource","elapsed":55005}
+
+: heartbeat {"tool":"SearchSource","elapsed":60006}
+
+: heartbeat {"tool":"SearchSource","elapsed":65006}
+
+: heartbeat {"tool":"SearchSource","elapsed":70007}
+
+: heartbeat {"tool":"SearchSource","elapsed":75006}
+
+: heartbeat {"tool":"SearchSource","elapsed":80007}
+
+: heartbeat {"tool":"SearchSource","elapsed":85006}
+
+: heartbeat {"tool":"SearchSource","elapsed":90006}
+
+: heartbeat {"tool":"SearchSource","elapsed":95006}
+
+: heartbeat {"tool":"SearchSource","elapsed":100006}
+
+: heartbeat {"tool":"SearchSource","elapsed":105006}
+
+: heartbeat {"tool":"SearchSource","elapsed":110008}
+
+: heartbeat {"tool":"SearchSource","elapsed":115008}
+
+: heartbeat {"tool":"SearchSource","elapsed":120007}
+
+: heartbeat {"tool":"SearchSource","elapsed":125008}
+
+: heartbeat {"tool":"SearchSource","elapsed":130007}
+
+: heartbeat {"tool":"SearchSource","elapsed":135007}
+
+: heartbeat {"tool":"SearchSource","elapsed":140007}
+
+: heartbeat {"tool":"SearchSource","elapsed":145008}
+
+: heartbeat {"tool":"SearchSource","elapsed":150008}
+
+: heartbeat {"tool":"SearchSource","elapsed":155008}
+
