@@ -1,0 +1,176 @@
+data: {"id":"chatcmpl-8885bf1f-3605-47b9-a8cb-f5ffda68966b","object":"chat.completion.chunk","created":1779196050,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n[SmartAgent: Executing SearchSource...]\n"},"finish_reason":null}]}
+
+: heartbeat {"tool":"SearchSource","elapsed":5000}
+
+: heartbeat {"tool":"SearchSource","elapsed":10000}
+
+: heartbeat {"tool":"SearchSource","elapsed":14999}
+
+: heartbeat {"tool":"SearchSource","elapsed":19999}
+
+: heartbeat {"tool":"SearchSource","elapsed":25000}
+
+: heartbeat {"tool":"SearchSource","elapsed":29999}
+
+: heartbeat {"tool":"SearchSource","elapsed":34999}
+
+: heartbeat {"tool":"SearchSource","elapsed":40000}
+
+: heartbeat {"tool":"SearchSource","elapsed":44999}
+
+: heartbeat {"tool":"SearchSource","elapsed":50000}
+
+: heartbeat {"tool":"SearchSource","elapsed":55001}
+
+: heartbeat {"tool":"SearchSource","elapsed":60001}
+
+: heartbeat {"tool":"SearchSource","elapsed":65001}
+
+: heartbeat {"tool":"SearchSource","elapsed":70001}
+
+: heartbeat {"tool":"SearchSource","elapsed":75001}
+
+: heartbeat {"tool":"SearchSource","elapsed":80001}
+
+: heartbeat {"tool":"SearchSource","elapsed":85001}
+
+: heartbeat {"tool":"SearchSource","elapsed":90002}
+
+: heartbeat {"tool":"SearchSource","elapsed":95001}
+
+: heartbeat {"tool":"SearchSource","elapsed":100003}
+
+: heartbeat {"tool":"SearchSource","elapsed":105003}
+
+: heartbeat {"tool":"SearchSource","elapsed":110005}
+
+: heartbeat {"tool":"SearchSource","elapsed":115005}
+
+: heartbeat {"tool":"SearchSource","elapsed":120006}
+
+: heartbeat {"tool":"SearchSource","elapsed":125005}
+
+: heartbeat {"tool":"SearchSource","elapsed":130006}
+
+: heartbeat {"tool":"SearchSource","elapsed":135006}
+
+: heartbeat {"tool":"SearchSource","elapsed":140006}
+
+: heartbeat {"tool":"SearchSource","elapsed":145006}
+
+: heartbeat {"tool":"SearchSource","elapsed":150005}
+
+: heartbeat {"tool":"SearchSource","elapsed":155006}
+
+: heartbeat {"tool":"SearchSource","elapsed":160006}
+
+: heartbeat {"tool":"SearchSource","elapsed":165005}
+
+: heartbeat {"tool":"SearchSource","elapsed":170005}
+
+: heartbeat {"tool":"SearchSource","elapsed":175006}
+
+: heartbeat {"tool":"SearchSource","elapsed":180006}
+
+: heartbeat {"tool":"SearchSource","elapsed":185005}
+
+: heartbeat {"tool":"SearchSource","elapsed":190006}
+
+: heartbeat {"tool":"SearchSource","elapsed":195006}
+
+: heartbeat {"tool":"SearchSource","elapsed":200005}
+
+: heartbeat {"tool":"SearchSource","elapsed":205006}
+
+: heartbeat {"tool":"SearchSource","elapsed":210005}
+
+: heartbeat {"tool":"SearchSource","elapsed":215006}
+
+: heartbeat {"tool":"SearchSource","elapsed":220006}
+
+: heartbeat {"tool":"SearchSource","elapsed":225006}
+
+: heartbeat {"tool":"SearchSource","elapsed":230005}
+
+: heartbeat {"tool":"SearchSource","elapsed":235005}
+
+: heartbeat {"tool":"SearchSource","elapsed":240005}
+
+: heartbeat {"tool":"SearchSource","elapsed":245005}
+
+: heartbeat {"tool":"SearchSource","elapsed":250006}
+
+: heartbeat {"tool":"SearchSource","elapsed":255005}
+
+: heartbeat {"tool":"SearchSource","elapsed":260006}
+
+: heartbeat {"tool":"SearchSource","elapsed":265005}
+
+: heartbeat {"tool":"SearchSource","elapsed":270005}
+
+: heartbeat {"tool":"SearchSource","elapsed":275005}
+
+: heartbeat {"tool":"SearchSource","elapsed":280006}
+
+: heartbeat {"tool":"SearchSource","elapsed":285005}
+
+: heartbeat {"tool":"SearchSource","elapsed":290005}
+
+: heartbeat {"tool":"SearchSource","elapsed":295006}
+
+: heartbeat {"tool":"SearchSource","elapsed":300006}
+
+: heartbeat {"tool":"SearchSource","elapsed":305006}
+
+: heartbeat {"tool":"SearchSource","elapsed":310007}
+
+: heartbeat {"tool":"SearchSource","elapsed":315008}
+
+: heartbeat {"tool":"SearchSource","elapsed":320008}
+
+: heartbeat {"tool":"SearchSource","elapsed":325008}
+
+: heartbeat {"tool":"SearchSource","elapsed":330008}
+
+: heartbeat {"tool":"SearchSource","elapsed":335009}
+
+: heartbeat {"tool":"SearchSource","elapsed":340008}
+
+: heartbeat {"tool":"SearchSource","elapsed":345009}
+
+: heartbeat {"tool":"SearchSource","elapsed":350008}
+
+: heartbeat {"tool":"SearchSource","elapsed":355009}
+
+: heartbeat {"tool":"SearchSource","elapsed":360008}
+
+: heartbeat {"tool":"SearchSource","elapsed":365008}
+
+: heartbeat {"tool":"SearchSource","elapsed":370008}
+
+: heartbeat {"tool":"SearchSource","elapsed":375008}
+
+: heartbeat {"tool":"SearchSource","elapsed":380008}
+
+: heartbeat {"tool":"SearchSource","elapsed":385009}
+
+: heartbeat {"tool":"SearchSource","elapsed":390008}
+
+: heartbeat {"tool":"SearchSource","elapsed":395009}
+
+: heartbeat {"tool":"SearchSource","elapsed":400009}
+
+: heartbeat {"tool":"SearchSource","elapsed":405010}
+
+: heartbeat {"tool":"SearchSource","elapsed":410010}
+
+data: {"id":"chatcmpl-8885bf1f-3605-47b9-a8cb-f5ffda68966b","object":"chat.completion.chunk","created":1779196050,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetFunctionModule...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8885bf1f-3605-47b9-a8cb-f5ffda68966b","object":"chat.completion.chunk","created":1779196050,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"**Function modules found in ZDMS_SEND_FILE (or related ZDMS_* group):**\n- In **FUGR ZDMS_SEND_FILE**:\n  - `ZDMS_EXTRACT_DOCS_TO_SFTP`\n- Other `ZDMS_*` FMs found in package Z001 (different FUGRs, listed for completeness from the single SearchSource run):\n  - (FUGR `ZDMS`) `ZDMS_PROC_DOC_UNDELETE`\n  - (FUGR `ZDMS_UPLOAD`) `ZDMS_UPLOAD_DOCUMENTS`\n  - (FUGR `ZDMS_VALIDATE`) `ZDMS_E001_PUR_CONTRT_VALIDATE`\n  - (FUGR `ZSD_DMS`) `ZDMS_UPLOAD_MEDICARE_DOCS`\n  - (FUGR `ZSD_ERX`) `ZDMS_UPLOAD_ERX_DOCS`\n\n**For each SFTP-wrapping FM, verbatim body (most important parts):**\n\nFM `ZDMS_EXTRACT_DOCS_TO_SFTP` (FUGR `ZDMS_SEND_FILE`) — body (verbatim as retrieved):\n```abap\nFUNCTION zdms_extract_docs_to_sftp\n  IMPORTING\n    VALUE(im_doc_type) TYPE dokar OPTIONAL\n    VALUE(im_form_type) TYPE char2 OPTIONAL\n    VALUE(im_fr_date) TYPE datum OPTIONAL\n    VALUE(im_to_date) TYPE datum OPTIONAL\n  EXPORTING\n    VALUE(et_data) TYPE zdms_file_data_t\n  TABLES\n    it_patient_id LIKE zkunnr OPTIONAL.\n\n\n\n\n\n  DATA: lt_docs  TYPE STANDARD TABLE OF ty_docs.\n\n  gv_type = im_form_type.\n\n  PERFORM f_get_docs USING im_doc_type\n                           im_form_type\n                           im_fr_date\n                           im_to_date\n                           it_patient_id[]\n                  CHANGING lt_docs[].\n\n\n PERFORM f_send_files USING lt_docs[]\n                     CHANGING et_data[].\n\nPERFORM f_send_files_to_sftp.\n\n\n\nENDFUNCTION.\n```\n\n- **CALL FUNCTION 'SXPG_COMMAND_EXECUTE' call site:** not present in this FM body (likely inside `PERFORM f_send_files_to_sftp` in an include, which was not retrieved by `GetFunctionModule`).\n- **Credential parameter assembly (which fnam keys from zfi_constants):** not present in this FM body (likely in `f_send_files_to_sftp`).\n- **The pname value the wrapper expects:** not present in this FM body.\n\n**Verdict:** **unclear** (this FUGR contains an FM explicitly named `*_TO_SFTP`, but the actual SFTP execution/wrapper logic is in `PERFORM f_send_files_to_sftp`, which is not visible from the single FM definition body returned here).\n\n**Auth pattern:** **unclear** (no credential handling visible in the retrieved FM body)\n\n**Summary:** `ZDMS_EXTRACT_DOCS_TO_SFTP`"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8885bf1f-3605-47b9-a8cb-f5ffda68966b","object":"chat.completion.chunk","created":1779196050,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-8885bf1f-3605-47b9-a8cb-f5ffda68966b","object":"chat.completion.chunk","created":1779196050,"model":"x","choices":[],"usage":{"prompt_tokens":10795,"completion_tokens":725,"total_tokens":11520,"models":{"gpt-5.2":{"promptTokens":11179,"completionTokens":1079,"totalTokens":12258,"requests":4},"embedder":{"promptTokens":352,"completionTokens":0,"totalTokens":352,"requests":1}}}}
+
+data: [DONE]
+

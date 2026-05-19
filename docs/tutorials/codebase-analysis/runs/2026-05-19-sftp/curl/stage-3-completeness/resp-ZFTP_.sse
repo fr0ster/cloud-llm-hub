@@ -1,0 +1,176 @@
+data: {"id":"chatcmpl-c1af1e51-8f8c-49e5-abe9-e72034c10429","object":"chat.completion.chunk","created":1779195225,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n[SmartAgent: Executing SearchSource...]\n"},"finish_reason":null}]}
+
+: heartbeat {"tool":"SearchSource","elapsed":5000}
+
+: heartbeat {"tool":"SearchSource","elapsed":9999}
+
+: heartbeat {"tool":"SearchSource","elapsed":14999}
+
+: heartbeat {"tool":"SearchSource","elapsed":20000}
+
+: heartbeat {"tool":"SearchSource","elapsed":25001}
+
+: heartbeat {"tool":"SearchSource","elapsed":30001}
+
+: heartbeat {"tool":"SearchSource","elapsed":35001}
+
+: heartbeat {"tool":"SearchSource","elapsed":40001}
+
+: heartbeat {"tool":"SearchSource","elapsed":45007}
+
+: heartbeat {"tool":"SearchSource","elapsed":50007}
+
+: heartbeat {"tool":"SearchSource","elapsed":55009}
+
+: heartbeat {"tool":"SearchSource","elapsed":60009}
+
+: heartbeat {"tool":"SearchSource","elapsed":65010}
+
+: heartbeat {"tool":"SearchSource","elapsed":70010}
+
+: heartbeat {"tool":"SearchSource","elapsed":75010}
+
+: heartbeat {"tool":"SearchSource","elapsed":80010}
+
+: heartbeat {"tool":"SearchSource","elapsed":85010}
+
+: heartbeat {"tool":"SearchSource","elapsed":90011}
+
+: heartbeat {"tool":"SearchSource","elapsed":95011}
+
+: heartbeat {"tool":"SearchSource","elapsed":100011}
+
+: heartbeat {"tool":"SearchSource","elapsed":105011}
+
+: heartbeat {"tool":"SearchSource","elapsed":110010}
+
+: heartbeat {"tool":"SearchSource","elapsed":115011}
+
+: heartbeat {"tool":"SearchSource","elapsed":120011}
+
+: heartbeat {"tool":"SearchSource","elapsed":125011}
+
+: heartbeat {"tool":"SearchSource","elapsed":130011}
+
+: heartbeat {"tool":"SearchSource","elapsed":135012}
+
+: heartbeat {"tool":"SearchSource","elapsed":140011}
+
+: heartbeat {"tool":"SearchSource","elapsed":145011}
+
+: heartbeat {"tool":"SearchSource","elapsed":150012}
+
+: heartbeat {"tool":"SearchSource","elapsed":155013}
+
+: heartbeat {"tool":"SearchSource","elapsed":160014}
+
+: heartbeat {"tool":"SearchSource","elapsed":165014}
+
+: heartbeat {"tool":"SearchSource","elapsed":170014}
+
+: heartbeat {"tool":"SearchSource","elapsed":175014}
+
+: heartbeat {"tool":"SearchSource","elapsed":180013}
+
+: heartbeat {"tool":"SearchSource","elapsed":185013}
+
+: heartbeat {"tool":"SearchSource","elapsed":190014}
+
+: heartbeat {"tool":"SearchSource","elapsed":195014}
+
+: heartbeat {"tool":"SearchSource","elapsed":200014}
+
+: heartbeat {"tool":"SearchSource","elapsed":205015}
+
+: heartbeat {"tool":"SearchSource","elapsed":210014}
+
+: heartbeat {"tool":"SearchSource","elapsed":215015}
+
+: heartbeat {"tool":"SearchSource","elapsed":220015}
+
+: heartbeat {"tool":"SearchSource","elapsed":225015}
+
+: heartbeat {"tool":"SearchSource","elapsed":230016}
+
+: heartbeat {"tool":"SearchSource","elapsed":235016}
+
+: heartbeat {"tool":"SearchSource","elapsed":240015}
+
+: heartbeat {"tool":"SearchSource","elapsed":245015}
+
+: heartbeat {"tool":"SearchSource","elapsed":250016}
+
+: heartbeat {"tool":"SearchSource","elapsed":255016}
+
+: heartbeat {"tool":"SearchSource","elapsed":260017}
+
+: heartbeat {"tool":"SearchSource","elapsed":265017}
+
+: heartbeat {"tool":"SearchSource","elapsed":270019}
+
+: heartbeat {"tool":"SearchSource","elapsed":275020}
+
+: heartbeat {"tool":"SearchSource","elapsed":280020}
+
+: heartbeat {"tool":"SearchSource","elapsed":285021}
+
+: heartbeat {"tool":"SearchSource","elapsed":290022}
+
+: heartbeat {"tool":"SearchSource","elapsed":295022}
+
+: heartbeat {"tool":"SearchSource","elapsed":300022}
+
+: heartbeat {"tool":"SearchSource","elapsed":305022}
+
+: heartbeat {"tool":"SearchSource","elapsed":310023}
+
+: heartbeat {"tool":"SearchSource","elapsed":315022}
+
+: heartbeat {"tool":"SearchSource","elapsed":320022}
+
+: heartbeat {"tool":"SearchSource","elapsed":325023}
+
+: heartbeat {"tool":"SearchSource","elapsed":330023}
+
+: heartbeat {"tool":"SearchSource","elapsed":335022}
+
+: heartbeat {"tool":"SearchSource","elapsed":340022}
+
+: heartbeat {"tool":"SearchSource","elapsed":345023}
+
+: heartbeat {"tool":"SearchSource","elapsed":350022}
+
+: heartbeat {"tool":"SearchSource","elapsed":355023}
+
+: heartbeat {"tool":"SearchSource","elapsed":360023}
+
+: heartbeat {"tool":"SearchSource","elapsed":365023}
+
+: heartbeat {"tool":"SearchSource","elapsed":370023}
+
+: heartbeat {"tool":"SearchSource","elapsed":375023}
+
+: heartbeat {"tool":"SearchSource","elapsed":380022}
+
+: heartbeat {"tool":"SearchSource","elapsed":385022}
+
+: heartbeat {"tool":"SearchSource","elapsed":390022}
+
+: heartbeat {"tool":"SearchSource","elapsed":395022}
+
+: heartbeat {"tool":"SearchSource","elapsed":400023}
+
+: heartbeat {"tool":"SearchSource","elapsed":405023}
+
+: heartbeat {"tool":"SearchSource","elapsed":410023}
+
+: heartbeat {"tool":"SearchSource","elapsed":415022}
+
+data: {"id":"chatcmpl-c1af1e51-8f8c-49e5-abe9-e72034c10429","object":"chat.completion.chunk","created":1779195225,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"**SearchSource result:**\n- total_hits: **7**\n- scanned: { packages: **1**, objects: **819**, sources: **60676** }\n- truncated: { by_object_cap: **false**, by_max_objects: **false** }\n\n**Distinct object_names with hits:**\n- **ZSFTP_BNP_PARIBAS (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_BNPP' .`\n- **ZSFTP_BNP_PARIBAS_PULL (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_BNPP_PULL' .`\n- **ZSFTP_BNP_PARIBAS_WITH_PGP (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_BNPP' .`\n- **ZSFTP_CAPARIO (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_837' .`\n- **ZSFTP_CAPARIO_PULL (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_EOB_PULL' .`\n- **ZSFTP_JPM (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_JPM' .`\n- **ZSFTP_JPM_PULL (PROG): 1** hits — sample line: `PARAMETERS: p_comm TYPE  sxpgcolist-name OBLIGATORY DEFAULT 'ZFTP_JPM_PULL' .`"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-c1af1e51-8f8c-49e5-abe9-e72034c10429","object":"chat.completion.chunk","created":1779195225,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-c1af1e51-8f8c-49e5-abe9-e72034c10429","object":"chat.completion.chunk","created":1779195225,"model":"x","choices":[],"usage":{"prompt_tokens":7233,"completion_tokens":467,"total_tokens":7700,"models":{"gpt-5.2":{"promptTokens":7459,"completionTokens":577,"totalTokens":8036,"requests":3},"embedder":{"promptTokens":107,"completionTokens":0,"totalTokens":107,"requests":1}}}}
+
+data: [DONE]
+
