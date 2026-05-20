@@ -478,9 +478,11 @@ Interface CDS views define the BO's data model. The root view has compositions t
 >
 > 2. **Views created then deleted during retries.** The LLM may delete and recreate views many times while trying to break the loop dependency, and may delete views that already worked. **Fix:** After this step, always verify with a checkpoint that all 4 views exist and are active before moving on.
 >
-> 3. **Agent claims "created" without calling the tool.** The reply may say the interface view is created but no `[SmartAgent: Executing ...]` line appears — the creation tool was never invoked. Two reproducible workarounds:
->    - Write the source-table name in **UPPERCASE** in the prompt (e.g. `Z##_MARA`, not `z##_mara`) — this consistently unblocks interface-view creation.
->    - Immediately ask the agent to **read the view back** ("Show me the source of `Z##_R_MAT_ROOT`"). If the read fails, the view never existed — re-issue the create prompt. The read also forces a real tool call, which usually makes the second attempt succeed.
+> 3. **Agent claims "created" but the object is not yet there.** ADT object creation is **not fully synchronous**: the create call can return before the object is visible to a subsequent read, especially under load or for views with unresolved references. The agent treats its own reply as final and moves on — you have to confirm. Two reproducible workarounds:
+>    - Write the source-table name in **UPPERCASE** in the prompt (e.g. `Z##_MARA`, not `z##_mara`). For reasons that look like ADT-side name resolution, the lowercase form sometimes leaves the create in a half-state where the agent thinks it succeeded.
+>    - Immediately ask the agent to **read the view back** ("Show me the source of `Z##_R_MAT_ROOT`"). If the read fails, the view never materialized — wait a few seconds and re-issue the create prompt. The read-back is the only reliable confirmation; do not trust the "created" reply alone.
+>
+> **Mental model**: treat every `Create…` reply as a *claim* until a read or list checkpoint confirms the object exists. This is an ADT limitation, not an agent bug.
 >
 > **Important — run a syntax check after activation:** CDS views are created without a syntax check and activated as a group. After activation, verify each view has no errors:
 > "Check CDS view `Z##_R_MAT_ROOT` for syntax errors" (repeat for each view).
@@ -538,8 +540,8 @@ Same loop-dependency pattern as Step 6: root redirects to children, children red
 
 **Checkpoint:** Ask the agent: "List all CDS views starting with Z##_ and confirm they are all active."
 
-> **Known LLM mistake — false-success on projection views.** Similar to Step 6, the agent may reply "projection view created" without invoking any creation tool (no `[SmartAgent: Executing ...]` line). The workaround:
-> - Ask the agent to **read each projection back** before activating: "Show me the source of `Z##_C_MAT_ROOT`". If the read fails, the view never existed — re-issue the create prompt. Reading back also forces a real tool call, which makes the second create attempt succeed.
+> **Same ADT async behavior as Step 6.** The agent may reply "projection view created" while the object has not yet materialized in ADT. The workaround:
+> - Ask the agent to **read each projection back** before activating: "Show me the source of `Z##_C_MAT_ROOT`". If the read fails, the view does not exist yet — wait a few seconds and re-issue the create prompt. Read-back is the only reliable confirmation.
 
 ---
 
