@@ -215,6 +215,179 @@ def generate_part2(prs: EPAMPresentation):
         background=Background.LIGHT,
     )
 
+    # ---- Slide: Two AI agents (controller + executor) ----
+    slide_m5, content_m5 = prs.add_default_slide(
+        title="Two AI agents, two roles",
+        upsubtitle="CONTROLLER + EXECUTOR",
+    )
+
+    agents_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="User — judge",
+            content=("Names the goal (sFTP usage per seed), names the scan, "
+                     "reviews each artifact. Decides when scope grows or stops."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="People", icon_name="Person_Suit",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Controller — Claude (this session)",
+            content=("Drives the conversation, formalizes the question, "
+                     "designs the scan pipeline with the user, parses outputs. "
+                     "Cannot touch SAP directly."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
+            icon_category="AI_VR_Bot", icon_name="Brain_1",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Executor — SmartAgent on cloud-llm-hub",
+            content=("gpt-5.2 with MCP tools (SearchObject, SearchSource, "
+                     "ReadProgram, GetIncludesList, GetInclude). Returns "
+                     "code-cited evidence; does not pick scope."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
+            icon_category="AI_VR_Bot", icon_name="Android",
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m5,
+        BlockGrid(
+            left=0, top=0, width=content_m5.width, height=content_m5.height,
+            columns=1, gap=GapSize.SMALL, blocks=agents_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Slide: How we designed THIS process (dialogue) ----
+    slide_m6, content_m6 = prs.add_default_slide(
+        title="How we designed THIS process",
+        upsubtitle="DIALOGUE → STAGE LIST",
+    )
+
+    dialogue_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="User serves",
+            rich_content=[
+                ContentParagraph(runs=[TextRun(text="“For these 13 seed reports, does each call SFTP? Output supports migration; we do NOT design the replacement.”")], is_bullet=False),
+            ],
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Blue,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="AI returns clarifications",
+            rich_content=[
+                ContentParagraph(text="What verdict scale per seed?", is_bullet=True),
+                ContentParagraph(text="What scope — only Z* and /VERTEX/*?", is_bullet=True),
+                ContentParagraph(text="Should we expand scope from confirmed callers, or stay on the 13?", is_bullet=True),
+            ],
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Teal,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="User decides",
+            rich_content=[
+                ContentParagraph(text="yes / no / unclear / not-found per seed; methods/direction/payload for yes.", is_bullet=True),
+                ContentParagraph(text="Z* and /VERTEX/* in DS4_CLH only.", is_bullet=True),
+                ContentParagraph(text="Expand via where-used + credential-bag scans when justified.", is_bullet=True),
+            ],
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Purple,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Stage list emerges",
+            content=("Stage 2 (read seed) → Stage 2b (open enumeration) "
+                     "→ Stage 2c (code extracts) → Stage 3 (usage map) "
+                     "→ Stage 4 (analysis by domain) → Stage 5 (result)."),
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m6,
+        BlockGrid(
+            left=0, top=0, width=content_m6.width, height=content_m6.height,
+            columns=2, gap=GapSize.MEDIUM, blocks=dialogue_blocks,
+            style=BlockStyle.SOLID_FILL, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Slide: Catching errors during the run ----
+    slide_m7, content_m7 = prs.add_default_slide(
+        title="Catching errors during the run",
+        upsubtitle="FIVE STEPS, EVERY ERROR",
+    )
+
+    errors_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="Ukrainian prompts wasted ~500k tokens",
+            content=("Symptom: first scan batch in Ukrainian, agent kept "
+                     "translating context. Repro: token counter on parallel "
+                     "checks. Root cause: cross-language overhead in pipeline. "
+                     "Fix: artifacts in English. Skill: feedback_artifacts_english."),
+            style=BlockStyle.CALLOUT, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Parallel SearchSource crashed the backend",
+            content=("Symptom: 4 parallel scans → SAP HTTP errors. Repro: "
+                     "single-scan baseline works. Root cause: SearchSource is "
+                     "heavy on ABAP side. Fix: run sequentially per destination. "
+                     "Skill: feedback_dont_overload_sap_backend."),
+            style=BlockStyle.CALLOUT, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Mixing SearchObject + SearchSource in one prompt",
+            content=("Symptom: model picked the wrong tool. Repro: split-prompt "
+                     "test. Root cause: planning LLM conflates similar tools. "
+                     "Fix: one tool per prompt. Skill: "
+                     "feedback_no_searchobject_and_searchsource_together."),
+            style=BlockStyle.CALLOUT, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m7,
+        BlockGrid(
+            left=0, top=0, width=content_m7.width, height=content_m7.height,
+            columns=1, gap=GapSize.SMALL, blocks=errors_blocks,
+            style=BlockStyle.CALLOUT, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Slide: Skills as deck output ----
+    slide_m8, content_m8 = prs.add_default_slide(
+        title="Skills are an output of the run",
+        upsubtitle="AT EVERY CHECKPOINT",
+    )
+
+    skills_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="Why",
+            content=("A run that leaves no refined process or skill behind "
+                     "has burned experience that walks out the door."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Education", icon_name="Knowledge",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="When",
+            content=("At every stage checkpoint, ask: “what did I change in "
+                     "the process or in a skill?” If nothing — re-read the run."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
+            icon_category="Calendars_Timing", icon_name="Clock_24h",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="What this run produced",
+            content=("6 process skills + 1 design decision + 1 tool-usage "
+                     "skill written during the run. Plus the 5-stage tutorial "
+                     "pipeline itself, validated and refined."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
+            icon_category="Documents", icon_name="Document_Layout",
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m8,
+        BlockGrid(
+            left=0, top=0, width=content_m8.width, height=content_m8.height,
+            columns=1, gap=GapSize.SMALL, blocks=skills_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
     # ============================================================
     # SECTION 02 — The Task (was 01)
     # ============================================================

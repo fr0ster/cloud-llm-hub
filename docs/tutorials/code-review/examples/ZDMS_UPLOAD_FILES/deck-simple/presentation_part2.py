@@ -322,6 +322,171 @@ def generate_part2(prs: EPAMPresentation):
         background=Background.LIGHT,
     )
 
+    # ---- Slide: Two AI agents (controller + executor) ----
+    slide_m5, content_m5 = prs.add_default_slide(
+        title="Two AI agents, two roles",
+        upsubtitle="CONTROLLER + EXECUTOR",
+    )
+
+    agents_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="User — judge",
+            content=("Names the goal, names the stage, reviews each "
+                     "artifact. Decides when to stop or go back."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="People", icon_name="Person_Suit",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Controller — Claude (this session)",
+            content=("Drives the conversation, formalizes the task, "
+                     "designs the pipeline with the user, parses outputs. "
+                     "Cannot touch SAP directly."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
+            icon_category="AI_VR_Bot", icon_name="Brain_1",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Executor — SmartAgent on cloud-llm-hub",
+            content=("gpt-5.2 with MCP tools (ReadProgram, GetIncludesList, "
+                     "GetInclude). Per-category rule sets. Cannot decide "
+                     "scope. Returns evidence, not decisions."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
+            icon_category="AI_VR_Bot", icon_name="Android",
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m5,
+        BlockGrid(
+            left=0, top=0, width=content_m5.width, height=content_m5.height,
+            columns=1, gap=GapSize.SMALL, blocks=agents_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Slide: How we designed THIS process (dialogue) ----
+    slide_m6, content_m6 = prs.add_default_slide(
+        title="How we designed THIS process",
+        upsubtitle="DIALOGUE → STAGE LIST",
+    )
+
+    dialogue_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="User serves",
+            rich_content=[
+                ContentParagraph(runs=[TextRun(text="“Review ZDMS_UPLOAD_FILES across security, performance, Clean Core, maintainability.”")], is_bullet=False),
+            ],
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Blue,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="AI returns clarifications",
+            rich_content=[
+                ContentParagraph(text="What's in scope — main program only or every include?", is_bullet=True),
+                ContentParagraph(text="What severity scale? What counts as evidence?", is_bullet=True),
+                ContentParagraph(text="Parallel or sequential? Read-only tools only?", is_bullet=True),
+            ],
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Teal,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="User decides",
+            rich_content=[
+                ContentParagraph(text="Whole program + every include in scope.", is_bullet=True),
+                ContentParagraph(text="CRITICAL/HIGH/MEDIUM/LOW/INFO. Every finding cited with Location + Snippet.", is_bullet=True),
+                ContentParagraph(text="4 parallel SmartAgent calls, read-only ADT tools only.", is_bullet=True),
+            ],
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Purple,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Stage list emerges",
+            content=("01-target (define scope + severity scale) → 02..05 "
+                     "(four parallel reviews) → 06-summary (aggregate) → "
+                     "RETRO (lessons). Per-stage artifact on disk."),
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m6,
+        BlockGrid(
+            left=0, top=0, width=content_m6.width, height=content_m6.height,
+            columns=2, gap=GapSize.MEDIUM, blocks=dialogue_blocks,
+            style=BlockStyle.SOLID_FILL, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Slide: Catching errors during the run ----
+    slide_m7, content_m7 = prs.add_default_slide(
+        title="Catching errors during the run",
+        upsubtitle="FIVE STEPS, EVERY ERROR",
+    )
+
+    errors_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="Bash backtick expansion mangled rule text",
+            content=("Symptom: shell warnings during run-checks.sh. Repro: rule text "
+                     "contained markdown backticks. Root cause: bash command "
+                     "substitution evaluated them. Fix: build prompts in Python "
+                     "end-to-end. Skill written: feedback_no_bash_var_for_prompts."),
+            style=BlockStyle.CALLOUT, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Severity-summary regex missed maintainability",
+            content=("Symptom: aggregation under-counted LOW findings. Repro: re-run "
+                     "regex on raw SSE. Root cause: maintainability check "
+                     "didn't emit the expected summary block. Fix: count by parsing "
+                     "per-finding ### headings only. Skill: source-of-truth rule."),
+            style=BlockStyle.CALLOUT, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m7,
+        BlockGrid(
+            left=0, top=0, width=content_m7.width, height=content_m7.height,
+            columns=1, gap=GapSize.SMALL, blocks=errors_blocks,
+            style=BlockStyle.CALLOUT, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Slide: Skills as deck output ----
+    slide_m8, content_m8 = prs.add_default_slide(
+        title="Skills are an output of the run",
+        upsubtitle="AT EVERY CHECKPOINT",
+    )
+
+    skills_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="Why",
+            content=("A run that leaves no refined process or skill behind "
+                     "has burned experience that walks out the door."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Education", icon_name="Knowledge",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="When",
+            content=("At every stage checkpoint, ask: “what did I change in "
+                     "the process or in a skill?” If nothing — re-read the run."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
+            icon_category="Calendars_Timing", icon_name="Clock_24h",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="What this run produced",
+            content=("Two feedback memos: prompts in Python (no bash vars), "
+                     "severity from headings only. Tutorial pipeline validated "
+                     "as the standard for future ABAP code reviews."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
+            icon_category="Documents", icon_name="Document_Layout",
+            text_size=TextSize.SMALL),
+    ]
+    prs.add_block_grid(
+        content_m8,
+        BlockGrid(
+            left=0, top=0, width=content_m8.width, height=content_m8.height,
+            columns=1, gap=GapSize.SMALL, blocks=skills_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
     # ============================================================
     # SECTION 02 — Target
     # ============================================================
