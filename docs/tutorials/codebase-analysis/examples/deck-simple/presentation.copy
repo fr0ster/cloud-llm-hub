@@ -166,19 +166,7 @@
 
 =====
 
-## Slide 16 — Case study — Banking (in-context EPAM case study)
-- Layout: Case Study slide — `CaseStudy.Large_Wealth_Management_Company_Micro_Frontends_Development`.
-- Rationale: closest EPAM client engagement to financial-services modernization; useful framing for the banking-domain migration cluster (7 of 16 reports).
-
-=====
-
-## Slide 17 — Case study — Healthcare claims
-- Layout: Case Study slide — `CaseStudy.Transforming_Healthcare_Claims_Analytics_with_Data_Pipeline_Modernization`.
-- Rationale: directly relevant to the Caparío/Patientco EDI 835/837 cluster (4 reports). Demonstrates EPAM healthcare-claims experience.
-
-=====
-
-## Slide 18 — What stays out (the "no" verdicts)
+## Slide 16 — What stays out (the "no" verdicts)
 - Layout: Default Slide, Title + Upsubtitle. Upsubtitle: "Not SFTP callers — local file I/O only". Title: "Five seeds dropped from migration code scope".
 - Body: BlockGrid 1 column with a short rich list inside one block (or 5 compact blocks if visually balanced):
   - /VERTEX/SPOT_VAT_OUTPUT_COMPL — Vertex tax, local I/O

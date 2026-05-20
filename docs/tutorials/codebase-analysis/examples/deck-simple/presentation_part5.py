@@ -11,7 +11,6 @@ from simple_deck import (
     TextSize,
     GapSize,
     EPAMColor,
-    CaseStudy,
 )
 
 
@@ -114,21 +113,7 @@ def generate_part5(prs: EPAMPresentation):
     )
 
     # ---------------------------------------------------------------
-    # Slide 16 — Case study: Banking (Wealth Management Micro-Frontends)
-    # ---------------------------------------------------------------
-    prs.add_case_study(
-        CaseStudy.Large_Wealth_Management_Company_Micro_Frontends_Development
-    )
-
-    # ---------------------------------------------------------------
-    # Slide 17 — Case study: Healthcare claims analytics
-    # ---------------------------------------------------------------
-    prs.add_case_study(
-        CaseStudy.Transforming_Healthcare_Claims_Analytics_with_Data_Pipeline_Modernization
-    )
-
-    # ---------------------------------------------------------------
-    # Slide 18 — What stays out (the "no" verdicts)
+    # Slide 16 — What stays out (the "no" verdicts)
     # Default Slide, Title + Upsubtitle. One block with rich list + caption.
     # ---------------------------------------------------------------
     slide18, content18 = prs.add_default_slide(
