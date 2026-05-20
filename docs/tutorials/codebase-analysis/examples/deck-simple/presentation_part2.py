@@ -2,25 +2,229 @@ from simple_deck import EPAMPresentation, Background
 from simple_deck import (
     Block,
     BlockGrid,
+    BlockProcess,
     BlockStyle,
     BlockMarginPreset,
     ContentParagraph,
+    ProcessDirection,
     TextRun,
     TextSize,
     GapSize,
+    HorizontalAlignment,
     EPAMColor,
 )
 
 
 def generate_part2(prs: EPAMPresentation):
-    # ---- Slide 3 — Section divider: "The Task" ----
+    # ============================================================
+    # SECTION 01 — Methodology
+    # ============================================================
+    prs.add_section_header_slide_dark(
+        section_number="01",
+        section_title="Methodology",
+        section_description=(
+            "How user and AI agreed on the question, designed the scan "
+            "pipeline together, executed it stage by stage, and verified."
+        ),
+    )
+
+    # ---- The method — 4 stages ----
+    slide_m1, content_m1 = prs.add_default_slide(
+        title="The method — four stages, in order",
+        upsubtitle="FOUR STAGES, IN ORDER",
+    )
+
+    method_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="1. Formalize the task",
+            content=("Plain-language goal + measurable check. "
+                     "Stops us from answering the wrong question."),
+            style=BlockStyle.TOP_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Goals", icon_name="Target", text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="2. Design the process",
+            content=("Stage list for THIS task — per-stage artifact, "
+                     "per-stage evaluation. Stages are not pre-baked."),
+            style=BlockStyle.TOP_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Structures_Architectures", icon_name="Structure_1",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="3. Execute stages",
+            content=("Each stage produces its artifact. Refine the skill "
+                     "at every checkpoint, never as a separate pass."),
+            style=BlockStyle.TOP_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Processes", icon_name="Gear_Process_1",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="4. Verify the goal",
+            content=("Yes → done. No → goal-check names the earlier stage "
+                     "to return to, based on what evidence was missing."),
+            style=BlockStyle.TOP_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Checkmarks", icon_name="Checkmark_Circle_1",
+            text_size=TextSize.SMALL),
+    ]
+
+    prs.add_block_process(
+        content_m1,
+        BlockProcess(
+            direction=ProcessDirection.HORIZONTAL,
+            left=0, top=0, width=content_m1.width, height=3200000,
+            blocks=method_blocks, gap=GapSize.MEDIUM,
+            arrow_color=EPAMColor.Light_Gray,
+        ),
+        background=Background.LIGHT,
+    )
+    prs.add_block(
+        content_m1,
+        Block(
+            left=0, top=3500000, width=content_m1.width, height=0,
+            content=(
+                "Iteration is normal — which earlier stage to return to is "
+                "decided by the failing goal-check, not by a pre-baked rule."
+            ),
+            style=BlockStyle.CALLOUT, color=EPAMColor.Light_Blue,
+            text_size=TextSize.SMALL,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Pair-work as badminton ----
+    slide_m2, content_m2 = prs.add_default_slide(
+        title="Pair-work as badminton",
+        upsubtitle="USER SERVES, AI RETURNS",
+    )
+
+    badminton_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="User serves",
+            content=("Plain-language task description. The user names the "
+                     "stage; the AI never takes the lead role."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="People", icon_name="Person_Suit",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="AI returns",
+            content=("Formalizes, drafts, calls tools, proposes. Each "
+                     "return is small enough to review before the next exchange."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
+            icon_category="AI_VR_Bot", icon_name="Android",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="User reviews",
+            content=("Keeps what holds, rejects what does not, asks for a "
+                     "correction. Reader judges, AI drafts. Neither side defers."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
+            icon_category="Checkmarks", icon_name="Checkmark_Circle_1",
+            text_size=TextSize.SMALL),
+    ]
+
+    prs.add_block_grid(
+        content_m2,
+        BlockGrid(
+            left=0, top=0, width=content_m2.width, height=content_m2.height,
+            columns=1, gap=GapSize.SMALL, blocks=badminton_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- How the method mapped to THIS analysis ----
+    slide_m3, content_m3 = prs.add_default_slide(
+        title="How we ran this analysis",
+        upsubtitle="THE FOUR STAGES, MAPPED",
+    )
+
+    mapping_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="Formalize",
+            content=("User: 'For 13 seeds, does each call SFTP?' Together: "
+                     "verdict per seed, methods/direction/payload, blind spots, "
+                     "Z*/VERTEX/* scope, NO replacement design."),
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Blue,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Design",
+            content=("Stage 2: ReadProgram each seed → Stage 2b: open-ended "
+                     "method enumeration → Stage 3: independent-marker scans "
+                     "→ late sanity scan beyond credential literals."),
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Teal,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Execute",
+            content=("Per-stage artifact on disk before next stage: "
+                     "02-methods.md → 02b-methods-deep.md → 02c-code-extracts.md "
+                     "→ 03-usage-map.md → 04-analysis.md → 05-result.md."),
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Purple,
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Verify",
+            content=("13 seeds → 19 confirmed objects · 5 domains · 11 SM69 "
+                     "endpoints · per-finding citations. Goal met. Iteration: "
+                     "scope grew via 3 independent scans + 1 sanity scan."),
+            style=BlockStyle.SOLID_FILL, color=EPAMColor.Light_Orange,
+            text_size=TextSize.SMALL),
+    ]
+
+    prs.add_block_grid(
+        content_m3,
+        BlockGrid(
+            left=0, top=0, width=content_m3.width, height=content_m3.height,
+            columns=2, gap=GapSize.MEDIUM, blocks=mapping_blocks,
+            style=BlockStyle.SOLID_FILL, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ---- Discipline that kept the run honest ----
+    slide_m4, content_m4 = prs.add_default_slide(
+        title="What kept the run honest",
+        upsubtitle="THREE DISCIPLINES IN PROMPTS",
+    )
+
+    discipline_blocks = [
+        Block(left=0, top=0, width=0, height=0,
+            title="Per-stage isolation",
+            content=("One stage per session. Artifact on disk before next stage. "
+                     "Stops context drift; each handoff is reviewable."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Blue,
+            icon_category="Processes", icon_name="Gear_Process_2",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Raw-SSE evidence",
+            content=("Every claim reproducible from curl/*.sse. Reader can "
+                     "re-derive the deck from raw traces — no agent authority."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
+            icon_category="Documents", icon_name="Document_Layout",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Sequential SearchSource",
+            content=("Heavy ABAP scans run sequentially per destination — "
+                     "parallel scans crashed the backend on earlier runs."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
+            icon_category="Checkmarks", icon_name="Checkmark_Circle_1",
+            text_size=TextSize.SMALL),
+    ]
+
+    prs.add_block_grid(
+        content_m4,
+        BlockGrid(
+            left=0, top=0, width=content_m4.width, height=content_m4.height,
+            columns=1, gap=GapSize.SMALL, blocks=discipline_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE, auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ============================================================
+    # SECTION 02 — The Task (was 01)
+    # ============================================================
     prs.add_section_header_slide_dark(
         section_title="The Task",
         section_description=(
             "13 stakeholder-listed reports. One question: how does each one use SFTP? "
             "Output supports migration handoff — we do NOT design the replacement."
         ),
-        section_number="01",
+        section_number="02",
     )
 
     # ---- Slide 4 — Goal and scope ----

@@ -24,7 +24,7 @@ def generate_part5(prs: EPAMPresentation):
             "16 reports cluster into 5 business domains. The migration validation "
             "matrix has to verify each endpoint separately."
         ),
-        section_number="04",
+        section_number="05",
     )
 
     # ---------------------------------------------------------------

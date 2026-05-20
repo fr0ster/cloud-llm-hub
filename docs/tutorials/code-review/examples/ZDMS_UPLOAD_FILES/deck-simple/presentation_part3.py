@@ -16,7 +16,7 @@ from simple_deck import (
 def generate_part3(prs: EPAMPresentation):
     # ----- Slide 7 — Section divider: Security (Section Header Dark) -----
     prs.add_section_header_slide_dark(
-        section_number="02",
+        section_number="03",
         section_title="Security",
         section_description=(
             "Authorization, OS-shell injection, information disclosure — "

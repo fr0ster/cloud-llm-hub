@@ -26,10 +26,9 @@ def generate_part1(prs: EPAMPresentation):
     # ----- Slide 2 — Contents (Contents Light) -----
     prs.add_contents_slide(
         contents=[
+            "Methodology — how user + AI worked",
             "Target & scope",
-            "Security findings",
-            "Performance findings",
-            "Clean Core findings",
+            "Security · Performance · Clean Core",
             "Maintainability findings",
             "Summary, priorities & retro",
         ]

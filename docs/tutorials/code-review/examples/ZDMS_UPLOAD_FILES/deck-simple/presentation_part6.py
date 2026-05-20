@@ -27,7 +27,7 @@ def _low_finding(title: str, content: str) -> Block:
 def generate_part6(prs: EPAMPresentation):
     # ----- Slide 16 — Section divider: Maintainability (Section Header Dark) -----
     prs.add_section_header_slide_dark(
-        section_number="05",
+        section_number="06",
         section_title="Maintainability",
         section_description=(
             "Style, modern-ABAP and dead-code findings — 16 LOW. "

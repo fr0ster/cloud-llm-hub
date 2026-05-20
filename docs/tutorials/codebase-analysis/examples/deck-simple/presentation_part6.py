@@ -26,7 +26,7 @@ def generate_part6(prs: EPAMPresentation):
             "The answer to the original goal, plus what the next team needs "
             "before they start writing code."
         ),
-        section_number="05",
+        section_number="06",
     )
 
     # ---------------------------------------------------------------

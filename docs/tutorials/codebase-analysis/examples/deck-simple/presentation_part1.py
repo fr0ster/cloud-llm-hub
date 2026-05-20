@@ -45,9 +45,9 @@ def generate_part1(prs: EPAMPresentation):
     # Slide 2 — Contents (Light), max 6 items
     prs.add_contents_slide(
         contents=[
-            "The task — 13 seeds, one migration question",
-            "Methods",
-            "Usage map — full inventory in Z001",
+            "Methodology — how user + AI worked",
+            "The task — 13 seeds, one question",
+            "Methods · Usage map",
             "Analysis — by business domain",
             "Result — migration handoff",
             "Retro",

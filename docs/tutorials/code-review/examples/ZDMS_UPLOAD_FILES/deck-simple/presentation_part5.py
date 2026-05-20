@@ -14,7 +14,7 @@ from simple_deck import (
 def generate_part5(prs: EPAMPresentation):
     # ----- Slide 13 — Section divider: Clean Core (Section Header Dark) -----
     prs.add_section_header_slide_dark(
-        section_number="04",
+        section_number="05",
         section_title="Clean Core",
         section_description=(
             "S/4HANA Cloud readiness — 6 HIGH findings. "

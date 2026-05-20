@@ -43,7 +43,7 @@ def generate_part3(prs: EPAMPresentation):
             "Stage 2 read every seed and its includes. Stage 2b enumerated "
             "methods openly. One mechanism kept showing up."
         ),
-        section_number="02",
+        section_number="03",
     )
 
     # ------------------------------------------------------------------

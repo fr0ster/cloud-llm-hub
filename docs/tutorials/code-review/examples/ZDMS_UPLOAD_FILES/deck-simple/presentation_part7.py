@@ -46,7 +46,7 @@ def _cell(text: str, color: EPAMColor, bold: bool = False, size: int = 14) -> Bl
 def generate_part7(prs: EPAMPresentation):
     # ----- Slide 20 — Section divider: Summary (Section Header Dark) -----
     prs.add_section_header_slide_dark(
-        section_number="06",
+        section_number="07",
         section_title="Summary",
         section_description=(
             "Cross-cutting picture, prioritized actions, and what the run "

@@ -26,7 +26,7 @@ def generate_part7(prs: EPAMPresentation):
             "What the run actually cost, what went wrong, and what the next "
             "analysis run inherits."
         ),
-        section_number="06",
+        section_number="07",
     )
 
     # ---------------------------------------------------------------

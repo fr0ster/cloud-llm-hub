@@ -13,7 +13,7 @@ from simple_deck import (
 def generate_part4(prs: EPAMPresentation):
     # ----- Slide 10 — Section divider: Performance (Section Header Dark) -----
     prs.add_section_header_slide_dark(
-        section_number="03",
+        section_number="04",
         section_title="Performance",
         section_description=(
             "Wide SELECTs and per-row function calls inside loops — "

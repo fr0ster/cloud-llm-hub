@@ -27,7 +27,7 @@ def generate_part4(prs: EPAMPresentation):
             "Seven independent SearchSource scans. Three credential-bag markers. "
             "Wrapper FUGRs discovered along the way."
         ),
-        section_number="03",
+        section_number="04",
     )
 
     # ---------------------------------------------------------------
