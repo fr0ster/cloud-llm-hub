@@ -1,0 +1,25 @@
+Generate an EPAM-branded PowerPoint deck (.pptx, no PDF) summarizing the sFTP usage analysis carried out in this folder on 2026-05-19 against destination DS4_CLH.
+
+Audience: SAP architects + engineering managers, technical-but-not-deep.
+
+Source markdowns (full content lives in `../`, in this analysis arc order):
+- ../01-task.md — Goal and task formalization
+- ../02-methods.md — Methods discovered (initial pass)
+- ../02b-methods-deep.md — Deep dive on candidate methods
+- ../02c-code-extracts.md — Relevant code extracts
+- ../03-usage-map.md — Where each sFTP entry point is used
+- ../04-analysis.md — Cross-cutting findings
+- ../05-result.md — Final synthesized result and recommendations
+- ../RETRO.md — Retrospective on the run (process, time, costs)
+
+Deck must:
+- Open with cover (title, subtitle, date) — EPAM-branded
+- Have a contents slide
+- One section per analysis phase: Task → Methods → Usage Map → Analysis → Result → Retro
+- Use blocks, BlockGrid, and the case-study layout where they fit
+- Keep slide bodies short — favor diagrams, blocks, and short bullets over walls of text
+- Finish with a thank-you / next-steps slide
+
+Final pptx output: ../report.simple-deck.pptx (NOT overwriting the existing report.pptx).
+
+Generate via the simple-deck Python library; run the resulting `presentation.py` with `simple-deck-python`.

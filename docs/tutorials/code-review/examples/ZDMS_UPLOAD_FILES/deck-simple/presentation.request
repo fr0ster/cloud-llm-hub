@@ -1,0 +1,25 @@
+Generate an EPAM-branded PowerPoint deck (.pptx, no PDF) summarizing the code review of ABAP program ZDMS_UPLOAD_FILES carried out on a real SAP system.
+
+Audience: SAP architects + engineering managers, technical-but-not-deep.
+
+Source markdowns (full content in `../`, in this review arc order):
+- ../01-target.md — Review target description (ZDMS_UPLOAD_FILES)
+- ../02-security.md — Security findings
+- ../03-performance.md — Performance findings
+- ../04-cleancore.md — Clean Core / S/4 readiness findings
+- ../05-maintainability.md — Maintainability findings
+- ../06-summary.md — Cross-cutting summary, prioritization
+- ../RETRO.md — Retrospective on the review run
+
+Deck must:
+- Open with cover (title, subtitle "Code review", date) — EPAM-branded
+- Have a contents slide
+- One section per review axis: Target → Security → Performance → Clean Core → Maintainability → Summary → Retro
+- For each finding category, show severity counts via a BlockGrid (Critical / High / Medium / Low) and list ALL findings (not just one per category) — short titles + 1-line description
+- Use HERO_METRIC_TO_THE_LEFT or HERO_METRIC_ON_TOP blocks where a number tells the story
+- Keep slide bodies short — favor blocks and short bullets over walls of text
+- Finish with priorities / next-steps slide
+
+Final pptx output: ../report.simple-deck.pptx (NOT overwriting the existing report.pptx).
+
+Generate via the simple-deck Python library; run the resulting `presentation.py` with `simple-deck-python`.

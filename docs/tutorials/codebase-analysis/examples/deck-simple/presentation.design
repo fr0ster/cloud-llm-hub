@@ -1,0 +1,62 @@
+# Design guidelines — sFTP usage analysis deck
+
+Goal: a technical retrospective deck. Audience is SAP architects + EMs.
+Tone is "what we found, in numbers" — favor metrics and short blocks over
+prose. Mixed light/dark slides; sections alternate as the outline says.
+
+## Theme
+
+- `Theme.DEFAULT`
+- No custom images; no image blocks. Images are not used in this deck.
+- Diagrams: BlockProcess for sequential/causal flows ("SXPG → SM69 → OS sftp"
+  on slide 8; scan discipline on slide 13; cutover order on slide 22).
+- No ConceptMap diagrams in this deck — the data is sequential, not radial.
+
+## Block styles (limit to 5 across the deck)
+
+Use ONLY these styles. Pick whichever fits — don't introduce extras.
+
+| Style | When to use |
+|---|---|
+| `BlockStyle.SOLID_FILL` | General-purpose info blocks (BlockGrid cells with title + content). Cycle accent colors via `auto_color_rotation=True`. |
+| `BlockStyle.CALLOUT` | Footnote / nuance under a grid (e.g. "All 13 verdicts source-cited in 02-methods.md"). |
+| `BlockStyle.HERO_METRIC_ON_TOP` | Slides with a number telling the story: slide 5 (`13` seeds), slide 11 (`+46%`), slide 20 (six headline metrics), slide 26 (run economics). |
+| `BlockStyle.LEFT_ICON_AND_TITLE` | Per-domain / per-finding cards where an icon helps the eye (slide 15 domain grid, slide 21 capability grid, slide 27/28 retro lists). |
+| `BlockStyle.TOP_ICON_AND_TITLE` | Small triplets — e.g. the 3-block "Goal / In scope / Out of scope" on slide 4. |
+
+## Color usage
+
+- Dark slides (Cover, Section Header Dark, Default Slide Dark): pull accent
+  colors from the dark palette — `EPAMColor.Cyan`, `EPAMColor.MintGreen`,
+  `EPAMColor.LightPurple`, `EPAMColor.Orange`. Use `auto_color_rotation=True`
+  on BlockGrid where possible.
+- Light slides (Default Slide, Contents, Section Header Light, splits):
+  pull from the light palette — `EPAMColor.Light_Blue`, `EPAMColor.Light_Teal`,
+  `EPAMColor.Light_Purple`, `EPAMColor.Light_Orange`. Same auto-rotation pattern.
+- Verdict / "scope grew" hero numbers: `EPAMColor.Orange` (dark slides) or
+  `EPAMColor.Light_Orange` (light slides) for emphasis.
+
+## Process style
+
+- `BlockProcess` (horizontal blocks). No chevron variant. Keep step blocks
+  on `BlockStyle.SOLID_FILL` with a consistent accent (one color across the
+  whole process, not rotated).
+
+## Slide-by-slide notes
+
+- Slide 8 (SXPG mechanism) — process should fit one slide width, four steps.
+- Slide 15 (domains) — use a 3 columns × 2 rows BlockGrid (5 domain blocks
+  plus 1 "total" hero block). Auto-rotate colors so each domain card differs.
+- Slides 16-17 (case studies) — use the simple-deck Case Study catalog
+  helpers (`add_case_study_slide` or equivalent). Domain match is the only
+  rationale; do not add custom content on these slides.
+- Slide 20 (headline numbers) — six hero metrics, 3×2 grid, no icons.
+- Slide 30 (thank you) — Default Slide Dark with a short bullet list as the
+  subtitle. Keep tone calm, not promotional.
+
+## Things to avoid
+
+- No animated builds, no transitions (lib does not support; nothing to set).
+- No images, no charts. Numbers belong in HERO_METRIC blocks, not chart shapes.
+- Keep block content to ≤4 short bullets — if a bullet runs past one line,
+  shorten or split into two blocks.

@@ -1,0 +1,67 @@
+# Design guidelines — ZDMS_UPLOAD_FILES code-review deck
+
+Goal: present 30 findings across 4 axes for a single ABAP program, prioritize,
+and surface the run economics. Audience is SAP architects + EMs.
+
+## Theme
+
+- `Theme.DEFAULT`
+- No custom images. No image blocks.
+- Diagrams: `BlockProcess` for "Four parallel category checks" (slide 6) and
+  for the "Recommended action order" (slide 23).
+- No ConceptMap; the structure is matrix + prioritized list, not radial.
+
+## Block styles (limit to 5 across the deck)
+
+| Style | When to use |
+|---|---|
+| `BlockStyle.HERO_METRIC_ON_TOP` | Every severity overview slide (4 blocks: CRITICAL/HIGH/MEDIUM/LOW), executive snapshot (slide 3), retro economics (slide 24). |
+| `BlockStyle.SOLID_FILL` | Per-finding cards in the findings list grids (slides 9, 12, 15, 18, 19). Severity is encoded by the accent color (see below), not by an icon. |
+| `BlockStyle.CALLOUT` | Verdict / footnote blocks (slide 14 "Verdict: rewrite, not patch"; slide 21 totals caption; slide 3 manual-review caption). |
+| `BlockStyle.LEFT_ICON_AND_TITLE` | The 2-block "What it does / How it does it" on slide 5 and the 4-block retro lessons on slide 25. |
+| `BlockStyle.TOP_ICON_AND_TITLE` | The 4-step BlockProcess slides (slides 6, 23). |
+
+## Severity color convention
+
+Use the same accent color for the same severity *everywhere* — readers should
+recognize severity at a glance.
+
+| Severity | Accent color | Notes |
+|---|---|---|
+| CRITICAL | `EPAMColor.Red` (dark slides) / `EPAMColor.Light_Red` (light slides) | Never visible on this deck (count = 0) but reserve the color so future runs render consistently. |
+| HIGH | `EPAMColor.Orange` / `EPAMColor.Light_Orange` | Used on every overview + every HIGH finding card. |
+| MEDIUM | `EPAMColor.Cyan` / `EPAMColor.Light_Teal` | |
+| LOW | `EPAMColor.Gray` / `EPAMColor.Light_Gray` | Keep neutral — 16 LOW findings should not draw the eye away from HIGHs. |
+
+Override `auto_color_rotation=False` on the per-finding BlockGrids and set
+`accent_color` explicitly on each block to enforce the convention.
+
+## Color usage on non-severity content
+
+- Dark slides: `EPAMColor.Cyan` for primary, `EPAMColor.MintGreen` for
+  contrast (Cover, Section Headers Dark, slide 22 verdict).
+- Light slides: `EPAMColor.Light_Blue` for primary, `EPAMColor.Light_Teal`
+  for contrast.
+
+## Process style
+
+- `BlockProcess`, horizontal, 4 steps each. Single accent color per process
+  (no rotation). Use `EPAMColor.Light_Blue` on slide 6, `EPAMColor.Orange`
+  on slide 23 (urgency cue).
+
+## Layout notes
+
+- Slide 21 "Findings heatmap" — implement as a `BlockGrid` of small
+  `SIMPLE` cells in a 5-column × 5-row arrangement (header row + 4 category
+  rows). Each cell is a one-line title (the count). Bold the HIGH column
+  by using `EPAMColor.Orange` on those cells.
+- Slide 18-19 each carry 8 LOW findings — 4 columns × 2 rows. Tight title,
+  one-line content per card.
+
+## Things to avoid
+
+- No animations, transitions.
+- No charts. Counts go into HERO_METRIC blocks or the matrix grid.
+- No images.
+- Block content ≤ 1 short paragraph or 3 bullets. If text wraps past 2 lines,
+  shorten — never let blocks auto-resize to be much larger than their grid cell.

@@ -1,0 +1,301 @@
+# PART 1: Opening
+
+## Slide 1 — Cover (Cover Dark, no image)
+- Layout: Cover Dark
+- Title: "ZDMS_UPLOAD_FILES"
+- Description: "ABAP code review — security, performance, Clean Core, maintainability"
+- Date: "MAY 2026" (use format_spaced_text)
+
+=====
+
+## Slide 2 — Contents (Contents Light)
+- Layout: Contents Light
+- Items (max 6, ≤50 chars each):
+  1. Target & scope
+  2. Security findings
+  3. Performance findings
+  4. Clean Core findings
+  5. Maintainability findings
+  6. Summary, priorities & retro
+
+=====
+
+## Slide 3 — Executive snapshot (Default Slide, Title + Upsubtitle)
+- Title: "30 findings across 4 axes"
+- Upsubtitle: "One legacy SFTP report — what one parallel AI review surfaced"
+- Body: BlockGrid (1 row × 5 cols) of HERO_METRIC_ON_TOP blocks:
+  - "0" — CRITICAL
+  - "10" — HIGH
+  - "3" — MEDIUM
+  - "17" — LOW
+  - "6 min" — Wall-clock for full 4-axis review
+- Footnote-style small text under grid: "Comparable senior-engineer manual review: 4–8 hours."
+
+=====
+
+# PART 2: Target
+
+## Slide 4 — Section divider: Target (Section Header Dark)
+- Section Number: "01"
+- Section Title: "Target"
+- Description (100–150 chars): "Legacy ABAP report ZDMS_UPLOAD_FILES — SFTP file transfer via OS shell commands. One program, every include in scope."
+
+=====
+
+## Slide 5 — What we reviewed (Default Slide, Title + Subtitle)
+- Title: "ZDMS_UPLOAD_FILES"
+- Upsubtitle: "Executable report, package Z001, destination DS4_CLH"
+- Body: 2 columns of blocks with icons
+  - Left block — "What it does" (icon: Processes / Gear_Process_1)
+    - Pulls files via SFTP GET → SAP DMS upload
+    - Pushes files via SFTP PUT
+    - Driven by SM69 entries `ZSFTP_DMS_GET` / `ZSFTP_DMS_PUT`
+  - Right block — "How it does it" (icon: Buildings_Construction / Hammer_Screwdriver)
+    - `SXPG_COMMAND_EXECUTE` → OS shell
+    - `OPEN/READ/TRANSFER/DELETE DATASET` on app server
+    - Reads config from standard `TVARVC`
+
+=====
+
+## Slide 6 — Review approach (Default Slide, Title + Upsubtitle)
+- Title: "Four parallel category checks"
+- Upsubtitle: "Same source, four independent rule sets — runs concurrently"
+- Body: BlockProcess (4 steps, icons)
+  1. Security (icon: Advanced_Technology / Security)
+  2. Performance (icon: Data_Analytics_Charts / Bar_Graph_Increasing_1)
+  3. Clean Core (icon: Cloud / Cloud_Computing_1)
+  4. Maintainability (icon: Core_Engineering / Engineering_Excellence)
+- Small caption under process: "Tools used: ReadProgram, GetIncludesList, GetInclude. Read-only, parallel-safe."
+
+=====
+
+# PART 3: Security
+
+## Slide 7 — Section divider: Security (Section Header Dark)
+- Section Number: "02"
+- Section Title: "Security"
+- Description: "Authorization, OS-shell injection, information disclosure — 4 findings, 2 HIGH."
+
+=====
+
+## Slide 8 — Security severity overview (Default Slide, Title + Upsubtitle)
+- Title: "Security: 4 findings"
+- Upsubtitle: "No CRITICAL — but two HIGH around OS command execution"
+- Body: BlockGrid 1×4 of HERO_METRIC_ON_TOP:
+  - "0" CRITICAL
+  - "2" HIGH
+  - "1" MEDIUM
+  - "1" LOW
+
+=====
+
+## Slide 9 — Security findings list (Default Slide, Title only)
+- Title: "Security — all 4 findings"
+- Body: BlockGrid 2×2 of blocks (no icon needed; severity-tagged short titles)
+  - "HIGH — Missing AUTHORITY-CHECK before SFTP GET"
+    - No explicit auth check before `SXPG_COMMAND_EXECUTE` (SFTP pull path).
+  - "HIGH — Missing AUTHORITY-CHECK before SFTP PUT"
+    - Same gap on the push path; relies only on FM `no_permission` exception.
+  - "MEDIUM — Shell-injection risk in parameters"
+    - `gv_param` built by unescaped CONCATENATE from `zfi_constants-fval`.
+  - "LOW — Sensitive details leaked via WRITE"
+    - `OPEN DATASET` error messages reveal filesystem paths to the user.
+
+=====
+
+# PART 4: Performance
+
+## Slide 10 — Section divider: Performance (Section Header Dark)
+- Section Number: "03"
+- Section Title: "Performance"
+- Description: "Wide SELECTs and per-row function calls inside loops — 4 findings, 2 HIGH."
+
+=====
+
+## Slide 11 — Performance severity overview (Default Slide, Title + Upsubtitle)
+- Title: "Performance: 4 findings"
+- Upsubtitle: "Loop-bound function calls dominate the risk"
+- Body: BlockGrid 1×4 HERO_METRIC_ON_TOP:
+  - "0" CRITICAL
+  - "2" HIGH
+  - "2" MEDIUM
+  - "0" LOW
+
+=====
+
+## Slide 12 — Performance findings list (Default Slide, Title only)
+- Title: "Performance — all 4 findings"
+- Body: BlockGrid 2×2 of blocks
+  - "HIGH — FORMAT_MESSAGE called per row"
+    - Inside `LOOP AT pt_data`; same message formatter invoked for every entry.
+  - "HIGH — ZDMS_UPLOAD_DOCUMENTS called per row"
+    - Upload FM invoked per row — should use a mass/table-parameter API.
+  - "MEDIUM — `SELECT *` on TVARVC"
+    - Wide fetch where only `sign/opti/low/high` are needed.
+  - "MEDIUM — `SELECT *` on DMS_DOC_FILES"
+    - Wide fetch with FOR ALL ENTRIES; only `filename` is used downstream.
+
+=====
+
+# PART 5: Clean Core
+
+## Slide 13 — Section divider: Clean Core (Section Header Dark)
+- Section Number: "04"
+- Section Title: "Clean Core"
+- Description: "S/4HANA Cloud readiness — 6 HIGH findings. This object will not run on Cloud as-is."
+
+=====
+
+## Slide 14 — Clean Core severity overview (Default Slide, Title + Upsubtitle)
+- Title: "Clean Core: 6 findings, all HIGH"
+- Upsubtitle: "Every finding here is a migration blocker"
+- Body: One-row BlockGrid 1×4 HERO_METRIC_ON_TOP:
+  - "0" CRITICAL
+  - "6" HIGH
+  - "0" MEDIUM
+  - "0" LOW
+- Below the grid: prominent highlighted callout block: "Verdict: rewrite, not patch — if S/4HANA Cloud is on the roadmap."
+
+=====
+
+## Slide 15 — Clean Core findings list (Default Slide, Title only)
+- Title: "Clean Core — all 6 findings"
+- Body: BlockGrid 3×2 of compact blocks
+  - "HIGH — SXPG_COMMAND_EXECUTE (SFTP GET)"
+    - OS-shell access via SM69 — not allowed in Cloud.
+  - "HIGH — SXPG_COMMAND_EXECUTE (SFTP PUT)"
+    - Same shell-access blocker on the push path.
+  - "HIGH — OPEN/READ/TRANSFER DATASET (app-server FS)"
+    - Direct AL11-style file I/O — disallowed in Cloud.
+  - "HIGH — DELETE DATASET (post-process cleanup)"
+    - App-server file deletion — disallowed in Cloud.
+  - "HIGH — DELETE DATASET (error path)"
+    - Second AL11 deletion site, same blocker.
+  - "HIGH — Direct SELECT on TVARVC"
+    - Standard config table read without released API.
+
+=====
+
+# PART 6: Maintainability
+
+## Slide 16 — Section divider: Maintainability (Section Header Dark)
+- Section Number: "05"
+- Section Title: "Maintainability"
+- Description: "Style, modern-ABAP and dead-code findings — 16 LOW. No blockers, steady tech-debt."
+
+=====
+
+## Slide 17 — Maintainability severity overview (Default Slide, Title + Upsubtitle)
+- Title: "Maintainability: 16 findings"
+- Upsubtitle: "All LOW — incremental cleanup, no urgency"
+- Body: BlockGrid 1×4 HERO_METRIC_ON_TOP:
+  - "0" CRITICAL
+  - "0" HIGH
+  - "0" MEDIUM
+  - "16" LOW
+
+=====
+
+## Slide 18 — Maintainability findings 1/2 (Default Slide, Title only)
+- Title: "Maintainability — findings 1–8"
+- Body: BlockGrid 4×2 of compact "LOW —" titled blocks, 1-line each
+  - "LOW — Obsolete CONCATENATE for path build" — use string templates.
+  - "LOW — Magic value for log-color param" — raw `'6'/'4'/'3'` literals passed around.
+  - "LOW — Magic literals in FORMAT COLOR CASE" — same color codes hard-coded again.
+  - "LOW — `WITH HEADER LINE` (lt_return #1)" — obsolete table-with-header declaration.
+  - "LOW — `WITH HEADER LINE` (lt_return #2)" — second instance of the same pattern.
+  - "LOW — Commented-out code left in place" — stray `*lv_doc` declaration above active one.
+  - "LOW — `SPLIT` for filename parsing" — older style; consider FIND REGEX.
+  - "LOW — Dead variable `lv_userid`" — declared, cleared, never sourced.
+
+=====
+
+## Slide 19 — Maintainability findings 2/2 (Default Slide, Title only)
+- Title: "Maintainability — findings 9–16"
+- Body: BlockGrid 4×2 of compact "LOW —" titled blocks
+  - "LOW — Mixed inline vs top DATA in same FORM" — inconsistent declaration style.
+  - "LOW — Hard-coded business text 'INVALID PATIENT ID'" — should use message class.
+  - "LOW — CONCATENATE for message build" — replace with string template.
+  - "LOW — Magic constant `'AU1'` (document type)" — extract to named constant.
+  - "LOW — Commented-out `ENDIF` left behind" — control-flow noise.
+  - "LOW — Hard-coded allowed-characters string" — opaque validation set.
+  - "LOW — CONCATENATE for path with `'\\'` separator" — magic separator + obsolete style.
+  - "LOW — Untyped FORM parameters in `f_fill_log`" — implicit ANY typing.
+
+=====
+
+# PART 7: Summary, priorities & retro
+
+## Slide 20 — Section divider: Summary (Section Header Dark)
+- Section Number: "06"
+- Section Title: "Summary & next steps"
+- Description: "Cross-cutting picture, prioritized actions, and what the run itself cost."
+
+=====
+
+## Slide 21 — Findings heatmap (Default Slide, Title + Upsubtitle)
+- Title: "Findings by category × severity"
+- Upsubtitle: "Where the weight sits"
+- Body: A simple matrix presented as BlockGrid 4×5 (4 category rows × 5 severity columns including header), or a compact table block. Cells show counts; emphasize HIGH column visually.
+  - Header row: " ", CRITICAL, HIGH, MEDIUM, LOW
+  - Security: 0 / 2 / 1 / 1
+  - Performance: 0 / 2 / 2 / 0
+  - Clean Core: 0 / 6 / 0 / 0
+  - Maintainability: 0 / 0 / 0 / 16
+- Below: small caption "TOTAL: 30 findings — 10 HIGH, 3 MEDIUM, 17 LOW, 0 CRITICAL."
+
+=====
+
+## Slide 22 — Verdict (Default Slide Dark, Title + Subtitle)
+- Title: "Significant rework needed"
+- Upsubtitle: "On-prem: functional. Cloud: would not run."
+- Subtitle / body: two blocks
+  - "Schedule a focused fix sprint" — address all 10 HIGH issues before next release.
+  - "Migration call" — 6 HIGH Clean Core findings = rewrite the SFTP path before S/4HANA Cloud move.
+
+=====
+
+## Slide 23 — Recommended priorities (Default Slide, Title only)
+- Title: "Recommended action order"
+- Body: ChevronProcess (4 steps, with icons)
+  1. "Now — Security" — add AUTHORITY-CHECK before SXPG; validate/escape parameters. (icon: Checkmarks / Checkmark_Circle_1)
+  2. "Next — Performance" — pull FM calls out of LOOP; narrow `SELECT` lists. (icon: Data_Analytics_Charts / Bar_Graph_Increasing_1)
+  3. "Plan — Clean Core" — replace SXPG + AL11 with Integration Suite / released APIs. (icon: Cloud / Cloud_Computing_1)
+  4. "Continuous — Maintainability" — fix during normal evolution; no dedicated sprint. (icon: Processes / Gear_Process_4)
+
+=====
+
+## Slide 24 — Retro: time & token cost (Default Slide, Title + Upsubtitle)
+- Title: "Run economics"
+- Upsubtitle: "AI-assisted review vs senior-engineer manual review"
+- Body: BlockGrid 1×4 of HERO_METRIC_ON_TOP blocks:
+  - "≈ 6 min" — Total wall-clock (vs 4–8 hours manual)
+  - "≈ 45 s" — Slowest of 4 parallel category checks
+  - "381k" — Executor-side LLM tokens (gpt-5.2)
+  - "≈ $28" — Controller-side share of session cost
+- Small caption: "30 findings, 4 categories, one parallel run."
+
+=====
+
+## Slide 25 — Retro: lessons (Default Slide, Title only)
+- Title: "What we learned for the next run"
+- Body: BlockGrid 2×2 of blocks with icons
+  - "Worked well" (icon: Checkmarks / Checkmark_Circle_1)
+    - Parallel category checks safe with read-only tools.
+    - Per-category isolation — no rule leakage.
+    - Strict source citation eliminated speculation.
+  - "Went off" (icon: Checkmarks / X_Mark_Circle_1)
+    - Bash backtick expansion mangled rule text in prompts.
+    - Severity-summary regex missed maintainability block.
+  - "Fix next time" (icon: Processes / Repair if available else Gear_Process_2)
+    - Build prompts in Python end-to-end, no bash variables.
+    - Parse severity from per-finding headings only.
+  - "Don't change" (icon: Goals / Thumbs_Up)
+    - One worked example per pipeline is enough.
+    - Keep parallelism only for read-only tool sets.
+
+=====
+
+## Slide 26 — Thank you / Q&A (Default Slide Dark, Title + Upsubtitle)
+- Title: "Questions?"
+- Upsubtitle: "ZDMS_UPLOAD_FILES code review — full artifacts in the tutorial folder"
