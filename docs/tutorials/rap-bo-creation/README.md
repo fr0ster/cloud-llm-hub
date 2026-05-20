@@ -21,7 +21,8 @@ Tick each box as you finish the step. Long sessions are easier when you can see 
 - [ ] Step 5 — 4 draft tables created and active
 - [ ] Step 6 — 4 interface CDS views activated together
 - [ ] Step 7 — 4 projection CDS views activated together
-- [ ] Step 8 — metadata extension created and active
+- [ ] Step 8 — root metadata extension created and active
+- [ ] Step 8b — child metadata extensions (Plant, Text, Sales) created and active
 - [ ] Step 9 — interface BDEF created (do not activate yet)
 - [ ] Step 10 — BIMP class created and activated together with the interface BDEF
 - [ ] Step 11 — projection BDEF created and active
@@ -477,6 +478,10 @@ Interface CDS views define the BO's data model. The root view has compositions t
 >
 > 2. **Views created then deleted during retries.** The LLM may delete and recreate views many times while trying to break the loop dependency, and may delete views that already worked. **Fix:** After this step, always verify with a checkpoint that all 4 views exist and are active before moving on.
 >
+> 3. **Agent claims "created" without calling the tool.** The reply may say the interface view is created but no `[SmartAgent: Executing ...]` line appears — the creation tool was never invoked. Two reproducible workarounds:
+>    - Write the source-table name in **UPPERCASE** in the prompt (e.g. `Z##_MARA`, not `z##_mara`) — this consistently unblocks interface-view creation.
+>    - Immediately ask the agent to **read the view back** ("Show me the source of `Z##_R_MAT_ROOT`"). If the read fails, the view never existed — re-issue the create prompt. The read also forces a real tool call, which usually makes the second attempt succeed.
+>
 > **Important — run a syntax check after activation:** CDS views are created without a syntax check and activated as a group. After activation, verify each view has no errors:
 > "Check CDS view `Z##_R_MAT_ROOT` for syntax errors" (repeat for each view).
 > The check may show warnings about key definitions or missing access control — those are warnings only for this tutorial but should be fixed in production.
@@ -533,6 +538,9 @@ Same loop-dependency pattern as Step 6: root redirects to children, children red
 
 **Checkpoint:** Ask the agent: "List all CDS views starting with Z##_ and confirm they are all active."
 
+> **Known LLM mistake — false-success on projection views.** Similar to Step 6, the agent may reply "projection view created" without invoking any creation tool (no `[SmartAgent: Executing ...]` line). The workaround:
+> - Ask the agent to **read each projection back** before activating: "Show me the source of `Z##_C_MAT_ROOT`". If the read fails, the view never existed — re-issue the create prompt. Reading back also forces a real tool call, which makes the second create attempt succeed.
+
 ---
 
 ## Step 8: Create Metadata Extensions
@@ -569,6 +577,81 @@ Metadata extensions add UI annotations for the Fiori Elements app. They depend o
 > Activate.
 
 **Expected result:** Metadata extension created and activated. The Fiori preview will show proper list/detail pages with field labels and facets.
+
+### Step 8b: Metadata Extensions for Child Projections
+
+Without metadata extensions on the child projections, the Object Page facets (Plant Data, Texts, Sales Data) render with no field labels and no usable column layout. Every projection view that appears as a facet needs its own extension. Three more extensions — one per child.
+
+**Message 1 — `Z##_C_MAT_PLANT`:**
+
+> Create metadata extension for `Z##_C_MAT_PLANT` in package `TEST_##_MAT` with this source:
+>
+> ```
+> @Metadata.layer: #CUSTOMER
+> annotate entity `Z##_C_MAT_PLANT` with
+> {
+>   @UI.hidden: true
+>   Uuid;
+>   @UI.hidden: true
+>   RootUuid;
+>   @UI: { lineItem: [{ position: 10 }], identification: [{ position: 10 }] }
+>   Matnr;
+>   @UI: { lineItem: [{ position: 20 }], identification: [{ position: 20 }] }
+>   Plant;
+> }
+> ```
+>
+> Activate.
+
+**Message 2 — `Z##_C_MAT_TEXT`:**
+
+> Create metadata extension for `Z##_C_MAT_TEXT` in package `TEST_##_MAT` with this source:
+>
+> ```
+> @Metadata.layer: #CUSTOMER
+> annotate entity `Z##_C_MAT_TEXT` with
+> {
+>   @UI.hidden: true
+>   Uuid;
+>   @UI.hidden: true
+>   RootUuid;
+>   @UI: { lineItem: [{ position: 10 }], identification: [{ position: 10 }] }
+>   Matnr;
+>   @UI: { lineItem: [{ position: 20 }], identification: [{ position: 20 }] }
+>   Language;
+>   @UI: { lineItem: [{ position: 30 }], identification: [{ position: 30 }] }
+>   MaterialDescription;
+> }
+> ```
+>
+> Activate.
+
+**Message 3 — `Z##_C_MAT_SALES`:**
+
+> Create metadata extension for `Z##_C_MAT_SALES` in package `TEST_##_MAT` with this source:
+>
+> ```
+> @Metadata.layer: #CUSTOMER
+> annotate entity `Z##_C_MAT_SALES` with
+> {
+>   @UI.hidden: true
+>   Uuid;
+>   @UI.hidden: true
+>   RootUuid;
+>   @UI: { lineItem: [{ position: 10 }], identification: [{ position: 10 }] }
+>   Matnr;
+>   @UI: { lineItem: [{ position: 20 }], identification: [{ position: 20 }] }
+>   SalesOrganization;
+>   @UI: { lineItem: [{ position: 30 }], identification: [{ position: 30 }] }
+>   DistributionChannel;
+> }
+> ```
+>
+> Activate.
+
+**Expected result:** All three child extensions active. The Object Page facets in the Fiori preview now show readable column headers and fields instead of empty/technical layouts.
+
+> **Rule of thumb:** every projection view that appears as a facet on the Object Page needs its own metadata extension. If a facet looks half-broken in the Fiori preview, it is almost always a missing or partial child extension.
 
 ---
 

@@ -81,4 +81,5 @@ The four-step method above is the *rulebook* of the game. The badminton is *how*
 | AI drifts past the current stage | Scope creep — starts work that belongs in a later stage | Name the current stage in the next prompt. Park out-of-stage suggestions for the right later step. |
 | Solving the task without refining the process or any skill | Experience walks out the door | Every checkpoint: *"what did I change in the process or skills?"* If nothing — re-read the run. |
 | Hard-coding the stage list as if it were universal | Different tasks need different stages | The method's step 2 is per-task. Don't pretend a stage list is universal. |
+| Editor locks on the live system desync the AI | AI reports "active" / "created" but the object is still locked by your IDE editor (Eclipse/ADT, ABAP-in-Eclipse, …). Cuts both ways: false-positive "active" and false-negative "cannot be changed". | Close all related editors in your IDE before letting the AI run activation/modification tools. Treat one "success" claim as a hypothesis — confirm with a separate read/list checkpoint. |
 

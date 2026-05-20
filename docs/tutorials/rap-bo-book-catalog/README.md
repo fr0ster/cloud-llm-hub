@@ -77,6 +77,7 @@ Two terms you will see often:
 | Draft table: "Missing fields (CamelCase expected)" | snake_case field names | Use lowercased CDS alias names |
 | CDS root-child relationship flipped | Composition vs association mis-read | Quote the spec, regenerate that view only |
 | 40+ BDEF mapping warnings | `mapping for … corresponding` | Use explicit `{ CdsAlias = table_field; }` |
+| Generated code compiles and activates, but CRUD does nothing at runtime | BIMP handlers missing `MODIFY ENTITIES` / `READ ENTITIES` body, or BDEF maps to the wrong table | Open the BIMP class in ADT, verify each handler method actually does the operation it claims. Don't ask the agent to "fix the CRUD" — fix it manually, the agent tends to re-generate the same broken shape. |
 
 ### Two RAG collections
 
@@ -333,6 +334,14 @@ Checkpoint before moving on:
 **Transformation:** plan steps + spec details → MCP tool calls (`Create…`, `Update…`, `Activate…`) on the live system. When SAP rejects something the agent fixes the spec via `rag_correct` first, then retries — you do not retype DDL.
 
 > **The specification keeps changing.** When SAP rejects something during implementation (wrong key, missing mapping, wrong type), fix the specification first, then the code. This keeps the spec and the system in sync. By the end, your draft will have grown into an accurate final specification.
+
+> **Before you start Phase 4 — close objects in Eclipse/ADT.** If you have BO objects (tables, CDS views, BDEF, BIMP class) open in Eclipse while the agent runs `Activate…`, the ADT lock from your editor can desync the agent's view of object state. Symptoms:
+> - Agent reports "active" but the object is actually still inactive (or vice versa).
+> - Agent says the object is "locked and can't be changed" when you have not touched it since the last activation.
+>
+> **Fix:** close all related editors in Eclipse before Phase 4. If the agent still reports a lock or a false "active", close any newly-opened editors and re-run the check. Treat one "active" claim as a hypothesis, not a fact, until a checkpoint confirms it.
+
+> **You do not fully control the flow.** This tutorial sells a phase-by-phase plan, but real runs diverge. The agent will sometimes retry on its own mistakes and walk you *backwards* — the first try produces working code, the second "fix" breaks it. **Rule of thumb:** if the agent loops on the same symptom for more than two rounds, stop letting it iterate and apply the fix manually (read the spec, edit the object directly in ADT, then tell the agent "I fixed X manually, continue from step Y"). Saving time with AI does not mean letting AI dig holes for you.
 
 ### Detecting fake responses
 
