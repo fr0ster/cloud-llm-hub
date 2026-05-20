@@ -337,20 +337,28 @@ def generate_part2(prs: EPAMPresentation):
             icon_category="People", icon_name="Person_Suit",
             text_size=TextSize.SMALL),
         Block(left=0, top=0, width=0, height=0,
-            title="Controller — Claude (this session)",
-            content=("Drives the conversation, formalizes the task, "
-                     "designs the pipeline with the user, parses outputs. "
-                     "Cannot touch SAP directly."),
+            title="Controller — Claude Code",
+            content=("CLI agent on the user's laptop. Drives the conversation, "
+                     "formalizes the task, designs the pipeline with the user, "
+                     "parses outputs. Cannot touch SAP directly."),
             style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Teal,
             icon_category="AI_VR_Bot", icon_name="Brain_1",
             text_size=TextSize.SMALL),
         Block(left=0, top=0, width=0, height=0,
             title="Executor — SmartAgent on cloud-llm-hub",
-            content=("gpt-5.2 with MCP tools (ReadProgram, GetIncludesList, "
-                     "GetInclude). Per-category rule sets. Cannot decide "
-                     "scope. Returns evidence, not decisions."),
+            content=("Called by the controller over /v1/chat/completions. "
+                     "gpt-5.2 + MCP tools (ReadProgram, GetIncludesList, "
+                     "GetInclude). Returns code-cited evidence, not decisions."),
             style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Purple,
             icon_category="AI_VR_Bot", icon_name="Android",
+            text_size=TextSize.SMALL),
+        Block(left=0, top=0, width=0, height=0,
+            title="Wiring",
+            content=("Claude Code → /v1/chat/completions on cloud-llm-hub → "
+                     "SmartAgent (gpt-5.2) → MCP → SAP destination DS4_CLH. "
+                     "Artifacts land as .md files."),
+            style=BlockStyle.LEFT_ICON_AND_TITLE, color=EPAMColor.Light_Orange,
+            icon_category="Cloud", icon_name="Cloud_Arrows_1",
             text_size=TextSize.SMALL),
     ]
     prs.add_block_grid(
