@@ -110,7 +110,154 @@ def generate_part2(prs: EPAMPresentation):
         background=Background.LIGHT,
     )
 
-    # ----- Slide 6 — Review approach (Default Slide, Title + Upsubtitle) -----
+    # ----- Slide 6 (NEW) — How we ran the review (pipeline) -----
+    slide6, content6 = prs.add_default_slide(
+        title="How we ran the review",
+        upsubtitle="READ-ONLY · PARALLEL · CITED",
+    )
+
+    pipeline_blocks = [
+        Block(
+            left=0, top=0, width=0, height=0,
+            title="1. Read source",
+            content=(
+                "ReadProgram + GetIncludesList + GetInclude × N. "
+                "Whole program + every include in scope."
+            ),
+            style=BlockStyle.TOP_ICON_AND_TITLE,
+            color=EPAMColor.Light_Blue,
+            icon_category="Documents",
+            icon_name="Document_Layout",
+            text_size=TextSize.SMALL,
+        ),
+        Block(
+            left=0, top=0, width=0, height=0,
+            title="2. Four parallel checks",
+            content=(
+                "Four SmartAgent calls fire concurrently — one per category, "
+                "each with its own rule set and severity scale."
+            ),
+            style=BlockStyle.TOP_ICON_AND_TITLE,
+            color=EPAMColor.Light_Blue,
+            icon_category="Processes",
+            icon_name="Process_Parallel" if False else "Gear_Process_1",
+            text_size=TextSize.SMALL,
+        ),
+        Block(
+            left=0, top=0, width=0, height=0,
+            title="3. Aggregate",
+            content=(
+                "Parse per-finding ### headings → severity histogram → "
+                "cross-category verdict. ~6 min wall-clock total."
+            ),
+            style=BlockStyle.TOP_ICON_AND_TITLE,
+            color=EPAMColor.Light_Blue,
+            icon_category="Data_Analytics_Charts",
+            icon_name="Bar_Graph_Increasing_1",
+            text_size=TextSize.SMALL,
+        ),
+    ]
+
+    pipeline_height = 3200000
+    prs.add_block_process(
+        content6,
+        BlockProcess(
+            direction=ProcessDirection.HORIZONTAL,
+            left=0,
+            top=0,
+            width=content6.width,
+            height=pipeline_height,
+            blocks=pipeline_blocks,
+            gap=GapSize.MEDIUM,
+            arrow_color=EPAMColor.Light_Gray,
+        ),
+        background=Background.LIGHT,
+    )
+
+    prs.add_block(
+        content6,
+        Block(
+            left=0,
+            top=pipeline_height + 274320,
+            width=content6.width,
+            height=0,
+            content=(
+                "Comparable senior-engineer manual review: 4–8 hours "
+                "(1–2 hours per category × 4)."
+            ),
+            style=BlockStyle.CALLOUT,
+            color=EPAMColor.Light_Blue,
+            text_size=TextSize.SMALL,
+            horizontal_alignment=HorizontalAlignment.LEFT,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ----- Slide 7 (NEW) — Discipline that made the run safe -----
+    slide7, content7 = prs.add_default_slide(
+        title="What kept the run honest",
+        upsubtitle="THREE DISCIPLINES IN PROMPTS",
+    )
+
+    discipline_blocks = [
+        Block(
+            left=0, top=0, width=0, height=0,
+            title="Source citation rule",
+            content=(
+                "No source = no finding. Every finding carries Location + "
+                "Snippet. Stops the agent from inventing issues."
+            ),
+            style=BlockStyle.LEFT_ICON_AND_TITLE,
+            color=EPAMColor.Light_Blue,
+            icon_category="Checkmarks",
+            icon_name="Checkmark_Circle_1",
+            text_size=TextSize.SMALL,
+        ),
+        Block(
+            left=0, top=0, width=0, height=0,
+            title="Per-category isolation",
+            content=(
+                "Each check stays inside its own rule set. No security "
+                "findings leaked into maintainability or vice versa."
+            ),
+            style=BlockStyle.LEFT_ICON_AND_TITLE,
+            color=EPAMColor.Light_Teal,
+            icon_category="Structures_Architectures",
+            icon_name="Architecture_1" if False else "Diagram_1",
+            text_size=TextSize.SMALL,
+        ),
+        Block(
+            left=0, top=0, width=0, height=0,
+            title="Read-only parallelism",
+            content=(
+                "Four parallel SmartAgent calls are safe because the tools "
+                "are read-only (Read*). SearchSource would not be safe in parallel."
+            ),
+            style=BlockStyle.LEFT_ICON_AND_TITLE,
+            color=EPAMColor.Light_Purple,
+            icon_category="Processes",
+            icon_name="Gear_Process_2",
+            text_size=TextSize.SMALL,
+        ),
+    ]
+
+    prs.add_block_grid(
+        content7,
+        BlockGrid(
+            left=0,
+            top=0,
+            width=content7.width,
+            height=content7.height,
+            columns=1,
+            gap=GapSize.SMALL,
+            blocks=discipline_blocks,
+            style=BlockStyle.LEFT_ICON_AND_TITLE,
+            auto_color_rotation=False,
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ----- Slide 8 — Four rule sets in parallel (was slide 6) -----
     slide6, content6 = prs.add_default_slide(
         title="Four parallel category checks",
         upsubtitle="FOUR RULE SETS IN PARALLEL",
