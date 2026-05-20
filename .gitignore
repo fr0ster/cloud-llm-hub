@@ -85,3 +85,5 @@ __pycache__/
 # simple-deck per-run validation reports
 docs/tutorials/**/report*.report
 
+.~lock.*
+
