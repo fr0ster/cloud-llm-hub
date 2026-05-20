@@ -77,7 +77,7 @@ Two terms you will see often:
 | Draft table: "Missing fields (CamelCase expected)" | snake_case field names | Use lowercased CDS alias names |
 | CDS root-child relationship flipped | Composition vs association mis-read | Quote the spec, regenerate that view only |
 | 40+ BDEF mapping warnings | `mapping for … corresponding` | Use explicit `{ CdsAlias = table_field; }` |
-| Generated code compiles and activates, but CRUD does nothing at runtime | BIMP handlers missing `MODIFY ENTITIES` / `READ ENTITIES` body, or BDEF maps to the wrong table | Open the BIMP class in ADT, verify each handler method actually does the operation it claims. Don't ask the agent to "fix the CRUD" — fix it manually, the agent tends to re-generate the same broken shape. |
+| Generated code compiles and activates, but CRUD does nothing at runtime | Most often timing — draft table / projection / binding not fully propagated yet (ADT is not strictly synchronous). Less often: BIMP handlers missing `MODIFY ENTITIES` / `READ ENTITIES` body, or BDEF maps to the wrong table. | First wait 10–30 seconds and retry the CRUD call — many "broken CRUD" reports are just propagation lag. If it still fails, open the BIMP class in ADT and verify each handler actually performs its operation. Don't ask the agent to "fix the CRUD" — fix it manually; the agent tends to re-generate the same broken shape. |
 
 ### Two RAG collections
 
