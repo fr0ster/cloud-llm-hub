@@ -291,6 +291,252 @@ def generate_part3(prs: EPAMPresentation):
     )
 
     # ============================================================
+    # Slide — Skill catalog (single-task skills)
+    # ============================================================
+    _, content_sk = prs.add_default_slide(
+        title="Skill catalog · one task per file",
+        upsubtitle="16 SKILLS · 33-74 LINES EACH",
+    )
+
+    prs.add_block_grid(
+        content_sk,
+        BlockGrid(
+            left=0, top=0,
+            width=content_sk.width, height=int(2.8 * INCH),
+            columns=3, gap=GapSize.MEDIUM,
+            style=BlockStyle.SOLID_FILL,
+            auto_color_rotation=False,
+            text_size=TextSize.EXTRA_SMALL,
+            margin_preset=BlockMarginPreset.NARROW,
+            blocks=[
+                Block(left=0, top=0, width=0, height=0,
+                      title="DDIC layer",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Blue,
+                      rich_content=[
+                          ContentParagraph(text="creating-domain", is_bullet=True),
+                          ContentParagraph(text="creating-data-element", is_bullet=True),
+                          ContentParagraph(text="creating-persistent-table", is_bullet=True),
+                          ContentParagraph(text="creating-draft-table", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="RAP layer",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Teal,
+                      rich_content=[
+                          ContentParagraph(text="creating-interface-cds-view", is_bullet=True),
+                          ContentParagraph(text="creating-projection-cds-view", is_bullet=True),
+                          ContentParagraph(text="creating-metadata-extension", is_bullet=True),
+                          ContentParagraph(text="creating-bdef", is_bullet=True),
+                          ContentParagraph(text="creating-bimp", is_bullet=True),
+                          ContentParagraph(text="creating-projection-bdef", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="Service · operational",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Orange,
+                      rich_content=[
+                          ContentParagraph(text="creating-service-definition", is_bullet=True),
+                          ContentParagraph(text="creating-service-binding", is_bullet=True),
+                          ContentParagraph(text="enforcing-target-package", is_bullet=True),
+                          ContentParagraph(text="avoiding-hallucinations", is_bullet=True),
+                          ContentParagraph(text="managing-rag-artifacts", is_bullet=True),
+                          ContentParagraph(text="activating-objects", is_bullet=True),
+                      ]),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    prs.add_block(
+        content_sk,
+        Block(
+            left=0, bottom=0,
+            width=content_sk.width, height=int(0.9 * INCH),
+            style=BlockStyle.CALLOUT,
+            color=EPAMColor.Light_Blue,
+            text_size=TextSize.SMALL,
+            rich_content=[
+                ContentParagraph(runs=[
+                    TextRun(text="Why split: ", bold=True),
+                    TextRun(text="one skill = one task · no stage / phase references inside · "
+                                 "load only what the current step needs · easier to evolve · "
+                                 "fits on one screen.")]),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ============================================================
+    # Slide — Artifacts across phases (same entity through pipeline)
+    # ============================================================
+    _, content_af = prs.add_default_slide(
+        title="The same entity moves through the pipeline",
+        upsubtitle="AUTHOR · FROM IDEA TO OBJECT",
+    )
+
+    prs.add_block_grid(
+        content_af,
+        BlockGrid(
+            left=0, top=0,
+            width=content_af.width, height=content_af.height,
+            columns=4, gap=GapSize.SMALL,
+            style=BlockStyle.SOLID_FILL,
+            auto_color_rotation=False,
+            text_size=TextSize.EXTRA_SMALL,
+            margin_preset=BlockMarginPreset.NARROW,
+            blocks=[
+                Block(left=0, top=0, width=0, height=0,
+                      title="Phase 1 · business",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Blue,
+                      rich_content=[
+                          ContentParagraph(runs=[TextRun(text="Entity: Author", bold=True)]),
+                          ContentParagraph(text="Name (string 100, required)", is_bullet=True),
+                          ContentParagraph(text="Country (string 50)", is_bullet=True),
+                          ContentParagraph(text="Birth Year (int 4)", is_bullet=True),
+                          ContentParagraph(text="Biography (text)", is_bullet=True),
+                          ContentParagraph(runs=[
+                              TextRun(text="Rule: ", bold=True),
+                              TextRun(text="name unique; birth-year 1000..now.")]),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="Phase 2 · spec",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Teal,
+                      rich_content=[
+                          ContentParagraph(runs=[TextRun(text="Table Z##_AUTHOR", bold=True)]),
+                          ContentParagraph(text="author_id uuid · key", is_bullet=True),
+                          ContentParagraph(text="name z##_e_name (z##_d_name CHAR 100)", is_bullet=True),
+                          ContentParagraph(text="country z##_e_country", is_bullet=True),
+                          ContentParagraph(text="birth_year z##_e_year (NUMC 4)", is_bullet=True),
+                          ContentParagraph(text="biography STRING", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="Phase 3 · plan",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Magenta,
+                      rich_content=[
+                          ContentParagraph(runs=[TextRun(text="Step group · Author", bold=True)]),
+                          ContentParagraph(text="1.1 create 5 domains", is_bullet=True),
+                          ContentParagraph(text="1.2 create 5 data elements", is_bullet=True),
+                          ContentParagraph(text="2.1 create Z##_AUTHOR + draft", is_bullet=True),
+                          ContentParagraph(text="3.1 CDS Z##_R_AUTHOR + C view", is_bullet=True),
+                          ContentParagraph(text="4.1 BDEF + BIMP + activate", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="Phase 4 · objects",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Orange,
+                      rich_content=[
+                          ContentParagraph(runs=[TextRun(text="Active on SAP", bold=True)]),
+                          ContentParagraph(text="DOMA · DTEL · 5+5", is_bullet=True),
+                          ContentParagraph(text="TABL Z##_AUTHOR + _D draft", is_bullet=True),
+                          ContentParagraph(text="DDLS Z##_R_AUTHOR + C", is_bullet=True),
+                          ContentParagraph(text="BDEF + BIMP class", is_bullet=True),
+                          ContentParagraph(text="Service + binding", is_bullet=True),
+                      ]),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ============================================================
+    # Slide — What got built · 72 objects
+    # ============================================================
+    _, content_b = prs.add_default_slide(
+        title="What got built · 72 objects, all active",
+        upsubtitle="4 ENTITIES · 1 RAP APP",
+    )
+
+    metrics_h = int(1.7 * INCH)
+    prs.add_block_grid(
+        content_b,
+        BlockGrid(
+            left=0, top=0,
+            width=content_b.width, height=metrics_h,
+            columns=4, gap=GapSize.SMALL,
+            style=BlockStyle.HERO_METRIC_ON_TOP,
+            auto_color_rotation=False,
+            blocks=[
+                Block(left=0, top=0, width=0, height=0,
+                      metric_value="72",
+                      content="objects active",
+                      style=BlockStyle.HERO_METRIC_ON_TOP,
+                      color=EPAMColor.Light_Teal,
+                      horizontal_alignment=HorizontalAlignment.CENTER),
+                Block(left=0, top=0, width=0, height=0,
+                      metric_value="77",
+                      content="API prompts in P4",
+                      style=BlockStyle.HERO_METRIC_ON_TOP,
+                      color=EPAMColor.Light_Blue,
+                      horizontal_alignment=HorizontalAlignment.CENTER),
+                Block(left=0, top=0, width=0, height=0,
+                      metric_value="~$19",
+                      content="API cost · vs ~$2k manual",
+                      style=BlockStyle.HERO_METRIC_ON_TOP,
+                      color=EPAMColor.Light_Orange,
+                      horizontal_alignment=HorizontalAlignment.CENTER),
+                Block(left=0, top=0, width=0, height=0,
+                      metric_value="~3h",
+                      content="wall-clock · vs ~2 weeks",
+                      style=BlockStyle.HERO_METRIC_ON_TOP,
+                      color=EPAMColor.Light_Magenta,
+                      horizontal_alignment=HorizontalAlignment.CENTER),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    breakdown_top = metrics_h + int(0.2 * INCH)
+    breakdown_h = content_b.height - breakdown_top
+    prs.add_block_grid(
+        content_b,
+        BlockGrid(
+            left=0, top=breakdown_top,
+            width=content_b.width, height=breakdown_h,
+            columns=3, gap=GapSize.MEDIUM,
+            style=BlockStyle.SOLID_FILL,
+            auto_color_rotation=False,
+            text_size=TextSize.SMALL,
+            margin_preset=BlockMarginPreset.NARROW,
+            blocks=[
+                Block(left=0, top=0, width=0, height=0,
+                      title="DDIC layer",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Blue,
+                      rich_content=[
+                          ContentParagraph(text="20 domains (DOMA)", is_bullet=True),
+                          ContentParagraph(text="20 data elements (DTEL)", is_bullet=True),
+                          ContentParagraph(text="4 persistent tables (TABL)", is_bullet=True),
+                          ContentParagraph(text="4 draft tables (TABL _D)", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="RAP layer",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Teal,
+                      rich_content=[
+                          ContentParagraph(text="4 interface CDS (Z##_R_*)", is_bullet=True),
+                          ContentParagraph(text="4 projection CDS (Z##_C_*)", is_bullet=True),
+                          ContentParagraph(text="4 metadata extensions", is_bullet=True),
+                          ContentParagraph(text="4 BDEF + 4 BIMP classes", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="Service · UI",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Orange,
+                      rich_content=[
+                          ContentParagraph(text="1 service definition", is_bullet=True),
+                          ContentParagraph(text="1 OData V4 binding (published)", is_bullet=True),
+                          ContentParagraph(text="Fiori Elements preview · CRUD + draft", is_bullet=True),
+                          ContentParagraph(text="Author shows by name, not UUID", is_bullet=True),
+                      ]),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ============================================================
     # Slide — Things that go wrong
     # ============================================================
     _, content_w = prs.add_default_slide(
