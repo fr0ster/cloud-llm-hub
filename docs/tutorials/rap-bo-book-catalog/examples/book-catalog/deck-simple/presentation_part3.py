@@ -380,46 +380,40 @@ def generate_part3(prs: EPAMPresentation):
     # tables collapsed to inline form). No re-interpretation.
     skill_lines = [
         "name: Activating Objects",
-        "description: Rules for activating ABAP objects safely — never bare \"activate all\",",
-        "             group activation for circular references, special tool for BDEF.",
         "tags: [sap, activation, governance]",
         "",
         "# Activating Objects",
         "",
-        "Activation locks objects and may fail partway through, leaving the system in an",
-        "inconsistent state. The rules below are about safety and correctness, not speed.",
-        "",
         "## Hard rules",
         "",
-        "- Never run bare \"Activate all inactive objects\" on a shared system — filter by prefix Z##_.",
-        "- Check before activating. Partial failures cascade; activation is expensive.",
-        "- Group activation for circular references (CDS R-views, C-views). Create all,",
-        "  activate together. Pre-activation \"data source not active\" errors disappear after.",
-        "- BDEF + BIMP must be activated together — circular dependency.",
-        "- BDEFs: call ActivateBehaviorDefinition. ActivateObjects is for DDIC and CDS.",
+        "- Never bare \"Activate all inactive objects\" — filter by prefix Z##_.",
+        "- Check before activating. Partial failures cascade.",
+        "- Group activation for circular refs (CDS R-views, C-views).",
+        "- BDEF + BIMP must be activated together.",
+        "- BDEFs: ActivateBehaviorDefinition. ActivateObjects = DDIC + CDS only.",
         "",
         "## After activation",
         "",
-        "- Re-run syntax check on each object to surface warnings hidden by earlier errors.",
-        "- Verify with Read… calls per object — response must include active: true.",
+        "- Re-run syntax check to surface warnings hidden by earlier errors.",
+        "- Read… each object — response must include active: true.",
         "",
         "## Common error fix",
         "",
-        "  Activated unrelated objects   → bare \"activate all inactive\"          → pass prefix filter",
-        "  Still inactive after activate → BDEF via ActivateObjects               → use ActivateBehaviorDefinition",
-        "  Half-active layer             → activated one-by-one (circular refs)   → group-activate whole layer",
-        "  Syntax clean, activate fails  → prerequisite layer not active          → activate prerequisite first",
+        "  Activated unrelated objects   → missing prefix filter",
+        "  Still inactive after activate → wrong tool: use ActivateBehaviorDefinition",
+        "  Half-active layer             → activated one-by-one; group-activate whole layer",
+        "  Syntax clean, activate fails  → prerequisite layer not active",
     ]
 
     paragraphs = []
     for line in skill_lines:
         if line == "":
             paragraphs.append(ContentParagraph(
-                runs=[TextRun(text=" ", font_size=7)]
+                runs=[TextRun(text=" ", font_size=9)]
             ))
         else:
             paragraphs.append(ContentParagraph(
-                runs=[TextRun(text=line, font_size=7, text_size=TextSize.EXTRA_SMALL)]
+                runs=[TextRun(text=line, font_size=9, text_size=TextSize.SMALL)]
             ))
 
     prs.add_block(
@@ -427,9 +421,8 @@ def generate_part3(prs: EPAMPresentation):
         Block(
             left=0, top=0,
             width=content_se.width, height=content_se.height,
-            style=BlockStyle.SOLID_FILL,
-            color=EPAMColor.Light_Gray,
-            text_size=TextSize.EXTRA_SMALL,
+            style=BlockStyle.SIMPLE,
+            text_size=TextSize.SMALL,
             margin_preset=BlockMarginPreset.NARROW,
             horizontal_alignment=HorizontalAlignment.LEFT,
             rich_content=paragraphs,
