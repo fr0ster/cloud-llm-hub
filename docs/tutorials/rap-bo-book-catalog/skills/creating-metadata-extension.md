@@ -43,6 +43,12 @@ annotate view Z##_C_<ROOT> with
 - Facet types: `#IDENTIFICATION_REFERENCE` for the general section,
   `#LINEITEM_REFERENCE` (with `targetElement`) for a child table on the object page,
   `#FIELDGROUP_REFERENCE` for grouped fields.
+- **Every projection view that appears as a facet needs its own metadata extension.**
+  The root extension covers list / object page for the root entity only. Without child
+  extensions on the projections referenced by `@UI.facet[].targetElement` (Plant,
+  Text, Sales, …), those facets render with no labels and no usable column layout.
+  If a facet looks half-broken in the Fiori preview, it is almost always a missing or
+  partial child extension.
 - After creation, `Activate` the extension. Read it back; the projection view itself
   does not need re-activation unless its DDL changed.
 
