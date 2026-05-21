@@ -1,0 +1,148 @@
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"I'll execute this procedure exactly as specified."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing ReadProgram...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetIncludesList...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"Now I'll retrieve each include:"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetInclude...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetInclude...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n[SmartAgent: Executing GetInclude...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"### MAIN: ZABER_PRESENTATION_FILES\n\n```abap\n*&---------------------------------------------------------------------*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n*& Report ZABER_PRESENTATION_FILES\n*&---------------------------------------------------------------------*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n*&\n*&---------------------------------------------------------------------*\nREPORT zaber_presentation_files."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\nINCLUDE :\n   zaber_presen_files_top,\n   zaber_presen_files_ss,\n   zaber_presen_files_f01.\n\nAT SELECTION-SCREEN ON VALUE-"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"REQUEST FOR p_file.\n\n  PERFORM get_filename.\n\n\nSTART-OF-SELECTION.\n\n  IF rb_crea = abap_true.\n\n    g"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"v_filename = sy-uname && ` ` && sy-datum && '.csv'.\n\n    SELECT * FROM zaber_auth INTO TABLE @gt_users."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n    PERFORM download_file USING  gv_filename.\n\n    PERFORM send_email.\n\n  ELSE.\n\n    IF p_file IS INITIAL.\n      MESSAGE 'Select"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" a file' TYPE 'S' DISPLAY LIKE 'E'.\n      RETURN.\n    ENDIF.\n\n    CASE abap_true.\n\n      WHEN rb_disp."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n        PERFORM upload_file.\n\n        IF gt_users IS NOT INITIAL.\n          CALL FUNCTION 'SRTT_TABLE"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_DISPLAY'\n            EXPORTING\n              table         = 'ZABER_AUTH'\n              iv_title      "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"= 'User List'\n            TABLES\n              table_content = gt_users.\n        ENDIF.\n\n      WHEN rb_add"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":".\n\n        PERFORM upload_file.\n\n        APPEND INITIAL LINE TO gt_users ASSIGNING FIELD-SYMBOL(<ls_user>).\n        "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"<ls_user>-name = 'Andrey Berezkin'.\n\n        gv_filename = p_file.\n\n        PERFORM download_file USING g"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"v_filename.\n\n\n      WHEN rb_del.\n\n        PERFORM delete_file.\n\n    ENDCASE.\n\n  ENDIF.\n```\n\n### INCLUDE"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":": ZABER_PRESEN_FILES_F01\n\n```abap\n*&---------------------------------------------------------------------*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n*& Include          ZABER_PRESEN_FILES_F01\n*&---------------------------------------------------------------------*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n\nFORM download_file USING iv_filename TYPE string.\n\n  cl_gui_frontend_services=>gui_download( EXPORTING filename ="},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" CONV #( iv_filename )\n                                              CHANGING data_tab = gt_users\n                                "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"              EXCEPTIONS OTHERS = 1 ).\n\n  IF sy-subrc <> 0.\n    MESSAGE 'Can not transfer data to file' TYPE 'S'"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" DISPLAY LIKE 'E'.\n    RETURN.\n  ENDIF.\n\n\n\nENDFORM.\n\nFORM upload_file .\n\n  cl_gui_frontend_services=>"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"gui_upload( EXPORTING filename = CONV #( p_file )\n                                              CHANGING data"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_tab = gt_users\n                                              EXCEPTIONS OTHERS = 1 ).\n  IF sy-subrc IS NOT"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" INITIAL.\n    MESSAGE 'Can not open this file' TYPE 'S' DISPLAY LIKE 'E'.\n    RETURN.\n  ENDIF.\n\nENDFORM.\n\nFORM delete_file"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":".\n\n  DATA: lv_rc TYPE i.\n\n  cl_gui_frontend_services=>file_delete(  EXPORTING  filename = CONV #( p_file"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" )\n                                          CHANGING   rc       = lv_rc\n                                          EXCEPTIONS OTHERS   "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"= 1 ).\n  IF sy-subrc <> 0.\n    MESSAGE 'Can not delete this file, sorry' TYPE 'S' DISPLAY LIKE 'E'.\n  ENDIF."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\nENDFORM.\n\nFORM get_filename.\n\n  CALL FUNCTION 'F4_FILENAME'\n    EXPORTING\n      program_name  = sy-"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"cprog\n      dynpro_number = sy-dynnr\n      field_name    = 'P_FILE'\n    IMPORTING\n      file_name     = p"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_file.\n\nENDFORM.\n\nFORM send_email.\n  DATA: lo_send_request TYPE REF TO cl_bcs,\n        lo_sender_mail"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"  TYPE REF TO cl_cam_address_bcs,\n        lo_rec          TYPE REF TO if_recipient_bcs,\n        lo_document     TYPE REF"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" TO cl_document_bcs,\n\n        lt_soli_tab     TYPE soli_tab,\n        lt_solix        TYPE solix_tab,\n        lt_"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"convert      TYPE truxs_t_text_data,\n        lt_html         TYPE TABLE OF w3html,\n        lt_header       "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"TYPE TABLE OF w3head,\n\n        lv_sender_mail  TYPE adr6-smtp_addr,\n        lv_mail         TYPE adr6-smtp_addr"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":",\n        lv_objdes       TYPE sood-objdes,\n        lv_xstring      TYPE xstring,\n        lv_string       TYPE string.\n\n  "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"FIELD-SYMBOLS: <ls_convert> LIKE LINE OF lt_convert,\n                 <ls_soli>    LIKE LINE OF lt_soli_tab,"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n                 <ls_html>    LIKE LINE OF lt_html.\n\n  TRY.\n\n      \"Create send request\n      lo_send"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_request = cl_bcs=>create_persistent( ).\n\n      \"Email FROM...\n      lv_sender_mail = 'andrey_berezkin@epam.com'."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n      lo_sender_mail = cl_cam_address_bcs=>create_internet_address( i_address_string = lv_sender_mail\n                                                                    "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"i_address_name   = lv_sender_mail ).\n      lo_send_request->set_sender( lo_sender_mail ).\n\n      \"Email TO...\n      "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"IF p_email IS NOT INITIAL.\n        lv_mail = p_email.\n        lo_rec = cl_cam_address_bcs=>create_internet_address"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"( lv_mail ).\n      ELSE.\n        lo_rec = cl_sapuser_bcs=>create( sy-uname ).\n      ENDIF.\n\n      lo"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_send_request->add_recipient( i_recipient  = lo_rec\n                                      i_express    = abap_true\n                "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"                      i_copy       = abap_true\n                                      i_blind_copy = abap_"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"false\n                                      i_no_forward = ' ' ).\n\n      CALL FUNCTION 'SOTR_SERV_TABLE_"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"TO_STRING'\n        IMPORTING\n          text     = lv_string\n        TABLES\n          text_tab = gt_users."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n      CALL FUNCTION 'SCMS_STRING_TO_XSTRING'\n        EXPORTING\n          text   = lv_string\n        IMPORTING\n          buffer"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" = lv_xstring\n        EXCEPTIONS\n          OTHERS = 1.\n\n      IF sy-subrc <> 0.\n        MESSAGE 'Message not sent' TYPE"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" 'S' DISPLAY LIKE 'E'.\n        RETURN.\n      ENDIF.\n\n      APPEND INITIAL LINE TO lt_html ASSIGNING <ls_html"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":">.\n      <ls_html>-line = 'Additional body'.\n\n      lt_solix = cl_bcs_convert=>xstring_to_solix( lv_xstring ).\n\n      lv"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_objdes = 'file.csv'.\n\n      lo_document = cl_document_bcs=>create_document( i_type = 'HTM' i_subject ="},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" 'New file is created' i_text = lt_html ).\n\n      IF lv_xstring IS NOT INITIAL.\n\n        lo_document->add_attachment( i_"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"attachment_type = 'BIN' i_attachment_subject = lv_objdes i_att_content_hex = lt_solix ).\n\n      ENDIF.\n\n      "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"lo_send_request->set_document( lo_document ).\n\n      lo_send_request->set_send_immediately( abap_true"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" ).\n\n      lo_send_request->send( ).\n    CATCH cx_document_bcs cx_send_req_bcs cx_address_bcs.\n      MESSAGE"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" 'Message not sent' TYPE 'S' DISPLAY LIKE 'E'.\n      RETURN.\n  ENDTRY.\n\n  COMMIT WORK.\n  MESSAGE 'Message is sent' TYPE"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" 'S'.\nENDFORM.\n```\n\n### INCLUDE: ZABER_PRESEN_FILES_SS\n\n```abap\n*&---------------------------------------------------------------------*\n*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"& Include          ZABER_PRESEN_FILES_SS\n*&---------------------------------------------------------------------*"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\nPARAMETERS: rb_crea RADIOBUTTON GROUP rb1 USER-COMMAND ucc.\n\nSELECTION-SCREEN BEGIN OF BLOCK bl1 WITH FRAME.\n  "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"PARAMETERS: p_send  AS CHECKBOX DEFAULT 'X' USER-COMMAND ucb,\n              p_email TYPE ad_smtpadr.\nSELECTION-SCREEN"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" END OF BLOCK bl1.\n\nPARAMETERS: rb_disp RADIOBUTTON GROUP rb1,\n            rb_del  RADIOBUTTON GROUP rb1,\n            rb"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"_add  RADIOBUTTON GROUP rb1,\n            p_file  TYPE rlgrap-filename.\n```\n\n### INCLUDE: ZABER_PRESEN_FILES_TOP"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n\n```abap\n*&---------------------------------------------------------------------*\n*& Include          "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"ZABER_PRESEN_FILES_TOP\n*&---------------------------------------------------------------------*\nDATA"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":": gt_users TYPE TABLE OF zaber_auth.\nDATA:  gv_filename TYPE string.\n```"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-bdc78b60-7091-444a-980a-9e88936dca49","object":"chat.completion.chunk","created":1779367150,"model":"x","choices":[],"usage":{"prompt_tokens":46686,"completion_tokens":2590,"total_tokens":49276,"models":{"anthropic--claude-4.5-sonnet":{"promptTokens":46869,"completionTokens":5267,"totalTokens":52136,"requests":4}}}}
+
+data: [DONE]
+

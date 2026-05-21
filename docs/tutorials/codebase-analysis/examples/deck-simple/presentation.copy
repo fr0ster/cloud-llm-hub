@@ -1,0 +1,305 @@
+# PART 1: Opening
+
+## Slide 1 — Cover
+- Layout: Cover Dark (no image) — EPAM brand opener.
+- Title: "SFTP Usage Analysis"
+- Description: "Where the customer's ABAP estate talks to SFTP — and what the migration team gets out of it"
+- Date: "MAY 2026" (use format_spaced_text)
+
+=====
+
+## Slide 2 — Contents
+- Layout: Contents (Light). Max 6 items, kept short.
+- Items:
+  1. The task — 13 seeds, one migration question
+  2. Methods — how SFTP is actually called
+  3. Usage map — full inventory in Z001
+  4. Analysis — by business domain
+  5. Result — migration handoff
+  6. Retro — time, tokens, lessons
+
+=====
+
+# PART 2: The Task
+
+## Slide 3 — Section divider: "Task"
+- Layout: Section Header (Dark), number "01".
+- Section title: "The Task"
+- Description: "13 stakeholder-listed reports. One question: how does each one use SFTP? Output supports migration handoff — we do NOT design the replacement."
+
+=====
+
+## Slide 4 — Goal and scope (in blocks)
+- Layout: Default Slide, Title only. Title: "Goal and scope".
+- Body: BlockGrid, 3 columns, 1 row. Compact text — auto-scale, not full-height.
+- Block A "Goal" — icon Goals/Target. Short rich list:
+  - SFTP verdict per seed (yes/no/unclear/not-found)
+  - For each yes: methods, direction, payload
+  - Blind spots called out explicitly
+- Block B "In scope" — icon Tasks/Document_Checklist_3. Short list:
+  - Z* and /VERTEX/* in DS4_CLH
+  - 13 seed objects
+  - Where-used traversal from confirmed SFTP
+- Block C "Out of scope" — icon Checkmarks/X_Mark_Circle_1. Short list:
+  - Replacement design / target API selection
+  - IDoc, OData, EDI (unless they explain a usage site)
+  - SAP standard namespace
+
+=====
+
+## Slide 5 — Run setup (hero metric + small detail blocks)
+- Layout: Default Slide, Title + Upsubtitle. Upsubtitle: "How the run was wired". Title: "13 seeds. One destination. SmartAgent over MCP."
+- Body: BlockGrid 2 columns.
+  - Left column (one big block, hero metric style): "13" with caption "stakeholder-listed seeds (corrected mid-run)".
+  - Right column (stacked, two short blocks):
+    - "Transport" — bullet list: `/v1/chat/completions` via local MCP proxy; header `x-sap-destination: DS4_CLH`.
+    - "Provider" — bullet list: OpenAI gpt-5.2 / gpt-5.5-pro on ai-applications subaccount; Anthropic not available here.
+
+=====
+
+# PART 3: Methods
+
+## Slide 6 — Section divider: "Methods"
+- Layout: Section Header (Light), number "02".
+- Section title: "Methods — how SFTP is actually called"
+- Description: "Stage 2 read every seed and its includes. Stage 2b enumerated methods openly. One mechanism kept showing up."
+
+=====
+
+## Slide 7 — Stage 2 verdicts (hero + tally)
+- Layout: White + Grey Split, 2/3. Left white = main, right grey = section title with breakdown.
+- Left (title "Stage 2 verdicts"): one hero block: "8 / 13" with caption "seeds confirmed as SFTP callers".
+- Right section title: "By verdict". Short stacked blocks:
+  - yes — 8
+  - no (local file I/O only) — 5
+- Below right: small footnote-style block "All 13 verdicts source-cited in 02-methods.md."
+
+=====
+
+## Slide 8 — The one underlying mechanism (diagram)
+- Layout: Default Slide, Title + Upsubtitle. Upsubtitle: "Same shape, every time". Title: "SXPG_COMMAND_EXECUTE → SM69 → OS sftp/scp".
+- Body: BlockProcess or ChevronProcess (4 steps, left to right):
+  1. ABAP report
+  2. READ zfi_constants (FTP_USER / HOST_KEY / PRIVATE_KEY_PATH / …)
+  3. CALL FUNCTION 'SXPG_COMMAND_EXECUTE'
+  4. SM69 entry → OS sftp / scp binary → remote endpoint
+- Caption under the process: "Every confirmed SFTP report reduces to this pattern."
+
+=====
+
+## Slide 9 — Two auth shapes (block comparison)
+- Layout: Default Slide, Title only. Title: "Two auth shapes the migration must support".
+- Body: BlockGrid 2 columns, 1 row.
+- Block A "Key-based (modern)" — icon Web/Window_Lock. Rich list of constants:
+  - FTP_USER, FTP_DOMAIN
+  - HOST_KEY, PRIVATE_KEY_PATH, PASSPHRASE
+  - Optional: FTP_PORT, FOLDER_PATH, FILE_EXT
+  - 13 of 14 direct reports + both wrapper FUGRs
+- Block B "Password-based (legacy)" — icon Checkmarks/X_Mark_Box_1 (warning shape). Rich list:
+  - FTP_USER, FTP_PSWD, FTP_DOMAIN
+  - FTP_PORT, HOST_KEY (still)
+  - Only ZSFTP_BNP_PARIBAS is pure password-auth
+  - Several others read FTP_PSWD defensively
+- Caption block under: "Single-auth replacements would break the BNP password path."
+
+=====
+
+# PART 4: Usage Map
+
+## Slide 10 — Section divider: "Usage Map"
+- Layout: Section Header (Dark), number "03".
+- Section title: "Usage Map — what we actually found in Z001"
+- Description: "Seven independent SearchSource scans. Three credential-bag markers. Wrapper FUGRs discovered along the way."
+
+=====
+
+## Slide 11 — Scope expansion (hero metric)
+- Layout: Grey + White Split, 2/3. Left grey = hero number, right white = lineage breakdown.
+- Left section title: "Scope grew". Big hero metric: "+46%". Caption: "vs the 13-seed stakeholder list (13 → 19 confirmed objects)".
+- Right title: "How it grew". Stacked compact blocks (one per scan finding):
+  - Scan PRIVATE_KEY_PATH → +5 PROGs + 2 FUGRs
+  - Scan FTP_PSWD → +1 PROG (BNP password variant)
+  - Scan _FROM_SFTP → +2 PROGs (wrapper callers)
+  - Sanity ZSFTP_ prefix → +1 FUGR (ZDMS_SEND_FILE, _TO_SFTP naming)
+
+=====
+
+## Slide 12 — Final inventory (BlockGrid)
+- Layout: Default Slide, Title only. Title: "Final SFTP inventory — Z001".
+- Body: BlockGrid 3 columns, 1 row.
+- Block A "16 PROG reports" — icon Documents/Document_Checklist_2. Caption: "direct SXPG callers + wrapper callers."
+- Block B "3 wrapper FUGRs" — icon Processes/Gear_Process_1. Caption: "ZMEDICARE, ZERX, ZDMS_SEND_FILE — credential isolation for indirect callers."
+- Block C "11 SM69 entries + 5 wrapper FMs" — icon Processes/API_1. Caption: "the actual mechanism artifacts on the OS side."
+- Footer note block: "3 SM69 entries are shared by ≥2 ABAP reports — coordinate cutover for each shared command."
+
+=====
+
+## Slide 13 — Scan discipline (process)
+- Layout: Default Slide, Title only. Title: "How we made the scans complete".
+- Body: BlockProcess, 4 steps:
+  1. One scan at a time per destination
+  2. Single-keyword over AND-query (timeout-safe)
+  3. Independent markers — don't rely on naming
+  4. Sanity scan beyond credential literals
+- Below: short caption block — "All seven scans returned without truncation."
+
+=====
+
+# PART 5: Analysis
+
+## Slide 14 — Section divider: "Analysis"
+- Layout: Section Header (Light), number "04".
+- Section title: "Analysis — what each consumer wants from SFTP"
+- Description: "16 reports cluster into 5 business domains. The migration validation matrix has to verify each endpoint separately."
+
+=====
+
+## Slide 15 — Domains overview (BlockGrid)
+- Layout: Default Slide, Title only. Title: "Five business domains, eight counter-parties".
+- Body: BlockGrid 2 columns × 3 rows (5 blocks + 1 summary block, or 3 columns × 2 rows — pick whichever fits visually). Each block compact: domain name, counter-party, report count, direction.
+- Block 1 "Banking — statement loaders" — icon Finance/Bank. "BNP, Citi, JPMorgan · 7 reports · both directions · MT940 + payments"
+- Block 2 "Healthcare claims" — icon Life_Sciences_Healthcare/Clipboard_Health. "Caparío, Patientco · 4 reports · both · EDI 835 / 837"
+- Block 3 "Payroll" — icon Business/Person. "Ceridian · 2 reports · pull only · posting files → FI"
+- Block 4 "Document management" — icon Documents/Folder_Connected. "Internal DMS · 3 reports · both · PDF / CSV / attachments"
+- Block 5 "Healthcare PDF (Medicare)" — icon Life_Sciences_Healthcare/Healthcare_Drugs. "Internal · 2 via ZMEDI / ZERX wrappers · both · Medicare PDFs / CSVs"
+- Block 6 "Total" — hero-metric mini: "16 reports". Caption: "+ 2 wrapper FUGRs."
+
+=====
+
+## Slide 16 — What stays out (the "no" verdicts)
+- Layout: Default Slide, Title + Upsubtitle. Upsubtitle: "Not SFTP callers — local file I/O only". Title: "Five seeds dropped from migration code scope".
+- Body: BlockGrid 1 column with a short rich list inside one block (or 5 compact blocks if visually balanced):
+  - /VERTEX/SPOT_VAT_OUTPUT_COMPL — Vertex tax, local I/O
+  - /VERTEX/SPOT_VAT_INPUT_COMPL — Vertex tax, local I/O
+  - ZEDI_835 — OPEN DATASET / GUI_UPLOAD only
+  - ZEDI_835_JPM — same shape, JPM variant
+  - ZFI_BANK_STMT_LOAD — local include processing
+- Caption block: "Their file paths must still exist after the SFTP layer is replaced — they consume what SFTP callers land."
+
+=====
+
+# PART 6: Result
+
+## Slide 19 — Section divider: "Result"
+- Layout: Section Header (Dark), number "05".
+- Section title: "Result — the migration handoff"
+- Description: "The answer to the original goal, plus what the next team needs before they start writing code."
+
+=====
+
+## Slide 20 — Headline numbers
+- Layout: Default Slide, Title only. Title: "Migration scope, in numbers".
+- Body: BlockGrid 3 columns × 2 rows, each block hero-metric style with short caption.
+- "18" — ABAP objects in scope (16 PROG + 2 FUGR core)
+- "16" — business consumer reports
+- "8" — distinct counter-party endpoints
+- "11" — SM69 commands
+- "2" — auth modes to support
+- "+46%" — vs original seed list
+
+=====
+
+## Slide 21 — What the new SFTP layer must support
+- Layout: Default Slide, Title only. Title: "Replacement must support…".
+- Body: BlockGrid 2 columns × 3 rows (6 compact blocks with icons).
+- Block 1 "Both auth modes" — icon Web/Window_Lock. "Key-based AND password-based (BNP requires both)."
+- Block 2 "Both directions" — icon Arrows/Arrows_Repeat_1. "8 pull · 6 push · 2 both."
+- Block 3 "PGP layer" — icon Web/Window_Lock. "ZSFTP_BNP_PARIBAS_WITH_PGP wraps the push."
+- Block 4 "11 endpoints" — icon Global/Global_Cloud. "Each SM69 binds one bank/provider host."
+- Block 5 "zfi_constants single source" — icon Database/Database. "All 16+3 read from it — keep or shim."
+- Block 6 "Non-default ports" — icon Processes/API_2. "FTP_PORT concatenated as `:port`."
+
+=====
+
+## Slide 22 — Migration priority (process)
+- Layout: Default Slide, Title only. Title: "A natural cutover order".
+- Body: ChevronProcess or BlockProcess, 4 steps:
+  1. Banking — 7 reports — MT940 + PGP for BNP
+  2. Healthcare clearinghouses — 4 reports — EDI 835/837 round-trip
+  3. Payroll — 2 reports — Ceridian posting → FI
+  4. Internal DMS / eRx — 5 reports — wrapper-FM integrity
+- Short caption block: "Each step has its own validation matrix; wrappers migrate as one unit."
+
+=====
+
+## Slide 23 — Known unknowns (block list)
+- Layout: Default Slide, Title only. Title: "Open questions the migration team must close".
+- Body: BlockGrid 1 column, 3 stacked blocks with icons.
+- Block 1 "OS-side SM69 script behavior" — icon Workshop/Repair. "11 SM69 entries; behavior is in SAP GUI tx SM69, out of scope for ABAP-only analysis. Needs Basis access."
+- Block 2 "Two reports share the Ceridian command" — icon People/2_People. "Operator preference or refactor leftover? Suggest consolidating after business owner sign-off."
+- Block 3 "ZDMS_EXTRACT_DOCS_TO_SFTP has 0 literal callers in Z001" — icon Tasks/Document_Magnify. "Dynamic call, cross-package caller, or dead code — must be resolved during cutover."
+
+=====
+
+## Slide 24 — Completeness confidence
+- Layout: Default Slide, Title + Upsubtitle. Upsubtitle: "How sure we are the list is complete". Title: "≈95% in scope · residual risk is hardcoded SFTP without zfi_constants".
+- Body: BlockGrid 2 columns × 1 row.
+- Block A "Within Z001 (PROG/FUGR/CLAS)" — short list:
+  - 3 independent credential-bag scans, all complete
+  - 1 sanity scan beyond credential literals
+  - Wrapper FUGRs enumerated, callers identified
+- Block B "Outside Z001" — short list:
+  - Other top-level Z* packages: un-scanned
+  - Cross-package callers of wrapper FUGRs: open
+  - Customer confirmation lifts confidence to ≈99%
+
+=====
+
+# PART 7: Retro and close
+
+## Slide 25 — Section divider: "Retro"
+- Layout: Section Header (Light), number "06".
+- Section title: "Retro — time, tokens, lessons"
+- Description: "What the run actually cost, what went wrong, and what the next analysis run inherits."
+
+=====
+
+## Slide 26 — Wall-clock + tokens (hero metrics)
+- Layout: Default Slide, Title only. Title: "Run economics".
+- Body: BlockGrid 3 columns × 2 rows, hero-metric blocks with captions.
+- "~2 h" — total wall-clock
+- "1.05 M" — executor-side tokens (gpt-5.2 + embedder)
+- "264" — model requests across the run
+- "~$66" — controller-side share (Claude Opus 4.7, sFTP portion)
+- "7" — independent SearchSource scans
+- "4–12 h" — manual UI estimate for comparable analysis (reference point)
+
+=====
+
+## Slide 27 — What went well (block list)
+- Layout: Default Slide, Title only. Title: "What held up".
+- Body: BlockGrid 2 columns × 2 rows. Short blocks with icons.
+- Block 1 "Per-stage isolation" — icon Processes/Process_1. One stage per session; artifact on disk before the next.
+- Block 2 "Raw-SSE evidence" — icon Documents/Document_Checklist_2. Every claim reproducible from curl/*.sse.
+- Block 3 "Lessons captured in-flight" — icon Education/Knowledge. 6 skills + 1 decision + 1 tool-usage skill written during the run.
+- Block 4 "Iterative scope expansion" — icon Arrows/Arrows_Expand_1. Three independent scans, each justified by the prior finding.
+
+=====
+
+## Slide 28 — What we'd do differently (block list)
+- Layout: Default Slide, Title only. Title: "Lessons for the next run".
+- Body: BlockGrid 2 columns × 3 rows, 6 compact blocks with icons.
+- Block 1 "English prompts only" — icon Education/Global. "First UA batch wasted ~500k tokens."
+- Block 2 "Spell out every SearchSource param" — icon Tasks/Document_Structure. "Don't rely on planning-LLM defaults."
+- Block 3 "One scan at a time per destination" — icon Calendars_Timing/Clock_24h. "Stability over wall-clock; 4 parallel scans crashed the backend."
+- Block 4 "Never mix SearchObject + SearchSource in one prompt" — icon Checkmarks/X_Mark_Circle_1. "Model picks the wrong one."
+- Block 5 "Assert tool availability positively" — icon Checkmarks/Checkmark_Circle_1. "Negative assertions leak tool names and trigger amnesia."
+- Block 6 "Add 'exactly ONCE' guards" — icon Calendars_Timing/Clock_24h. "Stops 50× GetIncludesList loops."
+
+=====
+
+## Slide 29 — Methodology validation (process)
+- Layout: Default Slide, Title + Upsubtitle. Upsubtitle: "The 5-stage tutorial held up". Title: "Three refinements to fold back".
+- Body: BlockProcess 3 steps:
+  1. Stage 2b open-ended enumeration is necessary (catches wrapper FMs)
+  2. Stage 3 needs ≥2 independent markers (password-only would be missed)
+  3. Late sanity scan beyond credential literals (caught the ZDMS_SEND_FILE wrapper)
+
+=====
+
+## Slide 30 — Thank you / next steps
+- Layout: Default Slide Dark, With subtitle. Upsubtitle: "Next steps". Title: "Thank you". Subtitle: short bullet list:
+  - Hand artifacts (02–05 + extracts) to migration team
+  - Basis input on SM69 OS-side scripts
+  - Confirm Z001-only scope or run scans on other Z* roots
+  - Contact: codebase-analysis tutorial owner (cloud-llm-hub repo)

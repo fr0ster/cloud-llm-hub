@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-34b067c5-97b4-44c7-b271-b64bb95188cc","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n[SmartAgent: Executing ReadProgram...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-34b067c5-97b4-44c7-b271-b64bb95188cc","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"**Program Type:** Executable Program (executableProgram)  \n**Description:** Work with files on the presentation server  "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-34b067c5-97b4-44c7-b271-b64bb95188cc","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n**Package:** ZABEREZKIN_MENTOR_PR_ACA  \n**Author:** ABEREZKIN  \n**Created:** 2024-03-16T00:00:00Z  "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-34b067c5-97b4-44c7-b271-b64bb95188cc","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"\n**Changed:** 2026-01-03T01:22:53Z  \n**Changed By:** ABEREZKIN"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-34b067c5-97b4-44c7-b271-b64bb95188cc","object":"chat.completion.chunk","created":1779367252,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-34b067c5-97b4-44c7-b271-b64bb95188cc","object":"chat.completion.chunk","created":1779367252,"model":"x","choices":[],"usage":{"prompt_tokens":23926,"completion_tokens":165,"total_tokens":24091,"models":{"anthropic--claude-4.5-sonnet":{"promptTokens":41170,"completionTokens":278,"totalTokens":41448,"requests":4}}}}
+
+data: [DONE]
+

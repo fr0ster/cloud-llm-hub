@@ -77,3 +77,13 @@ docs/examples/calm-dump-analyzer/mta_archives/*
 .mtaext.staging
 docs/examples/calm-dump-analyzer/mta_archives/calm-dump-analyzer_1.0.0.mtar
 docs/tutorials/SDLC Accelerators*.pptx
+
+# Python
+__pycache__/
+*.pyc
+
+# simple-deck per-run validation reports
+docs/tutorials/**/report*.report
+
+.~lock.*
+
