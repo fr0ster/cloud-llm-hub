@@ -368,82 +368,71 @@ def generate_part3(prs: EPAMPresentation):
     )
 
     # ============================================================
-    # Slide — Skill example (rendered activating-objects.md)
+    # Slide — Skill example · activating-objects.md as-is
     # ============================================================
     _, content_se = prs.add_default_slide(
-        title="Skill example · activating-objects",
-        upsubtitle="41 LINES · ONE TASK",
+        title="Skill example · activating-objects.md",
+        upsubtitle="WHOLE FILE · AS-IS",
     )
 
-    # Front-matter card on the top — what every skill carries
-    fm_h = int(1.0 * INCH)
+    # Render the actual file content verbatim — small font, single block.
+    # Markdown source is shown with its natural structure (headings, bullets,
+    # tables collapsed to inline form). No re-interpretation.
+    skill_lines = [
+        "name: Activating Objects",
+        "description: Rules for activating ABAP objects safely — never bare \"activate all\",",
+        "             group activation for circular references, special tool for BDEF.",
+        "tags: [sap, activation, governance]",
+        "",
+        "# Activating Objects",
+        "",
+        "Activation locks objects and may fail partway through, leaving the system in an",
+        "inconsistent state. The rules below are about safety and correctness, not speed.",
+        "",
+        "## Hard rules",
+        "",
+        "- Never run bare \"Activate all inactive objects\" on a shared system — filter by prefix Z##_.",
+        "- Check before activating. Partial failures cascade; activation is expensive.",
+        "- Group activation for circular references (CDS R-views, C-views). Create all,",
+        "  activate together. Pre-activation \"data source not active\" errors disappear after.",
+        "- BDEF + BIMP must be activated together — circular dependency.",
+        "- BDEFs: call ActivateBehaviorDefinition. ActivateObjects is for DDIC and CDS.",
+        "",
+        "## After activation",
+        "",
+        "- Re-run syntax check on each object to surface warnings hidden by earlier errors.",
+        "- Verify with Read… calls per object — response must include active: true.",
+        "",
+        "## Common error fix",
+        "",
+        "  Activated unrelated objects   → bare \"activate all inactive\"          → pass prefix filter",
+        "  Still inactive after activate → BDEF via ActivateObjects               → use ActivateBehaviorDefinition",
+        "  Half-active layer             → activated one-by-one (circular refs)   → group-activate whole layer",
+        "  Syntax clean, activate fails  → prerequisite layer not active          → activate prerequisite first",
+    ]
+
+    paragraphs = []
+    for line in skill_lines:
+        if line == "":
+            paragraphs.append(ContentParagraph(
+                runs=[TextRun(text=" ", font_size=7)]
+            ))
+        else:
+            paragraphs.append(ContentParagraph(
+                runs=[TextRun(text=line, font_size=7, text_size=TextSize.EXTRA_SMALL)]
+            ))
+
     prs.add_block(
         content_se,
         Block(
             left=0, top=0,
-            width=content_se.width, height=fm_h,
+            width=content_se.width, height=content_se.height,
             style=BlockStyle.SOLID_FILL,
             color=EPAMColor.Light_Gray,
             text_size=TextSize.EXTRA_SMALL,
             margin_preset=BlockMarginPreset.NARROW,
-            rich_content=[
-                ContentParagraph(runs=[
-                    TextRun(text="name: ", bold=True),
-                    TextRun(text="Activating Objects     "),
-                    TextRun(text="tags: ", bold=True),
-                    TextRun(text="[sap, activation, governance]")]),
-                ContentParagraph(runs=[
-                    TextRun(text="description: ", bold=True),
-                    TextRun(text="Rules for activating ABAP objects safely — never bare "
-                                 "'activate all', group activation for circular references, "
-                                 "special tool for BDEF")]),
-            ],
-        ),
-        background=Background.LIGHT,
-    )
-
-    # Body — hard rules + after-activation, two columns
-    body_top = fm_h + int(0.15 * INCH)
-    body_h = content_se.height - body_top
-
-    prs.add_block_grid(
-        content_se,
-        BlockGrid(
-            left=0, top=body_top,
-            width=content_se.width, height=body_h,
-            columns=2, gap=GapSize.MEDIUM,
-            style=BlockStyle.SOLID_FILL,
-            auto_color_rotation=False,
-            text_size=TextSize.EXTRA_SMALL,
-            margin_preset=BlockMarginPreset.NARROW,
-            blocks=[
-                Block(left=0, top=0, width=0, height=0,
-                      title="Hard rules",
-                      style=BlockStyle.SOLID_FILL,
-                      color=EPAMColor.Light_Red,
-                      rich_content=[
-                          ContentParagraph(text="Never bare 'activate all inactive' on a shared system — always filter by prefix Z##_.", is_bullet=True),
-                          ContentParagraph(text="Syntax-check each object before activating; activation is expensive and partial failures cascade.", is_bullet=True),
-                          ContentParagraph(text="Group activation for circular refs — CDS R views, CDS C views, BDEF + BIMP.", is_bullet=True),
-                          ContentParagraph(text="BDEF: use ActivateBehaviorDefinition, not the generic ActivateObjects.", is_bullet=True),
-                      ]),
-                Block(left=0, top=0, width=0, height=0,
-                      title="After + common errors",
-                      style=BlockStyle.SOLID_FILL,
-                      color=EPAMColor.Light_Orange,
-                      rich_content=[
-                          ContentParagraph(text="After: re-syntax-check; Read… each object and confirm active: true.", is_bullet=True),
-                          ContentParagraph(runs=[
-                              TextRun(text="Activated unrelated objects → ", bold=True),
-                              TextRun(text="missing prefix filter.")]),
-                          ContentParagraph(runs=[
-                              TextRun(text="Still inactive after activate → ", bold=True),
-                              TextRun(text="wrong tool (BDEF via ActivateObjects).")]),
-                          ContentParagraph(runs=[
-                              TextRun(text="Half-active layer → ", bold=True),
-                              TextRun(text="activated one-by-one; group-activate instead.")]),
-                      ]),
-            ],
+            horizontal_alignment=HorizontalAlignment.LEFT,
+            rich_content=paragraphs,
         ),
         background=Background.LIGHT,
     )
