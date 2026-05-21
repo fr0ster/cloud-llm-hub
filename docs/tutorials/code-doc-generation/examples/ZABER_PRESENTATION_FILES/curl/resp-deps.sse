@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-c721ad70-d65a-4cdb-99e4-d35bb8b4fd6f","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n[SmartAgent: Executing GetTable...]\n"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-c721ad70-d65a-4cdb-99e4-d35bb8b4fd6f","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":"**Description:** Authorization\n\n**Package:** Not returned in this response\n\n**Key fields:**\n- MANDT\n- NAME\n\n**All columns"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-c721ad70-d65a-4cdb-99e4-d35bb8b4fd6f","object":"chat.completion.chunk","created":1779367252,"model":"x","usage":null,"choices":[{"index":0,"delta":{"content":" with data elements:**\n- MANDT : MANDT\n- NAME : SYUNAME"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-c721ad70-d65a-4cdb-99e4-d35bb8b4fd6f","object":"chat.completion.chunk","created":1779367252,"model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-c721ad70-d65a-4cdb-99e4-d35bb8b4fd6f","object":"chat.completion.chunk","created":1779367252,"model":"x","choices":[],"usage":{"prompt_tokens":17244,"completion_tokens":113,"total_tokens":17357,"models":{"anthropic--claude-4.5-sonnet":{"promptTokens":26986,"completionTokens":176,"totalTokens":27162,"requests":3}}}}
+
+data: [DONE]
+
