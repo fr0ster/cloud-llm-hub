@@ -341,7 +341,7 @@ Checkpoint before moving on:
 >
 > **Fix:** close all related editors in Eclipse before Phase 4. If the agent still reports a lock or a false "active", close any newly-opened editors and re-run the check. Treat one "active" claim as a hypothesis, not a fact, until a checkpoint confirms it.
 
-> **You do not fully control the flow.** This tutorial sells a phase-by-phase plan, but real runs diverge. The agent will sometimes retry on its own mistakes and walk you *backwards* — the first try produces working code, the second "fix" breaks it. **Rule of thumb:** if the agent loops on the same symptom for more than two rounds, stop letting it iterate and apply the fix manually (read the spec, edit the object directly in ADT, then tell the agent "I fixed X manually, continue from step Y"). Saving time with AI does not mean letting AI dig holes for you.
+> **You do not fully control the flow.** This tutorial sells a phase-by-phase plan, but real runs diverge. If the agent loops on the same symptom for more than two rounds, stop letting it iterate and apply the fix manually (read the spec, edit the object directly in ADT, then tell the agent *"I fixed X manually, continue from step Y"*). This is the *"AI loop > 2 rounds → manual fix"* anti-pattern in [AI Pair-Programming Principles](../AI_PAIR_PROGRAMMING_PRINCIPLES.md#anti-patterns).
 
 ### Detecting fake responses
 
