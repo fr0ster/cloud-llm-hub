@@ -14,7 +14,7 @@ def generate_part1(prs: EPAMPresentation):
     prs.add_contents_slide(
         contents=[
             "The pipeline · phases · loop",
-            "What the skill teaches",
+            "Skill catalog + one example",
             "Artifacts across phases",
             "What got built · 72 objects",
             "What goes wrong",

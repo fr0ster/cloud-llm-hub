@@ -368,6 +368,87 @@ def generate_part3(prs: EPAMPresentation):
     )
 
     # ============================================================
+    # Slide — Skill example (rendered activating-objects.md)
+    # ============================================================
+    _, content_se = prs.add_default_slide(
+        title="Skill example · activating-objects",
+        upsubtitle="41 LINES · ONE TASK",
+    )
+
+    # Front-matter card on the top — what every skill carries
+    fm_h = int(1.0 * INCH)
+    prs.add_block(
+        content_se,
+        Block(
+            left=0, top=0,
+            width=content_se.width, height=fm_h,
+            style=BlockStyle.SOLID_FILL,
+            color=EPAMColor.Light_Gray,
+            text_size=TextSize.EXTRA_SMALL,
+            margin_preset=BlockMarginPreset.NARROW,
+            rich_content=[
+                ContentParagraph(runs=[
+                    TextRun(text="name: ", bold=True),
+                    TextRun(text="Activating Objects     "),
+                    TextRun(text="tags: ", bold=True),
+                    TextRun(text="[sap, activation, governance]")]),
+                ContentParagraph(runs=[
+                    TextRun(text="description: ", bold=True),
+                    TextRun(text="Rules for activating ABAP objects safely — never bare "
+                                 "'activate all', group activation for circular references, "
+                                 "special tool for BDEF")]),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    # Body — hard rules + after-activation, two columns
+    body_top = fm_h + int(0.15 * INCH)
+    body_h = content_se.height - body_top
+
+    prs.add_block_grid(
+        content_se,
+        BlockGrid(
+            left=0, top=body_top,
+            width=content_se.width, height=body_h,
+            columns=2, gap=GapSize.MEDIUM,
+            style=BlockStyle.SOLID_FILL,
+            auto_color_rotation=False,
+            text_size=TextSize.EXTRA_SMALL,
+            margin_preset=BlockMarginPreset.NARROW,
+            blocks=[
+                Block(left=0, top=0, width=0, height=0,
+                      title="Hard rules",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Red,
+                      rich_content=[
+                          ContentParagraph(text="Never bare 'activate all inactive' on a shared system — always filter by prefix Z##_.", is_bullet=True),
+                          ContentParagraph(text="Syntax-check each object before activating; activation is expensive and partial failures cascade.", is_bullet=True),
+                          ContentParagraph(text="Group activation for circular refs — CDS R views, CDS C views, BDEF + BIMP.", is_bullet=True),
+                          ContentParagraph(text="BDEF: use ActivateBehaviorDefinition, not the generic ActivateObjects.", is_bullet=True),
+                      ]),
+                Block(left=0, top=0, width=0, height=0,
+                      title="After + common errors",
+                      style=BlockStyle.SOLID_FILL,
+                      color=EPAMColor.Light_Orange,
+                      rich_content=[
+                          ContentParagraph(text="After: re-syntax-check; Read… each object and confirm active: true.", is_bullet=True),
+                          ContentParagraph(runs=[
+                              TextRun(text="Activated unrelated objects → ", bold=True),
+                              TextRun(text="missing prefix filter.")]),
+                          ContentParagraph(runs=[
+                              TextRun(text="Still inactive after activate → ", bold=True),
+                              TextRun(text="wrong tool (BDEF via ActivateObjects).")]),
+                          ContentParagraph(runs=[
+                              TextRun(text="Half-active layer → ", bold=True),
+                              TextRun(text="activated one-by-one; group-activate instead.")]),
+                      ]),
+            ],
+        ),
+        background=Background.LIGHT,
+    )
+
+    # ============================================================
     # Slide — Artifacts across phases (same entity through pipeline)
     # ============================================================
     _, content_af = prs.add_default_slide(
