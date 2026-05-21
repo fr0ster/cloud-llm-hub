@@ -17,7 +17,7 @@ your informal idea
 A different input idea yields a different `business-requirements`, which yields a different `tech-spec`, plan, and final functionality. The Book Catalog walkthrough below is one trace through the pipeline — your run will diverge as soon as your Phase 1 idea differs.
 
 **System:** SAP S/4HANA (on-premise) via cloud-llm-hub
-**Skill:** Upload `skills/rap-bo-creation.md` to a RAG collection before starting
+**Skills:** Upload the relevant files from `skills/` to a RAG collection before starting (one task per file — see `skills/README.md`)
 **Time:** 1-2 hours
 **Prerequisites:** cloud-llm-hub chat UI with MCP connection to SAP, one working RAG collection for this tutorial
 
@@ -84,14 +84,21 @@ This tutorial uses two RAG collections with different lifetimes — make sure bo
 
 | Collection | Scope | Contents | Lifetime |
 |------------|-------|----------|----------|
-| `RAP Skills` | shared/user | The reusable RAP skill (`rap-bo-creation.md`). Read-only reference; the same content drives every project. | Permanent — upload once, reuse across all RAP projects. |
+| `RAP Skills` | shared/user | The reusable RAP skill catalog (`skills/*.md` — one task per file). Read-only reference; the same content drives every project. | Permanent — upload once, reuse across all RAP projects. |
 | `<project>` (e.g. `book-catalog`) | user | Per-project artifacts produced in Phase 1–3 (`business-requirements`, `tech-spec`, `impl-plan`). The agent writes them via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. | Per project — create one fresh per tutorial run; back up before stopping if the run spans sessions. |
 
-### Load the RAP skill
+### Load the RAP skills
 
 1. Open MANAGE panel in cloud-llm-hub chat UI
 2. Create collection "RAP Skills"
-3. Upload `rap-bo-creation.md` (from SharePoint or `docs/tutorials/rap-bo-book-catalog/skills/`)
+3. Upload the skill files you need from `docs/tutorials/rap-bo-book-catalog/skills/`.
+   Each file is a single task (see `skills/README.md` for the catalog). For a full BO
+   creation run you typically need: `creating-domain`, `creating-data-element`,
+   `creating-persistent-table`, `creating-draft-table`, `creating-interface-cds-view`,
+   `creating-projection-cds-view`, `creating-metadata-extension`, `creating-bdef`,
+   `creating-bimp`, `creating-projection-bdef`, `creating-service-definition`,
+   `creating-service-binding`, plus the operational skills: `enforcing-target-package`,
+   `avoiding-hallucinations`, `managing-rag-artifacts`, `activating-objects`.
 4. Enable the collection (checkbox ON)
 
 ### Create the working RAG collection
