@@ -88,7 +88,11 @@ Front-matter fields:
 
 ## Example file
 
-Save the following as `~/.claude/agents/cloud-llm-hub.md`. Adjust the endpoint URL and
+A ready-to-copy version of the agent lives at
+[`docs/examples/cloud-llm-hub-agent/cloud-llm-hub.md`](../examples/cloud-llm-hub-agent/cloud-llm-hub.md).
+Clone or copy that file into `~/.claude/agents/` to skip the manual paste.
+
+The same content is inlined below for reading convenience. Adjust the endpoint URL and
 the list of common destinations to match your environment.
 
 ```markdown
