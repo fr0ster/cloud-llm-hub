@@ -103,7 +103,7 @@
                 <input id="rag-new-name" placeholder="Display Name" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px 10px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;width:180px">
                 <select id="rag-new-scope" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">
                   <option value="user">user</option>
-                  <option value="global">global</option>
+                  <option value="session">session</option>
                 </select>
                 <select id="rag-new-backend" style="background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:6px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px">
                   <option value="">default</option>
@@ -253,7 +253,7 @@
               <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Your private knowledge for the chat.</p>
               <ul style="margin:0;padding-left:20px;line-height:1.7">
                 <li><b>MANAGE</b> &mdash; opens the collection editor.</li>
-                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (only you) or <i>global</i> (everyone).</li>
+                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (private, persists across sessions) or <i>session</i> (private, wiped on logout / clear chat / destination switch).</li>
                 <li><b>UPLOAD FILE</b> &mdash; add a <code>.txt</code>/<code>.md</code>/<code>.csv</code>/<code>.json</code>/<code>.yaml</code>/<code>.xml</code>/<code>.log</code>; chunked automatically.</li>
                 <li><b>+ ADD</b> &mdash; add one record by hand (paste text, optional id and tags).</li>
                 <li><b>SEARCH</b> &mdash; find records inside a collection.</li>
