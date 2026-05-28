@@ -8,8 +8,9 @@ skills relevant to the task at hand.
 
 - The tutorial's RAG collection should hold the skills the agent needs for the work in
   progress. Upload skill files individually via the MANAGE panel.
-- Each skill has the same shape: front-matter (`name`, `description`, `tags`), a short
-  body, one or two tables of common errors with fixes.
+- Each skill is a frontmatter-only short fact — `name` plus a complete `description`
+  that itself encodes when and how to apply the rule. No body, no headings, no
+  cross-references to other skills.
 - If a skill describes more than one task, that's a bug — split it.
 
 ## Index — what each skill covers
