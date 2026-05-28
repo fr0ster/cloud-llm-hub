@@ -28,6 +28,14 @@ import {
 import cds from '@sap/cds';
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** TTL for session-scoped RAG collections (ms). Override via RAG_SESSION_TTL_MS env var. */
+export const SESSION_TTL_MS =
+  Number(process.env.RAG_SESSION_TTL_MS) || 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -50,12 +58,19 @@ export type RagBackendFactory = (ctx: {
 
 export interface CollectionMeta {
   id: string;
+  logicalId: string;
   displayName: string;
   description: string;
-  scope: 'global' | 'user';
+  scope: 'user' | 'session';
+  /** Marks a preset collection — enabled defaults to false until the user opts in. */
+  preset?: boolean;
   /** RAG backend type for this collection (default: registry's defaultBackend) */
   backend?: RagBackendType;
   owner?: string; // userId for user-scoped collections
+  /** Session id for session-scoped collections. */
+  sessionId?: string;
+  /** Expiry timestamp (ms since epoch) for session-scoped collections. */
+  expiresAt?: number;
   createdAt: string;
   documentCount: number;
 }
@@ -308,6 +323,7 @@ export class CollectionRegistry {
   private embedder: IEmbedder | null;
   private breaker: CircuitBreaker | null;
   private log = cds.log('rag-collections');
+  private enabledByUser: Map<string, Map<string, boolean>> = new Map();
 
   constructor(opts?: {
     storagePath?: string;
@@ -358,12 +374,109 @@ export class CollectionRegistry {
 
   listCollections(userId?: string): CollectionMeta[] {
     const result: CollectionMeta[] = [];
-    for (const stored of this.collections.values()) {
-      if (stored.meta.scope === 'global' || stored.meta.owner === userId) {
+    for (const [id, stored] of this.collections) {
+      if (id.startsWith('__orphan__')) continue;
+      if (stored.meta.owner === userId) {
         result.push({ ...stored.meta, documentCount: stored.documents.size });
       }
     }
     return result;
+  }
+
+  migrateToUserNamespacing(): void {
+    const {
+      userCollectionId,
+      normalizeLogicalId,
+      sanitizeUserKey,
+    } = require('./collection-ids');
+    const crypto = require('node:crypto');
+    const shortHash = (s: string) =>
+      crypto.createHash('sha256').update(s).digest('hex').slice(0, 8);
+    const takenLogical = new Map<string, Set<string>>(); // owner -> logicalIds occupied
+    const addTaken = (owner: string, logical: string) => {
+      const set = takenLogical.get(owner) ?? new Set<string>();
+      set.add(logical);
+      takenLogical.set(owner, set);
+      return set;
+    };
+    // True only for an id of the exact migrated form `<logical>__u_<userKey(owner)>`
+    // with a clean prefix. NOT for arbitrary `foo__bar`.
+    const isRealOwner = (owner?: string): owner is string =>
+      !!owner && owner !== 'anonymous';
+    const migratedPrefix = (id: string, owner?: string): string | null => {
+      if (!isRealOwner(owner)) return null; // 'anonymous' is not a real owner → never "already final"
+      const suffix = `__u_${sanitizeUserKey(owner)}`;
+      if (!id.endsWith(suffix)) return null;
+      const prefix = id.slice(0, -suffix.length);
+      return prefix && !prefix.includes('__') ? prefix : null;
+    };
+
+    // PASS 1 — record collections that are ALREADY migrated so PASS 2 can't collide with them.
+    // Trust the id-derived prefix (the source of truth), correcting any stale/mismatched logicalId.
+    for (const [id, stored] of this.collections) {
+      const m = stored.meta;
+      const prefix = migratedPrefix(id, m.owner);
+      if (prefix) {
+        m.logicalId = prefix;
+        addTaken(m.owner as string, prefix);
+      }
+    }
+
+    // PASS 2 — migrate everything not already in final form, in stable order.
+    const entries = [...this.collections.entries()].sort((a, b) =>
+      (a[1].meta.createdAt + a[0]).localeCompare(b[1].meta.createdAt + b[0]),
+    );
+    for (const [oldId, stored] of entries) {
+      const meta = stored.meta;
+      // Drop ONLY the built-in facts — the owner-less flat `facts`. A user-owned flat
+      // `facts` is a normal private collection and must migrate, not be deleted.
+      if (!meta.owner && oldId === 'facts') {
+        this.collections.delete(oldId);
+        continue;
+      }
+      if (migratedPrefix(oldId, meta.owner)) continue; // already final (recorded in PASS 1)
+      if (oldId.startsWith('__orphan__')) continue; // already quarantined
+
+      let newId: string;
+      if (!isRealOwner(meta.owner)) {
+        // no owner OR literal 'anonymous'
+        newId = `__orphan__${shortHash(oldId)}`; // quarantine: hashed key, not served
+        meta.logicalId = newId;
+      } else {
+        // Any non-final id (flat, or a stray `foo__bar`) → normalize with legacy fallback.
+        const base = normalizeLogicalId(meta.logicalId || oldId, oldId, true);
+        // Read the occupied set WITHOUT inserting first, then pick the first free candidate
+        // from the FIXED base (base, base-2, base-3, …) — never suffix an already-suffixed value.
+        const set = takenLogical.get(meta.owner) ?? new Set<string>();
+        const taken = (cand: string) =>
+          set.has(cand) ||
+          (userCollectionId(cand, meta.owner) !== oldId &&
+            this.collections.has(userCollectionId(cand, meta.owner)));
+        let logical = base;
+        if (taken(base)) {
+          let n = 2;
+          while (taken(`${base}-${n}`)) n++;
+          logical = `${base}-${n}`;
+        }
+        set.add(logical);
+        takenLogical.set(meta.owner, set);
+        meta.logicalId = logical;
+        newId = userCollectionId(logical, meta.owner);
+      }
+      if (newId !== oldId) {
+        meta.id = newId;
+        this.collections.delete(oldId);
+        this.collections.set(newId, stored);
+        for (const m of this.enabledByUser.values()) {
+          if (m.has(oldId)) {
+            m.set(newId, m.get(oldId) ?? false);
+            m.delete(oldId);
+          }
+        }
+      }
+    }
+    this.persistMeta();
+    this.persistEnabled();
   }
 
   getCollection(id: string): CollectionMeta | null {
@@ -407,9 +520,6 @@ export class CollectionRegistry {
   }
 
   deleteCollection(id: string): boolean {
-    if (id === 'facts') {
-      throw new Error('Cannot delete built-in "facts" collection');
-    }
     const deleted = this.collections.delete(id);
     if (deleted) {
       this.persistMeta();
@@ -417,6 +527,81 @@ export class CollectionRegistry {
       this.log.info('Collection deleted', { id });
     }
     return deleted;
+  }
+
+  getEnabled(userId: string, physicalId: string): boolean | undefined {
+    return this.enabledByUser.get(userId)?.get(physicalId);
+  }
+
+  setEnabled(userId: string, physicalId: string, enabled: boolean): void {
+    let m = this.enabledByUser.get(userId);
+    if (!m) {
+      m = new Map();
+      this.enabledByUser.set(userId, m);
+    }
+    m.set(physicalId, enabled);
+    this.persistEnabled();
+  }
+
+  /**
+   * Refresh the expiry timestamp of a session-scoped collection so it is not
+   * swept while the session is still active. Persists the updated metadata so
+   * the new deadline survives a restart.
+   */
+  refreshSessionExpiry(physicalId: string): void {
+    const stored = this.collections.get(physicalId);
+    if (stored && stored.meta.scope === 'session') {
+      stored.meta.expiresAt = Date.now() + SESSION_TTL_MS;
+      this.persistMeta();
+    }
+  }
+
+  sweepExpiredSessions(): void {
+    const now = Date.now();
+    let changed = false;
+    for (const [id, stored] of this.collections) {
+      if (
+        stored.meta.scope === 'session' &&
+        (stored.meta.expiresAt ?? 0) <= now
+      ) {
+        this.collections.delete(id);
+        for (const m of this.enabledByUser.values()) m.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.persistMeta();
+      this.persistEnabled();
+    }
+  }
+
+  deleteSessionCollections(userId: string, sessionId: string): void {
+    let changed = false;
+    for (const [id, stored] of this.collections) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        this.collections.delete(id);
+        for (const m of this.enabledByUser.values()) m.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.persistMeta();
+      this.persistEnabled();
+    }
+  }
+
+  private persistEnabled(): void {
+    if (!this.storagePath) return;
+    const obj: Record<string, Record<string, boolean>> = {};
+    for (const [u, m] of this.enabledByUser) obj[u] = Object.fromEntries(m);
+    fs.writeFileSync(
+      path.join(this.storagePath, 'enabled.json'),
+      JSON.stringify(obj, null, 2),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -492,9 +677,7 @@ export class CollectionRegistry {
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
     const result = await stored.rag.upsert(doc.text, {
       id: `doc:${collectionId}:${doc.id}`,
-      namespace:
-        namespace ??
-        (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
+      namespace: namespace ?? stored.meta.owner,
       ...doc.metadata,
     });
 
@@ -610,9 +793,7 @@ export class CollectionRegistry {
     // Re-upsert into RAG (vector updated)
     await stored.rag.upsert(existing.text, {
       id: `doc:${collectionId}:${docId}`,
-      namespace:
-        namespace ??
-        (stored.meta.scope === 'global' ? 'global' : stored.meta.owner),
+      namespace: namespace ?? stored.meta.owner,
       ...existing.metadata,
     });
 
@@ -700,7 +881,7 @@ export class CollectionRegistry {
               rag
                 .upsert(doc.text, {
                   id: `doc:${meta.id}:${doc.id}`,
-                  namespace: meta.scope === 'global' ? 'global' : meta.owner,
+                  namespace: meta.owner,
                   ...doc.metadata,
                 })
                 .catch((err: unknown) => {
@@ -734,6 +915,29 @@ export class CollectionRegistry {
         error: (err as Error).message,
       });
     }
+
+    // Load per-user enabled state
+    const enabledPath = path.join(storagePath, 'enabled.json');
+    if (fs.existsSync(enabledPath)) {
+      try {
+        const raw = fs.readFileSync(enabledPath, 'utf-8');
+        const obj: Record<string, Record<string, boolean>> = JSON.parse(raw);
+        for (const [userId, perUser] of Object.entries(obj)) {
+          const m = new Map<string, boolean>();
+          for (const [physicalId, val] of Object.entries(perUser)) {
+            m.set(physicalId, val);
+          }
+          this.enabledByUser.set(userId, m);
+        }
+      } catch (err) {
+        this.log.warn('Failed to load enabled.json', {
+          error: (err as Error).message,
+        });
+      }
+    }
+
+    this.migrateToUserNamespacing();
+    this.sweepExpiredSessions();
   }
 
   private persistMeta(): void {

@@ -31,10 +31,13 @@ import {
   setRequestConnection,
   setSessionDestination,
 } from './agent-manager';
+import { resolveRouteId } from './collection-ids';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableModels } from './lib/ai-core-models';
 import { resolveExposition } from './lib/exposition';
+import { runWithSessionId } from './request-session';
+import { resolveSessionId } from './session-id';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
 function getUserId(): string {
@@ -136,9 +139,23 @@ interface SessionEntry {
   lastAccess: number;
 }
 
+/**
+ * Session store keyed by `${userId}\u0000${sessionId}`.
+ *
+ * Deliberately NOT keyed by sessionId alone: two BTP users that happen to
+ * share or collide on the same session id (header spoofing, cookie theft,
+ * UUID collision) must never share chat history. Scoping by userId makes
+ * cross-user reads impossible by construction.
+ */
 const sessionStore = new Map<string, SessionEntry>();
 
-/** Periodic cleanup of expired sessions */
+/** Composite key that isolates sessions by user identity. */
+function sessionStoreKey(sessionId: string, userId: string): string {
+  return `${userId}\u0000${sessionId}`;
+}
+
+/** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the
+ *  Node process (or Jest workers) alive after everything else exits. */
 setInterval(() => {
   const now = Date.now();
   for (const [id, entry] of sessionStore) {
@@ -146,11 +163,14 @@ setInterval(() => {
       sessionStore.delete(id);
     }
   }
-}, SESSION_CLEANUP_INTERVAL_MS);
+}, SESSION_CLEANUP_INTERVAL_MS).unref();
 
-/** Get or create session history */
-function getSessionHistory(sessionId: string): Message[] {
-  const entry = sessionStore.get(sessionId);
+/** Get session history for a specific user. Returns empty array if none. */
+export function getSessionHistory(
+  sessionId: string,
+  userId: string,
+): Message[] {
+  const entry = sessionStore.get(sessionStoreKey(sessionId, userId));
   if (entry) {
     entry.lastAccess = Date.now();
     return entry.messages;
@@ -158,12 +178,17 @@ function getSessionHistory(sessionId: string): Message[] {
   return [];
 }
 
-/** Append messages to session history, trimming to max size */
-function appendToSession(sessionId: string, ...msgs: Message[]): void {
-  let entry = sessionStore.get(sessionId);
+/** Append messages to session history for a specific user, trimming to max size */
+export function appendToSession(
+  sessionId: string,
+  userId: string,
+  ...msgs: Message[]
+): void {
+  const key = sessionStoreKey(sessionId, userId);
+  let entry = sessionStore.get(key);
   if (!entry) {
     entry = { messages: [], lastAccess: Date.now() };
-    sessionStore.set(sessionId, entry);
+    sessionStore.set(key, entry);
   }
   entry.lastAccess = Date.now();
   entry.messages.push(...msgs);
@@ -174,15 +199,9 @@ function appendToSession(sessionId: string, ...msgs: Message[]): void {
   }
 }
 
-/** Replace session history entirely (for client-managed history mode) */
-function setSessionHistory(sessionId: string, msgs: Message[]): void {
-  const trimmed = msgs.slice(-SESSION_MAX_MESSAGES);
-  sessionStore.set(sessionId, { messages: trimmed, lastAccess: Date.now() });
-}
-
-/** Clear session history */
-export function clearSession(sessionId: string): void {
-  sessionStore.delete(sessionId);
+/** Clear session history for a specific user */
+export function clearSession(sessionId: string, userId: string): void {
+  sessionStore.delete(sessionStoreKey(sessionId, userId));
 }
 
 /**
@@ -359,14 +378,30 @@ export async function handleChatCompletions(
   }
 
   const traceId = randomUUID();
-  const clientSessionId = req.headers['x-session-id'] as string | undefined;
-  const sessionId = clientSessionId || randomUUID();
+  // Prefer the session id already stashed by the session middleware; otherwise resolve from
+  // headers/cookie directly (handles cases where the middleware ran before us).
+  // An EXPLICIT session is one the client actually sent — `x-session-id`/`mcp-session-id`
+  // header or the `clh_session` cookie. `resolveSessionId` returns only that (it never mints).
+  const explicitSessionId = resolveSessionId(req);
+  // Session id used for history + RAG keying: the middleware-stashed id (explicit, or the
+  // freshly-minted cookie id), falling back defensively if the middleware didn't run.
+  const sessionId =
+    (req as Request & { sessionId?: string }).sessionId ??
+    explicitSessionId ??
+    randomUUID();
   const t0 = Date.now();
 
   // Two modes of history management:
-  // 1. Server-managed session (our UI): x-session-id header present, client sends only new message
-  // 2. Client-managed history (OpenAI clients like Cline): no header, client sends full history
-  const serverManaged = !!clientSessionId;
+  // 1. Server-managed session (our browser UI): an explicit session (header/cookie) is present,
+  //    so the client sends only the new message and the server prepends its stored history.
+  // 2. Client-managed history (OpenAI/API clients like Cline): no explicit session, client sends
+  //    full history. A freshly-MINTED cookie id (first browser request, no cookie yet) is NOT
+  //    explicit → client-history mode, so stateless API clients sending full `messages` are
+  //    never silently truncated to just the last message.
+  const serverManaged = !!explicitSessionId;
+
+  // Resolve user identity early — needed for user-keyed session store lookups below.
+  const userId = getUserId();
 
   let normalizedMessages: Message[];
 
@@ -376,7 +411,7 @@ export async function handleChatCompletions(
       userMessages[userMessages.length - 1].content,
     );
     const newUserMessage: Message = { role: 'user', content: lastUserContent };
-    const serverHistory = getSessionHistory(sessionId);
+    const serverHistory = getSessionHistory(sessionId, userId);
     normalizedMessages = [...serverHistory, newUserMessage];
   } else {
     // Client history mode: normalize all client messages
@@ -419,8 +454,12 @@ export async function handleChatCompletions(
       })
       .filter((m): m is Message => m !== null);
 
-    // Store client history in server session for potential future server-managed use
-    setSessionHistory(sessionId, normalizedMessages);
+    // NOTE: We deliberately do NOT mirror `normalizedMessages` into `sessionStore` here.
+    // The response path below calls `appendToSession(sessionId, newUser, assistant)`, which
+    // already persists the turn. Mirroring would store `newUser` twice (mirror + append),
+    // so the next request (e.g. browser carrying the just-minted cookie) would prepend a
+    // polluted history with a duplicated first user message. For explicit-session API
+    // clients this branch never runs (serverManaged uses sessionStore via getSessionHistory).
   }
 
   // Trim history to prevent context overflow
@@ -536,8 +575,11 @@ export async function handleChatCompletions(
       to: destAfter,
       sessionId,
     });
-    clearSession(sessionId);
+    clearSession(sessionId, userId);
     clearSessionTopic(sessionId);
+    // Drop the session's ephemeral RAG collections too (owner-guarded), so they
+    // don't keep shadowing user collections after a destination switch.
+    getCollectionRegistry().deleteSessionCollections(userId, sessionId);
     // Re-build normalizedMessages with only the new user message (no stale history)
     const lastUserContent = extractText(
       userMessages[userMessages.length - 1].content,
@@ -559,14 +601,29 @@ export async function handleChatCompletions(
     return [];
   })();
 
+  // Resolve each entry: bare logical names → caller's own physical id; physical ids
+  // owned by another user → dropped. Session collection shadows user collection.
+  // Done once here and reused by both the RAG store injection and semantic search below.
+  const resolvedCollectionIds: string[] =
+    ragCollectionIds.length > 0
+      ? (() => {
+          const registry = getCollectionRegistry();
+          return ragCollectionIds
+            .map((entry) =>
+              resolveRouteId(registry, entry, getUserId(), sessionId, false),
+            )
+            .filter((id): id is string => id !== undefined);
+        })()
+      : [];
+
   // Inject dynamic RAG collections per-request (save/restore pattern).
   // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
   // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
   const deps = (handle.agent as any).deps;
   const originalRagStores = deps.ragStores;
-  if (ragCollectionIds.length > 0) {
+  if (resolvedCollectionIds.length > 0) {
     const registry = getCollectionRegistry();
-    const dynamicStores = registry.getRagStores(ragCollectionIds);
+    const dynamicStores = registry.getRagStores(resolvedCollectionIds);
     const injected = Object.keys(dynamicStores);
     if (injected.length > 0) {
       const mergedStores = { ...originalRagStores };
@@ -576,6 +633,7 @@ export async function handleChatCompletions(
       deps.ragStores = mergedStores;
       log.info('Dynamic RAG collections injected', {
         requested: ragCollectionIds,
+        resolved: resolvedCollectionIds,
         injected,
       });
     }
@@ -590,7 +648,7 @@ export async function handleChatCompletions(
   // Semantic search across active RAG collections and inject relevant results.
   // llm-agent hardcoded flow only queries RAG for "action" subprompts —
   // chat questions classified as "chat" → RAG skipped. We do our own search.
-  if (ragCollectionIds.length > 0) {
+  if (resolvedCollectionIds.length > 0) {
     const registry = getCollectionRegistry();
     const userMessage = normalizedMessages
       .filter((m) => m.role === 'user')
@@ -612,7 +670,7 @@ export async function handleChatCompletions(
         : new TextOnlyEmbedding(queryText);
 
       const relevantTexts: string[] = [];
-      for (const colId of ragCollectionIds) {
+      for (const colId of resolvedCollectionIds) {
         const store = registry.getRagStore(colId);
         if (!store) continue;
         const result = await new ExpositionFilteringRag(store).query(
@@ -654,7 +712,7 @@ export async function handleChatCompletions(
           };
         }
         log.info('RAG semantic search results injected', {
-          collections: ragCollectionIds,
+          collections: resolvedCollectionIds,
           resultCount: relevantTexts.length,
           contextChars: ragContext.length,
         });
@@ -702,7 +760,6 @@ export async function handleChatCompletions(
 
   try {
     const pipelineLog = cds.log('smart-pipeline');
-    const userId = getUserId();
     const opts = {
       stream: body.stream,
       // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
@@ -775,193 +832,210 @@ export async function handleChatCompletions(
 
       log.info('Starting streamProcess', { sessionId });
 
+      // Bind the active session id into AsyncLocalStorage so the RAG tool dispatcher
+      // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
+      // The wrapper must enclose the whole retry loop so the context stays alive across
+      // all stream iterations, including rate-limit retries.
       // Retry loop: restart stream on rate-limit errors (only before first content chunk)
       let rateLimitAttempt = 0;
-      streamRetry: while (rateLimitAttempt <= RATE_LIMIT_MAX_RETRIES) {
-        const stream = handle.agent.streamProcess(normalizedMessages, opts);
+      await runWithSessionId(sessionId, async () => {
+        streamRetry: while (rateLimitAttempt <= RATE_LIMIT_MAX_RETRIES) {
+          const stream = handle.agent.streamProcess(normalizedMessages, opts);
 
-        try {
-          for await (const chunk of stream) {
-            chunkCount++;
-            if (!chunk.ok) {
-              const err = chunk.error;
+          try {
+            for await (const chunk of stream) {
+              chunkCount++;
+              if (!chunk.ok) {
+                const err = chunk.error;
 
-              // Rate-limit retry: only if no content has been sent to the client yet
-              if (
-                isRateLimitError(err) &&
-                firstChunk &&
-                rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
-              ) {
-                const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
-                rateLimitAttempt++;
-                log.warn('Rate limit hit, retrying stream', {
-                  attempt: rateLimitAttempt,
-                  maxRetries: RATE_LIMIT_MAX_RETRIES,
-                  delayMs: delay,
-                });
-                await new Promise((r) => setTimeout(r, delay));
-                // Reset counters for fresh stream attempt
-                chunkCount = 0;
-                continue streamRetry;
-              }
-
-              // Non-retryable or retries exhausted — send user-friendly message for rate limits
-              const causes: string[] = [];
-              let current: unknown = err;
-              while (current) {
-                if (current instanceof Error) {
-                  causes.push(current.message);
-                  current = (current as { cause?: unknown }).cause;
-                } else {
-                  causes.push(String(current));
-                  break;
+                // Rate-limit retry: only if no content has been sent to the client yet
+                if (
+                  isRateLimitError(err) &&
+                  firstChunk &&
+                  rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
+                ) {
+                  const delay =
+                    RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
+                  rateLimitAttempt++;
+                  log.warn('Rate limit hit, retrying stream', {
+                    attempt: rateLimitAttempt,
+                    maxRetries: RATE_LIMIT_MAX_RETRIES,
+                    delayMs: delay,
+                  });
+                  await new Promise((r) => setTimeout(r, delay));
+                  // Reset counters for fresh stream attempt
+                  chunkCount = 0;
+                  continue streamRetry;
                 }
-              }
-              log.error('Stream error chunk', {
-                chunkCount,
-                error: err.message,
-                causes,
-              });
-              const userMessage = isRateLimitError(err)
-                ? RATE_LIMIT_USER_MESSAGE
-                : err.message;
-              res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
-              break;
-            }
 
-            const v = chunk.value;
-
-            // Forward heartbeats as SSE comments to keep the connection alive.
-            // Without this, CF Router / Cloud Connector may close idle TCP
-            // connections before the tool loop finishes, causing the browser's
-            // reader.read() to hang forever (onDone never fires).
-            if (v.heartbeat) {
-              res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
-              continue;
-            }
-            if (v.usage) {
-              lastUsage = {
-                prompt_tokens: v.usage.promptTokens,
-                completion_tokens: v.usage.completionTokens,
-                total_tokens: v.usage.totalTokens,
-                ...(v.usage.models ? { models: v.usage.models } : {}),
-              };
-            }
-            if (v.timing) {
-              log.info('Pipeline stage timing', { timing: v.timing });
-              continue;
-            }
-
-            const baseResponse = {
-              id,
-              object: 'chat.completion.chunk',
-              created,
-              model: getCurrentModel(),
-              usage: null,
-            };
-
-            // First chunk: role + initial content (matches SmartServer)
-            if (firstChunk) {
-              const initialContent = v.content || '';
-              if (initialContent) accumulatedContent += initialContent;
-              res.write(
-                `data: ${JSON.stringify({
-                  ...baseResponse,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: { role: 'assistant', content: initialContent },
-                      finish_reason: null,
-                    },
-                  ],
-                })}\n\n`,
-              );
-              firstChunk = false;
-              if (!v.finishReason && !v.toolCalls) continue;
-            }
-
-            // Content and/or tool_calls delta (matches SmartServer)
-            if (v.content || v.toolCalls) {
-              const delta: Record<string, unknown> = {};
-              if (v.content) {
-                accumulatedContent += v.content;
-                delta.content = v.content;
-              }
-              if (v.toolCalls) {
-                delta.tool_calls = v.toolCalls.map((call, index) => {
-                  const tc = toToolCallDelta(call, index);
-                  return {
-                    index: tc.index,
-                    id: tc.id,
-                    type: 'function',
-                    function: {
-                      name: tc.name,
-                      arguments: tc.arguments || '',
-                    },
-                  };
+                // Non-retryable or retries exhausted — send user-friendly message for rate limits
+                const causes: string[] = [];
+                let current: unknown = err;
+                while (current) {
+                  if (current instanceof Error) {
+                    causes.push(current.message);
+                    current = (current as { cause?: unknown }).cause;
+                  } else {
+                    causes.push(String(current));
+                    break;
+                  }
+                }
+                log.error('Stream error chunk', {
+                  chunkCount,
+                  error: err.message,
+                  causes,
                 });
+                const userMessage = isRateLimitError(err)
+                  ? RATE_LIMIT_USER_MESSAGE
+                  : err.message;
+                res.write(
+                  `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                );
+                break;
               }
-              res.write(
-                `data: ${JSON.stringify({
-                  ...baseResponse,
-                  choices: [
-                    {
-                      index: 0,
-                      delta,
-                      finish_reason: null,
-                    },
-                  ],
-                })}\n\n`,
-              );
+
+              const v = chunk.value;
+
+              // Forward heartbeats as SSE comments to keep the connection alive.
+              // Without this, CF Router / Cloud Connector may close idle TCP
+              // connections before the tool loop finishes, causing the browser's
+              // reader.read() to hang forever (onDone never fires).
+              if (v.heartbeat) {
+                res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
+                continue;
+              }
+              if (v.usage) {
+                lastUsage = {
+                  prompt_tokens: v.usage.promptTokens,
+                  completion_tokens: v.usage.completionTokens,
+                  total_tokens: v.usage.totalTokens,
+                  ...(v.usage.models ? { models: v.usage.models } : {}),
+                };
+              }
+              if (v.timing) {
+                log.info('Pipeline stage timing', { timing: v.timing });
+                continue;
+              }
+
+              const baseResponse = {
+                id,
+                object: 'chat.completion.chunk',
+                created,
+                model: getCurrentModel(),
+                usage: null,
+              };
+
+              // First chunk: role + initial content (matches SmartServer)
+              if (firstChunk) {
+                const initialContent = v.content || '';
+                if (initialContent) accumulatedContent += initialContent;
+                res.write(
+                  `data: ${JSON.stringify({
+                    ...baseResponse,
+                    choices: [
+                      {
+                        index: 0,
+                        delta: { role: 'assistant', content: initialContent },
+                        finish_reason: null,
+                      },
+                    ],
+                  })}\n\n`,
+                );
+                firstChunk = false;
+                if (!v.finishReason && !v.toolCalls) continue;
+              }
+
+              // Content and/or tool_calls delta (matches SmartServer)
+              if (v.content || v.toolCalls) {
+                const delta: Record<string, unknown> = {};
+                if (v.content) {
+                  accumulatedContent += v.content;
+                  delta.content = v.content;
+                }
+                if (v.toolCalls) {
+                  delta.tool_calls = v.toolCalls.map((call, index) => {
+                    const tc = toToolCallDelta(call, index);
+                    return {
+                      index: tc.index,
+                      id: tc.id,
+                      type: 'function',
+                      function: {
+                        name: tc.name,
+                        arguments: tc.arguments || '',
+                      },
+                    };
+                  });
+                }
+                res.write(
+                  `data: ${JSON.stringify({
+                    ...baseResponse,
+                    choices: [
+                      {
+                        index: 0,
+                        delta,
+                        finish_reason: null,
+                      },
+                    ],
+                  })}\n\n`,
+                );
+              }
+
+              if (v.finishReason) {
+                res.write(
+                  `data: ${JSON.stringify({
+                    ...baseResponse,
+                    choices: [
+                      {
+                        index: 0,
+                        delta: {},
+                        finish_reason: mapStopReason(v.finishReason),
+                      },
+                    ],
+                  })}\n\n`,
+                );
+                finishReasonSent = true;
+              }
+            }
+          } catch (streamErr) {
+            // Rate-limit retry on exception (only before first content chunk)
+            if (
+              isRateLimitError(streamErr) &&
+              firstChunk &&
+              rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
+            ) {
+              const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
+              rateLimitAttempt++;
+              log.warn('Rate limit exception, retrying stream', {
+                attempt: rateLimitAttempt,
+                delayMs: delay,
+              });
+              await new Promise((r) => setTimeout(r, delay));
+              chunkCount = 0;
+              continue;
             }
 
-            if (v.finishReason) {
-              res.write(
-                `data: ${JSON.stringify({
-                  ...baseResponse,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {},
-                      finish_reason: mapStopReason(v.finishReason),
-                    },
-                  ],
-                })}\n\n`,
-              );
-              finishReasonSent = true;
-            }
-          }
-        } catch (streamErr) {
-          // Rate-limit retry on exception (only before first content chunk)
-          if (
-            isRateLimitError(streamErr) &&
-            firstChunk &&
-            rateLimitAttempt < RATE_LIMIT_MAX_RETRIES
-          ) {
-            const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** rateLimitAttempt;
-            rateLimitAttempt++;
-            log.warn('Rate limit exception, retrying stream', {
-              attempt: rateLimitAttempt,
-              delayMs: delay,
+            const errMsg =
+              streamErr instanceof Error
+                ? streamErr.message
+                : String(streamErr);
+            log.error('Stream exception', {
+              error: errMsg,
+              stack: streamErr instanceof Error ? streamErr.stack : undefined,
             });
-            await new Promise((r) => setTimeout(r, delay));
-            chunkCount = 0;
-            continue;
+            const userMessage = isRateLimitError(streamErr)
+              ? RATE_LIMIT_USER_MESSAGE
+              : errMsg;
+            res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
           }
+          break; // Normal exit — no more retries needed
+        } // end streamRetry while loop
 
-          const errMsg =
-            streamErr instanceof Error ? streamErr.message : String(streamErr);
-          log.error('Stream exception', {
-            error: errMsg,
-            stack: streamErr instanceof Error ? streamErr.stack : undefined,
-          });
-          const userMessage = isRateLimitError(streamErr)
-            ? RATE_LIMIT_USER_MESSAGE
-            : errMsg;
-          res.write(`data: ${jsonError(userMessage, 'server_error')}\n\n`);
+        // Log per-model token breakdown if available (inside runWithSessionId so TS
+        // can track lastUsage mutations; this is pure logging with no ordering concern).
+        if (lastUsage?.models) {
+          log.info('Token usage by model', lastUsage.models);
         }
-        break; // Normal exit — no more retries needed
-      } // end streamRetry while loop
+      }); // end runWithSessionId
 
       // Ensure finish_reason is always sent — clients require it to detect stream end
       if (!finishReasonSent) {
@@ -999,11 +1073,6 @@ export async function handleChatCompletions(
         );
       }
 
-      // Log per-model token breakdown if available
-      if (lastUsage?.models) {
-        log.info('Token usage by model', lastUsage.models);
-      }
-
       log.info('Stream completed', {
         chunkCount,
         hasUsage: !!lastUsage,
@@ -1017,14 +1086,14 @@ export async function handleChatCompletions(
           .filter((m) => m.role === 'user')
           .slice(-1)[0];
         if (lastUser) {
-          appendToSession(sessionId, lastUser, {
+          appendToSession(sessionId, userId, lastUser, {
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          const entry = sessionStore.get(sessionId);
+          const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
-            storedMessages: entry?.messages.length ?? 0,
+            storedMessages: updatedHistory.length,
             responseChars: accumulatedContent.length,
           });
         }
@@ -1049,22 +1118,28 @@ export async function handleChatCompletions(
     }
 
     // --- Non-streaming (with rate-limit retry) ---
-    let result = await handle.agent.process(normalizedMessages, opts);
+    // Bind the active session id into AsyncLocalStorage so the RAG tool dispatcher
+    // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
+    // The wrapper encloses the whole retry block so the context stays alive across retries.
+    const result = await runWithSessionId(sessionId, async () => {
+      let r = await handle.agent.process(normalizedMessages, opts);
 
-    // Retry on rate-limit errors
-    if (!result.ok && isRateLimitError(result.error)) {
-      for (let attempt = 0; attempt < RATE_LIMIT_MAX_RETRIES; attempt++) {
-        const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt;
-        log.warn('Rate limit hit, retrying', {
-          attempt: attempt + 1,
-          maxRetries: RATE_LIMIT_MAX_RETRIES,
-          delayMs: delay,
-        });
-        await new Promise((r) => setTimeout(r, delay));
-        result = await handle.agent.process(normalizedMessages, opts);
-        if (result.ok || !isRateLimitError(result.error)) break;
+      // Retry on rate-limit errors
+      if (!r.ok && isRateLimitError(r.error)) {
+        for (let attempt = 0; attempt < RATE_LIMIT_MAX_RETRIES; attempt++) {
+          const delay = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt;
+          log.warn('Rate limit hit, retrying', {
+            attempt: attempt + 1,
+            maxRetries: RATE_LIMIT_MAX_RETRIES,
+            delayMs: delay,
+          });
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          r = await handle.agent.process(normalizedMessages, opts);
+          if (r.ok || !isRateLimitError(r.error)) break;
+        }
       }
-    }
+      return r;
+    });
 
     log.info('Chat completions done', {
       ok: result.ok,
@@ -1099,7 +1174,7 @@ export async function handleChatCompletions(
         .filter((m) => m.role === 'user')
         .slice(-1)[0];
       if (lastUser) {
-        appendToSession(sessionId, lastUser, {
+        appendToSession(sessionId, userId, lastUser, {
           role: 'assistant',
           content: finalContent,
         } as Message);

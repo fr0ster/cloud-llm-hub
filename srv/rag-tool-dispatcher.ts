@@ -15,8 +15,12 @@
  * when to surface them (e.g. tutorial/skill-driven flows).
  */
 import { randomUUID } from 'node:crypto';
+import cds from '@sap/cds';
 import { z } from 'zod';
+import { normalizeLogicalId, resolveByName } from './collection-ids';
 import type { CollectionRegistry } from './rag-collections';
+import { SESSION_TTL_MS } from './rag-collections';
+import { getRequestSessionId } from './request-session';
 
 const ragAddSchema = z.object({
   collection: z.string(),
@@ -107,23 +111,62 @@ export async function dispatchRagTool(
   }
   const args = parsed.data as Record<string, unknown>;
 
+  const userId = () => cds.context?.user?.id ?? 'anonymous';
+  const sessionId = () => getRequestSessionId();
+
   try {
     switch (name as RagToolName) {
       case 'rag_add': {
-        const collection = args.collection as string;
+        const sid = sessionId();
+        let physical: string | undefined;
+        try {
+          physical = resolveByName(
+            registry,
+            args.collection as string,
+            userId(),
+            sid,
+            true,
+          );
+        } catch (err) {
+          return { ok: false, error: (err as Error).message };
+        }
+        if (!physical) {
+          return {
+            ok: false,
+            error: 'Authenticated user required to add to a collection',
+          };
+        }
+        // Auto-create the collection if it does not exist yet.
+        if (!registry.getCollection(physical)) {
+          const isSession = !!sid && physical.includes('__s_');
+          registry.createCollection({
+            id: physical,
+            logicalId: normalizeLogicalId(args.collection as string),
+            displayName: args.collection as string,
+            description: '',
+            scope: isSession ? 'session' : 'user',
+            owner: userId(),
+            ...(isSession
+              ? { sessionId: sid, expiresAt: Date.now() + SESSION_TTL_MS }
+              : {}),
+          });
+        } else {
+          // Refresh expiry for existing session collections.
+          if (sid) registry.refreshSessionExpiry(physical);
+        }
         const requestedId = (args.id as string | undefined)?.trim();
         const id = requestedId || randomUUID();
         if (requestedId) {
-          const existing = registry.findActiveByCanonicalKey(collection, id);
+          const existing = registry.findActiveByCanonicalKey(physical, id);
           if (existing) {
             return {
               ok: false,
-              error: `Active record "${id}" already exists in collection "${collection}"`,
+              error: `Active record "${id}" already exists in collection "${args.collection as string}"`,
             };
           }
         }
         const tags = args.tags as string[] | undefined;
-        await registry.addDocument(collection, {
+        await registry.addDocument(physical, {
           id,
           text: args.text as string,
           metadata: {
@@ -134,19 +177,31 @@ export async function dispatchRagTool(
         return { ok: true, id };
       }
       case 'rag_correct': {
-        const collection = args.collection as string;
+        const physical = resolveByName(
+          registry,
+          args.collection as string,
+          userId(),
+          sessionId(),
+          false,
+        );
+        if (!physical) {
+          return {
+            ok: false,
+            error: `No active record found in collection "${args.collection as string}"`,
+          };
+        }
         const id = args.id as string;
-        const active = registry.findActiveByCanonicalKey(collection, id);
+        const active = registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
           return {
             ok: false,
-            error: `No active record with id "${id}" in collection "${collection}"`,
+            error: `No active record with id "${id}" in collection "${args.collection as string}"`,
           };
         }
         // In-place text update. The same physical record stays in the
         // collection — addressable by the same `id` throughout its life.
         // No supersede chain in MANAGE.
-        const updated = await registry.updateDocument(collection, active.id, {
+        const updated = await registry.updateDocument(physical, active.id, {
           text: args.newText as string,
           metadata: {
             canonicalKey: id,
@@ -157,26 +212,38 @@ export async function dispatchRagTool(
         if (!updated) {
           return {
             ok: false,
-            error: `Active record vanished mid-correction in "${collection}" (id "${id}")`,
+            error: `Active record vanished mid-correction in "${args.collection as string}" (id "${id}")`,
           };
         }
         return { ok: true, id };
       }
       case 'rag_deprecate': {
-        const collection = args.collection as string;
+        const physical = resolveByName(
+          registry,
+          args.collection as string,
+          userId(),
+          sessionId(),
+          false,
+        );
+        if (!physical) {
+          return {
+            ok: false,
+            error: `No active record found in collection "${args.collection as string}"`,
+          };
+        }
         const id = args.id as string;
-        const active = registry.findActiveByCanonicalKey(collection, id);
+        const active = registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
           return {
             ok: false,
-            error: `No active record with id "${id}" in collection "${collection}"`,
+            error: `No active record with id "${id}" in collection "${args.collection as string}"`,
           };
         }
-        const deleted = await registry.deleteDocument(collection, active.id);
+        const deleted = await registry.deleteDocument(physical, active.id);
         if (!deleted) {
           return {
             ok: false,
-            error: `Active record vanished mid-delete in "${collection}" (id "${id}")`,
+            error: `Active record vanished mid-delete in "${args.collection as string}" (id "${id}")`,
           };
         }
         return { ok: true, id, reason: args.reason };

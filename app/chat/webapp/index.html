@@ -310,7 +310,9 @@
         const classifierSelect = document.getElementById('classifier-model-select');
         let conversationHistory = [];
         let ready = false;
-        const sessionId = 'ui-' + crypto.randomUUID();
+        // Session ID is now managed server-side via an HttpOnly cookie (clh_session).
+        // The browser sends the cookie automatically on every same-origin request,
+        // so the session survives page reloads without JS generating a new random id.
 
         // Input history (Up/Down arrow navigation like terminal)
         const inputHistory = [];
@@ -1100,8 +1102,8 @@
         }
 
         function clearChat() {
-            // Clear server-side session history
-            fetch('/v1/session', { method: 'DELETE', headers: { 'X-Session-Id': sessionId } }).catch(() => {});
+            // Clear server-side session history — clh_session cookie is sent automatically
+            fetch('/v1/session', { method: 'DELETE' }).catch(() => {});
             Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];
             chatWindow.innerHTML = '';
@@ -1113,7 +1115,7 @@
             const dest = getSelectedDestination() || 'none';
             const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
             let md = `# Session Log\n\n`;
-            md += `- **Session:** ${sessionId}\n`;
+            md += `- **Session:** (server-managed cookie session)\n`;
             md += `- **Model:** ${model}\n`;
             md += `- **Destination:** ${dest}\n`;
             md += `- **Exported:** ${new Date().toISOString()}\n\n---\n\n`;
@@ -1252,8 +1254,10 @@
                 const selectedModel = getSelectedModel();
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
-                // Send only current message — SmartAgent manages session history internally
-                const headers = { 'Content-Type': 'application/json', 'X-Session-Id': sessionId, ...getSapCredHeaders() };
+                // Send only current message — SmartAgent manages session history internally.
+                // Session is tracked via the clh_session HttpOnly cookie (set by server),
+                // so no X-Session-Id header is needed from the browser.
+                const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders() };
                 const selectedDest = getSelectedDestination();
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
@@ -1375,9 +1379,8 @@
                         try { args = JSON.parse(tc.arguments); } catch (e) { /* malformed */ }
                         if (args) {
                             try {
-                                const resp = await fetch('/v1/rag/tool/' + encodeURIComponent(tc.name), {
+                                const resp = await ragFetch('/v1/rag/tool/' + encodeURIComponent(tc.name), {
                                     method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify(args)
                                 });
                                 const body = await resp.json().catch(() => ({}));
@@ -1568,32 +1571,38 @@
             renderAttachedFiles();
         }
 
-        /** Active RAG collections — toggled on/off in MANAGE panel. */
-        const activeCollections = new Set();
-        const knownCollections = new Set(); // tracks which collections we've seen
+        /** RAG collections cache — populated by loadCollections() from the server listing.
+         *  Each entry is the raw object from GET /v1/rag/collections, which includes:
+         *  id, logicalId, scope, displayName, enabled, documentCount, backend, description.
+         *  Enabled state is persistent on the server (PATCH /v1/rag/collections/:id/enabled).
+         */
+        let ragCollectionsCache = [];
 
         async function refreshActiveCollections() {
-            try {
-                const res = await ragFetch('/v1/rag/collections');
-                const data = await res.json();
-                for (const c of (data.collections || [])) {
-                    if (!knownCollections.has(c.id)) {
-                        // New collection — auto-enable
-                        knownCollections.add(c.id);
-                        activeCollections.add(c.id);
-                    }
-                }
-            } catch { /* keep previous state */ }
+            // Delegate to loadCollections so the cache and UI are always in sync.
+            await loadCollections();
         }
 
-        function toggleCollection(id) {
-            if (activeCollections.has(id)) activeCollections.delete(id);
-            else activeCollections.add(id);
-            loadCollections(); // re-render to update checkbox state
+        async function toggleCollection(id) {
+            const col = ragCollectionsCache.find(c => c.id === id);
+            if (!col) return;
+            const newEnabled = !col.enabled;
+            try {
+                await ragFetch(`/v1/rag/collections/${encodeURIComponent(id)}/enabled`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ enabled: newEnabled }),
+                });
+            } catch (err) {
+                alert('Failed to toggle collection: ' + err.message);
+                return;
+            }
+            // Re-render from the server to reflect the persisted state.
+            await loadCollections();
         }
 
         function getActiveRagCollections() {
-            const ids = [...activeCollections];
+            // Return physical ids (c.id) whose enabled flag is true — no in-memory Set.
+            const ids = ragCollectionsCache.filter(c => c.enabled).map(c => c.id);
             if (attachedFiles.length > 0 && !ids.includes('uploads')) ids.push('uploads');
             return ids;
         }
@@ -1604,6 +1613,7 @@
         let ragCurrentCollection = null;
 
         function ragFetch(url, opts = {}) {
+            // clh_session cookie is sent automatically by the browser on same-origin requests.
             return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
         }
 
@@ -1674,30 +1684,24 @@
             try {
                 const res = await ragFetch('/v1/rag/collections');
                 const data = await res.json();
-                if (!data.collections || data.collections.length === 0) {
+                ragCollectionsCache = data.collections || [];
+                if (ragCollectionsCache.length === 0) {
                     list.innerHTML = '<div style="color:#555;padding:10px">No collections yet. Create one above.</div>';
                     return;
                 }
-                // Auto-enable only NEW collections (not seen before)
-                for (const c of data.collections) {
-                    if (!knownCollections.has(c.id)) {
-                        knownCollections.add(c.id);
-                        activeCollections.add(c.id);
-                    }
-                }
-                list.innerHTML = data.collections.map(c => `
-                    <div style="display:flex;justify-content:space-between;align-items:center;background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:6px;border-radius:4px;border-left:3px solid ${activeCollections.has(c.id) ? (c.scope === 'global' ? '#ffcc00' : '#00bfff') : '#555'}">
+                list.innerHTML = ragCollectionsCache.map(c => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:6px;border-radius:4px;border-left:3px solid ${c.enabled ? (c.scope === 'session' ? '#ffcc00' : '#00bfff') : '#555'}">
                         <div style="display:flex;align-items:center;gap:8px">
-                            <input type="checkbox" ${activeCollections.has(c.id) ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
+                            <input type="checkbox" ${c.enabled ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
                             <span style="color:#fff;font-weight:bold">${escapeHtml(c.displayName)}</span>
-                            <span style="color:#555;margin-left:8px">(${escapeHtml(c.id)})</span>
-                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope} · ${c.backend || 'default'} · ${c.documentCount} docs</span>
+                            <span style="color:#555;margin-left:8px">(${escapeHtml(c.logicalId || c.id)})</span>
+                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope === 'session' ? '<span style="color:#ffcc00">session</span>' : escapeHtml(c.scope || 'user')} · ${c.backend || 'default'} · ${c.documentCount} docs</span>
                             ${c.description ? `<div style="color:#666;font-size:12px;margin-top:2px">${escapeHtml(c.description)}</div>` : ''}
                         </div>
                         <div style="display:flex;gap:6px">
                             <button onclick="openDocPanel('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #333;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DOCS</button>
                             <button onclick="openExportModal('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #225522;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Export all documents as ZIP">EXP</button>
-                            ${c.id !== 'facts' ? `<button onclick="deleteCollection('${escapeHtml(c.id)}')" style="background:#1a1a1a;color:#ff5555;border:1px solid #552222;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>` : ''}
+                            <button onclick="deleteCollection('${escapeHtml(c.id)}')" style="background:#1a1a1a;color:#ff5555;border:1px solid #552222;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
                         </div>
                     </div>
                 `).join('');
