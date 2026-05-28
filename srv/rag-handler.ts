@@ -9,12 +9,21 @@ import crypto from 'node:crypto';
 
 import cds from '@sap/cds';
 import type { Request, Response, Router } from 'express';
+import {
+  normalizeLogicalId,
+  resolveRouteId,
+  sessionCollectionId,
+  userCollectionId,
+} from './collection-ids';
 import type { CollectionRegistry } from './rag-collections';
+import { SESSION_TTL_MS } from './rag-collections';
 import {
   buildRagToolSchemas,
   dispatchRagTool,
   getRagToolNames,
 } from './rag-tool-dispatcher';
+import { runWithSessionId } from './request-session';
+import { resolveSessionId } from './session-id';
 
 const log = cds.log('rag-handler');
 
@@ -102,15 +111,44 @@ export function registerRagRoutes(
   });
 
   // GET /v1/rag/collections
-  router.get('/rag/collections', (_req: Request, res: Response) => {
+  router.get('/rag/collections', (req: Request, res: Response) => {
     const userId = getUserId();
-    // Hide user-scoped collections from anonymous callers — only show globals.
+    // Anonymous callers have no collections (no global scope; user scope requires identity).
     // listCollections() filters by owner === userId, so an 'anonymous' userId
     // would match every anonymous-owned legacy collection (cross-user leak).
     const effectiveUserId =
       userId && userId !== 'anonymous' ? userId : undefined;
-    const collections = registry.listCollections(effectiveUserId);
-    json(res, 200, { collections });
+    const sid =
+      (req as Request & { sessionId?: string }).sessionId ??
+      resolveSessionId(req);
+
+    let collections = registry.listCollections(effectiveUserId);
+    // Filter session-scoped collections to the current session only — prevents
+    // stale/parallel sessions from showing in MANAGE and leaking physical ids.
+    collections = collections.filter(
+      (c) => c.scope !== 'session' || c.sessionId === sid,
+    );
+
+    const defaultEnabled = (c: { preset?: boolean }) => !c.preset;
+
+    const mapped = collections.map((c) => ({
+      id: c.id,
+      logicalId: c.logicalId,
+      scope: c.scope,
+      displayName: c.displayName,
+      description: c.description,
+      backend: c.backend,
+      owner: c.owner,
+      createdAt: c.createdAt,
+      documentCount: c.documentCount,
+      preset: c.preset,
+      enabled:
+        effectiveUserId !== undefined
+          ? (registry.getEnabled(effectiveUserId, c.id) ?? defaultEnabled(c))
+          : defaultEnabled(c),
+    }));
+
+    json(res, 200, { collections: mapped });
   });
 
   // POST /v1/rag/collections
@@ -123,14 +161,13 @@ export function registerRagRoutes(
         return;
       }
 
-      if (scope === 'global' && !isAdmin()) {
-        error(res, 403, 'MCP_Admin role required for global collections');
+      if (scope === 'global') {
+        error(res, 400, 'global collections are no longer supported');
         return;
       }
 
-      const effectiveScope = scope || 'user';
       const userId = getUserId();
-      if (effectiveScope === 'user' && (!userId || userId === 'anonymous')) {
+      if (!userId || userId === 'anonymous') {
         error(
           res,
           401,
@@ -139,16 +176,73 @@ export function registerRagRoutes(
         return;
       }
 
-      const meta = registry.createCollection({
-        id,
-        displayName,
-        description: description || '',
-        scope: effectiveScope,
-        backend,
-        owner: effectiveScope === 'user' ? userId : undefined,
-      });
+      // Normalize logical id — 400 on reserved __ in the name.
+      let logicalId: string;
+      try {
+        logicalId = normalizeLogicalId(id);
+      } catch (normErr) {
+        error(res, 400, (normErr as Error).message);
+        return;
+      }
 
-      log.info('Collection created via API', { id, scope, user: getUserId() });
+      let physical: string;
+      let createMeta: Parameters<typeof registry.createCollection>[0];
+
+      if (scope === 'session') {
+        const sid =
+          (req as Request & { sessionId?: string }).sessionId ??
+          resolveSessionId(req);
+        if (!sid) {
+          error(
+            res,
+            400,
+            'session scope requires an active session (x-session-id header or clh_session cookie)',
+          );
+          return;
+        }
+        physical = sessionCollectionId(logicalId, userId, sid);
+        createMeta = {
+          id: physical,
+          logicalId,
+          displayName,
+          description: description || '',
+          scope: 'session',
+          backend,
+          owner: userId,
+          sessionId: sid,
+          expiresAt: Date.now() + SESSION_TTL_MS,
+        };
+      } else {
+        physical = userCollectionId(logicalId, userId);
+        createMeta = {
+          id: physical,
+          logicalId,
+          displayName,
+          description: description || '',
+          scope: 'user',
+          backend,
+          owner: userId,
+        };
+      }
+
+      // Idempotent: if the physical collection already exists, return existing meta.
+      const existing = registry.getCollection(physical);
+      if (existing) {
+        log.info('Collection already exists (idempotent)', {
+          id: physical,
+          user: userId,
+        });
+        json(res, 200, existing);
+        return;
+      }
+
+      const meta = registry.createCollection(createMeta);
+      log.info('Collection created via API', {
+        id: physical,
+        logicalId,
+        scope: createMeta.scope,
+        user: userId,
+      });
       json(res, 201, meta);
     } catch (err) {
       error(res, 409, (err as Error).message);
@@ -185,13 +279,38 @@ export function registerRagRoutes(
   };
 
   // Gate all /rag/collections/:id* sub-paths (collection by id, documents,
-  // upload, query). canAccess returns 404 for non-owner access so we don't
-  // leak the existence of other users' collections via timing or messages.
-  // GET / POST /query → 'read'; everything else → 'write'.
+  // upload, query). resolveRouteId performs ownership + session checks so
+  // callers cannot access another user's collection even if they know the id.
+  // forWrite=false (no auto-create via resolveByName) for GET / /query / /enabled.
+  // forWrite=true (may create via resolveByName on logical ids) for everything else.
+  // canAccess is a separate guard: for user-scoped collections only the owner passes;
+  // for global collections read is open but write requires MCP_Admin.
   router.use('/rag/collections/:id', (req: Request, res: Response, next) => {
-    const meta = registry.getCollection(req.params.id);
+    // PATCH /enabled must use read-mode so it never creates a new collection.
+    const isContentWrite =
+      req.method !== 'GET' &&
+      !req.path.endsWith('/query') &&
+      !req.path.endsWith('/enabled');
+
+    const physical = resolveRouteId(
+      registry,
+      req.params.id,
+      getUserId(),
+      (req as Request & { sessionId?: string }).sessionId ??
+        resolveSessionId(req),
+      isContentWrite,
+    );
+
+    if (!physical) {
+      error(res, 404, 'Collection not found');
+      return;
+    }
+
+    (req as Request & { _physId?: string })._physId = physical;
+
+    const meta = registry.getCollection(physical);
     if (!meta) {
-      error(res, 404, `Collection "${req.params.id}" not found`);
+      error(res, 404, 'Collection not found');
       return;
     }
     const isQuery = req.path.endsWith('/query');
@@ -203,39 +322,66 @@ export function registerRagRoutes(
 
   // GET /v1/rag/collections/:id
   router.get('/rag/collections/:id', (req: Request, res: Response) => {
-    const meta = registry.getCollection(req.params.id);
-    if (!meta) {
-      error(res, 404, `Collection "${req.params.id}" not found`);
+    const physId = (req as Request & { _physId?: string })._physId;
+    if (!physId) {
+      error(res, 404, 'Collection not found');
       return;
     }
-    if (!canAccess(meta, 'read', res)) return;
+    const meta = registry.getCollection(physId);
+    if (!meta) {
+      error(res, 404, `Collection "${physId}" not found`);
+      return;
+    }
     json(res, 200, meta);
   });
 
+  // PATCH /v1/rag/collections/:id/enabled
+  router.patch(
+    '/rag/collections/:id/enabled',
+    (req: Request, res: Response) => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId || !registry.getCollection(physId)) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
+      const { enabled } = req.body;
+      registry.setEnabled(getUserId(), physId, !!enabled);
+      json(res, 200, { id: physId, enabled: !!enabled });
+    },
+  );
+
   // PUT /v1/rag/collections/:id
   router.put('/rag/collections/:id', (req: Request, res: Response) => {
-    const meta = registry.getCollection(req.params.id);
-    if (!meta) {
-      error(res, 404, `Collection "${req.params.id}" not found`);
+    const physId = (req as Request & { _physId?: string })._physId;
+    if (!physId) {
+      error(res, 404, 'Collection not found');
       return;
     }
-    if (!canAccess(meta, 'write', res)) return;
+    const meta = registry.getCollection(physId);
+    if (!meta) {
+      error(res, 404, `Collection "${physId}" not found`);
+      return;
+    }
 
-    const updated = registry.updateCollection(req.params.id, req.body);
+    const updated = registry.updateCollection(physId, req.body);
     json(res, 200, updated);
   });
 
   // DELETE /v1/rag/collections/:id
   router.delete('/rag/collections/:id', (req: Request, res: Response) => {
-    const meta = registry.getCollection(req.params.id);
-    if (!meta) {
-      error(res, 404, `Collection "${req.params.id}" not found`);
+    const physId = (req as Request & { _physId?: string })._physId;
+    if (!physId) {
+      error(res, 404, 'Collection not found');
       return;
     }
-    if (!canAccess(meta, 'write', res)) return;
+    const meta = registry.getCollection(physId);
+    if (!meta) {
+      error(res, 404, `Collection "${physId}" not found`);
+      return;
+    }
 
     try {
-      registry.deleteCollection(req.params.id);
+      registry.deleteCollection(physId);
       res.status(204).end();
     } catch (err) {
       error(res, 400, (err as Error).message);
@@ -250,11 +396,16 @@ export function registerRagRoutes(
   router.get(
     '/rag/collections/:id/documents',
     (req: Request, res: Response) => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
       const offset = Number(req.query.offset) || 0;
       const limit = Math.min(Number(req.query.limit) || 50, 200);
-      const result = registry.listDocuments(req.params.id, { offset, limit });
+      const result = registry.listDocuments(physId, { offset, limit });
       if (!result) {
-        error(res, 404, `Collection "${req.params.id}" not found`);
+        error(res, 404, `Collection "${physId}" not found`);
         return;
       }
       json(res, 200, result);
@@ -266,6 +417,11 @@ export function registerRagRoutes(
     '/rag/collections/:id/documents',
     async (req: Request, res: Response) => {
       try {
+        const physId = (req as Request & { _physId?: string })._physId;
+        if (!physId) {
+          error(res, 404, 'Collection not found');
+          return;
+        }
         const { id, text, metadata } = req.body;
         if (!text) {
           error(res, 400, 'text is required');
@@ -274,7 +430,7 @@ export function registerRagRoutes(
         const docId = id || crypto.randomUUID();
         const namespace = req.body.namespace ?? undefined;
         const doc = await registry.addDocument(
-          req.params.id,
+          physId,
           { id: docId, text, metadata: metadata || {} },
           namespace,
         );
@@ -290,6 +446,11 @@ export function registerRagRoutes(
     '/rag/collections/:id/documents/bulk',
     async (req: Request, res: Response) => {
       try {
+        const physId = (req as Request & { _physId?: string })._physId;
+        if (!physId) {
+          error(res, 404, 'Collection not found');
+          return;
+        }
         const { documents } = req.body;
         if (!Array.isArray(documents) || documents.length === 0) {
           error(res, 400, 'documents array is required');
@@ -298,18 +459,6 @@ export function registerRagRoutes(
         if (documents.length > 100) {
           error(res, 400, 'Maximum 100 documents per bulk request');
           return;
-        }
-
-        if (!isAdmin()) {
-          const meta = registry.getCollection(req.params.id);
-          if (meta?.scope === 'global') {
-            error(
-              res,
-              403,
-              'MCP_Admin role required for bulk upload to global collections',
-            );
-            return;
-          }
         }
 
         const namespace = req.body.namespace ?? undefined;
@@ -325,14 +474,10 @@ export function registerRagRoutes(
           }),
         );
 
-        const result = await registry.addDocumentsBulk(
-          req.params.id,
-          docs,
-          namespace,
-        );
+        const result = await registry.addDocumentsBulk(physId, docs, namespace);
 
         log.info('Bulk upload completed', {
-          collection: req.params.id,
+          collection: physId,
           added: result.added,
           errors: result.errors.length,
           user: getUserId(),
@@ -349,7 +494,12 @@ export function registerRagRoutes(
   router.get(
     '/rag/collections/:id/documents/:did',
     (req: Request, res: Response) => {
-      const doc = registry.getDocument(req.params.id, req.params.did);
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
+      const doc = registry.getDocument(physId, req.params.did);
       if (!doc) {
         error(res, 404, 'Document not found');
         return;
@@ -363,8 +513,13 @@ export function registerRagRoutes(
     '/rag/collections/:id/documents/:did',
     async (req: Request, res: Response) => {
       try {
+        const physId = (req as Request & { _physId?: string })._physId;
+        if (!physId) {
+          error(res, 404, 'Collection not found');
+          return;
+        }
         const doc = await registry.updateDocument(
-          req.params.id,
+          physId,
           req.params.did,
           req.body,
         );
@@ -383,10 +538,12 @@ export function registerRagRoutes(
   router.delete(
     '/rag/collections/:id/documents/:did',
     async (req: Request, res: Response) => {
-      const deleted = await registry.deleteDocument(
-        req.params.id,
-        req.params.did,
-      );
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
+      const deleted = await registry.deleteDocument(physId, req.params.did);
       if (!deleted) {
         error(res, 404, 'Document not found');
         return;
@@ -406,17 +563,18 @@ export function registerRagRoutes(
     '/rag/collections/:id/upload',
     async (req: Request, res: Response) => {
       try {
-        const collectionId = req.params.id;
+        const collectionId = (req as Request & { _physId?: string })._physId;
+        if (!collectionId) {
+          error(res, 404, 'Collection not found');
+          return;
+        }
         const meta = registry.getCollection(collectionId);
         if (!meta) {
           error(res, 404, `Collection "${collectionId}" not found`);
           return;
         }
 
-        if (meta.scope === 'global' && !isAdmin()) {
-          error(res, 403, 'MCP_Admin role required for global collections');
-          return;
-        }
+        // Ownership is enforced by canAccess — no global scope to check here.
 
         const { filename, content, chunkSize, description } = req.body;
         if (!content || typeof content !== 'string') {
@@ -482,9 +640,14 @@ export function registerRagRoutes(
     '/rag/collections/:id/query',
     async (req: Request, res: Response) => {
       try {
-        const store = registry.getRagStore(req.params.id);
+        const physId = (req as Request & { _physId?: string })._physId;
+        if (!physId) {
+          error(res, 404, 'Collection not found');
+          return;
+        }
+        const store = registry.getRagStore(physId);
         if (!store) {
-          error(res, 404, `Collection "${req.params.id}" not found`);
+          error(res, 404, `Collection "${physId}" not found`);
           return;
         }
 
@@ -529,7 +692,12 @@ export function registerRagRoutes(
       error(res, 404, `Unknown RAG tool: ${name}`);
       return;
     }
-    const result = await dispatchRagTool(registry, name, req.body ?? {});
+    const sid =
+      (req as Request & { sessionId?: string }).sessionId ??
+      resolveSessionId(req);
+    const result = await runWithSessionId(sid, () =>
+      dispatchRagTool(registry, name, req.body ?? {}),
+    );
     json(res, result.ok ? 200 : 400, result);
   });
 
@@ -540,6 +708,7 @@ export function registerRagRoutes(
       'GET /v1/rag/collections',
       'POST /v1/rag/collections',
       'GET /v1/rag/collections/:id',
+      'PATCH /v1/rag/collections/:id/enabled',
       'PUT /v1/rag/collections/:id',
       'DELETE /v1/rag/collections/:id',
       'GET /v1/rag/collections/:id/documents',

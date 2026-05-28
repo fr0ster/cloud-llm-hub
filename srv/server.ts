@@ -13,6 +13,7 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before any submodule imports
 import './env-setup';
 
+import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
@@ -37,6 +38,7 @@ import {
   handleUsage,
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
+import { buildSetCookie, resolveSessionId } from './session-id';
 
 /**
  * Type guard for MCP request body
@@ -404,6 +406,24 @@ cds.on('bootstrap', (app: Application) => {
   // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
+  // Session middleware: resolves (or mints) the session ID for every /v1/* request.
+  // Priority: x-session-id header > mcp-session-id header > clh_session cookie > new id.
+  // When a new id is minted, an HttpOnly session cookie is issued so the browser
+  // session survives page reloads without JS generating a new random id each time.
+  // Header still wins, so API/MCP clients (Cline, curl) are unaffected.
+  app.use('/v1', (req: Request, res: Response, next: NextFunction) => {
+    let sid = resolveSessionId(req);
+    if (!sid) {
+      sid = `s-${randomUUID()}`;
+      const secure = !!(
+        req.secure || req.headers['x-forwarded-proto'] === 'https'
+      );
+      res.setHeader('Set-Cookie', buildSetCookie(sid, secure));
+    }
+    (req as Request & { sessionId?: string }).sessionId = sid;
+    next();
+  });
+
   // CORS preflight for /v1/* routes
   app.options('/v1/*', (_req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -489,16 +509,26 @@ cds.on('bootstrap', (app: Application) => {
 
   // DELETE /v1/session — clear server-side conversation history
   app.delete('/v1/session', ((req: Request, res: Response) => {
-    const sessionId = req.headers['x-session-id'] as string | undefined;
+    // Prefer the stashed sessionId from the session middleware; fall back to direct resolution.
+    const sessionId =
+      (req as Request & { sessionId?: string }).sessionId ??
+      resolveSessionId(req);
     if (sessionId) {
-      clearSession(sessionId);
+      const userId = cds.context?.user?.id ?? 'anonymous';
+      clearSession(sessionId, userId);
       clearSessionTopic(sessionId);
+      getCollectionRegistry().deleteSessionCollections(userId, sessionId);
       res.writeHead(204);
       res.end();
     } else {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(
-        JSON.stringify({ error: { message: 'x-session-id header required' } }),
+        JSON.stringify({
+          error: {
+            message:
+              'no session id (x-session-id header or clh_session cookie required)',
+          },
+        }),
       );
     }
   }) as never);
@@ -531,7 +561,13 @@ cds.on('served', () => {
       log.info('SmartAgents initialized and ready');
       // Load persisted RAG collections in background
       try {
-        await getCollectionRegistry().loadFromDisk();
+        const registry = getCollectionRegistry();
+        await registry.loadFromDisk();
+        // Periodically sweep expired session-scoped collections (every hour).
+        setInterval(
+          () => registry.sweepExpiredSessions(),
+          60 * 60 * 1000,
+        ).unref();
       } catch (err) {
         log.warn('RAG collection load failed', {
           error: err instanceof Error ? err.message : String(err),
