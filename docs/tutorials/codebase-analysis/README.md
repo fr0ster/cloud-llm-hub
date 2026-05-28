@@ -72,7 +72,7 @@ Why keep real names: the tutorial is more credible as evidence ("we actually ran
 
 ## Stage 1: Formalize the analysis task
 
-Use [task-formalization](skills/task-formalization.md) to turn the stakeholder ask into `01-task.md`: goal, measurement method, scope, constraints, tooling decisions, and out-of-scope list.
+Turn the stakeholder ask into `01-task.md`: goal, measurement method, scope, constraints, tooling decisions, and out-of-scope list. Skill that applies: [task-formalization-rule](skills/task-formalization-rule.md) — the six sections plus "missing facts get TBD, never invented".
 
 Do this before searching code. The purpose of Stage 1 is to make the analysis measurable, not to solve it.
 
@@ -90,7 +90,15 @@ Example: [01-task.md](examples/01-task.md).
 
 ## Stage 2: Determine SFTP methods
 
-Use [method-discovery](skills/method-discovery.md) once per seed object. Do not batch seeds. Record yes/no/unclear verdicts with source evidence in `02-methods.md`.
+Per seed object, ask for a yes/no/unclear verdict with source evidence; record in `02-methods.md`. Skills that apply:
+
+- [analyze-one-thing-per-call](skills/analyze-one-thing-per-call.md) — one seed per prompt, never batched.
+- [abap-read-source-by-type](skills/abap-read-source-by-type.md) — load full source by object type (PROG/CLAS/INTF/FUGR).
+- [abap-read-blocks-verdict-when-getinclude-null](skills/abap-read-blocks-verdict-when-getinclude-null.md) — when an include is unreadable, name it and mark `unclear`.
+- [search-tool-roles](skills/search-tool-roles.md) — existence check is SearchObject; never name SearchSource in the same prompt.
+- [evidence-is-source-not-names](skills/evidence-is-source-not-names.md) — verdict cites file:line + snippet, never the call-site identifier.
+- [sxpg-sftp-verdict](skills/sxpg-sftp-verdict.md) — verdict rule for SXPG_COMMAND_EXECUTE with SFTP credential parameters.
+- [prompt-tool-call-discipline](skills/prompt-tool-call-discipline.md) — number steps, append "do each step exactly ONCE", use positive tool-availability assertions if the model claims a tool is missing.
 
 Scope refinements must be explicit. If the scope change invalidates Stage 1, return to Stage 1.
 
@@ -108,10 +116,12 @@ Example: [02-methods.md](examples/02-methods.md).
 
 ## Stage 3: Find every usage site
 
-Use two channels:
+Use two channels — dependency / where-used traversal (GetWhereUsed) and literal source-text search (SearchSource). Walk usage edges for ONE method at a time. Skills that apply:
 
-- [usage-traversal](skills/usage-traversal.md) for dependency / where-used traversal.
-- [source-code-search](skills/source-code-search.md) for literal source-text search.
+- [consumer-discovery-by-source](skills/consumer-discovery-by-source.md) — three-channel enumeration (call-site literal + credential-bag literal + GetWhereUsed on wrappers); never enumerate by object-name patterns.
+- [search-tool-roles](skills/search-tool-roles.md) — text search is SearchSource; never name SearchObject in the same prompt.
+- [searchsource-call-discipline](skills/searchsource-call-discipline.md) — spell out all parameters, one keyword per call, verify both `truncated.*` are false, never run two SearchSource calls in parallel per destination.
+- [analyze-one-thing-per-call](skills/analyze-one-thing-per-call.md) — one search term per prompt.
 
 `03-usage-map.md` must state declared scope, channels used, search terms, and blind spots. "Complete" means complete within that scope and evidence set.
 
@@ -131,7 +141,12 @@ Example: [03-usage-map.md](examples/03-usage-map.md).
 
 ## Stage 4: Analyze usage
 
-Use [usage-analysis](skills/usage-analysis.md) once per usage site. Classify where/how/why with evidence. For SFTP, useful axes are direction, business domain, perimeter/internal-wrapper, and recurring pattern.
+Classify where/how/why per usage site with evidence. For SFTP, useful axes are direction, business domain, perimeter/internal-wrapper, and recurring pattern. Skills that apply:
+
+- [analyze-one-thing-per-call](skills/analyze-one-thing-per-call.md) — one usage site per prompt.
+- [evidence-is-source-not-names](skills/evidence-is-source-not-names.md) — axis values come from the source body, never from identifier patterns.
+- [cross-domain-naming-normal](skills/cross-domain-naming-normal.md) — don't flag cross-domain calls (FI → payroll-named SM69) as suspicious.
+- [unknown-with-evidence-missing](skills/unknown-with-evidence-missing.md) — record Unknown + a concrete follow-up when evidence is missing; never guess.
 
 Steps:
 
@@ -147,7 +162,7 @@ Example: [04-analysis.md](examples/04-analysis.md).
 
 ## Stage 5: Form results and verify goal
 
-Use [goal-verification](skills/goal-verification.md) to compare the result against `01-task.md` success criteria. `05-result.md` answers yes/no and provides migration-handoff input. No replacement design here.
+Compare the result against `01-task.md` success criteria. `05-result.md` answers yes/no per criterion and provides migration-handoff input. No replacement design here. Skill that applies: [goal-verification-rule](skills/goal-verification-rule.md) — `yes` must cite the supporting artifact, `no` must name the failing stage.
 
 Steps:
 
