@@ -2,6 +2,111 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.8.11] - 2026-05-28
+
+UI fix on top of v6.8.10. PR #113.
+
+### Fixed
+- **Chat UI: RAG NEW COLLECTION scope selector** offered `user` / `global`, but `global` scope was removed in v6.8.10 (#110) and the API now rejects it with 400; `session` scope was added but unreachable from the UI. Replaces the `global` option with `session` and refreshes the inline help text in the RAG Manager modal to describe what each scope persists across (`user` = private, persistent; `session` = private, wiped on logout / clear chat / destination switch).
+
+## [6.8.10] - 2026-05-23
+
+Per-user RAG isolation + cookie-based session model. PRs #107, #112. Closes #110.
+
+### Added
+- **Per-user (and per-session) RAG collection scoping** (#110). Physical collection IDs in the registry are now namespaced as `<logicalId>__u_<userKey>` for `scope:user` and `<logicalId>__s_<sanitizeUserKey(userId+\\0+sessionId)>` for `scope:session`, so collections created by one BTP user are invisible to others — including under the legacy `'anonymous'` fallback identity. Cross-user reads return 404 (existence is not leaked); cross-user/cross-session writes are owner-guarded.
+- **Server-managed cookie session** (`clh_session`, HttpOnly, SameSite=Lax, Secure when proxied via HTTPS). The UI no longer mints its own random session id; the cookie is issued by the `/v1/*` middleware on first request and persists across reloads. Non-browser clients (Cline, curl) keep the existing stateless mode — `serverManaged` is `false` whenever the request lacks an explicit session header. `DELETE /v1/session` clears chat history, the session topic, and all session-scope RAG collections owned by the caller.
+- **Persistent `enabled` map for RAG collections** stored in `enabled.json`, keyed per user. Toggling a collection on/off in the UI now survives reloads and re-logins. Exposed via `PATCH /v1/rag/collections/:id/enabled`.
+- **Session-scope RAG collections** with TTL + hourly sweep. `deleteSessionCollections(userId, sessionId)` is invoked on `DELETE /v1/session` and on every destination switch in `openai-handler.ts`, owner-guarded.
+- **Idempotent two-pass migration** for legacy collection IDs to the user-namespaced layout. Drops only ownerless `facts`, quarantines anonymous-owned legacy entries as `__orphan__<hash>`, and uses a deterministic `-2 / -3` suffix from a fixed base on collision (never compounds to `-2-2`). `listCollections` skips `__orphan__`.
+- Article: `docs/articles/cloud-llm-hub-vs-mcp.md` differentiating Cloud LLM Hub from raw MCP server deployments. PR #107.
+
+### Fixed
+- **Chat history was keyed only by session id**, leaking history across BTP users that happened to share a session id. Now keyed by `${userId}\\u0000${sessionId}` via `sessionStoreKey()` everywhere (`getSessionHistory`, `appendToSession`, `clearSession`). Caught by a dedicated cross-user/cross-session unit suite (`test/unit/cross-user-isolation.test.ts`) of 15 tests across 4 isolation axes.
+- **Cookie middleware was breaking stateless API clients** (Cline, curl with full `messages[]`): minting a `req.sessionId` for every request flipped `serverManaged` true and dropped client-supplied history. Now `serverManaged = !!explicitSessionId` — the cookie is still issued, but only treated as "real" when the client did not already provide their own.
+- First-cookie chat exchange was duplicated in storage because `setSessionHistory([newUser])` then `appendToSession(newUser, assistant)` produced `[newUser, newUser, assistant]`; removed the redundant `setSessionHistory` mirror.
+
+## [6.8.9] - 2026-05-23
+
+Documentation release. PR #106.
+
+### Added
+- `docs/tutorials/ZUI_NOTES.md` capturing a hands-on diagnosis session log against the Zoom UI tutorial track. Worked example for the tutorial-feedback loop.
+
+## [6.8.8] - 2026-05-22
+
+Documentation release. PR #105.
+
+### Added
+- `docs/examples/cloud-llm-hub-agent/` — ready-to-copy Claude Code sub-agent definition that wraps `POST /v1/chat/completions` at `127.0.0.1:3001`, with a recipe for forwarding the SAP destination header. Pairs with the integration guide added in v6.8.7.
+
+## [6.8.7] - 2026-05-22
+
+Documentation release. PR #104.
+
+### Added
+- `docs/usage/claude-code-agent.md` — integration guide for using Cloud LLM Hub as a Claude Code sub-agent (caller must specify SAP destination in the prompt; one round-trip per invocation via the local approuter on :3001).
+
+## [6.8.6] - 2026-05-22
+
+Documentation release. PR #103.
+
+### Changed
+- Tutorial principles refactor: lifted universal anti-patterns out of the metadata-extension rule into a tutorial-wide layer, and ported the `metadata-extension` rule itself into the new layered structure. Same content, fewer cross-tutorial duplications.
+
+## [6.8.5] - 2026-05-22
+
+Documentation release. PR #101.
+
+### Added
+- `docs/decks/simple-and-accelerator/` — slide deck explaining the simple-vs-accelerator split for tutorials (the "simple deck" tutorial form vs the LLM-driven accelerator form).
+
+## [6.8.4] - 2026-05-19
+
+Search timeout maintenance release.
+
+### Changed
+- **`SearchSource` default timeout raised from 30 s to 10 min** (`@mcp-abap-adt/core` 5.0.x → 5.1.1). Long-running ABAP-side scans no longer fail with a SmartAgent-side timeout before the backend produces results. Per-call override is still honoured via the tool parameter.
+
+## [6.8.3] - 2026-05-18
+
+Upload reliability follow-up.
+
+### Fixed
+- **All RAG-write entry points are now locked during an active upload** for the same `<userId, collectionId>` pair. Previously only the upload itself held the lock; concurrent `POST /documents` / `rag_add` calls could interleave and corrupt the chunk window. Lock surface extended to every entry point that mutates the collection, returning 409 with a clear "upload in progress" body.
+
+## [6.8.2] - 2026-05-18
+
+Upload UX hardening.
+
+### Added
+- **`uploadId`** disambiguator threaded through upload requests so retries of the same logical upload are deduplicated server-side instead of double-ingesting.
+
+### Fixed
+- Chat UI: the chat composer is now blocked while an upload is in flight, preventing the user from queuing chat turns whose retrieval context is mid-rebuild.
+
+## [6.8.1] - 2026-05-18
+
+Upload reliability fix.
+
+### Fixed
+- **Qdrant write failure no longer loses the chunk batch.** The pre-flight chunks are now preserved on the local side when the upstream Qdrant write fails, so a retry resumes from the last successful chunk window instead of re-reading the whole file from the user's browser.
+
+## [6.8.0] - 2026-05-18
+
+RAG export reliability release.
+
+### Added
+- **RAG export reassembly**: chunked documents exported via the WebUI ZIP flow (`EXP` button per collection) are now reassembled back into their original logical document before being written into the archive, so round-tripping a chunked upload no longer fragments the resulting `.md` / `.txt` file.
+- **Upload reliability**: deterministic chunk windows + locked write path foundation that the v6.8.1–v6.8.3 fixes built on.
+
+## [6.7.0] - 2026-05-15
+
+On-prem source search.
+
+### Added
+- **`SearchSource` MCP tool over on-prem ABAP sources** via Cloud Connector. Streams full source text (classes / function modules / programs) through the existing CloudSdkAbapConnection path, matching the behaviour of the BTP-side search. Heavy scans should still be run sequentially per-destination — concurrent SearchSource on the same backend overloads the ADT service (see project memory).
+
 ## [6.6.8] - 2026-05-14
 
 Diagnostic + trust hardening release. Closes #81, #82, #83, #85.
