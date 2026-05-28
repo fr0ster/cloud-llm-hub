@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.9.0] - 2026-05-28
+
+Multi-file RAG upload, source-aggregated Manager view, and a complete refactor of every tutorial's `skills/` folder to the self-contained short-fact form. PRs #115, #116, #117.
+
+### Added
+- **Chat UI: multi-file RAG upload.** The MANAGE → UPLOAD FILE picker now accepts multiple files at once (`multiple` attribute on the input). The upload loop runs sequentially per file — the server serialises writes per `<user, collection>` anyway, and a parallel fan-out would just queue and confuse the per-file progress UI. Each file gets its own `[N/M] Uploading <name> (X.X KB)…` status line; the final status summarises `N of M files OK` with a per-file detail line (chunk count or error message). PR #117.
+
+### Changed
+- **Chat UI: RAG Manager rows are aggregated per source file, not per chunk.** Chunked uploads now show ONE row per logical document (with a `N chunks` badge) instead of N rows. DEL on a source row deletes every chunk of that file (fan-out client-side, since the server has no source-level delete endpoint); SRC reassembles via the existing flow using the `chunkIndex=0` doc as seed. Rationale — there is no chunk-level edit in this UI, and DEL on any chunk would always mean "remove the whole file"; showing one row per chunk leaked internal topology without giving the user anything to operate on. Standalone records (no `metadata.source`) continue to show one row each with DL + DEL. PR #117.
+- **All tutorials' `skills/` folders rewritten as self-contained short-fact skills.** A skill in this repo is a minimal fact whose `description:` field tells the LLM both when and how to apply it, self-evident with no other file in context. Each previous skill that bundled multiple tasks, cross-referenced sibling files, or embedded stage scaffolding has been distilled into one or more frontmatter-only short facts. Aggregate effect across the four tutorials: ~80 KB of skill markdown collapsed into ~20 KB of dense facts; no skill file references another, no Anthropic-style `## Goal / ## Rule set / ## Worked example / ## Related` sections, no embedded pipeline logic.
+  - `docs/tutorials/codebase-analysis/skills/` — 15 files (including 8 in `skills/lessons/` that were lesson notes misclassified as skills) → 13 short-fact skills. PR #115.
+  - `docs/tutorials/code-doc-generation/skills/` — the single 3.8 KB `code-doc-generation.md` (six rule groups bundled) → 9 short-fact skills. PR #116.
+  - `docs/tutorials/code-review/skills/` — six stage-guide skills rewritten (security/performance/cleancore/maintainability review + target-formalization + aggregation); `abap-read-source.md` from v6.8.x already in target form, left untouched. PR #116.
+  - `docs/tutorials/rap-bo-book-catalog/skills/` — 16 BO-creation step files compressed to short-fact form, names preserved so the existing `skills/README.md` catalog still links cleanly. PR #116.
+- Each tutorial README updated to describe stages inline and reference the relevant short-fact skills as the rules that apply during the stage — stage orchestration lives in the README (for the human reader), facts in `skills/` (for the LLM via RAG).
+
 ## [6.8.11] - 2026-05-28
 
 UI fix on top of v6.8.10. PR #113.
