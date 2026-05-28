@@ -23,13 +23,14 @@ Find issues that could lead to a breach, privilege escalation, or credential lea
 
 ## Prompt pattern
 
-See `examples/ZDEMO_REPORT/curl/req-security.json`. Key elements:
+Runs **after** Stage 0 ([abap-read-source](abap-read-source.md)) has loaded the full source into the chat session. Do NOT bundle the read procedure into this prompt — under the weight of the rule set the model skips the read step and invents findings from training-data ABAP. Key elements:
 
-1. Pin tool availability positively: "You have ReadProgram, GetIncludesList, GetInclude. They are available."
-2. Read source: ReadProgram → GetIncludesList → GetInclude × N (each exactly once).
-3. Apply ONLY security rules. Reject findings that belong in other categories.
-4. Output strict per-finding shape: `SEVERITY — Title / Location / Snippet / Why / Recommendation`.
-5. Require source citation; no source = no finding.
+1. Confirm assumption: "Assume the full source (main + every include) is already in this chat session from Stage 0. If it is not, stop and ask the user to run the read step first."
+2. Apply ONLY security rules. Reject findings that belong in other categories.
+3. Output strict per-finding shape: `SEVERITY — Title / Location / Snippet / Why / Recommendation`.
+4. Require source citation; no source = no finding.
+
+See `examples/ZDEMO_REPORT/curl/req-security.json` (local, gitignored) for a worked prompt example.
 
 ## Severity ladder for this category
 

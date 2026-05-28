@@ -29,7 +29,7 @@ Default to MEDIUM or LOW. CRITICAL and HIGH belong in the other three categories
 
 ## Prompt pattern
 
-Same shape as the other check skills. See `examples/ZDEMO_REPORT/curl/req-maintainability.json`.
+Same shape as the other check skills — runs **after** Stage 0 ([abap-read-source](abap-read-source.md)) has loaded the source, with the maintainability rule set substituted. Do NOT bundle the read procedure into this prompt. See `examples/ZDEMO_REPORT/curl/req-maintainability.json` (local, gitignored) for a worked example.
 
 ## Worked example
 

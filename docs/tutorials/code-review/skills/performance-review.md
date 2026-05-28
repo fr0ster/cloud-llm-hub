@@ -26,7 +26,7 @@ Find code that will not scale: SQL antipatterns, loop hotspots, missing indexes,
 
 ## Prompt pattern
 
-Same shape as `security-review.md` but with the perf rule set substituted. See `examples/ZDEMO_REPORT/curl/req-performance.json`.
+Same shape as `security-review.md` — runs **after** Stage 0 ([abap-read-source](abap-read-source.md)) has loaded the source, with the perf rule set substituted in place of the security rules. Do NOT bundle the read procedure into this prompt. See `examples/ZDEMO_REPORT/curl/req-performance.json` (local, gitignored) for a worked example.
 
 ## Severity ladder
 

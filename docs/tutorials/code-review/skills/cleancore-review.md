@@ -33,7 +33,7 @@ CleanCore findings default to **HIGH** because they block a migration path, even
 
 ## Prompt pattern
 
-Same shape as the other check skills. See `examples/ZDEMO_REPORT/curl/req-cleancore.json`.
+Same shape as the other check skills — runs **after** Stage 0 ([abap-read-source](abap-read-source.md)) has loaded the source, with the CleanCore rule set substituted. Do NOT bundle the read procedure into this prompt. See `examples/ZDEMO_REPORT/curl/req-cleancore.json` (local, gitignored) for a worked example.
 
 ## Worked example
 

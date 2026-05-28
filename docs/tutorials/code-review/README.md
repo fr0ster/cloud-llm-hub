@@ -14,17 +14,20 @@ Pipeline:
 
 ```text
 informal review request
-  -> Stage 1 -> 01-target.md            (target object, scope of review, severities, tooling)
-  -> Stage 2 -> 02-security.md          (security check — auth, secrets, injection)
-  -> Stage 3 -> 03-performance.md       (performance check — SQL, loops, indexes)
-  -> Stage 4 -> 04-cleancore.md         (S/4HANA CleanCore compliance check)
-  -> Stage 5 -> 05-maintainability.md   (modern-ABAP, dead code, modularization)
-  -> Stage 6 -> 06-summary.md           (aggregated findings + severity ranking)
-  + manager  -> report.pptx             (slide deck — one page per category + verdict)
-  + retro    -> RETRO.md                (tokens, wall-clock, lessons)
+  -> Stage 0 -> chat context             (full ABAP source loaded — main + every include)
+  -> Stage 1 -> 01-target.md             (target object, scope of review, severities, tooling)
+  -> Stage 2 -> 02-security.md           (security check — auth, secrets, injection)
+  -> Stage 3 -> 03-performance.md        (performance check — SQL, loops, indexes)
+  -> Stage 4 -> 04-cleancore.md          (S/4HANA CleanCore compliance check)
+  -> Stage 5 -> 05-maintainability.md    (modern-ABAP, dead code, modularization)
+  -> Stage 6 -> 06-summary.md            (aggregated findings + severity ranking)
+  + manager  -> report.pptx              (slide deck — one page per category + verdict)
+  + retro    -> RETRO.md                 (tokens, wall-clock, lessons)
 ```
 
 **Stages 2-5 run in parallel** — they read the same source but apply independent rule sets. No shared state, no dependency chain. Safe to fan out (light tools only: `ReadProgram`, `GetIncludesList`, `GetInclude`, `GetFunctionModule`). Do not use `SearchSource` here — it's package-wide scan, not per-object review.
+
+**Stage 0 is mandatory and runs in its own turn.** Earlier versions of this tutorial bundled the read procedure into each per-category prompt. The model — under the weight of the rule set — skipped the read and produced findings invented from training-data ABAP. Splitting the read out into the [abap-read-source](skills/abap-read-source.md) skill, fired before the first per-category prompt, fixes that failure mode.
 
 ## Anti-pattern we critique
 
@@ -41,8 +44,21 @@ This tutorial decomposes the review into four pinned check categories with their
 
 This is a private customer repository. Real names (Z* objects, package names, SM69 commands) are preserved in examples for credibility. If you ever copy the artifacts to a public repo or share with a third party, anonymize first.
 
+## Setup (one-time per session)
+
+Upload the following skill files to a `user`-scope RAG collection in the chat UI and enable it. The chat session will pick them up automatically — no extra prompt boilerplate needed.
+
+- `skills/abap-read-source.md` — Stage 0. Tells the model to read main + every include with the right MCP tools before any analysis.
+- `skills/target-formalization.md` — Stage 1.
+- `skills/security-review.md`, `skills/performance-review.md`, `skills/cleancore-review.md`, `skills/maintainability-review.md` — Stages 2–5.
+- `skills/aggregation.md` — Stage 6.
+
+The skills are small (frontmatter-heavy). Upload them once per tutorial run; they live alongside any other RAG content you already use.
+
 ## Progress
 
+- [ ] Setup: skills uploaded to RAG collection and enabled.
+- [ ] Stage 0: full source loaded into chat session via `abap-read-source` skill.
 - [ ] Stage 1: target formalized; `target-formalization.md` reviewed.
 - [ ] Stage 2: security check complete; `security-review.md` reviewed.
 - [ ] Stage 3: performance check complete; `performance-review.md` reviewed.
@@ -52,9 +68,11 @@ This is a private customer repository. Real names (Z* objects, package names, SM
 
 ## Work rhythm
 
-- Stage 1 is sequential and gates everything. Stages 2-5 are independent — fan out via curl batch, then merge.
-- Fresh chat per check (each check has its own rule set; cross-talk leaks rules).
-- Carry the target's source once. Don't re-read in every check; the read is implicit at Stage 2-5 start.
+- Stage 0 runs **once per chat session**, in its own turn (e.g. `Read full code with every include for code review of ZDEMO_REPORT`). It must not be merged into a per-category prompt — bundling re-triggers the original failure mode.
+- Stage 1 is sequential and gates everything below it. Stages 2-5 are independent — fan out, then merge.
+- Fresh chat per check (each check has its own rule set; cross-talk leaks rules). Two ways to deliver Stage 0's source to each fresh per-category chat:
+  - **Chat-UI flow** — upload [abap-read-source](skills/abap-read-source.md) to a RAG collection once. Every fresh chat then runs Stage 0 in its own first turn (one Stage 0 call per per-category chat). The skill ensures the read happens before the per-category prompt.
+  - **Curl-batch flow** (see `examples/.../curl/run-checks.sh`) — Stage 0 fires ONCE up front and extracts the source verbatim into a local `source.txt`. Each per-category call is then stateless and inlines `source.txt` in the user message. Justified by the server-side chat-history trim policy: the assistant text of a previous turn is cut to a few hundred chars before the next turn sees it (`srv/openai-handler.ts:trimHistoryForContext`), so source can't be staged via session history in a multi-turn batch.
 - Severity scale fixed at Stage 1, applied consistently across checks. CRITICAL → HIGH → MEDIUM → LOW → INFO.
 
 ## Things AI does wrong in this kind of review
@@ -67,6 +85,10 @@ This is a private customer repository. Real names (Z* objects, package names, SM
 | AI flags a deprecation but doesn't say what to replace with | Require a "Recommendation" line per finding. Empty = drop finding. |
 | AI labels everything CRITICAL | Pin the severity scale + concrete examples per level in the skill file. |
 | AI says "the program is well-structured" without evidence | Reject. Same evidence rule as findings — applies to praise too. |
+
+## Stage 0: Load the full source
+
+Use [abap-read-source](skills/abap-read-source.md). One turn: `Read full code with every include for code review of <OBJECT>`. Verify the inventory message lists the main program plus every include the next stages will rely on. If anything came back as inaccessible, stop and fix access before continuing — partial reads produce confidently wrong findings.
 
 ## Stage 1: Formalize the review target
 
