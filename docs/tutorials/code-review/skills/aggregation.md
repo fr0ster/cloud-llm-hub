@@ -1,4 +1,0 @@
----
-name: aggregation
-description: 'Stage-6 aggregation rules: merge the four per-category findings files into a severity-ranked summary. Output order — (1) severity histogram (totals by CRITICAL/HIGH/MEDIUM/LOW/INFO), (2) per-category × per-severity matrix, (3) every CRITICAL and HIGH finding in full (location, why, recommendation), (4) flat indexed table of every finding (N, severity, category, title, location), (5) one-line verdict. Verdict logic — any CRITICAL: "Block release. {N} CRITICAL issue(s) found"; HIGH≥5: "Significant rework needed. {N} HIGH-severity issues — schedule a focused fix sprint"; any HIGH: "Tactical fixes needed. {N} HIGH-severity issues. Fix this quarter"; otherwise: "No high-severity issues. Address MEDIUM/LOW during normal maintenance." Add a CleanCore note when there are HIGH findings in the cleancore category — the object will not run in S/4HANA Cloud as-is.'
----

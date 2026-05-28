@@ -1,4 +1,1 @@
----
-name: creating-draft-table
-description: 'Draft table rules for a RAP draft-enabled entity. Key fields match the persistent table MINUS draftuuid (framework manages it via sych_bdl_draft_admin_inc; adding `key draftuuid` fails BDEF activation with "cannot have a key field DRAFTUUID"). Field names are CDS view aliases — lowercased PascalCase, no underscores (authorname not author_name, publicationyear not publication_year, createdby not created_by); wrong shape gives BDEF error "Missing fields (CamelCase expected)". Use `mandt` (not abap.clnt) for the client key. Include framework admin fields via `include sych_bdl_draft_admin_inc;` as a bare DDL line (no quoted form, no %_DIFFINCL); prefer group name "%admin" to avoid warnings. Never add `parentuuid` in child draft tables — framework wires it via the include; otherwise warning "does not expect the field PARENTUUID". Reserved ABAP keywords cannot be field names (rename e.g. format → editionformat).'
----
+Create a draft table that mirrors the persistent table with CDS alias field names and the draft admin include for RAP BO creation.

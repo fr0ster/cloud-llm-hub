@@ -1,4 +1,1 @@
----
-name: creating-projection-bdef
-description: 'Projection BDEF rules — the thin layer over the interface BDEF that picks operations exposed in OData. Header (required for strict-mode managed BO with draft): `projection;` `strict ( 2 );` `use draft;`. Root entity: `define behavior for Z##_C_<ROOT> alias <RootAlias> { use create; use update; use delete; use association _Plant { create; with draft; } use association _Sales { create; with draft; } … }` — one `use association` per composition (with `create;` if the parent should be allowed to create the child via the association, plus `with draft;` for draft-enabled compositions). Child entities: usually `use update; use delete;` (NO `use create;` — creation goes via the parent association) plus back-association to root `use association _Root { with draft; }`. Activate the projection BDEF AFTER the interface BDEF + BIMP are active, otherwise "behavior is not defined for view".'
----
+Create the projection BDEF in strict 2 mode with draft and the exposed operations per entity for RAP BO creation.

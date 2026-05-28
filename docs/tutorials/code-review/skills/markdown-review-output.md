@@ -1,0 +1,1 @@
+To save the code review result as a markdown file, write one section per review category with each finding showing severity (CRITICAL/HIGH/MEDIUM/LOW/INFO), location as file:line, code snippet, why, and recommendation, and end with a severity histogram and a one-line verdict.

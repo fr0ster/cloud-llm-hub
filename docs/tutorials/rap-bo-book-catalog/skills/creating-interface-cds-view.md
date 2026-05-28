@@ -1,4 +1,1 @@
----
-name: creating-interface-cds-view
-description: 'Interface (R-type) CDS view rules. Root: `define root view entity Z##_R_<ROOT> as select from z##_<root> composition [0..*] of Z##_R_<CHILD> as _<Child>`. Child: `define view entity Z##_R_<CHILD> as select from z##_<child> association to parent Z##_R_<ROOT> as _Root on $projection.RootUuid = _Root.Uuid`. All fields aliased to PascalCase (uuid as Uuid, matnr as Matnr, mtart as MaterialType) — the CDS aliases are what BDEF mappings and draft tables must match. Always provide the complete DDL in the create call; an empty shell created via CreateCdsView without DDL fails activation with "DDIC source code does not contain a valid definition". The composition graph is circular — syntax check before activation reports "data source X does not exist or is not active"; these errors clear on group activation. Create all R-views, then group-activate the whole layer in ONE call (filter Z##_R_*), never one by one. Use @AccessControl.authorizationCheck: #NOT_REQUIRED at the interface layer.'
----
+Create the R-type CDS layer with composition graph and group-activate together for RAP BO creation.

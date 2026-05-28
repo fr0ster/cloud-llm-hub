@@ -1,4 +1,1 @@
----
-name: creating-bimp
-description: 'Behavior Implementation (BIMP) rules for a managed RAP BO with instance authorization on the root. Global class is the empty skeleton (`CLASS z##_bp_r_<root_alias> DEFINITION PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF z##_r_<root_alias>. ENDCLASS.` plus an empty IMPLEMENTATION) — no handler methods on the global class. Real handler lives in the local types (CCIMP). For instance authorization the CCIMP must contain at least an empty `lhc_<RootAlias>` (INHERITING FROM cl_abap_behavior_handler) with method `get_instance_authorizations FOR INSTANCE AUTHORIZATION IMPORTING keys REQUEST requested_authorizations FOR <RootAlias> RESULT result` — body may be empty, framework handles CRUD. `<RootAlias>` is the BDEF root alias (e.g. MaterialRoot), not the entity name. Child entities (with `lock dependent` / `authorization dependent`) do NOT need their own handler classes — they inherit from the master. Activate BIMP + BDEF together via ActivateBehaviorDefinition.'
----
+Create the BIMP with an empty global class and a local-types handler for instance authorization on the root for RAP BO creation.
