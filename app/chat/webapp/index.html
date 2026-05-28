@@ -133,7 +133,7 @@
               <!-- File upload form -->
               <div id="rag-upload-form" style="display:none;background:#0a0a0a;border:1px solid #222;padding:12px;border-radius:4px;margin-bottom:10px">
                 <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">UPLOAD TEXT FILE</div>
-                <input type="file" id="rag-file-input" accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="color:#888;font-size:12px;margin-bottom:8px;display:block">
+                <input type="file" id="rag-file-input" multiple accept=".txt,.md,.csv,.json,.yaml,.yml,.xml,.log" style="color:#888;font-size:12px;margin-bottom:8px;display:block">
                 <input id="rag-file-desc" placeholder="File description (e.g., 'ABAP dump from DEV', 'SAP Notes for FI module')" style="width:100%;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px;margin-bottom:8px;box-sizing:border-box">
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="color:#888;font-size:12px">Chunk size:</label>
@@ -254,7 +254,7 @@
               <ul style="margin:0;padding-left:20px;line-height:1.7">
                 <li><b>MANAGE</b> &mdash; opens the collection editor.</li>
                 <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (private, persists across sessions) or <i>session</i> (private, wiped on logout / clear chat / destination switch).</li>
-                <li><b>UPLOAD FILE</b> &mdash; add a <code>.txt</code>/<code>.md</code>/<code>.csv</code>/<code>.json</code>/<code>.yaml</code>/<code>.xml</code>/<code>.log</code>; chunked automatically.</li>
+                <li><b>UPLOAD FILE</b> &mdash; add one or more <code>.txt</code>/<code>.md</code>/<code>.csv</code>/<code>.json</code>/<code>.yaml</code>/<code>.xml</code>/<code>.log</code> files; each one is chunked automatically and shown in the document list as a single row regardless of chunk count. Pick multiple files in the picker and they upload sequentially.</li>
                 <li><b>+ ADD</b> &mdash; add one record by hand (paste text, optional id and tags).</li>
                 <li><b>SEARCH</b> &mdash; find records inside a collection.</li>
                 <li><b>DL</b> on a record &mdash; download it as a file (use this to back records up).</li>
@@ -1760,30 +1760,104 @@
             try {
                 const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents?limit=100`);
                 const data = await res.json();
-                if (!data.documents || data.documents.length === 0) {
+                const docs = data.documents || [];
+                if (docs.length === 0) {
                     list.innerHTML = '<div style="color:#555;padding:10px">No documents. Add one or upload a file.</div>';
                     return;
                 }
-                list.innerHTML = data.documents.map(d => {
-                    const preview = d.text.length > 200 ? d.text.slice(0, 200) + '...' : d.text;
-                    const source = d.metadata?.source ? ` · <span style="color:#888">${escapeHtml(String(d.metadata.source))}</span>` : '';
+                // Aggregate chunked uploads by source filename — there is no chunk-level
+                // edit in the UI and DEL on any chunk would always mean "remove the whole
+                // file", so showing one row per logical document is what the user actually
+                // operates on. Standalone records (no metadata.source) stay one row each.
+                const rows = []; // entries: {kind, source?, doc, chunkIds[], chunkCount, firstChunk, createdAt}
+                const sourceIndex = new Map();
+                for (const d of docs) {
+                    const src = d.metadata && typeof d.metadata.source === 'string' ? d.metadata.source : null;
+                    const isChunk = src && Number.isInteger(d.metadata.chunkIndex);
+                    if (isChunk) {
+                        let row = sourceIndex.get(src);
+                        if (!row) {
+                            row = {
+                                kind: 'source',
+                                source: src,
+                                firstChunk: d, // doc with chunkIndex 0 will overwrite below
+                                chunkIds: [],
+                                createdAt: d.createdAt,
+                            };
+                            sourceIndex.set(src, row);
+                            rows.push(row);
+                        }
+                        row.chunkIds.push(d.id);
+                        // Keep the chunkIndex-0 doc as the preview source if we see it.
+                        if (d.metadata.chunkIndex === 0) row.firstChunk = d;
+                        // Earliest createdAt across all chunks of the file.
+                        if (d.createdAt && d.createdAt < row.createdAt) row.createdAt = d.createdAt;
+                    } else {
+                        rows.push({ kind: 'doc', doc: d });
+                    }
+                }
+                list.innerHTML = rows.map(row => {
+                    if (row.kind === 'doc') {
+                        const d = row.doc;
+                        const preview = d.text.length > 200 ? d.text.slice(0, 200) + '...' : d.text;
+                        return `
+                            <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
+                                <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+                                    <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(d.id)}</span>
+                                    <button onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download as text file">DL</button>
+                                    <button onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
+                                </div>
+                                <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
+                                <div style="color:#555;font-size:11px;margin-top:2px">${d.createdAt || ''}</div>
+                            </div>`;
+                    }
+                    // Source-aggregated row.
+                    const first = row.firstChunk;
+                    const preview = first.text.length > 200 ? first.text.slice(0, 200) + '...' : first.text;
+                    const chunkCount = row.chunkIds.length;
+                    // Pass the chunkIndex-0 id as the seed for SRC reassembly; the
+                    // existing downloadSourceFile() walks the rest from there.
                     return `
                         <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
                             <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-                                <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(d.id)}</span>${source}
-                                ${d.metadata && d.metadata.source && Number.isInteger(d.metadata.chunkIndex)
-                                  ? `<button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>`
-                                  : ''}
-                                <button onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download this chunk only as text file">DL</button>
-                                <button onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
+                                <span style="color:#00ff88;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(row.source)}">${escapeHtml(row.source)}</span>
+                                <span style="color:#555;font-size:11px">${chunkCount} chunk${chunkCount === 1 ? '' : 's'}</span>
+                                <button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(first.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>
+                                <button onclick="deleteSourceFile(${JSON.stringify(row.chunkIds).replace(/"/g, '&quot;')}, '${escapeHtml(row.source)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>
                             </div>
                             <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
-                            <div style="color:#555;font-size:11px;margin-top:2px">${d.createdAt}</div>
+                            <div style="color:#555;font-size:11px;margin-top:2px">${row.createdAt || ''}</div>
                         </div>`;
                 }).join('');
             } catch (err) {
                 list.innerHTML = `<span style="color:#ff5555">Error: ${escapeHtml(err.message)}</span>`;
             }
+        }
+
+        // Source-level delete — fan-out chunk-by-chunk client-side because the
+        // server has no "delete every chunk for source X" endpoint. Failures are
+        // collected and surfaced; partial deletes leave the source's row in the
+        // list with the remaining chunks until the user retries.
+        async function deleteSourceFile(chunkIds, sourceName) {
+            if (!Array.isArray(chunkIds) || chunkIds.length === 0) return;
+            if (!confirm(`Delete file "${sourceName}" (${chunkIds.length} chunk${chunkIds.length === 1 ? '' : 's'})?`)) return;
+            const failures = [];
+            for (const id of chunkIds) {
+                try {
+                    const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                    if (!res.ok) {
+                        const e = await res.json().catch(() => ({}));
+                        failures.push(`${id}: ${e.error?.message || res.status}`);
+                    }
+                } catch (err) {
+                    failures.push(`${id}: ${err.message}`);
+                }
+            }
+            if (failures.length > 0) {
+                alert(`Some chunks of "${sourceName}" failed to delete:\n` + failures.join('\n'));
+            }
+            loadDocuments();
+            loadCollections();
         }
 
         function showUploadForm() {
@@ -1799,36 +1873,65 @@
         async function uploadFile() {
             const fileInput = document.getElementById('rag-file-input');
             const statusEl = document.getElementById('rag-upload-status');
-            const file = fileInput.files?.[0];
-            if (!file) { statusEl.textContent = 'Select a file first'; statusEl.style.color = '#ff5555'; return; }
+            const files = Array.from(fileInput.files || []);
+            if (files.length === 0) {
+                statusEl.textContent = 'Select one or more files first';
+                statusEl.style.color = '#ff5555';
+                return;
+            }
 
-            statusEl.textContent = 'Reading file...';
-            statusEl.style.color = '#ffcc00';
+            const chunkSize = Number(document.getElementById('rag-chunk-size').value) || 2000;
+            const description = document.getElementById('rag-file-desc').value.trim();
+            // Files are uploaded sequentially (not in parallel) — the server
+            // serialises writes per <user, collection> anyway, and parallel
+            // requests would just queue and confuse the per-file progress UI.
             setManageFormBusy(true);
             lockInput('upload:manage');
+            const summary = [];
+            let okCount = 0;
             try {
-                const content = await file.text();
-                const chunkSize = Number(document.getElementById('rag-chunk-size').value) || 2000;
-                statusEl.textContent = `Uploading ${(content.length / 1024).toFixed(1)} KB...`;
-
-                const description = document.getElementById('rag-file-desc').value.trim();
-                const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/upload`, {
-                    method: 'POST',
-                    body: JSON.stringify({ filename: file.name, content, chunkSize, description }),
-                });
-                const data = await res.json();
-                if (!res.ok) { statusEl.textContent = data.error?.message || 'Upload failed'; statusEl.style.color = '#ff5555'; return; }
-
-                const chunks = data.chunks;
-                const added = typeof data.added === 'number' ? data.added : chunks;
-                statusEl.textContent = `Uploaded: ${chunks} chunks, ${added} added`;
-                statusEl.style.color = added < chunks ? '#ff5555' : '#00ff00';
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    statusEl.style.color = '#ffcc00';
+                    statusEl.textContent = `[${i + 1}/${files.length}] Reading ${file.name}...`;
+                    let content;
+                    try {
+                        content = await file.text();
+                    } catch (readErr) {
+                        summary.push(`${file.name}: read failed (${readErr.message})`);
+                        continue;
+                    }
+                    statusEl.textContent =
+                        `[${i + 1}/${files.length}] Uploading ${file.name} (${(content.length / 1024).toFixed(1)} KB)...`;
+                    try {
+                        const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/upload`, {
+                            method: 'POST',
+                            body: JSON.stringify({ filename: file.name, content, chunkSize, description }),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) {
+                            summary.push(`${file.name}: ${data.error?.message || 'upload failed'}`);
+                            continue;
+                        }
+                        const chunks = data.chunks;
+                        const added = typeof data.added === 'number' ? data.added : chunks;
+                        if (added < chunks) {
+                            summary.push(`${file.name}: ${added}/${chunks} chunks indexed (${chunks - added} failed)`);
+                        } else {
+                            summary.push(`${file.name}: ${chunks} chunk${chunks === 1 ? '' : 's'} indexed`);
+                            okCount++;
+                        }
+                    } catch (err) {
+                        summary.push(`${file.name}: ${err.message}`);
+                    }
+                }
+                const failures = files.length - okCount;
+                statusEl.style.color = failures === 0 ? '#00ff00' : '#ff5555';
+                statusEl.innerHTML = `<div>Done: ${okCount}/${files.length} files OK</div>` +
+                    summary.map(s => `<div style="font-size:11px;color:#888">${escapeHtml(s)}</div>`).join('');
                 fileInput.value = '';
                 loadDocuments();
                 loadCollections(); // refresh doc count
-            } catch (err) {
-                statusEl.textContent = err.message;
-                statusEl.style.color = '#ff5555';
             } finally {
                 setManageFormBusy(false);
                 unlockInput('upload:manage');
