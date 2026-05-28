@@ -1,4 +1,1 @@
----
-name: creating-data-element
-description: 'Data element creation rules. Always reference a domain by name (preferred) or a predefined ABAP type — never leave the type empty. Never use `abap_boolean`: the MCP handler accepts it but produces a data element without a usable type; use `type CHAR length 1` (or a custom CHAR 1 domain) and fill with abap_true/abap_false at runtime. The referenced domain must be ACTIVE before creating the data element — if creation fails with "domain not active", activate the domain first then retry. Name follows the project prefix Z##_E_<NAME>; domain/data-element pairs share the same <NAME> suffix. After a batch, call ReadDataElement per name to confirm active: true. Activate explicitly with the prefix filter (Z##_E_*), never a bare "Activate all inactive".'
----
+Create an ABAP data element that references an active domain or a predefined type for RAP BO creation.

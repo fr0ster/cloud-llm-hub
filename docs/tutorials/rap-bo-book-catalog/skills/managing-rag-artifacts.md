@@ -1,4 +1,1 @@
----
-name: managing-rag-artifacts
-description: 'Working RAG collection is the persistent state between conversation sessions; each artifact is addressed by a stable, human-readable id. Tool choice — `rag_add` to save a NEW artifact under a given id (first time only); `rag_correct` to update an existing artifact (NOT a second rag_add — same id, new full body, never a diff); `rag_deprecate` to remove an artifact entirely (no replacement). After rag_add, state to the user: "Saved as `<id>` in collection `<name>`." After rag_correct, state: "Corrected `<id>`. Reason: `<reason>`." rag_correct overwrites in place — the same id keeps pointing at the new content; previous text is gone. Never overload an id by saving the same logical artifact twice under different ids — keep one id per concept and correct it forward in time.'
----
+Save a new RAG artifact under a stable id and update in place for the RAP BO tutorial.

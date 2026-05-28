@@ -1,4 +1,1 @@
----
-name: activating-objects
-description: 'ABAP activation rules. Never run a bare "Activate all inactive objects" on a shared system — always filter by the project prefix ("Activate all inactive objects starting with Z##_"). Syntax-check each freshly created object and fix the errors before activation. Group-activate any layer with circular references (CDS R-views, C-views) in one call; pre-activation "data source X does not exist or is not active" errors are expected and clear on group activation. BDEF + BIMP have a circular dependency — always activate together with ActivateBehaviorDefinition (the generic ActivateObjects does not always find BDEFs). After activation: re-run syntax check on each object (warnings were masked by earlier errors) and verify with a Read… call that the response includes active: true.'
----
+Activate ABAP objects with the project prefix filter for RAP BO creation.

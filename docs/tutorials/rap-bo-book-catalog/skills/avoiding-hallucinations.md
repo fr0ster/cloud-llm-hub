@@ -1,4 +1,1 @@
----
-name: avoiding-hallucinations
-description: 'Keep the agent honest when creating ABAP objects in batch. Hard limits — batches of 3–4 objects per prompt, never more; start a fresh session after each layer or roughly every 10 messages. Detection signals for fake responses (any one is enough to redo the step): prompt token count < ~10 000 when a real tool call would burn 40 000–100 000; no "[SmartAgent: Executing <ToolName>...]" line in the response; response arrives in seconds when six creates should take 30–60 s. Treat "all N objects are active" as a CLAIM, not a result — after every batch create, read each object back (preferably in a fresh session) and require active: true in the read response. Never invent numbering (_V2, _NEW, alternate prefixes), never silently add a 21st object "because it seemed needed", never proceed when SearchObject finds a duplicate — stop and ask.'
----
+Create ABAP objects in small batches and read each one back for RAP BO creation.

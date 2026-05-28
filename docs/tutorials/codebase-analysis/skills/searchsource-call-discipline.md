@@ -1,4 +1,0 @@
----
-name: searchsource-call-discipline
-description: 'Calling SearchSource via SmartAgent: ALWAYS spell out every parameter explicitly — query (ONE specific keyword), packages, include_subpackages=true, object_types=["PROG","FUGR","CLAS"], max_objects=5000, concurrency=8, max_hits_per_object=10, emit_no_hits=false — never rely on planning-LLM defaults (too tight, silent truncation). One keyword per call: AND-queries via query2 time out on real customer packages — split into two single-keyword scans and intersect client-side. After the call, verify both truncated.by_object_cap=false AND truncated.by_max_objects=false; otherwise hits are a lower bound and must be reported as such. Never run two SearchSource calls in flight against the same destination — each one already runs concurrency=8 workers, parallelism saturates the SAP backend.'
----

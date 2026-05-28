@@ -1,4 +1,1 @@
----
-name: enforcing-target-package
-description: 'Every ABAP object created must live in the package the user specified — never silent fallback to $TMP. Hard rules. Never create in $TMP unless the user literally said so; if a Create… call fails because the target package lacks an open transport or is locked, REPORT THE ERROR AND STOP — never retry in $TMP. Every Create… call carries the target package parameter; if the user prompt omits the package, ASK before creating. Verify after batch creation by calling SearchObject with package=<TARGET> and confirming the result matches the just-created list exactly — no stray objects, no silently moved ones. For TEST_* / $* packages on-premise, pass `software component LOCAL` explicitly; the LLM often omits it and creation silently fails or falls back.'
----
+Create every ABAP object in the user-specified package and verify after the batch for RAP BO creation.

@@ -1,4 +1,1 @@
----
-name: creating-persistent-table
-description: 'Persistent table rules for a RAP managed BO. Root-table shape (in this order, exact field types): `client (key abap.clnt)`, `uuid (key sysuuid_x16)`, `<business_key> (key z##_e_<name>)`, business fields (each `z##_e_<name>`), `created_by (abp_creation_user)`, `created_at (abp_creation_tstmpl)`, `last_changed_by (abp_locinst_lastchange_user)`, `last_changed_at (abp_locinst_lastchange_tstmpl)`, `local_last_changed_at (abp_lastchange_tstmpl)` — the last is the ETag base for optimistic locking. Child-table shape: same fields PLUS `root_uuid : sysuuid_x16` linking to the parent root; keep all audit fields. Every business field references a data element — never base ABAP types (CHAR, STRING, INT4); base types appear inside domains only. The data elements (and their domains) must be active BEFORE the table is created. For TEST_* / $* packages on-premise pass `software component LOCAL` explicitly. Activate, then ReadTable to confirm active: true.'
----
+Create the persistent table with UUID keys, business keys, business fields, and audit fields for RAP BO creation.
