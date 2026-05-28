@@ -24,7 +24,7 @@ final spec. The walkthrough below uses `ZDEMO_REPORT` as the example — substit
 own ABAP object (your existing PROG / CLAS / FUGR) and the same flow applies.
 
 **System:** SAP S/4HANA (on-premise) via cloud-llm-hub
-**Skill:** Upload `skills/code-doc-generation.md` to a RAG collection before starting
+**Skills:** Upload the eight short-fact skills in `skills/*.md` to a RAG collection before starting (no-fabrication, cite-evidence, customer-namespace-only-in-section-7, one-question-per-prompt, use-cache-first, no-final-spec-until-phase-4, rag-artifact-ids, pick-cheapest-tool, ambiguity-rule)
 **Template:** Upload `templates/tech-spec-structure.md` and `templates/analysis-questions.md`
 to the same RAG collection
 **Time:** 30 min — 2 hours, depending on object size
@@ -86,13 +86,13 @@ because AI will quietly invent rows when the source is silent.
 | Same prompt gives different answers | Session too long | Start fresh; saved RAG artifacts carry the state |
 | `GetProgFullCode` runs for a 4k-line program | Wrong tool | Switch to `ReadProgram` + targeted `SearchSource` |
 
-### The two artifacts you load before phase 1
+### What you load before phase 1
 
-1. **`skills/code-doc-generation.md`** — the rules the agent must follow
-2. **`templates/tech-spec-structure.md`** — the document shape
-3. **`templates/analysis-questions.md`** — the analysis-time questions
+1. **`skills/*.md`** — the eight short-fact rules the agent must follow (no-fabrication, cite-evidence, customer-namespace-only-in-section-7, one-question-per-prompt, use-cache-first, no-final-spec-until-phase-4, rag-artifact-ids, pick-cheapest-tool, ambiguity-rule). Each file is frontmatter-only; upload them all to the same collection.
+2. **`templates/tech-spec-structure.md`** — the document shape.
+3. **`templates/analysis-questions.md`** — the analysis-time questions.
 
-Upload all three to the same RAG collection, scope `user`, enabled.
+Upload everything to the same RAG collection, scope `user`, enabled.
 
 ### Choose your target object
 
