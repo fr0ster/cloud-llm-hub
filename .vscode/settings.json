@@ -8,6 +8,11 @@
     // "tab",
     // "tsv"
   ],
+  // RHDA (redhat.fabric8-analytics): skip cds-build generated manifests under gen/.
+  // They are regenerated build output (gitignored) and intentionally have no lock file.
+  "redHatDependencyAnalytics.exclude": [
+    "**/gen/**/package.json"
+  ],
   "cSpell.language": "en",
   "cSpell.words": [
     "adtcore",
