@@ -10,8 +10,7 @@ description: Load full ABAP program source via MCP — main program, all include
 1. `ReadProgram(<name>)` — main source.
 2. `GetIncludesList(<name>)` — all include names.
 3. `GetInclude(<include_name>)` — for every include from step 2.
-4. Search for active enhancements, BAdI implementations, switch-controlled extensions that reference this program or its includes.
-5. Load source of each found enhancement / BAdI implementation.
+4. `GetProgFullCode(<name>, <type>)` - reading a full report code.
 
 ## Output
 
