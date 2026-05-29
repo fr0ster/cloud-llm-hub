@@ -87,3 +87,6 @@ docs/tutorials/**/report*.report
 
 .~lock.*
 
+
+# Build artifact — approuter copy of app/chat/webapp (created by mta.yaml build step)
+app/router/chat/
