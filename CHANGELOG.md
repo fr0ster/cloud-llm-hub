@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.10.0] - 2026-05-29
+
+Dependency upgrade to the `@mcp-abap-adt` 16.x line (Node 22) plus two RAG Manager UI fixes. PRs #120, #121.
+
+### Changed
+- **Bumped the whole `@mcp-abap-adt/*` dependency set** (#121): the llm-agent family (`llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`) and all provider/embedder/RAG packages (`openai-llm`, `anthropic-llm`, `deepseek-llm`, `*-embedder`, `qdrant-rag`, `sap-aicore-*`) from 12.x → **16.2.0**; `core` 6.7.0 → **6.11.1**; `adt-clients` 5.4.1 → 5.4.3; `connection` 1.8.0 → 1.9.1; `interfaces` 7.1.0 → 7.2.0. The llm-agent major bump (12 → 16) surfaced no TypeScript breakage — cloud-llm-hub programs against `@mcp-abap-adt/interfaces`, which stayed compatible. `mbt` stays pinned exact at `1.2.49` (post-Shai-Hulud safe re-publish).
+- **Require Node 22** (#121): `core@6.11.1` declares `engines.node >=22.0.0`. Aligned root `engines.node` (`>=20` → `>=22`), CI and release `setup-node` (`20` → `22`), and the lockfile root entry — previously CI/runtime could run below the dependency's declared minimum. Local `.nvmrc` / Volta were already on 22.16.0.
+
+### Fixed
+- **Chat UI: RAG Manager source-row DEL did nothing for chunked uploads** (#120). The DEL button inlined `JSON.stringify(chunkIds)` + `escapeHtml(sourceName)` into its `onclick`; `escapeHtml` does not escape single quotes, so a source name with an apostrophe broke the inline handler. Reworked to carry the chunk-id list and source name in `data-*` attributes the handler reads off the button.
+- **Chat UI: collection list showed chunk count instead of document count** (#120). Added a server-derived `sourceCount` that groups records by `(metadata.source, metadata.uploadId)` — every chunk of one upload counts once, two uploads of the same filename count twice, manual records count individually. The MANAGE list groups its rows the same way.
+
 ## [6.9.0] - 2026-05-28
 
 Multi-file RAG upload, source-aggregated Manager view, and a complete refactor of every tutorial's `skills/` folder to the self-contained short-fact form. PRs #115, #116, #117.
