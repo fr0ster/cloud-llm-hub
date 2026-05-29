@@ -1,1 +1,9 @@
+# Block leftover merge-conflict markers (and whitespace errors) in staged content.
+# Catches the stg mta.yaml case where a merge was "resolved" but <<<<<<< / =======
+# / >>>>>>> lines survived — git diff --check exits non-zero on any of them.
+git diff --cached --check || {
+  echo "✖ pre-commit: leftover conflict markers or whitespace errors in staged files (see above)." >&2
+  exit 1
+}
+
 npm run lint:check && npm run test:check
