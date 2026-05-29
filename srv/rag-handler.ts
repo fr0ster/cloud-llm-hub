@@ -141,6 +141,7 @@ export function registerRagRoutes(
       owner: c.owner,
       createdAt: c.createdAt,
       documentCount: c.documentCount,
+      sourceCount: c.sourceCount,
       preset: c.preset,
       enabled:
         effectiveUserId !== undefined

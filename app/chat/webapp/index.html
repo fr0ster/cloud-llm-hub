@@ -1695,7 +1695,7 @@
                             <input type="checkbox" ${c.enabled ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
                             <span style="color:#fff;font-weight:bold">${escapeHtml(c.displayName)}</span>
                             <span style="color:#555;margin-left:8px">(${escapeHtml(c.logicalId || c.id)})</span>
-                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope === 'session' ? '<span style="color:#ffcc00">session</span>' : escapeHtml(c.scope || 'user')} · ${c.backend || 'default'} · ${c.documentCount} docs</span>
+                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope === 'session' ? '<span style="color:#ffcc00">session</span>' : escapeHtml(c.scope || 'user')} · ${c.backend || 'default'} · ${(c.sourceCount ?? c.documentCount) ?? 0} docs</span>
                             ${c.description ? `<div style="color:#666;font-size:12px;margin-top:2px">${escapeHtml(c.description)}</div>` : ''}
                         </div>
                         <div style="display:flex;gap:6px">
@@ -1770,12 +1770,17 @@
                 // file", so showing one row per logical document is what the user actually
                 // operates on. Standalone records (no metadata.source) stay one row each.
                 const rows = []; // entries: {kind, source?, doc, chunkIds[], chunkCount, firstChunk, createdAt}
+                // Group chunked uploads by (source, uploadId) so two uploads of the
+                // same filename render as two distinct rows — matching the server's
+                // sourceCount. Legacy chunks without uploadId fall back to source alone.
                 const sourceIndex = new Map();
                 for (const d of docs) {
                     const src = d.metadata && typeof d.metadata.source === 'string' ? d.metadata.source : null;
                     const isChunk = src && Number.isInteger(d.metadata.chunkIndex);
                     if (isChunk) {
-                        let row = sourceIndex.get(src);
+                        const uploadId = typeof d.metadata.uploadId === 'string' ? d.metadata.uploadId : '';
+                        const groupKey = src + '\u0000' + uploadId;
+                        let row = sourceIndex.get(groupKey);
                         if (!row) {
                             row = {
                                 kind: 'source',
@@ -1784,7 +1789,7 @@
                                 chunkIds: [],
                                 createdAt: d.createdAt,
                             };
-                            sourceIndex.set(src, row);
+                            sourceIndex.set(groupKey, row);
                             rows.push(row);
                         }
                         row.chunkIds.push(d.id);
@@ -1823,7 +1828,7 @@
                                 <span style="color:#00ff88;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(row.source)}">${escapeHtml(row.source)}</span>
                                 <span style="color:#555;font-size:11px">${chunkCount} chunk${chunkCount === 1 ? '' : 's'}</span>
                                 <button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(first.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>
-                                <button onclick="deleteSourceFile(${JSON.stringify(row.chunkIds).replace(/"/g, '&quot;')}, '${escapeHtml(row.source)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>
+                                <button data-chunks="${escapeHtml(JSON.stringify(row.chunkIds))}" data-source="${escapeHtml(row.source)}" onclick="deleteSourceFile(this)" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>
                             </div>
                             <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
                             <div style="color:#555;font-size:11px;margin-top:2px">${row.createdAt || ''}</div>
@@ -1838,7 +1843,19 @@
         // server has no "delete every chunk for source X" endpoint. Failures are
         // collected and surfaced; partial deletes leave the source's row in the
         // list with the remaining chunks until the user retries.
-        async function deleteSourceFile(chunkIds, sourceName) {
+        //
+        // Argument shape: the DEL button passes `this` (the <button>) and we read
+        // the chunk-id JSON + source name from `data-` attributes. This avoids the
+        // escaping pitfall of inlining JSON.stringify(chunkIds) into the onclick
+        // attribute — apostrophes in source names broke the previous form.
+        async function deleteSourceFile(btn) {
+            let chunkIds;
+            try {
+                chunkIds = JSON.parse(btn.dataset.chunks || '[]');
+            } catch {
+                chunkIds = [];
+            }
+            const sourceName = btn.dataset.source || '';
             if (!Array.isArray(chunkIds) || chunkIds.length === 0) return;
             if (!confirm(`Delete file "${sourceName}" (${chunkIds.length} chunk${chunkIds.length === 1 ? '' : 's'})?`)) return;
             const failures = [];

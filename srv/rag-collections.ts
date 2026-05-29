@@ -72,7 +72,10 @@ export interface CollectionMeta {
   /** Expiry timestamp (ms since epoch) for session-scoped collections. */
   expiresAt?: number;
   createdAt: string;
+  /** Number of records (== chunks for chunked uploads). */
   documentCount: number;
+  /** Number of logical source documents — chunks of the same file count once. */
+  sourceCount: number;
 }
 
 export interface RagDocument {
@@ -86,6 +89,35 @@ interface StoredCollection {
   meta: CollectionMeta;
   documents: Map<string, RagDocument>;
   rag: RecencyBoostedRag;
+}
+
+/**
+ * Count logical source documents in a collection. Chunked uploads are grouped
+ * by `(metadata.source, metadata.uploadId)` — every chunk of the SAME upload
+ * counts once, but two separate uploads of the same filename count twice (they
+ * carry distinct uploadIds; the export path keys on the same pair). Legacy
+ * chunks that have `source` but no `uploadId` fall back to grouping by `source`
+ * alone. Records without `metadata.source` (manually-added records) count
+ * individually.
+ */
+function countSources(stored: StoredCollection): number {
+  const groups = new Set<string>();
+  let unmappedCount = 0;
+  for (const doc of stored.documents.values()) {
+    const meta = doc.metadata as
+      | { source?: unknown; uploadId?: unknown }
+      | undefined;
+    const src = meta?.source;
+    if (typeof src === 'string') {
+      const uploadId = typeof meta?.uploadId === 'string' ? meta.uploadId : '';
+      // NUL separator can't appear in a filename or uploadId, so it cannot
+      // collide two distinct (source, uploadId) pairs into one key.
+      groups.add(`${src}\u0000${uploadId}`);
+    } else {
+      unmappedCount++;
+    }
+  }
+  return groups.size + unmappedCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +409,11 @@ export class CollectionRegistry {
     for (const [id, stored] of this.collections) {
       if (id.startsWith('__orphan__')) continue;
       if (stored.meta.owner === userId) {
-        result.push({ ...stored.meta, documentCount: stored.documents.size });
+        result.push({
+          ...stored.meta,
+          documentCount: stored.documents.size,
+          sourceCount: countSources(stored),
+        });
       }
     }
     return result;
@@ -482,11 +518,15 @@ export class CollectionRegistry {
   getCollection(id: string): CollectionMeta | null {
     const stored = this.collections.get(id);
     if (!stored) return null;
-    return { ...stored.meta, documentCount: stored.documents.size };
+    return {
+      ...stored.meta,
+      documentCount: stored.documents.size,
+      sourceCount: countSources(stored),
+    };
   }
 
   createCollection(
-    meta: Omit<CollectionMeta, 'createdAt' | 'documentCount'>,
+    meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
   ): CollectionMeta {
     if (this.collections.has(meta.id)) {
       throw new Error(`Collection "${meta.id}" already exists`);
@@ -496,6 +536,7 @@ export class CollectionRegistry {
       backend: meta.backend ?? this.defaultBackend,
       createdAt: new Date().toISOString(),
       documentCount: 0,
+      sourceCount: 0,
     };
     this.collections.set(meta.id, {
       meta: full,
@@ -516,7 +557,11 @@ export class CollectionRegistry {
     if (update.displayName) stored.meta.displayName = update.displayName;
     if (update.description) stored.meta.description = update.description;
     this.persistMeta();
-    return { ...stored.meta, documentCount: stored.documents.size };
+    return {
+      ...stored.meta,
+      documentCount: stored.documents.size,
+      sourceCount: countSources(stored),
+    };
   }
 
   deleteCollection(id: string): boolean {
