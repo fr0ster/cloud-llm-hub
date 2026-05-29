@@ -1617,9 +1617,18 @@
             return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
         }
 
-        function openRagPanel() {
+        async function ensurePresets() {
+            // Seed per-user preset collections server-side if missing. Non-fatal:
+            // if it fails, presets just won't appear this open. Preset collections
+            // are created disabled (preset:true) so they don't auto-join chat context.
+            try { await ragFetch('/v1/rag/presets/ensure', { method: 'POST' }); }
+            catch { /* ignore — presets are opt-in convenience */ }
+        }
+
+        async function openRagPanel() {
             document.getElementById('rag-modal').style.display = 'block';
             document.getElementById('rag-doc-panel').style.display = 'none';
+            await ensurePresets();
             loadCollections();
             loadBackends();
         }
