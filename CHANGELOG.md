@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [6.11.0] - 2026-05-30
+
+Preset RAG collections — per-user RAP skills + context, seeded on demand. PR #122.
+
+### Added
+- **Preset RAG collections** (#122). Opening the chat MANAGE panel now seeds two per-user preset collections if absent — `RAP Skills` (16 fact-format object-creation skills) and `RAP Context` (4 RAP modeling-context docs: composition-vs-association, odata-draft-vs-readonly, phase-procedure, strict-mode-2). New endpoint `POST /v1/rag/presets/ensure` (`srv/presets.ts`). Per-user collection id via `sha256(userId)` 16-hex key; collections carry `preset:true` so the registry's `defaultEnabled = !preset` rule (from v6.8.10) makes them default OFF — opt-in, no auto-join to chat context. Seeding is idempotent at the document level: create-if-absent collection, add-if-missing documents, so user edits are preserved and a partial seed self-heals on the next open; a single document failure is logged and skipped.
+- Seed content lives under `srv/presets/{rap-skills,rap-context}/` and mirrors `docs/tutorials/rap-bo-book-catalog/{skills,context}/` byte-for-byte; a `presets-content-drift` unit test enforces that the two never silently diverge. The MTA build prune step touches only `node_modules`, so the seed `.md` files ship intact in `gen/srv/srv/presets/`.
+
 ## [6.10.0] - 2026-05-29
 
 Dependency upgrade to the `@mcp-abap-adt` 16.x line (Node 22) plus two RAG Manager UI fixes. PRs #120, #121.
