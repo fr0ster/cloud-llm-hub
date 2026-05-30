@@ -11,7 +11,6 @@ const path = require('node:path');
 
 const packageJsonPath = path.join(__dirname, '..', 'package.json');
 const mtaYamlPath = path.join(__dirname, '..', 'mta.yaml');
-const mtaStagingYamlPath = path.join(__dirname, '..', 'mta-staging.yaml');
 
 // Get version from package.json or command line argument
 let version;
@@ -50,14 +49,7 @@ function syncYamlVersion(filePath, targetVersion) {
   return true;
 }
 
-// Production MTA: same version as package.json.
+// Production MTA: same version as package.json. The staging MTA descriptor is
+// generated at deploy time from this file (tools/make-staging-mta.js), so there
+// is no separate staging version to sync.
 syncYamlVersion(mtaYamlPath, version);
-
-// Staging MTA: <prod-version>-rc so it's visibly a pre-release of the same
-// cycle. Only suffix when prod is a clean release; if package.json itself
-// already carries a pre-release suffix, reuse it verbatim to avoid double
-// "-rc.rc"-style stacking.
-if (fs.existsSync(mtaStagingYamlPath)) {
-  const stagingVersion = /-/.test(version) ? version : `${version}-rc`;
-  syncYamlVersion(mtaStagingYamlPath, stagingVersion);
-}

@@ -46,6 +46,7 @@
     "@sap/cds-dk": "^9.9.1",
     "@types/express": "^5.0.5",
     "@types/jest": "^30.0.0",
+    "@types/js-yaml": "4.0.9",
     "@types/node": "^25.6.2",
     "husky": "^9.1.7",
     "jest": "^30.4.0",
