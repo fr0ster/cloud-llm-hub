@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [Unreleased]
+
+### Changed
+- **Staging MTA descriptor + XSUAA files are now generated at deploy time** from the production `mta.yaml`, instead of maintaining a forked `mta-staging.yaml` on the staging branch (#123). `tools/make-staging-mta.js` reads `mta.yaml`, renames the structural identifiers `cloud-llm-hub` → `cloud-llm-hub-staging` (MTA ID, module/resource names, provides/requires refs, `xsappname`, `TENANT_HOST_PATTERN`), and writes the gitignored, ephemeral `mta.staging.generated.yaml`. Every `xs-security*.json` a resource references is regenerated to a gitignored `xs-security*.generated.json` with the same rename applied (`xsappname`, `grant-as-authority-to-apps`, `authorities`) and its `path:` repointed — so the staging XSUAA apps carry staging app IDs and the analyst/developer grant flow stays self-consistent rather than authorizing against prod. The route template, `APPROUTER_HOST`/`CF_LANDSCAPE`/`LLM_AGENT_*` params, the version number, and the `{space-guid}`/`!t<id>` tenant suffixes are left untouched; the rename is idempotent. `tools/deploy.sh` invokes the generator for the staging branch (`-f mta.staging.generated.yaml`, `.mtaext.staging`). The dead `mta-staging.yaml` is removed and staging no longer drifts from prod — this eliminates the recurring `mta.yaml` merge conflict on `deploy/acme-prod-stg`.
+
 ## [6.11.0] - 2026-05-30
 
 Preset RAG collections — per-user RAP skills + context, seeded on demand. PR #122.

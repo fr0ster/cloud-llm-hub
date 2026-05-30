@@ -18,7 +18,9 @@ STAGING="${1:-}"
 
 # Detect mode
 if [ "$STAGING" = "staging" ]; then
-  MTA_FLAG="-f mta-staging.yaml"
+  echo "Generating staging MTA descriptor from mta.yaml..."
+  node tools/make-staging-mta.js
+  MTA_FLAG="-f mta.staging.generated.yaml"
   MTAEXT=".mtaext.staging"
   SRV_APP="cloud-llm-hub-staging-srv"
 else

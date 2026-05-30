@@ -28,8 +28,9 @@ deploy/acme-sandbox            .mtaext for acme-sandbox subaccount
 
 | File | Location | In git? | Purpose |
 |------|----------|---------|---------|
-| `mta.yaml` | main | Yes | MTA structure, module definitions, parameter defaults |
-| `mta-staging.yaml` | main | Yes | Staging MTA with separate module names |
+| `mta.yaml` | main | Yes | MTA structure, module definitions, parameter defaults (prod identifiers) |
+| `mta.staging.generated.yaml` | worktree | No (gitignored) | Staging MTA — generated from `mta.yaml` at deploy time by `tools/make-staging-mta.js` (renames identifiers to `*-staging`); never edited or committed |
+| `xs-security*.generated.json` | worktree | No (gitignored) | Staging XSUAA descriptors — generated alongside the staging MTA with the same `*-staging` rename |
 | `.mtaext` | deploy/* branch | Yes (force-added) | Per-subaccount config: model, destination, host |
 | `.env` | worktree | No (gitignored) | Secrets: AICORE_* credentials |
 | `default-env.json` | worktree | No (gitignored) | Local dev: VCAP_SERVICES from BTP |
