@@ -52,6 +52,27 @@ function deepRename(node) {
   return node;
 }
 
+// Suffix every role-collection name so staging gets its own collections.
+// Role-collection names are subaccount-GLOBAL (not scoped by xsappname), so a
+// staging deploy into the same subaccount as prod would collide on create
+// ("Role Collection X already exists") unless the names differ. The names carry
+// no `cloud-llm-hub` token, so deepRename leaves them untouched — handle here.
+// Idempotent: a name already ending in the suffix is left alone.
+const ROLE_COLLECTION_SUFFIX = ' (staging)';
+function renameRoleCollections(sec) {
+  const collections = sec && sec['role-collections'];
+  if (!Array.isArray(collections)) return;
+  for (const rc of collections) {
+    if (
+      rc &&
+      typeof rc.name === 'string' &&
+      !rc.name.endsWith(ROLE_COLLECTION_SUFFIX)
+    ) {
+      rc.name += ROLE_COLLECTION_SUFFIX;
+    }
+  }
+}
+
 // Derive the generated xs-security filename: ./xs-security-foo.json ->
 // ./xs-security-foo.generated.json (relative paths from the descriptor).
 function generatedSecurityPath(securityPath) {
@@ -87,6 +108,7 @@ function transform(doc, root) {
       const srcSec = path.join(root, params.path);
       const sec = JSON.parse(fs.readFileSync(srcSec, 'utf8'));
       deepRename(sec);
+      renameRoleCollections(sec);
       const outRel = generatedSecurityPath(params.path);
       fs.writeFileSync(
         path.join(root, outRel),
