@@ -276,11 +276,11 @@
             </div>
             <div style="margin-bottom:8px">
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Login:</label>
-              <input id="sap-login" name="sap-login" autocomplete="section-sap username" placeholder="SAP username" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+              <input id="sap-login" name="username" autocomplete="username" placeholder="SAP username" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
             </div>
             <div style="margin-bottom:12px">
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Password:</label>
-              <input id="sap-password" name="sap-password" type="password" autocomplete="section-sap current-password" placeholder="SAP password" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+              <input id="sap-password" name="password" type="password" autocomplete="current-password" placeholder="SAP password" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
             </div>
             <div id="gate-error" style="display:none;color:#ff5555;font-size:11px;margin-bottom:8px"></div>
             <button type="submit" id="gate-submit" style="width:100%;font-size:12px;padding:6px 12px">CONNECT</button>
@@ -351,20 +351,32 @@
             const sel = document.getElementById('gate-dest');
             if (!sel) return;
             const prev = sel.value;
-            const ready = (gateDestinations || []).filter((d) => d.status === 'ready');
+            const all = gateDestinations || [];
             sel.innerHTML = '';
-            if (ready.length === 0) {
+            if (all.length === 0) {
                 const opt = document.createElement('option');
                 opt.value = '';
-                opt.textContent = gateDestinations.length ? 'destinations initializing...' : 'loading...';
+                opt.textContent = 'loading...';
                 sel.appendChild(opt);
                 return;
             }
-            for (const d of ready) {
+            // Show EVERY destination so the user sees the full list, but only
+            // 'ready' ones are selectable — the rest are still vectorizing in the
+            // background (sequential init) and become enabled as they get ready.
+            for (const d of all) {
                 const opt = document.createElement('option');
                 opt.value = d.name;
-                opt.textContent = d.name;
-                if (d.name === prev) opt.selected = true;
+                if (d.status === 'ready') {
+                    opt.textContent = d.name;
+                } else {
+                    const label = d.status === 'vectorizing' ? 'vectorizing…'
+                        : d.status === 'pending' ? 'pending'
+                        : d.status === 'unreachable' ? 'unreachable'
+                        : d.status || 'initializing';
+                    opt.textContent = `${d.name} (${label})`;
+                    opt.disabled = true;
+                }
+                if (d.name === prev && d.status === 'ready') opt.selected = true;
                 sel.appendChild(opt);
             }
         }
