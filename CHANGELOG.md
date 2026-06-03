@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.14.0] - 2026-06-03
+
+### Added
+- **Login gate: pick destination + SAP credentials after sign-in** (#128). The chat UI now blocks the whole interface after sign-in until the user chooses a destination and enters SAP login/password in a connect-time modal. The destination selector is removed from the toolbar (now an info label `DEST: <name>`); the destination is fixed for the session — to switch, log out and back in. Replaces the per-destination-change credential prompt from #126 (which only asked on a manual change and left a stale "enter credentials" message after applying). A mid-session `401 SAP_CREDENTIALS_REQUIRED` re-opens the gate. Only on-premise destinations exist for now; cloud/JWT auth is still in design.
+
+### Fixed
+- **Staging role-collection names collided with prod in the same subaccount** (#127). Role-collection names in `xs-security.json` (e.g. `MCP Reader Access`) are subaccount-global, not scoped by `xsappname`, so deploying a staging instance into the same subaccount as prod failed with `Role Collection X already exists`. `make-staging-mta.js` now appends ` (staging)` to each `role-collections[].name`; `role-template-references` stay `$XSAPPNAME`-scoped and the source file is not mutated. Unblocks same-subaccount prod+staging targets (e.g. CustomerB `deploy/customer-b-stg`).
+
 ## [6.13.1] - 2026-06-03
 
 ### Fixed
