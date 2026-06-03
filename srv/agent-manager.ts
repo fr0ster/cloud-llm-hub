@@ -281,6 +281,24 @@ export function setRequestConnection(connection: AbapConnectionLike): void {
   connectionALS.enterWith({ connection, context });
 }
 
+/**
+ * Run `fn` with the per-request connection bound for its ENTIRE async subtree.
+ *
+ * Unlike setRequestConnection (enterWith), `als.run()` keeps the store alive
+ * across every await/promise hop inside `fn` — including the SmartAgent pipeline
+ * and the MCP tool calls it makes. This is what callToolHandler relies on:
+ * without it the store is lost by the time a tool runs and the call fails with
+ * "SAP credentials are required". Per-request isolation is preserved (each
+ * request gets its own run() scope), which matters on the shared server.
+ */
+export function runWithRequestConnection<T>(
+  connection: AbapConnectionLike,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const context: HandlerContext = { connection, logger: loggerAdapter };
+  return connectionALS.run({ connection, context }, fn);
+}
+
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import {
   clearDestinationsCache,
