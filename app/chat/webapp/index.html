@@ -311,6 +311,9 @@
         let conversationHistory = [];
         let ready = false;
         let connectedDestination = '';
+        // Destination metadata from the server (name → { requiresCredentials, proxyType }).
+        // Used to prompt for SAP login/password only for on-premise destinations.
+        const destinationMeta = {};
         // Session ID is now managed server-side via an HttpOnly cookie (clh_session).
         // The browser sends the cookie automatically on every same-origin request,
         // so the session survives page reloads without JS generating a new random id.
@@ -1114,16 +1117,40 @@
             chatWindow.innerHTML = '';
         }
 
+        // On-premise (and NoAuthentication) destinations need the user's own SAP
+        // login/password; cloud destinations (JWT) do not. The server flags this
+        // via _destinations[].requiresCredentials.
+        function destinationNeedsCreds(name) {
+            return !!(name && destinationMeta[name] && destinationMeta[name].requiresCredentials);
+        }
+
+        function haveSapCreds() {
+            return !!(sapCredsLogin && sapCredsPassword);
+        }
+
         function reconnectDestination(nextDestination) {
             const prev = connectedDestination;
             connectedDestination = nextDestination || '';
             clearChat();
             clearSapCreds();
-            if (connectedDestination) showSapCredsDialog();
-            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Reconnected to destination ${escapeHtml(connectedDestination || 'none')}. Enter SAP credentials before the next SAP call.</div>`;
+            const needsCreds = destinationNeedsCreds(connectedDestination);
+            if (needsCreds) showSapCredsDialog();
+            const note = needsCreds
+                ? 'Enter SAP credentials (login/password) before the next SAP call.'
+                : 'Cloud destination — no SAP credentials required.';
+            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Reconnected to destination ${escapeHtml(connectedDestination || 'none')}. ${note}</div>`;
             chatWindow.scrollTop = chatWindow.scrollHeight;
             if (prev) {
-                console.log('[DEST] reconnect', { from: prev, to: connectedDestination });
+                console.log('[DEST] reconnect', { from: prev, to: connectedDestination, needsCreds });
+            }
+        }
+
+        // Prompt for credentials on first connect to an on-premise destination
+        // (when no destination change event fires). Idempotent: only prompts if
+        // creds are missing and the dialog isn't already the reason we're here.
+        function maybePromptCredsOnConnect() {
+            if (destinationNeedsCreds(connectedDestination) && !haveSapCreds()) {
+                showSapCredsDialog();
             }
         }
 
@@ -1162,6 +1189,11 @@
             const currentVal = destSelect.value || activeDest;
             destSelect.innerHTML = '';
             for (const d of destinations) {
+                // Cache destination metadata for credential prompting.
+                destinationMeta[d.name] = {
+                    requiresCredentials: !!d.requiresCredentials,
+                    proxyType: d.proxyType,
+                };
                 const opt = document.createElement('option');
                 opt.value = d.name;
                 const icon = d.status === 'ready' ? '\u2713'
@@ -1178,7 +1210,13 @@
                 destSelect.appendChild(opt);
             }
             destSelect.disabled = false;
+            const wasEmpty = !connectedDestination;
             connectedDestination = destSelect.value || currentVal || connectedDestination;
+            // First time we settle on a destination (initial page load, no change
+            // event): prompt for SAP credentials if it's on-premise and we have none.
+            if (wasEmpty && connectedDestination) {
+                maybePromptCredsOnConnect();
+            }
         }
 
         destSelect.addEventListener('change', () => {
