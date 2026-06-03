@@ -24,6 +24,7 @@ import {
   getCurrentDestination,
   getSmartAgent,
   isAgentReady,
+  runWithRequestConnection,
 } from './agent-manager';
 import {
   establishRequestConnection,
@@ -128,6 +129,11 @@ export async function handleAnthropicMessages(
     ...options,
   };
 
+  // Bind the per-request SAP connection for the whole agent run so MCP tool
+  // calls inside the pipeline see it (ALS store survives the async hops).
+  const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
+    requestConnection ? runWithRequestConnection(requestConnection, fn) : fn();
+
   try {
     // --- Streaming ---
     if (stream) {
@@ -138,14 +144,15 @@ export async function handleAnthropicMessages(
       });
 
       try {
-        const sseStream = adapter.transformStream(
-          handle.agent.streamProcess(messages, agentOpts),
-          context,
-        );
-
-        for await (const event of sseStream) {
-          res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
-        }
+        await runAgent(async () => {
+          const sseStream = adapter.transformStream(
+            handle.agent.streamProcess(messages, agentOpts),
+            context,
+          );
+          for await (const event of sseStream) {
+            res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+          }
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error('Stream error', { error: message });
@@ -157,7 +164,9 @@ export async function handleAnthropicMessages(
     }
 
     // --- Non-streaming ---
-    const result = await handle.agent.process(messages, agentOpts);
+    const result = await runAgent(() =>
+      handle.agent.process(messages, agentOpts),
+    );
 
     if (result.ok) {
       const formatted = adapter.formatResult(result.value, context);
