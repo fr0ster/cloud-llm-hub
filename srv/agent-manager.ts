@@ -399,6 +399,30 @@ export interface DestinationState {
   toolCount: number;
   status: 'pending' | 'ready' | 'vectorizing' | 'error' | 'unreachable';
   error?: string;
+  /** BTP destination ProxyType ('OnPremise' | 'Internet'), when known. */
+  proxyType?: string;
+  /**
+   * True when this destination requires the caller's own SAP credentials
+   * (on-premise / NoAuthentication). The chat UI uses this to prompt for
+   * login/password on connect. Cloud destinations (JWT) are false.
+   */
+  requiresCredentials?: boolean;
+}
+
+/**
+ * Whether a destination requires the caller's own SAP credentials.
+ * On-premise (Cloud Connector) and NoAuthentication destinations do; cloud
+ * destinations with their own auth (JWT via OAuth2*) do not. Mirrors the
+ * fail-closed rule in srv/lib/request-connection.ts.
+ */
+export function destinationRequiresCredentials(
+  proxyType?: string,
+  authentication?: string,
+): boolean {
+  return (
+    (proxyType ?? '').toLowerCase() === 'onpremise' ||
+    authentication === 'NoAuthentication'
+  );
 }
 
 /** Map of destination name → pre-built state */
@@ -511,12 +535,16 @@ export function getDestinationStates(): Array<{
   status: string;
   toolCount: number;
   error?: string;
+  proxyType?: string;
+  requiresCredentials?: boolean;
 }> {
   return [...destinationStates.entries()].map(([name, state]) => ({
     name,
     status: state.status,
     toolCount: state.toolCount,
     error: state.error,
+    proxyType: state.proxyType,
+    requiresCredentials: state.requiresCredentials,
   }));
 }
 
@@ -526,7 +554,7 @@ export function getDestinationStates(): Array<{
  * Returns updated destination states.
  */
 export async function refreshDestinations(): Promise<
-  Array<{ name: string; status: string; toolCount: number; error?: string }>
+  ReturnType<typeof getDestinationStates>
 > {
   const log = cds.log('agent-manager');
 
@@ -869,11 +897,36 @@ async function initDestination(
 
   log.info('Initializing destination', { destination: destinationName });
 
+  // Carry destination metadata (proxyType/auth) so the UI can prompt for SAP
+  // credentials on connect for on-premise destinations. Preserve any value
+  // already set by the pre-populate pass.
+  const prev = destinationStates.get(destinationName);
+  let proxyType = prev?.proxyType;
+  let requiresCredentials = prev?.requiresCredentials;
+  if (proxyType === undefined) {
+    try {
+      const meta = (await getAvailableDestinations()).find(
+        (d) => d.name === destinationName,
+      );
+      if (meta) {
+        proxyType = meta.proxyType;
+        requiresCredentials = destinationRequiresCredentials(
+          meta.proxyType,
+          meta.authentication,
+        );
+      }
+    } catch {
+      // Non-fatal: UI falls back to the 401 SAP_CREDENTIALS_REQUIRED prompt.
+    }
+  }
+
   const state: DestinationState = {
     mcpAdapter: null,
     toolsRag: await createToolsRagStore(config.llm.resourceGroup),
     toolCount: 0,
     status: 'vectorizing',
+    proxyType,
+    requiresCredentials,
   };
   destinationStates.set(destinationName, state);
 
@@ -952,6 +1005,11 @@ async function initBackgroundDestinations(): Promise<void> {
           toolsRag: new ExpositionFilteringRag(new InMemoryRag()),
           toolCount: 0,
           status: 'pending',
+          proxyType: dest.proxyType,
+          requiresCredentials: destinationRequiresCredentials(
+            dest.proxyType,
+            dest.authentication,
+          ),
         });
       }
     }
