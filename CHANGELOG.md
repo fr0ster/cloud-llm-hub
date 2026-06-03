@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.14.1] - 2026-06-04
+
+### Fixed
+- **Per-request SAP connection was lost across the agent pipeline** (#129). After #125 the per-request connection was registered with `AsyncLocalStorage.enterWith()` before `agent.process()`; the store did not survive the SmartAgent pipeline's async hops, so the MCP tool call saw an empty ALS store and failed with `SAP credentials are required` even with valid login/password. Added `runWithRequestConnection()` (`connectionALS.run(store, fn)`) and wrapped `process()`/`streamProcess()` in both the OpenAI and Anthropic handlers, keeping the store alive for the whole async subtree while preserving per-request isolation.
+- **Login gate showed only the first (ready) destination** (#129). With many destinations and sequential background vectorization, only the first appeared selectable, looking broken. The gate now lists every destination; not-yet-ready ones show a status suffix and are disabled, becoming selectable as they finish (the open gate refreshes on each `/v1/models` poll).
+- **Browser password managers could not fill the login gate** (#129). The SAP login/password inputs used `autocomplete="section-sap …"`; the `section-*` prefix scoped them out of the domain autofill set. Switched to standard `autocomplete="username"` / `"current-password"`.
+
 ## [6.14.0] - 2026-06-03
 
 ### Added
