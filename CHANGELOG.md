@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.13.1] - 2026-06-03
+
+### Fixed
+- **Chat UI now prompts for SAP credentials on connect to on-premise destinations** (#126). After #125 the credential dialog only opened on a manual destination change; on first load with a pre-selected on-premise destination the UI accepted it silently and the user was only asked after the first SAP call returned `401 SAP_CREDENTIALS_REQUIRED`. The backend gate was intact (fail-closed), but the prompt was missing on connect. The server now exposes `proxyType` / `requiresCredentials` per destination (in the `/v1/models` `_destinations` payload and `refreshDestinations()`), and the UI opens the login/password dialog on connect **only** for on-premise / `NoAuthentication` destinations — cloud (JWT) destinations are left untouched (still in design). The existing 401 fallback remains.
+
 ## [6.13.0] - 2026-06-03
 
 Per-user SAP credentials — no default destination service user. PR #125.
