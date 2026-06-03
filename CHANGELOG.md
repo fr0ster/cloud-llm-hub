@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.13.0] - 2026-06-03
+
+Per-user SAP credentials — no default destination service user. PR #125.
+
+### Changed
+- **Every channel now runs ABAP tools under the caller's own SAP user; the shared server no longer falls back to a destination service user** (#125). On-premise (Cloud Connector) and `NoAuthentication` destinations require the caller's `x-sap-login` / `x-sap-password` per request — missing credentials return `401 SAP_CREDENTIALS_REQUIRED` and no connection is built. Cloud (http) destinations use the destination's resolved auth (JWT); caller basic-auth overrides if supplied. The per-request connection is `connect()`-validated before the agent runs. This rationale: `cloud-llm-hub` is a single shared server, so the "default user" is deliberately pushed down to the per-user, per-machine `mcp-abap-adt-proxy` (which injects both the service JWT and the ABAP credentials via its YAML `defaultHeaders`).
+- The credential policy is centralized in `srv/lib/request-connection.ts` (`establishRequestConnection` / `resetRequestConnection`) and applied identically on `/v1/chat/completions`, `/v1/messages` (Claude CLI), and `/mcp/stream/http`. The embedded MCP adapter no longer probes or connects with a destination user at startup — it refuses ABAP calls when no per-request connection is present.
+- **Chat UI** treats a destination change as a reconnect boundary: it clears session-scoped state and SAP credentials, prompts for the new destination's credentials, and opens the credential dialog automatically when the server returns `SAP_CREDENTIALS_REQUIRED`.
+
 ## [6.12.0] - 2026-05-31
 
 Generated staging MTA + `@mcp-abap-adt` upgrade to the 17.x line. PRs #123, #124.
