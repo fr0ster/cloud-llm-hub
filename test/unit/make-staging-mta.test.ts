@@ -60,6 +60,13 @@ const PROD_XS_AUTH = JSON.stringify(
       },
     ],
     authorities: ['$XSAPPNAME.MCP_Reader'],
+    'role-collections': [
+      {
+        name: 'MCP Reader Access',
+        description: 'Read-only access to ABAP objects via MCP.',
+        'role-template-references': ['$XSAPPNAME.MCP_Reader'],
+      },
+    ],
   },
   null,
   2,
@@ -213,5 +220,18 @@ describe('make-staging-mta', () => {
     run(dir);
     const src = readJson(dir, 'xs-security.json');
     expect(src.xsappname).toBe('cloud-llm-hub-{space-guid}');
+  });
+
+  test('suffixes role-collection names so they do not collide with prod', () => {
+    run(dir);
+    const sec = readJson(dir, 'xs-security.generated.json');
+    expect(sec['role-collections'][0].name).toBe('MCP Reader Access (staging)');
+    // role-template-references stay $XSAPPNAME-scoped (untouched).
+    expect(sec['role-collections'][0]['role-template-references']).toEqual([
+      '$XSAPPNAME.MCP_Reader',
+    ]);
+    // source file's role-collection name is unchanged.
+    const src = readJson(dir, 'xs-security.json');
+    expect(src['role-collections'][0].name).toBe('MCP Reader Access');
   });
 });
