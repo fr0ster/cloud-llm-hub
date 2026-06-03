@@ -351,20 +351,32 @@
             const sel = document.getElementById('gate-dest');
             if (!sel) return;
             const prev = sel.value;
-            const ready = (gateDestinations || []).filter((d) => d.status === 'ready');
+            const all = gateDestinations || [];
             sel.innerHTML = '';
-            if (ready.length === 0) {
+            if (all.length === 0) {
                 const opt = document.createElement('option');
                 opt.value = '';
-                opt.textContent = gateDestinations.length ? 'destinations initializing...' : 'loading...';
+                opt.textContent = 'loading...';
                 sel.appendChild(opt);
                 return;
             }
-            for (const d of ready) {
+            // Show EVERY destination so the user sees the full list, but only
+            // 'ready' ones are selectable — the rest are still vectorizing in the
+            // background (sequential init) and become enabled as they get ready.
+            for (const d of all) {
                 const opt = document.createElement('option');
                 opt.value = d.name;
-                opt.textContent = d.name;
-                if (d.name === prev) opt.selected = true;
+                if (d.status === 'ready') {
+                    opt.textContent = d.name;
+                } else {
+                    const label = d.status === 'vectorizing' ? 'vectorizing…'
+                        : d.status === 'pending' ? 'pending'
+                        : d.status === 'unreachable' ? 'unreachable'
+                        : d.status || 'initializing';
+                    opt.textContent = `${d.name} (${label})`;
+                    opt.disabled = true;
+                }
+                if (d.name === prev && d.status === 'ready') opt.selected = true;
                 sel.appendChild(opt);
             }
         }
