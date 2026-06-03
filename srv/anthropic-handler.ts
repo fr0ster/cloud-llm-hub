@@ -20,7 +20,16 @@ import {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { isAiCoreConfigured } from './agent-config';
-import { getSmartAgent, isAgentReady } from './agent-manager';
+import {
+  getCurrentDestination,
+  getSmartAgent,
+  isAgentReady,
+} from './agent-manager';
+import {
+  establishRequestConnection,
+  resetRequestConnection,
+} from './lib/request-connection';
+import { resolveSessionId } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
@@ -76,11 +85,32 @@ export async function handleAnthropicMessages(
     roles: messages.map((m) => m.role).join(','),
   });
 
+  // Establish the caller's per-request SAP connection BEFORE running the agent.
+  // Same fail-closed policy as /v1/chat/completions: no default destination
+  // service user — on-premise/NoAuthentication destinations require the caller's
+  // x-sap-login/x-sap-password; cloud destinations use the resolved auth (JWT).
+  // Without a per-request connection, ABAP tool calls throw in agent-manager.
+  const requestedDestination = req.headers['x-sap-destination'] as
+    | string
+    | undefined;
+  const sessionId = resolveSessionId(req);
+  const destination = requestedDestination || getCurrentDestination(sessionId);
+
+  let requestConnection:
+    | import('@mcp-abap-adt/interfaces').IAbapConnection
+    | undefined;
+  if (destination) {
+    const established = await establishRequestConnection(req, res, destination);
+    if (established.handled) return;
+    requestConnection = established.connection;
+  }
+
   // Get SmartAgent handle (no model/destination override for Anthropic endpoint)
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     handle = await getSmartAgent();
   } catch (err) {
+    resetRequestConnection(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
     res.status(503).json({
@@ -98,45 +128,49 @@ export async function handleAnthropicMessages(
     ...options,
   };
 
-  // --- Streaming ---
-  if (stream) {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
+  try {
+    // --- Streaming ---
+    if (stream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
 
-    try {
-      const sseStream = adapter.transformStream(
-        handle.agent.streamProcess(messages, agentOpts),
-        context,
-      );
+      try {
+        const sseStream = adapter.transformStream(
+          handle.agent.streamProcess(messages, agentOpts),
+          context,
+        );
 
-      for await (const event of sseStream) {
-        res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+        for await (const event of sseStream) {
+          res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error('Stream error', { error: message });
+        // If headers already sent, we can only close the connection
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error('Stream error', { error: message });
-      // If headers already sent, we can only close the connection
+
+      res.end();
+      return;
     }
 
-    res.end();
-    return;
-  }
+    // --- Non-streaming ---
+    const result = await handle.agent.process(messages, agentOpts);
 
-  // --- Non-streaming ---
-  const result = await handle.agent.process(messages, agentOpts);
-
-  if (result.ok) {
-    const formatted = adapter.formatResult(result.value, context);
-    res.status(200).json(formatted);
-  } else {
-    log.error('Agent processing failed', { error: result.error.message });
-    const formatted = adapter.formatError(
-      result.error,
-      context as ApiRequestContext,
-    );
-    res.status(500).json(formatted);
+    if (result.ok) {
+      const formatted = adapter.formatResult(result.value, context);
+      res.status(200).json(formatted);
+    } else {
+      log.error('Agent processing failed', { error: result.error.message });
+      const formatted = adapter.formatError(
+        result.error,
+        context as ApiRequestContext,
+      );
+      res.status(500).json(formatted);
+    }
+  } finally {
+    resetRequestConnection(requestConnection);
   }
 }

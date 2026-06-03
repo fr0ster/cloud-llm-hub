@@ -259,10 +259,9 @@ function getToolExpositionMap(): Map<string, string> {
 // ---------------------------------------------------------------------------
 // Per-request connection override via AsyncLocalStorage
 // ---------------------------------------------------------------------------
-// SmartAgent uses a shared connection (service user) for all requests.
-// When x-sap-login/x-sap-password headers are present, a per-request
-// connection is created and stored in ALS. callToolHandler reads from ALS
-// and uses per-request connection instead of shared one.
+// SmartAgent tool definitions are shared per destination, but ABAP calls must
+// use the current user's per-request connection. callToolHandler reads from ALS
+// and refuses to call SAP when no request connection is present.
 // ---------------------------------------------------------------------------
 
 type AbapConnectionLike = import('@mcp-abap-adt/interfaces').IAbapConnection;
@@ -282,7 +281,6 @@ export function setRequestConnection(connection: AbapConnectionLike): void {
   connectionALS.enterWith({ connection, context });
 }
 
-import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import {
   clearDestinationsCache,
@@ -1032,52 +1030,12 @@ async function buildEmbeddedMcpAdapter(
 ): Promise<McpClientAdapter> {
   const log = cds.log('agent-manager');
 
-  // Resolve destination to get SAP connection config
-  const resolved = await resolveDestinationSapConfig(destinationName);
-  const connection = createConnection({
-    sapConfig: resolved.sapConfig,
-    destinationName: resolved.destinationName,
-  });
+  // Resolve destination metadata for proxy type/system type only. Do not probe
+  // or connect here: on-premise destinations must not use a destination service
+  // user at startup. Real ABAP credentials are supplied per request.
+  await resolveDestinationSapConfig(destinationName);
 
-  // Probe: verify SAP system is reachable before building the full MCP adapter
-  const PROBE_TIMEOUT_MS = 15_000;
-  const abapConn =
-    connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection;
-  try {
-    const probeResult = await abapConn.makeAdtRequest({
-      url: '/sap/bc/adt/discovery',
-      method: 'GET',
-      timeout: PROBE_TIMEOUT_MS,
-    });
-    if (probeResult.status >= 500) {
-      throw new Error(`SAP system returned HTTP ${probeResult.status}`);
-    }
-    log.info('Destination probe OK', {
-      destination: destinationName,
-      status: probeResult.status,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Destination "${destinationName}" is unreachable: ${msg}`);
-  }
-
-  // Pre-fetch CSRF token so it's ready for all tool calls.
-  // Without this, parallel tool calls race for CSRF and most fail with 403.
-  await connection.connect();
-
-  // Resolve system context: responsible person + master system.
-  // On-premise via BTP Destination: user from destination auth (e.g. MCPDEV01).
-  // Cloud: /systeminformation endpoint (called automatically as fallback).
-  // NOTE: Only call with explicit overrides — fallback to /systeminformation
-  // can interfere with CSRF token management on on-premise systems.
-  const destinationUser = resolved.username || resolved.sapConfig.username;
-  if (destinationUser) {
-    setSystemContext({ responsible: destinationUser });
-    log.info('System context set from destination user', {
-      destination: destinationName,
-      responsible: destinationUser,
-    });
-  }
+  setSystemContext({});
 
   // Load ALL tool handlers — role-based filtering happens at RAG query time
   // via ExpositionFilteringRag (post-filter by exposition metadata).
@@ -1094,10 +1052,11 @@ async function buildEmbeddedMcpAdapter(
 
   const entries = exporter.getHandlerEntries();
 
-  // Handler context with injected connection
+  // Handler context with a placeholder connection. Every actual tool call below
+  // must receive a per-request connection via connectionALS.
   const context: HandlerContext = {
     connection:
-      connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
+      null as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
     logger: loggerAdapter,
   };
 
@@ -1122,7 +1081,7 @@ async function buildEmbeddedMcpAdapter(
 
   log.info('Building embedded MCP client', {
     destination: destinationName,
-    connectionType: connection.constructor.name,
+    connectionType: 'per-request',
     toolCount: entries.length,
     tools: exporter.getToolNames(),
   });
@@ -1142,9 +1101,14 @@ async function buildEmbeddedMcpAdapter(
         throw new Error(`Unknown MCP tool: ${name}`);
       }
       // Per-request connection override: if ALS has a connection, use it
-      // instead of the shared agent connection (service user).
+      // instead of any shared/service-user destination connection.
       const requestScope = connectionALS.getStore();
-      const effectiveContext = requestScope?.context ?? context;
+      if (!requestScope) {
+        throw new Error(
+          `SAP credentials are required for destination "${destinationName}".`,
+        );
+      }
+      const effectiveContext = requestScope.context;
 
       // For closure-based handlers, temporarily swap group.context
       // so they pick up per-request connection.

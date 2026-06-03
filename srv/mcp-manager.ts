@@ -98,6 +98,20 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
     );
     const sapConfig: SapConfig = { ...resolved.sapConfig };
 
+    const destinationRequiresUserCredentials =
+      (resolved.proxyType ?? '').toLowerCase() === 'onpremise' ||
+      resolved.authenticationType === 'NoAuthentication';
+
+    if (destinationRequiresUserCredentials && (!sapLogin || !sapPassword)) {
+      const error = new Error(
+        `Destination "${destinationName}" requires SAP username and password. ` +
+          'Provide x-sap-login and x-sap-password headers.',
+      ) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 401;
+      error.code = 'SAP_CREDENTIALS_REQUIRED';
+      throw error;
+    }
+
     // Override with Basic auth from headers if provided
     if (sapLogin && sapPassword) {
       sapConfig.authType = 'basic';
@@ -108,18 +122,6 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
         destination: destinationName,
         username: sapLogin,
       });
-    }
-
-    // NoAuthentication destinations require explicit credentials via headers
-    if (
-      resolved.authenticationType === 'NoAuthentication' &&
-      !sapLogin &&
-      !sapPassword
-    ) {
-      throw new Error(
-        `Destination "${destinationName}" uses NoAuthentication. ` +
-          'Provide x-sap-login and x-sap-password headers.',
-      );
     }
 
     if (sapClientHeader) {
@@ -293,6 +295,18 @@ export async function createMCPServerForRequest(
       sapConfig,
       destinationName: destination?.destinationName,
     });
+    try {
+      await connection.connect();
+    } catch (connectErr) {
+      const error = new Error(
+        `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
+          connectErr instanceof Error ? connectErr.message : String(connectErr)
+        }`,
+      ) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 401;
+      error.code = 'SAP_CREDENTIALS_FAILED';
+      throw error;
+    }
 
     log.debug('Connection created', {
       connectionType: connection.constructor.name,

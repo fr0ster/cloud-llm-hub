@@ -253,7 +253,7 @@
               <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Your private knowledge for the chat.</p>
               <ul style="margin:0;padding-left:20px;line-height:1.7">
                 <li><b>MANAGE</b> &mdash; opens the collection editor.</li>
-                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (private, persists across sessions) or <i>session</i> (private, wiped on logout / clear chat / destination switch).</li>
+                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (private, persists across sessions) or <i>session</i> (private, wiped on logout / clear chat / destination reconnect).</li>
                 <li><b>UPLOAD FILE</b> &mdash; add one or more <code>.txt</code>/<code>.md</code>/<code>.csv</code>/<code>.json</code>/<code>.yaml</code>/<code>.xml</code>/<code>.log</code> files; each one is chunked automatically and shown in the document list as a single row regardless of chunk count. Pick multiple files in the picker and they upload sequentially.</li>
                 <li><b>+ ADD</b> &mdash; add one record by hand (paste text, optional id and tags).</li>
                 <li><b>SEARCH</b> &mdash; find records inside a collection.</li>
@@ -268,7 +268,7 @@
 
         <form id="sap-creds-dialog" onsubmit="applySapCreds(); return false;" style="display:none;background:#0a0a0a;border:1px solid #333;padding:12px;border-radius:4px;margin-bottom:8px">
           <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">SAP SYSTEM CREDENTIALS</div>
-          <div style="font-size:11px;color:#666;margin-bottom:8px">Override destination service user with your SAP credentials. Leave empty to use default.</div>
+          <div style="font-size:11px;color:#888;margin-bottom:8px">Use your own ABAP user for the selected destination. On-premise destinations require these credentials.</div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
             <label style="color:#888;font-size:12px;width:70px">Login:</label>
             <input id="sap-login" name="sap-login" autocomplete="section-sap username" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
@@ -291,7 +291,7 @@
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
             <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
-            <button id="sap-creds-btn" onclick="toggleSapCredsDialog()" title="SAP system credentials (override destination user)">SAP</button>
+            <button id="sap-creds-btn" onclick="toggleSapCredsDialog()" title="SAP system credentials for selected destination">SAP</button>
             <button id="logout-btn" onclick="try{localStorage.clear();sessionStorage.clear()}catch{};window.location.replace('/logout')" title="Sign out">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
@@ -310,6 +310,7 @@
         const classifierSelect = document.getElementById('classifier-model-select');
         let conversationHistory = [];
         let ready = false;
+        let connectedDestination = '';
         // Session ID is now managed server-side via an HttpOnly cookie (clh_session).
         // The browser sends the cookie automatically on every same-origin request,
         // so the session survives page reloads without JS generating a new random id.
@@ -328,6 +329,10 @@
             dialog.style.display = dialog.style.display === 'none' ? 'block' : 'none';
         }
 
+        function showSapCredsDialog() {
+            document.getElementById('sap-creds-dialog').style.display = 'block';
+        }
+
         function applySapCreds() {
             sapCredsLogin = document.getElementById('sap-login').value.trim();
             sapCredsPassword = document.getElementById('sap-password').value;
@@ -337,7 +342,7 @@
                 btn.title = `SAP credentials: ${sapCredsLogin}`;
             } else {
                 btn.classList.remove('active');
-                btn.title = 'SAP system credentials (override destination user)';
+                btn.title = 'SAP system credentials for selected destination';
             }
             document.getElementById('sap-creds-dialog').style.display = 'none';
         }
@@ -348,7 +353,7 @@
             document.getElementById('sap-login').value = '';
             document.getElementById('sap-password').value = '';
             document.getElementById('sap-creds-btn').classList.remove('active');
-            document.getElementById('sap-creds-btn').title = 'SAP system credentials (override destination user)';
+            document.getElementById('sap-creds-btn').title = 'SAP system credentials for selected destination';
             document.getElementById('sap-creds-dialog').style.display = 'none';
         }
 
@@ -1109,6 +1114,19 @@
             chatWindow.innerHTML = '';
         }
 
+        function reconnectDestination(nextDestination) {
+            const prev = connectedDestination;
+            connectedDestination = nextDestination || '';
+            clearChat();
+            clearSapCreds();
+            if (connectedDestination) showSapCredsDialog();
+            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Reconnected to destination ${escapeHtml(connectedDestination || 'none')}. Enter SAP credentials before the next SAP call.</div>`;
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            if (prev) {
+                console.log('[DEST] reconnect', { from: prev, to: connectedDestination });
+            }
+        }
+
         function exportSessionLog() {
             if (conversationHistory.length === 0) { alert('No messages to export.'); return; }
             const model = getSelectedModel() || 'unknown';
@@ -1160,7 +1178,13 @@
                 destSelect.appendChild(opt);
             }
             destSelect.disabled = false;
+            connectedDestination = destSelect.value || currentVal || connectedDestination;
         }
+
+        destSelect.addEventListener('change', () => {
+            const next = getSelectedDestination() || '';
+            if (next !== connectedDestination) reconnectDestination(next);
+        });
 
         function handleInputKeydown(event) {
             if (event.key === 'Enter') { sendMessage(); return; }
@@ -1191,6 +1215,7 @@
             if (!ready) return;
             const text = userInput.value.trim();
             if (!text) return;
+            const selectedDest = getSelectedDestination();
 
             inputHistory.push(text);
             historyIndex = -1;
@@ -1258,7 +1283,6 @@
                 // Session is tracked via the clh_session HttpOnly cookie (set by server),
                 // so no X-Session-Id header is needed from the browser.
                 const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders() };
-                const selectedDest = getSelectedDestination();
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
                 // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)
@@ -1279,6 +1303,9 @@
                     try {
                         const errJson = JSON.parse(errText);
                         if (errJson.error && errJson.error.message) {
+                            if (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED') {
+                                toggleSapCredsDialog();
+                            }
                             throw new Error(errJson.error.message);
                         }
                     } catch (parseErr) {
