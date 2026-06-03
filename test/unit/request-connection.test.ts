@@ -90,7 +90,7 @@ describe('establishRequestConnection', () => {
     );
     expect(result).toEqual({ handled: false });
     expect(mockResolve).not.toHaveBeenCalled();
-    expect(mockSetRequestConnection).not.toHaveBeenCalled();
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
   test('on-premise destination without credentials → 401, no connection', async () => {
@@ -112,7 +112,7 @@ describe('establishRequestConnection', () => {
       'SAP_CREDENTIALS_REQUIRED',
     );
     expect(mockCreateConnection).not.toHaveBeenCalled();
-    expect(mockSetRequestConnection).not.toHaveBeenCalled();
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
   test('NoAuthentication destination without credentials → 401', async () => {
@@ -158,7 +158,6 @@ describe('establishRequestConnection', () => {
     expect(passedConfig.username).toBe('MCPUSER');
     expect(passedConfig.password).toBe('secret');
     expect(mockConnect).toHaveBeenCalledTimes(1);
-    expect(mockSetRequestConnection).toHaveBeenCalledTimes(1);
   });
 
   test('cloud destination without credentials → uses resolved auth (no 401)', async () => {
@@ -184,7 +183,6 @@ describe('establishRequestConnection', () => {
     // No caller creds → keep the resolved JWT auth untouched.
     expect(passedConfig.authType).toBe('jwt');
     expect(passedConfig.jwtToken).toBe('tok');
-    expect(mockSetRequestConnection).toHaveBeenCalledTimes(1);
   });
 
   test('connect() failure → 401 SAP connection error, not registered', async () => {
@@ -203,6 +201,8 @@ describe('establishRequestConnection', () => {
     );
     expect(result.handled).toBe(true);
     expect(res.statusCode).toBe(401);
-    expect(mockSetRequestConnection).not.toHaveBeenCalled();
+    // connect() was attempted and rejected → no usable connection returned.
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+    expect(result.connection).toBeUndefined();
   });
 });
