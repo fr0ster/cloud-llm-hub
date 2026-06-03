@@ -28,14 +28,15 @@ import {
   getDestinationStates,
   getSmartAgent,
   isAgentReady,
-  setRequestConnection,
   setSessionDestination,
 } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
-import { createConnection } from './connections/connectionFactory';
-import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { getAvailableModels } from './lib/ai-core-models';
 import { resolveExposition } from './lib/exposition';
+import {
+  establishRequestConnection,
+  resetRequestConnection,
+} from './lib/request-connection';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
@@ -491,6 +492,10 @@ export async function handleChatCompletions(
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(sessionId);
   const destAfter = requestedDestination || destBefore;
+  let requestConnection:
+    | import('@mcp-abap-adt/interfaces').IAbapConnection
+    | undefined;
+
   log.debug('Destination tracking', {
     sessionId,
     destBefore,
@@ -498,10 +503,17 @@ export async function handleChatCompletions(
     requestedDestination: requestedDestination || '(none)',
   });
 
+  if (destAfter) {
+    const established = await establishRequestConnection(req, res, destAfter);
+    if (established.handled) return;
+    requestConnection = established.connection;
+  }
+
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     handle = await getSmartAgent(requestedModel, requestedDestination);
   } catch (err) {
+    resetRequestConnection(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
     // Propagate the structured destination_unreachable error from getSmartAgent
     // so clients can distinguish "your SAP system isn't reachable" from generic
@@ -567,10 +579,11 @@ export async function handleChatCompletions(
     return;
   }
 
-  // Track which destination this session is using
+  // Track which destination this session is using. A changed destination is a
+  // reconnect boundary: wipe session-scoped state before continuing.
   setSessionDestination(sessionId, destAfter);
   if (destBefore !== destAfter && serverManaged) {
-    log.info('Destination switched, clearing session history', {
+    log.info('Destination reconnect, clearing session history', {
       from: destBefore,
       to: destAfter,
       sessionId,
@@ -578,7 +591,7 @@ export async function handleChatCompletions(
     clearSession(sessionId, userId);
     clearSessionTopic(sessionId);
     // Drop the session's ephemeral RAG collections too (owner-guarded), so they
-    // don't keep shadowing user collections after a destination switch.
+    // don't keep shadowing user collections after a destination reconnect.
     getCollectionRegistry().deleteSessionCollections(userId, sessionId);
     // Re-build normalizedMessages with only the new user message (no stale history)
     const lastUserContent = extractText(
@@ -717,44 +730,6 @@ export async function handleChatCompletions(
           contextChars: ragContext.length,
         });
       }
-    }
-  }
-
-  // Per-request credential override: create connection with user's credentials
-  const sapLogin = req.headers['x-sap-login'] as string | undefined;
-  const sapPassword = req.headers['x-sap-password'] as string | undefined;
-  let requestConnection:
-    | import('@mcp-abap-adt/interfaces').IAbapConnection
-    | undefined;
-
-  if (sapLogin && sapPassword && destAfter) {
-    try {
-      const resolved = await resolveDestinationSapConfig(
-        destAfter,
-        req.headers.authorization?.replace('Bearer ', ''),
-      );
-      const sapConfig = { ...resolved.sapConfig };
-      sapConfig.authType = 'basic';
-      sapConfig.username = sapLogin;
-      sapConfig.password = sapPassword;
-      const conn = createConnection({
-        sapConfig,
-        destinationName: resolved.destinationName,
-      });
-      await conn.connect();
-      requestConnection =
-        conn as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection;
-      setRequestConnection(requestConnection);
-      log.info('Per-request connection created', {
-        destination: destAfter,
-        username: sapLogin,
-      });
-    } catch (connErr) {
-      log.warn('Per-request connection failed, using shared', {
-        destination: destAfter,
-        username: sapLogin,
-        error: connErr instanceof Error ? connErr.message : String(connErr),
-      });
     }
   }
 
@@ -1209,6 +1184,7 @@ export async function handleChatCompletions(
     );
   } finally {
     restoreRagStores();
+    resetRequestConnection(requestConnection);
   }
 }
 
