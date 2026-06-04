@@ -100,6 +100,16 @@
         "*.log"
       ]
     },
+    "log": {
+      "mask_headers": [
+        "/authorization/i",
+        "/cookie/i",
+        "/cert/i",
+        "/ssl/i",
+        "/x-sap-password/i",
+        "/x-sap-login/i"
+      ]
+    },
     "requires": {
       "auth": {
         "kind": "xsuaa",
