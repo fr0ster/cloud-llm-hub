@@ -265,12 +265,20 @@ export class CloudSdkAbapConnection implements AbapConnection {
           response?: { status?: number };
           statusCode?: number;
         };
+        const status = errorObj?.response?.status ?? errorObj?.statusCode;
         logger.csrfToken('error', `CSRF token error: ${errorMessage}`, {
           url: csrfUrl,
-          status: errorObj?.response?.status || errorObj?.statusCode,
+          status,
           attempt: attempt + 1,
           maxAttempts: retryCount + 1,
         });
+
+        // Authentication failures (401/403) must NOT be retried: each retry is
+        // another failed ABAP logon and will LOCK the user after a few attempts.
+        // Only transient failures (network/5xx/missing-token) are worth retrying.
+        if (status === 401 || status === 403) {
+          throw new Error(CSRF_ERROR_MESSAGES.FETCH_FAILED(1, errorMessage));
+        }
 
         if (attempt < retryCount) {
           continue;
