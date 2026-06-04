@@ -259,10 +259,9 @@ function getToolExpositionMap(): Map<string, string> {
 // ---------------------------------------------------------------------------
 // Per-request connection override via AsyncLocalStorage
 // ---------------------------------------------------------------------------
-// SmartAgent uses a shared connection (service user) for all requests.
-// When x-sap-login/x-sap-password headers are present, a per-request
-// connection is created and stored in ALS. callToolHandler reads from ALS
-// and uses per-request connection instead of shared one.
+// SmartAgent tool definitions are shared per destination, but ABAP calls must
+// use the current user's per-request connection. callToolHandler reads from ALS
+// and refuses to call SAP when no request connection is present.
 // ---------------------------------------------------------------------------
 
 type AbapConnectionLike = import('@mcp-abap-adt/interfaces').IAbapConnection;
@@ -282,7 +281,24 @@ export function setRequestConnection(connection: AbapConnectionLike): void {
   connectionALS.enterWith({ connection, context });
 }
 
-import { createConnection } from './connections/connectionFactory';
+/**
+ * Run `fn` with the per-request connection bound for its ENTIRE async subtree.
+ *
+ * Unlike setRequestConnection (enterWith), `als.run()` keeps the store alive
+ * across every await/promise hop inside `fn` — including the SmartAgent pipeline
+ * and the MCP tool calls it makes. This is what callToolHandler relies on:
+ * without it the store is lost by the time a tool runs and the call fails with
+ * "SAP credentials are required". Per-request isolation is preserved (each
+ * request gets its own run() scope), which matters on the shared server.
+ */
+export function runWithRequestConnection<T>(
+  connection: AbapConnectionLike,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const context: HandlerContext = { connection, logger: loggerAdapter };
+  return connectionALS.run({ connection, context }, fn);
+}
+
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import {
   clearDestinationsCache,
@@ -401,6 +417,30 @@ export interface DestinationState {
   toolCount: number;
   status: 'pending' | 'ready' | 'vectorizing' | 'error' | 'unreachable';
   error?: string;
+  /** BTP destination ProxyType ('OnPremise' | 'Internet'), when known. */
+  proxyType?: string;
+  /**
+   * True when this destination requires the caller's own SAP credentials
+   * (on-premise / NoAuthentication). The chat UI uses this to prompt for
+   * login/password on connect. Cloud destinations (JWT) are false.
+   */
+  requiresCredentials?: boolean;
+}
+
+/**
+ * Whether a destination requires the caller's own SAP credentials.
+ * On-premise (Cloud Connector) and NoAuthentication destinations do; cloud
+ * destinations with their own auth (JWT via OAuth2*) do not. Mirrors the
+ * fail-closed rule in srv/lib/request-connection.ts.
+ */
+export function destinationRequiresCredentials(
+  proxyType?: string,
+  authentication?: string,
+): boolean {
+  return (
+    (proxyType ?? '').toLowerCase() === 'onpremise' ||
+    authentication === 'NoAuthentication'
+  );
 }
 
 /** Map of destination name → pre-built state */
@@ -513,12 +553,16 @@ export function getDestinationStates(): Array<{
   status: string;
   toolCount: number;
   error?: string;
+  proxyType?: string;
+  requiresCredentials?: boolean;
 }> {
   return [...destinationStates.entries()].map(([name, state]) => ({
     name,
     status: state.status,
     toolCount: state.toolCount,
     error: state.error,
+    proxyType: state.proxyType,
+    requiresCredentials: state.requiresCredentials,
   }));
 }
 
@@ -528,7 +572,7 @@ export function getDestinationStates(): Array<{
  * Returns updated destination states.
  */
 export async function refreshDestinations(): Promise<
-  Array<{ name: string; status: string; toolCount: number; error?: string }>
+  ReturnType<typeof getDestinationStates>
 > {
   const log = cds.log('agent-manager');
 
@@ -871,11 +915,36 @@ async function initDestination(
 
   log.info('Initializing destination', { destination: destinationName });
 
+  // Carry destination metadata (proxyType/auth) so the UI can prompt for SAP
+  // credentials on connect for on-premise destinations. Preserve any value
+  // already set by the pre-populate pass.
+  const prev = destinationStates.get(destinationName);
+  let proxyType = prev?.proxyType;
+  let requiresCredentials = prev?.requiresCredentials;
+  if (proxyType === undefined) {
+    try {
+      const meta = (await getAvailableDestinations()).find(
+        (d) => d.name === destinationName,
+      );
+      if (meta) {
+        proxyType = meta.proxyType;
+        requiresCredentials = destinationRequiresCredentials(
+          meta.proxyType,
+          meta.authentication,
+        );
+      }
+    } catch {
+      // Non-fatal: UI falls back to the 401 SAP_CREDENTIALS_REQUIRED prompt.
+    }
+  }
+
   const state: DestinationState = {
     mcpAdapter: null,
     toolsRag: await createToolsRagStore(config.llm.resourceGroup),
     toolCount: 0,
     status: 'vectorizing',
+    proxyType,
+    requiresCredentials,
   };
   destinationStates.set(destinationName, state);
 
@@ -954,6 +1023,11 @@ async function initBackgroundDestinations(): Promise<void> {
           toolsRag: new ExpositionFilteringRag(new InMemoryRag()),
           toolCount: 0,
           status: 'pending',
+          proxyType: dest.proxyType,
+          requiresCredentials: destinationRequiresCredentials(
+            dest.proxyType,
+            dest.authentication,
+          ),
         });
       }
     }
@@ -1032,52 +1106,12 @@ async function buildEmbeddedMcpAdapter(
 ): Promise<McpClientAdapter> {
   const log = cds.log('agent-manager');
 
-  // Resolve destination to get SAP connection config
-  const resolved = await resolveDestinationSapConfig(destinationName);
-  const connection = createConnection({
-    sapConfig: resolved.sapConfig,
-    destinationName: resolved.destinationName,
-  });
+  // Resolve destination metadata for proxy type/system type only. Do not probe
+  // or connect here: on-premise destinations must not use a destination service
+  // user at startup. Real ABAP credentials are supplied per request.
+  await resolveDestinationSapConfig(destinationName);
 
-  // Probe: verify SAP system is reachable before building the full MCP adapter
-  const PROBE_TIMEOUT_MS = 15_000;
-  const abapConn =
-    connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection;
-  try {
-    const probeResult = await abapConn.makeAdtRequest({
-      url: '/sap/bc/adt/discovery',
-      method: 'GET',
-      timeout: PROBE_TIMEOUT_MS,
-    });
-    if (probeResult.status >= 500) {
-      throw new Error(`SAP system returned HTTP ${probeResult.status}`);
-    }
-    log.info('Destination probe OK', {
-      destination: destinationName,
-      status: probeResult.status,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Destination "${destinationName}" is unreachable: ${msg}`);
-  }
-
-  // Pre-fetch CSRF token so it's ready for all tool calls.
-  // Without this, parallel tool calls race for CSRF and most fail with 403.
-  await connection.connect();
-
-  // Resolve system context: responsible person + master system.
-  // On-premise via BTP Destination: user from destination auth (e.g. MCPDEV01).
-  // Cloud: /systeminformation endpoint (called automatically as fallback).
-  // NOTE: Only call with explicit overrides — fallback to /systeminformation
-  // can interfere with CSRF token management on on-premise systems.
-  const destinationUser = resolved.username || resolved.sapConfig.username;
-  if (destinationUser) {
-    setSystemContext({ responsible: destinationUser });
-    log.info('System context set from destination user', {
-      destination: destinationName,
-      responsible: destinationUser,
-    });
-  }
+  setSystemContext({});
 
   // Load ALL tool handlers — role-based filtering happens at RAG query time
   // via ExpositionFilteringRag (post-filter by exposition metadata).
@@ -1094,10 +1128,11 @@ async function buildEmbeddedMcpAdapter(
 
   const entries = exporter.getHandlerEntries();
 
-  // Handler context with injected connection
+  // Handler context with a placeholder connection. Every actual tool call below
+  // must receive a per-request connection via connectionALS.
   const context: HandlerContext = {
     connection:
-      connection as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
+      null as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
     logger: loggerAdapter,
   };
 
@@ -1122,7 +1157,7 @@ async function buildEmbeddedMcpAdapter(
 
   log.info('Building embedded MCP client', {
     destination: destinationName,
-    connectionType: connection.constructor.name,
+    connectionType: 'per-request',
     toolCount: entries.length,
     tools: exporter.getToolNames(),
   });
@@ -1142,9 +1177,14 @@ async function buildEmbeddedMcpAdapter(
         throw new Error(`Unknown MCP tool: ${name}`);
       }
       // Per-request connection override: if ALS has a connection, use it
-      // instead of the shared agent connection (service user).
+      // instead of any shared/service-user destination connection.
       const requestScope = connectionALS.getStore();
-      const effectiveContext = requestScope?.context ?? context;
+      if (!requestScope) {
+        throw new Error(
+          `SAP credentials are required for destination "${destinationName}".`,
+        );
+      }
+      const effectiveContext = requestScope.context;
 
       // For closure-based handlers, temporarily swap group.context
       // so they pick up per-request connection.

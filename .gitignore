@@ -87,3 +87,10 @@ docs/tutorials/**/report*.report
 
 .~lock.*
 
+
+# Build artifact — approuter copy of app/chat/webapp (created by mta.yaml build step)
+app/router/chat/
+
+# Generated staging MTA descriptor (tools/make-staging-mta.js — ephemeral)
+mta.staging.generated.yaml
+xs-security*.generated.json

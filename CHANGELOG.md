@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file. The format follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) principles.
 
+## [Unreleased]
+
+## [6.14.1] - 2026-06-04
+
+### Fixed
+- **Per-request SAP connection was lost across the agent pipeline** (#129). After #125 the per-request connection was registered with `AsyncLocalStorage.enterWith()` before `agent.process()`; the store did not survive the SmartAgent pipeline's async hops, so the MCP tool call saw an empty ALS store and failed with `SAP credentials are required` even with valid login/password. Added `runWithRequestConnection()` (`connectionALS.run(store, fn)`) and wrapped `process()`/`streamProcess()` in both the OpenAI and Anthropic handlers, keeping the store alive for the whole async subtree while preserving per-request isolation.
+- **Login gate showed only the first (ready) destination** (#129). With many destinations and sequential background vectorization, only the first appeared selectable, looking broken. The gate now lists every destination; not-yet-ready ones show a status suffix and are disabled, becoming selectable as they finish (the open gate refreshes on each `/v1/models` poll).
+- **Browser password managers could not fill the login gate** (#129). The SAP login/password inputs used `autocomplete="section-sap …"`; the `section-*` prefix scoped them out of the domain autofill set. Switched to standard `autocomplete="username"` / `"current-password"`.
+
+## [6.14.0] - 2026-06-03
+
+### Added
+- **Login gate: pick destination + SAP credentials after sign-in** (#128). The chat UI now blocks the whole interface after sign-in until the user chooses a destination and enters SAP login/password in a connect-time modal. The destination selector is removed from the toolbar (now an info label `DEST: <name>`); the destination is fixed for the session — to switch, log out and back in. Replaces the per-destination-change credential prompt from #126 (which only asked on a manual change and left a stale "enter credentials" message after applying). A mid-session `401 SAP_CREDENTIALS_REQUIRED` re-opens the gate. Only on-premise destinations exist for now; cloud/JWT auth is still in design.
+
+### Fixed
+- **Staging role-collection names collided with prod in the same subaccount** (#127). Role-collection names in `xs-security.json` (e.g. `MCP Reader Access`) are subaccount-global, not scoped by `xsappname`, so deploying a staging instance into the same subaccount as prod failed with `Role Collection X already exists`. `make-staging-mta.js` now appends ` (staging)` to each `role-collections[].name`; `role-template-references` stay `$XSAPPNAME`-scoped and the source file is not mutated. Unblocks same-subaccount prod+staging targets (e.g. CustomerB `deploy/customer-b-stg`).
+
+## [6.13.1] - 2026-06-03
+
+### Fixed
+- **Chat UI now prompts for SAP credentials on connect to on-premise destinations** (#126). After #125 the credential dialog only opened on a manual destination change; on first load with a pre-selected on-premise destination the UI accepted it silently and the user was only asked after the first SAP call returned `401 SAP_CREDENTIALS_REQUIRED`. The backend gate was intact (fail-closed), but the prompt was missing on connect. The server now exposes `proxyType` / `requiresCredentials` per destination (in the `/v1/models` `_destinations` payload and `refreshDestinations()`), and the UI opens the login/password dialog on connect **only** for on-premise / `NoAuthentication` destinations — cloud (JWT) destinations are left untouched (still in design). The existing 401 fallback remains.
+
+## [6.13.0] - 2026-06-03
+
+Per-user SAP credentials — no default destination service user. PR #125.
+
+### Changed
+- **Every channel now runs ABAP tools under the caller's own SAP user; the shared server no longer falls back to a destination service user** (#125). On-premise (Cloud Connector) and `NoAuthentication` destinations require the caller's `x-sap-login` / `x-sap-password` per request — missing credentials return `401 SAP_CREDENTIALS_REQUIRED` and no connection is built. Cloud (http) destinations use the destination's resolved auth (JWT); caller basic-auth overrides if supplied. The per-request connection is `connect()`-validated before the agent runs. This rationale: `cloud-llm-hub` is a single shared server, so the "default user" is deliberately pushed down to the per-user, per-machine `mcp-abap-adt-proxy` (which injects both the service JWT and the ABAP credentials via its YAML `defaultHeaders`).
+- The credential policy is centralized in `srv/lib/request-connection.ts` (`establishRequestConnection` / `resetRequestConnection`) and applied identically on `/v1/chat/completions`, `/v1/messages` (Claude CLI), and `/mcp/stream/http`. The embedded MCP adapter no longer probes or connects with a destination user at startup — it refuses ABAP calls when no per-request connection is present.
+- **Chat UI** treats a destination change as a reconnect boundary: it clears session-scoped state and SAP credentials, prompts for the new destination's credentials, and opens the credential dialog automatically when the server returns `SAP_CREDENTIALS_REQUIRED`.
+
+## [6.12.0] - 2026-05-31
+
+Generated staging MTA + `@mcp-abap-adt` upgrade to the 17.x line. PRs #123, #124.
+
+### Changed
+- **Bumped `@mcp-abap-adt/core` 6.11.1 → 6.11.3 and the llm-agent family + provider/embedder/RAG packages 16.2.0 → 17.0.0** (#124). `core` 6.11.3 removes the redundant `GetProgFullCode` read path and sharpens the `ReadProgram` / `GetInclude` tool descriptions; `srv/tool-intents.json` was regenerated to match. The llm-agent 16 → 17 major surfaced no TypeScript breakage and is a behavioral no-op for cloud-llm-hub — the 17.0.0 changes live in the `llm-agent-server`/coordinator layer, which the project does not consume (it builds its own server on `SmartAgentBuilder`). Reinstalled against the existing lockfile so the diff is mcp-only; `mbt` stays pinned exact at `1.2.49`.
+- **Staging MTA descriptor + XSUAA files are now generated at deploy time** from the production `mta.yaml`, instead of maintaining a forked `mta-staging.yaml` on the staging branch (#123). `tools/make-staging-mta.js` reads `mta.yaml`, renames the structural identifiers `cloud-llm-hub` → `cloud-llm-hub-staging` (MTA ID, module/resource names, provides/requires refs, `xsappname`, `TENANT_HOST_PATTERN`), and writes the gitignored, ephemeral `mta.staging.generated.yaml`. Every `xs-security*.json` a resource references is regenerated to a gitignored `xs-security*.generated.json` with the same rename applied (`xsappname`, `grant-as-authority-to-apps`, `authorities`) and its `path:` repointed — so the staging XSUAA apps carry staging app IDs and the analyst/developer grant flow stays self-consistent rather than authorizing against prod. The route template, `APPROUTER_HOST`/`CF_LANDSCAPE`/`LLM_AGENT_*` params, the version number, and the `{space-guid}`/`!t<id>` tenant suffixes are left untouched; the rename is idempotent. `tools/deploy.sh` invokes the generator for the staging branch (`-f mta.staging.generated.yaml`, `.mtaext.staging`). The dead `mta-staging.yaml` is removed and staging no longer drifts from prod — this eliminates the recurring `mta.yaml` merge conflict on `deploy/acme-prod-stg`. `tools/make-staging-mta.js` reads `mta.yaml`, renames the structural identifiers `cloud-llm-hub` → `cloud-llm-hub-staging` (MTA ID, module/resource names, provides/requires refs, `xsappname`, `TENANT_HOST_PATTERN`), and writes the gitignored, ephemeral `mta.staging.generated.yaml`. Every `xs-security*.json` a resource references is regenerated to a gitignored `xs-security*.generated.json` with the same rename applied (`xsappname`, `grant-as-authority-to-apps`, `authorities`) and its `path:` repointed — so the staging XSUAA apps carry staging app IDs and the analyst/developer grant flow stays self-consistent rather than authorizing against prod. The route template, `APPROUTER_HOST`/`CF_LANDSCAPE`/`LLM_AGENT_*` params, the version number, and the `{space-guid}`/`!t<id>` tenant suffixes are left untouched; the rename is idempotent. `tools/deploy.sh` invokes the generator for the staging branch (`-f mta.staging.generated.yaml`, `.mtaext.staging`). The dead `mta-staging.yaml` is removed and staging no longer drifts from prod — this eliminates the recurring `mta.yaml` merge conflict on `deploy/acme-prod-stg`.
+
+## [6.11.0] - 2026-05-30
+
+Preset RAG collections — per-user RAP skills + context, seeded on demand. PR #122.
+
+### Added
+- **Preset RAG collections** (#122). Opening the chat MANAGE panel now seeds two per-user preset collections if absent — `RAP Skills` (16 fact-format object-creation skills) and `RAP Context` (4 RAP modeling-context docs: composition-vs-association, odata-draft-vs-readonly, phase-procedure, strict-mode-2). New endpoint `POST /v1/rag/presets/ensure` (`srv/presets.ts`). Per-user collection id via `sha256(userId)` 16-hex key; collections carry `preset:true` so the registry's `defaultEnabled = !preset` rule (from v6.8.10) makes them default OFF — opt-in, no auto-join to chat context. Seeding is idempotent at the document level: create-if-absent collection, add-if-missing documents, so user edits are preserved and a partial seed self-heals on the next open; a single document failure is logged and skipped.
+- Seed content lives under `srv/presets/{rap-skills,rap-context}/` and mirrors `docs/tutorials/rap-bo-book-catalog/{skills,context}/` byte-for-byte; a `presets-content-drift` unit test enforces that the two never silently diverge. The MTA build prune step touches only `node_modules`, so the seed `.md` files ship intact in `gen/srv/srv/presets/`.
+
+## [6.10.0] - 2026-05-29
+
+Dependency upgrade to the `@mcp-abap-adt` 16.x line (Node 22) plus two RAG Manager UI fixes. PRs #120, #121.
+
+### Changed
+- **Bumped the whole `@mcp-abap-adt/*` dependency set** (#121): the llm-agent family (`llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`) and all provider/embedder/RAG packages (`openai-llm`, `anthropic-llm`, `deepseek-llm`, `*-embedder`, `qdrant-rag`, `sap-aicore-*`) from 12.x → **16.2.0**; `core` 6.7.0 → **6.11.1**; `adt-clients` 5.4.1 → 5.4.3; `connection` 1.8.0 → 1.9.1; `interfaces` 7.1.0 → 7.2.0. The llm-agent major bump (12 → 16) surfaced no TypeScript breakage — cloud-llm-hub programs against `@mcp-abap-adt/interfaces`, which stayed compatible. `mbt` stays pinned exact at `1.2.49` (post-Shai-Hulud safe re-publish).
+- **Require Node 22** (#121): `core@6.11.1` declares `engines.node >=22.0.0`. Aligned root `engines.node` (`>=20` → `>=22`), CI and release `setup-node` (`20` → `22`), and the lockfile root entry — previously CI/runtime could run below the dependency's declared minimum. Local `.nvmrc` / Volta were already on 22.16.0.
+
+### Fixed
+- **Chat UI: RAG Manager source-row DEL did nothing for chunked uploads** (#120). The DEL button inlined `JSON.stringify(chunkIds)` + `escapeHtml(sourceName)` into its `onclick`; `escapeHtml` does not escape single quotes, so a source name with an apostrophe broke the inline handler. Reworked to carry the chunk-id list and source name in `data-*` attributes the handler reads off the button.
+- **Chat UI: collection list showed chunk count instead of document count** (#120). Added a server-derived `sourceCount` that groups records by `(metadata.source, metadata.uploadId)` — every chunk of one upload counts once, two uploads of the same filename count twice, manual records count individually. The MANAGE list groups its rows the same way.
+
 ## [6.9.0] - 2026-05-28
 
 Multi-file RAG upload, source-aggregated Manager view, and a complete refactor of every tutorial's `skills/` folder to the self-contained short-fact form. PRs #115, #116, #117.
