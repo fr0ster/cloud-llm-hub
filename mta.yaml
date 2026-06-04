@@ -51,6 +51,13 @@ modules:
     parameters:
       instances: 1
       buildpack: nodejs_buildpack
+      # Explicit per-subaccount route so the srv URL reflects the subaccount
+      # (e.g. acme-subaccount-cloud-llm-hub-srv) instead of the generic
+      # CF default org-name route (acme-org...-sn-<random-guid>), which is
+      # confusing (looks like another account) and unstable across redeploys.
+      # The proxy targetUrl points here, so a stable, named route matters.
+      routes:
+        - route: ${APPROUTER_HOST}-srv.${CF_LANDSCAPE}
     properties:
       # LLM Agent Configuration (values from .mtaext via global parameters)
       LLM_AGENT_PROVIDER: ${LLM_AGENT_PROVIDER}
