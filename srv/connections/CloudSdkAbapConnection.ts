@@ -93,6 +93,20 @@ export class CloudSdkAbapConnection implements AbapConnection {
       .join('; ');
   }
 
+  /**
+   * Force the configured SAP client (mandant) into the `sap-usercontext` cookie.
+   * The `X-SAP-Client` header alone is NOT enough: SAP routes the request to the
+   * system DEFAULT client unless `sap-usercontext=sap-client=<client>` is sent,
+   * and the CSRF token itself is client-specific. Without this, a non-default
+   * client (e.g. 600) silently falls back to the default (e.g. 100) and the
+   * logon fails because the user's context lives in the other client.
+   */
+  private enforceClientCookie(): void {
+    if (this.config.client) {
+      this.cookieJar.set('sap-usercontext', `sap-client=${this.config.client}`);
+    }
+  }
+
   async getBaseUrl(): Promise<string> {
     if (this.cachedBaseUrl) {
       return this.cachedBaseUrl;
@@ -214,6 +228,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
         // - Authentication via BTP Destination Service
         // - Proxy configuration for On-Premise systems
         // - SSL certificate validation
+        // The CSRF token is client-specific — fetch it in the TARGET client, not
+        // the system default. Seed sap-usercontext before the request.
+        this.enforceClientCookie();
+        const csrfCookie = this.getCookieHeader();
         const response = await executeHttpRequest(
           { destinationName: this.destinationName },
           {
@@ -222,6 +240,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
             headers: {
               ...(await this.getAuthHeaders()),
               ...CSRF_CONFIG.REQUIRED_HEADERS,
+              ...(csrfCookie ? { Cookie: csrfCookie } : {}),
             },
           },
         );
@@ -246,6 +265,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
         this.mergeSetCookies(
           response.headers?.['set-cookie'] as string | string[] | undefined,
         );
+        // SAP's response often resets sap-usercontext to the system DEFAULT
+        // client — re-enforce our configured client for all subsequent requests.
+        this.enforceClientCookie();
         if (this.cookieJar.size > 0) {
           logger.csrfToken('success', 'Cookies extracted from CSRF response', {
             cookieCount: this.cookieJar.size,
