@@ -103,5 +103,6 @@
     "ztst",
     "Вирішення",
     "проблем"
-  ]
+  ],
+  "github.copilot.chat.virtualTools.threshold": 0
 }
