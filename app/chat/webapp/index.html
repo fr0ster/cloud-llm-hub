@@ -403,6 +403,17 @@
             const info = document.getElementById('dest-info');
             if (info) info.textContent = dest;
 
+            // Ask the browser password manager to SAVE these SAP creds. The gate
+            // cancels the real form submit (return false) and hides itself
+            // immediately, so the browser's save heuristic never fires on its own
+            // — trigger it explicitly via the Credential Management API.
+            if (window.PasswordCredential) {
+                try {
+                    navigator.credentials.store(
+                        new PasswordCredential({ id: login, password: password, name: dest })
+                    );
+                } catch (e) { /* non-fatal: unsupported browser/context */ }
+            }
             loginGateDone = true;
             hideLoginGate();
             unlockInput('login-gate');
