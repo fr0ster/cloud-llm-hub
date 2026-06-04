@@ -100,6 +100,39 @@ echo -n "alice:" | base64  # Should be YWxpY2U6
 
 ---
 
+### Problem: Web chat — wrong SAP password after switching systems
+
+**TL;DR:** The browser password manager keeps only the **last** SAP password you
+saved. If the same SAP user has **different passwords on different systems**
+(e.g. `DEVELOPER` on DEV vs QAS), after switching systems you must **re-type the
+password manually** — the autofilled one belongs to the other system.
+
+**Symptoms:**
+
+- Login gate connects to one system fine, but a different system fails / 401.
+- You switched destination (e.g. DEV → QAS) and it stopped working.
+
+**Why:**
+
+- The login gate stores credentials in the **browser password manager**, keyed by
+  `(host, username)`.
+- Same hub host + same SAP user = **one** stored password. The manager autofills
+  that one password for **every** system — but each SAP system may have its own
+  password for that user.
+- So whichever system's password you saved last works; the other gets the wrong
+  password.
+
+**Fix:**
+
+- When you LOGOUT and reconnect to a different system that uses the **same SAP
+  user with a different password**, **clear the autofilled password field and
+  type the correct password** for that system.
+- The manager then remembers the last one you entered (so switching back requires
+  re-typing again). This is a browser password-manager limitation (one password
+  per user per site), not a server issue.
+
+---
+
 ### Problem: 403 Forbidden
 
 **Symptoms:**
