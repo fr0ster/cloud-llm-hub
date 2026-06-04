@@ -133,6 +133,56 @@ password manually** — the autofilled one belongs to the other system.
 
 ---
 
+### Problem: Local proxy — `SAP_CREDENTIALS_REQUIRED` even though creds are set
+
+**TL;DR:** Point the `mcp-abap-adt-proxy` `targetUrl` at the **bare srv route**, NOT
+the approuter. The approuter **strips custom `x-sap-*` headers**, so the srv never
+sees your SAP login/password → fail-closed `SAP_CREDENTIALS_REQUIRED`.
+
+**Symptoms:**
+
+- Proxy/Cline request returns `SAP_CREDENTIALS_REQUIRED` (or `401`) although the
+  proxy `defaultHeaders` carry `x-sap-login` / `x-sap-password`.
+- The same call works against another subaccount whose `targetUrl` points at its
+  srv route.
+
+**Fix:**
+
+- Set the proxy `targetUrl` to the **srv** route, e.g.
+  `https://<subaccount>-cloud-llm-hub-srv.cfapps.<region>.hana.ondemand.com`
+  (the app `cloud-llm-hub-srv`), **not** the approuter
+  `https://<subaccount>-cloud-llm-hub...` (the app `cloud-llm-hub`).
+- The srv route is intentionally public so the proxy can deliver `x-sap-*`
+  headers directly. The approuter is for the browser/XSUAA flow only.
+- The srv route is named per subaccount (`${APPROUTER_HOST}-srv`); if you still
+  see a generic `acme-org...-sn-<guid>` route, redeploy so the named route
+  is created, then update `targetUrl`.
+
+---
+
+### Problem: Wrong SAP client (mandant) — e.g. QAS needs client 600
+
+**TL;DR:** The `X-SAP-Client` **header alone is ignored** by ABAP — the client is
+selected via the `sap-usercontext` cookie, which the hub now sets from the
+destination's `sap-client` **or** the per-request `x-sap-client` header.
+
+**Symptoms:**
+
+- Connection to a system in a non-default client (e.g. client `600`) fails with
+  `CSRF ... 401` while the same user works in the default client (e.g. `100`).
+
+**Fix:**
+
+- Set `sap-client` on the BTP destination (e.g. `600` for QAS), **or** pass the
+  per-request header `x-sap-client: 600` (proxy `defaultHeaders`).
+- The hub sends both `X-SAP-Client` and the `sap-usercontext=sap-client=<n>`
+  cookie, so ABAP routes to the right client.
+- If it still fails after the client is correct, the user is likely **locked in
+  that client** — unlock in SU01 on that system/client. (CSRF no longer retries
+  on 401, so the hub will not re-lock from retries.)
+
+---
+
 ### Problem: 403 Forbidden
 
 **Symptoms:**
