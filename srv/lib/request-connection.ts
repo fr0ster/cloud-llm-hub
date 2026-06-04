@@ -73,6 +73,10 @@ export async function establishRequestConnection(
 
   const sapLogin = (req.headers['x-sap-login'] as string | undefined)?.trim();
   const sapPassword = req.headers['x-sap-password'] as string | undefined;
+  // Caller-supplied SAP client (mandant), e.g. "600". Overrides the
+  // destination's own sap-client so a single URL-only destination can serve
+  // multiple clients per request.
+  const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
 
   try {
     const resolved = await resolveDestinationSapConfig(
@@ -103,6 +107,12 @@ export async function establishRequestConnection(
     }
     // Cloud destinations with no caller credentials keep the resolved auth
     // (JWT from the destination / principal propagation passthrough).
+
+    // Per-request client (mandant) override — wins over the destination's
+    // sap-client. Sent on the wire as the X-SAP-Client header.
+    if (sapClient) {
+      sapConfig.client = sapClient;
+    }
 
     const conn = createConnection({
       sapConfig,
