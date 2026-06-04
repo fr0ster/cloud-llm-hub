@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.14.2] - 2026-06-04
+
+Per-request SAP mandant, ABAP lockout prevention, log masking, and per-subaccount srv route.
+
+### Added
+- **Per-request SAP client (mandant) via `x-sap-client` header.** The client can now be passed per request, overriding the destination's `sap-client`, so one URL-only destination can serve multiple clients (e.g. DEV=100, QAS=600).
+
+### Fixed
+- **ABAP user lockout from CSRF retries.** `CloudSdkAbapConnection.fetchCsrfToken` retried every failure — including `401` — up to `RETRY_COUNT` (4 attempts), so a single bad-credential request burned 4 ABAP logon attempts and locked the SAP user after 1–2 requests (re-locked every few minutes by any client still sending wrong creds). Auth failures (`401`/`403`) now fail fast on the first attempt; retries remain only for transient (network/5xx) errors.
+- **SAP client (mandant) was not honored — non-default clients fell back to the system default.** ABAP selects the client from the `sap-usercontext` cookie, not the `X-SAP-Client` header alone, so e.g. client `600` silently routed to `100` and failed. `CloudSdkAbapConnection` now seeds and re-enforces `sap-usercontext=sap-client=<client>` on the CSRF fetch and every request (the client comes from the destination's `sap-client` or the new `x-sap-client` header).
+- **Caller SAP credentials leaked in clear text in logs.** The structured request logger dumped `x-sap-login` / `x-sap-password` as plain header fields. Added both to `cds.log.mask_headers` so they render as `***`, like `authorization`.
+- **srv had a generic, unstable CF route.** The `cloud-llm-hub-srv` module declared no `routes:`, so CF assigned the org-name default (`acme-org…-sn-<random-guid>`) on every subaccount — confusing (looked like a different account) and unstable across redeploys, while the `mcp-abap-adt-proxy` targets the srv route directly. Declared an explicit per-subaccount route `${APPROUTER_HOST}-srv.${CF_LANDSCAPE}` (e.g. `acme-subaccount-cloud-llm-hub-srv`).
+- **Login gate did not save the SAP password in the browser password manager.** The gate cancels the real form submit (`return false`) and hides immediately, so the browser never registered a login submission. It now calls the Credential Management API (`navigator.credentials.store`) explicitly.
+
+### Docs
+- Troubleshooting: the proxy `targetUrl` must be the **bare srv route**, not the approuter (the approuter strips custom `x-sap-*` headers → `SAP_CREDENTIALS_REQUIRED`); SAP client/mandant selection; re-enter the SAP password in the web chat when switching systems that share a user. Added a lessons entry (`docs/lessons/2026-06-04-proxy-routing-mandant-lockout.md`).
+
 ## [6.14.1] - 2026-06-04
 
 ### Fixed
