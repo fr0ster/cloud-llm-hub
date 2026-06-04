@@ -15,6 +15,7 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
+import { ensurePresets } from './presets';
 import type { CollectionRegistry } from './rag-collections';
 import { SESSION_TTL_MS } from './rag-collections';
 import {
@@ -141,6 +142,7 @@ export function registerRagRoutes(
       owner: c.owner,
       createdAt: c.createdAt,
       documentCount: c.documentCount,
+      sourceCount: c.sourceCount,
       preset: c.preset,
       enabled:
         effectiveUserId !== undefined
@@ -149,6 +151,20 @@ export function registerRagRoutes(
     }));
 
     json(res, 200, { collections: mapped });
+  });
+
+  // POST /v1/rag/presets/ensure — seed per-user preset collections if missing.
+  router.post('/rag/presets/ensure', async (_req: Request, res: Response) => {
+    try {
+      const userId = getUserId();
+      await ensurePresets(registry, userId);
+      json(res, 200, {
+        ok: true,
+        collections: registry.listCollections(userId),
+      });
+    } catch (err) {
+      error(res, 500, `ensurePresets failed: ${(err as Error).message}`);
+    }
   });
 
   // POST /v1/rag/collections
@@ -707,6 +723,7 @@ export function registerRagRoutes(
       'GET /v1/rag/backends',
       'GET /v1/rag/collections',
       'POST /v1/rag/collections',
+      'POST /v1/rag/presets/ensure',
       'GET /v1/rag/collections/:id',
       'PATCH /v1/rag/collections/:id/enabled',
       'PUT /v1/rag/collections/:id',

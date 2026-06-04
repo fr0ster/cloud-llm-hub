@@ -34,9 +34,6 @@
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
         #export-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
         #export-btn:hover:not(:disabled) { background: #333; color: #fff; }
-        #sap-creds-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
-        #sap-creds-btn:hover:not(:disabled) { background: #333; color: #fff; }
-        #sap-creds-btn.active { color: #00ff00; border-color: #00ff00; }
         #logout-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; margin-left: auto; }
         #logout-btn:hover:not(:disabled) { background: #333; color: #fff; }
         .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
@@ -77,7 +74,7 @@
         <div class="system-bar">
             <span>LLM: <select id="llm-model-select" disabled><option value="">...</option></select></span>
             <span>MODE: <span id="agent-mode">...</span></span>
-            <span>DEST: <select id="dest-select" disabled><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="margin-left:4px;padding:1px 6px;font-size:12px;cursor:pointer" disabled>&#x21bb;</button><button id="dest-diag" onclick="runDestinationDiagnostic()" title="Diagnose connectivity for every destination (independent of agent state)" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
+            <span>DEST: <span id="dest-info" title="Active SAP destination (chosen at login)">none</span><select id="dest-select" disabled style="display:none"><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="display:none" disabled>&#x21bb;</button><button id="dest-diag" onclick="runDestinationDiagnostic()" title="Diagnose connectivity for every destination (independent of agent state)" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
             <span><button id="help-btn" type="button" onclick="openHelp()" title="Help" aria-haspopup="dialog" style="padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">HELP</button></span>
         </div>
@@ -253,7 +250,7 @@
               <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Your private knowledge for the chat.</p>
               <ul style="margin:0;padding-left:20px;line-height:1.7">
                 <li><b>MANAGE</b> &mdash; opens the collection editor.</li>
-                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (private, persists across sessions) or <i>session</i> (private, wiped on logout / clear chat / destination switch).</li>
+                <li><b>NEW COLLECTION</b> &mdash; create one. Pick scope <i>user</i> (private, persists across sessions) or <i>session</i> (private, wiped on logout / clear chat / destination reconnect).</li>
                 <li><b>UPLOAD FILE</b> &mdash; add one or more <code>.txt</code>/<code>.md</code>/<code>.csv</code>/<code>.json</code>/<code>.yaml</code>/<code>.xml</code>/<code>.log</code> files; each one is chunked automatically and shown in the document list as a single row regardless of chunk count. Pick multiple files in the picker and they upload sequentially.</li>
                 <li><b>+ ADD</b> &mdash; add one record by hand (paste text, optional id and tags).</li>
                 <li><b>SEARCH</b> &mdash; find records inside a collection.</li>
@@ -266,22 +263,29 @@
           </div>
         </div>
 
-        <form id="sap-creds-dialog" onsubmit="applySapCreds(); return false;" style="display:none;background:#0a0a0a;border:1px solid #333;padding:12px;border-radius:4px;margin-bottom:8px">
-          <div style="color:#ffcc00;font-size:12px;font-weight:bold;margin-bottom:8px">SAP SYSTEM CREDENTIALS</div>
-          <div style="font-size:11px;color:#666;margin-bottom:8px">Override destination service user with your SAP credentials. Leave empty to use default.</div>
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-            <label style="color:#888;font-size:12px;width:70px">Login:</label>
-            <input id="sap-login" name="sap-login" autocomplete="section-sap username" placeholder="SAP username" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-            <label style="color:#888;font-size:12px;width:70px">Password:</label>
-            <input id="sap-password" name="sap-password" type="password" autocomplete="section-sap current-password" placeholder="SAP password" style="flex:1;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:4px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
-          </div>
-          <div style="display:flex;gap:8px">
-            <button type="submit" style="font-size:11px;padding:2px 12px">APPLY</button>
-            <button type="button" onclick="clearSapCreds()" style="font-size:11px;padding:2px 12px;color:#ff5555;border-color:#552222">CLEAR</button>
-          </div>
-        </form>
+        <!-- Login gate: blocks the whole UI after sign-in until the user picks a
+             destination and enters SAP login/password. Destination is fixed for
+             the session — to switch, log out and back in. -->
+        <div id="login-gate-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.85);align-items:center;justify-content:center">
+          <form id="login-gate-form" onsubmit="submitLoginGate(); return false;" style="background:#0a0a0a;border:1px solid #333;padding:20px;border-radius:6px;width:360px;max-width:90vw">
+            <div style="color:#ffcc00;font-size:14px;font-weight:bold;margin-bottom:4px">CONNECT TO SAP</div>
+            <div style="font-size:11px;color:#888;margin-bottom:14px">Choose a destination and enter your ABAP user. Required before using the chat. To change the destination later, log out and back in.</div>
+            <div style="margin-bottom:8px">
+              <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">Destination:</label>
+              <select id="gate-dest" style="width:100%;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px"><option value="">loading...</option></select>
+            </div>
+            <div style="margin-bottom:8px">
+              <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Login:</label>
+              <input id="sap-login" name="username" autocomplete="username" placeholder="SAP username" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            </div>
+            <div style="margin-bottom:12px">
+              <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Password:</label>
+              <input id="sap-password" name="password" type="password" autocomplete="current-password" placeholder="SAP password" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            </div>
+            <div id="gate-error" style="display:none;color:#ff5555;font-size:11px;margin-bottom:8px"></div>
+            <button type="submit" id="gate-submit" style="width:100%;font-size:12px;padding:6px 12px">CONNECT</button>
+          </form>
+        </div>
         <div id="chat-window"></div>
         <div class="input-area">
             <input type="text" id="user-input" autocomplete="off" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
@@ -291,8 +295,7 @@
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
             <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
-            <button id="sap-creds-btn" onclick="toggleSapCredsDialog()" title="SAP system credentials (override destination user)">SAP</button>
-            <button id="logout-btn" onclick="try{localStorage.clear();sessionStorage.clear()}catch{};window.location.replace('/logout')" title="Sign out">LOGOUT</button>
+            <button id="logout-btn" onclick="try{localStorage.clear();sessionStorage.clear()}catch{};window.location.replace('/logout')" title="Sign out / switch destination">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
     </div>
@@ -310,6 +313,11 @@
         const classifierSelect = document.getElementById('classifier-model-select');
         let conversationHistory = [];
         let ready = false;
+        let connectedDestination = '';
+        // Destination metadata from the server (name → { requiresCredentials, proxyType }).
+        const destinationMeta = {};
+        // Latest destination list from the server, used to populate the login gate.
+        let gateDestinations = [];
         // Session ID is now managed server-side via an HttpOnly cookie (clh_session).
         // The browser sends the cookie automatically on every same-origin request,
         // so the session survives page reloads without JS generating a new random id.
@@ -319,37 +327,89 @@
         let historyIndex = -1;
         let historyDraft = '';
 
-        // SAP credential override (x-sap-login / x-sap-password)
+        // SAP credentials chosen in the login gate (x-sap-login / x-sap-password).
         let sapCredsLogin = '';
         let sapCredsPassword = '';
+        let loginGateDone = false;
 
-        function toggleSapCredsDialog() {
-            const dialog = document.getElementById('sap-creds-dialog');
-            dialog.style.display = dialog.style.display === 'none' ? 'block' : 'none';
+        // ---------------------------------------------------------------
+        // Login gate — after sign-in the whole chat is locked until the user
+        // picks a destination and enters SAP login/password. The destination is
+        // fixed for the session; to switch, log out and back in.
+        // ---------------------------------------------------------------
+        function showLoginGate() {
+            document.getElementById('login-gate-overlay').style.display = 'flex';
+            populateGateDestinations();
+            setTimeout(() => document.getElementById('gate-dest')?.focus(), 50);
         }
 
-        function applySapCreds() {
-            sapCredsLogin = document.getElementById('sap-login').value.trim();
-            sapCredsPassword = document.getElementById('sap-password').value;
-            const btn = document.getElementById('sap-creds-btn');
-            if (sapCredsLogin && sapCredsPassword) {
-                btn.classList.add('active');
-                btn.title = `SAP credentials: ${sapCredsLogin}`;
-            } else {
-                btn.classList.remove('active');
-                btn.title = 'SAP system credentials (override destination user)';
+        function hideLoginGate() {
+            document.getElementById('login-gate-overlay').style.display = 'none';
+        }
+
+        function populateGateDestinations() {
+            const sel = document.getElementById('gate-dest');
+            if (!sel) return;
+            const prev = sel.value;
+            const all = gateDestinations || [];
+            sel.innerHTML = '';
+            if (all.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = 'loading...';
+                sel.appendChild(opt);
+                return;
             }
-            document.getElementById('sap-creds-dialog').style.display = 'none';
+            // Show EVERY destination so the user sees the full list, but only
+            // 'ready' ones are selectable — the rest are still vectorizing in the
+            // background (sequential init) and become enabled as they get ready.
+            for (const d of all) {
+                const opt = document.createElement('option');
+                opt.value = d.name;
+                if (d.status === 'ready') {
+                    opt.textContent = d.name;
+                } else {
+                    const label = d.status === 'vectorizing' ? 'vectorizing…'
+                        : d.status === 'pending' ? 'pending'
+                        : d.status === 'unreachable' ? 'unreachable'
+                        : d.status || 'initializing';
+                    opt.textContent = `${d.name} (${label})`;
+                    opt.disabled = true;
+                }
+                if (d.name === prev && d.status === 'ready') opt.selected = true;
+                sel.appendChild(opt);
+            }
         }
 
-        function clearSapCreds() {
-            sapCredsLogin = '';
-            sapCredsPassword = '';
-            document.getElementById('sap-login').value = '';
-            document.getElementById('sap-password').value = '';
-            document.getElementById('sap-creds-btn').classList.remove('active');
-            document.getElementById('sap-creds-btn').title = 'SAP system credentials (override destination user)';
-            document.getElementById('sap-creds-dialog').style.display = 'none';
+        function submitLoginGate() {
+            const dest = document.getElementById('gate-dest').value;
+            const login = document.getElementById('sap-login').value.trim();
+            const password = document.getElementById('sap-password').value;
+            const err = document.getElementById('gate-error');
+            const fail = (msg) => { err.textContent = msg; err.style.display = 'block'; };
+            if (!dest) return fail('Choose a destination.');
+            if (!login || !password) return fail('Enter SAP login and password.');
+            err.style.display = 'none';
+
+            sapCredsLogin = login;
+            sapCredsPassword = password;
+            connectedDestination = dest;
+            if (destSelect) {
+                // keep the hidden select in sync — request code reads it
+                let opt = [...destSelect.options].find((o) => o.value === dest);
+                if (!opt) { opt = document.createElement('option'); opt.value = dest; destSelect.appendChild(opt); }
+                destSelect.value = dest;
+            }
+            const info = document.getElementById('dest-info');
+            if (info) info.textContent = dest;
+
+            loginGateDone = true;
+            hideLoginGate();
+            unlockInput('login-gate');
+            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Connected to ${escapeHtml(dest)} as ${escapeHtml(login)}.</div>`;
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
+            userInput.focus();
         }
 
         function getSapCredHeaders() {
@@ -810,6 +870,9 @@
 
         // Bootstrap state — locked from script-load time until /v1/models gives the green light.
         lockInput('bootstrap');
+        // Login gate — locked until the user picks a destination + SAP credentials.
+        // Stays locked through reloads (creds live only in memory, not persisted).
+        lockInput('login-gate');
 
         function setManageFormBusy(busy) {
           const ids = ['rag-file-input', 'rag-chunk-size', 'rag-file-desc'];
@@ -945,9 +1008,15 @@
                     ready = true;
                     setStatus('READY', 'status-ready');
                     unlockInput('bootstrap');
-                    destRefreshBtn.disabled = false;
-                    refreshActiveCollections();
-                    userInput.focus();
+                    // Now that the agent is ready, show the login gate (destination +
+                    // SAP credentials). The chat stays locked under 'login-gate'
+                    // until the user connects. Skip if already connected this session.
+                    if (!loginGateDone) {
+                        showLoginGate();
+                    } else {
+                        refreshActiveCollections();
+                        userInput.focus();
+                    }
                     return;
                 }
             } catch (e) { /* retry */ }
@@ -1141,25 +1210,28 @@
 
         function renderDestinations(destinations, activeDest) {
             if (!destinations || destinations.length === 0) return;
-            const currentVal = destSelect.value || activeDest;
+            // Keep the latest list for the login gate, and cache metadata.
+            gateDestinations = destinations;
+            for (const d of destinations) {
+                destinationMeta[d.name] = {
+                    requiresCredentials: !!d.requiresCredentials,
+                    proxyType: d.proxyType,
+                };
+            }
+            // The hidden select still backs request code (X-SAP-Destination).
+            // It is NOT a user control anymore \u2014 the login gate owns selection.
+            const keep = connectedDestination || destSelect.value || activeDest;
             destSelect.innerHTML = '';
             for (const d of destinations) {
                 const opt = document.createElement('option');
                 opt.value = d.name;
-                const icon = d.status === 'ready' ? '\u2713'
-                    : d.status === 'vectorizing' ? '\u23F3'
-                    : d.status === 'pending' ? '\u2022'
-                    : '\u2717';
-                const label = d.status === 'ready' ? `${d.toolCount}t`
-                    : d.status === 'vectorizing' ? 'vectorizing...'
-                    : d.status === 'pending' ? 'pending'
-                    : 'error';
-                opt.textContent = `${d.name} [${icon} ${label}]`;
-                if (d.name === currentVal) opt.selected = true;
-                if (d.status !== 'ready') opt.disabled = true;
+                opt.textContent = d.name;
+                if (d.name === keep) opt.selected = true;
                 destSelect.appendChild(opt);
             }
-            destSelect.disabled = false;
+            // Refresh the gate dropdown if it's currently open (more destinations
+            // may have finished vectorizing).
+            if (!loginGateDone) populateGateDestinations();
         }
 
         function handleInputKeydown(event) {
@@ -1191,6 +1263,7 @@
             if (!ready) return;
             const text = userInput.value.trim();
             if (!text) return;
+            const selectedDest = getSelectedDestination();
 
             inputHistory.push(text);
             historyIndex = -1;
@@ -1258,7 +1331,6 @@
                 // Session is tracked via the clh_session HttpOnly cookie (set by server),
                 // so no X-Session-Id header is needed from the browser.
                 const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders() };
-                const selectedDest = getSelectedDestination();
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
                 // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)
@@ -1279,6 +1351,13 @@
                     try {
                         const errJson = JSON.parse(errText);
                         if (errJson.error && errJson.error.message) {
+                            // Credentials rejected/expired mid-session: re-open the
+                            // login gate so the user can re-enter destination + creds.
+                            if (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED') {
+                                loginGateDone = false;
+                                lockInput('login-gate');
+                                showLoginGate();
+                            }
                             throw new Error(errJson.error.message);
                         }
                     } catch (parseErr) {
@@ -1617,9 +1696,18 @@
             return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
         }
 
-        function openRagPanel() {
+        async function ensurePresets() {
+            // Seed per-user preset collections server-side if missing. Non-fatal:
+            // if it fails, presets just won't appear this open. Preset collections
+            // are created disabled (preset:true) so they don't auto-join chat context.
+            try { await ragFetch('/v1/rag/presets/ensure', { method: 'POST' }); }
+            catch { /* ignore — presets are opt-in convenience */ }
+        }
+
+        async function openRagPanel() {
             document.getElementById('rag-modal').style.display = 'block';
             document.getElementById('rag-doc-panel').style.display = 'none';
+            await ensurePresets();
             loadCollections();
             loadBackends();
         }
@@ -1695,7 +1783,7 @@
                             <input type="checkbox" ${c.enabled ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
                             <span style="color:#fff;font-weight:bold">${escapeHtml(c.displayName)}</span>
                             <span style="color:#555;margin-left:8px">(${escapeHtml(c.logicalId || c.id)})</span>
-                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope === 'session' ? '<span style="color:#ffcc00">session</span>' : escapeHtml(c.scope || 'user')} · ${c.backend || 'default'} · ${c.documentCount} docs</span>
+                            <span style="color:#888;margin-left:8px;font-size:12px">${c.scope === 'session' ? '<span style="color:#ffcc00">session</span>' : escapeHtml(c.scope || 'user')} · ${c.backend || 'default'} · ${(c.sourceCount ?? c.documentCount) ?? 0} docs</span>
                             ${c.description ? `<div style="color:#666;font-size:12px;margin-top:2px">${escapeHtml(c.description)}</div>` : ''}
                         </div>
                         <div style="display:flex;gap:6px">
@@ -1770,12 +1858,17 @@
                 // file", so showing one row per logical document is what the user actually
                 // operates on. Standalone records (no metadata.source) stay one row each.
                 const rows = []; // entries: {kind, source?, doc, chunkIds[], chunkCount, firstChunk, createdAt}
+                // Group chunked uploads by (source, uploadId) so two uploads of the
+                // same filename render as two distinct rows — matching the server's
+                // sourceCount. Legacy chunks without uploadId fall back to source alone.
                 const sourceIndex = new Map();
                 for (const d of docs) {
                     const src = d.metadata && typeof d.metadata.source === 'string' ? d.metadata.source : null;
                     const isChunk = src && Number.isInteger(d.metadata.chunkIndex);
                     if (isChunk) {
-                        let row = sourceIndex.get(src);
+                        const uploadId = typeof d.metadata.uploadId === 'string' ? d.metadata.uploadId : '';
+                        const groupKey = src + '\u0000' + uploadId;
+                        let row = sourceIndex.get(groupKey);
                         if (!row) {
                             row = {
                                 kind: 'source',
@@ -1784,7 +1877,7 @@
                                 chunkIds: [],
                                 createdAt: d.createdAt,
                             };
-                            sourceIndex.set(src, row);
+                            sourceIndex.set(groupKey, row);
                             rows.push(row);
                         }
                         row.chunkIds.push(d.id);
@@ -1823,7 +1916,7 @@
                                 <span style="color:#00ff88;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(row.source)}">${escapeHtml(row.source)}</span>
                                 <span style="color:#555;font-size:11px">${chunkCount} chunk${chunkCount === 1 ? '' : 's'}</span>
                                 <button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(first.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>
-                                <button onclick="deleteSourceFile(${JSON.stringify(row.chunkIds).replace(/"/g, '&quot;')}, '${escapeHtml(row.source)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>
+                                <button data-chunks="${escapeHtml(JSON.stringify(row.chunkIds))}" data-source="${escapeHtml(row.source)}" onclick="deleteSourceFile(this)" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>
                             </div>
                             <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
                             <div style="color:#555;font-size:11px;margin-top:2px">${row.createdAt || ''}</div>
@@ -1838,7 +1931,19 @@
         // server has no "delete every chunk for source X" endpoint. Failures are
         // collected and surfaced; partial deletes leave the source's row in the
         // list with the remaining chunks until the user retries.
-        async function deleteSourceFile(chunkIds, sourceName) {
+        //
+        // Argument shape: the DEL button passes `this` (the <button>) and we read
+        // the chunk-id JSON + source name from `data-` attributes. This avoids the
+        // escaping pitfall of inlining JSON.stringify(chunkIds) into the onclick
+        // attribute — apostrophes in source names broke the previous form.
+        async function deleteSourceFile(btn) {
+            let chunkIds;
+            try {
+                chunkIds = JSON.parse(btn.dataset.chunks || '[]');
+            } catch {
+                chunkIds = [];
+            }
+            const sourceName = btn.dataset.source || '';
             if (!Array.isArray(chunkIds) || chunkIds.length === 0) return;
             if (!confirm(`Delete file "${sourceName}" (${chunkIds.length} chunk${chunkIds.length === 1 ? '' : 's'})?`)) return;
             const failures = [];

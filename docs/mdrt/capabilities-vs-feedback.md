@@ -86,8 +86,8 @@ Extras grounded in what we've already built:
 |------|-------|
 | Documentation generation for legacy code | ✅ |
 | RAP business object scaffolding from a spec | ✅ |
-| Unit-test generation (ABAP + CDS) | 🟡 |
-| Performance analysis from profiler traces | 🟡 |
+| Unit-test generation (ABAP + CDS) | ✅ |
+| Performance analysis from profiler traces | ✅ |
 | Enhancement / BAdI impact analysis | 🟡 |
 | Spec-draft analysis before estimation | ✅ |
 
