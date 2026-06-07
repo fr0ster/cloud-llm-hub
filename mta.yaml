@@ -85,7 +85,12 @@ modules:
     provides:
       - name: srv-api # required by consumers of CAP services (e.g. approuter)
         properties:
-          srv-url: ${default-url}
+          # Bind the destination to the SAME explicit named route declared above
+          # (routes: ${APPROUTER_HOST}-srv). ${default-url} resolves to the CF
+          # default generated route, which is NOT created when an explicit route
+          # is set — so the approuter destination pointed at a dead host and all
+          # /v1, /mcp and root calls 502'd while only static /chat/webapp loaded.
+          srv-url: https://${APPROUTER_HOST}-srv.${CF_LANDSCAPE}
     requires:
       - name: cloud-llm-hub-auth
       - name: cloud-llm-hub-destination
