@@ -10,8 +10,13 @@
   ],
   // RHDA (redhat.fabric8-analytics): skip cds-build generated manifests under gen/.
   // They are regenerated build output (gitignored) and intentionally have no lock file.
+  // RHDA matches each pattern with minimatch (default dot:false) against the ABSOLUTE
+  // path, so a leading `**` will NOT traverse the dotted `.worktrees/` segment — the
+  // first pattern misses worktree builds. The second names `.worktrees` literally to
+  // reach `.worktrees/<target>/gen/**`, while leaving the real worktree manifests analyzed.
   "redHatDependencyAnalytics.exclude": [
-    "**/gen/**/package.json"
+    "**/gen/**/package.json",
+    "**/.worktrees/**/gen/**/package.json"
   ],
   "cSpell.language": "en",
   "cSpell.words": [
