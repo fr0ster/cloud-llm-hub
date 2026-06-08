@@ -10,7 +10,7 @@
 #   cd .worktrees/ai-apps    && ../../tools/deploy.sh
 #   cd .worktrees/ai-apps-stg && ../../tools/deploy.sh staging
 #
-# Flow: verify CF target → rebase main → inject secrets → build → deploy
+# Flow: verify CF target → merge main → inject secrets → build → deploy
 
 set -euo pipefail
 
@@ -40,7 +40,9 @@ echo "=== Deploy: $BRANCH ==="
 
 # Verify CF target matches deploy branch
 APPROUTER_HOST=$(grep -oP 'APPROUTER_HOST:\s*"\K[^"]+' "$MTAEXT" 2>/dev/null || echo "")
-CF_ORG=$(cf target 2>&1 | grep "org:" | awk '{print $2}')
+# Full org string (e.g. "CustomerB Inc_cloud-llm-hub-acme2"); awk '{print $2}'
+# used to grab only the first token ("CustomerB"/"ACME") and falsely warn.
+CF_ORG=$(cf target 2>&1 | grep "^org:" | sed 's/^org:[[:space:]]*//')
 
 echo ""
 echo "CF target:"
@@ -64,10 +66,13 @@ if [ -n "$APPROUTER_HOST" ] && [ -n "$CF_ORG" ]; then
 fi
 echo ""
 
-# Rebase on main
+# Merge main (NOT rebase). These deploy/* branches carry a long history of
+# merge commits from main plus a few deploy-specific commits; `git rebase main`
+# replays those commits onto main and conflicts on files since deleted upstream
+# (e.g. the old app/router/chat/webapp/index.html). Merge is the promotion model.
 echo ""
-echo "[1/4] Rebase on main..."
-git rebase main
+echo "[1/4] Merge main..."
+git merge --no-edit main
 
 # Inject secrets from .env BEFORE deploy
 # Secrets not in mta.yaml properties — cf set-env values persist through deploy
