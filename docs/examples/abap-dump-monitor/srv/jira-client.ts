@@ -153,15 +153,20 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
         .join('&')
     : '';
   const url = baseUrl + req.url + search;
+  // EPAM's Jira sits behind a Squid/WAF that returns '406 Not Acceptable'
+  // (text/html) for requests that don't look browser-like: a bare
+  // `Accept: application/json`, a non-browser User-Agent, or a Content-Type on
+  // a body-less GET all trip it. Widen Accept, present a browser UA, and only
+  // send Content-Type when there is actually a JSON body (POST).
   const headers: Record<string, string> = {
-    Accept: 'application/json',
-    // Some Jira on-prem deployments reject requests without a Content-Type
-    // even on GET (returning 406 / 500). Send it unconditionally.
-    'Content-Type': 'application/json',
+    Accept: 'application/json, */*',
+    'User-Agent':
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     // Disable Atlassian XSRF check for REST calls.
     'X-Atlassian-Token': 'no-check',
-    ...(req.headers ?? {}),
   };
+  if (req.data !== undefined) headers['Content-Type'] = 'application/json';
+  Object.assign(headers, req.headers ?? {});
   // Authentication: prefer destination authTokens, fall back to BasicAuthentication
   // user/password (most likely for Jira destinations created with type Basic).
   const tok = (d as any).authTokens?.[0];
