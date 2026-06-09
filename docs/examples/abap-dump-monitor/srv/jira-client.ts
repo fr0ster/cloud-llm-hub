@@ -167,16 +167,24 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
   };
   if (req.data !== undefined) headers['Content-Type'] = 'application/json';
   Object.assign(headers, req.headers ?? {});
-  // Authentication: prefer destination authTokens, fall back to BasicAuthentication
-  // user/password (most likely for Jira destinations created with type Basic).
+  // Authentication. Prefer a destination-provided auth token. Otherwise use the
+  // Password field as a **Bearer** Personal Access Token — EPAM's Jira (Data
+  // Center) authenticates PATs as `Authorization: Bearer <PAT>`, and token auth
+  // bypasses Jira's XSRF check on POST/PUT. Basic (user:PAT) authenticates reads
+  // but POSTs get 403 "XSRF check failed". Set JIRA_AUTH=basic to force the
+  // classic Basic scheme for instances that genuinely need it.
   const tok = (d as any).authTokens?.[0];
-  if (tok?.value)
+  if (tok?.value) {
     headers.Authorization = `${tok.type ?? 'Bearer'} ${tok.value}`;
-  else if ((d as any).username && (d as any).password) {
-    const cred = Buffer.from(
-      `${(d as any).username}:${(d as any).password}`,
-    ).toString('base64');
-    headers.Authorization = `Basic ${cred}`;
+  } else if ((d as any).password) {
+    if (process.env.JIRA_AUTH === 'basic' && (d as any).username) {
+      const cred = Buffer.from(
+        `${(d as any).username}:${(d as any).password}`,
+      ).toString('base64');
+      headers.Authorization = `Basic ${cred}`;
+    } else {
+      headers.Authorization = `Bearer ${(d as any).password}`;
+    }
   }
   const resp = await fetch(url, {
     method: req.method,
