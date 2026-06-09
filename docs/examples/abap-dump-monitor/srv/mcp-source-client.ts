@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
+import { sapCredentialHeaders } from './sap-auth';
 
 export interface FrameLike {
   eventType?: string;
@@ -216,6 +217,7 @@ export class McpSourceClient {
           // know which on-prem system to route ADT reads to and falls back
           // to the server's default destination, which is not what we want.
           'X-SAP-Destination': this.sapDestinationName,
+          ...sapCredentialHeaders(),
         },
       },
     });

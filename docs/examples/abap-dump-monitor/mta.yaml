@@ -8,6 +8,13 @@ parameters:
   CLOUD_LLM_HUB_CLIENT_ID: ""
   CLOUD_LLM_HUB_CLIENT_SECRET: ""
   CLOUD_LLM_HUB_TOKEN_URL: ""
+  # Technical SAP user for the on-premise ABAP system. cloud-llm-hub fails
+  # closed for OnPremise/NoAuthentication destinations and ignores the BTP
+  # destination's own auth — it requires x-sap-login/x-sap-password per request
+  # (srv/mcp-manager.ts). This headless monitor has no end-user, so it sends
+  # this technical user. Set the real values in .mtaext (secrets — keep out of git).
+  SAP_LOGIN: ""
+  SAP_PASSWORD: ""
   JIRA_URL: "https://jiraeu.epam.com"
   # Jira credentials are NOT in MTA — destination is created manually in the
   # BTP cockpit with a Personal Access Token. See the JIRA_EPAM stanza below.
@@ -28,6 +35,10 @@ modules:
     properties:
       SAP_SYSTEM_ID: "E19.100"
       SAP_DESTINATION: "S4HANA_E19"
+      # Technical user sent as x-sap-login/x-sap-password to cloud-llm-hub
+      # (mandatory for the on-premise S4HANA_E19 destination — see params).
+      SAP_LOGIN: ${SAP_LOGIN}
+      SAP_PASSWORD: ${SAP_PASSWORD}
       CLOUD_LLM_HUB_DESTINATION: "CLOUD_LLM_HUB"
       JIRA_DESTINATION: "JIRA_EPAM"
       # Used to render clickable Jira issue links on Object Page (jiraIssueUrl

@@ -5,6 +5,7 @@ import type {
   ISettings,
   ParsedDump,
 } from './interfaces';
+import { sapCredentialHeaders } from './sap-auth';
 
 export class Analyzer implements IAnalyzer {
   constructor(
@@ -97,6 +98,7 @@ export class Analyzer implements IAnalyzer {
         Authorization: `${tokenType} ${token}`,
         'Content-Type': 'application/json',
         'X-SAP-Destination': this.sapDestination,
+        ...sapCredentialHeaders(),
       },
       body: JSON.stringify(body),
     });

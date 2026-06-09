@@ -21,6 +21,12 @@ parameters:
   # Redeploys do not overwrite it.
   JIRA_URL: "https://jiraeu.epam.com"
 
+  # Technical SAP user for the on-premise ABAP system (E19). cloud-llm-hub fails
+  # closed for OnPremise destinations and ignores the destination's own auth, so
+  # the monitor MUST send x-sap-login/x-sap-password per request. Fill these in.
+  SAP_LOGIN: "<tech-user>"
+  SAP_PASSWORD: "<tech-user-password>"
+
 modules:
   - name: abap-dump-monitor-srv
     properties:

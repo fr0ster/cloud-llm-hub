@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import type { DumpListItem, IDumpSource } from './interfaces';
+import { sapCredentialHeaders } from './sap-auth';
 
 const ADT_TS = (iso: string): string =>
   iso.replace(/[-:T]/g, '').replace(/\..*$/, '').replace('Z', '').slice(0, 14);
@@ -112,6 +113,7 @@ export class DumpSource implements IDumpSource {
           headers: {
             Authorization: `${tokenType} ${authToken}`,
             'X-SAP-Destination': this.sapDestination,
+            ...sapCredentialHeaders(),
           },
         },
       },
