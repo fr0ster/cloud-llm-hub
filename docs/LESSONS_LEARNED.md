@@ -11,6 +11,7 @@ Each lesson file has a YAML frontmatter block (`date`, `branch`, `subaccount`, `
 | | _Catalog reset 2026-04-27 — append new entries below._ Earlier 2026-04-19 entries retired with the docs cleanup; recover from git history if needed. | | |
 | 2026-06-04 | [Proxy routing, SAP mandant, CSRF-retry lockout](lessons/2026-06-04-proxy-routing-mandant-lockout.md) | main | ai-applications / nvcr |
 | 2026-06-07 | [`${default-url}` points at a dead route once srv has an explicit route](lessons/2026-06-07-default-url-dead-srv-route.md) | main | ai-applications |
+| 2026-06-10 | [abap-dump-monitor: the cloud-llm-hub → ABAP → Jira auth chain](lessons/2026-06-10-dump-monitor-auth-chain-and-jira-squid.md) | main | ai-applications |
 
 ## Adding a new lesson
 
