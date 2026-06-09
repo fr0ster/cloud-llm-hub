@@ -1,4 +1,4 @@
-// @ts-expect-error - @sap/cds has no type definitions
+// @ts-ignore - @sap/cds ships partial/varying types across versions; runtime import is fine
 import cds from '@sap/cds';
 
 declare const SELECT: any;

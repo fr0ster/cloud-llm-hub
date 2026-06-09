@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-// @ts-expect-error - @sap/cds has no type definitions
+// @ts-ignore - @sap/cds ships partial/varying types across versions; runtime import is fine
 import cds from '@sap/cds';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import express from 'express';
