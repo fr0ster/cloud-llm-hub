@@ -20,34 +20,43 @@ export class JiraClient implements IJiraClient {
   ) {}
 
   async searchByLabel(label: string): Promise<JiraIssueRef | undefined> {
-    // Two Atlassian endpoints in the wild:
-    //   • /rest/api/2/search       — legacy; on-prem Jira always has it,
-    //                                but a corporate Squid proxy in front
-    //                                of EPAM's Jira intermittently returns
-    //                                '500 HTTP 406 Not Acceptable' as text/html.
-    //   • /rest/api/2/search/jql   — newer Atlassian path; some on-prem
-    //                                instances 404 because they predate it.
-    // Try both in order and return the first success — any HTTP error from
-    // the first endpoint is a reason to fall back, no error-pattern matching.
-    const ENDPOINTS = ['/rest/api/2/search', '/rest/api/2/search/jql'];
+    // Two Atlassian search endpoints in the wild, each with its native method:
+    //   • GET  /rest/api/2/search       — legacy Server/DC path. The corporate
+    //                                     Squid/Apache proxy in front of EPAM's
+    //                                     Jira returns '406 Not Acceptable'
+    //                                     (text/html) on the POST form, but
+    //                                     accepts the GET form with the JQL as
+    //                                     a %20-encoded query param.
+    //   • POST /rest/api/2/search/jql   — newer Atlassian Cloud path; Server/DC
+    //                                     instances that predate it return 404.
+    // Try in order and return the first success — any HTTP error is a reason to
+    // fall back, no error-pattern matching.
+    const ATTEMPTS: Array<{ endpoint: string; method: 'GET' | 'POST' }> = [
+      { endpoint: '/rest/api/2/search', method: 'GET' },
+      { endpoint: '/rest/api/2/search/jql', method: 'POST' },
+    ];
+    const jql = `labels = "${label}"`;
     let lastErr: Error | undefined;
-    for (const endpoint of ENDPOINTS) {
+    for (const { endpoint, method } of ATTEMPTS) {
       try {
         const resp = await this.http(
           { destinationName: this.destinationName },
-          {
-            method: 'POST',
-            url: endpoint,
-            headers: { 'Content-Type': 'application/json' },
-            data: {
-              jql: `labels = "${label}"`,
-              fields: ['status'],
-              maxResults: 1,
-            },
-            responseType: 'json',
-          },
+          method === 'GET'
+            ? {
+                method: 'GET',
+                url: endpoint,
+                params: { jql, fields: 'status', maxResults: '1' },
+                responseType: 'json',
+              }
+            : {
+                method: 'POST',
+                url: endpoint,
+                headers: { 'Content-Type': 'application/json' },
+                data: { jql, fields: ['status'], maxResults: 1 },
+                responseType: 'json',
+              },
         );
-        this.assertOk(resp, `search (${endpoint})`);
+        this.assertOk(resp, `search (${method} ${endpoint})`);
         const issue = resp.data?.issues?.[0];
         if (!issue) return undefined;
         return {
