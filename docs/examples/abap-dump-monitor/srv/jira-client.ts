@@ -173,17 +173,23 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
   // bypasses Jira's XSRF check on POST/PUT. Basic (user:PAT) authenticates reads
   // but POSTs get 403 "XSRF check failed". Set JIRA_AUTH=basic to force the
   // classic Basic scheme for instances that genuinely need it.
-  const tok = (d as any).authTokens?.[0];
-  if (tok?.value) {
-    headers.Authorization = `${tok.type ?? 'Bearer'} ${tok.value}`;
-  } else if ((d as any).password) {
-    if (process.env.JIRA_AUTH === 'basic' && (d as any).username) {
-      const cred = Buffer.from(
-        `${(d as any).username}:${(d as any).password}`,
-      ).toString('base64');
+  // Default to Bearer PAT. NOTE: a BasicAuthentication destination makes Cloud
+  // SDK populate authTokens[0] with a *Basic* token, so an authTokens-first
+  // check would silently keep using Basic (and keep failing XSRF on POST). So
+  // for the default Bearer path we read the Password field directly and ignore
+  // that Basic authToken. JIRA_AUTH=basic opts back into the Basic scheme.
+  const password = (d as any).password;
+  const username = (d as any).username;
+  const forceBasic = process.env.JIRA_AUTH === 'basic';
+  if (!forceBasic && password) {
+    headers.Authorization = `Bearer ${password}`;
+  } else {
+    const tok = (d as any).authTokens?.[0];
+    if (tok?.value) {
+      headers.Authorization = `${tok.type ?? 'Bearer'} ${tok.value}`;
+    } else if (username && password) {
+      const cred = Buffer.from(`${username}:${password}`).toString('base64');
       headers.Authorization = `Basic ${cred}`;
-    } else {
-      headers.Authorization = `Bearer ${(d as any).password}`;
     }
   }
   const resp = await fetch(url, {
@@ -207,9 +213,13 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
     // with HTML body), and content-negotiation issues. Body capped to
     // 500 chars to keep the log readable.
     const safeHeaders = Object.fromEntries(
-      Object.entries(headers).map(([k]) => [
+      Object.entries(headers).map(([k, v]) => [
         k,
-        k.toLowerCase() === 'authorization' ? '<redacted>' : 'set',
+        // Reveal only the auth SCHEME (first word) — never the token — so logs
+        // show whether Bearer vs Basic was actually sent.
+        k.toLowerCase() === 'authorization'
+          ? `${String(v).split(' ')[0]} <redacted>`
+          : 'set',
       ]),
     );
     const bodyPreview = String(text ?? '').slice(0, 500);
