@@ -153,15 +153,18 @@ export const defaultJiraHttpFn: JiraHttpFn = async (dest, req) => {
         .join('&')
     : '';
   const url = baseUrl + req.url + search;
-  // EPAM's Jira sits behind a Squid/WAF that returns '406 Not Acceptable'
-  // (text/html) for requests that don't look browser-like: a bare
-  // `Accept: application/json`, a non-browser User-Agent, or a Content-Type on
-  // a body-less GET all trip it. Widen Accept, present a browser UA, and only
-  // send Content-Type when there is actually a JSON body (POST).
+  // EPAM's Jira sits behind a Squid that returns '406 Not Acceptable' for a
+  // bare `Accept: application/json` and for a Content-Type on a body-less GET,
+  // so widen Accept and only send Content-Type with a JSON body (POST).
+  // IMPORTANT: do NOT send a *browser* User-Agent. Jira's XSRF filter treats
+  // browser-looking requests as form posts and enforces the XSRF token even
+  // for Bearer-authenticated REST calls (the no-check header is stripped by the
+  // proxy), so a 'Mozilla/...' UA makes every POST fail 403 "XSRF check failed".
+  // A non-browser UA still satisfies the Squid (which only wants *some* UA) and
+  // keeps the POSTs XSRF-exempt.
   const headers: Record<string, string> = {
     Accept: 'application/json, */*',
-    'User-Agent':
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'User-Agent': 'abap-dump-monitor/1.0 (+rest-client)',
     // Disable Atlassian XSRF check for REST calls.
     'X-Atlassian-Token': 'no-check',
   };
