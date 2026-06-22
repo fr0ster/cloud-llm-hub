@@ -81,9 +81,15 @@ probe(path):
 - If no destination header → 400.
 - Build the connection under the **caller's** identity exactly like
   `srv/lib/request-connection.ts` (resolve destination, apply basic-auth
-  override from `x-sap-login`/`x-sap-password`, apply `x-sap-client` override),
-  via `createConnection({ sapConfig })` — but do NOT call `connect()`.
-- Call `conn.probe('/sap/bc/adt/discovery')` → `{ httpCode, rawMessage }`.
+  override from `x-sap-login`/`x-sap-password`, apply `x-sap-client` override).
+  **Must pass `destinationName`** —
+  `createConnection({ sapConfig, destinationName: resolved.destinationName })`.
+  The factory selects `CloudSdkAbapConnection` (Cloud SDK + Cloud Connector,
+  and the new `probe()`) ONLY when `destinationName` is set; omitting it yields
+  the base direct connection, which has neither. Do NOT call `connect()`.
+- `probe()` is `CloudSdkAbapConnection`-specific and not on the `IAbapConnection`
+  interface, so type it explicitly — cast `conn as CloudSdkAbapConnection`
+  before calling `conn.probe('/sap/bc/adt/discovery')` → `{ httpCode, rawMessage }`.
 - `const { status, hint } = classifyProbe(httpCode, rawMessage, proxyType, 'caller')`
   (see identity-aware hints below).
 - Return the `DestinationDiagnostic` for this destination + measured `latencyMs`.
@@ -117,6 +123,21 @@ Re-check the credentials you entered and log in again."* All other branches
    Stop calling `DiagnoseDestinations()` from this button.
 3. The probe request carries `X-SAP-Destination` + `getSapCredHeaders()`
    (which now includes `X-SAP-Client`), exactly like the chat request.
+
+**Probe call lifecycle (P2 — network/error path).** Both entry points (login,
+DIAG) share one async helper, e.g. `runActiveProbe()`, that is fully defensive
+and never throws to the caller:
+- Before the fetch → `SAP: CHECKING…` (neutral/yellow) in `#sap-status`.
+- `try`: `fetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', { headers })`.
+  - On non-2xx (e.g. 400 missing header, 500) → `SAP: ERROR <http status>`.
+  - On 2xx → parse the `DestinationDiagnostic`; `status==='ok'` → `SAP: OK`,
+    else → `SAP: ERROR <status/first line of hint>`.
+- `catch` (network failure / fetch throw / JSON parse) →
+  `SAP: ERROR (probe unreachable)`; never an unhandled rejection.
+- `finally`: clear the `CHECKING…` transient.
+- In all branches the **login gate is never blocked** — `submitLoginGate()`
+  awaits the helper only to render status, and a probe failure does not prevent
+  entry (a `.catch` guards the call so a rejected probe still completes login).
 
 ### Status indicator (P1 — dedicated element)
 
