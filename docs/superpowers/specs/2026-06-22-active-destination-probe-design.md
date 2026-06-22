@@ -37,8 +37,8 @@ is reachable — clearly (OK/ERROR + reason), at login and on demand.
 - No change to `DiagnoseDestinations()` (all-destinations) server function — it
   stays for any other caller. Only the post-login DIAG button stops using it.
 - No hard login gate: an ERROR probe does NOT block entry (see Decisions).
-- No new classification logic — reuse `classifyProbe` (already has the TLS
-  branch).
+- No new *classification* logic, but `classifyProbe` gains an identity-aware
+  hint (see below) — the existing status enum is unchanged.
 
 ## Design
 
@@ -51,25 +51,57 @@ function ProbeActiveDestination() returns DestinationDiagnostic;
 Reuses the existing `DestinationDiagnostic` type (name, proxyType, status,
 httpCode, latencyMs, rawMessage, hint).
 
-`srv/mcp-proxy.ts` handler:
+**Dedicated single-shot probe (P1 — correctness of client + exactly one
+attempt).** A bare `makeAdtRequest('GET')` sends the `X-SAP-Client` header but
+NOT the `sap-usercontext` cookie (that cookie is only seeded by
+`enforceClientCookie()` inside the CSRF/`connect()` paths), and the
+`X-SAP-Client` header **alone is ignored by ABAP**, which then routes to the
+system DEFAULT client — so the probe would silently test the wrong mandant.
+Conversely `connect()` pre-fetches a CSRF token with its retry loop, which is
+both unnecessary for a GET and violates the "exactly one attempt" requirement.
+
+Therefore add a new method `CloudSdkAbapConnection.probe(path)` that does a
+**single** `executeHttpRequest` GET with everything seeded up front, and does
+NOT call `connect()` and does NOT retry:
+```
+probe(path):
+  this.enforceClientCookie()                 // seed sap-usercontext = sap-client=<client>
+  executeHttpRequest({ destinationName }, {
+    method: 'GET', url: path,
+    headers: { ...getAuthHeaders(),           // caller Basic auth
+               'X-SAP-Client': client,
+               Cookie: getCookieHeader() } }) // includes sap-usercontext
+  → returns { httpCode, rawMessage }          // body/error body trimmed to 500
+  // one attempt only — no retry on any status (incl. 401/403: lockout safety)
+```
+
+`srv/mcp-proxy.ts` handler `ProbeActiveDestination`:
 - Read `X-SAP-Destination`, `x-sap-login`, `x-sap-password`, `x-sap-client`
   from `req.headers` (same header names as the chat path).
 - If no destination header → 400.
-- Build a connection under the **caller's** identity. Reuse the same resolution
-  + override path as `srv/lib/request-connection.ts` (resolve destination, then
-  apply basic-auth override from `x-sap-login`/`x-sap-password` and the
-  `x-sap-client` override), rather than `executeHttpRequest({ destinationName })`
-  which would use destination creds.
-- Probe `GET /sap/bc/adt/discovery` (same endpoint `DiagnoseDestinations` uses),
-  capture `httpCode` and `rawMessage` (response body / error body, trimmed to
-  500 chars) with the same extraction `DiagnoseDestinations` uses.
-- `const { status, hint } = classifyProbe(httpCode, rawMessage, proxyType)`.
-- Return the `DestinationDiagnostic` for this one destination + measured
-  `latencyMs`.
+- Build the connection under the **caller's** identity exactly like
+  `srv/lib/request-connection.ts` (resolve destination, apply basic-auth
+  override from `x-sap-login`/`x-sap-password`, apply `x-sap-client` override),
+  via `createConnection({ sapConfig })` — but do NOT call `connect()`.
+- Call `conn.probe('/sap/bc/adt/discovery')` → `{ httpCode, rawMessage }`.
+- `const { status, hint } = classifyProbe(httpCode, rawMessage, proxyType, 'caller')`
+  (see identity-aware hints below).
+- Return the `DestinationDiagnostic` for this destination + measured `latencyMs`.
 
-Reuse, don't duplicate: factor the probe-and-classify step shared with
-`DiagnoseDestinations` into a small helper if it reads cleanly; otherwise keep
-the handler self-contained and call the shared `classifyProbe`.
+### Identity-aware hints (P2) — `srv/lib/probe-classifier.ts`
+
+`classifyProbe`'s auth hints currently assume the **destination's** stored
+credentials ("credentials in the destination are stale" / "Check destination
+User/Password or override via x-sap-login/x-sap-password"). For a caller-identity
+probe that wording is wrong — it's the user's own login/password/client that was
+rejected.
+
+Add an optional 4th parameter `identity: 'destination' | 'caller'` (default
+`'destination'`, so existing callers — `DiagnoseDestinations`, the handlers —
+are unchanged). When `identity === 'caller'`, the `backend_auth_failed` branch
+returns instead: *"Backend rejected your SAP login/password (or client number).
+Re-check the credentials you entered and log in again."* All other branches
+(TLS, timeout, SCC, 5xx, network) are identity-independent and unchanged.
 
 ### UI — `app/chat/webapp/index.html`
 
@@ -86,11 +118,17 @@ the handler self-contained and call the shared `classifyProbe`.
 3. The probe request carries `X-SAP-Destination` + `getSapCredHeaders()`
    (which now includes `X-SAP-Client`), exactly like the chat request.
 
-### Status indicator
+### Status indicator (P1 — dedicated element)
 
-Render OK/ERROR in the existing toolbar status area (`#status-text` / the
-`.system-bar`). Reuse current colours (green `#00ff00`, red `#ff5555`). No new
-layout — a short coloured token plus reason text.
+`#status-text` is owned by `setStatus()` and is constantly overwritten with
+agent lifecycle states (`CONNECTING`, `READY`, `<phase> Ns`, `ERROR`). It can
+NOT hold the SAP probe result — the first chat message would wipe it.
+
+Add a **separate** element to the toolbar `.system-bar`, e.g.
+`<span id="sap-status">…</span>`, written only by the probe flow (login +
+DIAG). `setStatus()` is left untouched, so agent state and SAP connectivity
+state coexist. Reuse current colours (green `#00ff00` for `SAP: OK`, red
+`#ff5555` for `SAP: ERROR <reason>`).
 
 ## Decisions
 
@@ -99,9 +137,9 @@ layout — a short coloured token plus reason text.
 - **ERROR does not block entry.** The user can still open the chat and press
   DIAG to inspect; we only surface the status.
 - **Keep `DiagnoseDestinations()`** server-side; only the button switches.
-- **No retry storms.** The probe is a single GET; it must NOT retry on 401/403
-  (same lockout rule as CSRF) — `/sap/bc/adt/discovery` is a GET so a single
-  attempt is enough.
+- **No retry storms.** `probe()` makes exactly one `executeHttpRequest` GET and
+  retries on NO status (401/403 lockout safety, and no point retrying TLS/5xx
+  for a diagnostic). It deliberately bypasses `connect()`'s CSRF retry loop.
 
 ## Data flow
 
@@ -127,14 +165,28 @@ login gate submit / DIAG click
 
 ## Testing
 
-- `classifyProbe` — already unit-tested (incl. TLS branch).
-- Handler — not unit-tested (depends on `executeHttpRequest` / live SAP); verify
-  manually on acme-prod staging:
-  1. TST (healthy) + user creds + client → `OK`.
-  2. QAS → `ERROR` with the TLS/certificate hint.
-  3. DEV with the user's own valid creds → `OK` (proves it uses caller creds,
-     not the destination's stale creds that make `DiagnoseDestinations` show 401).
-  4. Wrong client / wrong password → `ERROR` (auth), single attempt (no lockout).
+**Unit (mocked)** — the resolver and HTTP transport mock cleanly, exactly as
+`test/unit/request-connection.test.ts` already does (mock
+`resolveDestinationSapConfig` + `createConnection`/`probe`). Required cases:
+- `classifyProbe` identity-aware hint: `(401, '', 'OnPremise', 'caller')`
+  mentions the user's credentials/client, NOT the destination; default identity
+  keeps the old wording (regression guard for existing callers).
+- Probe handler uses the **caller's** Basic auth (from `x-sap-login`/`-password`),
+  not the destination's resolved auth.
+- Probe sends both the `X-SAP-Client` header AND the `sap-usercontext` cookie
+  (assert `enforceClientCookie` ran / the cookie is present) for the caller's
+  client number.
+- **Exactly one attempt** — on a mocked 401/403 the transport mock is called
+  once (no retry / lockout), and on 5xx as well (probe never retries).
+- Missing `X-SAP-Destination` header → 400.
+
+**Manual (acme-prod staging)** — confirm end to end:
+1. TST (healthy) + user creds + client → `SAP: OK`.
+2. QAS → `SAP: ERROR` with the TLS/certificate hint.
+3. DEV with the user's own valid creds → `SAP: OK` (proves caller creds are used,
+   not the destination's stale creds that make `DiagnoseDestinations` show 401).
+4. Wrong client / wrong password → `SAP: ERROR` (auth), single attempt.
+5. After a chat message, `SAP: OK/ERROR` is still visible (separate element).
 
 ## Rollback
 
