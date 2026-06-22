@@ -282,6 +282,10 @@
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Password:</label>
               <input id="sap-password" name="password" type="password" autocomplete="current-password" placeholder="SAP password" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
             </div>
+            <div style="margin-bottom:12px">
+              <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Client (optional):</label>
+              <input id="sap-client" inputmode="numeric" maxlength="3" placeholder="e.g. 100 — blank = destination default" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
+            </div>
             <div id="gate-error" style="display:none;color:#ff5555;font-size:11px;margin-bottom:8px"></div>
             <button type="submit" id="gate-submit" style="width:100%;font-size:12px;padding:6px 12px">CONNECT</button>
           </form>
@@ -330,6 +334,11 @@
         // SAP credentials chosen in the login gate (x-sap-login / x-sap-password).
         let sapCredsLogin = '';
         let sapCredsPassword = '';
+        // Optional SAP client (mandant) chosen in the login gate (x-sap-client).
+        // Blank = use the destination's configured default client. Persists across
+        // mid-session re-gate just like login/password; full reset comes from the
+        // logout page reload.
+        let sapCredsClient = '';
         let loginGateDone = false;
 
         // ---------------------------------------------------------------
@@ -385,14 +394,18 @@
             const dest = document.getElementById('gate-dest').value;
             const login = document.getElementById('sap-login').value.trim();
             const password = document.getElementById('sap-password').value;
+            const client = document.getElementById('sap-client').value.trim();
             const err = document.getElementById('gate-error');
             const fail = (msg) => { err.textContent = msg; err.style.display = 'block'; };
             if (!dest) return fail('Choose a destination.');
             if (!login || !password) return fail('Enter SAP login and password.');
+            // SAP client is optional; when given it must be exactly 3 digits (000-999).
+            if (client && !/^\d{3}$/.test(client)) return fail('SAP client must be 3 digits, e.g. 100.');
             err.style.display = 'none';
 
             sapCredsLogin = login;
             sapCredsPassword = password;
+            sapCredsClient = client;
             connectedDestination = dest;
             if (destSelect) {
                 // keep the hidden select in sync — request code reads it
@@ -417,7 +430,8 @@
             loginGateDone = true;
             hideLoginGate();
             unlockInput('login-gate');
-            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Connected to ${escapeHtml(dest)} as ${escapeHtml(login)}.</div>`;
+            const clientNote = client ? ` (client ${escapeHtml(client)})` : '';
+            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Connected to ${escapeHtml(dest)}${clientNote} as ${escapeHtml(login)}.</div>`;
             chatWindow.scrollTop = chatWindow.scrollHeight;
             try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
             userInput.focus();
@@ -425,7 +439,9 @@
 
         function getSapCredHeaders() {
             if (sapCredsLogin && sapCredsPassword) {
-                return { 'X-SAP-Login': sapCredsLogin, 'X-SAP-Password': sapCredsPassword };
+                const h = { 'X-SAP-Login': sapCredsLogin, 'X-SAP-Password': sapCredsPassword };
+                if (sapCredsClient) h['X-SAP-Client'] = sapCredsClient;
+                return h;
             }
             return {};
         }
