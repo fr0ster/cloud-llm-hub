@@ -15,6 +15,27 @@ describe('classifyProbe', () => {
     ).toBe('backend_auth_failed');
   });
 
+  it('auth hint defaults to the destination identity (existing callers)', () => {
+    const r = classifyProbe(401, '', 'OnPremise');
+    expect(r.hint).toMatch(/destination/i);
+    // default identity must not blame the caller's own credentials
+    expect(r.hint).not.toMatch(/you entered|your SAP login/i);
+  });
+
+  it("caller-identity auth hint blames the user's own credentials, not the destination", () => {
+    const r = classifyProbe(401, '', 'OnPremise', 'caller');
+    expect(r.status).toBe('backend_auth_failed');
+    expect(r.hint).toMatch(/your SAP login|client number|log in again/i);
+    expect(r.hint).not.toMatch(/destination User\/Password|stale/i);
+  });
+
+  it('identity only affects the auth branch — TLS hint is identity-independent', () => {
+    const raw = 'SSLHandshakeException: certificate_expired';
+    expect(classifyProbe(500, raw, 'OnPremise', 'caller').hint).toBe(
+      classifyProbe(500, raw, 'OnPremise', 'destination').hint,
+    );
+  });
+
   it('classifies a TLS certificate_expired 5xx as a TLS problem, not a generic 5xx', () => {
     const raw =
       'javax.net.ssl.SSLHandshakeException: (certificate_expired) ' +
@@ -45,8 +66,8 @@ describe('classifyProbe', () => {
   });
 
   it('classifies DNS / network errors', () => {
-    expect(classifyProbe(0, 'getaddrinfo ENOTFOUND host', 'OnPremise').status).toBe(
-      'dns_or_network',
-    );
+    expect(
+      classifyProbe(0, 'getaddrinfo ENOTFOUND host', 'OnPremise').status,
+    ).toBe('dns_or_network');
   });
 });

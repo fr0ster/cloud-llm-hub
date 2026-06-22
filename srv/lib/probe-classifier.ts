@@ -25,10 +25,20 @@ export interface ProbeClassification {
   hint: string;
 }
 
+/**
+ * Whose credentials were on the wire for this probe:
+ * - 'destination' (default): the destination's own stored auth — used by the
+ *   all-destinations DiagnoseDestinations probe and the handlers.
+ * - 'caller': the end user's own x-sap-login/password/client — used by the
+ *   active-destination probe. Changes only the auth-failure hint wording.
+ */
+export type ProbeIdentity = 'destination' | 'caller';
+
 export function classifyProbe(
   httpCode: number,
   rawMessage: string,
   proxyType: string,
+  identity: ProbeIdentity = 'destination',
 ): ProbeClassification {
   const msg = rawMessage || '';
   const isOnprem = proxyType.toLowerCase() === 'onpremise';
@@ -74,6 +84,12 @@ export function classifyProbe(
       msg,
     )
   ) {
+    if (identity === 'caller') {
+      return {
+        status: 'backend_auth_failed',
+        hint: 'Backend rejected your SAP login/password (or client number). Re-check the credentials you entered and log in again.',
+      };
+    }
     return {
       status: 'backend_auth_failed',
       hint: isOnprem
