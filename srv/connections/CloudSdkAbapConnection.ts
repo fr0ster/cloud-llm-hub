@@ -57,6 +57,68 @@ export class CloudSdkAbapConnection implements AbapConnection {
     await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
   }
 
+  /**
+   * Single-shot connectivity probe under THIS connection's identity (the
+   * caller's Basic auth + client). Used by the active-destination probe.
+   *
+   * Deliberately does NOT call connect(): a GET needs no CSRF token, and
+   * connect()'s CSRF retry loop would both waste round-trips and violate the
+   * "exactly one attempt" rule (retrying a 401/403 risks locking the ABAP
+   * user). It seeds the `sap-usercontext` cookie up front so the request hits
+   * the configured client (the `X-SAP-Client` header alone is ignored by ABAP),
+   * makes ONE executeHttpRequest GET with a server-side timeout, and never
+   * retries on any status.
+   *
+   * @param path - ADT path to GET, e.g. `/sap/bc/adt/discovery`
+   * @returns httpCode and a trimmed backend body/error snippet (rawMessage)
+   */
+  async probe(path: string): Promise<{ httpCode: number; rawMessage: string }> {
+    const baseUrl = await this.getBaseUrl();
+    this.enforceClientCookie();
+    const cookie = this.getCookieHeader();
+    const trim = (v: unknown): string => {
+      if (typeof v === 'string') return v.slice(0, 500);
+      if (v && typeof v === 'object') {
+        try {
+          return JSON.stringify(v).slice(0, 500);
+        } catch {
+          return String(v).slice(0, 500);
+        }
+      }
+      return '';
+    };
+    try {
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: 'GET',
+          url: `${baseUrl}${path}`,
+          // Server-side timeout: the browser AbortController only stops the UI
+          // wait, not this Cloud SDK request.
+          timeout: 12_000,
+          headers: {
+            ...(await this.getAuthHeaders()),
+            ...(cookie ? { Cookie: cookie } : {}),
+          },
+        },
+      );
+      return {
+        httpCode: response.status || 200,
+        rawMessage: trim(response.data),
+      };
+    } catch (error: unknown) {
+      const errObj = error as {
+        response?: { status?: number; data?: unknown };
+        statusCode?: number;
+        message?: string;
+      };
+      const httpCode = errObj?.response?.status ?? errObj?.statusCode ?? 0;
+      const body = errObj?.response?.data;
+      const rawMessage = body ? trim(body) : trim(errObj?.message);
+      return { httpCode, rawMessage };
+    }
+  }
+
   reset(): void {
     this.csrfToken = null;
     this.cookieJar.clear();

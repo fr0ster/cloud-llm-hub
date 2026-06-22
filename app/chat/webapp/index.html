@@ -74,8 +74,9 @@
         <div class="system-bar">
             <span>LLM: <select id="llm-model-select" disabled><option value="">...</option></select></span>
             <span>MODE: <span id="agent-mode">...</span></span>
-            <span>DEST: <span id="dest-info" title="Active SAP destination (chosen at login)">none</span><select id="dest-select" disabled style="display:none"><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="display:none" disabled>&#x21bb;</button><button id="dest-diag" onclick="runDestinationDiagnostic()" title="Diagnose connectivity for every destination (independent of agent state)" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
+            <span>DEST: <span id="dest-info" title="Active SAP destination (chosen at login)">none</span><select id="dest-select" disabled style="display:none"><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="display:none" disabled>&#x21bb;</button><button id="dest-diag" onclick="runActiveProbeAndShow()" title="Test THIS destination under your SAP login/password/client" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
+            <span>SAP: <span id="sap-status" title="Connectivity of the active destination under your SAP identity" style="color:#888">—</span></span>
             <span><button id="help-btn" type="button" onclick="openHelp()" title="Help" aria-haspopup="dialog" style="padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">HELP</button></span>
         </div>
         <div class="system-bar">
@@ -421,6 +422,10 @@
             chatWindow.scrollTop = chatWindow.scrollHeight;
             try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
             userInput.focus();
+            // Validate the entered creds + client against the active destination
+            // WITHOUT blocking entry: gate is already unlocked above; the probe
+            // owns all its own errors and only updates the SAP status indicator.
+            void runActiveProbe();
         }
 
         function getSapCredHeaders() {
@@ -1065,6 +1070,53 @@
             dns_or_network: '#ff5555',
             unknown: '#bbbbbb',
         };
+
+        // Probe the ACTIVE destination under the caller's own SAP identity
+        // (login/password/client). Updates the #sap-status indicator with a
+        // terminal OK/ERROR/CHECKING and returns the DestinationDiagnostic on a
+        // 2xx response, or null on any non-2xx / transport / parse failure.
+        // Fully defensive — never throws to the caller, so it can be fired
+        // fire-and-forget from the login gate without blocking entry.
+        async function runActiveProbe() {
+            const el = document.getElementById('sap-status');
+            const setSap = (txt, color) => { if (el) { el.textContent = txt; el.style.color = color; } };
+            const dest = getSelectedDestination() || connectedDestination;
+            if (!dest) { setSap('—', '#888'); return null; }
+            setSap('CHECKING…', '#ffcc00');
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 12000);
+            try {
+                const resp = await fetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', {
+                    headers: { Accept: 'application/json', 'X-SAP-Destination': dest, ...getSapCredHeaders() },
+                    signal: controller.signal,
+                });
+                if (!resp.ok) { setSap('ERROR ' + resp.status, '#ff5555'); return null; }
+                const d = await resp.json();
+                if (d && d.status === 'ok') { setSap('OK', '#00ff00'); }
+                else { setSap('ERROR' + (d && d.status ? ' ' + d.status : ''), '#ff5555'); }
+                return d;
+            } catch (e) {
+                setSap('ERROR (probe unreachable)', '#ff5555');
+                return null;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        // DIAG button: probe the active destination under the user's identity and
+        // show the single-destination details (reuses the diagnostic modal).
+        async function runActiveProbeAndShow() {
+            const btn = document.getElementById('dest-diag');
+            const orig = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = 'DIAG…'; }
+            try {
+                const d = await runActiveProbe();
+                if (d) renderDiagModal([d]);
+                else alert('Probe did not return a diagnostic — see the SAP status indicator.');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+            }
+        }
 
         async function runDestinationDiagnostic() {
             const btn = document.getElementById('dest-diag');
