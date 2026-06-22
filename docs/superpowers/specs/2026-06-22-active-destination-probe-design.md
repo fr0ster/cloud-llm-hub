@@ -68,6 +68,8 @@ probe(path):
   this.enforceClientCookie()                 // seed sap-usercontext = sap-client=<client>
   executeHttpRequest({ destinationName }, {
     method: 'GET', url: path,
+    timeout: 12_000,                          // SERVER-side timeout — the browser
+                                              // AbortController does not stop this request
     headers: { ...getAuthHeaders(),           // caller Basic auth
                'X-SAP-Client': client,
                Cookie: getCookieHeader() } }) // includes sap-usercontext
@@ -79,16 +81,20 @@ probe(path):
 - Read `X-SAP-Destination`, `x-sap-login`, `x-sap-password`, `x-sap-client`
   from `req.headers` (same header names as the chat path).
 - If no destination header → 400.
-- **Guarantee caller identity (P1).** `request-connection` only overrides to
-  basic auth `if (sapLogin && sapPassword)` — with a missing or half-supplied
-  pair it silently falls back to the **destination's** auth, which would probe
-  the wrong identity. So `ProbeActiveDestination` enforces:
-  - exactly one of login/password present → **400** (partial credentials);
-  - for destinations that require user credentials (onprem / NoAuthentication —
-    same `requiresUserCredentials` test as `request-connection`) both are
-    mandatory → **400** if absent.
-  - both absent on a cloud/JWT destination is allowed (mirrors the chat path:
-    resolved destination/JWT auth is the caller's identity there).
+- **Guarantee caller identity (P1).** The whole point of this probe is "does
+  MY connection work", so it must run as the **user**, never as a destination's
+  technical identity. `request-connection` only overrides to basic auth
+  `if (sapLogin && sapPassword)` and otherwise falls back to the destination's
+  own auth (e.g. `OAuth2ClientCredentials` — a service identity, not the user).
+  The login gate ALWAYS collects login + password, so the simplest correct rule
+  is:
+  - **`ProbeActiveDestination` requires BOTH `x-sap-login` and `x-sap-password`
+    for every call → 400 if either is missing.** No destination-auth fallback,
+    cloud or onprem.
+  - The only conceivable exception is confirmed principal propagation
+    (`OAuth2SAMLBearerAssertion`, where the caller's JWT *is* the user identity);
+    that is out of scope here and would be an explicit, separate opt-in — not a
+    silent fallback.
 - Build the connection under the **caller's** identity exactly like
   `srv/lib/request-connection.ts` (resolve destination, apply basic-auth
   override from `x-sap-login`/`x-sap-password`, apply `x-sap-client` override).
@@ -215,8 +221,8 @@ login gate submit / DIAG click
 - **Exactly one attempt** — on a mocked 401/403 the transport mock is called
   once (no retry / lockout), and on 5xx as well (probe never retries).
 - Missing `X-SAP-Destination` header → 400.
-- Partial credentials (only login OR only password) → 400; cred-requiring
-  destination with no creds → 400 (caller-identity guarantee).
+- Missing either `x-sap-login` or `x-sap-password` → 400 (caller-identity
+  guarantee; no destination-auth fallback, cloud or onprem).
 
 **Manual (acme-prod staging)** — confirm end to end:
 1. TST (healthy) + user creds + client → `SAP: OK`.
