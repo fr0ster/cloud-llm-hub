@@ -422,6 +422,51 @@ export default async function registerMcpProxyHandlers(
     return results;
   });
 
+  // Probe ONLY the active destination under the CALLER's own SAP identity.
+  // Unlike DiagnoseDestinations (which probes every destination with its own
+  // stored credentials), this answers "does MY session work" — it builds the
+  // connection from x-sap-login/x-sap-password/x-sap-client and reports a single
+  // classified DestinationDiagnostic.
+  srv.on('ProbeActiveDestination', async (req: Request) => {
+    const { runActiveDestinationProbe } = await import('./lib/active-probe');
+    // CAP Request wraps the express request; x-sap-* headers live there.
+    const httpReq =
+      (
+        req as unknown as {
+          http?: { req?: { headers?: Record<string, string | undefined> } };
+        }
+      ).http?.req ??
+      (
+        req as unknown as {
+          _?: { req?: { headers?: Record<string, string | undefined> } };
+        }
+      )._?.req;
+    const headers = httpReq?.headers ?? {};
+
+    const result = await runActiveDestinationProbe({
+      destination: headers['x-sap-destination'],
+      login: headers['x-sap-login'],
+      password: headers['x-sap-password'],
+      client: headers['x-sap-client'],
+      jwt: headers.authorization?.replace('Bearer ', ''),
+    });
+
+    log.info('ProbeActiveDestination completed', {
+      destination: result.name,
+      username: headers['x-sap-login'],
+      client: headers['x-sap-client'] || '(destination default)',
+      status: result.status,
+      httpCode: result.httpCode,
+      latencyMs: result.latencyMs,
+    });
+
+    return {
+      ...result,
+      locationId: '',
+      timestamp: new Date().toISOString(),
+    };
+  });
+
   // Legacy action for backward compatibility
   srv.on('InvokeTool', async (req: Request<ProxyInvocation>) => {
     const { toolId, mode = DEFAULT_MODE } = req.data;
