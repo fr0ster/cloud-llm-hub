@@ -79,6 +79,16 @@ probe(path):
 - Read `X-SAP-Destination`, `x-sap-login`, `x-sap-password`, `x-sap-client`
   from `req.headers` (same header names as the chat path).
 - If no destination header → 400.
+- **Guarantee caller identity (P1).** `request-connection` only overrides to
+  basic auth `if (sapLogin && sapPassword)` — with a missing or half-supplied
+  pair it silently falls back to the **destination's** auth, which would probe
+  the wrong identity. So `ProbeActiveDestination` enforces:
+  - exactly one of login/password present → **400** (partial credentials);
+  - for destinations that require user credentials (onprem / NoAuthentication —
+    same `requiresUserCredentials` test as `request-connection`) both are
+    mandatory → **400** if absent.
+  - both absent on a cloud/JWT destination is allowed (mirrors the chat path:
+    resolved destination/JWT auth is the caller's identity there).
 - Build the connection under the **caller's** identity exactly like
   `srv/lib/request-connection.ts` (resolve destination, apply basic-auth
   override from `x-sap-login`/`x-sap-password`, apply `x-sap-client` override).
@@ -111,11 +121,11 @@ Re-check the credentials you entered and log in again."* All other branches
 
 ### UI — `app/chat/webapp/index.html`
 
-1. **Validate on login.** At the end of `submitLoginGate()` (after creds are
-   stored), call `ProbeActiveDestination()` with the chosen creds + client and
-   reflect the outcome in the toolbar status:
-   - `status === 'ok'` → green `OK` indicator.
-   - otherwise → red `ERROR` + the short `status` / first line of `hint`.
+1. **Validate on login.** After `submitLoginGate()` has unlocked the chat
+   (see "Never block the gate" below), it fires `void runActiveProbe()` to
+   validate the chosen creds + client and reflect the outcome in `#sap-status`:
+   - `status === 'ok'` → green `SAP: OK`.
+   - otherwise → red `SAP: ERROR` + the short `status` / first line of `hint`.
    The cosmetic `Connected …` line stays, but is now backed by a real probe.
 2. **DIAG button** (post-login) → call `ProbeActiveDestination()` again and show
    a single-destination detail view (status, httpCode, latencyMs, hint,
@@ -126,18 +136,23 @@ Re-check the credentials you entered and log in again."* All other branches
 
 **Probe call lifecycle (P2 — network/error path).** Both entry points (login,
 DIAG) share one async helper, e.g. `runActiveProbe()`, that is fully defensive
-and never throws to the caller:
-- Before the fetch → `SAP: CHECKING…` (neutral/yellow) in `#sap-status`.
-- `try`: `fetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', { headers })`.
-  - On non-2xx (e.g. 400 missing header, 500) → `SAP: ERROR <http status>`.
-  - On 2xx → parse the `DestinationDiagnostic`; `status==='ok'` → `SAP: OK`,
-    else → `SAP: ERROR <status/first line of hint>`.
-- `catch` (network failure / fetch throw / JSON parse) →
-  `SAP: ERROR (probe unreachable)`; never an unhandled rejection.
-- `finally`: clear the `CHECKING…` transient.
-- In all branches the **login gate is never blocked** — `submitLoginGate()`
-  awaits the helper only to render status, and a probe failure does not prevent
-  entry (a `.catch` guards the call so a rejected probe still completes login).
+and never throws to the caller. Each branch writes a **terminal** `#sap-status`
+(no `finally` clearing step — that would wipe the result a branch just set):
+- Before the fetch → `SAP: CHECKING…` (neutral/yellow).
+- `try`: `fetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', { headers,
+  signal })` with an `AbortController` timeout (12 s) so the probe can never
+  hang.
+  - non-2xx (400 partial creds, 500, …) → `SAP: ERROR <http status>`.
+  - 2xx → parse `DestinationDiagnostic`; `status==='ok'` → `SAP: OK`, else
+    → `SAP: ERROR <status / first line of hint>`.
+- `catch` (network failure / abort timeout / JSON parse) →
+  `SAP: ERROR (probe unreachable)`. Never an unhandled rejection.
+
+**Never block the gate (P1).** `submitLoginGate()` does its normal
+`loginGateDone = true` → `hideLoginGate()` → `unlockInput()` → focus FIRST, and
+only then fires `void runActiveProbe()` (fire-and-forget — not awaited). The
+helper owns all its own errors, so a slow or failing probe can never delay or
+block entry. The DIAG button calls the same helper directly.
 
 ### Status indicator (P1 — dedicated element)
 
@@ -200,6 +215,8 @@ login gate submit / DIAG click
 - **Exactly one attempt** — on a mocked 401/403 the transport mock is called
   once (no retry / lockout), and on 5xx as well (probe never retries).
 - Missing `X-SAP-Destination` header → 400.
+- Partial credentials (only login OR only password) → 400; cred-requiring
+  destination with no creds → 400 (caller-identity guarantee).
 
 **Manual (acme-prod staging)** — confirm end to end:
 1. TST (healthy) + user creds + client → `SAP: OK`.
