@@ -25,15 +25,40 @@ export interface ProbeClassification {
   hint: string;
 }
 
+/**
+ * Whose credentials were on the wire for this probe:
+ * - 'destination' (default): the destination's own stored auth — used by the
+ *   all-destinations DiagnoseDestinations probe and the handlers.
+ * - 'caller': the end user's own x-sap-login/password/client — used by the
+ *   active-destination probe. Changes only the auth-failure hint wording.
+ */
+export type ProbeIdentity = 'destination' | 'caller';
+
 export function classifyProbe(
   httpCode: number,
   rawMessage: string,
   proxyType: string,
+  identity: ProbeIdentity = 'destination',
 ): ProbeClassification {
   const msg = rawMessage || '';
   const isOnprem = proxyType.toLowerCase() === 'onpremise';
   if (httpCode >= 200 && httpCode < 300) {
     return { status: 'ok', hint: '' };
+  }
+  // TLS/certificate handshake failures. These surface as a 5xx from the
+  // connectivity proxy, so they must be caught BEFORE the generic 5xx branch
+  // or they read as an opaque "backend returned 5xx". The cause is always a
+  // certificate on the wire (on-prem server cert or Cloud Connector mapping),
+  // never cloud-llm-hub itself.
+  if (
+    /certificate_expired|SSLHandshake|SSLPeerUnverified|bad_certificate|certificate_unknown|PKIX|unable to find valid certification path/i.test(
+      msg,
+    )
+  ) {
+    return {
+      status: 'backend_error',
+      hint: 'TLS handshake to the backend failed (certificate problem). The on-premise server certificate (ABAP STRUST / SSL server PSE) or the Cloud Connector backend mapping is expired or untrusted — renew it / check the SCC system mapping. This is not a cloud-llm-hub issue.',
+    };
   }
   if (/Timed out waiting for tunnel to open/i.test(msg)) {
     return {
@@ -59,6 +84,12 @@ export function classifyProbe(
       msg,
     )
   ) {
+    if (identity === 'caller') {
+      return {
+        status: 'backend_auth_failed',
+        hint: 'Backend rejected your SAP login/password (or client number). Re-check the credentials you entered and log in again.',
+      };
+    }
     return {
       status: 'backend_auth_failed',
       hint: isOnprem

@@ -4,6 +4,10 @@ service McpProxyService {
   function ProbeDestination(destination: String) returns DestinationProbeResult;
   function ListDestinations() returns array of DestinationStatus;
   function DiagnoseDestinations() returns array of DestinationDiagnostic;
+  // Probe ONLY the active destination (X-SAP-Destination) under the CALLER's own
+  // SAP identity (x-sap-login/x-sap-password/x-sap-client), not the destination's
+  // stored credentials. Used by the post-login OK/ERROR status + DIAG button.
+  function ProbeActiveDestination() returns DestinationDiagnostic;
   action InvokeTool(request: ProxyInvocation) returns ProxyResult;
 }
 

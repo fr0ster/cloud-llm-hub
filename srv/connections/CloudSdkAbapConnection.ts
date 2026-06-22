@@ -57,6 +57,68 @@ export class CloudSdkAbapConnection implements AbapConnection {
     await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
   }
 
+  /**
+   * Single-shot connectivity probe under THIS connection's identity (the
+   * caller's Basic auth + client). Used by the active-destination probe.
+   *
+   * Deliberately does NOT call connect(): a GET needs no CSRF token, and
+   * connect()'s CSRF retry loop would both waste round-trips and violate the
+   * "exactly one attempt" rule (retrying a 401/403 risks locking the ABAP
+   * user). It seeds the `sap-usercontext` cookie up front so the request hits
+   * the configured client (the `X-SAP-Client` header alone is ignored by ABAP),
+   * makes ONE executeHttpRequest GET with a server-side timeout, and never
+   * retries on any status.
+   *
+   * @param path - ADT path to GET, e.g. `/sap/bc/adt/discovery`
+   * @returns httpCode and a trimmed backend body/error snippet (rawMessage)
+   */
+  async probe(path: string): Promise<{ httpCode: number; rawMessage: string }> {
+    const baseUrl = await this.getBaseUrl();
+    this.enforceClientCookie();
+    const cookie = this.getCookieHeader();
+    const trim = (v: unknown): string => {
+      if (typeof v === 'string') return v.slice(0, 500);
+      if (v && typeof v === 'object') {
+        try {
+          return JSON.stringify(v).slice(0, 500);
+        } catch {
+          return String(v).slice(0, 500);
+        }
+      }
+      return '';
+    };
+    try {
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: 'GET',
+          url: `${baseUrl}${path}`,
+          // Server-side timeout: the browser AbortController only stops the UI
+          // wait, not this Cloud SDK request.
+          timeout: 12_000,
+          headers: {
+            ...(await this.getAuthHeaders()),
+            ...(cookie ? { Cookie: cookie } : {}),
+          },
+        },
+      );
+      return {
+        httpCode: response.status || 200,
+        rawMessage: trim(response.data),
+      };
+    } catch (error: unknown) {
+      const errObj = error as {
+        response?: { status?: number; data?: unknown };
+        statusCode?: number;
+        message?: string;
+      };
+      const httpCode = errObj?.response?.status ?? errObj?.statusCode ?? 0;
+      const body = errObj?.response?.data;
+      const rawMessage = body ? trim(body) : trim(errObj?.message);
+      return { httpCode, rawMessage };
+    }
+  }
+
   reset(): void {
     this.csrfToken = null;
     this.cookieJar.clear();
@@ -281,13 +343,35 @@ export class CloudSdkAbapConnection implements AbapConnection {
         });
         return token;
       } catch (error: unknown) {
-        const errorMessage =
+        const rawMessage =
           error instanceof Error ? error.message : String(error);
         const errorObj = error as {
-          response?: { status?: number };
+          response?: { status?: number; data?: unknown };
           statusCode?: number;
         };
         const status = errorObj?.response?.status ?? errorObj?.statusCode;
+
+        // The bare Cloud SDK / axios message is just "Request failed with
+        // status code NNN", which hides the real cause. The connectivity proxy
+        // puts the actual reason in the response BODY (e.g. an SSL
+        // "certificate_expired" handshake error, or "Anmeldung fehlgeschlagen"
+        // for bad credentials). Surface a trimmed snippet so the diagnosis
+        // reaches the service response instead of an opaque 500.
+        const respData = errorObj?.response?.data;
+        let backendDetail = '';
+        if (typeof respData === 'string') {
+          backendDetail = respData;
+        } else if (respData && typeof respData === 'object') {
+          try {
+            backendDetail = JSON.stringify(respData);
+          } catch {
+            backendDetail = String(respData);
+          }
+        }
+        const errorMessage = backendDetail
+          ? `${rawMessage} — backend: ${backendDetail.slice(0, 300)}`
+          : rawMessage;
+
         logger.csrfToken('error', `CSRF token error: ${errorMessage}`, {
           url: csrfUrl,
           status,
