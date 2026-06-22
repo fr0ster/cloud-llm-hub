@@ -141,9 +141,20 @@ Re-check the credentials you entered and log in again."* All other branches
    (which now includes `X-SAP-Client`), exactly like the chat request.
 
 **Probe call lifecycle (P2 — network/error path).** Both entry points (login,
-DIAG) share one async helper, e.g. `runActiveProbe()`, that is fully defensive
-and never throws to the caller. Each branch writes a **terminal** `#sap-status`
-(no `finally` clearing step — that would wipe the result a branch just set):
+DIAG) share one async helper
+`runActiveProbe(): Promise<DestinationDiagnostic | null>`, fully defensive and
+never throwing to the caller. **Return contract:** resolves to the parsed
+`DestinationDiagnostic` on a 2xx response (whatever its `status`), and to
+`null` on any non-2xx, transport failure, abort timeout, or JSON-parse error.
+The helper always updates `#sap-status` itself; the return value is only for
+callers that need the detail. Consumers:
+- **Login** → `void runActiveProbe()` (ignores the result; status is enough).
+- **DIAG** → `const d = await runActiveProbe(); if (d) renderProbeModal(d)` —
+  the modal renders only when a diagnostic came back; on `null` the red
+  `#sap-status` is the whole story.
+
+Each branch writes a **terminal** `#sap-status` (no `finally` clearing step —
+that would wipe the result a branch just set):
 - Before the fetch → `SAP: CHECKING…` (neutral/yellow).
 - `try`: `fetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', { headers,
   signal })` with an `AbortController` timeout (12 s) so the probe can never
