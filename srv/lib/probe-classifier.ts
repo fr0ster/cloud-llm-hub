@@ -35,6 +35,21 @@ export function classifyProbe(
   if (httpCode >= 200 && httpCode < 300) {
     return { status: 'ok', hint: '' };
   }
+  // TLS/certificate handshake failures. These surface as a 5xx from the
+  // connectivity proxy, so they must be caught BEFORE the generic 5xx branch
+  // or they read as an opaque "backend returned 5xx". The cause is always a
+  // certificate on the wire (on-prem server cert or Cloud Connector mapping),
+  // never cloud-llm-hub itself.
+  if (
+    /certificate_expired|SSLHandshake|SSLPeerUnverified|bad_certificate|certificate_unknown|PKIX|unable to find valid certification path/i.test(
+      msg,
+    )
+  ) {
+    return {
+      status: 'backend_error',
+      hint: 'TLS handshake to the backend failed (certificate problem). The on-premise server certificate (ABAP STRUST / SSL server PSE) or the Cloud Connector backend mapping is expired or untrusted — renew it / check the SCC system mapping. This is not a cloud-llm-hub issue.',
+    };
+  }
   if (/Timed out waiting for tunnel to open/i.test(msg)) {
     return {
       status: 'tunnel_timeout',
