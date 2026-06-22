@@ -78,11 +78,26 @@ let sapCredsClient = '';
 When `sapCredsClient` is set, add `'X-SAP-Client': sapCredsClient` to the
 returned headers. (Client is numeric, so no ISO-8859-1 header concern.)
 
-### 5. Reset on logout / re-gate
+### 5. Persistence on re-gate / reset on logout
 
-`sapCredsClient` is cleared wherever `sapCredsLogin` / `sapCredsPassword` are
-reset (login gate is per-session, like the destination). When the gate reopens
-mid-session on `SAP_CREDENTIALS_REQUIRED`, the field starts empty.
+`sapCredsClient` mirrors the existing login/password lifecycle exactly — and the
+current code never explicitly resets those:
+
+- **Mid-session re-gate** (`SAP_CREDENTIALS_REQUIRED`, ~line 1367): the handler
+  only sets `loginGateDone = false` and calls `showLoginGate()`. It does **not**
+  clear `sapCredsLogin` / `sapCredsPassword` nor the gate's DOM inputs, so the
+  previous values stay pre-filled. `sapCredsClient` and the `sap-client` DOM
+  input must behave identically: **do not clear them on re-gate.** This avoids a
+  silent switch from a non-default client (e.g. 600) back to the destination
+  default — where the user's account may not exist.
+- **Full reset = logout only.** The logout button (~line 298) does
+  `localStorage.clear(); sessionStorage.clear(); window.location.replace('/logout')`
+  — a full page navigation that reloads the app, so every JS variable
+  (`sapCredsClient` included) and every DOM field resets to its initial empty
+  state automatically. No explicit client-clearing code is added or needed.
+
+In short: add **no** reset logic for the client. Persistence on re-gate and
+reset on logout both fall out of the existing behaviour.
 
 ## Decisions
 
@@ -100,7 +115,9 @@ manually:
 2. Client `600` (a non-default client the user has access to) → request runs
    under client 600; confirmation line shows `(client 600)`.
 3. Invalid input (`60`, `abc`, `6000`) → inline error, gate does not proceed.
-4. Logout → re-open gate → client field empty.
+4. Mid-session re-gate (trigger `SAP_CREDENTIALS_REQUIRED`) → client field stays
+   pre-filled with the previously entered number (no silent switch to default).
+5. Logout → app reloads → gate opens with an empty client field.
 
 ## Rollback
 
