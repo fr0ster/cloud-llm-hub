@@ -114,7 +114,10 @@ manually:
 1. Blank client → request works exactly as before (destination default client).
 2. Client `600` (a non-default client the user has access to) → request runs
    under client 600; confirmation line shows `(client 600)`.
-3. Invalid input (`60`, `abc`, `6000`) → inline error, gate does not proceed.
+3. Invalid input that `maxlength="3"` still admits — `60` (too short), `abc`
+   (non-numeric), `1 0` (space) → inline error, gate does not proceed. (Note:
+   `maxlength="3"` already blocks typing/pasting a 4th char, so an over-length
+   case like `6000` cannot be entered and is not a meaningful test.)
 4. Mid-session re-gate (trigger `SAP_CREDENTIALS_REQUIRED`) → client field stays
    pre-filled with the previously entered number (no silent switch to default).
 5. Logout → app reloads → gate opens with an empty client field.
