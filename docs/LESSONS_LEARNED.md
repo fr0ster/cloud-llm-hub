@@ -13,6 +13,7 @@ Each lesson file has a YAML frontmatter block (`date`, `branch`, `subaccount`, `
 | 2026-06-07 | [`${default-url}` points at a dead route once srv has an explicit route](lessons/2026-06-07-default-url-dead-srv-route.md) | main | ai-applications |
 | 2026-06-10 | [abap-dump-monitor: the cloud-llm-hub → ABAP → Jira auth chain](lessons/2026-06-10-dump-monitor-auth-chain-and-jira-squid.md) | main | ai-applications |
 | 2026-06-11 | [UpdateClass "not locked" — stateless PUT after lock, BASIS-version-dependent](lessons/2026-06-11-update-lock-stateless-put-basis-version.md) | main | nvcr (DS4) |
+| 2026-06-17 | [Chat login "non ISO-8859-1 code point" — Cyrillic homoglyph password](lessons/2026-06-17-cyrillic-homoglyph-password-fetch-header.md) | main | nvcr (CR2) |
 
 ## Adding a new lesson
 
