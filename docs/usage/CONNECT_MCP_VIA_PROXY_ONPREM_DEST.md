@@ -17,6 +17,21 @@ You set this up **once**, then the editor connects with a trivial config.
 
 ---
 
+## Step 0 — install the tools
+
+You need **Node.js** (provides `npm`/`npx`) plus:
+
+- **Cloud Foundry CLI** (`cf`) — for the login and fetching the service key.
+  Install per the [official guide](https://docs.cloudfoundry.org/cf-cli/install-go-cli.html)
+  (Homebrew: `brew install cloudfoundry/tap/cf-cli`).
+- **The proxy** — `mcp-abap-adt-proxy`, version **≥ 1.6**:
+  ```bash
+  npm i -g @mcp-abap-adt/proxy
+  mcp-abap-adt-proxy --version        # must be >= 1.6
+  ```
+
+---
+
 ## Step 1 — two small config files
 
 ### `~/.config/mcp-abap-adt/proxy/myconfig.yaml`
@@ -72,17 +87,19 @@ The proxy gets its login token from a **service key** file named after your
 Create it once, with the CF CLI logged into the right subaccount:
 
 ```bash
-npm run get:key          # fetches the cloud-llm-hub-auth key and saves the JSON
+cf create-service-key cloud-llm-hub-auth mcp      # first time only
+cf service-key cloud-llm-hub-auth mcp             # copy the printed {...} into
+#   ~/.config/mcp-abap-adt/service-keys/<YOUR_BTP_DESTINATION>.json
 ```
 
-Re-run it if you switch subaccounts (a stale key → login errors).
+> Working inside the `cloud-llm-hub` repo? `npm run get:key` runs the above and
+> writes the file for you.
+
+Re-do this if you switch subaccounts (a stale key → login errors).
 
 ---
 
 ## Step 3 — start the proxy
-
-> Needs `mcp-abap-adt-proxy` **≥ 1.6** (`mcp-abap-adt-proxy --version`;
-> upgrade with `brew upgrade mcp-abap-adt-proxy` or `npm i -g @mcp-abap-adt/proxy`).
 
 ```bash
 cf login --sso
