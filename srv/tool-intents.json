@@ -607,6 +607,110 @@
     "text": "Tool: CheckDdl\nDescription: Perform syntax check on an ABAP CDS view. Can check existing view (active/inactive) or validate hypothetical DDL source. Returns syntax errors, warnings, and messages.\nParameters: type, properties, required",
     "enriched": "Tool: CheckDdl\nDescription: Perform syntax check on an ABAP CDS view. Can check existing view (active/inactive) or validate hypothetical DDL source. Returns syntax errors, warnings, and messages.\nParameters: type, properties, required\nIntent: CDS view syntax check, validate ABAP CDS, check CDS errors, verify DDL source, CDS warnings and messages"
   },
+  "GetClassVersions": {
+    "text": "Tool: GetClassVersions\nDescription: [read-only] List the SAP version history of a ABAP class. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetClassVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetClassVersions\nDescription: [read-only] List the SAP version history of a ABAP class. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetClassVersionSource.\nParameters: type, properties, required"
+  },
+  "GetClassVersionSource": {
+    "text": "Tool: GetClassVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP class version by its content_uri (taken from a GetClassVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetClassVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP class version by its content_uri (taken from a GetClassVersions entry).\nParameters: type, properties, required"
+  },
+  "GetProgramVersions": {
+    "text": "Tool: GetProgramVersions\nDescription: [read-only] List the SAP version history of a ABAP program. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetProgramVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetProgramVersions\nDescription: [read-only] List the SAP version history of a ABAP program. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetProgramVersionSource.\nParameters: type, properties, required"
+  },
+  "GetProgramVersionSource": {
+    "text": "Tool: GetProgramVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP program version by its content_uri (taken from a GetProgramVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetProgramVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP program version by its content_uri (taken from a GetProgramVersions entry).\nParameters: type, properties, required"
+  },
+  "GetInterfaceVersions": {
+    "text": "Tool: GetInterfaceVersions\nDescription: [read-only] List the SAP version history of a ABAP interface. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetInterfaceVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetInterfaceVersions\nDescription: [read-only] List the SAP version history of a ABAP interface. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetInterfaceVersionSource.\nParameters: type, properties, required"
+  },
+  "GetInterfaceVersionSource": {
+    "text": "Tool: GetInterfaceVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP interface version by its content_uri (taken from a GetInterfaceVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetInterfaceVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP interface version by its content_uri (taken from a GetInterfaceVersions entry).\nParameters: type, properties, required"
+  },
+  "GetFunctionGroupVersions": {
+    "text": "Tool: GetFunctionGroupVersions\nDescription: [read-only] List the SAP version history of a ABAP function group. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetFunctionGroupVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetFunctionGroupVersions\nDescription: [read-only] List the SAP version history of a ABAP function group. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetFunctionGroupVersionSource.\nParameters: type, properties, required"
+  },
+  "GetFunctionGroupVersionSource": {
+    "text": "Tool: GetFunctionGroupVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP function group version by its content_uri (taken from a GetFunctionGroupVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetFunctionGroupVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP function group version by its content_uri (taken from a GetFunctionGroupVersions entry).\nParameters: type, properties, required"
+  },
+  "GetFunctionModuleVersions": {
+    "text": "Tool: GetFunctionModuleVersions\nDescription: [read-only] List the SAP version history of a ABAP function module. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetFunctionModuleVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetFunctionModuleVersions\nDescription: [read-only] List the SAP version history of a ABAP function module. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetFunctionModuleVersionSource.\nParameters: type, properties, required"
+  },
+  "GetFunctionModuleVersionSource": {
+    "text": "Tool: GetFunctionModuleVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP function module version by its content_uri (taken from a GetFunctionModuleVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetFunctionModuleVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP function module version by its content_uri (taken from a GetFunctionModuleVersions entry).\nParameters: type, properties, required"
+  },
+  "GetTableVersions": {
+    "text": "Tool: GetTableVersions\nDescription: [read-only] List the SAP version history of a ABAP table. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetTableVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetTableVersions\nDescription: [read-only] List the SAP version history of a ABAP table. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetTableVersionSource.\nParameters: type, properties, required"
+  },
+  "GetTableVersionSource": {
+    "text": "Tool: GetTableVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP table version by its content_uri (taken from a GetTableVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetTableVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP table version by its content_uri (taken from a GetTableVersions entry).\nParameters: type, properties, required"
+  },
+  "GetStructureVersions": {
+    "text": "Tool: GetStructureVersions\nDescription: [read-only] List the SAP version history of a ABAP structure. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetStructureVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetStructureVersions\nDescription: [read-only] List the SAP version history of a ABAP structure. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetStructureVersionSource.\nParameters: type, properties, required"
+  },
+  "GetStructureVersionSource": {
+    "text": "Tool: GetStructureVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP structure version by its content_uri (taken from a GetStructureVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetStructureVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP structure version by its content_uri (taken from a GetStructureVersions entry).\nParameters: type, properties, required"
+  },
+  "GetDdlVersions": {
+    "text": "Tool: GetDdlVersions\nDescription: [read-only] List the SAP version history of a CDS view (DDL source). Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetDdlVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetDdlVersions\nDescription: [read-only] List the SAP version history of a CDS view (DDL source). Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetDdlVersionSource.\nParameters: type, properties, required"
+  },
+  "GetDdlVersionSource": {
+    "text": "Tool: GetDdlVersionSource\nDescription: [read-only] Fetch the source of a specific CDS view (DDL source) version by its content_uri (taken from a GetDdlVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetDdlVersionSource\nDescription: [read-only] Fetch the source of a specific CDS view (DDL source) version by its content_uri (taken from a GetDdlVersions entry).\nParameters: type, properties, required"
+  },
+  "GetDomainVersions": {
+    "text": "Tool: GetDomainVersions\nDescription: [read-only] List the SAP version history of a ABAP domain. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetDomainVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetDomainVersions\nDescription: [read-only] List the SAP version history of a ABAP domain. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetDomainVersionSource.\nParameters: type, properties, required"
+  },
+  "GetDomainVersionSource": {
+    "text": "Tool: GetDomainVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP domain version by its content_uri (taken from a GetDomainVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetDomainVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP domain version by its content_uri (taken from a GetDomainVersions entry).\nParameters: type, properties, required"
+  },
+  "GetDataElementVersions": {
+    "text": "Tool: GetDataElementVersions\nDescription: [read-only] List the SAP version history of a ABAP data element. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetDataElementVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetDataElementVersions\nDescription: [read-only] List the SAP version history of a ABAP data element. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetDataElementVersionSource.\nParameters: type, properties, required"
+  },
+  "GetDataElementVersionSource": {
+    "text": "Tool: GetDataElementVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP data element version by its content_uri (taken from a GetDataElementVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetDataElementVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP data element version by its content_uri (taken from a GetDataElementVersions entry).\nParameters: type, properties, required"
+  },
+  "GetPackageVersions": {
+    "text": "Tool: GetPackageVersions\nDescription: [read-only] List the SAP version history of a ABAP package. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetPackageVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetPackageVersions\nDescription: [read-only] List the SAP version history of a ABAP package. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetPackageVersionSource.\nParameters: type, properties, required"
+  },
+  "GetPackageVersionSource": {
+    "text": "Tool: GetPackageVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP package version by its content_uri (taken from a GetPackageVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetPackageVersionSource\nDescription: [read-only] Fetch the source of a specific ABAP package version by its content_uri (taken from a GetPackageVersions entry).\nParameters: type, properties, required"
+  },
+  "GetBehaviorDefinitionVersions": {
+    "text": "Tool: GetBehaviorDefinitionVersions\nDescription: [read-only] List the SAP version history of a RAP behavior definition. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetBehaviorDefinitionVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetBehaviorDefinitionVersions\nDescription: [read-only] List the SAP version history of a RAP behavior definition. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetBehaviorDefinitionVersionSource.\nParameters: type, properties, required"
+  },
+  "GetBehaviorDefinitionVersionSource": {
+    "text": "Tool: GetBehaviorDefinitionVersionSource\nDescription: [read-only] Fetch the source of a specific RAP behavior definition version by its content_uri (taken from a GetBehaviorDefinitionVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetBehaviorDefinitionVersionSource\nDescription: [read-only] Fetch the source of a specific RAP behavior definition version by its content_uri (taken from a GetBehaviorDefinitionVersions entry).\nParameters: type, properties, required"
+  },
+  "GetMetadataExtensionVersions": {
+    "text": "Tool: GetMetadataExtensionVersions\nDescription: [read-only] List the SAP version history of a CDS metadata extension. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetMetadataExtensionVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetMetadataExtensionVersions\nDescription: [read-only] List the SAP version history of a CDS metadata extension. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version's source via GetMetadataExtensionVersionSource.\nParameters: type, properties, required"
+  },
+  "GetMetadataExtensionVersionSource": {
+    "text": "Tool: GetMetadataExtensionVersionSource\nDescription: [read-only] Fetch the source of a specific CDS metadata extension version by its content_uri (taken from a GetMetadataExtensionVersions entry).\nParameters: type, properties, required",
+    "enriched": "Tool: GetMetadataExtensionVersionSource\nDescription: [read-only] Fetch the source of a specific CDS metadata extension version by its content_uri (taken from a GetMetadataExtensionVersions entry).\nParameters: type, properties, required"
+  },
   "HandlerValidate": {
     "text": "Tool: HandlerValidate\nDescription: Validate before create only. object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), DDL(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*), SERVICE_BINDING(object_name*=service_binding_name*, service_definition_name*).\nParameters: type, properties, required",
     "enriched": "Tool: HandlerValidate\nDescription: Validate before create only. object_type required: CLASS(object_name*), PROGRAM(object_name*), INTERFACE(object_name*), FUNCTION_GROUP(object_name*), FUNCTION_MODULE(object_name*), TABLE(object_name*), STRUCTURE(object_name*), DDL(object_name*), DOMAIN(object_name*), DATA_ELEMENT(object_name*), PACKAGE(object_name*), BEHAVIOR_DEFINITION(object_name*), BEHAVIOR_IMPLEMENTATION(object_name*), METADATA_EXTENSION(object_name*), SERVICE_BINDING(object_name*=service_binding_name*, service_definition_name*).\nParameters: type, properties, required\nIntent: validate object before creation, check object validity, pre-create object validation, verify ABAP object type, validate object properties"
