@@ -59,6 +59,14 @@
     "text": "Tool: GetStructuresList\nDescription: [read-only] Recursively list the structures embedded in an ABAP structure (.INCLUDE / append), as a tree.\nParameters: type, properties, required",
     "enriched": "Tool: GetStructuresList\nDescription: [read-only] Recursively list the structures embedded in an ABAP structure (.INCLUDE / append), as a tree.\nParameters: type, properties, required"
   },
+  "GetObjectVersions": {
+    "text": "Tool: GetObjectVersions\nDescription: [read-only] List the version history of an ABAP object. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version source via GetObjectVersionSource.\nParameters: type, properties, required",
+    "enriched": "Tool: GetObjectVersions\nDescription: [read-only] List the version history of an ABAP object. Returns each version with its versionId, author, updatedAt, title and an opaque content_uri to fetch that version source via GetObjectVersionSource.\nParameters: type, properties, required"
+  },
+  "GetObjectVersionSource": {
+    "text": "Tool: GetObjectVersionSource\nDescription: [read-only] Fetch the source code of a specific object version. Pass the opaque content_uri from a GetObjectVersions entry.\nParameters: type, properties, required",
+    "enriched": "Tool: GetObjectVersionSource\nDescription: [read-only] Fetch the source code of a specific object version. Pass the opaque content_uri from a GetObjectVersions entry.\nParameters: type, properties, required"
+  },
   "ReadDdl": {
     "text": "Tool: ReadDdl\nDescription: Operation: Read, Create, Update. Subject: DDL source. Will be useful for reading, creating, or updating a DDL source. [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.\nParameters: type, properties, required",
     "enriched": "Tool: ReadDdl\nDescription: Operation: Read, Create, Update. Subject: DDL source. Will be useful for reading, creating, or updating a DDL source. [read-only] Read ABAP CDS view source code and metadata. Answers: \"show CDS view source\", \"display view definition\", \"view CDS X\", \"get CDS code\". Returns source code, package, responsible, description.\nParameters: type, properties, required\nIntent: read CDS view source, display view definition, get CDS code, show ABAP view metadata, read view details"
