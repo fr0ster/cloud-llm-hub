@@ -1,32 +1,39 @@
 /**
- * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes exactly
- * ONE tool, `execute_step`, which delegates a single, fully-specified step to the
- * SmartAgent executor and returns its text.
+ * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes two
+ * tools for an external planner (e.g. Claude Code):
  *
- * The division of labour lives in the tool's description: any MCP client that
- * connects here is told it is the planner/controller and the agent behind the
- * tool is a stateless executor. The full ABAP tool set stays on
- * `/mcp/stream/http`; this is an additive, parallel surface.
+ *   - `list_destinations` — the SAP systems this instance can reach, so the
+ *     planner can choose one.
+ *   - `execute_step` — delegate ONE concrete step to the SmartAgent executor on
+ *     the chosen destination and return its text.
  *
- * Stateless by design: each call runs the agent over a single user message with
- * an ephemeral session id, so the executor carries nothing between calls — the
- * controller holds all plan state.
+ * The division of labour lives in `execute_step`'s description: the connecting
+ * client is the planner/controller; the agent behind the tool is a stateless
+ * executor. The full ABAP tool set stays on `/mcp/stream/http`; this is an
+ * additive, parallel surface.
+ *
+ * Auth is unchanged: SAP credentials arrive in `x-sap-login` / `x-sap-password`
+ * headers (set by the auth proxy's defaults or overridden by the client). The
+ * server stores no credentials. The destination is chosen per call (the
+ * `destination` argument), so the SAP connection is built lazily inside the
+ * `execute_step` handler — `list_destinations` and the MCP handshake need no
+ * connection at all.
  */
 
 import './env-setup';
 
 import { randomUUID } from 'node:crypto';
+import type { SapConfig } from '@mcp-abap-adt/connection';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
-import type { Request, Response } from 'express';
+import type { Request } from 'express';
 import { z } from 'zod';
 import { getSmartAgent, runWithRequestConnection } from './agent-manager';
+import { createConnection } from './connections/connectionFactory';
+import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
-import {
-  establishRequestConnection,
-  resetRequestConnection,
-} from './lib/request-connection';
 import { runWithSessionId } from './request-session';
 
 /**
@@ -34,64 +41,95 @@ import { runWithSessionId } from './request-session';
  * moment it lists tools — this is what makes the role split self-documenting.
  */
 const EXECUTE_STEP_DESCRIPTION = [
-  'Delegate ONE concrete, fully-specified ABAP/SAP step to the executor agent and return its result.',
+  'Delegate ONE step to the ABAP/SAP executor agent — describe the OUTCOME you want, and get its result.',
   '',
-  'Roles. The agent behind this tool is a capable ABAP EXECUTOR: it knows the SAP system well and selects the right MCP tools by analysing your request, but it does NOT plan, keeps NO state between calls, and cannot adjust its behaviour based on earlier results. YOU are the planner and controller.',
+  'You say WHAT, the executor decides HOW. State the goal in plain business/domain terms. Do NOT prescribe the approach — do not name SAP transactions, GUI steps, MCP tools, function modules, or endpoints. Your theoretical knowledge of HOW something is usually done in SAP (e.g. "run ST22", "use SE11") is very likely WRONG here: the executor works through ADT and picks the right tool itself — telling it HOW only pushes it down a wrong path. Name the subject/outcome (the WHAT — e.g. "the latest short dumps", "table VBAK’s definition"), never the method (the HOW). If it cannot do something, it will tell you.',
+  '',
+  'Roles. The agent is a capable ABAP executor: it knows the system and selects the right MCP tools by analysing your request, but it does NOT plan, keeps NO state between calls, and cannot adjust based on earlier results. YOU are the planner and controller.',
+  '',
+  'One step at a time. Run exactly ONE execute_step and wait for its result before the next. NEVER call execute_step in parallel — concurrent calls corrupt the executor’s session. Keep it strictly sequential.',
   '',
   'How to use:',
-  '- Build a plan. Split the goal into steps where each step is clearly described and unambiguously solves ONE concrete task. Call this tool once per step.',
-  '- WHICH MCP tools a step needs is NOT your concern — if the step is unambiguous the executor finds the right tools itself. Describe the step’s goal with the exact object names / context it needs, not the tooling.',
-  '- After each call ANALYSE the response carefully before the next step. The executor can err or hallucinate. If a request is genuinely impossible to fulfil and no answer can legitimately be returned, then a confident-looking answer is NOT a real answer — it signals an error or a problem, not success. Surface that; do not accept the hallucination.',
-  '- CORRECT the plan as you go from what the executor actually returns; do not assume a step succeeded just because text came back.',
+  '- Plan: split the goal into steps that each express ONE concrete outcome; one call per step. Keep each step about WHAT, not HOW.',
+  '- Pick the system: see `list_destinations` for the available destinations and pass the chosen one as `destination`.',
+  '- ANALYSE each response before the next step; the executor can err or hallucinate. An impossible request answered confidently is an error or a problem, not success — surface it; do not accept the hallucination.',
+  '- CORRECT the plan from what the executor actually returns; do not assume success just because text came back.',
   '',
   'Each call is independent — pass everything the step needs here; nothing carries over.',
 ].join('\n');
 
 export interface AgentMcpResult {
-  /** Per-request transport, when the server was created successfully. */
-  transport?: StreamableHTTPServerTransport;
-  /** Release transport + connection. Call after the request completes. */
-  cleanup?: () => Promise<void>;
-  /** True when a structured error was already written to `res`. */
-  handled: boolean;
+  transport: StreamableHTTPServerTransport;
+  cleanup: () => Promise<void>;
+}
+
+/** MCP text result helper. */
+function textResult(text: string, isError = false) {
+  return {
+    content: [{ type: 'text' as const, text }],
+    ...(isError ? { isError: true } : {}),
+  };
 }
 
 /**
- * Build the per-request single-tool MCP server for `/mcp/agent/stream/http`.
- * Resolves the SAP connection (same per-request policy as the other channels),
- * acquires the SmartAgent for the requested destination, and registers the one
- * `execute_step` tool. On a credential/destination failure a JSON error is
- * written to `res` and `{ handled: true }` is returned.
+ * Build the per-request SAP connection for a chosen destination, using the
+ * credentials carried in the request headers (set by the auth proxy or the
+ * client). Mirrors the fail-closed per-request policy used by the other
+ * channels; throws on a missing/invalid credential instead of writing a
+ * response (the caller turns it into an MCP tool error).
+ */
+async function buildConnectionForDestination(
+  req: Request,
+  destination: string,
+): Promise<IAbapConnection> {
+  const sapLogin = (req.headers['x-sap-login'] as string | undefined)?.trim();
+  const sapPassword = req.headers['x-sap-password'] as string | undefined;
+  const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
+
+  const resolved = await resolveDestinationSapConfig(
+    destination,
+    req.headers.authorization?.replace('Bearer ', ''),
+  );
+
+  const requiresUserCredentials =
+    (resolved.proxyType ?? '').toLowerCase() === 'onpremise' ||
+    resolved.authenticationType === 'NoAuthentication';
+  if (requiresUserCredentials && (!sapLogin || !sapPassword)) {
+    throw new Error(
+      `Destination "${destination}" requires your SAP username and password (x-sap-login / x-sap-password).`,
+    );
+  }
+
+  const sapConfig: SapConfig = { ...resolved.sapConfig };
+  if (sapLogin && sapPassword) {
+    sapConfig.authType = 'basic';
+    sapConfig.username = sapLogin;
+    sapConfig.password = sapPassword;
+    sapConfig.jwtToken = undefined;
+  }
+  if (sapClient) sapConfig.client = sapClient;
+
+  const conn = createConnection({
+    sapConfig,
+    destinationName: resolved.destinationName,
+  });
+  await conn.connect();
+  return conn as unknown as IAbapConnection;
+}
+
+/**
+ * Build the per-request single-purpose MCP server for `/mcp/agent/stream/http`.
+ * No SAP connection or agent is resolved here — both tool handlers do their own
+ * lazy work, so the MCP handshake and `list_destinations` never depend on a
+ * destination being reachable.
  */
 export async function createAgentMcpServerForRequest(
   req: Request,
-  res: Response,
 ): Promise<AgentMcpResult> {
   const log = cds.log('agent-mcp');
-  const destination = (
-    req.headers['x-sap-destination'] as string | undefined
-  )?.trim();
 
-  // Same fail-closed per-request connection policy as /v1 and /mcp.
-  const established = await establishRequestConnection(req, res, destination);
-  if (established.handled) return { handled: true };
-  const connection = established.connection;
-
-  let handle: Awaited<ReturnType<typeof getSmartAgent>>;
-  try {
-    handle = await getSmartAgent(undefined, destination);
-  } catch (err) {
-    const e = err as Error & { statusCode?: number; code?: string };
-    resetRequestConnection(connection);
-    res.writeHead(e.statusCode ?? 502, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error: { type: e.code || 'agent_unavailable', message: e.message },
-      }),
-    );
-    return { handled: true };
-  }
-
+  // Captured once (the user/roles are stable for the request); the destination
+  // is per call, so it is read from the tool arguments below.
   const userId = cds.context?.user?.id ?? 'anonymous';
   const exposition = resolveExposition(
     ['MCP_Reader', 'MCP_Analyst', 'MCP_Developer', 'MCP_Full'].filter(
@@ -104,46 +142,82 @@ export async function createAgentMcpServerForRequest(
     version: '1.0.0',
   });
 
+  // --- list_destinations --------------------------------------------------
+  server.registerTool(
+    'list_destinations',
+    {
+      description:
+        'List the SAP systems (destinations) this instance can reach. Pick one and pass its `name` as the `destination` argument of execute_step. Reachability is confirmed when you actually run a step — if a destination is down the executor reports it.',
+      inputSchema: {},
+    },
+    async () => {
+      const { getAvailableDestinations } = await import(
+        './lib/btp-destinations'
+      );
+      const dests = await getAvailableDestinations();
+      const list = dests.map((d) => ({
+        name: d.name,
+        proxyType: d.proxyType,
+        authentication: d.authentication,
+      }));
+      return textResult(JSON.stringify({ destinations: list }, null, 2));
+    },
+  );
+
+  // --- execute_step -------------------------------------------------------
   server.registerTool(
     'execute_step',
     {
       description: EXECUTE_STEP_DESCRIPTION,
       inputSchema: {
+        destination: z
+          .string()
+          .describe(
+            'The SAP system to run this step against — a destination name from list_destinations.',
+          ),
         task: z
           .string()
           .describe(
-            'One concrete, fully-specified step for the executor to carry out.',
+            'What outcome you want (the WHAT, in plain domain terms — not the HOW).',
           ),
       },
     },
-    async ({ task }: { task: string }) => {
-      // Ephemeral session per call → the executor loads/saves no history.
-      const sessionId = `agent-step-${randomUUID()}`;
-      const opts = {
-        stream: false,
-        externalTools: [],
-        sessionId,
-        ragFilter: {
-          namespace: `${userId}:${destination ?? ''}`,
-          exposition,
-        },
-        trace: { traceId: sessionId },
-      };
+    async ({ destination, task }: { destination: string; task: string }) => {
+      let connection: IAbapConnection | undefined;
+      try {
+        connection = await buildConnectionForDestination(req, destination);
+        const handle = await getSmartAgent(undefined, destination);
 
-      const r = await runWithSessionId(sessionId, () =>
-        connection
-          ? runWithRequestConnection(connection, () =>
-              handle.agent.process([{ role: 'user', content: task }], opts),
-            )
-          : handle.agent.process([{ role: 'user', content: task }], opts),
-      );
+        // Ephemeral session per call → the executor loads/saves no history.
+        const sessionId = `agent-step-${randomUUID()}`;
+        const opts = {
+          stream: false,
+          externalTools: [],
+          sessionId,
+          ragFilter: { namespace: `${userId}:${destination}`, exposition },
+          trace: { traceId: sessionId },
+        };
 
-      const text = r.ok
-        ? r.value.content || '(no response)'
-        : `Error: ${r.error.message}`;
+        const conn = connection;
+        const r = await runWithSessionId(sessionId, () =>
+          runWithRequestConnection(conn, () =>
+            handle.agent.process([{ role: 'user', content: task }], opts),
+          ),
+        );
 
-      log.info('execute_step done', { ok: r.ok, destination });
-      return { content: [{ type: 'text' as const, text }] };
+        log.info('execute_step done', { ok: r.ok, destination });
+        return textResult(
+          r.ok
+            ? r.value.content || '(no response)'
+            : `Error: ${r.error.message}`,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn('execute_step failed', { destination, error: message });
+        return textResult(`ERROR: ${message}`, true);
+      } finally {
+        (connection as { reset?: () => void } | undefined)?.reset?.();
+      }
     },
   );
 
@@ -160,8 +234,7 @@ export async function createAgentMcpServerForRequest(
     } catch (err) {
       log.warn('transport close failed', { error: String(err) });
     }
-    resetRequestConnection(connection);
   };
 
-  return { transport, cleanup, handled: false };
+  return { transport, cleanup };
 }

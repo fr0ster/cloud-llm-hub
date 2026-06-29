@@ -388,7 +388,7 @@ cds.on('bootstrap', (app: Application) => {
     });
   });
 
-  // Planner/controller surface — exposes ONLY the single `execute_step` tool
+  // Planner/controller surface — exposes `list_destinations` + `execute_step`
   // (the executor agent behind it). Same /mcp auth as above. See srv/agent-mcp.ts.
   app.post('/mcp/agent/stream/http', async (req: Request, res: Response) => {
     const alog = cds.log('mcp-proxy/agent-stream');
@@ -407,15 +407,14 @@ cds.on('bootstrap', (app: Application) => {
         }
       }
 
-      const result = await createAgentMcpServerForRequest(req, res);
-      if (result.handled) return; // structured error already written to res
-      cleanup = result.cleanup ?? null;
+      const result = await createAgentMcpServerForRequest(req);
+      cleanup = result.cleanup;
       res.on('close', () => {
         cleanup?.().catch((err) =>
           alog.warn('cleanup on close failed', { error: String(err) }),
         );
       });
-      await result.transport?.handleRequest(req, res, body);
+      await result.transport.handleRequest(req, res, body);
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       alog.error('agent-stream handler error', { error: error.message });
