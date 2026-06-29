@@ -27,6 +27,7 @@ import {
   refreshDestinations,
   resolveSystemDestination,
 } from './agent-manager';
+import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
@@ -384,6 +385,60 @@ cds.on('bootstrap', (app: Application) => {
       message: 'StreamableHTTP endpoint requires POST method, not GET',
       supportedMethod: 'POST',
       endpoint: '/mcp/stream/http',
+    });
+  });
+
+  // Planner/controller surface — exposes ONLY the single `execute_step` tool
+  // (the executor agent behind it). Same /mcp auth as above. See srv/agent-mcp.ts.
+  app.post('/mcp/agent/stream/http', async (req: Request, res: Response) => {
+    const alog = cds.log('mcp-proxy/agent-stream');
+    let cleanup: (() => Promise<void>) | null = null;
+    try {
+      // Read the JSON-RPC body first (same as handleStreamHTTP).
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      let body: unknown = null;
+      if (chunks.length > 0) {
+        const s = Buffer.concat(chunks).toString('utf-8');
+        try {
+          body = JSON.parse(s);
+        } catch {
+          body = s || null;
+        }
+      }
+
+      const result = await createAgentMcpServerForRequest(req, res);
+      if (result.handled) return; // structured error already written to res
+      cleanup = result.cleanup ?? null;
+      res.on('close', () => {
+        cleanup?.().catch((err) =>
+          alog.warn('cleanup on close failed', { error: String(err) }),
+        );
+      });
+      await result.transport?.handleRequest(req, res, body);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      alog.error('agent-stream handler error', { error: error.message });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal Server Error' });
+      }
+    } finally {
+      if (cleanup) {
+        try {
+          await cleanup();
+        } catch (err) {
+          alog.warn('cleanup failed', { error: String(err) });
+        }
+      }
+    }
+  });
+
+  app.get('/mcp/agent/stream/http', (_req: Request, res: Response) => {
+    res.status(405).json({
+      error: 'Method Not Allowed',
+      message: 'StreamableHTTP endpoint requires POST method, not GET',
+      supportedMethod: 'POST',
+      endpoint: '/mcp/agent/stream/http',
     });
   });
 
