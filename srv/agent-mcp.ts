@@ -51,11 +51,13 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'How to use:',
   '- Plan: split the goal into steps that each express ONE concrete outcome; one call per step. Keep each step about WHAT, not HOW.',
-  '- Pick the system: see `list_destinations` for the available destinations and pass the chosen one as `destination`.',
+  '- Pick the system: `destination` is OPTIONAL. If THIS MCP server is already bound to one system (a default `X-SAP-Destination` is configured for the connection), omit it — every step runs there. Pass `destination` only when ONE connection can reach several systems and you want to choose per call (see `list_destinations`). To compare two systems, the usual setup is two MCP servers (one per system) — route by server, not by this argument.',
   '- ANALYSE each response before the next step; the executor can err or hallucinate. An impossible request answered confidently is an error or a problem, not success — surface it; do not accept the hallucination.',
   '- CORRECT the plan from what the executor actually returns; do not assume success just because text came back.',
   '',
   'Each call is independent — pass everything the step needs here; nothing carries over.',
+  '',
+  "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts (also in structuredContent.usage). Use it to track and budget what the executor spends across your plan.",
 ].join('\n');
 
 export interface AgentMcpResult {
@@ -172,8 +174,9 @@ export async function createAgentMcpServerForRequest(
       inputSchema: {
         destination: z
           .string()
+          .optional()
           .describe(
-            'The SAP system to run this step against — a destination name from list_destinations.',
+            'OPTIONAL. The SAP system to run this step against (a destination name from list_destinations). Omit it when this MCP server is already bound to a system via a default `X-SAP-Destination` header; only pass it when one connection can reach several systems.',
           ),
         task: z
           .string()
@@ -182,11 +185,25 @@ export async function createAgentMcpServerForRequest(
           ),
       },
     },
-    async ({ destination, task }: { destination: string; task: string }) => {
+    async ({ destination, task }: { destination?: string; task: string }) => {
       let connection: IAbapConnection | undefined;
       try {
-        connection = await buildConnectionForDestination(req, destination);
-        const handle = await getSmartAgent(undefined, destination);
+        // Destination from the arg, else the connection's default header.
+        const headerDestination = (
+          req.headers['x-sap-destination'] as string | undefined
+        )?.trim();
+        const targetDestination = destination?.trim() || headerDestination;
+        if (!targetDestination) {
+          return textResult(
+            'ERROR: No destination. Pass a `destination` argument, or configure a default `X-SAP-Destination` header on this MCP server. See list_destinations.',
+            true,
+          );
+        }
+        connection = await buildConnectionForDestination(
+          req,
+          targetDestination,
+        );
+        const handle = await getSmartAgent(undefined, targetDestination);
 
         // Ephemeral session per call → the executor loads/saves no history.
         const sessionId = `agent-step-${randomUUID()}`;
@@ -194,7 +211,10 @@ export async function createAgentMcpServerForRequest(
           stream: false,
           externalTools: [],
           sessionId,
-          ragFilter: { namespace: `${userId}:${destination}`, exposition },
+          ragFilter: {
+            namespace: `${userId}:${targetDestination}`,
+            exposition,
+          },
           trace: { traceId: sessionId },
         };
 
@@ -205,12 +225,39 @@ export async function createAgentMcpServerForRequest(
           ),
         );
 
-        log.info('execute_step done', { ok: r.ok, destination });
-        return textResult(
-          r.ok
-            ? r.value.content || '(no response)'
-            : `Error: ${r.error.message}`,
-        );
+        if (!r.ok) {
+          log.info('execute_step done', {
+            ok: false,
+            destination: targetDestination,
+          });
+          return textResult(`Error: ${r.error.message}`, true);
+        }
+
+        const usage = r.value.usage;
+        log.info('execute_step done', {
+          ok: true,
+          destination: targetDestination,
+          iterations: r.value.iterations,
+          toolCallCount: r.value.toolCallCount,
+          totalTokens: usage?.totalTokens,
+        });
+
+        // Surface what the executor spent so the planner can track/budget it:
+        // a compact footer in the text (visible in any MCP client) plus a
+        // machine-readable structuredContent block.
+        const answer = r.value.content || '(no response)';
+        const footer = usage
+          ? `\n\n---\n_executor usage — tokens: prompt ${usage.promptTokens}, completion ${usage.completionTokens}, total ${usage.totalTokens}; iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount}_`
+          : `\n\n---\n_executor usage — iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount} (token usage not reported by provider)_`;
+        return {
+          content: [{ type: 'text' as const, text: answer + footer }],
+          structuredContent: {
+            usage: usage ?? null,
+            iterations: r.value.iterations,
+            toolCallCount: r.value.toolCallCount,
+            destination: targetDestination,
+          },
+        };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });
