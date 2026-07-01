@@ -1,6 +1,6 @@
 _schema-version: 3.3.0
 ID: cloud-llm-hub
-version: 6.18.0
+version: 6.18.1
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true
@@ -22,7 +22,7 @@ parameters:
   LLM_AGENT_EMBEDDING_MODEL:
   LLM_AGENT_PRESENTATION_MODEL:
   LLM_AGENT_HISTORY_RECENCY_WINDOW:
-  LLM_AGENT_RAG_QUERY_K:
+  LLM_AGENT_RAG_QUERY_K: "15"
   LLM_AGENT_PIPELINE_MODE: "default"
   # System-to-destination mapping: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"
   DESTINATION_MAPPING: ""
