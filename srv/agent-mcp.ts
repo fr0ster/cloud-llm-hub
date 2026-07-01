@@ -57,7 +57,7 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'Each call is independent — pass everything the step needs here; nothing carries over.',
   '',
-  "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts (also in structuredContent.usage). Use it to track and budget what the executor spends across your plan.",
+  "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts. Use it to track and budget what the executor spends across your plan.",
 ].join('\n');
 
 export interface AgentMcpResult {
@@ -242,22 +242,18 @@ export async function createAgentMcpServerForRequest(
           totalTokens: usage?.totalTokens,
         });
 
-        // Surface what the executor spent so the planner can track/budget it:
-        // a compact footer in the text (visible in any MCP client) plus a
-        // machine-readable structuredContent block.
+        // Surface what the executor spent so the planner can track/budget it,
+        // as a compact footer appended to the answer text.
+        //
+        // NOTE: do NOT return `structuredContent` here. This tool has no
+        // registered outputSchema, and returning structuredContent made SSE
+        // clients / the auth proxy drop the text payload (empty result). Keep
+        // usage in the text footer only.
         const answer = r.value.content || '(no response)';
         const footer = usage
           ? `\n\n---\n_executor usage — tokens: prompt ${usage.promptTokens}, completion ${usage.completionTokens}, total ${usage.totalTokens}; iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount}_`
           : `\n\n---\n_executor usage — iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount} (token usage not reported by provider)_`;
-        return {
-          content: [{ type: 'text' as const, text: answer + footer }],
-          structuredContent: {
-            usage: usage ?? null,
-            iterations: r.value.iterations,
-            toolCallCount: r.value.toolCallCount,
-            destination: targetDestination,
-          },
-        };
+        return textResult(answer + footer);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });
