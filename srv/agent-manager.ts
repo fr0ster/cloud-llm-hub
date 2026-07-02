@@ -384,28 +384,6 @@ export function getAgentMetrics() {
   return metrics.snapshot();
 }
 
-/**
- * Resolve the MCP tool timeout for a given tool name.
- *
- * 1. process.env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS — global override (existing knob).
- * 2. otherwise SearchSource gets 600_000 ms (10 min); every other tool
- *    keeps the 120_000 ms (2 min) default.
- *
- * Malformed env values (NaN, zero, negative) fall through to the per-tool
- * default rather than being silently treated as 0.
- *
- * When the next tool starts hitting the 2-minute wall in production we add
- * another branch here — but not pre-emptively.
- */
-export function resolveMcpToolTimeoutMs(
-  toolName: string,
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const override = Number(env.LLM_AGENT_MCP_TOOL_TIMEOUT_MS);
-  if (Number.isFinite(override) && override > 0) return override;
-  return toolName === 'SearchSource' ? 600_000 : 120_000;
-}
-
 // ---------------------------------------------------------------------------
 // Multi-destination state management
 // ---------------------------------------------------------------------------
@@ -1206,22 +1184,12 @@ async function buildEmbeddedMcpAdapter(
             ? handler(effectiveContext, args)
             : (handler as unknown as (a: typeof args) => unknown)(args);
 
-        // Timeout: prevent hanging when SAP system doesn't respond (e.g. after destination switch)
-        const MCP_TOOL_TIMEOUT_MS = resolveMcpToolTimeoutMs(name);
-        const result = await Promise.race([
-          toolCall,
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    `MCP tool "${name}" timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`,
-                  ),
-                ),
-              MCP_TOOL_TIMEOUT_MS,
-            ),
-          ),
-        ]);
+        // No cloud-llm-hub-side timeout wrapper. Each SAP call is already bounded
+        // by the adt-clients HTTP timeout (SAP_TIMEOUT_*), and destination
+        // availability is covered by the ProbeDestination reachability check —
+        // a redundant Promise.race here only fought those legitimate limits
+        // (e.g. cutting heavy where-used scans that the ABAP layer allows).
+        const result = await toolCall;
 
         const resultStr = JSON.stringify(result).slice(0, 1000);
         log.info('MCP tool call', {

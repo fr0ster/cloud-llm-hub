@@ -294,11 +294,16 @@ export class CloudSdkAbapConnection implements AbapConnection {
         // the system default. Seed sap-usercontext before the request.
         this.enforceClientCookie();
         const csrfCookie = this.getCookieHeader();
+        // Bound the CSRF fetch too — the SAP Cloud SDK does not time out on its
+        // own, so a hung CSRF request on a POST/PUT tool would otherwise block
+        // the whole call indefinitely. Uses SAP_TIMEOUT_CSRF (default 15 s).
+        const csrfTimeoutMs = Number(process.env.SAP_TIMEOUT_CSRF) || 15_000;
         const response = await executeHttpRequest(
           { destinationName: this.destinationName },
           {
             method: 'GET',
             url: csrfUrl,
+            timeout: csrfTimeoutMs,
             headers: {
               ...(await this.getAuthHeaders()),
               ...CSRF_CONFIG.REQUIRED_HEADERS,
@@ -439,12 +444,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
     const {
       url,
       method,
-      timeout: _timeout,
+      timeout,
       data,
       params,
       headers: optionHeaders,
     } = options;
     const normalizedMethod = method.toUpperCase();
+    // SAP Cloud SDK's executeHttpRequest does NOT time out on its own, so the
+    // per-request timeout (from the ADT client, ultimately SAP_TIMEOUT_*) MUST be
+    // forwarded here — otherwise a hung BTP-destination request blocks forever.
+    // Falls back to 120 s when the caller didn't specify one.
+    const requestTimeoutMs = timeout ?? 120_000;
 
     // Get base URL and build full URL from endpoint
     // Connection has base URL, url parameter is endpoint (e.g., /sap/bc/adt/oo/classes/...)
@@ -541,6 +551,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
             | 'PATCH',
           url: requestUrl,
           headers: requestHeaders,
+          timeout: requestTimeoutMs,
           // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
           params: params as Record<string, any> | undefined,
           // Keep original data type (string for XML, object for JSON).
@@ -620,6 +631,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
                 | 'PATCH',
               url: requestUrl,
               headers: retryHeaders,
+              timeout: requestTimeoutMs,
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
               params: params as Record<string, any> | undefined,
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
@@ -677,6 +689,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
                 | 'PATCH',
               url: requestUrl,
               headers: retryHeaders,
+              timeout: requestTimeoutMs,
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
               params: params as Record<string, any> | undefined,
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
