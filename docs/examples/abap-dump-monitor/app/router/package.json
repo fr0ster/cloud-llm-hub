@@ -2,8 +2,11 @@
   "name": "abap-dump-monitor-approuter",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
   "dependencies": {
-    "@sap/approuter": "^21.4.0"
+    "@sap/approuter": "^22.0.3"
   },
   "scripts": {
     "start": "node node_modules/@sap/approuter/approuter.js"
