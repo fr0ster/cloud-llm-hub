@@ -934,5 +934,35 @@
   "GetObjectsByType": {
     "text": "Tool: GetObjectsByType\nDescription: [read-only] Retrieves all ABAP objects of a specific type (classes, tables, programs, interfaces, etc.) under a given parent node. Useful for listing all objects of one type within a package or composite object.\nParameters: type, properties, required",
     "enriched": "Tool: GetObjectsByType\nDescription: [read-only] Retrieves all ABAP objects of a specific type (classes, tables, programs, interfaces, etc.) under a given parent node. Useful for listing all objects of one type within a package or composite object.\nParameters: type, properties, required\nIntent: list ABAP objects by type, get objects in package, show classes tables programs, retrieve objects under node, list repository objects"
+  },
+  "ReadMessageClass": {
+    "text": "Tool: ReadMessageClass\nDescription: [read-only] Read an ABAP message class (MSAG / T100) with ALL of its messages. Answers: \"read message class X\", \"show message class T100\", \"list messages of message class\", \"display all messages of msg class\", \"what messages are in message class Z...\". Returns name, description, package, master language and the full message list (msgno, msgtext, self-explanatory).\nParameters: type, properties, required"
+  },
+  "ReadMessageClassMessage": {
+    "text": "Tool: ReadMessageClassMessage\nDescription: [read-only] Read ONE message (by number) from an ABAP message class (MSAG / T100). Answers: \"read message 000 of class X\", \"show message text for msgno N\", \"get message N from message class\". Returns msgno, msgtext, self-explanatory flag, description.\nParameters: type, properties, required"
+  },
+  "GetMessageClass": {
+    "text": "Tool: GetMessageClass\nDescription: Retrieve an ABAP message class (MSAG / T100) with its messages. Answers: \"get message class X\", \"open message class for editing\", \"fetch message class header and messages\". Returns name, description, package, master language, message list.\nParameters: type, properties, required"
+  },
+  "CreateMessageClass": {
+    "text": "Tool: CreateMessageClass\nDescription: Operation: Create. Create a new ABAP message class (MSAG / T100) shell; messages are added afterwards with CreateMessageClassMessage. Answers: \"create message class X\", \"new message class\", \"add message class to package\". Needs package and (for transportable) transport_request.\nParameters: type, properties, required"
+  },
+  "UpdateMessageClass": {
+    "text": "Tool: UpdateMessageClass\nDescription: Operation: Update. Update a message class (MSAG / T100) header, e.g. its description. Answers: \"rename/redescribe message class\", \"change message class description\". For individual messages use Create/UpdateMessageClassMessage.\nParameters: type, properties, required"
+  },
+  "DeleteMessageClass": {
+    "text": "Tool: DeleteMessageClass\nDescription: Operation: Delete. Delete an ABAP message class (MSAG / T100) and ALL its messages, with a deletion check first. Answers: \"delete message class X\", \"remove message class\". Transport request required for transportable packages.\nParameters: type, properties, required"
+  },
+  "GetMessageClassMessage": {
+    "text": "Tool: GetMessageClassMessage\nDescription: Retrieve a SINGLE message (by number) from an ABAP message class (MSAG / T100). Answers: \"get message N of class X\", \"fetch one message by number\". Returns msgno, msgtext, self-explanatory flag, description.\nParameters: type, properties, required"
+  },
+  "CreateMessageClassMessage": {
+    "text": "Tool: CreateMessageClassMessage\nDescription: Operation: Create. Add a message (number + text) to an existing ABAP message class (MSAG / T100); the parent class must exist. Answers: \"add message N to class X\", \"create message text\", \"insert new message into message class\".\nParameters: type, properties, required"
+  },
+  "UpdateMessageClassMessage": {
+    "text": "Tool: UpdateMessageClassMessage\nDescription: Operation: Update. Change the text/flags of a message in an ABAP message class (MSAG / T100); upserts if missing. Answers: \"change message text\", \"update message N of class X\", \"edit message class message\".\nParameters: type, properties, required"
+  },
+  "DeleteMessageClassMessage": {
+    "text": "Tool: DeleteMessageClassMessage\nDescription: Operation: Delete. Remove ONE message (by number) from an ABAP message class (MSAG / T100), keeping the class and other messages. Answers: \"delete message N from class X\", \"remove a single message\".\nParameters: type, properties, required"
   }
 }
