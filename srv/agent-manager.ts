@@ -743,7 +743,7 @@ async function vectorizeTools(
   const uncachedTools: typeof basicEntries = [];
   const toolEntries = basicEntries.map((t) => {
     const cached = cache?.[t.name];
-    if (cached?.enriched.includes('\nIntent:')) {
+    if (cached?.enriched?.includes('\nIntent:')) {
       return { name: t.name, text: cached.enriched };
     }
     uncachedTools.push(t);
