@@ -106,10 +106,13 @@ export async function handleAnthropicMessages(
     requestConnection = established.connection;
   }
 
-  // Get SmartAgent handle (no model/destination override for Anthropic endpoint)
+  // Get the SmartAgent handle for the SAME destination the connection was
+  // established for (resolved above from x-sap-destination / session). Passing
+  // it explicitly ensures the agent's MCP tools match the connection — without
+  // it, getSmartAgent would fall to the configured default destination.
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent();
+    handle = await getSmartAgent(undefined, destination);
   } catch (err) {
     resetRequestConnection(requestConnection);
     const message = err instanceof Error ? err.message : String(err);

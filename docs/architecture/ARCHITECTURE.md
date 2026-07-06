@@ -283,7 +283,7 @@ graph TD
 | **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service at path `/mcp`. Exposes `Health()`, `ProbeDestination(destination)`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
 | **MCP Manager** | `mcp-manager.ts` | Core factory. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
 | **Agent Service** | `agent-service.ts` + `.cds` | CAP service at path `/agent`. Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Delegates to `agent-manager.ts`. |
-| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background vectorization for non-primary destinations. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background + on-demand vectorization for all destinations (no privileged primary); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. |
 | **OpenAI Handler** | `openai-handler.ts` | OpenAI-compatible HTTP handlers: `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (with destination metadata), `GET /v1/usage`. Reads `X-SAP-Destination` header for per-request destination switching. |
 | **Agent Config** | `agent-config.ts` | Reads `LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`, `LLM_AGENT_MCP_DESTINATION` from env vars. Reads AI Core service binding from `VCAP_SERVICES`. Singleton pattern. |
 | **Auth Service** | `auth.ts` + `.cds` | CAP service at path `/auth`. `CheckAuth()` validates user identity. `CheckRoles(required)` checks specific roles. Used by `server.ts` middleware for `/mcp/*` routes. |
@@ -856,7 +856,8 @@ graph TB
 | `LLM_AGENT_MODEL` | `agent-config.ts` | LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`) |
 | `LLM_AGENT_TEMPERATURE` | `agent-config.ts` | Temperature (0.0–2.0, default: 0.7) |
 | `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
-| `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | Primary BTP Destination name for ABAP system (blocks at startup) |
+| `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | Optional "warm this first" BTP Destination hint (NOT privileged; does not block startup) |
+| `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Max ms `getSmartAgent` waits for a destination to vectorize before erroring (default: 90000) |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | MCP proxy URL (optional, auto-detected) |
 | `LLM_AGENT_RESOURCE_GROUP` | `ai-core-models.ts` | AI Core resource group (default: `default`) |
 | `LLM_AGENT_PROVIDER` | `agent-config.ts` | LLM provider (`sap-ai-sdk` \| `openai` \| `anthropic` \| `deepseek`, default: `sap-ai-sdk`) |
@@ -1009,12 +1010,13 @@ Each destination has its own `McpClientAdapter` (MCP connection) and `Tools RAG 
 
 ### Startup & Background Vectorization
 
-1. **Primary destination** (from `LLM_AGENT_MCP_DESTINATION` env var) blocks at startup — agent not ready until complete
-2. After primary is ready, `initBackgroundDestinations()` fires:
+1. **No blocking primary.** Startup is ready immediately (shared LLMs init lazily) — readiness does NOT depend on any destination vectorizing. There is no privileged destination.
+2. `initBackgroundDestinations()` fires (non-blocking) and warms **all** destinations equally:
    - Fetches all BTP destinations via Destination Service API
    - Registers ALL as `pending` immediately (visible in UI)
-   - Vectorizes each sequentially in background
-3. UI polls `GET /v1/models` every 15s to update destination status
+   - Vectorizes each sequentially in background (the `LLM_AGENT_MCP_DESTINATION` hint, if set, goes first)
+3. A request to a not-yet-ready destination **waits** (bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`, default 90s) in `getSmartAgent` and is served once ready — instead of erroring `agent not initialized`. Concurrent inits are deduped via `ensureDestinationInit`.
+4. UI polls `GET /v1/models` every 15s to update destination status
 
 ### Destination Switching
 

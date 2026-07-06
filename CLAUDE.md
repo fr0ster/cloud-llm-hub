@@ -103,6 +103,21 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 - Supports on-premise systems via Cloud Connector (Connectivity service)
 - Connection types: BTP Destination (CloudSdkAbapConnection) and Direct (createAbapConnection)
 
+### Destination lifecycle (equal, lazy, block-until-ready)
+
+- No privileged "primary" destination. Startup is ready immediately; it does NOT
+  block on any destination vectorizing. All destinations warm in a sequential
+  background pass and/or lazily on first request.
+- `getSmartAgent` waits (bounded) for a destination's vectorization instead of
+  erroring `agent not initialized`. `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (default
+  90000) caps the wait. After timeout: explicit-destination requests throw a
+  retryable 503; non-explicit throw unless `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true`.
+- `LLM_AGENT_MCP_DESTINATION` is now only an optional "warm this first" hint — it
+  is initialized like any other destination, just earlier in the queue.
+- `ensureDestinationInit` dedups concurrent inits (one vectorization per
+  destination) across startup, background, `/destinations/refresh`, the retry
+  timer, and the lazy `getSmartAgent` path.
+
 ### LLM Provider
 
 Configurable via `LLM_AGENT_PROVIDER` env var:
