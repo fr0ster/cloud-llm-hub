@@ -44,7 +44,7 @@ Automatic discovery and management of multiple SAP ABAP systems.
 - Connect to multiple SAP systems from a single deployment
 - Zero configuration for new destinations — auto-discovered from BTP
 - Switch between SAP systems mid-conversation
-- Non-blocking startup — primary destination ready first, others in background
+- Non-blocking startup — no privileged primary; all destinations warm equally (background/on-demand), and requests wait for a destination to be ready rather than erroring
 
 ### 3. **File Artifact Generation** *(v3.0+)*
 

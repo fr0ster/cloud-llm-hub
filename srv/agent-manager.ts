@@ -424,6 +424,16 @@ export function destinationRequiresCredentials(
 /** Map of destination name → pre-built state */
 const destinationStates = new Map<string, DestinationState>();
 
+/**
+ * In-flight `initDestination` promises, keyed by destination name.
+ * Guarantees at most ONE concurrent vectorization per destination: every
+ * caller (startup warm, background loop, /destinations/refresh, the retry
+ * timer, and the lazy path in getSmartAgent) goes through
+ * `ensureDestinationInit`, so a refresh/retry racing a first request cannot
+ * double-vectorize the same destination.
+ */
+const destinationInits = new Map<string, Promise<DestinationState>>();
+
 // ---------------------------------------------------------------------------
 // System-to-destination mapping (e.g., "DEV.100" → "S4HANA_DEV")
 // ---------------------------------------------------------------------------
@@ -466,19 +476,22 @@ export function resolveSystemDestination(systemCode: string): {
     };
   }
 
-  // Check destination state
+  // Resolving a system code is just a NAME mapping — it must NOT require the
+  // destination to be vectorized. With no blocking startup init, a cold-start
+  // caller may resolve before warmup finishes; absent / pending / vectorizing
+  // are all resolvable. Fail only on a terminal state (unreachable / error).
   const state = destinationStates.get(dest);
-  if (!state) {
-    return {
-      ok: false,
-      error: `Destination "${dest}" (mapped from "${systemCode}") is not initialized.`,
-    };
-  }
-  if (state.status === 'unreachable' || state.status === 'error') {
+  if (state?.status === 'unreachable' || state?.status === 'error') {
     return {
       ok: false,
       error: `Destination "${dest}" (mapped from "${systemCode}") is ${state.status}: ${state.error || 'unavailable'}`,
     };
+  }
+
+  // Kick off warmup (fire-and-forget) so a resolve also starts vectorization;
+  // the subsequent getSmartAgent call then waits on the same shared init.
+  if (!agentHandles.has(dest)) {
+    ensureDestinationInit(dest).catch(() => undefined);
   }
 
   return { ok: true, destination: dest };
@@ -573,11 +586,11 @@ export async function refreshDestinations(): Promise<
   });
 
   for (const d of newDests) {
-    await initDestination(d.name);
+    await ensureDestinationInit(d.name);
   }
 
   for (const name of unreachable) {
-    await initDestination(name);
+    await ensureDestinationInit(name);
     const state = destinationStates.get(name);
     if (state?.status === 'ready') {
       log.info('Destination recovered after manual refresh', {
@@ -972,6 +985,23 @@ async function initDestination(
 }
 
 /**
+ * Init a destination through the in-flight dedup map: if an init for `name` is
+ * already running, return that promise; otherwise start one and register it,
+ * clearing the entry when it settles. Callers that only want a READY handle
+ * (getSmartAgent) must check `agentHandles` first — this always (re)runs
+ * `initDestination` when nothing is in flight, which is what refresh/retry want.
+ */
+function ensureDestinationInit(name: string): Promise<DestinationState> {
+  const existing = destinationInits.get(name);
+  if (existing) return existing;
+  const p = initDestination(name).finally(() => {
+    destinationInits.delete(name);
+  });
+  destinationInits.set(name, p);
+  return p;
+}
+
+/**
  * Initialize remaining destinations in background (after primary is ready).
  * Fetches available SAP destinations from BTP Destination Service and
  * vectorizes each one's MCP tools into a separate RAG store.
@@ -981,20 +1011,29 @@ async function initBackgroundDestinations(): Promise<void> {
 
   try {
     const destinations = await getAvailableDestinations();
-    const primaryDest = getAgentConfig().mcp.destination;
-    const others = destinations.filter((d) => d.name !== primaryDest);
+    // No privileged primary: warm ALL destinations. The configured
+    // LLM_AGENT_MCP_DESTINATION is only an optional "warm this first" hint —
+    // it is initialized like any other, just earlier in the queue.
+    const hint = getAgentConfig().mcp.destination;
+    const ordered = hint
+      ? [
+          ...destinations.filter((d) => d.name === hint),
+          ...destinations.filter((d) => d.name !== hint),
+        ]
+      : destinations;
 
-    if (others.length === 0) {
-      log.info('No additional destinations to initialize');
+    if (ordered.length === 0) {
+      log.info('No destinations to initialize');
       return;
     }
 
-    log.info('Starting background destination initialization', {
-      destinations: others.map((d) => d.name),
+    log.info('Starting background destination warmup', {
+      destinations: ordered.map((d) => d.name),
+      warmFirst: hint || null,
     });
 
     // Register all destinations as 'pending' immediately so UI sees the full list
-    for (const dest of others) {
+    for (const dest of ordered) {
       if (!destinationStates.has(dest.name)) {
         destinationStates.set(dest.name, {
           mcpAdapter: null,
@@ -1010,11 +1049,13 @@ async function initBackgroundDestinations(): Promise<void> {
       }
     }
 
-    // Sequential: each destination does embedding calls, avoid overwhelming API
-    for (const dest of others) {
+    // Sequential: each destination does embedding calls, avoid overwhelming the
+    // embedding API. (No destination-level concurrency limit today; a later
+    // change can add LLM_AGENT_DEST_INIT_CONCURRENCY if this proves too slow.)
+    for (const dest of ordered) {
       const state = destinationStates.get(dest.name);
       if (state?.status === 'ready') continue;
-      await initDestination(dest.name);
+      await ensureDestinationInit(dest.name);
     }
 
     const states = [...destinationStates.values()];
@@ -1060,7 +1101,7 @@ function scheduleUnreachableRetry(): void {
     });
 
     for (const [name] of unreachable) {
-      await initDestination(name);
+      await ensureDestinationInit(name);
       const state = destinationStates.get(name);
       if (state?.status === 'ready') {
         log.info('Previously unreachable destination is now ready', {
@@ -1422,6 +1463,17 @@ async function buildLlmOnlyAgent(
  * Each destination has its own SmartAgent with isolated MCP connection.
  * Shared resources: LLM, embedder, facts/feedback/state RAG, metrics.
  */
+/**
+ * How long `getSmartAgent` waits for a destination's lazy vectorization before
+ * giving up. Env `LLM_AGENT_DESTINATION_INIT_WAIT_MS`; malformed/≤0 → 90 s.
+ */
+export function getDestinationInitWaitMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const v = Number(env.LLM_AGENT_DESTINATION_INIT_WAIT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 90_000;
+}
+
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
@@ -1430,12 +1482,13 @@ export async function getSmartAgent(
   const config = getAgentConfig();
 
   // --- Model hot-swap (updates all agents — LLM is stateless) ---
+  // NOT gated on agentHandles.size: with no blocking primary at startup, the
+  // FIRST real request can arrive before any agent exists. We still must set
+  // currentModel/sharedMainLlm so the about-to-be-built first agent uses the
+  // requested model (getOrCreateSharedLlms reuses sharedMainLlm). The loop over
+  // existing handles is simply a no-op when none exist yet.
   const activeModel = getCurrentModel();
-  if (
-    requestedModel &&
-    requestedModel !== activeModel &&
-    agentHandles.size > 0
-  ) {
+  if (requestedModel && requestedModel !== activeModel) {
     const newLlmPromise = makeLlm(
       {
         provider: config.llm.provider,
@@ -1457,7 +1510,7 @@ export async function getSmartAgent(
     sharedMainLlm = newLlmPromise;
     currentModel = requestedModel;
 
-    log.info('Model hot-swapped across all agents', {
+    log.info('Model set for request', {
       from: activeModel,
       to: requestedModel,
       agentCount: agentHandles.size,
@@ -1466,30 +1519,66 @@ export async function getSmartAgent(
 
   // --- Destination lookup (no hot-swap — each dest has its own agent) ---
   const destName = requestedDestination || config.mcp.destination;
-  const handle = agentHandles.get(destName);
-
-  if (handle) {
-    return handle;
-  }
-
-  // Destination not ready — decide whether to hard-fail or fall back.
-  // Hard fail when the caller named the destination explicitly via header
-  // (e.g. x-sap-destination); silently degrading to LLM-only means the
-  // user gets a confident answer fabricated from training data instead of
-  // hitting their actual SAP system — see issue #83.
-  // Set LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true to restore the legacy
-  // permissive behavior for any deploy that relies on it.
-  const destState = destinationStates.get(destName);
-  const status = destState?.status ?? 'unknown';
   const isExplicit = !!requestedDestination;
   const allowFallback =
     process.env.LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK === 'true';
 
-  if (isExplicit && !allowFallback) {
+  // Ready → serve immediately.
+  let handle = agentHandles.get(destName);
+  if (handle) {
+    return handle;
+  }
+
+  // Nothing configured at all → LLM-only (there is genuinely nothing to wait
+  // for). This is not the "explicit destination not ready" case.
+  if (!destName) {
+    if (!llmOnlyHandle) {
+      llmOnlyHandle = await buildLlmOnlyAgent(config);
+    }
+    return llmOnlyHandle;
+  }
+
+  const isTerminal = (s?: string) => s === 'error' || s === 'unreachable';
+
+  // Not ready and not terminal (absent / unknown / pending / vectorizing):
+  // WAIT for this destination's vectorization instead of erroring. All callers
+  // share one init via ensureDestinationInit; the wait is bounded by
+  // LLM_AGENT_DESTINATION_INIT_WAIT_MS so a hung destination can't hold the
+  // request forever. This replaces the old immediate "agent not initialized".
+  if (!isTerminal(destinationStates.get(destName)?.status)) {
+    const waitMs = getDestinationInitWaitMs();
+    log.info('Destination not ready — waiting for vectorization', {
+      destination: destName,
+      status: destinationStates.get(destName)?.status ?? 'unknown',
+      waitMs,
+    });
+    await Promise.race([
+      // Swallow init errors here; the state re-read below decides the outcome.
+      ensureDestinationInit(destName).catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, waitMs)),
+    ]);
+    handle = agentHandles.get(destName);
+    if (handle) {
+      return handle;
+    }
+  }
+
+  // Still not ready after the wait: timed out (still vectorizing) or terminal
+  // (error/unreachable). Fail fast for an explicit destination — silently
+  // degrading to LLM-only would fabricate an answer from training data instead
+  // of hitting the caller's SAP system (issue #83). Non-explicit requests get
+  // LLM-only ONLY with the escape hatch (LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK);
+  // otherwise they also throw a retryable 503 (the init keeps running, so a
+  // retry shortly after usually succeeds).
+  const destState = destinationStates.get(destName);
+  const status = destState?.status ?? 'unknown';
+
+  if (isExplicit || !allowFallback) {
+    const detail = isTerminal(status)
+      ? destState?.error || status
+      : `still initializing after ${Math.round(getDestinationInitWaitMs() / 1000)}s — retry shortly`;
     const destError = new Error(
-      `Destination "${destName}" is ${status}: ${
-        destState?.error || 'agent not initialized'
-      }`,
+      `Destination "${destName}" is ${status}: ${detail}`,
     ) as Error & {
       statusCode?: number;
       code?: string;
@@ -1500,19 +1589,19 @@ export async function getSmartAgent(
     destError.code = 'destination_unreachable';
     destError.destinationStatus = status;
     destError.destination = destName;
-    log.warn('Refusing LLM-only fallback for explicit destination request', {
+    log.warn('Destination not ready after wait — refusing LLM-only fallback', {
       destination: destName,
       status,
+      explicit: isExplicit,
     });
     throw destError;
   }
 
-  log.warn('Requested destination has no agent — using LLM-only fallback', {
+  // Non-explicit + escape hatch → legacy permissive LLM-only.
+  log.warn('Destination not ready after wait — using LLM-only fallback', {
     destination: destName,
     status,
-    explicit: isExplicit,
   });
-
   if (!llmOnlyHandle) {
     llmOnlyHandle = await buildLlmOnlyAgent(config);
   }
@@ -1520,7 +1609,11 @@ export async function getSmartAgent(
 }
 
 /**
- * Initialize the primary destination and start background init for others.
+ * Bootstrap the agent layer. Readiness does NOT depend on any destination:
+ * the app is ready as soon as the process is up (shared LLMs init lazily on
+ * first agent build). ALL destinations warm in the background and/or on demand
+ * — there is no privileged, blocking "primary". A request to a not-yet-ready
+ * destination waits (bounded) in getSmartAgent instead of erroring.
  * Called once from server.ts on startup.
  */
 export async function initSmartAgents(): Promise<void> {
@@ -1529,7 +1622,7 @@ export async function initSmartAgents(): Promise<void> {
   const config = getAgentConfig();
   const destName = config.mcp.destination;
 
-  // LLM-only mode: no MCP destination configured
+  // LLM-only mode: no MCP destination configured at all.
   if (!destName) {
     log.info('No MCP destination configured — starting in LLM-only mode', {
       model: getCurrentModel(),
@@ -1540,73 +1633,22 @@ export async function initSmartAgents(): Promise<void> {
     return;
   }
 
-  log.info('Initializing primary destination', {
-    destination: destName,
+  // Ready immediately — no blocking destination init. (Removing the primary
+  // fixes: broken primary degrading startup, and non-primary destinations
+  // erroring for minutes after every deploy.)
+  initializationDone = true;
+  log.info('SmartAgents ready — destinations warm in background/on-demand', {
     model: getCurrentModel(),
     embeddingModel:
       process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
     mode: config.agent.mode,
+    warmFirst: destName,
   });
 
-  // Initialize primary destination (blocking — must be ready before serving)
-  await initDestination(destName);
-
-  const handle = agentHandles.get(destName);
-  if (!handle) {
-    log.warn(
-      'Primary destination failed to initialize — building LLM-only fallback',
-      {
-        destination: destName,
-      },
-    );
-    llmOnlyHandle = await buildLlmOnlyAgent(config);
-  }
-
-  // Run health check in background (only if primary destination initialized)
-  if (handle) {
-    (async () => {
-      try {
-        const res = await handle.agent.healthCheck();
-        if (res.ok) {
-          const v = res.value;
-          const mcpStatus =
-            v.mcp.length === 0
-              ? 'NONE'
-              : v.mcp.every((m) => m.ok)
-                ? 'OK'
-                : 'PARTIAL/FAIL';
-          log.info('SmartAgent health check', {
-            destination: destName,
-            llm: v.llm ? 'OK' : 'FAIL',
-            rag: v.rag ? 'OK' : 'FAIL',
-            mcp: mcpStatus,
-          });
-        } else {
-          log.warn('SmartAgent health check failed', {
-            error: res.error.message,
-          });
-        }
-      } catch (e) {
-        log.warn('SmartAgent health check error', { error: String(e) });
-      }
-    })();
-  }
-
-  initializationDone = true;
-
-  log.info(
-    handle
-      ? 'SmartAgent ready'
-      : 'SmartAgent initialized (degraded — no MCP destinations)',
-    {
-      destination: destName,
-      model: getCurrentModel(),
-    },
-  );
-
-  // Background: initialize remaining SAP destinations (non-blocking)
+  // Background: warm ALL SAP destinations (the configured one first as a
+  // non-privileged hint). Non-blocking — never gates startup or readiness.
   initBackgroundDestinations().catch((err) => {
-    log.warn('Background destination init error', {
+    log.warn('Background destination warmup error', {
       error: err instanceof Error ? err.message : String(err),
     });
   });

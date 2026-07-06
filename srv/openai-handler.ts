@@ -524,7 +524,10 @@ export async function handleChatCompletions(
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent(requestedModel, requestedDestination);
+    // Use destAfter (header OR session/default) — the same destination the
+    // connection was established for. requestedDestination alone is undefined
+    // for session-scoped chats, which would fall to the configured default.
+    handle = await getSmartAgent(requestedModel, destAfter);
   } catch (err) {
     resetRequestConnection(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
