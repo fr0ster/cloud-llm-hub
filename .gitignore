@@ -50,6 +50,7 @@ sk.json
 !docs/examples/abap-dump-monitor/app/**/manifest.json
 !**/package.json
 !srv/tool-intents.json
+!srv/tool-embeddings.json
 
 # Submodules (exclude from this branch, keep folder for other branches)
 submodules/llm-agent/

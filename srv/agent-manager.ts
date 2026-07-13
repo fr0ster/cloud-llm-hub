@@ -692,7 +692,7 @@ async function createToolsRagStore(
     0.1,
   );
 
-  // Enrichment is handled in vectorizeTools() — either from cache or via
+  // Enrichment is handled in vectorizeToolDocs() — either from cache or via
   // IntentEnricher for uncached tools. VectorRag always uses NoopDocumentEnricher
   // since enriched text is supplied pre-built at upsert time.
   const toolsVectorRag = new VectorRag(embedding.embedder, {
@@ -713,28 +713,44 @@ async function createToolsRagStore(
 // Tool vectorization (extracted for reuse across destinations)
 // ---------------------------------------------------------------------------
 
-/** Vectorize MCP tools into a RAG store */
-async function vectorizeTools(
-  mcpAdapter: McpClientAdapter,
-  toolsStore: ExpositionFilteringRag,
-  embedderBreaker: CircuitBreaker | null,
-): Promise<{ ok: number; failed: number; total: number }> {
-  const log = cds.log('agent-manager');
+/** Minimal tool shape needed to assemble a tool-doc (from listTools OR HandlerExporter). */
+type ToolDocInput = {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+};
+type ToolDocBasicEntry = {
+  name: string;
+  description: string;
+  paramNames: string;
+  text: string;
+};
 
-  const toolsResult = await mcpAdapter.listTools();
-  if (!toolsResult.ok) {
-    throw new Error('MCP listTools failed — cannot vectorize tools');
-  }
-
-  const tools = toolsResult.value;
-  const maxRetries = 3;
-  const throttleMs = 50;
-
-  // Build basic tool entries
-  const basicEntries = tools.map((t) => {
+/**
+ * Assemble the FINAL tool-doc corpus text — destination-independent and
+ * deterministic for CACHED tools. This is the single source of truth for the
+ * embedded text, shared by runtime vectorization and the build-time embedding
+ * generator (`tools/generate-tool-embeddings.ts`). Byte-identical to the former
+ * inline logic: base "Tool/Description/Parameters" text → `tool-intents.json`
+ * enriched text when present → CRUD/"Workflow:" hints appended.
+ *
+ * Params are read via `toJsonSchema` so a raw Zod `inputSchema` (HandlerExporter)
+ * yields the same names as an already-JSON-Schema `inputSchema` (listTools).
+ *
+ * Returns `entries` (final text, with hints) and `uncached` (base entries, NO
+ * hints — the LLM enrich step consumes these and OVERWRITES the entry text,
+ * preserving the existing hints-loss quirk for uncached tools). `cached` flags
+ * whether the tool had an enriched intent (so the generator can fail-fast).
+ */
+export function buildToolDocs(tools: ToolDocInput[]): {
+  entries: { name: string; text: string; cached: boolean }[];
+  uncached: ToolDocBasicEntry[];
+} {
+  const basicEntries: ToolDocBasicEntry[] = tools.map((t) => {
     const paramNames = Object.keys(
-      (t.inputSchema as { properties?: Record<string, unknown> })?.properties ??
-        {},
+      (toJsonSchema(t.inputSchema).properties as
+        | Record<string, unknown>
+        | undefined) ?? {},
     ).join(', ');
     return {
       name: t.name,
@@ -750,31 +766,26 @@ async function vectorizeTools(
     };
   });
 
-  // Use pre-generated intent cache when available.
-  // For uncached tools (new handlers after core update), enrich via LLM on the fly.
+  // Pre-generated intent cache: cached (enriched) tools are deterministic; the
+  // rest are collected as uncached for the LLM enrich step downstream.
   const cache = getToolIntentCache();
-  const uncachedTools: typeof basicEntries = [];
-  const toolEntries = basicEntries.map((t) => {
+  const uncached: ToolDocBasicEntry[] = [];
+  const entries = basicEntries.map((t) => {
     const cached = cache?.[t.name];
     if (cached?.enriched?.includes('\nIntent:')) {
-      return { name: t.name, text: cached.enriched };
+      return { name: t.name, text: cached.enriched, cached: true };
     }
-    uncachedTools.push(t);
-    return { name: t.name, text: t.text };
+    uncached.push(t);
+    return { name: t.name, text: t.text, cached: false };
   });
 
-  // Enrich CRUD tool descriptions with related operation context.
-  // E.g., UpdateClass mentions "use after CreateClass" so vector search
-  // on "create class" also matches UpdateClass. Workaround until
-  // mcp-abap-adt#66 adds this to tool descriptions natively.
-  // Applied after cache lookup — appended to both cached and uncached text.
+  // Enrich CRUD tool descriptions with related operation context (BM25/vector
+  // recall). Appended to both cached and uncached text.
   const toolNameSet = new Set(basicEntries.map((t) => t.name));
-  for (const t of toolEntries) {
+  for (const t of entries) {
     const m = t.name.match(/^(Create|Update|Read)(.+)$/);
     if (!m) continue;
     const [, verb, object] = m;
-    // Split camelCase object name for BM25 matching (e.g., "Class" stays "class",
-    // "BehaviorDefinition" → "behavior definition")
     const objWords = object.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
     const hints: string[] = [];
     if (verb === 'Create') {
@@ -801,6 +812,30 @@ async function vectorizeTools(
       t.text += `\nWorkflow: ${hints.join(' ')}`;
     }
   }
+
+  return { entries, uncached };
+}
+
+/**
+ * Vectorize an explicit tool list into a RAG store. Source-agnostic: the tools
+ * come directly from `HandlerExporter` (the shared, destination-free corpus).
+ * Assembles docs via `buildToolDocs`, LLM-enriches uncached tools, embeds/upserts.
+ */
+async function vectorizeToolDocs(
+  tools: ToolDocInput[],
+  toolsStore: ExpositionFilteringRag,
+  embedderBreaker: CircuitBreaker | null,
+  onlyNames?: Set<string>,
+): Promise<{ ok: number; failed: number; total: number }> {
+  const log = cds.log('agent-manager');
+
+  const maxRetries = 3;
+  const throttleMs = 50;
+
+  // Assemble tool-doc corpus (base text + cache enrich + Workflow hints).
+  const cache = getToolIntentCache();
+  const { entries: toolEntries, uncached: uncachedTools } =
+    buildToolDocs(tools);
 
   // Enrich uncached tools via LLM (only runs for tools missing from cache)
   if (uncachedTools.length > 0 && cache) {
@@ -829,7 +864,13 @@ async function vectorizeTools(
     }
   }
 
-  let pending = toolEntries;
+  // Docs (and their Workflow hints) are built from the FULL `tools` set so
+  // sibling-derived hints are correct; when `onlyNames` is given (partial
+  // bundle supplement) we UPSERT only that subset — the canonical full-set text.
+  let pending = onlyNames
+    ? toolEntries.filter((t) => onlyNames.has(t.name))
+    : toolEntries;
+  const totalToProcess = pending.length;
   let totalOk = 0;
 
   for (
@@ -887,7 +928,280 @@ async function vectorizeTools(
     embedderBreakerState: embedderBreaker?.state ?? 'n/a',
   });
 
-  return { ok: totalOk, failed: pending.length, total: tools.length };
+  return { ok: totalOk, failed: pending.length, total: totalToProcess };
+}
+
+// ---------------------------------------------------------------------------
+// Shared tool corpus (destination-independent, vectorized ONCE)
+// ---------------------------------------------------------------------------
+// The tool set + intent text is identical for every destination (tools come
+// from HandlerExporter, not from a per-destination system), so the tool-RAG is
+// built ONCE and shared by all destination agents instead of re-vectorized N
+// times. Read-only after build → safe to share across agents.
+
+/** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
+function listToolDefsFromExporter(): ToolDocInput[] {
+  const exporter = new HandlerExporter({
+    includeReadOnly: true,
+    includeHighLevel: true,
+    includeLowLevel: false,
+    includeCompact: true,
+    includeSystem: true,
+    includeSearch: true,
+    logger: loggerAdapter,
+  });
+  return exporter.getHandlerEntries().map((e) => ({
+    name: e.toolDefinition.name,
+    description: e.toolDefinition.description,
+    inputSchema: e.toolDefinition.inputSchema,
+  }));
+}
+
+/** One shared-corpus doc: the upsert `id`, final `text`, exposition tag, cached flag. */
+export type SharedCorpusDoc = {
+  id: string;
+  name: string;
+  text: string;
+  exposition?: string;
+  cached: boolean;
+};
+
+/**
+ * The canonical shared tool corpus (deterministic for cached tools) — the single
+ * source of truth for both the build-time embedding generator and the runtime
+ * bundle loader's per-entry text match. Built from `HandlerExporter` (no
+ * destination) via `buildToolDocs`; `cached` marks tools with a pre-generated
+ * intent (uncached tools are LLM-enriched at runtime, not part of the bundle).
+ */
+export function getSharedCorpusDocs(): SharedCorpusDoc[] {
+  const { entries } = buildToolDocs(listToolDefsFromExporter());
+  const expoMap = getToolExpositionMap();
+  return entries.map((e) => ({
+    id: `tool:${e.name}`,
+    name: e.name,
+    text: e.text,
+    exposition: expoMap.get(e.name),
+    cached: e.cached,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Build-time embedding bundle (srv/tool-embeddings.json)
+// ---------------------------------------------------------------------------
+// Precomputed embeddings for the full corpus, generated by
+// tools/generate-tool-embeddings.ts. Loaded at startup via upsertPrecomputedRaw
+// with ZERO embedding calls on the happy path (the vector space is gated by a
+// config-only fingerprint; each vector by per-entry text identity).
+
+type EmbedderFingerprint = {
+  provider: string;
+  embeddingModel: string;
+  baseURL?: string;
+  resourceGroup?: string;
+};
+type ToolEmbeddingBundle = {
+  header: {
+    embedderFingerprint: EmbedderFingerprint;
+    embeddingDim: number;
+    coreVersion?: string;
+    generatedAt?: string;
+    canary?: { text: string; vector: number[] };
+  };
+  entries: {
+    id: string;
+    name: string;
+    text: string;
+    vector: number[];
+    exposition?: string;
+  }[];
+};
+
+/** Runtime embedder identity — read from config, NO embedding call. */
+export function runtimeEmbedderFingerprint(
+  config: AgentConfig = getAgentConfig(),
+): EmbedderFingerprint {
+  const provider = config.llm.provider;
+  const embeddingModel =
+    process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
+  return provider === 'sap-ai-sdk'
+    ? {
+        provider,
+        embeddingModel,
+        resourceGroup: config.llm.resourceGroup || 'default',
+      }
+    : { provider, embeddingModel, baseURL: config.llm.baseUrl };
+}
+
+/** Fingerprint equality — provider + model + endpoint identity (no dim). */
+export function fingerprintMatches(
+  bundle: EmbedderFingerprint,
+  runtime: EmbedderFingerprint,
+): boolean {
+  return (
+    bundle.provider === runtime.provider &&
+    bundle.embeddingModel === runtime.embeddingModel &&
+    (bundle.baseURL ?? '') === (runtime.baseURL ?? '') &&
+    (bundle.resourceGroup ?? '') === (runtime.resourceGroup ?? '')
+  );
+}
+
+/**
+ * Pure plan (no embedding, no store writes — unit-testable): given a bundle, the
+ * runtime corpus docs, and the runtime fingerprint, decide what loads from the
+ * bundle (fingerprint match + per-entry text identity) vs what must be
+ * vectorized at runtime (missing / changed text). A fingerprint mismatch
+ * invalidates the WHOLE bundle.
+ */
+export function planBundleLoad(
+  bundle: ToolEmbeddingBundle | null,
+  runtimeDocs: SharedCorpusDoc[],
+  runtime: EmbedderFingerprint,
+): {
+  usable: boolean;
+  toLoad: { id: string; text: string; vector: number[]; exposition?: string }[];
+  supplementNames: string[];
+} {
+  if (
+    !bundle ||
+    !fingerprintMatches(bundle.header.embedderFingerprint, runtime)
+  ) {
+    return {
+      usable: false,
+      toLoad: [],
+      supplementNames: runtimeDocs.map((d) => d.name),
+    };
+  }
+  const byId = new Map(bundle.entries.map((e) => [e.id, e]));
+  const toLoad: {
+    id: string;
+    text: string;
+    vector: number[];
+    exposition?: string;
+  }[] = [];
+  const supplementNames: string[] = [];
+  for (const d of runtimeDocs) {
+    const be = byId.get(d.id);
+    if (be && be.text === d.text) {
+      toLoad.push({
+        id: d.id,
+        text: d.text,
+        vector: be.vector,
+        exposition: d.exposition,
+      });
+    } else {
+      supplementNames.push(d.name);
+    }
+  }
+  return { usable: true, toLoad, supplementNames };
+}
+
+function loadToolEmbeddingBundle(): ToolEmbeddingBundle | null {
+  const p = path.resolve(__dirname, 'tool-embeddings.json');
+  try {
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8')) as ToolEmbeddingBundle;
+  } catch {
+    return null;
+  }
+}
+
+let sharedToolsRag: ExpositionFilteringRag | null = null;
+let sharedToolsInit: Promise<ExpositionFilteringRag> | null = null;
+let sharedToolCount = 0;
+
+/**
+ * Build (once) and return the shared tool-RAG store. Global single-flight:
+ * concurrent callers share ONE build; on success `sharedToolsRag` is cached and
+ * reused; on failure the in-flight promise is cleared so a later call retries.
+ * Vector mode loads the build-time bundle (zero embedding on the happy path)
+ * and supplements only missing/changed tools; in-memory mode populates text-only.
+ */
+function ensureSharedToolsVectorized(): Promise<ExpositionFilteringRag> {
+  if (sharedToolsRag) return Promise.resolve(sharedToolsRag);
+  if (sharedToolsInit) return sharedToolsInit;
+  const log = cds.log('agent-manager');
+  sharedToolsInit = (async () => {
+    const config = getAgentConfig();
+    const store = await createToolsRagStore(config.llm.resourceGroup);
+    const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
+
+    // In-memory mode (no embedder): no vectors — populate text-only via the
+    // runtime path (which still LLM-enriches uncached tools). Bundle is vectors-
+    // only, so it does not apply here.
+    if (!embedding) {
+      const result = await vectorizeToolDocs(
+        listToolDefsFromExporter(),
+        store,
+        null,
+      );
+      sharedToolCount = result.ok;
+      sharedToolsRag = store;
+      log.info('Shared tool corpus ready (in-memory, keyword-only)', {
+        toolCount: result.ok,
+      });
+      return store;
+    }
+
+    // Vector mode: bundle fast path (zero embedding when fingerprint + all
+    // per-entry texts match).
+    const runtimeDocs = getSharedCorpusDocs();
+    const plan = planBundleLoad(
+      loadToolEmbeddingBundle(),
+      runtimeDocs,
+      runtimeEmbedderFingerprint(config),
+    );
+
+    if (plan.usable) {
+      const writer = store.writer();
+      for (const e of plan.toLoad) {
+        await writer?.upsertPrecomputedRaw?.(
+          e.id,
+          e.text,
+          e.vector,
+          e.exposition ? { exposition: e.exposition } : {},
+        );
+      }
+      // Supplement missing/changed tools. Build docs from the FULL tool set so
+      // Workflow hints (sibling-derived) are correct, but UPSERT only the
+      // supplement subset — otherwise a supplemented tool's text would lose
+      // hints for siblings that live in the bundle and diverge from the
+      // canonical runtime text that triggered the supplement.
+      if (plan.supplementNames.length > 0) {
+        await vectorizeToolDocs(
+          listToolDefsFromExporter(),
+          store,
+          embedding.breaker,
+          new Set(plan.supplementNames),
+        );
+      }
+      sharedToolCount = plan.toLoad.length + plan.supplementNames.length;
+      sharedToolsRag = store;
+      log.info('Shared tool corpus ready (bundle)', {
+        loaded: plan.toLoad.length,
+        supplemented: plan.supplementNames.length,
+      });
+      return store;
+    }
+
+    // No/invalid bundle → full runtime vectorization.
+    const result = await vectorizeToolDocs(
+      listToolDefsFromExporter(),
+      store,
+      embedding.breaker,
+    );
+    sharedToolCount = result.ok;
+    sharedToolsRag = store;
+    log.info('Shared tool corpus ready (runtime vectorization)', {
+      toolCount: result.ok,
+      bundle: 'absent-or-mismatch',
+    });
+    return store;
+  })();
+  sharedToolsInit.catch(() => {
+    // Allow a retry on the next call after a failed build.
+    sharedToolsInit = null;
+  });
+  return sharedToolsInit;
 }
 
 // ---------------------------------------------------------------------------
@@ -929,10 +1243,15 @@ async function initDestination(
     }
   }
 
+  // Shared tool corpus — vectorized ONCE and reused by every destination
+  // (destination-independent). This replaces the former per-destination
+  // vectorization; the first caller triggers the build, the rest share it.
+  const sharedRag = await ensureSharedToolsVectorized();
+
   const state: DestinationState = {
     mcpAdapter: null,
-    toolsRag: await createToolsRagStore(config.llm.resourceGroup),
-    toolCount: 0,
+    toolsRag: sharedRag,
+    toolCount: sharedToolCount,
     status: 'vectorizing',
     proxyType,
     requiresCredentials,
@@ -942,18 +1261,11 @@ async function initDestination(
   try {
     state.mcpAdapter = await buildEmbeddedMcpAdapter(destinationName);
 
-    const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
-    const result = await vectorizeTools(
-      state.mcpAdapter,
-      state.toolsRag,
-      embedding?.breaker ?? null,
-    );
-    state.toolCount = result.ok;
-
-    // Build a full SmartAgent for this destination
+    // Build a full SmartAgent for this destination, referencing the SHARED
+    // tool RAG (no per-destination re-vectorization).
     const handle = await buildAgentForDestination(
       state.mcpAdapter,
-      state.toolsRag,
+      sharedRag,
       config,
     );
     agentHandles.set(destinationName, handle);
@@ -1645,8 +1957,15 @@ export async function initSmartAgents(): Promise<void> {
     warmFirst: destName,
   });
 
-  // Background: warm ALL SAP destinations (the configured one first as a
-  // non-privileged hint). Non-blocking — never gates startup or readiness.
+  // Background: build the shared tool corpus ONCE (fire-and-forget — readiness
+  // does not wait on it; getSmartAgent/initDestination await it on the request
+  // path via the bounded wait). Then warm ALL SAP destinations (the configured
+  // one first as a non-privileged hint). Non-blocking — never gates readiness.
+  ensureSharedToolsVectorized().catch((err) => {
+    log.warn('Shared tool corpus build error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
   initBackgroundDestinations().catch((err) => {
     log.warn('Background destination warmup error', {
       error: err instanceof Error ? err.message : String(err),
