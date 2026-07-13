@@ -118,6 +118,26 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
   destination) across startup, background, `/destinations/refresh`, the retry
   timer, and the lazy `getSmartAgent` path.
 
+### Shared tool corpus + build-time embedding bundle
+
+- The tool-intent RAG is **destination-independent** (tools come from
+  `HandlerExporter`, identical for every SAP system), so it is built **once** and
+  shared by all destination agents (`ensureSharedToolsVectorized`, global
+  single-flight) — not re-vectorized per destination.
+- `srv/tool-embeddings.json` is a **committed build-time bundle** of precomputed
+  embeddings (like `srv/tool-intents.json`). At startup the shared store loads it
+  via `upsertPrecomputedRaw` with **zero embedding calls** when the config-only
+  `embedderFingerprint` matches and each entry's text is identical; mismatched
+  fingerprint → full runtime vectorize; missing/changed tools → supplement only
+  those. This removes the cold-start warmup after a deploy.
+- Regenerate after tools / `tool-intents.json` / the embedder change:
+  `npx tsx tools/generate-tool-intents.ts` (enrich any uncached tools) then
+  `npx tsx tools/generate-tool-embeddings.ts` (needs AI Core creds, e.g. a deploy
+  worktree's `AICORE_*`). The embeddings generator fail-fasts if any tool is
+  uncached. The bundle's fingerprint must match the target embedder — one AI Core
+  bundle covers the `sap-ai-sdk` targets; `openai` targets fall back to the
+  share-only path (still one vectorization, not N).
+
 ### LLM Provider
 
 Configurable via `LLM_AGENT_PROVIDER` env var:
