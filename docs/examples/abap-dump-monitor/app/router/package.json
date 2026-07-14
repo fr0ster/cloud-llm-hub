@@ -10,5 +10,8 @@
   },
   "scripts": {
     "start": "node node_modules/@sap/approuter/approuter.js"
+  },
+  "overrides": {
+    "ws": "8.21.0"
   }
 }
