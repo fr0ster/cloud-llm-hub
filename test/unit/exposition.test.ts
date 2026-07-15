@@ -78,14 +78,12 @@ describe('resolveExposition', () => {
     expect(result).toEqual(['readonly', 'search', 'system', 'high']);
   });
 
-  it('never includes low', () => {
-    const result = resolveExposition([
-      'MCP_Reader',
-      'MCP_Analyst',
-      'MCP_Developer',
-      'MCP_Full',
-    ]);
-    expect(result).not.toContain('low');
+  it('grants low only to MCP_Full', () => {
+    expect(resolveExposition(['MCP_Full'])).toContain('low');
+    // Lower roles never reach the low-level generic handlers.
+    expect(resolveExposition(['MCP_Developer'])).not.toContain('low');
+    expect(resolveExposition(['MCP_Analyst'])).not.toContain('low');
+    expect(resolveExposition(['MCP_Reader'])).not.toContain('low');
   });
 
   it('produces no duplicates with overlapping roles', () => {
