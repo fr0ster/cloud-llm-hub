@@ -12,7 +12,7 @@ One goal per prompt · Phases 1–3 produce documents only · Phase 4 is layer-b
 - **RAP Skills** collection enabled (`skills/*.md`).
 - Working collection **`simple-book-bo`** created and enabled.
 - `AI_PAIR_PROGRAMMING_PRINCIPLES.md` available to the agent (in RAG).
-- Object prefix `ZDEMO01_`, package `TEST_OK_BOOK` (adjust to your system).
+- Object prefix `ZDEMO01_`, package `TEST_RAG_APP` (sub-package under `$TMP`; adjust to your system).
 
 ---
 
@@ -24,7 +24,7 @@ Read AI_PAIR_PROGRAMMING_PRINCIPLES.md and follow it; we're at Phase 1 (document
 
 ## Prompt 2 — Phase 2: Technical Specification
 ```
-Phase 2, documents only: from `business-requirements` in `simple-book-bo`, draft and save a `tech-spec` for a single-entity RAP managed BO with draft (Fiori Elements, OData V4, strict 2, prefix ZDEMO01_, package TEST_OK_BOOK, custom domains/data elements, explicit BDEF mapping, all 5 draft actions, search Title/Author, filter Genre/Year) covering every ABAP layer.
+Phase 2, documents only: from `business-requirements` in `simple-book-bo`, draft and save a `tech-spec` for a single-entity RAP managed BO with draft (Fiori Elements, OData V4, strict 2, prefix ZDEMO01_, package TEST_RAG_APP, custom domains/data elements, explicit BDEF mapping, all 5 draft actions, search Title/Author, filter Genre/Year) covering every ABAP layer.
 ```
 ✔ Before next: `rag_add OK`, id `tech-spec`; draft-table keys match, explicit BDEF mapping, 5 draft actions.
 
@@ -36,6 +36,6 @@ Phase 3, documents only: from `tech-spec` in `simple-book-bo`, produce and save 
 
 ## Prompt 4 — Phase 4: Implementation (kickoff)
 ```
-Phase 4 (system tools allowed, package TEST_OK_BOOK / prefix ZDEMO01_): implement `impl-plan` using `tech-spec` from `simple-book-bo` layer by layer (max 3–4 objects), do step 1 now and stop after each layer for my review, read every object back to prove active:true, create CDS/BDEF without activating then check-fix-activate, and stop for me to fix manually if you loop twice.
+Phase 4 (system tools allowed, package TEST_RAG_APP / prefix ZDEMO01_): implement `impl-plan` using `tech-spec` from `simple-book-bo` layer by layer (max 3–4 objects), do step 1 now and stop after each layer for my review, read every object back to prove active:true, create CDS/BDEF without activating then check-fix-activate, and stop for me to fix manually if you loop twice.
 ```
 ✔ Continue Phase 4 with short follow-ups: `Run plan step N` → `Verify all ZDEMO01_ objects from step N are active` → for CDS/BDEF `Check step N for syntax errors` → `Activate step N together`. After publish: test in Fiori preview (create / edit / delete / search / filter).
