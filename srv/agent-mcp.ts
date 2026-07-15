@@ -34,6 +34,7 @@ import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
+import { setRequestResponsible } from './lib/responsible';
 import { runWithSessionId } from './request-session';
 
 /**
@@ -49,8 +50,14 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'One step at a time. Run exactly ONE execute_step and wait for its result before the next. NEVER call execute_step in parallel — concurrent calls corrupt the executor’s session. Keep it strictly sequential.',
   '',
+  'Step granularity — isolate, but keep co-dependent objects in ONE step. The executor is stateless: each step must be a COMPLETE, self-activating unit it can finish on its own. So make every step as small and focused as possible — ideally one dependency layer or one kind of object — and walk the dependency order layer by layer. BUT anything that only becomes consistent/active AS A UNIT (mutual or circular dependencies) must go in the SAME step; never leave objects inactive for a later step to "finish", because a stateless executor cannot resume a half-built, inactive state. Rule of thumb: split along the dependency graph (independent layers = separate steps, in order); never split a set of objects that only activates together.',
+  '',
+  'Example — building a RAP business object, one step per layer in dependency order: (1) domains; (2) data elements; (3) tables/structures; (4) CDS interface views; (5) the CDS projection view together with its behavior definition and behavior implementation (these are mutually dependent — create and activate them in ONE step); (6) service definition; (7) service binding. Each step stays isolated, but co-dependent objects are grouped.',
+  '',
+  "Verify after every create — do NOT trust a create step's reply alone. Creating and activating ABAP objects can take time and may not finish (or may fail) even when the create step returned text. So after each step that creates something, run SEPARATE verification step(s) that check the objects actually EXIST and are ACTIVE. Give it a little time first, then re-check a FEW times (poll) until you either confirm the objects are created and active, or you get an error. Only move to the next dependency layer once the current one is verified active. On a confirmed error, analyse it and REACT — fix and retry, change the plan, or ask the user what to do — do not push on as if it succeeded.",
+  '',
   'How to use:',
-  '- Plan: split the goal into steps that each express ONE concrete outcome; one call per step. Keep each step about WHAT, not HOW.',
+  '- Plan: split the goal into steps that each express ONE concrete outcome; one call per step. Keep each step about WHAT, not HOW. Follow the step-granularity rule above.',
   '- Pick the system: `destination` is OPTIONAL. If THIS MCP server is already bound to one system (a default `X-SAP-Destination` is configured for the connection), omit it — every step runs there. Pass `destination` only when ONE connection can reach several systems and you want to choose per call (see `list_destinations`). To compare two systems, the usual setup is two MCP servers (one per system) — route by server, not by this argument.',
   '- ANALYSE each response before the next step; the executor can err or hallucinate. An impossible request answered confidently is an error or a problem, not success — surface it; do not accept the hallucination.',
   '- CORRECT the plan from what the executor actually returns; do not assume success just because text came back.',
@@ -203,6 +210,8 @@ export async function createAgentMcpServerForRequest(
           req,
           targetDestination,
         );
+        // Per-request responsible person for ADT writes (create/update/delete).
+        setRequestResponsible(req.headers);
         const handle = await getSmartAgent(undefined, targetDestination);
 
         // Ephemeral session per call → the executor loads/saves no history.
@@ -230,16 +239,31 @@ export async function createAgentMcpServerForRequest(
             ok: false,
             destination: targetDestination,
           });
-          return textResult(`Error: ${r.error.message}`, true);
+          return textResult(
+            `ERROR on destination "${targetDestination}": ${r.error.message}`,
+            true,
+          );
         }
 
         const usage = r.value.usage;
+        // Detect problems the executor may have masked in a "successful" result
+        // so the consumer always learns about them (not just a plausible answer):
+        //  - the run was CUT SHORT at its iteration / tool-call limit (incomplete)
+        //  - the executor returned NO content (the step likely failed / did nothing)
+        const truncated =
+          r.value.stopReason === 'iteration_limit' ||
+          r.value.stopReason === 'tool_call_limit';
+        const emptyContent = !r.value.content?.trim();
+        const isProblem = truncated || emptyContent;
+
         log.info('execute_step done', {
           ok: true,
           destination: targetDestination,
           iterations: r.value.iterations,
           toolCallCount: r.value.toolCallCount,
           totalTokens: usage?.totalTokens,
+          stopReason: r.value.stopReason,
+          problem: isProblem || undefined,
         });
 
         // Surface what the executor spent so the planner can track/budget it,
@@ -249,11 +273,24 @@ export async function createAgentMcpServerForRequest(
         // registered outputSchema, and returning structuredContent made SSE
         // clients / the auth proxy drop the text payload (empty result). Keep
         // usage in the text footer only.
-        const answer = r.value.content || '(no response)';
+        const answer = r.value.content?.trim() || '(no response)';
+
+        // Prepend an unmissable PROBLEM banner (and flag isError) so the consumer
+        // cannot mistake a truncated / empty run for success.
+        let banner = '';
+        if (truncated) {
+          banner = `PROBLEM: the executor stopped at its ${
+            r.value.stopReason === 'iteration_limit' ? 'iteration' : 'tool-call'
+          } limit before finishing — this result is INCOMPLETE and may be unreliable. Do not treat it as success; narrow the step or split it further.\n\n`;
+        } else if (emptyContent) {
+          banner =
+            'PROBLEM: the executor returned no content — the step likely failed or did nothing. Do not treat it as success.\n\n';
+        }
+
         const footer = usage
           ? `\n\n---\n_executor usage — tokens: prompt ${usage.promptTokens}, completion ${usage.completionTokens}, total ${usage.totalTokens}; iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount}_`
           : `\n\n---\n_executor usage — iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount} (token usage not reported by provider)_`;
-        return textResult(answer + footer);
+        return textResult(banner + answer + footer, isProblem);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });

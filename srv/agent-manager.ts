@@ -23,6 +23,7 @@ import {
   CompactHandlersGroup,
   HandlerExporter,
   HighLevelHandlersGroup,
+  LowLevelHandlersGroup,
   ReadOnlyHandlersGroup,
   SearchHandlersGroup,
   SystemHandlersGroup,
@@ -167,11 +168,14 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
 
     if (!result.ok || !allowedExpositions) return result;
 
-    // Post-filter by allowed exposition levels
+    // Post-filter by allowed exposition levels. A tool WITHOUT an exposition
+    // tag is excluded when a role filter is active — otherwise an un-tagged tool
+    // (e.g. a group not mapped in getToolExpositionMap) would bypass role-based
+    // filtering and reach every role. Every exposed tool must carry an exposition.
     const allowed = new Set(allowedExpositions);
     const filtered = result.value.filter(
       (r) =>
-        !r.metadata.exposition || allowed.has(r.metadata.exposition as string),
+        !!r.metadata.exposition && allowed.has(r.metadata.exposition as string),
     );
 
     if (filtered.length < result.value.length) {
@@ -228,6 +232,10 @@ function getToolExpositionMap(): Map<string, string> {
     { name: 'search', group: new SearchHandlersGroup(noopCtx) },
     { name: 'system', group: new SystemHandlersGroup(noopCtx) },
     { name: 'compact', group: new CompactHandlersGroup(noopCtx) },
+    // Low-level generic handlers get their own restricted 'low' exposition so
+    // they are role-gated (granted only to MCP_Full) instead of falling through
+    // as un-tagged tools that bypass ExpositionFilteringRag's role filter.
+    { name: 'low', group: new LowLevelHandlersGroup(noopCtx) },
   ];
 
   toolExpositionMap = new Map();
@@ -251,6 +259,7 @@ function getToolExpositionMap(): Map<string, string> {
       .length,
     compact: [...toolExpositionMap.values()].filter((v) => v === 'compact')
       .length,
+    low: [...toolExpositionMap.values()].filter((v) => v === 'low').length,
   });
 
   return toolExpositionMap;
@@ -939,17 +948,35 @@ async function vectorizeToolDocs(
 // built ONCE and shared by all destination agents instead of re-vectorized N
 // times. Read-only after build → safe to share across agents.
 
-/** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
-function listToolDefsFromExporter(): ToolDocInput[] {
-  const exporter = new HandlerExporter({
+/**
+ * HandlerExporter include-config — the single source of truth shared by the RAG
+ * tool list (`listToolDefsFromExporter`) and the callable MCP adapter
+ * (`buildEmbeddedMcpAdapter`) so they never diverge.
+ *
+ * The COMPACT group exposes generic low-level handlers (`HandlerCreate`,
+ * `HandlerActivate`, `HandlerLock`, `HandlerTransportCreate`, …) ALONGSIDE the
+ * high-level named tools (`CreatePackage`, `CreateClass`, …). Exposing both lets
+ * the agent pick a generic low-level handler for a "create" when it should use
+ * the high-level tool. So compact/low-level are now OPT-IN via env, OFF by
+ * default — enable explicitly at deploy only:
+ *   LLM_AGENT_INCLUDE_COMPACT=true    (generic compact/low-level handlers)
+ *   LLM_AGENT_INCLUDE_LOW_LEVEL=true  (the low handler group)
+ */
+export function getHandlerExporterConfig(env: NodeJS.ProcessEnv = process.env) {
+  return {
     includeReadOnly: true,
     includeHighLevel: true,
-    includeLowLevel: false,
-    includeCompact: true,
+    includeLowLevel: env.LLM_AGENT_INCLUDE_LOW_LEVEL === 'true',
+    includeCompact: env.LLM_AGENT_INCLUDE_COMPACT === 'true',
     includeSystem: true,
     includeSearch: true,
     logger: loggerAdapter,
-  });
+  };
+}
+
+/** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
+function listToolDefsFromExporter(): ToolDocInput[] {
+  const exporter = new HandlerExporter(getHandlerExporterConfig());
   return exporter.getHandlerEntries().map((e) => ({
     name: e.toolDefinition.name,
     description: e.toolDefinition.description,
@@ -1447,15 +1474,7 @@ async function buildEmbeddedMcpAdapter(
   // Load ALL tool handlers — role-based filtering happens at RAG query time
   // via ExpositionFilteringRag (post-filter by exposition metadata).
   // Low-level handlers excluded: they duplicate high-level with finer granularity.
-  const exporter = new HandlerExporter({
-    includeReadOnly: true,
-    includeHighLevel: true,
-    includeLowLevel: false,
-    includeCompact: true,
-    includeSystem: true,
-    includeSearch: true,
-    logger: loggerAdapter,
-  });
+  const exporter = new HandlerExporter(getHandlerExporterConfig());
 
   const entries = exporter.getHandlerEntries();
 

@@ -51,9 +51,11 @@ export function resolveExposition(userRoles: string[]): ExpositionLevel[] {
     exposition.push('high');
   }
 
-  // Full adds compact
+  // Full adds compact + low (the low-level generic handlers, opt-in via
+  // LLM_AGENT_INCLUDE_LOW_LEVEL — only the highest role may reach them).
   if (roles.has('MCP_Full')) {
     exposition.push('compact');
+    exposition.push('low');
   }
 
   return exposition;

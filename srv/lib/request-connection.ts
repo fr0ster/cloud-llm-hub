@@ -24,6 +24,7 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { createConnection } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
+import { setRequestResponsible } from './responsible';
 
 export type CredentialError = Error & {
   statusCode?: number;
@@ -130,6 +131,10 @@ export async function establishRequestConnection(
       auth: sapLogin ? 'user-basic' : sapConfig.authType,
       username: sapLogin || '(destination-auth)',
     });
+
+    // Per-request responsible person for ADT writes (create/update/delete):
+    // x-sap-responsible, else the connecting x-sap-login user.
+    setRequestResponsible(req.headers);
 
     return { connection, handled: false };
   } catch (connErr) {
