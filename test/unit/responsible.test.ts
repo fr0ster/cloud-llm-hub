@@ -7,6 +7,11 @@ describe('setRequestResponsible', () => {
     expect(getSystemContext().responsible).toBe('ALICE');
   });
 
+  it('uppercases the responsible (SAP user-master is uppercase)', () => {
+    setRequestResponsible({ 'x-sap-login': 'developer' });
+    expect(getSystemContext().responsible).toBe('DEVELOPER');
+  });
+
   it('prefers x-sap-responsible over x-sap-login', () => {
     setRequestResponsible({
       'x-sap-responsible': 'BOB',

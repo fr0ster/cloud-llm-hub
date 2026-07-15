@@ -22,8 +22,14 @@ export function setRequestResponsible(headers: Record<string, unknown>): void {
   try {
     const pick = (v: unknown): string | undefined =>
       (Array.isArray(v) ? v[0] : v)?.toString().trim() || undefined;
-    const responsible =
-      pick(headers['x-sap-responsible']) ?? pick(headers['x-sap-login']);
+    // SAP user IDs are stored UPPERCASE in the user master; login is
+    // case-insensitive but the responsible-person lookup is NOT, so a lowercase
+    // proxy login (e.g. "developer") is rejected as an invalid person. Uppercase
+    // the derived value — safe for both x-sap-responsible and x-sap-login since
+    // both map to an SAP user-ID.
+    const responsible = (
+      pick(headers['x-sap-responsible']) ?? pick(headers['x-sap-login'])
+    )?.toUpperCase();
     // ALWAYS set it (even to undefined) — the singleton is process-wide, so a
     // request WITHOUT these headers (e.g. destination-auth) must NOT inherit the
     // previous request's responsible. setSystemContext merges, so
