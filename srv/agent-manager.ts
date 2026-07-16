@@ -44,6 +44,7 @@ import {
   type IRagEditor,
   NoopDocumentEnricher,
   type RagMetadata,
+  type RagResult,
   ToolCache,
   TranslatePreprocessor,
   VectorRag,
@@ -104,6 +105,20 @@ function getToolIntentCache(): typeof toolIntentCache {
 // allowed set (from ragFilter.exposition).
 // If ragFilter.exposition is not set, all tools are returned (backwards compat).
 // ---------------------------------------------------------------------------
+
+// Cap how many `skill:*` entries a single RAG query may surface. Skills and tools
+// live in the SAME shared store and compete for the same top-K, so without a cap a
+// RAP prompt (all 18 skills are RAP-adjacent) fills most of the top-K with skills and
+// starves tool selection — observed live: 12 of 15 slots were skills. We give tools
+// their full k and limit skills to the top-N by score. Env-tunable
+// (`LLM_AGENT_SKILL_RAG_K`, default 3); 0 disables skill injection.
+const SKILL_RAG_K = (() => {
+  const parsed = Number(process.env.LLM_AGENT_SKILL_RAG_K);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 3;
+})();
+
+const isSkillId = (id: unknown): boolean =>
+  typeof id === 'string' && id.startsWith('skill:');
 
 export class ExpositionFilteringRag implements IRag, IRagEditor {
   constructor(private inner: IRag) {}
@@ -205,9 +220,24 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const allowedExpositions = options?.ragFilter?.exposition;
     // Strip ragFilter — tools use exposition metadata, not namespace
     const { ragFilter: _unused, ...cleanOpts } = options ?? {};
-    // Request more results to compensate for post-filtering
-    const overFetchK = allowedExpositions ? k * 3 : k;
+    // Over-fetch so that (a) exposition post-filtering doesn't starve results and
+    // (b) tools crowded out of the top-K by skills can be recovered before the cap.
+    // A fixed multiplier is not enough: if every skill outranks the tools, the top
+    // k*3 could be all skills and tools would never be fetched. We know exactly how
+    // many skills live in this store (the writer tracks them), so add that headroom
+    // to GUARANTEE k tools are reachable even when all skills rank first.
+    const overFetchK = k * 3 + this.vectorizedSkillIds.size;
     const result = await this.inner.query(embedding, overFetchK, cleanOpts);
+
+    // Give tools their full k budget; cap skills at the top SKILL_RAG_K by score.
+    // Input rows are score-descending from the inner store, so slicing keeps the best.
+    const capSkills = (rows: RagResult[]) => {
+      const tools = rows.filter((r) => !isSkillId(r.metadata.id)).slice(0, k);
+      const skills = rows
+        .filter((r) => isSkillId(r.metadata.id))
+        .slice(0, SKILL_RAG_K);
+      return [...tools, ...skills];
+    };
 
     if (result.ok) {
       log.debug('RAG tool search results', {
@@ -223,7 +253,12 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       });
     }
 
-    if (!result.ok || !allowedExpositions) return result;
+    if (!result.ok) return result;
+    // No role filter (e.g. no exposition passed): still cap skills so they can't
+    // crowd tools, but skip exposition post-filtering.
+    if (!allowedExpositions) {
+      return { ok: true as const, value: capSkills(result.value) };
+    }
 
     // Post-filter by allowed exposition levels. A tool WITHOUT an exposition
     // tag is excluded when a role filter is active — otherwise an un-tagged tool
@@ -259,7 +294,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       });
     }
 
-    return { ok: true as const, value: filtered.slice(0, k) };
+    return { ok: true as const, value: capSkills(filtered) };
   }
 
   async healthCheck() {
