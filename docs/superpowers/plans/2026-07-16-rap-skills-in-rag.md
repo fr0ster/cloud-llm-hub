@@ -8,6 +8,42 @@
 
 **Tech Stack:** TypeScript, `@mcp-abap-adt/llm-agent` + `llm-agent-libs` 17.0.0 (`FileSystemSkillManager`, `scanDirsForSkills`, `ISkillManager`), Jest, Biome.
 
+## Skills serve the EXECUTOR, not the planner's process
+
+A skill helps the stateless **executor subagent** decide HOW to do ONE concrete step
+(create/read a specific object). It is NOT tied to the consumer→planner workflow. The
+4-phase flow (`idea → business-requirements → tech-spec → impl-plan → active objects`) is a
+conversation between the consumer and the planner; the planner decides how to break work into
+steps and hands each to the executor. Skills must therefore:
+
+- Speak to a SINGLE object step ("how to create a draft table", "what's critical when reading
+  a BDEF"), never to phases, sequencing strategy, or document workflow.
+- Contain NO reference to the 4-phase process, "small batches", RAG-artifact management, or
+  planner-level orchestration. Those are planner concerns and live in `EXECUTE_STEP_DESCRIPTION`,
+  not in an executor skill.
+
+**Excluded from the executor skill set** (they are planner/consumer concerns, not step
+guidance): `phase-procedure`, `avoiding-hallucinations` (batch/sequence strategy),
+`managing-rag-artifacts`. `enforcing-target-package` is kept but reworded to a per-step rule
+("create THIS object in the specified package"), dropping any batch/phase framing.
+
+## Operation dimension — skills are `<operation>-<object>`
+
+Selection is semantic on the `description` ONLY, so the description MUST make the OPERATION
+explicit, not just the object. A prompt "create a draft table" and a prompt "read a draft
+table" must surface DIFFERENT skills carrying different critical info:
+
+- **Creating** a draft table → field naming, keys, the admin include (what to write).
+- **Reading** a draft table → something else is critical (e.g. that draft rows are transient,
+  the `%admin`/draft-key semantics, that it is not the source of truth) — NOT the field names.
+
+Every skill's `description` therefore leads with its operation verb ("Create …", "Read /
+inspect …"). Where an object's READ is a distinct task with distinct critical info, it gets
+its own `reading-<object>` skill alongside the `creating-<object>` one. The create-skills are
+the urgent deliverable (RAP BO creation); read-skills are added for the objects where reading
+genuinely differs (at minimum draft table, persistent table, interface CDS, projection CDS,
+BDEF), sourced from the same docs and the read-oriented handlers.
+
 ## Global Constraints
 
 - **All artifacts in English** — code, comments, docs, SKILL.md content, commit messages.
@@ -715,16 +751,22 @@ define table <draft_table> {
 Run: `npx jest test/unit/skills-content.test.ts`
 Expected: PASS — 2 tests.
 
-- [ ] **Step 5: Verify against the live system (the rule must match reality)**
+- [ ] **Step 5: Verify against the captured verbatim reads (fast path; skills are urgent)**
 
-Read the real draft table on DEV and confirm the skill states the same rule.
+The `ZDEMO01_` tutorial BO has been deleted from DEV, and the mcp-abap-adt fixture YAML
+(`tests/test-config.yaml`) covers only draft-DISABLED managed BOs — so there is no live draft
+table to read right now. Skills are needed urgently, so the draft skill is sourced from the
+**verbatim `ZDEMO01_TBOOK` / `ZDEMO01_DBOOK` reads captured earlier in this session** — real data,
+taken via `execute_step` while the objects existed. That capture is the reference; confirm the
+SKILL.md matches it:
 
-Run (via the `acme_dev` MCP, one `execute_step`):
-> `Show the complete definition of the draft table ZDEMO01_DBOOK in package TEST_RAG_APP: every field name in order, which fields are keys, and each field's type or data element, including any include. Quote the actual definition verbatim. Read-only.`
+- keys `client` + `bookuuid`; fields `pubyear`, `currencycode`, `createdby`, `createdat`,
+  `lastchangedby`, `lastchangedat`, `locallastchangedat`
+- final line `"%admin" : include sych_bdl_draft_admin_inc;`
+- `@Semantics.amount.currencyCode : 'zdemo01_dbook.currencycode'` (points at the DRAFT's own field)
 
-Expected: keys `client` + `bookuuid`; fields `pubyear`, `currencycode`, `createdby`, `createdat`, `lastchangedby`, `lastchangedat`, `locallastchangedat`; final line `"%admin" : include sych_bdl_draft_admin_inc;`; `@Semantics.amount.currencyCode : 'zdemo01_dbook.currencycode'`.
-
-If reality differs from the skill, **the skill is wrong — fix the skill**, never the other way round.
+**Deferred (not urgent):** rebuild a live draft fixture in a scratch package to re-verify —
+tracked as the "borrow the mcp-abap-adt integration harness + seed a draft fixture" follow-up.
 
 - [ ] **Step 6: Commit**
 
@@ -815,25 +857,41 @@ Only after Task 5 proves the channel works.
 - Consumes: the content pattern from Task 4.
 - Produces: the full 16-skill pool.
 
-- [ ] **Step 1: Read each object from the live system before writing its skill**
+- [ ] **Step 1: Source each skill from OUR existing documentation (not the live system)**
 
-For every skill, read the corresponding real object in package `TEST_RAG_APP` on DEV via
-`execute_step` (one object per step — the `execute_step` contract requires minimal steps),
-and derive the rule from what is actually there. Sources, per skill:
+The knowledge is already written across the tutorial docs — the skill files just need to be
+brought into the agreed shape: **one concrete task + a focused explanation** (the level of
+"draft tables → how fields and keys are named", "composition-linked CDS → create together but
+activate as a group"). Do NOT read the live system and do NOT dump the phase docs wholesale;
+extract the key rule and keep each skill concise.
 
-| Skill | Live object(s) to read |
+Sources (all under `docs/tutorials/rap-bo-book-catalog/`):
+- **Task hook → `description`:** the one-liner in `skills/<name>.md` for that skill.
+- **Concept explanations:** `context/composition-vs-association.md` (owned children,
+  master/dependent, group activation), `context/strict-mode-2.md`, `context/odata-draft-vs-readonly.md`,
+  `context/phase-procedure.md`.
+- **Concrete field/key/BDEF specifics:** `examples/book-catalog/phase2-technical-specification.md`
+  and `examples/book-catalog/phase3-implementation-plan.md`.
+
+Per-skill emphasis (the "one task + explanation" each must land):
+
+| Skill | The explanation it must carry |
 |---|---|
-| `creating-domain` | `ZDEMO01_DOM_TITLE`, `ZDEMO01_DOM_PRICE`, `ZDEMO01_DOM_PUBYEAR` |
-| `creating-data-element` | `ZDEMO01_DE_TITLE`, `ZDEMO01_DE_PRICE` |
-| `creating-persistent-table` | `ZDEMO01_TBOOK` |
-| `creating-interface-cds-view` | `ZDEMO01_I_BOOK` (DDLS) |
-| `creating-projection-cds-view` | `ZDEMO01_C_BOOK` (DDLS) |
-| `creating-metadata-extension` | `ZDEMO01_C_BOOK_MDE` |
-| `creating-bdef` | `ZDEMO01_I_BOOK` (BDEF) |
-| `creating-bimp` | `ZBP_DEMO1_I_BOOK` |
-| `creating-projection-bdef` | `ZDEMO01_C_BOOK` (BDEF) |
-| `creating-service-definition` | the `ZDEMO01_*` service definition |
-| `creating-service-binding` | the `ZDEMO01_*` STOB objects |
+| `creating-domain` | one concrete type + explicit length; domain must be active before a data element references it |
+| `creating-data-element` | references an active domain OR a predefined type; label matters for Fiori |
+| `creating-persistent-table` | UUID key + business keys + business fields + audit fields; the field roles |
+| `creating-interface-cds-view` | R-type layer with the composition graph; **create the linked views together, activate the group as one** |
+| `creating-projection-cds-view` | C-type layer with redirected compositions; same group-activation rule |
+| `creating-metadata-extension` | Fiori UI annotations (facets, line items, identification, selection fields) on the projection |
+| `creating-bdef` | interface BDEF: strict(2), draft, per-entity authorization, lock master/dependent, draft actions on the root, explicit field mapping |
+| `creating-bimp` | empty global class + local-types handler for instance authorization on the root |
+| `creating-projection-bdef` | projection BDEF: strict(2), draft, exposed operations per entity |
+| `creating-service-definition` | expose projection views under stable OData entity aliases |
+| `creating-service-binding` | explicit OData variant, then publish |
+| `activating-objects` | activate with the project prefix filter |
+| `enforcing-target-package` | every object in the user-specified package; verify after the batch |
+| `avoiding-hallucinations` | small batches, read each object back |
+| `managing-rag-artifacts` | save under a stable id, update in place |
 
 `activating-objects`, `enforcing-target-package`, `avoiding-hallucinations` and
 `managing-rag-artifacts` are procedural, not object-shaped: derive them from the observed
@@ -842,9 +900,12 @@ short.
 
 - [ ] **Step 2: Write each SKILL.md following the Task 4 pattern**
 
-Each file: frontmatter `name` (= directory name) and `description` (phrased as the request a
-user would make — it is the ONLY text embedded for matching), then a body with the platform
-rules, the gotchas, and a shape block. Illustrative names must be labelled as illustration.
+Each file: YAML frontmatter with `description` FIRST then `name` (the content test's regex
+requires `description` before `name`; `name` must equal the directory name; `description` is
+phrased as the request a user would make — it is the ONLY text embedded for matching), then a
+body with the rule, the gotchas, and a shape block where useful. Keep it concise — one task +
+its explanation, not a phase-doc dump. Any illustrative object names must be labelled as
+illustration, never as a mandatory naming rule (naming policy stays the customer's).
 
 - [ ] **Step 3: Extend the content test**
 
