@@ -26,6 +26,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private readonly destinationName: string;
   /** Shared promise for CSRF refresh — ensures only one fetch at a time */
   private csrfRefreshing: Promise<string> | null = null;
+  /** Reference count for nested beginCriticalSection()/endCriticalSection(). */
+  private criticalSectionDepth = 0;
+  /** True while a lock→modify→unlock chain must not be cut by a short timeout. */
+  private inCriticalSection = false;
 
   constructor(
     private readonly config: SapConfig,
@@ -49,6 +53,32 @@ export class CloudSdkAbapConnection implements AbapConnection {
     logger.debug(`Session type set to: ${type}`, {
       sessionId: this.sessionId?.substring(0, 8),
     });
+  }
+
+  /**
+   * Enter an uninterruptible critical section (mirrors AbstractAbapConnection).
+   *
+   * Core wraps every Create/Update/Delete handler in `beginCriticalSection()` …
+   * `endCriticalSection()` via optional chaining (`conn?.beginCriticalSection?.()`).
+   * This connection `implements AbapConnection` rather than extending the base, so
+   * WITHOUT these methods that wrapping is a silent no-op and a slow write on a BTP
+   * destination is cut by the short per-request timeout — which drops the stateful
+   * ADT session and orphans the lock, leaving the object locked and inactive.
+   * Implementing them here makes the upstream lock/timeout fix actually apply on the
+   * BTP-destination path. Reference-counted so nested begin/end pairs are safe.
+   */
+  beginCriticalSection(): void {
+    this.criticalSectionDepth++;
+    this.inCriticalSection = true;
+  }
+
+  endCriticalSection(): void {
+    if (this.criticalSectionDepth > 0) this.criticalSectionDepth--;
+    if (this.criticalSectionDepth === 0) this.inCriticalSection = false;
+  }
+
+  isInCriticalSection(): boolean {
+    return this.inCriticalSection;
   }
 
   async connect(): Promise<void> {
@@ -453,8 +483,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
     // SAP Cloud SDK's executeHttpRequest does NOT time out on its own, so the
     // per-request timeout (from the ADT client, ultimately SAP_TIMEOUT_*) MUST be
     // forwarded here — otherwise a hung BTP-destination request blocks forever.
-    // Falls back to 120 s when the caller didn't specify one.
-    const requestTimeoutMs = timeout ?? 120_000;
+    // Falls back to 120 s when the caller didn't specify one. Inside a critical
+    // section (lock→modify→unlock), raise the ceiling to SAP_TIMEOUT_CRITICAL so a
+    // slow write is not cut mid-flight — cutting it drops the stateful session and
+    // orphans the lock. Applied here, so main + both retries + reused config honour it.
+    // Mirrors @mcp-abap-adt/connection getCriticalSectionTimeout() (not re-exported
+    // from the package root): SAP_TIMEOUT_CRITICAL, default 600000 ms (10 min).
+    const criticalTimeoutMs =
+      Number(process.env.SAP_TIMEOUT_CRITICAL) || 600_000;
+    const requestTimeoutMs = this.inCriticalSection
+      ? Math.max(timeout ?? 0, criticalTimeoutMs)
+      : (timeout ?? 120_000);
 
     // Get base URL and build full URL from endpoint
     // Connection has base URL, url parameter is endpoint (e.g., /sap/bc/adt/oo/classes/...)
