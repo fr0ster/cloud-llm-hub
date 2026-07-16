@@ -51,6 +51,16 @@ modules:
     parameters:
       instances: 1
       buildpack: nodejs_buildpack
+      # The SmartAgent path (execute_step) holds the 258-tool RAG corpus, skill
+      # injection, 32k-token LLM buffers and up to MAX_ITERATIONS of accumulated
+      # context in one request — a per-request heap spike that OOM-killed the
+      # default 1G container (V8 "heap out of memory", exit 134). A killed process
+      # runs NO finally block, so an in-flight lock→create→…→unlock chain never
+      # unlocks → the object is left orphan-LOCKED (SM12 to clear). 2G + a V8 heap
+      # ceiling below the container gives the request headroom so the process
+      # survives and the unlock finalizer runs.
+      memory: 2048M
+      disk-quota: 1024M
       # Explicit per-subaccount route so the srv URL reflects the subaccount
       # (e.g. acme-subaccount-cloud-llm-hub-srv) instead of the generic
       # CF default org-name route (acme-org...-sn-<random-guid>), which is
@@ -59,6 +69,11 @@ modules:
       routes:
         - route: ${APPROUTER_HOST}-srv.${CF_LANDSCAPE}
     properties:
+      # Cap the V8 old-space below the 2G container (leaves ~512M for non-heap:
+      # native buffers, code, stacks) so V8 GCs hard instead of the container
+      # OOM-killing the process. Without this, Node's heap ceiling is set low and
+      # a heavy SmartAgent request hits it before the container limit.
+      NODE_OPTIONS: '--max-old-space-size=1536'
       # LLM Agent Configuration (values from .mtaext via global parameters)
       LLM_AGENT_PROVIDER: ${LLM_AGENT_PROVIDER}
       LLM_AGENT_MODEL: ${LLM_AGENT_MODEL}
