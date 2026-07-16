@@ -227,6 +227,18 @@ export async function createAgentMcpServerForRequest(
             exposition,
           },
           trace: { traceId: sessionId },
+          // Surface skill selection on the planner path (chat has its own
+          // sessionLogger; execute_step had none, so skill matching was invisible).
+          sessionLogger: {
+            logStep(name: string, data: unknown) {
+              if (
+                name === 'skills_selected' ||
+                name === 'skill_select_rag_fallback'
+              ) {
+                log.info(name, { destination: targetDestination, data });
+              }
+            },
+          },
         };
 
         const conn = connection;

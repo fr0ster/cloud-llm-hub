@@ -772,6 +772,8 @@ export async function handleChatCompletions(
         logStep(name: string, data: unknown) {
           if (
             name === 'tools_selected' ||
+            name === 'skills_selected' ||
+            name === 'skill_select_rag_fallback' ||
             name.startsWith('rag_query') ||
             name === 'classification_skipped' ||
             name === 'tool_select_rag_fallback' ||
