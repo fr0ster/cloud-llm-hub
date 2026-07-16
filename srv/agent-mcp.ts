@@ -48,6 +48,8 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'Roles. The agent is a capable ABAP executor: it knows the system and selects the right MCP tools by analysing your request, but it does NOT plan, keeps NO state between calls, and cannot adjust based on earlier results. YOU are the planner and controller.',
   '',
+  'Two kinds of knowledge — keep them apart. GENERAL ABAP knowledge (the language, RAP, CDS, DDIC, the patterns) is yours to bring: if your client supports skills, load `sap-abap` from the `sap-skills` marketplace (invoke it as `sap-abap:sap-abap`) — that exact one, the marketplace ships ~33 similarly named SAP plugins (`sap-abap-cds`, `sap-sqlscript`, `sap-cap-capire` …) which are not it. CONCRETE knowledge about THIS system — what actually exists in it, how it really behaves, which tool reaches it — belongs to the executor, not to you. So use the skill to decide WHAT to build and to write any source you hand over; never use it to prescribe HOW the executor should reach the system.',
+  '',
   'ONE object per step — keep every step MINIMAL. Each call is an isolated unit of work with its own connection and its own executor session, so one object = one step = one call. NEVER batch several objects into a single step: a long step can exceed the client timeout, and a step cut mid-flight leaves objects created-but-INACTIVE and LOCKED by the orphaned session — which then blocks every later attempt to activate them.',
   '',
   'Parallel is allowed — sequencing is only for real dependencies. Steps that do not depend on each other’s result MAY be dispatched in parallel; only a step that needs a previous step’s outcome waits for it. Do not serialise work that has no dependency between its parts.',
