@@ -43,6 +43,7 @@ import {
   type IRagBackendWriter,
   type IRagEditor,
   NoopDocumentEnricher,
+  type RagMetadata,
   ToolCache,
   TranslatePreprocessor,
   VectorRag,
@@ -107,6 +108,17 @@ function getToolIntentCache(): typeof toolIntentCache {
 export class ExpositionFilteringRag implements IRag, IRagEditor {
   constructor(private inner: IRag) {}
 
+  // Skill ids (`skill:<name>`) already vectorized into THIS shared store. The
+  // llm-agent builder re-runs its skill-vectorization loop on every build(), and
+  // buildAgentForDestination calls build() once per destination against the SAME
+  // shared store — so without this, the 18 skills get re-embedded N times
+  // (VectorRag.upsert embeds first, then idempotent-replaces by id), reintroducing
+  // embedding calls on the deliberately embedding-free cold-start path (v6.21.0).
+  // The text for a given skill id is fixed within a process, so a second upsert of
+  // the same id is pure waste — skip it. delete/clear reset the guard so an edited
+  // skill re-vectorizes.
+  private readonly vectorizedSkillIds = new Set<string>();
+
   async upsert(
     text: string,
     metadata: Record<string, unknown>,
@@ -133,7 +145,52 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
   }
 
   writer(): IRagBackendWriter | undefined {
-    return this.inner.writer?.();
+    const inner = this.inner.writer?.();
+    if (!inner) return undefined;
+    const seen = this.vectorizedSkillIds;
+    // Dedup skill:* re-vectorization (see vectorizedSkillIds above). Everything
+    // else passes straight through.
+    return {
+      async upsertRaw(id, text, metadata, options) {
+        if (id.startsWith('skill:') && seen.has(id)) {
+          return { ok: true as const, value: undefined };
+        }
+        const res = await inner.upsertRaw(id, text, metadata, options);
+        if (res.ok && id.startsWith('skill:')) seen.add(id);
+        return res;
+      },
+      async deleteByIdRaw(id, options) {
+        if (id.startsWith('skill:')) seen.delete(id);
+        return inner.deleteByIdRaw(id, options);
+      },
+      ...(inner.clearAll && {
+        clearAll: async () => {
+          seen.clear();
+          // biome-ignore lint/style/noNonNullAssertion: guarded by the spread condition
+          return inner.clearAll!();
+        },
+      }),
+      ...(inner.upsertPrecomputedRaw && {
+        upsertPrecomputedRaw: async (
+          id: string,
+          text: string,
+          vector: number[],
+          metadata: RagMetadata,
+          options?: CallOptions,
+        ) => {
+          // biome-ignore lint/style/noNonNullAssertion: guarded by the spread condition
+          const res = await inner.upsertPrecomputedRaw!(
+            id,
+            text,
+            vector,
+            metadata,
+            options,
+          );
+          if (res.ok && id.startsWith('skill:')) seen.add(id);
+          return res;
+        },
+      }),
+    };
   }
 
   async query(
@@ -173,10 +230,20 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // (e.g. a group not mapped in getToolExpositionMap) would bypass role-based
     // filtering and reach every role. Every exposed tool must carry an exposition.
     const allowed = new Set(allowedExpositions);
-    const filtered = result.value.filter(
-      (r) =>
-        !!r.metadata.exposition && allowed.has(r.metadata.exposition as string),
-    );
+    const filtered = result.value.filter((r) => {
+      // Skills are instruction TEXT, not callable tools. `exposition` gates tool
+      // ACCESS; a skill cannot be invoked, so role-filtering it would only hide
+      // rules while changing nothing about what the caller may do. The builder
+      // upserts them with empty metadata (`upsertRaw('skill:<name>', text, {})`),
+      // so without this they would all be dropped and skill injection would
+      // silently do nothing. Narrow on purpose: ONLY the `skill:` prefix — an
+      // untagged TOOL must still be dropped (the v6.22.0 bypass fix).
+      const id = r.metadata.id;
+      if (typeof id === 'string' && id.startsWith('skill:')) return true;
+      return (
+        !!r.metadata.exposition && allowed.has(r.metadata.exposition as string)
+      );
+    });
 
     if (filtered.length < result.value.length) {
       log.debug('RAG tool search filtered by exposition', {
@@ -315,6 +382,7 @@ import {
 } from './lib/btp-destinations';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
+import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
 import { CollectionRegistry } from './rag-collections';
 
 /**
@@ -1701,6 +1769,14 @@ async function buildAgentForDestination(
 
   // Tools RAG store for MCP tool selection (auto-vectorized)
   builder.setToolsRag(toolsRag);
+
+  // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
+  // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
+  // injects the matched skill's body into the system message. Wired here (agent
+  // level), so chat and execute_step behave identically.
+  const skillsPool = buildSkillsPool();
+  builder.withSkillManager(skillsPool);
+  await logSkillsPool(skillsPool);
 
   // Share embedder across all RAG queries
   if (sharedEmbedder) builder.withEmbedder(sharedEmbedder);
