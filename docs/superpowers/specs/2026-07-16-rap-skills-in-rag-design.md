@@ -126,8 +126,22 @@ preset skills ─┘                                             │
                                                               │
 ExpositionFilteringRag: let skill:* through ◄─────────────────┘
                                                               │
-agent.js: RAG query → skill:* in results → getContent() → injected as context → tool selection
+agent.js hardcoded flow — ONE RAG query, two independent consumers:
+
+  RAG query
+    ├─► tool:*  → tools selected            (agent.js:562)   ─┐
+    └─► skill:* → skillManager.getContent() (agent.js:596)   ─┤
+                                                              ▼
+                                            assemble → skill content appended
+                                            to the system message (agent.js:707)
+                                                              ▼
+                                                     streaming tool loop
 ```
+
+**Skills do NOT influence which tools get selected.** Tools are chosen first (`:562`), skills
+after (`:596`), and the content lands post-assembly (`:707`). Both read the *same* RAG
+results, but independently. (The "skills feed the tool query" wording belongs to the staged
+`DefaultPipeline` — which we do not run.)
 
 Wired at the **agent** level (`agent-manager.ts`), so chat and `execute_step` behave
 identically, with no per-request `deps` hack.
