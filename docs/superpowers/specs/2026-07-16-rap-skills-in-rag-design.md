@@ -105,30 +105,60 @@ Wiring happens at the **agent** level (`agent-manager.ts`), not per handler — 
 | `srv/skills-corpus.ts` | build RAG docs from the skills, ids `skill:<name>` |
 | `srv/agent-manager.ts` | `withSkillManager(...)` + register the skills store |
 
-### Open decision — where the skill docs live
+### Decision — the skill docs get their OWN store
 
-| Option | Pro | Con |
-|---|---|---|
-| **(a) In the shared `tools` store** | no extra RAG query; matches the library's evident intent (it looks for `skill:*` in the tool results) | skills consume slots of `ragQueryK` (prod = 15) meant for tools |
-| **(b) Separate store in `ragStores`** | tools keep their whole K | triggers the fallback path — an extra embed + a re-query of every store, each request |
+A separate store registered in `deps.ragStores`. Settled by reading `agent.js:502`:
 
-Leaning **(a)**: the library plainly expects `skill:*` to appear among the tool results, and
-prod K=15 has room for one or two skills. **Must verify before committing:** that tool
-selection ignores `skill:*` entries rather than trying to call them as tools.
+```js
+const storeEntries = Object.entries(this.deps.ragStores);   // ALL stores
+const originalEmbedding = mkEmbed(combinedActionText);      // embedding is cached
+const ragQueryResults = await Promise.all(storeEntries.map(([name, store]) => ...));
+```
+
+The **initial** query already fans out over **every** store, **each with its own K**, reusing
+one cached embedding. So a separate skills store:
+
+- costs **no extra query** — it rides in the same `Promise.all`
+- costs **no extra embed** — the embedding is cached across stores
+- takes **no `ragQueryK` slots from tools** — K is per store, not shared
+- never reaches the fallback at `agent.js:603` (that fires only when the initial results
+  contain no `skill:*` at all)
+
+Putting skills into the shared `tools` store was considered and rejected: it buys nothing and
+makes skills compete with tools for the same K (prod K=15).
 
 ---
 
-## Skills vs collections — deliberately separate
+## Three separate things — nothing moves
 
-| | Skills | Collections |
+There is an existing structure that must be left intact:
+
+```
+docs/tutorials/rap-bo-book-catalog/skills/   source of truth (16 one-liners + README)
+              │  presets-content-drift.test.ts asserts byte-for-byte equality
+              ▼
+srv/presets/rap-skills/                      shipped mirror, declared in PRESET_PACKS
+                                             seeded per-user, preset:true → opt-in
+```
+
+| | **Product skills** (new) | **Preset packs** (existing) |
 |---|---|---|
-| Location | `srv/skills/` | `srv/presets/` (rap-context) |
-| Nature | **product invariant** — our RAP rules | **user knowledge** — editable, per-user |
-| Lifecycle | versioned in git with the code | seeded per user, opt-in |
-| Reaches executor | always | only if the user enables it (chat only) |
+| Location | `srv/skills/` | `srv/presets/{rap-skills,rap-context}/` |
+| Source of truth | itself | `docs/tutorials/rap-bo-book-catalog/{skills,context}/` |
+| Nature | product invariant — the real rules | tutorial material / user knowledge |
+| Content | full rules (field naming, keys, gotchas) | one-line task hooks |
+| Delivery | always, via `deps.ragStores` + skill manager | seeded per user, opt-in, chat only |
+| Versioned | in git with the code | in git, mirrored by a drift test |
 
-Not merged. `srv/presets/rap-context/` keeps working unchanged. The 16 stubs move
-`srv/presets/rap-skills/` → `srv/skills/` and get real content.
+**The 16 preset stubs do NOT move and are NOT edited.** An earlier draft of this spec said
+"move `srv/presets/rap-skills/` → `srv/skills/`"; that was wrong. It would have broken
+`PRESET_PACKS` (`srv/presets.ts:23`), `presets.test.ts:49`, and the drift test
+(`presets-content-drift.test.ts:5`), and it would have dragged the tutorial into a change
+that has nothing to do with it.
+
+`srv/skills/` is **new and additive**. The two sets overlap in subject but not in purpose:
+the preset ones are tutorial hooks; the product ones are the rules the executor must follow.
+No existing test changes.
 
 ---
 
@@ -178,9 +208,11 @@ corpus grows.
 ## Testing
 
 - corpus: ids are exactly `skill:<name>` and match the SKILL.md `name`
+- the skills store is registered in `deps.ragStores` (so the initial fan-out query hits it)
+- existing preset tests (`presets.test.ts`, `presets-content-drift.test.ts`) still pass untouched
 - injection: a semantically close prompt puts the right skill's content into context;
   an unrelated prompt does not (assert via the `skills_selected` session-log step)
-- tool selection is unaffected by `skill:*` entries
+- tool selection is unaffected: `skill:*` lives in its own store and is never offered as a tool
 - degradation: embedder/dir failure → no skills, no throw
 - wiring: the built agent exposes a skill manager
 
