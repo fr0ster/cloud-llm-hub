@@ -3,11 +3,11 @@
   "version": "6.22.2",
   "description": "A simple CAP project.",
   "dependencies": {
-    "@mcp-abap-adt/adt-clients": "^7.3.1",
+    "@mcp-abap-adt/adt-clients": "^7.4.0",
     "@mcp-abap-adt/anthropic-llm": "^17.0.0",
     "@mcp-abap-adt/auth-broker": "^1.0.5",
-    "@mcp-abap-adt/connection": "^1.9.1",
-    "@mcp-abap-adt/core": "^8.6.0",
+    "@mcp-abap-adt/connection": "^1.10.0",
+    "@mcp-abap-adt/core": "^8.8.0",
     "@mcp-abap-adt/deepseek-llm": "^17.0.0",
     "@mcp-abap-adt/header-validator": "^0.1.8",
     "@mcp-abap-adt/interfaces": "^9.2.0",
@@ -26,7 +26,6 @@
     "@sap-ai-sdk/orchestration": "^2.10.0",
     "@sap-cloud-sdk/connectivity": "^4.6.0",
     "@sap-cloud-sdk/http-client": "^4.6.0",
-    "zod": "^4.4.3",
     "@sap/cds": "^9.9.1",
     "@sap/xsenv": "^6.2.0",
     "@sap/xssec": "^4.13.0",
@@ -35,7 +34,8 @@
     "express": "^4",
     "https-proxy-agent": "^9.0.0",
     "js-yaml": "^4.1.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
