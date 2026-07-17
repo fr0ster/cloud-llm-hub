@@ -379,7 +379,12 @@ export async function createMCPServerForRequest(
         });
       }
       try {
-        // reset() exists in implementation but not in interface, use type assertion
+        // End the server-side ADT stateful session (releases a left-open
+        // edit-lock), then reset local state. Both exist in the implementation
+        // but not the interface, so use type assertions.
+        await (
+          connection as { closeSession?: () => Promise<void> }
+        ).closeSession?.();
         (connection as { reset?: () => void }).reset?.();
       } catch (err) {
         log.warn('Failed to reset connection during cleanup', {

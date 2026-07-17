@@ -529,7 +529,7 @@ export async function handleChatCompletions(
     // for session-scoped chats, which would fall to the configured default.
     handle = await getSmartAgent(requestedModel, destAfter);
   } catch (err) {
-    resetRequestConnection(requestConnection);
+    await resetRequestConnection(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
     // Propagate the structured destination_unreachable error from getSmartAgent
     // so clients can distinguish "your SAP system isn't reachable" from generic
@@ -1206,7 +1206,7 @@ export async function handleChatCompletions(
     );
   } finally {
     restoreRagStores();
-    resetRequestConnection(requestConnection);
+    await resetRequestConnection(requestConnection);
   }
 }
 
