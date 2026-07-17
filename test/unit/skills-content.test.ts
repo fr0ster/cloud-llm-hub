@@ -23,6 +23,7 @@ const EXPECTED_SKILL_DIRS = [
   'reading-persistent-table',
   'reading-interface-cds-view',
   'reading-bdef',
+  'reading-short-dumps',
 ].sort();
 
 describe('shipped skills', () => {
