@@ -54,20 +54,6 @@ const EXEC_STEP_MAX_CONCURRENCY = 2;
 const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY);
 
 /**
- * Output-token ceiling for the executor on the interface-MCP (`execute_step`)
- * path only. The shared cap (`LLM_AGENT_MAX_TOKENS`) SILENTLY truncates a large
- * result — a big ST22 dump, a wide where-used list — because llm-agent reports
- * no `length`/`max_tokens` stop reason, so nothing flags the cut and it looks
- * like a mysterious mid-response chop. This path is meant to be transparent
- * (whatever the executor produces comes back), so allow a higher, path-specific
- * ceiling. Unset → fall back to the shared config cap (no behaviour change).
- * Set it in the deploy `.mtaext` to the model's practical output ceiling once
- * the provider is confirmed to accept that value.
- */
-const MCP_MAX_TOKENS =
-  Number(process.env.LLM_AGENT_MCP_MAX_TOKENS) || undefined;
-
-/**
  * The contract. Read by the connecting MCP client (the planner/controller) the
  * moment it lists tools — this is what makes the role split self-documenting.
  */
@@ -263,10 +249,6 @@ export async function createAgentMcpServerForRequest(
           stream: false,
           externalTools: [],
           sessionId,
-          // Raise the executor's output cap for this path only. Undefined keeps
-          // the agent's configured default, so the shared cap still applies when
-          // LLM_AGENT_MCP_MAX_TOKENS is unset (no silent-truncation change).
-          ...(MCP_MAX_TOKENS ? { maxTokens: MCP_MAX_TOKENS } : {}),
           ragFilter: {
             namespace: `${userId}:${targetDestination}`,
             exposition,
@@ -304,52 +286,19 @@ export async function createAgentMcpServerForRequest(
           );
         }
 
-        const usage = r.value.usage;
-        // Detect problems the executor may have masked in a "successful" result
-        // so the consumer always learns about them (not just a plausible answer):
-        //  - the run was CUT SHORT at its iteration / tool-call limit (incomplete)
-        //  - the executor returned NO content (the step likely failed / did nothing)
-        const truncated =
-          r.value.stopReason === 'iteration_limit' ||
-          r.value.stopReason === 'tool_call_limit';
-        const emptyContent = !r.value.content?.trim();
-        const isProblem = truncated || emptyContent;
-
+        // Transparent pass-through: return the executor's output VERBATIM — no
+        // PROBLEM banner, no usage footer, no reshaping. This MCP is a thin proxy
+        // to the agent; whatever the agent produced is exactly what the caller
+        // gets. Diagnostics stay server-side in the log below.
         log.info('execute_step done', {
           ok: true,
           destination: targetDestination,
           iterations: r.value.iterations,
           toolCallCount: r.value.toolCallCount,
-          totalTokens: usage?.totalTokens,
+          totalTokens: r.value.usage?.totalTokens,
           stopReason: r.value.stopReason,
-          problem: isProblem || undefined,
         });
-
-        // Surface what the executor spent so the planner can track/budget it,
-        // as a compact footer appended to the answer text.
-        //
-        // NOTE: do NOT return `structuredContent` here. This tool has no
-        // registered outputSchema, and returning structuredContent made SSE
-        // clients / the auth proxy drop the text payload (empty result). Keep
-        // usage in the text footer only.
-        const answer = r.value.content?.trim() || '(no response)';
-
-        // Prepend an unmissable PROBLEM banner (and flag isError) so the consumer
-        // cannot mistake a truncated / empty run for success.
-        let banner = '';
-        if (truncated) {
-          banner = `PROBLEM: the executor stopped at its ${
-            r.value.stopReason === 'iteration_limit' ? 'iteration' : 'tool-call'
-          } limit before finishing — this result is INCOMPLETE and may be unreliable. Do not treat it as success; narrow the step or split it further.\n\n`;
-        } else if (emptyContent) {
-          banner =
-            'PROBLEM: the executor returned no content — the step likely failed or did nothing. Do not treat it as success.\n\n';
-        }
-
-        const footer = usage
-          ? `\n\n---\n_executor usage — tokens: prompt ${usage.promptTokens}, completion ${usage.completionTokens}, total ${usage.totalTokens}; iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount}_`
-          : `\n\n---\n_executor usage — iterations ${r.value.iterations}, tool calls ${r.value.toolCallCount} (token usage not reported by provider)_`;
-        return textResult(banner + answer + footer, isProblem);
+        return textResult(r.value.content ?? '', false);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });
