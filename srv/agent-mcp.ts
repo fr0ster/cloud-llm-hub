@@ -35,7 +35,23 @@ import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
 import { setRequestResponsible } from './lib/responsible';
+import { Semaphore } from './lib/semaphore';
 import { runWithSessionId } from './request-session';
+
+/**
+ * Global cap on concurrent `execute_step` executions. The tool contract lets a
+ * planner dispatch independent steps in parallel; each step is a full SmartAgent
+ * pipeline whose peak memory adds up, so an unbounded fan-out could OOM the
+ * container (observed: 5 parallel domain-creates on a 1 GB container). This
+ * throttles to at most `EXEC_STEP_MAX_CONCURRENCY` running at once — parallel
+ * dispatch still works, the excess just waits its turn in FIFO order. Bounding
+ * concurrency bounds peak memory regardless of how many calls arrive.
+ *
+ * Module-level singleton: the MCP server is rebuilt per request, so the cap must
+ * live here (shared across all requests), not inside the per-request builder.
+ */
+const EXEC_STEP_MAX_CONCURRENCY = 2;
+const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY);
 
 /**
  * The contract. Read by the connecting MCP client (the planner/controller) the
@@ -197,6 +213,15 @@ export async function createAgentMcpServerForRequest(
       },
     },
     async ({ destination, task }: { destination?: string; task: string }) => {
+      // Throttle concurrent executor runs to bound peak memory (see
+      // execStepSemaphore). Parallel dispatch is honoured; the excess waits.
+      if (execStepSemaphore.active >= EXEC_STEP_MAX_CONCURRENCY) {
+        log.info('execute_step queued — concurrency cap reached', {
+          active: execStepSemaphore.active,
+          pending: execStepSemaphore.pending,
+        });
+      }
+      const releaseSlot = await execStepSemaphore.acquire();
       let connection: IAbapConnection | undefined;
       try {
         // Destination from the arg, else the connection's default header.
@@ -319,6 +344,9 @@ export async function createAgentMcpServerForRequest(
           connection as { closeSession?: () => Promise<void> } | undefined
         )?.closeSession?.();
         (connection as { reset?: () => void } | undefined)?.reset?.();
+        // Release the concurrency slot last, after the session is torn down, so
+        // the next queued step starts only once this one's memory is freed.
+        releaseSlot();
       }
     },
   );
