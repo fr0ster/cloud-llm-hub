@@ -204,8 +204,8 @@
     "enriched": "Tool: UpdateDomain\nDescription: Operation: Update, Create. Subject: Domain. Will be useful for updating or creating domain. Update an existing ABAP domain. Locks, updates with provided parameters (complete replacement), unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP domain, create domain, modify domain properties, replace domain data, activate domain changes"
   },
   "DeleteDomain": {
-    "text": "Tool: DeleteDomain\nDescription: Delete an ABAP domain from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteDomain\nDescription: Delete an ABAP domain from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP domain, remove domain from SAP, delete domain object, domain deletion check, delete SAP domain"
+    "text": "Tool: DeleteDomain\nDescription: Delete an ABAP domain from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteDomain\nDescription: Delete an ABAP domain from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP domain, remove domain from SAP, delete domain object, domain deletion check, delete SAP domain"
   },
   "CreateDataElement": {
     "text": "Tool: CreateDataElement\nDescription: Operation: Create. Subject: DataElement. Will be useful for creating data element. Create a new ABAP data element in SAP system. Creates the data element object in initial state.\nParameters: type, properties, required",
@@ -220,8 +220,8 @@
     "enriched": "Tool: UpdateDataElement\nDescription: Operation: Update, Create. Subject: DataElement. Will be useful for updating or creating data element. Update an existing ABAP data element. Locks, updates with provided parameters (complete replacement), unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update data element, create data element, modify ABAP data element, replace data element properties, activate data element"
   },
   "DeleteDataElement": {
-    "text": "Tool: DeleteDataElement\nDescription: Delete an ABAP data element from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteDataElement\nDescription: Delete an ABAP data element from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP data element, remove data element, delete SAP data element, erase data element, delete ABAP object"
+    "text": "Tool: DeleteDataElement\nDescription: Delete an ABAP data element from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteDataElement\nDescription: Delete an ABAP data element from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP data element, remove data element, delete SAP data element, erase data element, delete ABAP object"
   },
   "CreateTransport": {
     "text": "Tool: CreateTransport\nDescription: Create a new ABAP transport request in SAP system for development objects.\nParameters: type, properties, required",
@@ -240,8 +240,8 @@
     "enriched": "Tool: UpdateTable\nDescription: Operation: Update, Create. Subject: Table. Will be useful for updating or creating table. Update DDL source code of an existing ABAP table. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update table data, create new table, modify ABAP table, update DDL source, lock and activate table"
   },
   "DeleteTable": {
-    "text": "Tool: DeleteTable\nDescription: Delete an ABAP table from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteTable\nDescription: Delete an ABAP table from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP table, remove database table, delete SAP table, drop table from system, erase table data"
+    "text": "Tool: DeleteTable\nDescription: Delete an ABAP table from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteTable\nDescription: Delete an ABAP table from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP table, remove database table, delete SAP table, drop table from system, erase table data"
   },
   "CreateStructure": {
     "text": "Tool: CreateStructure\nDescription: Operation: Create. Subject: Structure. Will be useful for creating structure. Create a new ABAP structure in SAP system. Creates the structure object in initial state.\nParameters: type, properties, required",
@@ -256,8 +256,8 @@
     "enriched": "Tool: UpdateStructure\nDescription: Operation: Update, Create. Subject: Structure. Will be useful for updating or creating structure. Update DDL source code of an existing ABAP structure. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update structure, create structure, modify ABAP structure, change DDL source, activate structure"
   },
   "DeleteStructure": {
-    "text": "Tool: DeleteStructure\nDescription: Delete an ABAP structure from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteStructure\nDescription: Delete an ABAP structure from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP structure, remove structure from system, delete data structure, erase ABAP type, delete structure with check"
+    "text": "Tool: DeleteStructure\nDescription: Delete an ABAP structure from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteStructure\nDescription: Delete an ABAP structure from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP structure, remove structure from system, delete data structure, erase ABAP type, delete structure with check"
   },
   "CreateDdl": {
     "text": "Tool: CreateDdl\nDescription: Operation: Create. Subject: DDL source. Will be useful for creating a DDL source. Create a new CDS View or Classic View in SAP system. Creates the DDL source object in initial state. Use UpdateDdl to set DDL source code.\nParameters: type, properties, required",
@@ -272,8 +272,8 @@
     "enriched": "Tool: UpdateDdl\nDescription: Operation: Update, Create. Subject: DDL source. Will be useful for updating or creating a DDL source. Update DDL source code of an existing CDS View or Classic View. Locks, updates, unlocks, and optionally activates. Use CreateDdl to create a new DDL source.\nParameters: type, properties, required\nIntent: update view, create view, modify CDS view, edit classic view, activate view changes"
   },
   "DeleteDdl": {
-    "text": "Tool: DeleteDdl\nDescription: Delete a DDL source from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteDdl\nDescription: Delete a DDL source from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP view, remove SAP view, delete database view, delete view with check, delete view transport request"
+    "text": "Tool: DeleteDdl\nDescription: Delete a DDL source from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteDdl\nDescription: Delete a DDL source from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP view, remove SAP view, delete database view, delete view with check, delete view transport request"
   },
   "CreateServiceDefinition": {
     "text": "Tool: CreateServiceDefinition\nDescription: Operation: Create. Subject: ServiceDefinition. Will be useful for creating service definition. Create a new ABAP service definition in SAP system. Creates the service definition object in initial state.\nParameters: type, properties, required",
@@ -288,8 +288,8 @@
     "enriched": "Tool: UpdateServiceDefinition\nDescription: Operation: Update, Create. Subject: ServiceDefinition. Will be useful for updating or creating service definition. Update source code of an existing ABAP service definition. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update service definition, create service definition, modify ABAP service, change service source code, activate service update"
   },
   "DeleteServiceDefinition": {
-    "text": "Tool: DeleteServiceDefinition\nDescription: Delete an ABAP service definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteServiceDefinition\nDescription: Delete an ABAP service definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP service definition, remove SAP service, delete service from system, service deletion check, delete SAP service object"
+    "text": "Tool: DeleteServiceDefinition\nDescription: Delete an ABAP service definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteServiceDefinition\nDescription: Delete an ABAP service definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP service definition, remove SAP service, delete service from system, service deletion check, delete SAP service object"
   },
   "CreateServiceBinding": {
     "text": "Tool: CreateServiceBinding\nDescription: Operation: Create. Subject: ServiceBinding. Will be useful for creating service binding. Create a new ABAP service binding in SAP system. Creates the service binding object in initial state.\nParameters: type, properties, required",
@@ -328,8 +328,8 @@
     "enriched": "Tool: UpdateClass\nDescription: Operation: Update, Create. Subject: Class. Will be useful for updating or creating class. Update source code of an existing ABAP class. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP class, create new class, modify class source code, lock and unlock class, activate class"
   },
   "DeleteClass": {
-    "text": "Tool: DeleteClass\nDescription: Delete an ABAP class from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteClass\nDescription: Delete an ABAP class from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP class, remove class from system, delete SAP class, class deletion check, delete class with transport"
+    "text": "Tool: DeleteClass\nDescription: Delete an ABAP class from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteClass\nDescription: Delete an ABAP class from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP class, remove class from system, delete SAP class, class deletion check, delete class with transport"
   },
   "CreateUnitTest": {
     "text": "Tool: CreateUnitTest\nDescription: Start an ABAP Unit test run for provided class test definitions. Returns run_id for status/result queries.\nParameters: type, properties, required",
@@ -444,8 +444,8 @@
     "enriched": "Tool: UpdateProgram\nDescription: Operation: Update, Create. Subject: Program. Will be useful for updating or creating program. Update source code of an existing ABAP program. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP program, create new program, modify program source, program code update, activate program"
   },
   "DeleteProgram": {
-    "text": "Tool: DeleteProgram\nDescription: Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteProgram\nDescription: Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP program, remove SAP program, delete code object, erase ABAP report, delete SAP report"
+    "text": "Tool: DeleteProgram\nDescription: Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteProgram\nDescription: Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP program, remove SAP program, delete code object, erase ABAP report, delete SAP report"
   },
   "CreateInterface": {
     "text": "Tool: CreateInterface\nDescription: Operation: Create. Subject: Interface. Will be useful for creating interface. Create a new ABAP interface in SAP system. Creates the interface object in initial state.\nParameters: type, properties, required",
@@ -460,8 +460,8 @@
     "enriched": "Tool: UpdateInterface\nDescription: Operation: Update, Create. Subject: Interface. Will be useful for updating or creating interface. Update source code of an existing ABAP interface. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update ABAP interface, create interface, modify interface code, activate interface, lock and unlock interface"
   },
   "DeleteInterface": {
-    "text": "Tool: DeleteInterface\nDescription: Delete an ABAP interface from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteInterface\nDescription: Delete an ABAP interface from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP interface, remove interface from system, delete SAP interface, interface deletion check, delete interface with transport"
+    "text": "Tool: DeleteInterface\nDescription: Delete an ABAP interface from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteInterface\nDescription: Delete an ABAP interface from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP interface, remove interface from system, delete SAP interface, interface deletion check, delete interface with transport"
   },
   "CreateFunctionGroup": {
     "text": "Tool: CreateFunctionGroup\nDescription: Create a new ABAP function group in SAP system. Function groups serve as containers for function modules. Uses stateful session for proper lock management.\nParameters: type, properties, required",
@@ -476,8 +476,8 @@
     "enriched": "Tool: UpdateFunctionGroup\nDescription: Update metadata (description) of an existing ABAP function group. Function groups are containers for function modules and don't have source code to update directly. Uses stateful session with proper lock/unlock mechanism.\nParameters: type, properties, required\nIntent: update function group description, modify function group metadata, change function group info, edit function group details, update ABAP function group"
   },
   "DeleteFunctionGroup": {
-    "text": "Tool: DeleteFunctionGroup\nDescription: Delete an ABAP function group from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteFunctionGroup\nDescription: Delete an ABAP function group from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete function group, remove ABAP function group, delete SAP function group, erase function group, delete function module group"
+    "text": "Tool: DeleteFunctionGroup\nDescription: Delete an ABAP function group from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteFunctionGroup\nDescription: Delete an ABAP function group from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete function group, remove ABAP function group, delete SAP function group, erase function group, delete function module group"
   },
   "CreateFunctionModule": {
     "text": "Tool: CreateFunctionModule\nDescription: Operation: Create. Subject: FunctionModule. Will be useful for creating function module. Create a new ABAP function module within an existing function group. Creates the function module in initial state.\nParameters: type, properties, required",
@@ -492,8 +492,8 @@
     "enriched": "Tool: UpdateFunctionModule\nDescription: Operation: Update, Create. Subject: FunctionModule. Will be useful for updating or creating function module. Update source code of an existing ABAP function module. Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update function module, create function module, modify ABAP function, change function module code, activate function module"
   },
   "DeleteFunctionModule": {
-    "text": "Tool: DeleteFunctionModule\nDescription: Delete an ABAP function module from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteFunctionModule\nDescription: Delete an ABAP function module from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete function module, remove ABAP function, delete SAP FM, erase function module, delete ABAP code"
+    "text": "Tool: DeleteFunctionModule\nDescription: Delete an ABAP function module from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteFunctionModule\nDescription: Delete an ABAP function module from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete function module, remove ABAP function, delete SAP FM, erase function module, delete ABAP code"
   },
   "CreateFunctionInclude": {
     "text": "Tool: CreateFunctionInclude\nDescription: Operation: Create. Subject: FunctionInclude. Will be useful for creating function group include. Create a new ABAP include within an existing function group. Creates the include in initial state.\nParameters: type, properties, required",
@@ -504,8 +504,8 @@
     "enriched": "Tool: UpdateFunctionInclude\nDescription: Operation: Update. Subject: FunctionInclude. Will be useful for updating a function group include. Update source code of an existing ABAP function group include.\nParameters: type, properties, required\nIntent: update function include, modify function group include, change ABAP include code, edit function include source, update ABAP function code"
   },
   "DeleteFunctionInclude": {
-    "text": "Tool: DeleteFunctionInclude\nDescription: Delete an ABAP function group include from the SAP system. Note: function module includes must be deleted via the Function Builder; the backend rejects such deletions. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteFunctionInclude\nDescription: Delete an ABAP function group include from the SAP system. Note: function module includes must be deleted via the Function Builder; the backend rejects such deletions. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete function group include, remove ABAP include, delete SAP function include, erase function group code, delete ABAP code snippet"
+    "text": "Tool: DeleteFunctionInclude\nDescription: Delete an ABAP function group include from the SAP system. Note: function module includes must be deleted via the Function Builder; the backend rejects such deletions. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteFunctionInclude\nDescription: Delete an ABAP function group include from the SAP system. Note: function module includes must be deleted via the Function Builder; the backend rejects such deletions. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete function group include, remove ABAP include, delete SAP function include, erase function group code, delete ABAP code snippet"
   },
   "CreateBehaviorDefinition": {
     "text": "Tool: CreateBehaviorDefinition\nDescription: Operation: Create. Subject: BehaviorDefinition. Will be useful for creating behavior definition. Create a new ABAP Behavior Definition (BDEF) in SAP system. Creates the behavior definition object in initial state.\nParameters: type, properties, required",
@@ -520,8 +520,8 @@
     "enriched": "Tool: UpdateBehaviorDefinition\nDescription: Operation: Update, Create. Subject: BehaviorDefinition. Will be useful for updating or creating behavior definition. Update source code of an existing ABAP Behavior Definition (BDEF). Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update behavior definition, create behavior definition, modify ABAP BDEF, edit behavior source code, activate behavior definition"
   },
   "DeleteBehaviorDefinition": {
-    "text": "Tool: DeleteBehaviorDefinition\nDescription: Delete an ABAP behavior definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteBehaviorDefinition\nDescription: Delete an ABAP behavior definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP behavior definition, remove behavior from SAP, delete behavior with check, delete SAP behavior object"
+    "text": "Tool: DeleteBehaviorDefinition\nDescription: Delete an ABAP behavior definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteBehaviorDefinition\nDescription: Delete an ABAP behavior definition from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP behavior definition, remove behavior from SAP, delete behavior with check, delete SAP behavior object"
   },
   "CreateBehaviorImplementation": {
     "text": "Tool: CreateBehaviorImplementation\nDescription: Create a new ABAP behavior implementation class for a behavior definition. Creates the object in initial state. Use UpdateBehaviorImplementation to set implementation code afterwards.\nParameters: type, properties, required",
@@ -536,8 +536,8 @@
     "enriched": "Tool: UpdateBehaviorImplementation\nDescription: Update source code of an existing ABAP behavior implementation class. Updates both main source (with FOR BEHAVIOR OF clause) and implementations include. Uses stateful session with proper lock/unlock mechanism.\nParameters: type, properties, required\nIntent: update ABAP behavior implementation, modify behavior source code, change behavior class, edit FOR BEHAVIOR OF clause, update implementation include"
   },
   "DeleteBehaviorImplementation": {
-    "text": "Tool: DeleteBehaviorImplementation\nDescription: Delete an ABAP behavior implementation from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteBehaviorImplementation\nDescription: Delete an ABAP behavior implementation from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP behavior implementation, remove behavior code, delete SAP behavior, check before delete, transport request deletion"
+    "text": "Tool: DeleteBehaviorImplementation\nDescription: Delete an ABAP behavior implementation from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteBehaviorImplementation\nDescription: Delete an ABAP behavior implementation from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP behavior implementation, remove behavior code, delete SAP behavior, check before delete, transport request deletion"
   },
   "CreateMetadataExtension": {
     "text": "Tool: CreateMetadataExtension\nDescription: Operation: Create. Subject: MetadataExtension. Will be useful for creating metadata extension. Create a new ABAP Metadata Extension (DDLX) in SAP system. Creates the metadata extension object in initial state.\nParameters: type, properties, required",
@@ -552,8 +552,8 @@
     "enriched": "Tool: UpdateMetadataExtension\nDescription: Operation: Update, Create. Subject: MetadataExtension. Will be useful for updating or creating metadata extension. Update source code of an existing ABAP Metadata Extension (DDLX). Locks, updates, unlocks, and optionally activates.\nParameters: type, properties, required\nIntent: update metadata extension, create metadata extension, modify ABAP metadata, edit DDLX source, activate metadata changes"
   },
   "DeleteMetadataExtension": {
-    "text": "Tool: DeleteMetadataExtension\nDescription: Delete an ABAP metadata extension from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteMetadataExtension\nDescription: Delete an ABAP metadata extension from the SAP system. Includes deletion check before actual deletion. Transport request optional for $TMP objects.\nParameters: type, properties, required\nIntent: delete ABAP metadata extension, remove metadata extension, delete metadata object, delete SAP metadata, remove ABAP extension"
+    "text": "Tool: DeleteMetadataExtension\nDescription: Delete an ABAP metadata extension from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteMetadataExtension\nDescription: Delete an ABAP metadata extension from the SAP system. Includes deletion check before actual deletion. Transport request optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP metadata extension, remove metadata extension, delete metadata object, delete SAP metadata, remove ABAP extension"
   },
   "CheckBehaviorDefinition": {
     "text": "Tool: CheckBehaviorDefinition\nDescription: Perform syntax check on an ABAP behavior definition (BDEF). Returns syntax errors, warnings, and messages.\nParameters: type, properties, required",
@@ -765,7 +765,7 @@
   },
   "HandlerDumpList": {
     "text": "Tool: HandlerDumpList\nDescription: Runtime dump list. object_type: not used. Required: none. Optional: user, top, from, to. Response: JSON.\nParameters: type, properties, required",
-    "enriched": "Tool: HandlerDumpList\nDescription: Runtime dump list. object_type: not used. Required: none. Optional: user, top, from, to. Response: JSON.\nParameters: type, properties, required\nIntent: runtime dump list, show error dumps, list program crashes, view dump reports, runtime error logs"
+    "enriched": "Tool: HandlerDumpList\nDescription: Runtime dump list. object_type: not used. Required: none. Optional: user, top, from, to. Response: JSON.\nParameters: type, properties, required\nIntent: list runtime dumps, short dumps, ST22 dump list, latest dumps, dumps by user, program crashes, runtime errors, error dump overview"
   },
   "HandlerDumpView": {
     "text": "Tool: HandlerDumpView\nDescription: Runtime dump view. object_type: not used. Required: dump_id*. Optional: view(default|summary|formatted). Response: JSON.\nParameters: type, properties, required",
@@ -845,7 +845,7 @@
   },
   "RuntimeListFeeds": {
     "text": "Tool: RuntimeListFeeds\nDescription: [runtime] List available ADT runtime feeds or read a specific feed type. Feed types: dumps, system_messages, gateway_errors. Without feed_type returns available feed descriptors.\nParameters: type, properties, required",
-    "enriched": "Tool: RuntimeListFeeds\nDescription: [runtime] List available ADT runtime feeds or read a specific feed type. Feed types: dumps, system_messages, gateway_errors. Without feed_type returns available feed descriptors.\nParameters: type, properties, required\nIntent: list ADT runtime feeds, show available feeds, read runtime feed data, get dumps feed, get system messages feed"
+    "enriched": "Tool: RuntimeListFeeds\nDescription: [runtime] List available ADT runtime feeds or read a specific feed type. Feed types: dumps, system_messages, gateway_errors. Without feed_type returns available feed descriptors.\nParameters: type, properties, required\nIntent: list ADT runtime feeds, show available feeds, short dumps, runtime errors, ST22 dumps, latest dumps, dumps caused by a user, system messages, SM02 alerts, gateway errors, IWFND error log feed"
   },
   "RuntimeListSystemMessages": {
     "text": "Tool: RuntimeListSystemMessages\nDescription: [runtime] List SM02 system messages. Returns structured entries with id, title, text, severity, validity period, and author.\nParameters: type, properties, required",
@@ -920,8 +920,8 @@
     "enriched": "Tool: GetPackageTree\nDescription: [high-level] Retrieve complete package tree structure including subpackages and objects. Returns hierarchical tree with object names, types, and descriptions.\nParameters: type, properties, required\nIntent: package tree structure, show subpackages, list package objects, hierarchical package view, retrieve package hierarchy"
   },
   "SearchObject": {
-    "text": "Tool: SearchObject\nDescription: [read-only] Search ABAP repository by object name or wildcard pattern (e.g. 'ZDEMO*'). Answers: \"find object X\", \"does X exist\", \"list objects matching...\", \"search for program/class/table by name\". Supports all repository object types — optionally filter by type (PROG, CLAS, INTF, DEVC, TABL, DDLS, DTEL, FUGR, SRVD, SRVB, BDEF, DDLX, etc.).\nParameters: type, properties, required",
-    "enriched": "Tool: SearchObject\nDescription: [read-only] Search ABAP repository by object name or wildcard pattern (e.g. 'ZDEMO*'). Answers: \"find object X\", \"does X exist\", \"list objects matching...\", \"search for program/class/table by name\". Supports all repository object types — optionally filter by type (PROG, CLAS, INTF, DEVC, TABL, DDLS, DTEL, FUGR, SRVD, SRVB, BDEF, DDLX, etc.).\nParameters: type, properties, required\nIntent: search ABAP object by name, find ABAP program class table, check if object exists, list objects by pattern, search repository objects"
+    "text": "Tool: SearchObject\nDescription: [read-only] Search ABAP repository by object name or wildcard pattern (e.g. 'Z*'). Answers: \"find object X\", \"does X exist\", \"list objects matching...\", \"search for program/class/table by name\". Supports all repository object types — optionally filter by type (PROG, CLAS, INTF, DEVC, TABL, DDLS, DTEL, FUGR, SRVD, SRVB, BDEF, DDLX, etc.).\nParameters: type, properties, required",
+    "enriched": "Tool: SearchObject\nDescription: [read-only] Search ABAP repository by object name or wildcard pattern (e.g. 'Z*'). Answers: \"find object X\", \"does X exist\", \"list objects matching...\", \"search for program/class/table by name\". Supports all repository object types — optionally filter by type (PROG, CLAS, INTF, DEVC, TABL, DDLS, DTEL, FUGR, SRVD, SRVB, BDEF, DDLX, etc.).\nParameters: type, properties, required\nIntent: search ABAP object by name, find ABAP program class table, check if object exists, list objects by pattern, search repository objects"
   },
   "SearchSource": {
     "text": "Tool: SearchSource\nDescription: [read-only] Search ABAP source text inside one or more packages (programs, function groups, classes). Onprem-only (cloud lacks an indexed source-search endpoint). `packages` accepts `*` masks (Z*, ZFI_*, /NS/Z*) alongside exact names; mask resolution is best-effort and scoped to the ADT repository-search result window — there is no guarantee that every matching package is scanned. If you need certainty, pass concrete package names. When using masks, narrow the mask itself and use `object_types`, `object_filter`, and `max_objects` as scan-target controls that apply after package resolution. Comments are searched by default; set exclude_comments=true to drop col-1 `*` and full-line `\"` comments. The `version` parameter affects PROG and CLAS main include reads only — FUGR subinclude reads always go against the active version (the include endpoint exposes no version selector). `truncated.by_object_cap` means at least one object had MORE hits than `max_hits_per_object`, so that object's hits were capped — it is NOT a limit on the number of objects scanned. The object-count limit is `max_objects` (which sets `truncated.by_max_objects`). To avoid `by_object_cap`, raise `max_hits_per_object`. `concurrency` is capped at 16 per call. Run only ONE SearchSource per destination at a time — multiple parallel SearchSource calls against the same SAP system saturate the scan backend and can make all of them time out. Prefer combining terms into a single call over parallel calls.\nParameters: query, query2, exclude, packages, include_subpackages, object_filter, object_types, exclude_comments, max_hits_per_object, emit_no_hits, max_objects, concurrency, version, time_budget_ms",
@@ -956,8 +956,8 @@
     "enriched": "Tool: UpdateMessageClass\nDescription: Operation: Update. Subject: Message Class (MSAG). Update a message class header (e.g. its description). To add or change individual messages use CreateMessageClassMessage / UpdateMessageClassMessage.\nParameters: type, properties, required\nIntent: update message class, change message class description, edit MSAG header, modify message class info"
   },
   "DeleteMessageClass": {
-    "text": "Tool: DeleteMessageClass\nDescription: Delete an ABAP message class (MSAG) and all of its messages from the SAP system. Includes a deletion check before the actual deletion. Transport request required for transportable objects, optional for local ($TMP).\nParameters: type, properties, required",
-    "enriched": "Tool: DeleteMessageClass\nDescription: Delete an ABAP message class (MSAG) and all of its messages from the SAP system. Includes a deletion check before the actual deletion. Transport request required for transportable objects, optional for local ($TMP).\nParameters: type, properties, required\nIntent: delete ABAP message class, remove message class, delete MSAG, delete messages, delete SAP message class"
+    "text": "Tool: DeleteMessageClass\nDescription: Delete an ABAP message class (MSAG) and all of its messages from the SAP system. Includes a deletion check before the actual deletion. Transport request required for transportable objects, optional for local objects.\nParameters: type, properties, required",
+    "enriched": "Tool: DeleteMessageClass\nDescription: Delete an ABAP message class (MSAG) and all of its messages from the SAP system. Includes a deletion check before the actual deletion. Transport request required for transportable objects, optional for local objects.\nParameters: type, properties, required\nIntent: delete ABAP message class, remove message class, delete MSAG, delete messages, delete SAP message class"
   },
   "GetMessageClassMessage": {
     "text": "Tool: GetMessageClassMessage\nDescription: Retrieve a single message (by number) from an ABAP message class (MSAG/T100). Returns msgno, msgtext, self-explanatory flag and description.\nParameters: type, properties, required",
