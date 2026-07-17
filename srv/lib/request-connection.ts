@@ -163,7 +163,15 @@ export async function establishRequestConnection(
   }
 }
 
-/** Best-effort release of a per-request connection (call in `finally`). */
-export function resetRequestConnection(connection?: IAbapConnection): void {
+/** Best-effort release of a per-request connection (call in `finally`).
+ * Ends the server-side ADT stateful session first (releases any edit-lock a
+ * mutating tool left open — the "currently editing"/inactive-object symptom),
+ * then clears local state. Never throws. */
+export async function resetRequestConnection(
+  connection?: IAbapConnection,
+): Promise<void> {
+  await (
+    connection as { closeSession?: () => Promise<void> } | undefined
+  )?.closeSession?.();
   (connection as { reset?: () => void } | undefined)?.reset?.();
 }

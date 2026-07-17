@@ -30,6 +30,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private criticalSectionDepth = 0;
   /** True while a lock→modify→unlock chain must not be cut by a short timeout. */
   private inCriticalSection = false;
+  /** True once this connection has run any stateful request — so cleanup knows
+   * it must terminate the server-side ADT session (which may hold an edit-lock). */
+  private wentStateful = false;
 
   constructor(
     private readonly config: SapConfig,
@@ -49,10 +52,61 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   setSessionType(type: 'stateless' | 'stateful'): void {
+    if (type === 'stateful') this.wentStateful = true;
     this.sessionType = type;
     logger.debug(`Session type set to: ${type}`, {
       sessionId: this.sessionId?.substring(0, 8),
     });
+  }
+
+  /**
+   * Terminate the server-side ADT stateful session, releasing any edit-lock it
+   * still holds.
+   *
+   * An ADT mutating flow (lock → create → update → unlock → activate) runs in a
+   * STATEFUL session bound to `sap-adt-connection-id`. ADT keeps the object
+   * "being edited" for the LIFETIME OF THAT SESSION — and nothing here ended it,
+   * so the object was left inactive and reporting "User X is currently editing"
+   * (an ADT session lock, NOT an SM12 enqueue) until the session timed out
+   * server-side. That is why a combined create+activate could leave the object
+   * inactive+locked, and why a separate later activate (fresh session) worked.
+   *
+   * Sending ONE stateless request for the same `sap-adt-connection-id` tells ADT
+   * to drop the stateful session now, freeing the (already-persisted, inactive)
+   * object for activation. Best-effort: never throws — this is a cleanup path.
+   */
+  async closeSession(): Promise<void> {
+    if (!this.wentStateful) return;
+    this.wentStateful = false;
+    this.sessionType = 'stateless';
+    try {
+      const baseUrl = await this.getBaseUrl();
+      this.enforceClientCookie();
+      const cookie = this.getCookieHeader();
+      await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: 'GET',
+          url: `${baseUrl}/sap/bc/adt/compatibility/graph`,
+          timeout: 12_000,
+          headers: {
+            ...(await this.getAuthHeaders()),
+            'sap-adt-connection-id': this.sessionId,
+            // Explicit stateless ends the stateful session for this connection-id.
+            'x-sap-adt-sessiontype': 'stateless',
+            ...(cookie ? { Cookie: cookie } : {}),
+          },
+        },
+      );
+      logger.debug('ADT stateful session closed', {
+        sessionId: this.sessionId?.substring(0, 8),
+      });
+    } catch (err) {
+      // Never let session cleanup break the request flow.
+      logger.warn('closeSession (ADT session release) failed', {
+        error: String(err),
+      });
+    }
   }
 
   /**

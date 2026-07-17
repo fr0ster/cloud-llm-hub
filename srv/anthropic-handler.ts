@@ -114,7 +114,7 @@ export async function handleAnthropicMessages(
   try {
     handle = await getSmartAgent(undefined, destination);
   } catch (err) {
-    resetRequestConnection(requestConnection);
+    await resetRequestConnection(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
     res.status(503).json({
@@ -183,6 +183,6 @@ export async function handleAnthropicMessages(
       res.status(500).json(formatted);
     }
   } finally {
-    resetRequestConnection(requestConnection);
+    await resetRequestConnection(requestConnection);
   }
 }
