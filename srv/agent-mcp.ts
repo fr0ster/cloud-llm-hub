@@ -54,6 +54,20 @@ const EXEC_STEP_MAX_CONCURRENCY = 2;
 const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY);
 
 /**
+ * Output-token ceiling for the executor on the interface-MCP (`execute_step`)
+ * path only. The shared cap (`LLM_AGENT_MAX_TOKENS`) SILENTLY truncates a large
+ * result — a big ST22 dump, a wide where-used list — because llm-agent reports
+ * no `length`/`max_tokens` stop reason, so nothing flags the cut and it looks
+ * like a mysterious mid-response chop. This path is meant to be transparent
+ * (whatever the executor produces comes back), so allow a higher, path-specific
+ * ceiling. Unset → fall back to the shared config cap (no behaviour change).
+ * Set it in the deploy `.mtaext` to the model's practical output ceiling once
+ * the provider is confirmed to accept that value.
+ */
+const MCP_MAX_TOKENS =
+  Number(process.env.LLM_AGENT_MCP_MAX_TOKENS) || undefined;
+
+/**
  * The contract. Read by the connecting MCP client (the planner/controller) the
  * moment it lists tools — this is what makes the role split self-documenting.
  */
@@ -249,6 +263,10 @@ export async function createAgentMcpServerForRequest(
           stream: false,
           externalTools: [],
           sessionId,
+          // Raise the executor's output cap for this path only. Undefined keeps
+          // the agent's configured default, so the shared cap still applies when
+          // LLM_AGENT_MCP_MAX_TOKENS is unset (no silent-truncation change).
+          ...(MCP_MAX_TOKENS ? { maxTokens: MCP_MAX_TOKENS } : {}),
           ragFilter: {
             namespace: `${userId}:${targetDestination}`,
             exposition,
