@@ -126,12 +126,17 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   (`srv/agent-mcp.ts`). Scoping the buffer to that session would miss on the very next
   `execute_step` from the same planner — so it **must not** be the owner.
   - **Principal is an opaque `principalHash`, never raw identities.**
-    `principalHash = hash(cds.context.user.id + authMode + resolvedSapIdentity)`.
-    `resolvedSapIdentity` is the SAP user the fetch **actually runs as** — for basic / on-prem it is
-    `x-sap-login`; for a destination **service user** (OAuth2 client-credentials) it is that service
-    user; for **principal propagation** (SAML bearer) it is the propagated SAP user — read from the
-    **resolved** connection auth, not the raw header. `authMode` distinguishes the same login reached
-    via a different auth path. **Raw user id / SAP login never appear in a key, file, or log** — the
+    `principalHash = hash(cds.context.user.id + authMode + resolvedSapIdentity + resolvedDestination)`.
+    `cds.context.user.id` (JWT-derived) is **always present** and is the anchor. `resolvedSapIdentity`
+    is added **only when the connection actually exposes it** — for basic / on-prem it is
+    `x-sap-login`; for a destination **service user** it is the destination `User` property
+    (`srv/connections/destinationResolver.ts`, which reads `User` only for BasicAuth). For
+    **principal propagation** (SAML bearer) the SAP user is derived at SAP from the JWT and is **not
+    known client-side without a backend round-trip / claim parsing**, so `resolvedSapIdentity` is
+    simply **absent** — isolation then rests on `cds.context.user.id + authMode + resolvedDestination`
+    (optionally the JWT `sub`), which already identify the caller and the propagated target. So the
+    hash is **always computable** without discovering the SAP user. `authMode` distinguishes the same
+    login reached via a different auth path. **Raw user id / SAP login never appear in a key, file, or log** — the
     key is the hash only (consistent with the credential masking added in v6.14.2).
   - **Bias to narrow, never broad.** A missed cache-hit just re-fetches (cheap; immutable) — a
     wrong-principal hit **leaks** an access-controlled dump. So a shared SAP service user is still
@@ -171,6 +176,12 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   executed by the caller) and is therefore not the vehicle for a server-executed tool. One
   well-outcome-framed tool ≠ the section-tool explosion decision 5 forbids.
 
+- **Log hygiene (small Phase 1 task).** The "raw identities never in logs" rule is currently
+  violated: `request-connection` writes `username: sapLogin || '(destination-auth)'` — a raw SAP
+  login in a **structured log field**, not covered by the v6.14.2 header masking
+  (`srv/lib/request-connection.ts`). Mask/drop it (log `principalHash` or `'user-basic'` instead) so
+  the privacy rule holds system-wide, not only inside the buffer.
+
 **Outcome:** "planner delegates → gets an analysable dump" is closed **via the `analyze_dump`
 tool**, with no core change and one (not N) added tools.
 
@@ -192,6 +203,10 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 - **Semantic RAG for the unstructured tail only** (huge variable/memory sections, "where is X
   mentioned") — best-effort supplement, explicitly **not** a recall guarantee.
 - **Memoisation** of prior conclusions (`prompt → result`) in the principal-scoped RAG (or the genuine chat session, when present).
+- **Principal-namespaced RAG is a prerequisite for the two above.** The current RAG path namespaces
+  by `${userId}:${destination}` (`srv/agent-mcp.ts`, `srv/openai-handler.ts`), **not** `principalHash`
+  — so Phase 3 must introduce a new principal namespace/keying model before the semantic cache can be
+  access-isolated the same way as the Phase 1 buffer. Not a drop-in reuse of today's namespace.
 - Generalise the immutable buffer to **version-pinned** reads.
 - (Separate initiative) a **deterministic anchor layer for tool selection** — the retrospective
   lesson from v6.27.0 (B): a known, finite category shouldn't rely on top-K similarity.
