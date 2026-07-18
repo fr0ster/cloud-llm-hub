@@ -86,8 +86,8 @@ Planner (Claude Code)
 cloud-llm-hub  (USER + ACCESS principal aware)
    ├─ analyze_dump tool (intent) + deterministic chapter profiles           [Phase 1]
    ├─ de-pad + split-by-chapter (lifted parseDump/MAJOR_TITLES)             [Phase 1 → moves to core in Phase 2]
-   ├─ DumpBufferStore (injected iface): {destination,client,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
-   ├─ semantic cache: session RAG (unstructured tail + memoised results)     [Phase 3]
+   ├─ DumpBufferStore (injected iface): {principal,destination,client,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
+   ├─ semantic cache: principal-scoped RAG (unstructured tail + memoised results)     [Phase 3]
    └─ ICache adapter: principal-scoped, access-isolated storage               [Phase 2 injects into core]
         │  get(key)/set(key,value) on a domain key
         ▼
@@ -150,7 +150,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     Phase 2 they **compose**: core caches the raw dump + owns the sectioning, so cloud-llm-hub's
     layer becomes a **thin adapter over core's sectioned reads** (and may keep a small
     sectioned-result cache) — but the two are not one storage contract.
-  - Rationale for the default staying in-memory: the buffer is a *within-session optimisation
+  - Rationale for the default staying in-memory: the buffer is a *within-principal, short-lived optimisation
     over an immutable, re-fetchable artifact* — never a source of truth — so durability buys no
     correctness, only cost; the interface keeps the door open regardless.
 - **Interface = one server-side tool `analyze_dump(dump_ref, intent)`**, injected into the
@@ -181,7 +181,7 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 
 - **Semantic RAG for the unstructured tail only** (huge variable/memory sections, "where is X
   mentioned") — best-effort supplement, explicitly **not** a recall guarantee.
-- **Memoisation** of prior conclusions (`prompt → result`) in the session RAG.
+- **Memoisation** of prior conclusions (`prompt → result`) in the principal-scoped RAG (or the genuine chat session, when present).
 - Generalise the immutable buffer to **version-pinned** reads.
 - (Separate initiative) a **deterministic anchor layer for tool selection** — the retrospective
   lesson from v6.27.0 (B): a known, finite category shouldn't rely on top-K similarity.
@@ -190,12 +190,12 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 
 - Caching aggregates (where-used, search, package-tree) — no reliable cheap validation.
 - Semantic retrieval as the recall guarantee for structured content.
-- Cross-session/cross-user sharing of a fetched artifact — forbidden by access control.
+- Cross-**principal** (cross-user) sharing of a fetched artifact — forbidden by access control. Same principal reusing a dump across the stateless executor's ephemeral calls IS allowed — that reuse is the point.
 - Returning the full 185K formatted dump to any LLM.
 
 ## Review resolutions (spec review, 2026-07-18)
 
-- **Buffer key** must be `{ destination, client, dump_id }`, not `dump_id` alone — the session
+- **Buffer key** must be `{ principal, resolvedDestination, resolvedClient, dump_id }`, not `dump_id` alone — the session
   namespace is user+session, not destination (decision 4).
 - **Phase 1 buffer is non-vector raw storage**, not the RAG collection (which embeds on upsert) —
   RAG is Phase 3, unstructured tail only (Phase 1 bullet 4).
