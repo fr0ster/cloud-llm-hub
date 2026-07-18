@@ -1,4 +1,4 @@
-# Session-Scoped Dump Analysis & Large-Artifact Buffer — Design
+# Principal-Scoped Dump Analysis & Large-Artifact Buffer — Design
 
 **Date:** 2026-07-18
 **Status:** Design (approved for phasing; Phase 1 to be planned)
@@ -54,12 +54,13 @@ prompt needs: complete, but minimal.** Caching is a means to that end.
    to user B. Core is consumer-agnostic and cannot enforce this — so cloud-llm-hub owns the
    isolation. **The owner is the stable access principal, not any session.** The planner surface
    is stateless and the executor session is ephemeral (`agent-step-<UUID>`), so there is no
-   durable session to key on — the principal is `cds.context.user.id` **plus** the per-request SAP
-   identity (`x-sap-login`) that gated the fetch. (The existing `sessionCollectionId`,
+   durable session to key on — the owner is an opaque `principalHash` over `cds.context.user.id`
+   + auth mode + the **resolved** SAP identity that gated the fetch (formal definition, and why
+   raw identities never enter keys/logs, in Phase 1). (The existing `sessionCollectionId`,
    `${logicalId}__s_<hash of userId+NUL+sessionId>` in `srv/collection-ids.ts`, is for genuine
    sessions and is **not** the mechanism here — see Phase 1.) The key must also carry the
    **resolved** system scope, because one principal can address several systems/clients:
-   `{ principal, resolvedDestination, resolvedClient, dump_id }` — `dump_id` alone can collide
+   `{ principalHash, resolvedDestination, resolvedClient, dump_id }` — `dump_id` alone can collide
    across systems (the ADT id string embeds `_<SID>_` incidentally, but the key must not rely on
    that).
 
@@ -86,7 +87,7 @@ Planner (Claude Code)
 cloud-llm-hub  (USER + ACCESS principal aware)
    ├─ analyze_dump tool (intent) + deterministic chapter profiles           [Phase 1]
    ├─ de-pad + split-by-chapter (lifted parseDump/MAJOR_TITLES)             [Phase 1 → moves to core in Phase 2]
-   ├─ DumpBufferStore (injected iface): {principal,destination,client,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
+   ├─ DumpBufferStore (injected iface): {principalHash,resolvedDest,resolvedClient,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
    ├─ semantic cache: principal-scoped RAG (unstructured tail + memoised results)     [Phase 3]
    └─ ICache adapter: principal-scoped, access-isolated storage               [Phase 2 injects into core]
         │  get(key)/set(key,value) on a domain key
@@ -123,13 +124,22 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   planner surface `/mcp/agent/stream/http` is **stateless** (`sessionIdGenerator: undefined`) and
   each `execute_step` runs under an **ephemeral** executor session `agent-step-<UUID>`
   (`srv/agent-mcp.ts`). Scoping the buffer to that session would miss on the very next
-  `execute_step` from the same planner — so it **must not** be the owner. Owner is the **stable
-  access principal**: the authenticated user (`cds.context.user.id`) **and** the per-request SAP
-  identity that gated the fetch (`x-sap-login`, where the destination requires user credentials) —
-  so one user's dump is never served to another. The system scope is the **resolved**
-  `{ destination, client }` (after `resolveDestinationSapConfig` applies defaults), **never the raw
-  header** — otherwise "client omitted → default" and "client passed = the default" produce two
-  keys for one system. Full key: `{ principal, resolvedDestination, resolvedClient, dump_id }`.
+  `execute_step` from the same planner — so it **must not** be the owner.
+  - **Principal is an opaque `principalHash`, never raw identities.**
+    `principalHash = hash(cds.context.user.id + authMode + resolvedSapIdentity)`.
+    `resolvedSapIdentity` is the SAP user the fetch **actually runs as** — for basic / on-prem it is
+    `x-sap-login`; for a destination **service user** (OAuth2 client-credentials) it is that service
+    user; for **principal propagation** (SAML bearer) it is the propagated SAP user — read from the
+    **resolved** connection auth, not the raw header. `authMode` distinguishes the same login reached
+    via a different auth path. **Raw user id / SAP login never appear in a key, file, or log** — the
+    key is the hash only (consistent with the credential masking added in v6.14.2).
+  - **Bias to narrow, never broad.** A missed cache-hit just re-fetches (cheap; immutable) — a
+    wrong-principal hit **leaks** an access-controlled dump. So a shared SAP service user is still
+    isolated by `cds.context.user.id`, and any doubt **widens the principal, never the reuse.**
+  - **System scope = the resolved `{ destination, client }`** (after `resolveDestinationSapConfig`
+    applies defaults), **never the raw header** — otherwise "client omitted → default" and
+    "client passed = the default" produce two keys for one system.
+  - Full key: `{ principalHash, resolvedDestination, resolvedClient, dump_id }`.
 - **Buffer behind an injected store interface (DI) — implementation is a config choice.**
   Same ports-and-adapters principle as core's `ICache` (decision 3): `analyze_dump` and the
   profiles depend on a small `DumpBufferStore` **interface** (`get(key)`/`set(key,chapters)`/
@@ -195,8 +205,9 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 
 ## Review resolutions (spec review, 2026-07-18)
 
-- **Buffer key** must be `{ principal, resolvedDestination, resolvedClient, dump_id }`, not `dump_id` alone — the session
-  namespace is user+session, not destination (decision 4).
+- **Buffer key** must be `{ principalHash, resolvedDestination, resolvedClient, dump_id }`, not
+  `dump_id` alone — the executor session is ephemeral, so the owner is the **principal** (opaque
+  hash), and the system scope is the **resolved** destination/client (decision 4).
 - **Phase 1 buffer is non-vector raw storage**, not the RAG collection (which embeds on upsert) —
   RAG is Phase 3, unstructured tail only (Phase 1 bullet 4).
 - **Reuse `parseDump`/`MAJOR_TITLES`** (lifted into `srv/lib/`); profiles reference the parser's
