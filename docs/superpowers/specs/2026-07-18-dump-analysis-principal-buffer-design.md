@@ -145,8 +145,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     the propagated target. So the hash is **always computable** without discovering the SAP user.
     **Fail closed if the principal is not established.** The `/mcp` route is auth-protected
     (`srv/server.ts`), but the code path still has an `anonymous` fallback (`srv/agent-mcp.ts`
-    `cds.context?.user?.id ?? 'anonymous'`). If the user id is missing or `anonymous`, `analyze_dump`
-    `analyze_dump` **refuses (fail closed)** — full stop. An unidentified caller must not run an
+    `cds.context?.user?.id ?? 'anonymous'`). If the user id is missing or `anonymous`, `analyze_dump` **refuses (fail closed)** — full stop. An unidentified caller must not run an
     access-controlled dump analysis, and there is no stable principal to buffer under. It does
     **NOT** fall back to an anonymous fresh fetch (that would still perform the access-controlled
     read without a stable identity) and never computes or serves under a shared anonymous key.
