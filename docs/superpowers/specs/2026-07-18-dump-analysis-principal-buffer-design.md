@@ -60,7 +60,7 @@ prompt needs: complete, but minimal.** Caching is a means to that end.
    `${logicalId}__s_<hash of userId+NUL+sessionId>` in `srv/collection-ids.ts`, is for genuine
    sessions and is **not** the mechanism here — see Phase 1.) The key must also carry the
    **resolved** system scope, because one principal can address several systems/clients:
-   `{ principalHash, resolvedDestination, resolvedClient, dump_id }` — `dump_id` alone can collide
+   `{ principalHash, resolvedDestination, effectiveClient, dump_id }` — `dump_id` alone can collide
    across systems (the ADT id string embeds `_<SID>_` incidentally, but the key must not rely on
    that).
 
@@ -126,25 +126,31 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   (`srv/agent-mcp.ts`). Scoping the buffer to that session would miss on the very next
   `execute_step` from the same planner — so it **must not** be the owner.
   - **Principal is an opaque `principalHash`, never raw identities.**
-    `principalHash = hash(cds.context.user.id + authMode + resolvedSapIdentity + resolvedDestination)`.
-    `cds.context.user.id` (JWT-derived) is **always present** and is the anchor. `resolvedSapIdentity`
-    is added **only when the connection actually exposes it** — for basic / on-prem it is
-    `x-sap-login`; for a destination **service user** it is the destination `User` property
-    (`srv/connections/destinationResolver.ts`, which reads `User` only for BasicAuth). For
-    **principal propagation** (SAML bearer) the SAP user is derived at SAP from the JWT and is **not
-    known client-side without a backend round-trip / claim parsing**, so `resolvedSapIdentity` is
-    simply **absent** — isolation then rests on `cds.context.user.id + authMode + resolvedDestination`
-    (optionally the JWT `sub`), which already identify the caller and the propagated target. So the
-    hash is **always computable** without discovering the SAP user. `authMode` distinguishes the same
+    `principalHash = hash(cds.context.user.id + authMode + resolvedSapIdentity)` — **WHO only.**
+    Destination and client (WHERE) are **separate key parts** (system scope, below), never folded
+    into the identity hash. `cds.context.user.id` (JWT-derived) is **always present** and is the
+    anchor. `resolvedSapIdentity` is added **only when the connection actually exposes it** — for
+    basic / on-prem it is `x-sap-login`; for a destination **service user** it is the destination
+    `User` property (`srv/connections/destinationResolver.ts`, which reads `User` only for
+    BasicAuth). For **principal propagation** (SAML bearer) the SAP user is derived at SAP from the
+    JWT and is **not known client-side without a backend round-trip / claim parsing**, so
+    `resolvedSapIdentity` is simply **absent** — isolation then rests on the `principalHash`
+    (`cds.context.user.id + authMode`, optionally the JWT `sub`) **combined with the
+    `resolvedDestination` already in the system-scope key**, which together identify the caller and
+    the propagated target. So the hash is **always computable** without discovering the SAP user. `authMode` distinguishes the same
     login reached via a different auth path. **Raw user id / SAP login never appear in a key, file, or log** — the
     key is the hash only (consistent with the credential masking added in v6.14.2).
   - **Bias to narrow, never broad.** A missed cache-hit just re-fetches (cheap; immutable) — a
     wrong-principal hit **leaks** an access-controlled dump. So a shared SAP service user is still
     isolated by `cds.context.user.id`, and any doubt **widens the principal, never the reuse.**
-  - **System scope = the resolved `{ destination, client }`** (after `resolveDestinationSapConfig`
-    applies defaults), **never the raw header** — otherwise "client omitted → default" and
-    "client passed = the default" produce two keys for one system.
-  - Full key: `{ principalHash, resolvedDestination, resolvedClient, dump_id }`.
+  - **System scope = `{ resolvedDestination, effectiveClient }`.** The client must be the
+    **effective** client actually used for the fetch:
+    `effectiveClient = x-sap-client header override if present, else the destination's resolved
+    sap-client/default` — the code applies the header override **after** `resolveDestinationSapConfig`
+    (`sapConfig.client = sapClient` in `srv/lib/request-connection.ts` and `srv/agent-mcp.ts`). Using
+    the destination default alone would key a dump under the wrong client when the header overrode it;
+    conversely "client omitted → default" and "client passed = that default" must collapse to one key.
+  - Full key: `{ principalHash, resolvedDestination, effectiveClient, dump_id }`.
 - **Buffer behind an injected store interface (DI) — implementation is a config choice.**
   Same ports-and-adapters principle as core's `ICache` (decision 3): `analyze_dump` and the
   profiles depend on a small `DumpBufferStore` **interface** (`get(key)`/`set(key,chapters)`/
@@ -176,11 +182,14 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   executed by the caller) and is therefore not the vehicle for a server-executed tool. One
   well-outcome-framed tool ≠ the section-tool explosion decision 5 forbids.
 
-- **Log hygiene (small Phase 1 task).** The "raw identities never in logs" rule is currently
-  violated: `request-connection` writes `username: sapLogin || '(destination-auth)'` — a raw SAP
-  login in a **structured log field**, not covered by the v6.14.2 header masking
-  (`srv/lib/request-connection.ts`). Mask/drop it (log `principalHash` or `'user-basic'` instead) so
-  the privacy rule holds system-wide, not only inside the buffer.
+- **Log hygiene — repo-wide audit (Phase 1 task).** The "raw identities never in logs" rule is
+  currently violated in **several** places, not one: `request-connection` (`username: sapLogin`,
+  `srv/lib/request-connection.ts`), the mcp-proxy **active probe** (`username: headers['x-sap-login']`,
+  `srv/mcp-proxy.ts`), and the mcp-manager **auth-override** log (`username: sapLogin`,
+  `srv/mcp-manager.ts`) — all raw SAP logins in structured fields **not** covered by the v6.14.2
+  header masking. Phase 1 does a **repo-wide sweep** (grep `x-sap-login` / `sapLogin` / `username:`)
+  and masks or drops every raw-login log site, not just the one the buffer touches, so the privacy
+  rule holds system-wide.
 
 **Outcome:** "planner delegates → gets an analysable dump" is closed **via the `analyze_dump`
 tool**, with no core change and one (not N) added tools.
@@ -220,7 +229,7 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 
 ## Review resolutions (spec review, 2026-07-18)
 
-- **Buffer key** must be `{ principalHash, resolvedDestination, resolvedClient, dump_id }`, not
+- **Buffer key** must be `{ principalHash, resolvedDestination, effectiveClient, dump_id }`, not
   `dump_id` alone — the executor session is ephemeral, so the owner is the **principal** (opaque
   hash), and the system scope is the **resolved** destination/client (decision 4).
 - **Phase 1 buffer is non-vector raw storage**, not the RAG collection (which embeds on upsert) —
