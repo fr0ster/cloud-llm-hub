@@ -84,7 +84,7 @@ Planner (Claude Code)
    │  execute_step  ("analyse the latest dump for user X")
    ▼
 cloud-llm-hub  (USER + ACCESS principal aware)
-   ├─ analyze_dump tool (intent) + deterministic chapter profiles           [Phase 1]
+   ├─ GetDumpSection tool (mechanical, RAG-selected) + executor reasoning     [Phase 1]
    ├─ de-pad + split-by-chapter (lifted parseDump/MAJOR_TITLES)             [Phase 1 → moves to core in Phase 2]
    ├─ DumpBufferStore (injected iface): {principalHash,resolvedDest,effectiveClient,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
    ├─ semantic cache: principal-scoped RAG (unstructured tail + memoised results)     [Phase 3]
@@ -110,10 +110,13 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   canonical titles. Titles are exact: `What happened?`, `Error analysis`, `Source Code Extract`,
   `Active Calls/Events`, `Chain of Exception Objects`, `Contents of system fields`, … — match
   the parser's set, **not** ad-hoc names.
-- **Deterministic analysis profiles**: an `intent` → a fixed set of **canonical section ids**
-  (with an alias map to the exact titles above). Initial profile `root-cause` =
-  `Error analysis` + `Chain of Exception Objects` + `Source Code Extract` + `Active Calls/Events`
-  (+ `What happened?`). Recall is guaranteed by construction — **no semantic step.**
+- **Section selection is the executor's reasoning over a known index — NOT a tool profile.** The
+  tool returns the finite, named **section index**; the executor, guided by the `reading-short-dumps`
+  skill, picks the chapters its task needs — for root cause: `Error analysis` +
+  `Chain of Exception Objects` + `Source Code Extract` + `Active Calls/Events` (+ `What happened?`).
+  This is **recall by known structure** (an LLM choosing from an enumerated set), exactly what
+  decision 6 endorses — decision 6 rejects **embedding-similarity** recall, not an LLM selecting from
+  a listed index. So the root-cause chapter list lives in the **skill**, not baked into the tool.
 - **Buffer = a non-vector raw keyed store.** NOT the RAG collection: `addDocument` embeds
   `doc.text` on upsert (`srv/rag-collections.ts` `stored.rag.upsert(doc.text, …)`), so buffering a
   95K-token dump there just moves the size problem into the embedder. Phase 1 uses a plain keyed
@@ -145,7 +148,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     the propagated target. So the hash is **always computable** without discovering the SAP user.
     **Fail closed if the principal is not established.** The `/mcp` route is auth-protected
     (`srv/server.ts`), but the code path still has an `anonymous` fallback (`srv/agent-mcp.ts`
-    `cds.context?.user?.id ?? 'anonymous'`). If the user id is missing or `anonymous`, `analyze_dump` **refuses (fail closed)** — full stop. An unidentified caller must not run an
+    `cds.context?.user?.id ?? 'anonymous'`). If the user id is missing or `anonymous`, `GetDumpSection` **refuses (fail closed)** — full stop. An unidentified caller must not run an
     access-controlled dump analysis, and there is no stable principal to buffer under. It does
     **NOT** fall back to an anonymous fresh fetch (that would still perform the access-controlled
     read without a stable identity) and never computes or serves under a shared anonymous key.
@@ -168,7 +171,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     conversely "client omitted → default" and "client passed = that default" must collapse to one key.
   - Full key: `{ principalHash, resolvedDestination, effectiveClient, dump_id }`.
 - **Buffer behind an injected store interface (DI) — implementation is a config choice.**
-  Same ports-and-adapters principle as core's `ICache` (decision 3): `analyze_dump` and the
+  Same ports-and-adapters principle as core's `ICache` (decision 3): `GetDumpSection` and the
   profiles depend on a small `DumpBufferStore` **interface** (`get(key)`/`set(key,chapters)`/
   eviction), never on a concrete store. **Whichever implementation we configure/inject is what
   runs** — so "in-memory vs persistent" is not a hard design choice, it's the injected adapter.
@@ -179,7 +182,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     executor session), so eviction is time+size based, not session-based; **does not survive
     restart** (a dropped dump is re-fetched — immutable, so always correct); not shared across CF
     instances (re-fetch on the other instance is fine).
-  - **Swappable without touching `analyze_dump`:** a persistent (DB/file) or cross-instance
+  - **Swappable without touching `GetDumpSection`:** a persistent (DB/file) or cross-instance
     `DumpBufferStore` adapter can be injected later; the consumer code does not change.
     **This is a distinct contract from core's `ICache`** — do not conflate them:
     `DumpBufferStore` caches **sectioned chapters** (cloud-llm-hub, access-scoped by principal),
@@ -190,13 +193,26 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   - Rationale for the default staying in-memory: the buffer is a *within-principal, short-lived optimisation
     over an immutable, re-fetchable artifact* — never a source of truth — so durability buys no
     correctness, only cost; the interface keeps the door open regardless.
-- **Interface = one server-side tool `analyze_dump(dump_ref, intent)`**, injected into the
-  executor's embedded MCP adapter (our code — no core change, no `HandlerExporter` change). It
-  carries the `intent`, which a generic result-transform cannot: the transform seam exists
-  (`callToolHandler` in the embedded adapter) but is **intent-blind**, so it could only shrink
-  generically, not select a profile. `externalTools` is the **client-side** channel (`body.tools`,
-  executed by the caller) and is therefore not the vehicle for a server-executed tool. One
-  well-outcome-framed tool ≠ the section-tool explosion decision 5 forbids.
+- **Interface = one MECHANICAL, RAG-selected tool `GetDumpSection(dump_ref, section?)`.** It is a
+  **concrete tool at the executor's tool level** (alongside `RuntimeGetDumpById`), **not** on the
+  abstract planner surface — putting a concrete op next to the abstract `execute_step` mixes
+  abstraction levels (an architectural smell). "Analyse" vs "read" is the **executor's reasoning**
+  driven by the task ("analyse the dump" → it analyses; "read the dump" → it reads), never baked into
+  the tool. The tool is purely mechanical: `section` omitted → the **section index** (chapter
+  titles); `section` given → that chapter's de-padded text.
+  - **Reached via RAG-intent, like every other concrete tool** (uniform, no special-casing — this
+    is the chosen mechanism over always-inject). Add a `GetDumpSection` tool-intent to
+    `srv/tool-intents.json` ("read short dump section, dump error analysis, dump call stack, dump
+    source extract, chapter of a runtime dump") and **regenerate the embedding bundle**
+    (`tools/generate-tool-embeddings.ts`, live AI Core creds via `npm run update:env` — see
+    v6.27.0) so the executor selects it semantically. The B-fix made dump-tool recall reliable and
+    the `reading-short-dumps` skill also names the flow.
+  - Registered in the executor's **embedded MCP adapter** (`buildEmbeddedMcpAdapter`,
+    `srv/agent-manager.ts`): add its definition to `listToolsHandler` and its handler to the
+    `callToolHandler` map — our code, **no core / `HandlerExporter` change**. The handler calls the
+    existing `RuntimeGetDumpById` (via the same embedded map) once, fills the buffer, and serves
+    sections from it. One mechanical tool with a `section` param ≠ the `get_dump_section` × N
+    explosion decision 5 forbids.
 
 - **Log hygiene — repo-wide audit (Phase 1 task).** The "raw SAP login never in logs" rule is
   currently violated in **several** places, not one: `request-connection` (`username: sapLogin`,
@@ -208,7 +224,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   credential-adjacent identity** — reviewed per hit, **not** every generic `username:` field
   blindly. Covers the buffer's site and the others found, so the privacy rule holds system-wide.
 
-**Outcome:** "planner delegates → gets an analysable dump" is closed **via the `analyze_dump`
+**Outcome:** "planner delegates → gets an analysable dump" is closed **via the `GetDumpSection`
 tool**, with no core change and one (not N) added tools.
 
 ## Phase 2 — mcp-abap-adt (core; this team)
@@ -253,8 +269,11 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
   RAG is Phase 3, unstructured tail only (Phase 1 bullet 4).
 - **Reuse `parseDump`/`MAJOR_TITLES`** (lifted into `srv/lib/`); profiles reference the parser's
   canonical titles via an alias map, not ad-hoc names (Phase 1 bullets 2-3).
-- **Interface resolved to one server-side `analyze_dump` tool** — the transform seam is
-  intent-blind, `externalTools` is client-side (Phase 1 bullet 5).
+- **Interface resolved to one MECHANICAL, RAG-selected `GetDumpSection` tool** at the executor's
+  tool level (not the abstract planner surface — no level-mixing); "analyse vs read" is the
+  executor's reasoning, not a tool intent; the root-cause chapter list lives in the
+  `reading-short-dumps` skill. Reached via RAG-intent (add intent + regen bundle), the uniform
+  mechanism, chosen over always-inject.
 
 ## Open questions (to resolve when planning Phase 1)
 
@@ -263,5 +282,5 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 2. **De-pad fidelity**: how aggressively to collapse internal box padding without losing
    alignment that carries meaning (source-line columns, hex dumps). The lifted `parseDump`
    already preserves `sourceExtract` spans — measure de-pad against its output.
-3. **`dump_ref` resolution**: `analyze_dump` takes a concrete `dump_id` or a descriptor
+3. **`dump_ref` resolution**: `GetDumpSection` takes a concrete `dump_id` or a descriptor
    ("latest for user X") that it resolves via `RuntimeListFeeds` first — decide the arg shape.
