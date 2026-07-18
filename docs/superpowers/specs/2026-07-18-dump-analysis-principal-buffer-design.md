@@ -128,7 +128,10 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     `principalHash = hash(canonicalTuple([cds.context.user.id, authMode, resolvedSapIdentity ?? null, jwtSub ?? null]))` — **WHO only.**
     Use a **canonical tuple encoding** (a JSON array, or NUL-delimited with escaping), **not raw
     string concatenation** — concatenation lets component boundaries collide (`"ab"+"c"` vs
-    `"a"+"bc"`).
+    `"a"+"bc"`). Each component is **deterministic**: `resolvedSapIdentity` and `jwtSub` are the
+    reliably-extracted value **or `null`, applied the same way on every code path** — never
+    conditionally present depending on where the request flows (that would split one principal into
+    two keys).
     Destination and client (WHERE) are **separate key parts** (system scope, below), never folded
     into the identity hash. `cds.context.user.id` (JWT-derived) is **always present** and is the
     anchor. `resolvedSapIdentity` is added **only when the connection actually exposes it** — for
@@ -137,14 +140,16 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     BasicAuth). For **principal propagation** (SAML bearer) the SAP user is derived at SAP from the
     JWT and is **not known client-side without a backend round-trip / claim parsing**, so
     `resolvedSapIdentity` is simply **absent** — isolation then rests on the `principalHash`
-    (`cds.context.user.id + authMode`, optionally the JWT `sub`) **combined with the
+    (`cds.context.user.id + authMode`, plus the JWT `sub` per the deterministic rule above) **combined with the
     `resolvedDestination` already in the system-scope key**, which together identify the caller and
     the propagated target. So the hash is **always computable** without discovering the SAP user.
     **Fail closed if the principal is not established.** The `/mcp` route is auth-protected
     (`srv/server.ts`), but the code path still has an `anonymous` fallback (`srv/agent-mcp.ts`
     `cds.context?.user?.id ?? 'anonymous'`). If the user id is missing or `anonymous`, `analyze_dump`
-    **must NOT** compute a shared `principalHash` or buffer/serve under it — bypass the cache (fetch
-    fresh, do not store) or refuse; never risk cross-caller reuse under a shared anonymous key.
+    `analyze_dump` **refuses (fail closed)** — full stop. An unidentified caller must not run an
+    access-controlled dump analysis, and there is no stable principal to buffer under. It does
+    **NOT** fall back to an anonymous fresh fetch (that would still perform the access-controlled
+    read without a stable identity) and never computes or serves under a shared anonymous key.
     `authMode` distinguishes the same
     login reached via a different auth path. **The key and buffer files carry only `principalHash`**
     — no raw identity there. The **logs** rule is narrower and targets the **SAP login**
@@ -194,7 +199,7 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   executed by the caller) and is therefore not the vehicle for a server-executed tool. One
   well-outcome-framed tool ≠ the section-tool explosion decision 5 forbids.
 
-- **Log hygiene — repo-wide audit (Phase 1 task).** The "raw identities never in logs" rule is
+- **Log hygiene — repo-wide audit (Phase 1 task).** The "raw SAP login never in logs" rule is
   currently violated in **several** places, not one: `request-connection` (`username: sapLogin`,
   `srv/lib/request-connection.ts`), the mcp-proxy **active probe** (`username: headers['x-sap-login']`,
   `srv/mcp-proxy.ts`), and the mcp-manager **auth-override** log (`username: sapLogin`,
