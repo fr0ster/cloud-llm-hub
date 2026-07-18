@@ -55,8 +55,7 @@ prompt needs: complete, but minimal.** Caching is a means to that end.
    isolation. **The owner is the stable access principal, not any session.** The planner surface
    is stateless and the executor session is ephemeral (`agent-step-<UUID>`), so there is no
    durable session to key on — the owner is an opaque `principalHash` over `cds.context.user.id`
-   + auth mode + the **resolved** SAP identity that gated the fetch (formal definition, and why
-   raw identities never enter keys/logs, in Phase 1). (The existing `sessionCollectionId`,
+   + auth mode + the **resolved** SAP identity that gated the fetch (formal definition — SAP login never enters keys/files/logs; the XSUAA user id, a normal diagnostic id, stays — in Phase 1). (The existing `sessionCollectionId`,
    `${logicalId}__s_<hash of userId+NUL+sessionId>` in `srv/collection-ids.ts`, is for genuine
    sessions and is **not** the mechanism here — see Phase 1.) The key must also carry the
    **resolved** system scope, because one principal can address several systems/clients:
@@ -126,7 +125,10 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   (`srv/agent-mcp.ts`). Scoping the buffer to that session would miss on the very next
   `execute_step` from the same planner — so it **must not** be the owner.
   - **Principal is an opaque `principalHash`, never raw identities.**
-    `principalHash = hash(cds.context.user.id + authMode + resolvedSapIdentity)` — **WHO only.**
+    `principalHash = hash(canonicalTuple([cds.context.user.id, authMode, resolvedSapIdentity ?? null, jwtSub ?? null]))` — **WHO only.**
+    Use a **canonical tuple encoding** (a JSON array, or NUL-delimited with escaping), **not raw
+    string concatenation** — concatenation lets component boundaries collide (`"ab"+"c"` vs
+    `"a"+"bc"`).
     Destination and client (WHERE) are **separate key parts** (system scope, below), never folded
     into the identity hash. `cds.context.user.id` (JWT-derived) is **always present** and is the
     anchor. `resolvedSapIdentity` is added **only when the connection actually exposes it** — for
@@ -138,8 +140,12 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     (`cds.context.user.id + authMode`, optionally the JWT `sub`) **combined with the
     `resolvedDestination` already in the system-scope key**, which together identify the caller and
     the propagated target. So the hash is **always computable** without discovering the SAP user. `authMode` distinguishes the same
-    login reached via a different auth path. **Raw user id / SAP login never appear in a key, file, or log** — the
-    key is the hash only (consistent with the credential masking added in v6.14.2).
+    login reached via a different auth path. **The key and buffer files carry only `principalHash`**
+    — no raw identity there. The **logs** rule is narrower and targets the **SAP login**
+    (credential-adjacent): the XSUAA `cds.context.user.id` is a normal application-level identifier
+    already logged for diagnostics (`srv/auth.ts`, `srv/server.ts`) and **stays** — it is not a
+    secret, and masking it would gut diagnostics for no security gain. (Consistent with the
+    credential masking added in v6.14.2.)
   - **Bias to narrow, never broad.** A missed cache-hit just re-fetches (cheap; immutable) — a
     wrong-principal hit **leaks** an access-controlled dump. So a shared SAP service user is still
     isolated by `cds.context.user.id`, and any doubt **widens the principal, never the reuse.**
@@ -231,7 +237,7 @@ Phase 1 works without this; Phase 2 makes it "correct" and reusable.
 
 - **Buffer key** must be `{ principalHash, resolvedDestination, effectiveClient, dump_id }`, not
   `dump_id` alone — the executor session is ephemeral, so the owner is the **principal** (opaque
-  hash), and the system scope is the **resolved** destination/client (decision 4).
+  hash), and the system scope is the **resolved destination + effective client** (decision 4).
 - **Phase 1 buffer is non-vector raw storage**, not the RAG collection (which embeds on upsert) —
   RAG is Phase 3, unstructured tail only (Phase 1 bullet 4).
 - **Reuse `parseDump`/`MAJOR_TITLES`** (lifted into `srv/lib/`); profiles reference the parser's
