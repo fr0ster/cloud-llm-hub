@@ -37,27 +37,31 @@ prompt needs: complete, but minimal.** Caching is a means to that end.
    | What | raw artifact, keyed | prior query results + extracted content |
    | Purpose | never hit ADT twice | assemble relevant context for a prompt |
    | Validation | ETag / immutable | (own layer) |
-   | Home | **mcp-abap-adt (core)** | **cloud-llm-hub**, session-scoped |
+   | Home | **mcp-abap-adt (core)** | **cloud-llm-hub**, principal-scoped |
 
 3. **Caching policy in core; storage injected from the consumer (ports & adapters).**
    The knowledge "a dump is immutable", "a class source has an ETag", "what the key is",
    "how to validate" is ABAP domain → lives in **core** (mcp-abap-adt, which this team
-   develops). The **storage + session-scoping + access isolation** is a consumer concern →
+   develops). The **storage + principal-scoping + access isolation** is a consumer concern →
    injected into core via an `ICache` interface. Core takes an optional `cache?: ICache`; if
    provided it uses it with its own policy, if not it stays stateless as today. Core calls
-   `get(key)/set(key,value)` on a **domain** key and stays oblivious to sessions; the injected
-   adapter **namespaces the key by `user:session`**, so access isolation comes for free.
+   `get(key)/set(key,value)` on a **domain** key and stays oblivious to the caller; the injected
+   adapter **namespaces the key by the access principal** (decision 4), so access isolation comes
+   for free.
 
-4. **Session-scoped by security, not convenience.** Dumps are access-controlled (MCP_Analyst
-   role, per-request SAP credentials, fail-closed). A dump fetched under user A's session must
-   never be served to user B. Core is consumer-agnostic and cannot enforce this — so the buffer
-   **must** be session/user-scoped. cloud-llm-hub's session collection id is
-   `${logicalId}__s_<hash>`, where `<hash>` is a sanitized digest of `userId + NUL + sessionId`
-   — scoped by **user + session, NOT destination**
-   (`srv/collection-ids.ts` `sessionCollectionId`). Because one session can address several
-   systems/clients, the **buffer key must carry the system scope explicitly**:
-   `{ destination, client, dump_id }` — `dump_id` alone can collide across systems. (The ADT dump
-   id string happens to embed `_<SID>_`, but the key must not rely on that incidentally.)
+4. **Principal-scoped by security, not convenience.** Dumps are access-controlled (MCP_Analyst
+   role, per-request SAP credentials, fail-closed). A dump fetched by user A must never be served
+   to user B. Core is consumer-agnostic and cannot enforce this — so cloud-llm-hub owns the
+   isolation. **The owner is the stable access principal, not any session.** The planner surface
+   is stateless and the executor session is ephemeral (`agent-step-<UUID>`), so there is no
+   durable session to key on — the principal is `cds.context.user.id` **plus** the per-request SAP
+   identity (`x-sap-login`) that gated the fetch. (The existing `sessionCollectionId`,
+   `${logicalId}__s_<hash of userId+NUL+sessionId>` in `srv/collection-ids.ts`, is for genuine
+   sessions and is **not** the mechanism here — see Phase 1.) The key must also carry the
+   **resolved** system scope, because one principal can address several systems/clients:
+   `{ principal, resolvedDestination, resolvedClient, dump_id }` — `dump_id` alone can collide
+   across systems (the ADT id string embeds `_<SID>_` incidentally, but the key must not rely on
+   that).
 
 5. **No section-fetch tool explosion.** Adding `get_dump_section` × N re-strains tool selection
    — the very problem v6.27.0 fought. The mechanism must not add many tools.
@@ -79,12 +83,12 @@ prompt needs: complete, but minimal.** Caching is a means to that end.
 Planner (Claude Code)
    │  execute_step  ("analyse the latest dump for user X")
    ▼
-cloud-llm-hub  (SESSION + USER + ACCESS aware)
+cloud-llm-hub  (USER + ACCESS principal aware)
    ├─ analyze_dump tool (intent) + deterministic chapter profiles           [Phase 1]
    ├─ de-pad + split-by-chapter (lifted parseDump/MAJOR_TITLES)             [Phase 1 → moves to core in Phase 2]
    ├─ DumpBufferStore (injected iface): {destination,client,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
    ├─ semantic cache: session RAG (unstructured tail + memoised results)     [Phase 3]
-   └─ ICache adapter: session-scoped, access-isolated storage               [Phase 2 injects into core]
+   └─ ICache adapter: principal-scoped, access-isolated storage               [Phase 2 injects into core]
         │  get(key)/set(key,value) on a domain key
         ▼
 mcp-abap-adt  (core — CONSUMER-AGNOSTIC, stateless)
@@ -110,12 +114,22 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   (with an alias map to the exact titles above). Initial profile `root-cause` =
   `Error analysis` + `Chain of Exception Objects` + `Source Code Extract` + `Active Calls/Events`
   (+ `What happened?`). Recall is guaranteed by construction — **no semantic step.**
-- **Session buffer = a non-vector raw keyed store.** NOT the RAG collection: `addDocument`
-  embeds `doc.text` on upsert (`srv/rag-collections.ts` `stored.rag.upsert(doc.text, …)`), so
-  buffering a 95K-token dump there just moves the size problem into the embedder. Phase 1 uses a
-  plain in-memory keyed store `{ destination, client, dump_id } → parsed chapters`; immutable
-  → no validation; access isolation from the `user:session`-scoped store. (RAG enters only in
-  Phase 3, and only for the unstructured tail.)
+- **Buffer = a non-vector raw keyed store.** NOT the RAG collection: `addDocument` embeds
+  `doc.text` on upsert (`srv/rag-collections.ts` `stored.rag.upsert(doc.text, …)`), so buffering a
+  95K-token dump there just moves the size problem into the embedder. Phase 1 uses a plain keyed
+  store `key → parsed chapters`; immutable → no validation. (RAG enters only in Phase 3, and only
+  for the unstructured tail.)
+- **Key = the stable access principal + RESOLVED system scope, NOT the executor session.** The
+  planner surface `/mcp/agent/stream/http` is **stateless** (`sessionIdGenerator: undefined`) and
+  each `execute_step` runs under an **ephemeral** executor session `agent-step-<UUID>`
+  (`srv/agent-mcp.ts`). Scoping the buffer to that session would miss on the very next
+  `execute_step` from the same planner — so it **must not** be the owner. Owner is the **stable
+  access principal**: the authenticated user (`cds.context.user.id`) **and** the per-request SAP
+  identity that gated the fetch (`x-sap-login`, where the destination requires user credentials) —
+  so one user's dump is never served to another. The system scope is the **resolved**
+  `{ destination, client }` (after `resolveDestinationSapConfig` applies defaults), **never the raw
+  header** — otherwise "client omitted → default" and "client passed = the default" produce two
+  keys for one system. Full key: `{ principal, resolvedDestination, resolvedClient, dump_id }`.
 - **Buffer behind an injected store interface (DI) — implementation is a config choice.**
   Same ports-and-adapters principle as core's `ICache` (decision 3): `analyze_dump` and the
   profiles depend on a small `DumpBufferStore` **interface** (`get(key)`/`set(key,chapters)`/
@@ -123,12 +137,19 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   runs** — so "in-memory vs persistent" is not a hard design choice, it's the injected adapter.
   - **Default (ships in Phase 1):** an **in-memory, LRU-bounded** adapter — hard cap
     (`LLM_AGENT_DUMP_BUFFER_MAX` entries *and* a total-bytes ceiling) so a ~400 KB de-padded dump
-    cannot reintroduce the OOM risk v6.24.5/6.25.0 fought; TTL on **session expiry** + a short
-    absolute backstop; **does not survive restart** (a dropped dump is re-fetched — immutable, so
-    always correct); not shared across CF instances (re-fetch on the other instance is fine).
+    cannot reintroduce the OOM risk v6.24.5/6.25.0 fought; **absolute TTL** (configurable minutes)
+    + LRU — there is **no stable session** to hang expiry on (stateless surface, ephemeral
+    executor session), so eviction is time+size based, not session-based; **does not survive
+    restart** (a dropped dump is re-fetched — immutable, so always correct); not shared across CF
+    instances (re-fetch on the other instance is fine).
   - **Swappable without touching `analyze_dump`:** a persistent (DB/file) or cross-instance
-    adapter can be injected/configured later — and this is exactly what Phase 2 does, backing the
-    same interface with the core `ICache` storage. The consumer code does not change.
+    `DumpBufferStore` adapter can be injected later; the consumer code does not change.
+    **This is a distinct contract from core's `ICache`** — do not conflate them:
+    `DumpBufferStore` caches **sectioned chapters** (cloud-llm-hub, access-scoped by principal),
+    while core's `ICache` (Phase 2) dedups the **raw artifact fetch** (core, domain-keyed). In
+    Phase 2 they **compose**: core caches the raw dump + owns the sectioning, so cloud-llm-hub's
+    layer becomes a **thin adapter over core's sectioned reads** (and may keep a small
+    sectioned-result cache) — but the two are not one storage contract.
   - Rationale for the default staying in-memory: the buffer is a *within-session optimisation
     over an immutable, re-fetchable artifact* — never a source of truth — so durability buys no
     correctness, only cost; the interface keeps the door open regardless.
