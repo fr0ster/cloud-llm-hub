@@ -16,7 +16,7 @@
 - **`principalHash` = `hash(canonicalTuple([cds.context.user.id, authMode, resolvedSapIdentity ?? null, jwtSub ?? null]))`** — WHO only (destination/client are separate key parts). Canonical tuple encoding, **not** raw concatenation. Each component deterministic (value-or-`null`, same on every code path). `resolvedSapIdentity` = `x-sap-login` (basic), destination `User` (service user), or **absent** (principal propagation — no backend round-trip).
 - **Fail closed.** If `cds.context.user.id` is missing or `'anonymous'`, `GetDumpSection` **refuses** — no shared-principal buffer, no anonymous fresh fetch.
 - **Raw SAP login never in a key, file, or log.** The buffer key carries only `principalHash`. The XSUAA `cds.context.user.id` is a normal diagnostic id and stays in logs.
-- **RAG-selected via the SHARED corpus.** The corpus is assembled from `HandlerExporter` via `getStaticTools()` / `getSharedCorpusDocs()` (`srv/agent-manager.ts`), and `tools/generate-tool-embeddings.ts` reads `getSharedCorpusDocs()` too. **Appending to `listToolsHandler` alone will NOT make the tool RAG-selectable** — a **cloud-local tool registry** must be merged into `getStaticTools`/`getSharedCorpusDocs` + the exposition map + `listToolsHandler` + `callToolHandler`. **No `HandlerExporter`/core change** (we merge alongside); our own corpus-assembly functions do change.
+- **RAG-selected via the SHARED corpus.** The corpus is assembled from `HandlerExporter` via `listToolDefsFromExporter()` / `getSharedCorpusDocs()` (`srv/agent-manager.ts`), and `tools/generate-tool-embeddings.ts` reads `getSharedCorpusDocs()` too. **Appending to `listToolsHandler` alone will NOT make the tool RAG-selectable** — a **cloud-local tool registry** must be merged into `listToolDefsFromExporter`/`getSharedCorpusDocs` + the exposition map + `listToolsHandler` + `callToolHandler`. **No `HandlerExporter`/core change** (we merge alongside); our own corpus-assembly functions do change.
 - **The `callToolHandler` inside `buildEmbeddedMcpAdapter` has no `req`** — the ALS store is only `{ connection, context }` (`srv/agent-manager.ts`). The principal + system scope must be **computed where `req` exists** (`srv/agent-mcp.ts` `execute_step`) and **carried into the ALS store**, then read back in the tool branch.
 - **Reuse `parseDump`/`MAJOR_TITLES`** (lift into `srv/lib/`), do not reinvent. Canonical chapter titles only.
 - English everywhere; single quotes, 2-space indent, 100-col; Biome clean; `tsc` clean; Conventional Commits; a test per unit.
@@ -30,7 +30,7 @@
 - Create `srv/lib/dump-buffer.ts` — `DumpBufferStore` interface + `InMemoryLruDumpBuffer` + `makeDefaultDumpBuffer(env)`.
 - Create `srv/lib/get-dump-section.ts` — `getDumpSectionResult(args, deps)` handler.
 - Create `srv/lib/cloud-local-tools.ts` — the cloud-local tool registry (`GetDumpSection` def: name, description, inputSchema, exposition tag) + a merge helper.
-- Modify `srv/agent-manager.ts` — merge the cloud-local registry into `getStaticTools`/`getSharedCorpusDocs` + the exposition map; extend the ALS store type + `runWithRequestConnection`/`setRequestConnection` with a `dumpScope`; register `GetDumpSection` in `buildEmbeddedMcpAdapter` (`listToolsHandler` + `callToolHandler`).
+- Modify `srv/agent-manager.ts` — merge the cloud-local registry into `listToolDefsFromExporter`/`getSharedCorpusDocs` + the exposition map; extend the ALS store type + `runWithRequestConnection`/`setRequestConnection` with a `dumpScope`; register `GetDumpSection` in `buildEmbeddedMcpAdapter` (`listToolsHandler` + `callToolHandler`).
 - Modify `srv/agent-mcp.ts` — compute `principalHash` + system scope at `execute_step` and pass into `runWithRequestConnection` (into the ALS store).
 - Modify `srv/tool-intents.json` (+ regenerate `srv/tool-embeddings.json`) — add the `GetDumpSection` intent.
 - Modify `srv/skills/reading-short-dumps/SKILL.md` — index-first `GetDumpSection` flow.
@@ -118,16 +118,17 @@ describe('dump-parser (lifted)', () => {
 
 ### Task 5: Cloud-local tool registry → merge `GetDumpSection` into the shared corpus (F1)
 
-**Files:** Create `srv/lib/cloud-local-tools.ts`; Test `test/unit/cloud-local-tools.test.ts`; Modify `srv/agent-manager.ts` (`getStaticTools`/`getSharedCorpusDocs` + the exposition map).
+**Files:** Create `srv/lib/cloud-local-tools.ts`; Test `test/unit/cloud-local-tools.test.ts`; Modify `srv/agent-manager.ts` — the real private corpus source is **`listToolDefsFromExporter()`** (`srv/agent-manager.ts:1081`), and **`ToolDocInput`** is a private `type` at `:829` (there is **no** `getStaticTools`). This task **exports `ToolDocInput`** and merges the registry inside `listToolDefsFromExporter()`.
 
 **Interfaces:**
-- Consumes: the `ToolDocInput` shape (`srv/agent-manager.ts:828`) and the exposition-map builder.
-- Produces: `CLOUD_LOCAL_TOOLS: ToolDocInput[]` (one entry: `GetDumpSection`, `inputSchema` = `{ dump_id: string (required), section?: string }`, a one-line mechanical description, exposition tag `'system'` — dumps require MCP_Analyst, same tier as `RuntimeGetDumpById`) and a `mergeCloudLocalTools(tools: ToolDocInput[]): ToolDocInput[]`.
+- Consumes: the exported `ToolDocInput` type and the exposition-map builder.
+- Produces: `CLOUD_LOCAL_TOOLS: ToolDocInput[]` (one entry: `GetDumpSection`, `inputSchema` = `{ dump_id: string (required), section?: string }`, a one-line mechanical description, exposition tag `'system'` — dumps require MCP_Analyst, same tier as `RuntimeGetDumpById`) and `mergeCloudLocalTools(tools: ToolDocInput[]): ToolDocInput[]`.
 
-- [ ] **Step 1: Write the failing test** — `mergeCloudLocalTools([])` contains a `GetDumpSection` entry with exposition `'system'` and a `dump_id` param; and (integration) `getStaticTools()` includes `GetDumpSection` after wiring.
-- [ ] **Step 2: Run, confirm fail.**
-- [ ] **Step 3: Implement `cloud-local-tools.ts`** — export `CLOUD_LOCAL_TOOLS` + `mergeCloudLocalTools`. In `srv/agent-manager.ts`, call `mergeCloudLocalTools(...)` inside `getStaticTools()` (so `getSharedCorpusDocs()` and the generator both include it) and make the exposition-map builder tag `GetDumpSection` `'system'`. Do **not** touch `HandlerExporter`.
-- [ ] **Step 4: Green — also assert `getSharedCorpusDocs()` now yields a `GetDumpSection` doc.**
+- [ ] **Step 1:** In `srv/agent-manager.ts`, add `export` to the `ToolDocInput` type (`:829`).
+- [ ] **Step 2: Write the failing test** — `mergeCloudLocalTools([])` has a `GetDumpSection` entry (exposition `'system'`, a `dump_id` param); and (integration) `listToolDefsFromExporter()` includes `GetDumpSection` after wiring.
+- [ ] **Step 3: Run, confirm fail.**
+- [ ] **Step 4: Implement `cloud-local-tools.ts`** (`CLOUD_LOCAL_TOOLS` + `mergeCloudLocalTools`). In `srv/agent-manager.ts`, wrap the return of **`listToolDefsFromExporter()`** with `mergeCloudLocalTools(...)` (so `getSharedCorpusDocs()` and `tools/generate-tool-embeddings.ts` both include it) and make the exposition-map builder tag `GetDumpSection` `'system'`. Do **not** touch `HandlerExporter`.
+- [ ] **Step 5: Green — also assert `getSharedCorpusDocs()` now yields a `GetDumpSection` doc.**
 - [ ] **Step 5: Commit** — `feat(tool-rag): cloud-local tool registry; merge GetDumpSection into the shared corpus`.
 
 ---
@@ -137,14 +138,15 @@ describe('dump-parser (lifted)', () => {
 **Files:** Modify `srv/agent-manager.ts` (ALS store type, `runWithRequestConnection`, `buildEmbeddedMcpAdapter`), `srv/agent-mcp.ts` (`execute_step`).
 
 **Interfaces:**
-- Consumes: Tasks 1–5; `handlerMap.get('RuntimeGetDumpById')`; `resolvePrincipal`/`resolveSystemScope`; `makeDefaultDumpBuffer()`.
+- Consumes: Tasks 1–5; `resolvePrincipal`/`resolveSystemScope`; `makeDefaultDumpBuffer()`.
 - Produces: `GetDumpSection` visible in `listToolsHandler` and dispatchable in `callToolHandler`, keyed by the request's principal/scope.
 
-- [ ] **Step 1:** Extend the ALS store type to `{ connection, context, dumpScope?: { principalHash: string; resolvedDestination: string; effectiveClient: string } }`; thread `dumpScope` through `runWithRequestConnection`/`setRequestConnection` (optional param, defaulted `undefined`).
-- [ ] **Step 2:** In `srv/agent-mcp.ts` `execute_step`, where `req` + the resolved `SapConfig` exist, compute `authMode` (`sapLogin ? 'basic' : sapConfig.authType`), `resolvedSapIdentity` (`sapLogin ?? resolved.sapConfig.username ?? null`), `jwtSub` (from the validated JWT if available, else `null`), then `resolvePrincipal(...)`. If `null`, **do not** attach a `dumpScope` (the tool will refuse). Else build `dumpScope` with `resolveSystemScope(req.headers['x-sap-client'], { destinationName, client })` and pass it into `runWithRequestConnection`.
-- [ ] **Step 3:** In `buildEmbeddedMcpAdapter`: append the `GetDumpSection` def (from `CLOUD_LOCAL_TOOLS`) to what `listToolsHandler` returns; in `callToolHandler`, add a branch `if (name === 'GetDumpSection')` **before** the `handlerMap` lookup that reads `connectionALS.getStore()?.dumpScope` — **if absent, throw `SAP identity required to analyse a dump (no stable principal)`** — else calls `getDumpSectionResult(args, { key: { ...dumpScope, dumpId: args.dump_id }, buffer: <module singleton>, fetchFormatted: (id) => callToolHandler('RuntimeGetDumpById', { dump_id: id, view: 'formatted', response_mode: 'payload' }) → extract text })` and returns the JSON as tool text. Log with `principalHash` only.
-- [ ] **Step 4: Test** — build the adapter against a stubbed `RuntimeGetDumpById` returning the fixture, set an ALS `dumpScope`, call `GetDumpSection` twice → one underlying fetch, correct index/section; and with no `dumpScope` → throws the fail-closed error. (If the adapter is awkward to construct in a unit, assert the branch via a thin extracted function and document a manual check in the report.)
-- [ ] **Step 5: Commit** — `feat(agent-mcp): principal-scoped GetDumpSection via ALS dumpScope + embedded adapter`.
+- [ ] **Step 1 (F1): expose the resolved metadata from the connection helper.** `buildConnectionForDestination` (`srv/agent-mcp.ts:110`) currently returns only `IAbapConnection` — `sapLogin`, `sapClient`, `sapConfig`, and the `resolved` object are locals. Change it to return `{ connection, resolved, sapConfig, sapLogin, sapClient }` and update its one call site in `execute_step`. (Same shape is needed in `srv/lib/request-connection.ts` only if a future path reuses it — Phase 1 touches the agent-mcp helper.)
+- [ ] **Step 2:** Extend the ALS store type to `{ connection, context, dumpScope?: { principalHash: string; resolvedDestination: string; effectiveClient: string } }`; thread `dumpScope` through `runWithRequestConnection`/`setRequestConnection` (optional, defaulted `undefined`).
+- [ ] **Step 3 (F2): compute the principal in `execute_step`** from the now-exposed metadata: `authMode = sapLogin ? 'basic' : sapConfig.authType`; **`resolvedSapIdentity = sapLogin ?? resolved.username ?? null`** — the destination service user is `resolved.username` (`srv/connections/destinationResolver.ts`), **NOT** `resolved.sapConfig.username`; `jwtSub` from the validated JWT if available else `null`. `resolvePrincipal(...)` → if `null`, attach **no** `dumpScope` (tool refuses). Else `dumpScope = { principalHash, ...resolveSystemScope(sapClient, { destinationName: resolved.destinationName, client: resolved.sapConfig.client }) }`; pass it into `runWithRequestConnection`.
+- [ ] **Step 4 (F4): extract a named dispatcher.** In `buildEmbeddedMcpAdapter`, the current `callToolHandler` is an inline anonymous property (`srv/agent-manager.ts:1627`) — it cannot recurse by name. Extract a local `async function invokeEmbeddedTool(name, args)` holding today's dispatch body; have `callToolHandler` delegate to it. Then add, at the top of `invokeEmbeddedTool` (or `callToolHandler`), a branch `if (name === 'GetDumpSection')` that reads `connectionALS.getStore()?.dumpScope` — **absent ⇒ throw `SAP identity required to analyse a dump (no stable principal)`** — else `getDumpSectionResult(args, { key: { ...dumpScope, dumpId: args.dump_id }, buffer: <module singleton makeDefaultDumpBuffer()>, fetchFormatted: (id) => invokeEmbeddedTool('RuntimeGetDumpById', { dump_id: id, view: 'formatted', response_mode: 'payload' }).then(extractText) })`; return the JSON as tool text. Append the `GetDumpSection` def (from `CLOUD_LOCAL_TOOLS`) to `listToolsHandler`. Log with `principalHash` only.
+- [ ] **Step 5: Test** — drive `invokeEmbeddedTool('GetDumpSection', …)` against a stubbed `RuntimeGetDumpById` returning the fixture, with an ALS `dumpScope` set: two calls → one underlying fetch, correct index/section; no `dumpScope` → throws the fail-closed error. (Extracting `invokeEmbeddedTool` makes this unit-testable.)
+- [ ] **Step 6: Commit** — `feat(agent-mcp): principal-scoped GetDumpSection via ALS dumpScope + embedded adapter`.
 
 ---
 
