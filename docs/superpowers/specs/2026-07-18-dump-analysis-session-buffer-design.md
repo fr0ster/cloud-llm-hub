@@ -82,7 +82,7 @@ Planner (Claude Code)
 cloud-llm-hub  (SESSION + USER + ACCESS aware)
    ├─ analyze_dump tool (intent) + deterministic chapter profiles           [Phase 1]
    ├─ de-pad + split-by-chapter (lifted parseDump/MAJOR_TITLES)             [Phase 1 → moves to core in Phase 2]
-   ├─ NON-VECTOR raw buffer: {destination,client,dump_id} → chapters         [Phase 1 → becomes the injected ICache storage in Phase 2]
+   ├─ DumpBufferStore (injected iface): {destination,client,dump_id}→chapters [Phase 1 default = in-mem LRU; swap-in persistent later]
    ├─ semantic cache: session RAG (unstructured tail + memoised results)     [Phase 3]
    └─ ICache adapter: session-scoped, access-isolated storage               [Phase 2 injects into core]
         │  get(key)/set(key,value) on a domain key
@@ -116,18 +116,22 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   plain in-memory keyed store `{ destination, client, dump_id } → parsed chapters`; immutable
   → no validation; access isolation from the `user:session`-scoped store. (RAG enters only in
   Phase 3, and only for the unstructured tail.)
-- **Buffer lifecycle — in-memory, bounded, not persistent (Phase 1).** The buffer is a
-  *within-session optimisation over an immutable, re-fetchable artifact* — never a source of
-  truth — so it needs no durability. Explicit policy:
-  - **Storage:** in-process memory. **Does NOT survive restart** (a dropped dump is simply
-    re-fetched — it is immutable, so re-fetch is always correct).
-  - **Bounded size:** hard cap (e.g. `LLM_AGENT_DUMP_BUFFER_MAX` entries *and* a total-bytes
-    ceiling) with **LRU eviction** — a de-padded dump is ~400 KB, and this must not reintroduce
-    the OOM risk that v6.25.0/6.24.5 fought.
-  - **TTL:** evict on **session expiry**, plus a short absolute TTL as a backstop.
-  - Not shared across CF instances — on scale-out a dump fetched on instance A is re-fetched on
-    B (acceptable; immutable). Persistence/sharing, if ever wanted, arrives in Phase 2 via the
-    injected `ICache` adapter, not here.
+- **Buffer behind an injected store interface (DI) — implementation is a config choice.**
+  Same ports-and-adapters principle as core's `ICache` (decision 3): `analyze_dump` and the
+  profiles depend on a small `DumpBufferStore` **interface** (`get(key)`/`set(key,chapters)`/
+  eviction), never on a concrete store. **Whichever implementation we configure/inject is what
+  runs** — so "in-memory vs persistent" is not a hard design choice, it's the injected adapter.
+  - **Default (ships in Phase 1):** an **in-memory, LRU-bounded** adapter — hard cap
+    (`LLM_AGENT_DUMP_BUFFER_MAX` entries *and* a total-bytes ceiling) so a ~400 KB de-padded dump
+    cannot reintroduce the OOM risk v6.24.5/6.25.0 fought; TTL on **session expiry** + a short
+    absolute backstop; **does not survive restart** (a dropped dump is re-fetched — immutable, so
+    always correct); not shared across CF instances (re-fetch on the other instance is fine).
+  - **Swappable without touching `analyze_dump`:** a persistent (DB/file) or cross-instance
+    adapter can be injected/configured later — and this is exactly what Phase 2 does, backing the
+    same interface with the core `ICache` storage. The consumer code does not change.
+  - Rationale for the default staying in-memory: the buffer is a *within-session optimisation
+    over an immutable, re-fetchable artifact* — never a source of truth — so durability buys no
+    correctness, only cost; the interface keeps the door open regardless.
 - **Interface = one server-side tool `analyze_dump(dump_ref, intent)`**, injected into the
   executor's embedded MCP adapter (our code — no core change, no `HandlerExporter` change). It
   carries the `intent`, which a generic result-transform cannot: the transform seam exists
