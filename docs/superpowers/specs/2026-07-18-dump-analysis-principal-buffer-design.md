@@ -139,7 +139,13 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
     `resolvedSapIdentity` is simply **absent** — isolation then rests on the `principalHash`
     (`cds.context.user.id + authMode`, optionally the JWT `sub`) **combined with the
     `resolvedDestination` already in the system-scope key**, which together identify the caller and
-    the propagated target. So the hash is **always computable** without discovering the SAP user. `authMode` distinguishes the same
+    the propagated target. So the hash is **always computable** without discovering the SAP user.
+    **Fail closed if the principal is not established.** The `/mcp` route is auth-protected
+    (`srv/server.ts`), but the code path still has an `anonymous` fallback (`srv/agent-mcp.ts`
+    `cds.context?.user?.id ?? 'anonymous'`). If the user id is missing or `anonymous`, `analyze_dump`
+    **must NOT** compute a shared `principalHash` or buffer/serve under it — bypass the cache (fetch
+    fresh, do not store) or refuse; never risk cross-caller reuse under a shared anonymous key.
+    `authMode` distinguishes the same
     login reached via a different auth path. **The key and buffer files carry only `principalHash`**
     — no raw identity there. The **logs** rule is narrower and targets the **SAP login**
     (credential-adjacent): the XSUAA `cds.context.user.id` is a normal application-level identifier
@@ -194,8 +200,9 @@ Productise exactly the flow already proven by hand (fetch → de-pad → chapter
   `srv/mcp-proxy.ts`), and the mcp-manager **auth-override** log (`username: sapLogin`,
   `srv/mcp-manager.ts`) — all raw SAP logins in structured fields **not** covered by the v6.14.2
   header masking. Phase 1 does a **repo-wide sweep** (grep `x-sap-login` / `sapLogin` / `username:`)
-  and masks or drops every raw-login log site, not just the one the buffer touches, so the privacy
-  rule holds system-wide.
+  to **enumerate** candidates, then masks/drops each hit **whose value is a SAP login or
+  credential-adjacent identity** — reviewed per hit, **not** every generic `username:` field
+  blindly. Covers the buffer's site and the others found, so the privacy rule holds system-wide.
 
 **Outcome:** "planner delegates → gets an analysable dump" is closed **via the `analyze_dump`
 tool**, with no core change and one (not N) added tools.
