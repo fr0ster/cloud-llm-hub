@@ -20,3 +20,7 @@ package-lock.json text eol=lf
 *.ts text eol=lf
 *.json text eol=lf
 
+# Raw ST22 dump fixtures preserve SAP's fixed-width pipe padding verbatim —
+# trailing whitespace is real fixture data, not a whitespace error.
+test/unit/fixtures/*.formatted.txt -whitespace
+
