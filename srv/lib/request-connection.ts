@@ -24,6 +24,7 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { createConnection } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
+import { maskLoginForLog } from './log-mask';
 import { setRequestResponsible } from './responsible';
 
 export type CredentialError = Error & {
@@ -129,7 +130,7 @@ export async function establishRequestConnection(
     log.info('Per-request SAP connection established', {
       destination,
       auth: sapLogin ? 'user-basic' : sapConfig.authType,
-      username: sapLogin || '(destination-auth)',
+      username: maskLoginForLog(sapLogin),
     });
 
     // Per-request responsible person for ADT writes (create/update/delete):
@@ -144,7 +145,7 @@ export async function establishRequestConnection(
 
     log.warn('Per-request SAP connection unavailable', {
       destination,
-      username: sapLogin,
+      username: maskLoginForLog(sapLogin),
       code: errWithCode.code,
       error: err.message,
     });
