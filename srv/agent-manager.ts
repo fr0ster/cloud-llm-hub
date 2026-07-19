@@ -349,6 +349,9 @@ function getToolExpositionMap(): Map<string, string> {
       }
     }
   }
+  for (const [t, e] of Object.entries(CLOUD_LOCAL_TOOL_EXPOSITIONS)) {
+    toolExpositionMap.set(t, e);
+  }
 
   cds.log('agent-manager').info('Built tool exposition map', {
     total: toolExpositionMap.size,
@@ -415,6 +418,10 @@ import {
   clearDestinationsCache,
   getAvailableDestinations,
 } from './lib/btp-destinations';
+import {
+  CLOUD_LOCAL_TOOL_EXPOSITIONS,
+  mergeCloudLocalTools,
+} from './lib/cloud-local-tools';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
@@ -826,7 +833,7 @@ async function createToolsRagStore(
 // ---------------------------------------------------------------------------
 
 /** Minimal tool shape needed to assemble a tool-doc (from listTools OR HandlerExporter). */
-type ToolDocInput = {
+export type ToolDocInput = {
   name: string;
   description?: string;
   inputSchema?: unknown;
@@ -1080,11 +1087,12 @@ export function getHandlerExporterConfig(env: NodeJS.ProcessEnv = process.env) {
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
 function listToolDefsFromExporter(): ToolDocInput[] {
   const exporter = new HandlerExporter(getHandlerExporterConfig());
-  return exporter.getHandlerEntries().map((e) => ({
+  const coreTools = exporter.getHandlerEntries().map((e) => ({
     name: e.toolDefinition.name,
     description: e.toolDefinition.description,
     inputSchema: e.toolDefinition.inputSchema,
   }));
+  return mergeCloudLocalTools(coreTools);
 }
 
 /** One shared-corpus doc: the upsert `id`, final `text`, exposition tag, cached flag. */
