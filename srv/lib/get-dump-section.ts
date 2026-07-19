@@ -52,3 +52,120 @@ export async function getDumpSectionResult(
 
   return { dumpId: args.dumpId, section: args.section, text };
 }
+
+/**
+ * Join the text parts of an MCP tool result into a single string. Non-text
+ * parts (if any) are ignored; an empty/absent `content` yields `''`.
+ */
+export function extractMcpTextResult(result: unknown): string {
+  const content = (result as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter(
+      (c): c is { type: 'text'; text: string } =>
+        (c as { type?: unknown })?.type === 'text' &&
+        typeof (c as { text?: unknown })?.text === 'string',
+    )
+    .map((c) => c.text)
+    .join('\n');
+}
+
+/**
+ * Parse a `RuntimeGetDumpById` (view: 'formatted') MCP result and return the
+ * raw pipe-text payload. `RuntimeGetDumpById` wraps the payload in a JSON
+ * envelope `{ success, dump_id, view, status, payload }`; the raw dump text is
+ * `payload` (a string) only for the formatted view. Validates the envelope and
+ * throws loudly on any deviation — never silently returns `''`, because a
+ * wrong-format payload would corrupt every parsed section.
+ */
+export function parseFormattedDumpPayload(result: unknown): string {
+  const raw = extractMcpTextResult(result);
+  const j = JSON.parse(raw) as {
+    success?: unknown;
+    view?: unknown;
+    payload?: unknown;
+  };
+  if (
+    j.success !== true ||
+    j.view !== 'formatted' ||
+    typeof j.payload !== 'string'
+  ) {
+    throw new Error(
+      `Unexpected RuntimeGetDumpById result: ${JSON.stringify({
+        success: j.success,
+        view: j.view,
+        payloadType: typeof j.payload,
+      })}`,
+    );
+  }
+  return j.payload;
+}
+
+export interface GetDumpSectionCallArgs {
+  dumpId?: string;
+  section?: string;
+}
+
+export interface GetDumpSectionCallDeps {
+  dumpScope?: {
+    principalHash: string;
+    resolvedDestination: string;
+    effectiveClient: string;
+  };
+  buffer: DumpBufferStore;
+  fetchFormatted: (dumpId: string) => Promise<string>;
+}
+
+export interface McpTextResult {
+  isError: boolean;
+  content: [{ type: 'text'; text: string }];
+}
+
+/**
+ * MCP-shaped entry point for the `GetDumpSection` tool. Fails closed with two
+ * DISTINCT errors (never conflated): no stable principal → identity required;
+ * missing `dumpId` → dump_id required. Otherwise delegates to
+ * `getDumpSectionResult`, keyed by the principal/scope, and turns any thrown
+ * error (e.g. an invalid `section`) into an `isError:true` MCP result.
+ */
+export async function handleGetDumpSectionCall(
+  args: GetDumpSectionCallArgs,
+  deps: GetDumpSectionCallDeps,
+): Promise<McpTextResult> {
+  if (!deps.dumpScope) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: 'SAP identity required to analyse a dump (no stable principal)',
+        },
+      ],
+    };
+  }
+  if (!args.dumpId) {
+    return {
+      isError: true,
+      content: [{ type: 'text', text: 'dump_id is required' }],
+    };
+  }
+  try {
+    const result = await getDumpSectionResult(
+      { dumpId: args.dumpId, section: args.section },
+      {
+        key: { ...deps.dumpScope, dumpId: args.dumpId },
+        buffer: deps.buffer,
+        fetchFormatted: deps.fetchFormatted,
+      },
+    );
+    return {
+      isError: false,
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  } catch (e) {
+    return {
+      isError: true,
+      content: [{ type: 'text', text: String((e as Error).message) }],
+    };
+  }
+}

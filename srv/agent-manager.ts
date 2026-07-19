@@ -380,9 +380,30 @@ function getToolExpositionMap(): Map<string, string> {
 
 type AbapConnectionLike = import('@mcp-abap-adt/interfaces').IAbapConnection;
 
+interface DumpScope {
+  principalHash: string;
+  resolvedDestination: string;
+  effectiveClient: string;
+}
+
+// Process-wide buffer for cloud-local dump sections. Must be a singleton: a
+// per-call buffer would never hit, defeating the whole point of caching the
+// 185K-token formatted payload across GetDumpSection calls. Keys carry only the
+// principalHash (never the raw SAP login), so entries are principal-isolated.
+// Lazily built: `makeDefaultDumpBuffer` is imported mid-file (below), so a
+// top-level `const` would hit its temporal dead zone under CommonJS transpile.
+let dumpBufferSingleton: DumpBufferStore | undefined;
+function getDumpBuffer(): DumpBufferStore {
+  if (!dumpBufferSingleton) {
+    dumpBufferSingleton = makeDefaultDumpBuffer(process.env);
+  }
+  return dumpBufferSingleton;
+}
+
 const connectionALS = new AsyncLocalStorage<{
   connection: AbapConnectionLike;
   context: HandlerContext;
+  dumpScope?: DumpScope;
 }>();
 
 /**
@@ -390,9 +411,12 @@ const connectionALS = new AsyncLocalStorage<{
  * All MCP tool calls in this async scope will use the given connection
  * instead of the shared agent connection. Call before agent.process/streamProcess.
  */
-export function setRequestConnection(connection: AbapConnectionLike): void {
+export function setRequestConnection(
+  connection: AbapConnectionLike,
+  dumpScope?: DumpScope,
+): void {
   const context: HandlerContext = { connection, logger: loggerAdapter };
-  connectionALS.enterWith({ connection, context });
+  connectionALS.enterWith({ connection, context, dumpScope });
 }
 
 /**
@@ -408,9 +432,10 @@ export function setRequestConnection(connection: AbapConnectionLike): void {
 export function runWithRequestConnection<T>(
   connection: AbapConnectionLike,
   fn: () => Promise<T>,
+  dumpScope?: DumpScope,
 ): Promise<T> {
   const context: HandlerContext = { connection, logger: loggerAdapter };
-  return connectionALS.run({ connection, context }, fn);
+  return connectionALS.run({ connection, context, dumpScope }, fn);
 }
 
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
@@ -420,8 +445,14 @@ import {
 } from './lib/btp-destinations';
 import {
   CLOUD_LOCAL_TOOL_EXPOSITIONS,
+  CLOUD_LOCAL_TOOLS,
   mergeCloudLocalTools,
 } from './lib/cloud-local-tools';
+import { type DumpBufferStore, makeDefaultDumpBuffer } from './lib/dump-buffer';
+import {
+  handleGetDumpSectionCall,
+  parseFormattedDumpPayload,
+} from './lib/get-dump-section';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
@@ -1623,85 +1654,128 @@ async function buildEmbeddedMcpAdapter(
     tools: exporter.getToolNames(),
   });
 
+  // Named dispatcher so cloud-local tools can recurse by name (GetDumpSection
+  // fetches the formatted dump via RuntimeGetDumpById through this same path).
+  // biome-ignore lint/suspicious/noExplicitAny: MCP tool args are untyped at this boundary
+  async function invokeEmbeddedTool(name: string, args: any): Promise<unknown> {
+    // Cloud-local tool: NOT in handlerMap, so branch BEFORE the unknown-tool
+    // check. Principal-scoped via the ALS dumpScope; the raw login is never in
+    // the key/log — only its hash.
+    if (name === 'GetDumpSection') {
+      const dumpScope = connectionALS.getStore()?.dumpScope;
+      log.info('GetDumpSection dispatch', {
+        destination: destinationName,
+        principalHash: dumpScope?.principalHash,
+        hasScope: !!dumpScope,
+      });
+      return handleGetDumpSectionCall(
+        { dumpId: args?.dump_id, section: args?.section },
+        {
+          dumpScope,
+          buffer: getDumpBuffer(),
+          fetchFormatted: (id: string) =>
+            invokeEmbeddedTool('RuntimeGetDumpById', {
+              dump_id: id,
+              view: 'formatted',
+              response_mode: 'payload',
+            }).then(parseFormattedDumpPayload),
+        },
+      );
+    }
+
+    const handler = handlerMap.get(name);
+    if (!handler) {
+      throw new Error(`Unknown MCP tool: ${name}`);
+    }
+    // Per-request connection override: if ALS has a connection, use it
+    // instead of any shared/service-user destination connection.
+    const requestScope = connectionALS.getStore();
+    if (!requestScope) {
+      throw new Error(
+        `SAP credentials are required for destination "${destinationName}".`,
+      );
+    }
+    const effectiveContext = requestScope.context;
+
+    // For closure-based handlers, temporarily swap group.context
+    // so they pick up per-request connection.
+    let prevGroupContexts: HandlerContext[] | undefined;
+    try {
+      if (requestScope && handlerGroups) {
+        prevGroupContexts = handlerGroups.map((g) => g.context);
+        for (const g of handlerGroups) {
+          g.context = effectiveContext;
+        }
+      }
+
+      // Handlers from HandlerExporter have two signatures:
+      // - length >= 2: (context, args) => ... (direct handlers)
+      // - length === 1: (args) => ... (closure-based, uses group.context)
+      // Match BaseMcpServer.registerHandlers() logic (line 283-301)
+      const toolCall =
+        handler.length >= 2
+          ? handler(effectiveContext, args)
+          : (handler as unknown as (a: typeof args) => unknown)(args);
+
+      // No cloud-llm-hub-side timeout wrapper. Each SAP call is already bounded
+      // by the adt-clients HTTP timeout (SAP_TIMEOUT_*), and destination
+      // availability is covered by the ProbeDestination reachability check —
+      // a redundant Promise.race here only fought those legitimate limits
+      // (e.g. cutting heavy where-used scans that the ABAP layer allows).
+      const result = await toolCall;
+
+      const resultStr = JSON.stringify(result).slice(0, 1000);
+      log.info('MCP tool call', {
+        destination: destinationName,
+        tool: name,
+        handlerType: handler.length >= 2 ? 'direct' : 'closure',
+        argsKeys: Object.keys(args || {}),
+        args: JSON.stringify(args).slice(0, 300),
+        resultLength: resultStr.length,
+        resultPreview: resultStr.slice(0, 500),
+        connectionOverride: !!requestScope,
+      });
+      return result;
+    } catch (err) {
+      log.error('MCP tool call failed', {
+        tool: name,
+        args: JSON.stringify(args).slice(0, 500),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    } finally {
+      // Restore shared group.context after per-request override
+      if (prevGroupContexts && handlerGroups) {
+        for (let i = 0; i < handlerGroups.length; i++) {
+          handlerGroups[i].context = prevGroupContexts[i];
+        }
+      }
+    }
+  }
+
   // Use embedded transport — direct in-process handler calls
   const mcpClient = new MCPClientWrapper({
     transport: 'embedded',
-    listToolsHandler: async () =>
-      entries.map((e) => ({
+    listToolsHandler: async () => {
+      const list = entries.map((e) => ({
         name: e.toolDefinition.name,
         description: e.toolDefinition.description,
         inputSchema: toJsonSchema(e.toolDefinition.inputSchema),
-      })),
-    callToolHandler: async (name, args) => {
-      const handler = handlerMap.get(name);
-      if (!handler) {
-        throw new Error(`Unknown MCP tool: ${name}`);
-      }
-      // Per-request connection override: if ALS has a connection, use it
-      // instead of any shared/service-user destination connection.
-      const requestScope = connectionALS.getStore();
-      if (!requestScope) {
-        throw new Error(
-          `SAP credentials are required for destination "${destinationName}".`,
-        );
-      }
-      const effectiveContext = requestScope.context;
-
-      // For closure-based handlers, temporarily swap group.context
-      // so they pick up per-request connection.
-      let prevGroupContexts: HandlerContext[] | undefined;
-      try {
-        if (requestScope && handlerGroups) {
-          prevGroupContexts = handlerGroups.map((g) => g.context);
-          for (const g of handlerGroups) {
-            g.context = effectiveContext;
-          }
-        }
-
-        // Handlers from HandlerExporter have two signatures:
-        // - length >= 2: (context, args) => ... (direct handlers)
-        // - length === 1: (args) => ... (closure-based, uses group.context)
-        // Match BaseMcpServer.registerHandlers() logic (line 283-301)
-        const toolCall =
-          handler.length >= 2
-            ? handler(effectiveContext, args)
-            : (handler as unknown as (a: typeof args) => unknown)(args);
-
-        // No cloud-llm-hub-side timeout wrapper. Each SAP call is already bounded
-        // by the adt-clients HTTP timeout (SAP_TIMEOUT_*), and destination
-        // availability is covered by the ProbeDestination reachability check —
-        // a redundant Promise.race here only fought those legitimate limits
-        // (e.g. cutting heavy where-used scans that the ABAP layer allows).
-        const result = await toolCall;
-
-        const resultStr = JSON.stringify(result).slice(0, 1000);
-        log.info('MCP tool call', {
-          destination: destinationName,
-          tool: name,
-          handlerType: handler.length >= 2 ? 'direct' : 'closure',
-          argsKeys: Object.keys(args || {}),
-          args: JSON.stringify(args).slice(0, 300),
-          resultLength: resultStr.length,
-          resultPreview: resultStr.slice(0, 500),
-          connectionOverride: !!requestScope,
+      }));
+      // Append cloud-local GetDumpSection unless a core tool already claims the
+      // name (same dedupe policy as the corpus). Its inputSchema is already a
+      // JSON schema, so it is NOT run through toJsonSchema.
+      if (!entries.some((e) => e.toolDefinition.name === 'GetDumpSection')) {
+        const def = CLOUD_LOCAL_TOOLS[0];
+        list.push({
+          name: def.name,
+          description: def.description ?? '',
+          inputSchema: def.inputSchema as ReturnType<typeof toJsonSchema>,
         });
-        return result;
-      } catch (err) {
-        log.error('MCP tool call failed', {
-          tool: name,
-          args: JSON.stringify(args).slice(0, 500),
-          error: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
-      } finally {
-        // Restore shared group.context after per-request override
-        if (prevGroupContexts && handlerGroups) {
-          for (let i = 0; i < handlerGroups.length; i++) {
-            handlerGroups[i].context = prevGroupContexts[i];
-          }
-        }
       }
+      return list;
     },
+    callToolHandler: async (name, args) => invokeEmbeddedTool(name, args),
   });
 
   // connect() populates internal tools list from listToolsHandler

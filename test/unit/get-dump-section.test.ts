@@ -5,7 +5,11 @@ import type {
   DumpBufferStore,
   DumpBufferValue,
 } from '../../srv/lib/dump-buffer';
-import { getDumpSectionResult } from '../../srv/lib/get-dump-section';
+import {
+  getDumpSectionResult,
+  handleGetDumpSectionCall,
+  parseFormattedDumpPayload,
+} from '../../srv/lib/get-dump-section';
 
 const payload = fs.readFileSync(
   path.join(__dirname, 'fixtures/zdemo01-dump.formatted.txt'),
@@ -91,5 +95,166 @@ describe('getDumpSectionResult (buffer-once)', () => {
         { key, buffer, fetchFormatted },
       ),
     ).rejects.toThrow(/Error analysis/);
+  });
+});
+
+function formattedWrapper(payloadText: string): unknown {
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          view: 'formatted',
+          payload: payloadText,
+        }),
+      },
+    ],
+  };
+}
+
+describe('parseFormattedDumpPayload', () => {
+  it('returns the payload string from a valid formatted wrapper', () => {
+    expect(parseFormattedDumpPayload(formattedWrapper('<pipe text>'))).toBe(
+      '<pipe text>',
+    );
+  });
+
+  it('throws when success is false', () => {
+    const result = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            view: 'formatted',
+            payload: 'x',
+          }),
+        },
+      ],
+    };
+    expect(() => parseFormattedDumpPayload(result)).toThrow(
+      /Unexpected RuntimeGetDumpById result/,
+    );
+  });
+
+  it('throws when view is not formatted', () => {
+    const result = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            view: 'summary',
+            payload: 'x',
+          }),
+        },
+      ],
+    };
+    expect(() => parseFormattedDumpPayload(result)).toThrow(
+      /Unexpected RuntimeGetDumpById result/,
+    );
+  });
+
+  it('throws when payload is not a string', () => {
+    const result = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            view: 'formatted',
+            payload: { not: 'a string' },
+          }),
+        },
+      ],
+    };
+    expect(() => parseFormattedDumpPayload(result)).toThrow(
+      /Unexpected RuntimeGetDumpById result/,
+    );
+  });
+
+  it('throws on malformed JSON', () => {
+    const result = { content: [{ type: 'text', text: 'not json {{' }] };
+    expect(() => parseFormattedDumpPayload(result)).toThrow();
+  });
+});
+
+describe('handleGetDumpSectionCall (MCP-shaped, fail-closed)', () => {
+  const dumpScope = {
+    principalHash: 'hash1',
+    resolvedDestination: 'S4HANA_DEV',
+    effectiveClient: '100',
+  };
+
+  const fetchFormatted = () =>
+    Promise.resolve(parseFormattedDumpPayload(formattedWrapper(payload)));
+
+  it('returns the index (isError:false) when section is omitted', async () => {
+    const buffer = fakeBuffer();
+    const result = await handleGetDumpSectionCall(
+      { dumpId: 'DUMP001' },
+      { dumpScope, buffer, fetchFormatted },
+    );
+    expect(result.isError).toBe(false);
+    expect(result.content[0].text).toContain('Error analysis');
+  });
+
+  it('returns the de-padded chapter text for a valid section', async () => {
+    const buffer = fakeBuffer();
+    const result = await handleGetDumpSectionCall(
+      { dumpId: 'DUMP001', section: 'Error analysis' },
+      { dumpScope, buffer, fetchFormatted },
+    );
+    expect(result.isError).toBe(false);
+    expect(result.content[0].text).toContain('CX_RAP_HANDLER_NOT_IMPLEMENTED');
+  });
+
+  it('fetches once across two calls (buffer hit)', async () => {
+    const buffer = fakeBuffer();
+    const spy = jest
+      .fn()
+      .mockResolvedValue(parseFormattedDumpPayload(formattedWrapper(payload)));
+    await handleGetDumpSectionCall(
+      { dumpId: 'DUMP001' },
+      { dumpScope, buffer, fetchFormatted: spy },
+    );
+    await handleGetDumpSectionCall(
+      { dumpId: 'DUMP001', section: 'Error analysis' },
+      { dumpScope, buffer, fetchFormatted: spy },
+    );
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed with a principal message when dumpScope is absent', async () => {
+    const buffer = fakeBuffer();
+    const result = await handleGetDumpSectionCall(
+      { dumpId: 'DUMP001' },
+      { buffer, fetchFormatted },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      'SAP identity required to analyse a dump (no stable principal)',
+    );
+  });
+
+  it('fails with a distinct message when dumpId is absent', async () => {
+    const buffer = fakeBuffer();
+    const result = await handleGetDumpSectionCall(
+      {},
+      { dumpScope, buffer, fetchFormatted },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('dump_id is required');
+  });
+
+  it('returns isError:true listing valid chapters for an invalid section', async () => {
+    const buffer = fakeBuffer();
+    const result = await handleGetDumpSectionCall(
+      { dumpId: 'DUMP001', section: 'No Such Chapter' },
+      { dumpScope, buffer, fetchFormatted },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Error analysis');
   });
 });
