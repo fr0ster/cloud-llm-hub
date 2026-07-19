@@ -1030,5 +1030,9 @@
   "GetMetadataExtensionVersionDiff": {
     "text": "Tool: GetMetadataExtensionVersionDiff\nDescription: [read-only] Compute a unified diff between two CDS metadata extension versions, by their content_uris (taken from GetMetadataExtensionVersions entries).\nParameters: type, properties, required",
     "enriched": "Tool: GetMetadataExtensionVersionDiff\nDescription: [read-only] Compute a unified diff between two CDS metadata extension versions, by their content_uris (taken from GetMetadataExtensionVersions entries).\nParameters: type, properties, required\nIntent: compare CDS metadata versions, diff metadata extensions, show version differences, metadata extension comparison, CDS version diff"
+  },
+  "GetDumpSection": {
+    "text": "Tool: GetDumpSection\nDescription: Returns a runtime dump (ST22 short dump) section index, or one de-padded chapter when `section` is given.\nParameters: dump_id, section",
+    "enriched": "Tool: GetDumpSection\nDescription: Returns a runtime dump (ST22 short dump) section index, or one de-padded chapter when `section` is given.\nParameters: dump_id, section\nIntent: runtime dump section, get ST22 dump, read dump chapter, analyze short dump, retrieve dump data"
   }
 }
