@@ -34,6 +34,7 @@ import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
+import { resolvePrincipal, resolveSystemScope } from './lib/principal';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
 import { runWithSessionId } from './request-session';
@@ -107,10 +108,18 @@ function textResult(text: string, isError = false) {
  * channels; throws on a missing/invalid credential instead of writing a
  * response (the caller turns it into an MCP tool error).
  */
+interface BuiltConnection {
+  connection: IAbapConnection;
+  resolved: Awaited<ReturnType<typeof resolveDestinationSapConfig>>;
+  sapConfig: SapConfig;
+  sapLogin: string | undefined;
+  sapClient: string | undefined;
+}
+
 async function buildConnectionForDestination(
   req: Request,
   destination: string,
-): Promise<IAbapConnection> {
+): Promise<BuiltConnection> {
   const sapLogin = (req.headers['x-sap-login'] as string | undefined)?.trim();
   const sapPassword = req.headers['x-sap-password'] as string | undefined;
   const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
@@ -143,7 +152,13 @@ async function buildConnectionForDestination(
     destinationName: resolved.destinationName,
   });
   await conn.connect();
-  return conn as unknown as IAbapConnection;
+  return {
+    connection: conn as unknown as IAbapConnection,
+    resolved,
+    sapConfig,
+    sapLogin,
+    sapClient,
+  };
 }
 
 /**
@@ -235,10 +250,37 @@ export async function createAgentMcpServerForRequest(
             true,
           );
         }
-        connection = await buildConnectionForDestination(
+        const built = await buildConnectionForDestination(
           req,
           targetDestination,
         );
+        connection = built.connection;
+        const { resolved, sapConfig, sapLogin, sapClient } = built;
+
+        // Derive a stable, non-reversible principal + system scope for the
+        // principal-scoped cloud-local tools (e.g. GetDumpSection's buffer key).
+        // The raw SAP login never enters a key/log — only its hash. Fails closed:
+        // an anonymous/unauthenticated caller yields no dumpScope, so the tool
+        // refuses. jwtSub is null here — no validated-JWT `sub` is surfaced on
+        // this path (see task-6-report.md).
+        const authMode = sapLogin ? 'basic' : sapConfig.authType;
+        const resolvedSapIdentity = sapLogin ?? resolved.username ?? null;
+        const principal = resolvePrincipal({
+          cdsUserId: userId,
+          authMode,
+          resolvedSapIdentity,
+          jwtSub: null,
+        });
+        const dumpScope = principal
+          ? {
+              principalHash: principal.principalHash,
+              ...resolveSystemScope(sapClient, {
+                destinationName: resolved.destinationName,
+                client: resolved.sapConfig.client,
+              }),
+            }
+          : undefined;
+
         // Per-request responsible person for ADT writes (create/update/delete).
         setRequestResponsible(req.headers);
         const handle = await getSmartAgent(undefined, targetDestination);
@@ -270,8 +312,10 @@ export async function createAgentMcpServerForRequest(
 
         const conn = connection;
         const r = await runWithSessionId(sessionId, () =>
-          runWithRequestConnection(conn, () =>
-            handle.agent.process([{ role: 'user', content: task }], opts),
+          runWithRequestConnection(
+            conn,
+            () => handle.agent.process([{ role: 'user', content: task }], opts),
+            dumpScope,
           ),
         );
 
