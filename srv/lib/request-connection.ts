@@ -83,6 +83,11 @@ export async function establishRequestConnection(
   // destination's own sap-client so a single URL-only destination can serve
   // multiple clients per request.
   const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
+  // The basic-auth override needs BOTH a login and a password — a login alone
+  // does NOT authenticate as that login. Declared before the try so BOTH the
+  // success and the failure logs (and the auth config + dump principal) key off
+  // this single effective-auth flag rather than the raw x-sap-login header.
+  const usedBasicOverride = !!(sapLogin && sapPassword);
 
   try {
     const resolved = await resolveDestinationSapConfig(
@@ -103,10 +108,6 @@ export async function establishRequestConnection(
       );
     }
 
-    // The basic-auth override needs BOTH a login and a password — a login alone
-    // does NOT authenticate as that login. Everything below (auth config, the
-    // diagnostic log, and the dump principal) keys off this single flag.
-    const usedBasicOverride = !!(sapLogin && sapPassword);
     const sapConfig: SapConfig = { ...resolved.sapConfig };
     if (usedBasicOverride) {
       // Caller-supplied basic auth overrides the destination's own auth.
@@ -169,7 +170,9 @@ export async function establishRequestConnection(
 
     log.warn('Per-request SAP connection unavailable', {
       destination,
-      username: maskLoginForLog(sapLogin),
+      username: usedBasicOverride
+        ? maskLoginForLog(sapLogin)
+        : '(destination-auth)',
       code: errWithCode.code,
       error: err.message,
     });
