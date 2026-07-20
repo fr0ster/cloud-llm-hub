@@ -13,17 +13,42 @@ describe('ExpositionFilteringRag exposition filter', () => {
   const rows: Row[] = [
     { score: 0.9, metadata: { id: 'tool:CreateDomain', exposition: 'high' } },
     { score: 0.8, metadata: { id: 'tool:HandlerLowLevel' } }, // untagged tool
-    { score: 0.7, metadata: { id: 'skill:creating-draft-table' } }, // untagged skill
+    { score: 0.75, metadata: { id: 'skill:creating-domain' } }, // write skill → high
+    { score: 0.7, metadata: { id: 'skill:some-consumer-skill' } }, // untagged skill
   ];
 
-  it('keeps skill:* even though they carry no exposition', async () => {
+  it('keeps an UNtagged skill regardless of role (instructions default)', async () => {
     const rag = new ExpositionFilteringRag(innerWith(rows) as any);
     const res = await rag.query({} as never, 10, {
-      ragFilter: { exposition: ['high'] },
+      ragFilter: { exposition: ['readonly', 'search'] },
     });
     if (!res.ok) throw new Error('query failed');
     const ids = res.value.map((r) => r.metadata.id);
-    expect(ids).toContain('skill:creating-draft-table');
+    expect(ids).toContain('skill:some-consumer-skill');
+  });
+
+  it('drops a WRITE skill for a role lacking its exposition', async () => {
+    // read-only caller: no 'high' → the creating-domain skill must NOT reach the
+    // executor (else it narrates a create it cannot perform — the hallucination).
+    const rag = new ExpositionFilteringRag(innerWith(rows) as any);
+    const res = await rag.query({} as never, 10, {
+      ragFilter: { exposition: ['readonly', 'search', 'system'] },
+    });
+    if (!res.ok) throw new Error('query failed');
+    const ids = res.value.map((r) => r.metadata.id);
+    expect(ids).not.toContain('skill:creating-domain');
+    expect(ids).not.toContain('tool:CreateDomain'); // its tool is gated too
+  });
+
+  it('keeps a WRITE skill for a role that has its exposition', async () => {
+    const rag = new ExpositionFilteringRag(innerWith(rows) as any);
+    const res = await rag.query({} as never, 10, {
+      ragFilter: { exposition: ['readonly', 'search', 'system', 'high'] },
+    });
+    if (!res.ok) throw new Error('query failed');
+    const ids = res.value.map((r) => r.metadata.id);
+    expect(ids).toContain('skill:creating-domain');
+    expect(ids).toContain('tool:CreateDomain');
   });
 
   it('still drops an untagged TOOL when a role filter is active', async () => {
@@ -41,7 +66,7 @@ describe('ExpositionFilteringRag exposition filter', () => {
     const rag = new ExpositionFilteringRag(innerWith(rows) as any);
     const res = await rag.query({} as never, 10, {});
     if (!res.ok) throw new Error('query failed');
-    expect(res.value).toHaveLength(3);
+    expect(res.value).toHaveLength(4);
   });
 });
 
