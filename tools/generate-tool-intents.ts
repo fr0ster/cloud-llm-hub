@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
+import { CLOUD_LOCAL_TOOLS } from '../srv/lib/cloud-local-tools';
 
 type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
@@ -64,6 +65,27 @@ async function main() {
       .join('\n');
     return { name: def.name as string, text };
   });
+
+  // Merge cloud-local tools (mirrors the shared corpus in agent-manager.ts via
+  // mergeCloudLocalTools). Without this, GetDumpSection is invisible here and the
+  // purge pass below would delete any GetDumpSection intent as an "unknown" tool.
+  // Cloud-local inputSchema is already JSON Schema, so read `.properties` directly.
+  for (const cl of CLOUD_LOCAL_TOOLS) {
+    if (tools.some((t) => t.name === cl.name)) continue;
+    const props =
+      (cl.inputSchema as { properties?: Record<string, unknown> } | undefined)
+        ?.properties ?? {};
+    const paramNames = Object.keys(props).join(', ');
+    const text = [
+      `Tool: ${cl.name}`,
+      `Description: ${cl.description}`,
+      paramNames ? `Parameters: ${paramNames}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    tools.push({ name: cl.name, text });
+  }
+  console.log(`Tools (incl. cloud-local): ${tools.length}`);
 
   // Create LLM for enrichment
   const llm = await makeLlm(

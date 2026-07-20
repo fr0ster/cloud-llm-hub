@@ -65,9 +65,12 @@ function jsonError(message: string, type: string): string {
  */
 function withRequestConnection<T>(
   connection: import('@mcp-abap-adt/interfaces').IAbapConnection | undefined,
+  dumpScope: import('./lib/principal').DumpScope | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return connection ? runWithRequestConnection(connection, fn) : fn();
+  return connection
+    ? runWithRequestConnection(connection, fn, dumpScope)
+    : fn();
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +511,7 @@ export async function handleChatCompletions(
   let requestConnection:
     | import('@mcp-abap-adt/interfaces').IAbapConnection
     | undefined;
+  let requestDumpScope: import('./lib/principal').DumpScope | undefined;
 
   log.debug('Destination tracking', {
     sessionId,
@@ -520,6 +524,7 @@ export async function handleChatCompletions(
     const established = await establishRequestConnection(req, res, destAfter);
     if (established.handled) return;
     requestConnection = established.connection;
+    requestDumpScope = established.dumpScope;
   }
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
@@ -832,7 +837,7 @@ export async function handleChatCompletions(
       // Retry loop: restart stream on rate-limit errors (only before first content chunk)
       let rateLimitAttempt = 0;
       await runWithSessionId(sessionId, () =>
-        withRequestConnection(requestConnection, async () => {
+        withRequestConnection(requestConnection, requestDumpScope, async () => {
           streamRetry: while (rateLimitAttempt <= RATE_LIMIT_MAX_RETRIES) {
             const stream = handle.agent.streamProcess(normalizedMessages, opts);
 
@@ -1117,7 +1122,7 @@ export async function handleChatCompletions(
     // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
     // The wrapper encloses the whole retry block so the context stays alive across retries.
     const result = await runWithSessionId(sessionId, () =>
-      withRequestConnection(requestConnection, async () => {
+      withRequestConnection(requestConnection, requestDumpScope, async () => {
         let r = await handle.agent.process(normalizedMessages, opts);
 
         // Retry on rate-limit errors

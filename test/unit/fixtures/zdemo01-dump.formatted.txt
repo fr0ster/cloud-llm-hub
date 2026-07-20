@@ -1,0 +1,337 @@
+----------------------------------------------------------------------------------------------------
+Category               ABAP programming error                                                                                                                                                                                                                                                       
+Runtime Errors         RAISE_SHORTDUMP                                                                                                                                                                                                                                                              
+Except.                CX_SADL_DUMP_APPL_MODEL_ERROR                                                                                                                                                                                                                                                
+Development Object     STOB ZDEMO01_C_BOOK                                                                                                                                                                                                                                                            
+Application Component  Not assigned                                                                                                                                                                                                                                                                 
+Date and Time          17.07.2026 10:08:28 (UTC+3)                                                                                                                                                                                                                                                  
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Short Text                                                                                        |
+|    The current program has intentionally triggered a termination with a                          |
+|    short dump.                                                                                   |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What happened?                                                                                    |
+|    The current program has recognised an error that it could not handle                          |
+|    adequately. To reverse any database changes made and to save                                  |
+|    information for further analysis, the program has intentionally                               |
+|    triggered a short dump using the language elements RAISE SHORTDUMP or                         |
+|    THROW SHORTDUMP.                                                                              |
+|    For more information follow the link: ABAP Keyword Documentation.                             |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What can you do?                                                                                  |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Error analysis                                                                                    |
+|    The program has indicated exception "CX_SADL_DUMP_APPL_MODEL_ERROR" as the                    |
+|     reason for the                                                                               |
+|    termination:                                                                                  |
+|    Processing was aborted because of an application modeling error: See previous                 |
+|    in exception chain.                                                                           |
+|                                                                                                  |
+|    The exception is related to the previous exception                                            |
+|     "CX_RAP_HANDLER_NOT_IMPLEMENTED" that occurred in                                            |
+|    program "CL_RAP_BHV_PROCESSOR==========CP", in line 23 of include                             |
+|     "CL_RAP_BHV_PROCESSOR==========CM01B". The reason for this exception                         |
+|    was:                                                                                          |
+|    Handler not implemented; Method: INSTANCE_AUTHORIZATION, Involved Entities:                   |
+|    ZDEMO01_C_BOOK                                                                                  |
+|                                                                                                  |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|How to correct the error                                                                          |
+|    If the error occurs in a non-modified SAP program, you might be able to                       |
+|    find a solution in the SAP Notes system. If you have access to the SAP                        |
+|    Notes system, check there first using the following keywords:                                 |
+|                                                                                                  |
+|    "RAISE_SHORTDUMP" CX_SADL_DUMP_APPL_MODEL_ERROR                                               |
+|    "CL_SADL_SHORTDUMP=============CP" or CL_SADL_SHORTDUMP=============CM006                     |
+|    "TRIGGER_APPL_MODEL_ERROR_DUMP"                                                               |
+|    If you cannot solve the problem yourself, please send the following                           |
+|    information to SAP:                                                                           |
+|                                                                                                  |
+|    1. The description of the problem (short dump)                                                |
+|    Please press the "Local File” button in the current display.                                  |
+|                                                                                                  |
+|    2. The relevant system log                                                                    |
+|    To do this, call the system log in transaction SM21. Restrict the time                        |
+|    interval to ten minutes before the short dump and five minutes after                          |
+|    it. In the display, choose System -> List -> Save -> Local File                               |
+|    (unconverted).                                                                                |
+|                                                                                                  |
+|    3. If these are programs of your own, or modified SAP programs: The                           |
+|    source text of the programs                                                                   |
+|    To do this, please choose                                                                     |
+|    "Other Utilities -> Upload/Download -> Download".                                             |
+|                                                                                                  |
+|    4. Details regarding the conditions under which the error occurred or                         |
+|    which actions and input caused the error.                                                     |
+|    which actions and input caused the error.                                                     |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|System environment                                                                                |
+|    SAP Release..... 816                                                                          |
+|    SAP Basis level 0000                                                                          |
+|                                                                                                  |
+|    Application server... sapdev01                                                           |
+|    Instance name....... sapdev01_DEV_00                                                     |
+|    Network address...... 10.0.0.10                                                               |
+|    Operating system... Linux                                                                     |
+|    Release.............. 6.4.0-150600.21-defa                                                    |
+|    Hardware type....... x86_64                                                                   |
+|    Character length..... 16 Bits                                                                 |
+|    Pointer length........ 64 Bits                                                                |
+|    Work process number... 18                                                                     |
+|    Work process ID....... 23303                                                                  |
+|    ABAP load version.... 3684                                                                    |
+|    Shortdump setting. full                                                                       |
+|                                                                                                  |
+|    Database server... sapdev01                                                              |
+|    Database type..... HDB                                                                        |
+|    Database name..... DEV                                                                        |
+|    Database user ID SAPHANADB                                                                    |
+|                                                                                                  |
+|    Terminal.......... 10.0.0.20                                                             |
+|                                                                                                  |
+|    Character set C                                                                               |
+|                                                                                                  |
+|    SAP kernel....... 916                                                                         |
+|    Created on....... Aug 19 2025 20:27:15                                                        |
+|    Created at....... Linux GNU SLES-15 x86_64  cc10.3.0 use-pr250819                             |
+|    Database version SQLDBC 2.25.029.1751901582                                                   |
+|    Patch level....... 50                                                                         |
+|    Patch text.......                                                                             |
+|    Hash............. c923521b123f8872bbf887037deb5b11f4a01151                                    |
+|    Version.......... v9.16-2346-gc923521b                                                        |
+|                                                                                                  |
+|    Database............ HANA 1.0, HANA 2.0                                                       |
+|    SAP database version. 916                                                                     |
+|    Operating system... "Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                       |
+|     c923521b123f8872bbf887037deb5b11f4a01151"                                                    |
+|    Operating system... Linux,   GitVers: v9.16-2346-gc923521b,   GitHash:                        |
+|     c923521b123f8872bbf887037deb5b11f4a01151                                                     |
+|                                                                                                  |
+|    Memory consumption                                                                            |
+|    EM...... 12116441 Bytes                                                                       |
+|    Heap........................ 0 Bytes                                                          |
+|    Page........................ 16384 Bytes                                                      |
+|    MM used memory..... 9042008 Bytes                                                             |
+|    MM free memory.......... 3070288 Bytes                                                        |
+|    MM largest free block... 1491064 Bytes                                                        |
+|    MM used blocks....... 8986                                                                    |
+|    MM free blocks............ 21                                                                 |
+|    MM maximum memory used... 10211664 Bytes                                                      |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Chain of Exception Objects                                                                        |
+----------------------------------------------------------------------------------------------------
+|Level        Class                                                                                |
+|Attrib. Name                   Value                                                              |
+----------------------------------------------------------------------------------------------------
+|1            CX_SADL_DUMP_APPL_MODEL_ERROR                                                        |
+|(Program)                      CL_SADL_SHORTDUMP=============CP                                   |
+|(Include)                      CL_SADL_SHORTDUMP=============CM006                                |
+|(Row)                          2                                                                  |
+|(Short Text)                   Processing was aborted because of an application modeling error:   |
+|                               See previous in exception chain.                                   |
+|T100_MSGID                     SADL_DIAGNOSTIC                                                    |
+|T100_MSGNO                     008                                                                |
+|T100_MSGV1                     See previous in exception chain.                                   |
+|CLASSIFICATION                 BAD_APPLICATION_MODELING                                           |
+|IS_RESUMABLE                                                                                      |
+|KERNEL_ERRID                                                                                      |
+|ORIGIN_DEVELOPMENT_OBJECT_NAME ZDEMO01_C_BOOK                                                       |
+|ORIGIN_DEVELOPMENT_OBJECT_TYPE STOB                                                               |
+|REASON                         See previous in exception chain.                                   |
+----------------------------------------------------------------------------------------------------
+|2            CX_RAP_HANDLER_NOT_IMPLEMENTED                                                       |
+|(Program)                      CL_RAP_BHV_PROCESSOR==========CP                                   |
+|(Include)                      CL_RAP_BHV_PROCESSOR==========CM01B                                |
+|(Row)                          23                                                                 |
+|(Short Text)                   Handler not implemented; Method: INSTANCE_AUTHORIZATION, Involved  |
+|                               Entities: ZDEMO01_C_BOOK                                             |
+|T100_MSGID                     RAP_RUNTIME                                                        |
+|T100_MSGNO                     006                                                                |
+|T100_MSGV1                     INSTANCE_AUTHORIZATION                                             |
+|T100_MSGV2                     ZDEMO01_C_BOOK                                                       |
+|INVOLVED_ENTITIES              ZDEMO01_C_BOOK                                                       |
+|IS_RESUMABLE                                                                                      |
+|KERNEL_ERRID                                                                                      |
+|METHOD                         INSTANCE_AUTHORIZATION                                             |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Information on where terminated                                                                   |
+|    The termination occurred in ABAP program or include                                           |
+|     "CL_SADL_SHORTDUMP=============CP", in "TRIGGER_APPL_MODEL_ERROR_DUMP". The                  |
+|    main program was "SAPMHTTP".                                                                  |
+|                                                                                                  |
+|    In the source code, the termination point is in line 2 of include                             |
+|     "CL_SADL_SHORTDUMP=============CM006".                                                       |
+|    include "CL_SADL_SHORTDUMP=============CM006".                                                |
+----------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------------------------
+|Source Code Extract                                                                                 |
+------------------------------------------------------------------------------------------------------
+|Line |Code                                                                                          |
+------------------------------------------------------------------------------------------------------
+|    1|  METHOD trigger_appl_model_error_dump.                                                       |
+|>>>>>|    DATA(_) = COND i( WHEN aunit_excptn_instead_of_dump <> abap_true THEN                     |
+|    3|     THROW SHORTDUMP cx_sadl_dump_appl_model_error( io_error )                                |
+|    4|"########################################################################################     |
+|    5|"#                                  !!! ATTENTION !!!                                   #     |
+|    6|"# Processing was deliberately stopped because an application modeling error has been   #     |
+|    7|"# detected. Please identify the root cause and contact the application owners:         #     |
+|    8|"#   Carefully read the "Error Analysis" section of this dump ("Long text" tab in ADT   #     |
+|    9|"#   or if viewed in SAP GUI (transaction ST22) in "ABAP Developer View").              #     |
+|   10|"#   For more detailed information refer to the exception chain contained in the dump.  #     |
+|   11|"#   Identify the CDS view and/or service implementation classes to route this issue to #     |
+|   12|"#   the responsible application component. To facilitate the support incident please   #     |
+|   13|"#   attach a full export of this dump and a description of your scenario. Thank you!   #     |
+|   14|"########################################################################################     |
+|   15|     ELSE THROW RESUMABLE cx_sadl_dump_appl_model_error( io_error ) ). "<- for unit tests only|
+|   16|  ENDMETHOD.                                                                                  |
+------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Contents of system fields                                                                         |
+----------------------------------------------------------------------------------------------------
+|Name    |Val.                                                                                     |
+----------------------------------------------------------------------------------------------------
+|SY-SUBRC|0                                                                                        |
+|SY-INDEX|1                                                                                        |
+|SY-TABIX|1                                                                                        |
+|SY-DBCNT|0                                                                                        |
+|SY-FDPOS|1                                                                                        |
+|SY-LSIND|0                                                                                        |
+|SY-PAGNO|0                                                                                        |
+|SY-LINNO|1                                                                                        |
+|SY-COLNO|1                                                                                        |
+|SY-PFKEY|                                                                                         |
+|SY-UCOMM|                                                                                         |
+|SY-TITLE|HTTP Control                                                                             |
+|SY-MSGTY|I                                                                                        |
+|SY-MSGID|SADL_DIAGNOSTIC                                                                          |
+|SY-MSGNO|002                                                                                      |
+|SY-MSGV1|                                                                                         |
+|SY-MSGV2|                                                                                         |
+|SY-MSGV3|                                                                                         |
+|SY-MSGV4|                                                                                         |
+|SY-MODNO|0                                                                                        |
+|SY-DATUM|20260717                                                                                 |
+|SY-UZEIT|100828                                                                                   |
+|SY-XPROG|ZDEMO01_C_BOOK==================BD                                                         |
+|SY-XFORM|PE_36_0000_0000                                                                          |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Active Calls/Events                                                                               |
+----------------------------------------------------------------------------------------------------
+|No.   Ty.          Program                             Include                             Line   |
+|      Name                                                                                        |
+----------------------------------------------------------------------------------------------------
+|   40 METHOD       CL_SADL_SHORTDUMP=============CP    CL_SADL_SHORTDUMP=============CM006     2  |
+|      CL_SADL_SHORTDUMP=>TRIGGER_APPL_MODEL_ERROR_DUMP                                            |
+|   39 METHOD       CL_SADL_SHORTDUMP=============CP    CL_SADL_SHORTDUMP=============CM008     4  |
+|      CL_SADL_SHORTDUMP=>RAISE_FOR_ERROR                                                          |
+|   38 METHOD       CL_SADL_EXC_STRATEGY_SHORTDUMPCP    CL_SADL_EXC_STRATEGY_SHORTDUMPCM001     2  |
+|      CL_SADL_EXC_STRATEGY_SHORTDUMP=>IF_SADL_EXCEPTION_HANDLER~HANDLE                            |
+|   37 METHOD       CL_SADL_EXCEPTION_GATEKEEPER==CP    CL_SADL_EXCEPTION_GATEKEEPER==CCIMP    53  |
+|      LCL_GATEKEEPER_TRACING_WRAPPER=>IF_SADL_EXCEPTION_HANDLER~HANDLE                            |
+|   36 METHOD       CL_SADL_GW_V4_DPC_ADP_EXC_CONVCP    CL_SADL_GW_V4_DPC_ADP_EXC_CONVCM002   112  |
+|      CL_SADL_GW_V4_DPC_ADP_EXC_CONV=>CONVERT_TO_GW_EXC_OR_HANDLE                                 |
+|   35 METHOD       CL_SADL_GW_V4_DPC_ADAPTER=====CP    CL_SADL_GW_V4_DPC_ADAPTER=====CM01O     2  |
+|      CL_SADL_GW_V4_DPC_ADAPTER=>CONVERT_TO_GW_EXC_OR_HANDLE                                      |
+|   34 EXCP_HANDLER CL_SADL_GW_V4_DPC_ADAPTER=====CP    CL_SADL_GW_V4_DPC_ADAPTER=====CM00E    63  |
+|      /IWBEP/IF_V4_DP_ADVANCED~CREATE_ENTITY                                                      |
+|   33 METHOD       CL_RAP_BHV_PROCESSOR==========CP    CL_RAP_BHV_PROCESSOR==========CM01B    23  |
+|      CL_RAP_BHV_PROCESSOR=>_CALL_PERMISSION_CHECKS                                               |
+|   32 METHOD       CL_RAP_BHV_PROCESSOR==========CP    CL_RAP_BHV_PROCESSOR==========CM00R    18  |
+|      CL_RAP_BHV_PROCESSOR=>IF_RAP_TRANSACTION_PROCESSOR~GET_PROPERTIES                           |
+|   31 METHOD       CL_RAP_ENTITY_TRANSACTIONAL===CP    CL_RAP_ENTITY_TRANSACTIONAL===CM00N    13  |
+|      CL_RAP_ENTITY_TRANSACTIONAL=>IF_SADL_ENTITY_TRANSACT_PROPS~GET_PROPERTIES                   |
+|   30 METHOD       CL_SADL_RUNTIME_PROPERTIES====CP    CL_SADL_RUNTIME_PROPERTIES====CM004     5  |
+|      CL_SADL_RUNTIME_PROPERTIES=>READ_AND_MAP_PROPERTIES                                         |
+|   29 METHOD       CL_SADL_ENTITY_RUNTIME========CP    CL_SADL_ENTITY_RUNTIME========CM002    53  |
+|      CL_SADL_ENTITY_RUNTIME=>IF_SADL_QUERY_FETCH~FETCH                                           |
+|   28 METHOD       CL_SADL_GW_ODATA_RUNTIME======CP    CL_SADL_GW_ODATA_RUNTIME======CM00R    54  |
+|      CL_SADL_GW_ODATA_RUNTIME=>_GET_ENTITYSET_VIA_FETCH                                          |
+|   27 METHOD       CL_SADL_GW_ODATA_RUNTIME======CP    CL_SADL_GW_ODATA_RUNTIME======CM001     9  |
+|      CL_SADL_GW_ODATA_RUNTIME=>IF_SADL_GW_ODATA_RUNTIME~GET_ENTITY_SET                           |
+|   26 METHOD       CL_SADL_GW_DPC_BATCH==========CP    CL_SADL_GW_DPC_BATCH==========CM004    10  |
+|      CL_SADL_GW_DPC_BATCH=>_FETCH_DATA                                                           |
+|   25 METHOD       CL_SADL_GW_DPC_BATCH==========CP    CL_SADL_GW_DPC_BATCH==========CM001    13  |
+|      CL_SADL_GW_DPC_BATCH=>READ_MODIFIED_ENTITIES                                                |
+|   24 METHOD       CL_SADL_GW_V4_GENERIC_DPC=====CP    CL_SADL_GW_V4_GENERIC_DPC=====CM021   120  |
+|      CL_SADL_GW_V4_GENERIC_DPC=>_POSTPROCESS_CHANGESET                                           |
+|   23 METHOD       CL_SADL_GW_V4_GENERIC_DPC=====CP    CL_SADL_GW_V4_GENERIC_DPC=====CM010    99  |
+|      CL_SADL_GW_V4_GENERIC_DPC=>IF_SADL_GW_V4_GENERIC_DPC~PROCESS_CHANGE_SET                     |
+|   22 METHOD       CL_SADL_GW_V4_GENERIC_DPC=====CP    CL_SADL_GW_V4_GENERIC_DPC=====CM00V     2  |
+|      CL_SADL_GW_V4_GENERIC_DPC=>IF_SADL_GW_V4_GENERIC_DPC~CREATE_ENTITY                          |
+|   21 METHOD       CL_SADL_GW_V4_DPC_ADAPTER=====CP    CL_SADL_GW_V4_DPC_ADAPTER=====CM00E    29  |
+|      CL_SADL_GW_V4_DPC_ADAPTER=>/IWBEP/IF_V4_DP_ADVANCED~CREATE_ENTITY                           |
+|   20 METHOD       /IWBEP/CL_V4_ABS_DATA_PROVIDERCP    /IWBEP/CL_V4_ABS_DATA_PROVIDERCM01O    71  |
+|      /IWBEP/CL_V4_ABS_DATA_PROVIDER=>EXECUTE_BATCH_OPERATION                                     |
+|   19 METHOD       /IWBEP/CL_V4_ABS_DATA_PROVIDERCP    /IWBEP/CL_V4_ABS_DATA_PROVIDERCM01K    87  |
+|      /IWBEP/CL_V4_ABS_DATA_PROVIDER=>/IWBEP/IF_V4_DP_BATCH~PROCESS_BATCH                         |
+|   18 METHOD       CL_SADL_GW_V4_DPC_ADAPTER=====CP    CL_SADL_GW_V4_DPC_ADAPTER=====CM01T     4  |
+|      CL_SADL_GW_V4_DPC_ADAPTER=>/IWBEP/IF_V4_DP_BATCH~PROCESS_BATCH                              |
+|   17 METHOD       /IWBEP/CL_V4_DP_PROXY=========CP    /IWBEP/CL_V4_DP_PROXY=========CM006    50  |
+|      /IWBEP/CL_V4_DP_PROXY=>/IWBEP/IF_V4_DATA_PROVIDER_FW~PROCESS_BATCH                          |
+|   16 METHOD       /IWBEP/CL_V4_LOCAL_DP_PROXY===CP    /IWBEP/CL_V4_LOCAL_DP_PROXY===CM009     5  |
+|      /IWBEP/CL_V4_LOCAL_DP_PROXY=>/IWBEP/IF_V4_DATA_PROVIDER_FW~PROCESS_BATCH                    |
+|   15 METHOD       /IWBEP/CL_OD_PROCESSOR========CP    /IWBEP/CL_OD_PROCESSOR========CM02J    13  |
+|      /IWBEP/CL_OD_PROCESSOR=>BATCH_EXECUTE                                                       |
+|   14 METHOD       /IWBEP/CL_OD_PROCESSOR========CP    /IWBEP/CL_OD_PROCESSOR========CM00B    26  |
+|      /IWBEP/CL_OD_PROCESSOR=>/IWCOR/IF_OD_PROC_BATCH~EXECUTE                                     |
+|   13 METHOD       /IWCOR/CL_OD_PROC_DISPATCHER==CP    /IWCOR/CL_OD_PROC_DISPATCHER==CM00F    30  |
+|      /IWCOR/CL_OD_PROC_DISPATCHER=>PROCESS_BATCH                                                 |
+|   12 METHOD       /IWCOR/CL_OD_PROC_DISPATCHER==CP    /IWCOR/CL_OD_PROC_DISPATCHER==CM01A    78  |
+|      /IWCOR/CL_OD_PROC_DISPATCHER=>PROCESS_INTERNAL                                              |
+|   11 METHOD       /IWCOR/CL_OD_PROC_DISPATCHER==CP    /IWCOR/CL_OD_PROC_DISPATCHER==CM005    37  |
+|      /IWCOR/CL_OD_PROC_DISPATCHER=>/IWCOR/IF_OD_PROCESSOR~PROCESS                                |
+|   10 METHOD       /IWCOR/CL_OD_HDLR_ROOT========CP    /IWCOR/CL_OD_HDLR_ROOT========CM004   241  |
+|      /IWCOR/CL_OD_HDLR_ROOT=>DISPATCH                                                            |
+|    9 METHOD       /IWBEP/CL_OD_ROOT_HANDLER=====CP    /IWBEP/CL_OD_ROOT_HANDLER=====CM003   130  |
+|      /IWBEP/CL_OD_ROOT_HANDLER=>DISPATCH                                                         |
+|    8 METHOD       /IWCOR/CL_OD_HDLR_ROOT========CP    /IWCOR/CL_OD_HDLR_ROOT========CM00L   167  |
+|      /IWCOR/CL_OD_HDLR_ROOT=>HANDLE_WITH_MODE                                                    |
+|    7 METHOD       /IWCOR/CL_OD_HDLR_ROOT========CP    /IWCOR/CL_OD_HDLR_ROOT========CM00F     3  |
+|      /IWCOR/CL_OD_HDLR_ROOT=>/IWCOR/IF_REST_HANDLER~HANDLE                                       |
+|    6 METHOD       /IWCOR/CL_REST_HTTP_HANDLER===CP    /IWCOR/CL_REST_HTTP_HANDLER===CM001   121  |
+|      /IWCOR/CL_REST_HTTP_HANDLER=>IF_HTTP_EXTENSION~HANDLE_REQUEST                               |
+|    5 METHOD       /IWBEP/CL_OD_HTTP_REQ_HANDLER=CP    /IWBEP/CL_OD_HTTP_REQ_HANDLER=CM007    77  |
+|      /IWBEP/CL_OD_HTTP_REQ_HANDLER=>IF_HTTP_EXTENSION~HANDLE_REQUEST                             |
+|    4 METHOD       /IWBEP/CL_OD_ICF_HANDLER======CP    /IWBEP/CL_OD_ICF_HANDLER======CM001    39  |
+|      /IWBEP/CL_OD_ICF_HANDLER=>IF_HTTP_EXTENSION~HANDLE_REQUEST                                  |
+|    3 METHOD       CL_HTTP_SERVER================CP    CL_HTTP_SERVER================CM00D   814  |
+|      CL_HTTP_SERVER=>EXECUTE_REQUEST                                                             |
+|    2 FUNCTION     SAPLHTTP_RUNTIME                    LHTTP_RUNTIMEU02                     1779  |
+|      HTTP_DISPATCH_REQUEST                                                                       |
+|    1 MODULE (PBO) SAPMHTTP                            SAPMHTTP                               12  |
+|      %_HTTP_START                                                                                |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------

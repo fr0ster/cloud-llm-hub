@@ -1,6 +1,7 @@
 import cds, { type Request, type Service } from '@sap/cds';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import { maskLoginForLog } from './lib/log-mask';
 
 interface ProxyInvocation {
   toolId: string;
@@ -453,7 +454,7 @@ export default async function registerMcpProxyHandlers(
 
     log.info('ProbeActiveDestination completed', {
       destination: result.name,
-      username: headers['x-sap-login'],
+      username: maskLoginForLog(headers['x-sap-login']),
       client: headers['x-sap-client'] || '(destination default)',
       status: result.status,
       httpCode: result.httpCode,
