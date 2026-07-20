@@ -26,8 +26,15 @@ describe('hasWriteTool', () => {
     expect(hasWriteTool(['DeleteTable'])).toBe(true);
     expect(hasWriteTool(['UpdateClass'])).toBe(true);
   });
+  it('detects compact-mode Handler* write handlers', () => {
+    expect(hasWriteTool(['HandlerCreate'])).toBe(true);
+    expect(hasWriteTool(['HandlerUpdate'])).toBe(true);
+    expect(hasWriteTool(['HandlerDelete'])).toBe(true);
+    expect(hasWriteTool(['HandlerActivate'])).toBe(true);
+  });
   it('is false for read-only tool sets', () => {
     expect(hasWriteTool(['ReadDomain', 'GetTableContents'])).toBe(false);
+    expect(hasWriteTool(['HandlerGet', 'HandlerRead'])).toBe(false);
     expect(hasWriteTool([])).toBe(false);
   });
 });
@@ -49,13 +56,31 @@ describe('claimsCompletedWrite', () => {
     expect(claimsCompletedWrite('Объект создан.')).toBe(true);
     expect(claimsCompletedWrite("Об'єкт створено.")).toBe(true);
   });
-  it('does NOT match "Created by/on" metadata (read-back)', () => {
+  it('matches EN active / first-person claims', () => {
+    expect(claimsCompletedWrite('I created domain ZDEMO_D_MATNR.')).toBe(true);
+    expect(claimsCompletedWrite('I have created the domain.')).toBe(true);
+    expect(claimsCompletedWrite("I've created it.")).toBe(true);
+    expect(claimsCompletedWrite('I successfully created the table.')).toBe(
+      true,
+    );
+    expect(claimsCompletedWrite('Created domain ZDEMO_D_MATNR.')).toBe(true);
+    expect(
+      claimsCompletedWrite('✅ Created domain ZDEMO and activated it.'),
+    ).toBe(true);
+  });
+  it('does NOT match "Created by/on/:" metadata (read-back)', () => {
     expect(
       claimsCompletedWrite(
         'The domain ZDEMO exists. Created by: DEVELOPER on 2026-07-19. Length: 10.',
       ),
     ).toBe(false);
     expect(claimsCompletedWrite('Создан: DEVELOPER')).toBe(false);
+    // A "Created: <date>" field label (line start + colon) must not match.
+    expect(claimsCompletedWrite('Domain ZDEMO\nCreated: 2026-07-19')).toBe(false);
+    // Mid-sentence "created" prose is not a completed-write claim.
+    expect(
+      claimsCompletedWrite('The newly created object was then read back.'),
+    ).toBe(false);
   });
   it('does NOT match instructions or honest refusals', () => {
     expect(
