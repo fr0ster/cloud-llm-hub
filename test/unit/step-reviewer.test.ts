@@ -15,6 +15,10 @@ describe('buildReviewMessages', () => {
     expect(sys.role).toBe('system');
     expect(sys.content.toLowerCase()).toContain('skeptic');
     expect(sys.content).toContain('JSON');
+    // Honest non-accomplishment must NOT be flagged as fake...
+    expect(sys.content.toLowerCase()).toContain('honest');
+    // ...but a genuine doubt must still be surfaced explicitly.
+    expect(sys.content.toLowerCase()).toContain('unsure');
     expect(user.content).toContain('ReadDomain');
     expect(user.content).toContain('Create domain ZDEMO_D_MATNR');
   });
