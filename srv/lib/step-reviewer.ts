@@ -1,0 +1,154 @@
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
+
+export type StepReview = {
+  possiblyFake: boolean;
+  confidence: 'low' | 'medium' | 'high';
+  reasons: string;
+};
+
+const SYSTEM = [
+  'You are a strict, skeptical REVIEWER of an ABAP executor agent — NOT its',
+  'assistant. The executor was asked to do a task and produced a response.',
+  'Assume it MAY have hallucinated: claimed results it never actually produced.',
+  'Ground your judgement ONLY in the tools it ACTUALLY executed. A real ABAP',
+  'operation needs the matching MCP tool: create needs a Create* tool, activate',
+  'needs Activate*, delete needs Delete*, update needs Update*, read needs',
+  'Read*/Get*. If the response claims an outcome the executed tools do not',
+  'support (e.g. claims created/activated but no Create*/Activate* ran, or claims',
+  'success after zero tool calls), the result is UNSUPPORTED — possiblyFake=true.',
+  'Default to skepticism. Reply with STRICT JSON ONLY, no prose:',
+  '{"possiblyFake": boolean, "confidence": "low"|"medium"|"high", "reasons": string}',
+].join(' ');
+
+export function buildReviewMessages(input: {
+  task: string;
+  executedTools: string[];
+  content: string;
+}): { role: 'system' | 'user'; content: string }[] {
+  const tools = input.executedTools.length
+    ? input.executedTools.join(', ')
+    : '(none)';
+  const user = [
+    `TASK:\n${input.task}`,
+    `\nTOOLS ACTUALLY EXECUTED (in order): ${tools}`,
+    `\nEXECUTOR RESPONSE:\n${input.content}`,
+    '\nDid the executor actually accomplish the task, judged ONLY by the executed',
+    'tools? Return the strict JSON verdict.',
+  ].join('\n');
+  return [
+    { role: 'system', content: SYSTEM },
+    { role: 'user', content: user },
+  ];
+}
+
+/** Yield each COMPLETE balanced `{…}` object in order (ignores braces in strings). */
+function* balancedJsonObjects(text: string): Generator<string> {
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf('{', i);
+    if (start < 0) return;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+    for (let j = start; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        end = j;
+        break;
+      }
+    }
+    if (end < 0) {
+      // Unterminated from `start` — skip past this `{` and keep looking; a later
+      // `{…}` may still be a complete, valid verdict.
+      i = start + 1;
+      continue;
+    }
+    yield text.slice(start, end + 1);
+    i = end + 1;
+  }
+}
+
+function toReview(raw: unknown): StepReview | null {
+  const o = raw as Record<string, unknown>;
+  if (typeof o.possiblyFake !== 'boolean') return null;
+  if (
+    o.confidence !== 'low' &&
+    o.confidence !== 'medium' &&
+    o.confidence !== 'high'
+  ) {
+    return null;
+  }
+  if (typeof o.reasons !== 'string') return null;
+  return {
+    possiblyFake: o.possiblyFake,
+    confidence: o.confidence,
+    reasons: o.reasons,
+  };
+}
+
+/**
+ * Scan every balanced `{…}` object in the text and return the FIRST that parses
+ * AND validates as a verdict — so a stray `Note: {example}` before the real JSON
+ * does not defeat parsing. `null` if none validate (→ caller fails open).
+ */
+export function parseReviewVerdict(text: string): StepReview | null {
+  for (const json of balancedJsonObjects(text)) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(json);
+    } catch {
+      continue;
+    }
+    const v = toReview(raw);
+    if (v) return v;
+  }
+  return null;
+}
+
+export function formatReviewNotice(review: StepReview): string {
+  return (
+    `⚠️ RESULT MAY BE UNVERIFIED (executor-honesty review, confidence: ` +
+    `${review.confidence}): ${review.reasons} — the executor's claim may not ` +
+    `reflect what actually ran. Verify against the system before relying on it.`
+  );
+}
+
+export async function reviewStep(
+  input: { task: string; executedTools: string[]; content: string },
+  deps: { llm: ILlm; timeoutMs?: number },
+): Promise<StepReview | null> {
+  const timeoutMs = deps.timeoutMs ?? 8000;
+  const ctrl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Race the chat against a hard timeout — a reviewer that ignores the signal
+  // must still never block execute_step. `null` from the timeout branch fails open.
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      ctrl.abort();
+      resolve(null);
+    }, timeoutMs);
+  });
+  try {
+    const res = await Promise.race([
+      deps.llm.chat(buildReviewMessages(input), undefined, {
+        signal: ctrl.signal,
+      }),
+      timeout,
+    ]);
+    if (res === null || !res.ok) return null;
+    return parseReviewVerdict(res.value.content);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
