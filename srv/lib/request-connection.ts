@@ -24,6 +24,8 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { createConnection } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
+import { maskLoginForLog } from './log-mask';
+import { computeDumpScope, type DumpScope } from './principal';
 import { setRequestResponsible } from './responsible';
 
 export type CredentialError = Error & {
@@ -49,6 +51,9 @@ export interface EstablishResult {
   connection?: IAbapConnection;
   /** True when an error response has already been written to `res` and the caller must return immediately. */
   handled: boolean;
+  /** Principal scope for GetDumpSection — the caller must thread it into
+   * runWithRequestConnection so the tool has a principal on this (chat) path too. */
+  dumpScope?: DumpScope;
 }
 
 /**
@@ -78,6 +83,11 @@ export async function establishRequestConnection(
   // destination's own sap-client so a single URL-only destination can serve
   // multiple clients per request.
   const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
+  // The basic-auth override needs BOTH a login and a password — a login alone
+  // does NOT authenticate as that login. Declared before the try so BOTH the
+  // success and the failure logs (and the auth config + dump principal) key off
+  // this single effective-auth flag rather than the raw x-sap-login header.
+  const usedBasicOverride = !!(sapLogin && sapPassword);
 
   try {
     const resolved = await resolveDestinationSapConfig(
@@ -99,7 +109,7 @@ export async function establishRequestConnection(
     }
 
     const sapConfig: SapConfig = { ...resolved.sapConfig };
-    if (sapLogin && sapPassword) {
+    if (usedBasicOverride) {
       // Caller-supplied basic auth overrides the destination's own auth.
       sapConfig.authType = 'basic';
       sapConfig.username = sapLogin;
@@ -128,15 +138,31 @@ export async function establishRequestConnection(
 
     log.info('Per-request SAP connection established', {
       destination,
-      auth: sapLogin ? 'user-basic' : sapConfig.authType,
-      username: sapLogin || '(destination-auth)',
+      auth: usedBasicOverride ? 'user-basic' : sapConfig.authType,
+      username: usedBasicOverride
+        ? maskLoginForLog(sapLogin)
+        : '(destination-auth)',
     });
 
     // Per-request responsible person for ADT writes (create/update/delete):
     // x-sap-responsible, else the connecting x-sap-login user.
     setRequestResponsible(req.headers);
 
-    return { connection, handled: false };
+    // Principal scope for GetDumpSection — same derivation as the planner path,
+    // so the tool has a principal when RAG-selected on the chat (/v1) channels.
+    const dumpScope = computeDumpScope({
+      cdsUserId: cds.context?.user?.id ?? 'anonymous',
+      usedBasicOverride,
+      sapLogin,
+      destinationAuthType: sapConfig.authType,
+      resolvedUsername: resolved.username,
+      destinationName: resolved.destinationName,
+      rawClient: sapClient,
+      resolvedClient: resolved.sapConfig.client,
+      jwtSub: null,
+    });
+
+    return { connection, handled: false, dumpScope };
   } catch (connErr) {
     const err = connErr instanceof Error ? connErr : new Error(String(connErr));
     const errWithCode = err as CredentialError;
@@ -144,7 +170,9 @@ export async function establishRequestConnection(
 
     log.warn('Per-request SAP connection unavailable', {
       destination,
-      username: sapLogin,
+      username: usedBasicOverride
+        ? maskLoginForLog(sapLogin)
+        : '(destination-auth)',
       code: errWithCode.code,
       error: err.message,
     });

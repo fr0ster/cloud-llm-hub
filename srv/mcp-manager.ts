@@ -26,6 +26,7 @@ import {
 } from './connections/destinationResolver';
 import { logErrorSafely } from './lib/errorUtils';
 import { resolveExposition } from './lib/exposition';
+import { maskLoginForLog } from './lib/log-mask';
 import { loggerAdapter } from './lib/logger';
 
 interface SapContext {
@@ -120,7 +121,7 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
       delete sapConfig.jwtToken;
       log.info('Destination auth overridden with x-sap-login/x-sap-password', {
         destination: destinationName,
-        username: sapLogin,
+        username: maskLoginForLog(sapLogin),
       });
     }
 

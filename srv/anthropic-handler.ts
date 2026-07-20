@@ -100,10 +100,12 @@ export async function handleAnthropicMessages(
   let requestConnection:
     | import('@mcp-abap-adt/interfaces').IAbapConnection
     | undefined;
+  let requestDumpScope: import('./lib/principal').DumpScope | undefined;
   if (destination) {
     const established = await establishRequestConnection(req, res, destination);
     if (established.handled) return;
     requestConnection = established.connection;
+    requestDumpScope = established.dumpScope;
   }
 
   // Get the SmartAgent handle for the SAME destination the connection was
@@ -135,7 +137,9 @@ export async function handleAnthropicMessages(
   // Bind the per-request SAP connection for the whole agent run so MCP tool
   // calls inside the pipeline see it (ALS store survives the async hops).
   const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
-    requestConnection ? runWithRequestConnection(requestConnection, fn) : fn();
+    requestConnection
+      ? runWithRequestConnection(requestConnection, fn, requestDumpScope)
+      : fn();
 
   try {
     // --- Streaming ---

@@ -34,6 +34,7 @@ import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
+import { computeDumpScope } from './lib/principal';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
 import { runWithSessionId } from './request-session';
@@ -107,10 +108,21 @@ function textResult(text: string, isError = false) {
  * channels; throws on a missing/invalid credential instead of writing a
  * response (the caller turns it into an MCP tool error).
  */
+interface BuiltConnection {
+  connection: IAbapConnection;
+  resolved: Awaited<ReturnType<typeof resolveDestinationSapConfig>>;
+  sapConfig: SapConfig;
+  sapLogin: string | undefined;
+  sapClient: string | undefined;
+  // True iff the basic-auth override was actually applied (login AND password
+  // both present). The password itself is NOT returned — only this flag.
+  usedBasicOverride: boolean;
+}
+
 async function buildConnectionForDestination(
   req: Request,
   destination: string,
-): Promise<IAbapConnection> {
+): Promise<BuiltConnection> {
   const sapLogin = (req.headers['x-sap-login'] as string | undefined)?.trim();
   const sapPassword = req.headers['x-sap-password'] as string | undefined;
   const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
@@ -129,8 +141,9 @@ async function buildConnectionForDestination(
     );
   }
 
+  const usedBasicOverride = !!(sapLogin && sapPassword);
   const sapConfig: SapConfig = { ...resolved.sapConfig };
-  if (sapLogin && sapPassword) {
+  if (usedBasicOverride) {
     sapConfig.authType = 'basic';
     sapConfig.username = sapLogin;
     sapConfig.password = sapPassword;
@@ -143,7 +156,14 @@ async function buildConnectionForDestination(
     destinationName: resolved.destinationName,
   });
   await conn.connect();
-  return conn as unknown as IAbapConnection;
+  return {
+    connection: conn as unknown as IAbapConnection,
+    resolved,
+    sapConfig,
+    sapLogin,
+    sapClient,
+    usedBasicOverride,
+  };
 }
 
 /**
@@ -235,10 +255,31 @@ export async function createAgentMcpServerForRequest(
             true,
           );
         }
-        connection = await buildConnectionForDestination(
+        const built = await buildConnectionForDestination(
           req,
           targetDestination,
         );
+        connection = built.connection;
+        const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
+          built;
+
+        // Stable, non-reversible principal + system scope for the principal-scoped
+        // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
+        // paths via computeDumpScope so the tool has a principal wherever it can
+        // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
+        // raw login never enters a key/log; jwtSub is null on this path.
+        const dumpScope = computeDumpScope({
+          cdsUserId: userId,
+          usedBasicOverride,
+          sapLogin,
+          destinationAuthType: sapConfig.authType,
+          resolvedUsername: resolved.username,
+          destinationName: resolved.destinationName,
+          rawClient: sapClient,
+          resolvedClient: resolved.sapConfig.client,
+          jwtSub: null,
+        });
+
         // Per-request responsible person for ADT writes (create/update/delete).
         setRequestResponsible(req.headers);
         const handle = await getSmartAgent(undefined, targetDestination);
@@ -270,8 +311,10 @@ export async function createAgentMcpServerForRequest(
 
         const conn = connection;
         const r = await runWithSessionId(sessionId, () =>
-          runWithRequestConnection(conn, () =>
-            handle.agent.process([{ role: 'user', content: task }], opts),
+          runWithRequestConnection(
+            conn,
+            () => handle.agent.process([{ role: 'user', content: task }], opts),
+            dumpScope,
           ),
         );
 
