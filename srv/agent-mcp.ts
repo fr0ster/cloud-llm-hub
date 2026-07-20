@@ -34,11 +34,7 @@ import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
-import {
-  effectiveSapIdentity,
-  resolvePrincipal,
-  resolveSystemScope,
-} from './lib/principal';
+import { computeDumpScope } from './lib/principal';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
 import { runWithSessionId } from './request-session';
@@ -267,36 +263,22 @@ export async function createAgentMcpServerForRequest(
         const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
           built;
 
-        // Derive a stable, non-reversible principal + system scope for the
-        // principal-scoped cloud-local tools (e.g. GetDumpSection's buffer key).
-        // The raw SAP login never enters a key/log — only its hash. Fails closed:
-        // an anonymous/unauthenticated caller yields no dumpScope, so the tool
-        // refuses. jwtSub is null here — no validated-JWT `sub` is surfaced on
-        // this path (see task-6-report.md).
-        // Effective identity, not the raw header: a login without a password did
-        // NOT authenticate as that login (the connection used destination auth),
-        // so the key must not reflect the unused x-sap-login. See effectiveSapIdentity.
-        const { authMode, resolvedSapIdentity } = effectiveSapIdentity({
+        // Stable, non-reversible principal + system scope for the principal-scoped
+        // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
+        // paths via computeDumpScope so the tool has a principal wherever it can
+        // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
+        // raw login never enters a key/log; jwtSub is null on this path.
+        const dumpScope = computeDumpScope({
+          cdsUserId: userId,
           usedBasicOverride,
           sapLogin,
           destinationAuthType: sapConfig.authType,
           resolvedUsername: resolved.username,
-        });
-        const principal = resolvePrincipal({
-          cdsUserId: userId,
-          authMode,
-          resolvedSapIdentity,
+          destinationName: resolved.destinationName,
+          rawClient: sapClient,
+          resolvedClient: resolved.sapConfig.client,
           jwtSub: null,
         });
-        const dumpScope = principal
-          ? {
-              principalHash: principal.principalHash,
-              ...resolveSystemScope(sapClient, {
-                destinationName: resolved.destinationName,
-                client: resolved.sapConfig.client,
-              }),
-            }
-          : undefined;
 
         // Per-request responsible person for ADT writes (create/update/delete).
         setRequestResponsible(req.headers);

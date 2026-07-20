@@ -16,6 +16,7 @@
 
 import { createHash } from 'node:crypto';
 import {
+  computeDumpScope,
   effectiveSapIdentity,
   principalHash,
   resolvePrincipal,
@@ -226,5 +227,56 @@ describe('effectiveSapIdentity', () => {
         resolvedUsername: null,
       }),
     ).toEqual({ authMode: 'jwt', resolvedSapIdentity: null });
+  });
+});
+
+describe('computeDumpScope', () => {
+  const base = {
+    usedBasicOverride: true,
+    sapLogin: 'DEV01',
+    destinationAuthType: 'basic',
+    resolvedUsername: 'SVC',
+    destinationName: 'S4HANA_DEV',
+    rawClient: '100',
+    resolvedClient: '000',
+    jwtSub: null,
+  };
+
+  it('returns a scope for a real CDS user (matches the piecewise derivation)', () => {
+    const scope = computeDumpScope({ cdsUserId: 'alice', ...base });
+    expect(scope).toEqual({
+      principalHash: principalHash({
+        cdsUserId: 'alice',
+        authMode: 'basic',
+        resolvedSapIdentity: 'DEV01',
+        jwtSub: null,
+      }),
+      resolvedDestination: 'S4HANA_DEV',
+      effectiveClient: '100', // header client wins over resolved '000'
+    });
+  });
+
+  it('fails closed (undefined) for an anonymous / missing CDS user', () => {
+    expect(
+      computeDumpScope({ cdsUserId: 'anonymous', ...base }),
+    ).toBeUndefined();
+    expect(computeDumpScope({ cdsUserId: '', ...base })).toBeUndefined();
+  });
+
+  it('login without password uses the destination user, not the stray login', () => {
+    const scope = computeDumpScope({
+      cdsUserId: 'bob',
+      ...base,
+      usedBasicOverride: false,
+      destinationAuthType: 'jwt',
+    });
+    expect(scope?.principalHash).toBe(
+      principalHash({
+        cdsUserId: 'bob',
+        authMode: 'jwt',
+        resolvedSapIdentity: 'SVC',
+        jwtSub: null,
+      }),
+    );
   });
 });

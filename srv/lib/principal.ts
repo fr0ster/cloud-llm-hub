@@ -112,3 +112,51 @@ export function effectiveSapIdentity(input: {
         resolvedSapIdentity: input.resolvedUsername ?? null,
       };
 }
+
+/** The principal + system scope carried in the ALS store for GetDumpSection. */
+export interface DumpScope {
+  principalHash: string;
+  resolvedDestination: string;
+  effectiveClient: string;
+}
+
+/**
+ * Full dump-scope for a request — the single source of truth used by BOTH the
+ * planner (`execute_step`) and the chat (`/v1/*`) paths, so GetDumpSection has a
+ * principal wherever it can be RAG-selected. Returns `undefined` (fail closed)
+ * when there is no stable principal (missing/anonymous CDS user).
+ */
+export function computeDumpScope(input: {
+  cdsUserId: string;
+  usedBasicOverride: boolean;
+  sapLogin?: string;
+  destinationAuthType: string;
+  resolvedUsername?: string | null;
+  destinationName: string;
+  rawClient?: string;
+  resolvedClient?: string;
+  jwtSub?: string | null;
+}): DumpScope | undefined {
+  const { authMode, resolvedSapIdentity } = effectiveSapIdentity({
+    usedBasicOverride: input.usedBasicOverride,
+    sapLogin: input.sapLogin,
+    destinationAuthType: input.destinationAuthType,
+    resolvedUsername: input.resolvedUsername,
+  });
+  const principal = resolvePrincipal({
+    cdsUserId: input.cdsUserId,
+    authMode,
+    resolvedSapIdentity,
+    jwtSub: input.jwtSub ?? null,
+  });
+  if (!principal) return undefined;
+  const scope = resolveSystemScope(input.rawClient, {
+    destinationName: input.destinationName,
+    client: input.resolvedClient,
+  });
+  return {
+    principalHash: principal.principalHash,
+    resolvedDestination: scope.resolvedDestination,
+    effectiveClient: scope.effectiveClient,
+  };
+}

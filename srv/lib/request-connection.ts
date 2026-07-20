@@ -25,6 +25,7 @@ import type { Request, Response } from 'express';
 import { createConnection } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
 import { maskLoginForLog } from './log-mask';
+import { computeDumpScope, type DumpScope } from './principal';
 import { setRequestResponsible } from './responsible';
 
 export type CredentialError = Error & {
@@ -50,6 +51,9 @@ export interface EstablishResult {
   connection?: IAbapConnection;
   /** True when an error response has already been written to `res` and the caller must return immediately. */
   handled: boolean;
+  /** Principal scope for GetDumpSection — the caller must thread it into
+   * runWithRequestConnection so the tool has a principal on this (chat) path too. */
+  dumpScope?: DumpScope;
 }
 
 /**
@@ -137,7 +141,21 @@ export async function establishRequestConnection(
     // x-sap-responsible, else the connecting x-sap-login user.
     setRequestResponsible(req.headers);
 
-    return { connection, handled: false };
+    // Principal scope for GetDumpSection — same derivation as the planner path,
+    // so the tool has a principal when RAG-selected on the chat (/v1) channels.
+    const dumpScope = computeDumpScope({
+      cdsUserId: cds.context?.user?.id ?? 'anonymous',
+      usedBasicOverride: !!(sapLogin && sapPassword),
+      sapLogin,
+      destinationAuthType: sapConfig.authType,
+      resolvedUsername: resolved.username,
+      destinationName: resolved.destinationName,
+      rawClient: sapClient,
+      resolvedClient: resolved.sapConfig.client,
+      jwtSub: null,
+    });
+
+    return { connection, handled: false, dumpScope };
   } catch (connErr) {
     const err = connErr instanceof Error ? connErr : new Error(String(connErr));
     const errWithCode = err as CredentialError;
