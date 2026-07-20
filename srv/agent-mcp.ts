@@ -25,11 +25,13 @@ import './env-setup';
 import { randomUUID } from 'node:crypto';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
+import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { z } from 'zod';
+import { getAgentConfig } from './agent-config';
 import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
@@ -37,7 +39,41 @@ import { resolveExposition } from './lib/exposition';
 import { computeDumpScope } from './lib/principal';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
+import {
+  loadStepGateThresholds,
+  loadStepReviewTimeoutMs,
+  stepReviewEnabled,
+} from './lib/step-gate';
+import { assembleReviewedResponse, reviewStep } from './lib/step-reviewer';
+import { extractExecutedTools } from './lib/write-guardrail';
 import { runWithSessionId } from './request-session';
+
+type ReviewerLlm = import('@mcp-abap-adt/llm-agent').ILlm;
+let reviewerLlm: ReviewerLlm | null = null;
+/**
+ * Lazily build (and cache) the executor-honesty reviewer's own LLM client.
+ * Model fallback ends at the executor's own `cfg.llm.model` — NEVER a
+ * hardcoded model name, since that may not be deployed for the current
+ * provider/resource group and would leave the reviewer silently dead.
+ */
+async function getReviewerLlm(): Promise<ReviewerLlm> {
+  if (reviewerLlm) return reviewerLlm;
+  const cfg = getAgentConfig();
+  reviewerLlm = await makeLlm(
+    {
+      provider: cfg.llm.provider,
+      apiKey: cfg.llm.apiKey || 'sap-ai-sdk-managed',
+      baseURL: cfg.llm.baseUrl,
+      model:
+        process.env.LLM_AGENT_REVIEWER_MODEL ||
+        process.env.LLM_AGENT_CLASSIFIER_MODEL ||
+        cfg.llm.model,
+      resourceGroup: cfg.llm.resourceGroup,
+    },
+    0,
+  );
+  return reviewerLlm;
+}
 
 /**
  * Global cap on concurrent `execute_step` executions. The tool contract lets a
@@ -333,6 +369,46 @@ export async function createAgentMcpServerForRequest(
         // PROBLEM banner, no usage footer, no reshaping. This MCP is a thin proxy
         // to the agent; whatever the agent produced is exactly what the caller
         // gets. Diagnostics stay server-side in the log below.
+        //
+        // ONE exception — the executor-honesty guardrail: if the response asserts
+        // a completed write yet NO write tool ran (e.g. a read-only caller whose
+        // role lacks Create*/Update*/Delete*/Activate*), prepend an "unverified"
+        // banner. The tool trace already proves nothing was written; we must not
+        // relay fabricated success to the controller as if it happened.
+        const rawContent = r.value.content ?? '';
+        const assembled = await assembleReviewedResponse(
+          {
+            task,
+            rawContent,
+            toolCallCount: r.value.toolCallCount,
+            totalTokens: r.value.usage?.totalTokens ?? 0,
+          },
+          {
+            enabled: stepReviewEnabled(process.env),
+            thresholds: loadStepGateThresholds(process.env),
+            // Fail-open even if building the reviewer LLM fails (e.g. model not
+            // deployed): the closure returns null, surfaced as reviewFailed below.
+            runReview: async (i) => {
+              try {
+                return await reviewStep(i, {
+                  llm: await getReviewerLlm(),
+                  timeoutMs: loadStepReviewTimeoutMs(process.env),
+                });
+              } catch (err) {
+                log.warn('step reviewer llm unavailable (fail-open)', {
+                  destination: targetDestination,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+                return null;
+              }
+            },
+          },
+        );
+        if (assembled.reviewFailed) {
+          log.info('step reviewer produced no verdict (fail-open)', {
+            destination: targetDestination,
+          });
+        }
         log.info('execute_step done', {
           ok: true,
           destination: targetDestination,
@@ -340,8 +416,14 @@ export async function createAgentMcpServerForRequest(
           toolCallCount: r.value.toolCallCount,
           totalTokens: r.value.usage?.totalTokens,
           stopReason: r.value.stopReason,
+          writeGuardrailWarned: assembled.writeGuardrailWarned,
+          reviewWarned: assembled.reviewWarned,
+          reviewFailed: assembled.reviewFailed,
+          ...(assembled.writeGuardrailWarned || assembled.reviewWarned
+            ? { executedTools: extractExecutedTools(rawContent) }
+            : {}),
         });
-        return textResult(r.value.content ?? '', false);
+        return textResult(assembled.content, false);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });
