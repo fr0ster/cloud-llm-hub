@@ -274,7 +274,16 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       // silently do nothing. Narrow on purpose: ONLY the `skill:` prefix — an
       // untagged TOOL must still be dropped (the v6.22.0 bypass fix).
       const id = r.metadata.id;
-      if (typeof id === 'string' && id.startsWith('skill:')) return true;
+      if (typeof id === 'string' && id.startsWith('skill:')) {
+        // A skill is instruction TEXT, not a callable tool — but a WRITE skill
+        // (creating-*/activating-*) handed to a read-only caller makes the
+        // executor narrate a create it cannot perform (no write tool is granted),
+        // fabricating success. So a TAGGED skill is gated by the SAME exposition
+        // as the tools it drives; an UNtagged skill still passes (harmless
+        // instructions — preserves the default for any future/consumer skill).
+        const skillExpo = SKILL_EXPOSITIONS[id.slice('skill:'.length)];
+        return !skillExpo || allowed.has(skillExpo);
+      }
       return (
         !!r.metadata.exposition && allowed.has(r.metadata.exposition as string)
       );
@@ -455,6 +464,7 @@ import {
 } from './lib/get-dump-section';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
+import { SKILL_EXPOSITIONS } from './lib/skill-expositions';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
 import { CollectionRegistry } from './rag-collections';
 
