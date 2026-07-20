@@ -34,7 +34,11 @@ import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
-import { resolvePrincipal, resolveSystemScope } from './lib/principal';
+import {
+  effectiveSapIdentity,
+  resolvePrincipal,
+  resolveSystemScope,
+} from './lib/principal';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
 import { runWithSessionId } from './request-session';
@@ -114,6 +118,9 @@ interface BuiltConnection {
   sapConfig: SapConfig;
   sapLogin: string | undefined;
   sapClient: string | undefined;
+  // True iff the basic-auth override was actually applied (login AND password
+  // both present). The password itself is NOT returned — only this flag.
+  usedBasicOverride: boolean;
 }
 
 async function buildConnectionForDestination(
@@ -138,8 +145,9 @@ async function buildConnectionForDestination(
     );
   }
 
+  const usedBasicOverride = !!(sapLogin && sapPassword);
   const sapConfig: SapConfig = { ...resolved.sapConfig };
-  if (sapLogin && sapPassword) {
+  if (usedBasicOverride) {
     sapConfig.authType = 'basic';
     sapConfig.username = sapLogin;
     sapConfig.password = sapPassword;
@@ -158,6 +166,7 @@ async function buildConnectionForDestination(
     sapConfig,
     sapLogin,
     sapClient,
+    usedBasicOverride,
   };
 }
 
@@ -255,7 +264,8 @@ export async function createAgentMcpServerForRequest(
           targetDestination,
         );
         connection = built.connection;
-        const { resolved, sapConfig, sapLogin, sapClient } = built;
+        const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
+          built;
 
         // Derive a stable, non-reversible principal + system scope for the
         // principal-scoped cloud-local tools (e.g. GetDumpSection's buffer key).
@@ -263,8 +273,15 @@ export async function createAgentMcpServerForRequest(
         // an anonymous/unauthenticated caller yields no dumpScope, so the tool
         // refuses. jwtSub is null here — no validated-JWT `sub` is surfaced on
         // this path (see task-6-report.md).
-        const authMode = sapLogin ? 'basic' : sapConfig.authType;
-        const resolvedSapIdentity = sapLogin ?? resolved.username ?? null;
+        // Effective identity, not the raw header: a login without a password did
+        // NOT authenticate as that login (the connection used destination auth),
+        // so the key must not reflect the unused x-sap-login. See effectiveSapIdentity.
+        const { authMode, resolvedSapIdentity } = effectiveSapIdentity({
+          usedBasicOverride,
+          sapLogin,
+          destinationAuthType: sapConfig.authType,
+          resolvedUsername: resolved.username,
+        });
         const principal = resolvePrincipal({
           cdsUserId: userId,
           authMode,

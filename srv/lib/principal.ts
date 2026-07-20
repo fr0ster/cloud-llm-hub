@@ -89,3 +89,26 @@ export function resolvePrincipal(
     }),
   };
 }
+
+/**
+ * The EFFECTIVE SAP identity that actually authenticated the connection — the
+ * basis for the buffer-key principal, so it must reflect the real access path,
+ * not an unused caller header. The basic-auth override only takes effect when a
+ * login AND a password are BOTH supplied (`usedBasicOverride`). A login WITHOUT
+ * a password does NOT authenticate as that login — the connection uses the
+ * destination's own auth, so the identity is the destination's resolved user
+ * (or null under principal propagation), never the stray login header.
+ */
+export function effectiveSapIdentity(input: {
+  usedBasicOverride: boolean;
+  sapLogin?: string;
+  destinationAuthType: string;
+  resolvedUsername?: string | null;
+}): { authMode: string; resolvedSapIdentity: string | null } {
+  return input.usedBasicOverride
+    ? { authMode: 'basic', resolvedSapIdentity: input.sapLogin ?? null }
+    : {
+        authMode: input.destinationAuthType,
+        resolvedSapIdentity: input.resolvedUsername ?? null,
+      };
+}
