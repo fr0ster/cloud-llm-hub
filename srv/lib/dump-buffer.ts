@@ -99,12 +99,28 @@ export class InMemoryLruDumpBuffer implements DumpBufferStore {
   }
 }
 
+/**
+ * Parse a strictly-positive integer env value; anything else (unset, empty,
+ * non-numeric, zero, negative, non-integer) → `def`. A raw `Number('abc')` is
+ * NaN and a bare `?? def` does NOT catch it — a malformed value would then make
+ * `maxBytes`/`maxEntries` NaN (every `> NaN` comparison false → eviction never
+ * fires) or `ttlMs` NaN (entries never expire), silently defeating the hard
+ * cap this buffer exists to enforce.
+ */
+function positiveIntEnv(value: string | undefined, def: number): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : def;
+}
+
 export function makeDefaultDumpBuffer(
   env: Record<string, string | undefined> = process.env,
 ): DumpBufferStore {
-  const maxEntries = Number(env.LLM_AGENT_DUMP_BUFFER_MAX_ENTRIES ?? 32);
-  const maxBytes = Number(env.LLM_AGENT_DUMP_BUFFER_MAX_BYTES ?? 64_000_000);
-  const ttlMs = Number(env.LLM_AGENT_DUMP_BUFFER_TTL_MS ?? 600_000);
+  const maxEntries = positiveIntEnv(env.LLM_AGENT_DUMP_BUFFER_MAX_ENTRIES, 32);
+  const maxBytes = positiveIntEnv(
+    env.LLM_AGENT_DUMP_BUFFER_MAX_BYTES,
+    64_000_000,
+  );
+  const ttlMs = positiveIntEnv(env.LLM_AGENT_DUMP_BUFFER_TTL_MS, 600_000);
 
   return new InMemoryLruDumpBuffer({ maxEntries, maxBytes, ttlMs });
 }

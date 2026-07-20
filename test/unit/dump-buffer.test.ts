@@ -121,4 +121,20 @@ describe('makeDefaultDumpBuffer', () => {
     expect(store.get(key({ dumpId: 'd1' }))).toBeUndefined();
     expect(store.get(key({ dumpId: 'd2' }))).toBeDefined();
   });
+
+  it('falls back to safe defaults on malformed env (never disables the cap)', () => {
+    // 'abc' → NaN, '' → 0, '-5' → negative: a raw Number() would leave the
+    // bound NaN/0 and DISABLE eviction (OOM). It must fall back to the default
+    // maxEntries=32, so the 33rd insert still evicts the oldest.
+    const store = makeDefaultDumpBuffer({
+      LLM_AGENT_DUMP_BUFFER_MAX_ENTRIES: 'abc',
+      LLM_AGENT_DUMP_BUFFER_MAX_BYTES: '',
+      LLM_AGENT_DUMP_BUFFER_TTL_MS: '-5',
+    });
+    for (let i = 0; i < 33; i++) {
+      store.set(key({ dumpId: `d${i}` }), { index: [], raw: 'x' });
+    }
+    expect(store.get(key({ dumpId: 'd0' }))).toBeUndefined(); // oldest evicted
+    expect(store.get(key({ dumpId: 'd32' }))).toBeDefined(); // newest kept
+  });
 });
