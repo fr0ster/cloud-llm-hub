@@ -103,8 +103,12 @@ export async function establishRequestConnection(
       );
     }
 
+    // The basic-auth override needs BOTH a login and a password — a login alone
+    // does NOT authenticate as that login. Everything below (auth config, the
+    // diagnostic log, and the dump principal) keys off this single flag.
+    const usedBasicOverride = !!(sapLogin && sapPassword);
     const sapConfig: SapConfig = { ...resolved.sapConfig };
-    if (sapLogin && sapPassword) {
+    if (usedBasicOverride) {
       // Caller-supplied basic auth overrides the destination's own auth.
       sapConfig.authType = 'basic';
       sapConfig.username = sapLogin;
@@ -133,8 +137,10 @@ export async function establishRequestConnection(
 
     log.info('Per-request SAP connection established', {
       destination,
-      auth: sapLogin ? 'user-basic' : sapConfig.authType,
-      username: maskLoginForLog(sapLogin),
+      auth: usedBasicOverride ? 'user-basic' : sapConfig.authType,
+      username: usedBasicOverride
+        ? maskLoginForLog(sapLogin)
+        : '(destination-auth)',
     });
 
     // Per-request responsible person for ADT writes (create/update/delete):
@@ -145,7 +151,7 @@ export async function establishRequestConnection(
     // so the tool has a principal when RAG-selected on the chat (/v1) channels.
     const dumpScope = computeDumpScope({
       cdsUserId: cds.context?.user?.id ?? 'anonymous',
-      usedBasicOverride: !!(sapLogin && sapPassword),
+      usedBasicOverride,
       sapLogin,
       destinationAuthType: sapConfig.authType,
       resolvedUsername: resolved.username,
