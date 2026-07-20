@@ -16,6 +16,7 @@
 
 import { createHash } from 'node:crypto';
 import {
+  effectiveSapIdentity,
   principalHash,
   resolvePrincipal,
   resolveSystemScope,
@@ -191,5 +192,39 @@ describe('resolvePrincipal', () => {
         jwtSub: null,
       }),
     );
+  });
+});
+
+describe('effectiveSapIdentity', () => {
+  it('login + password (override used) → basic auth, login is the identity', () => {
+    expect(
+      effectiveSapIdentity({
+        usedBasicOverride: true,
+        sapLogin: 'ALICE',
+        destinationAuthType: 'jwt',
+        resolvedUsername: 'SVC_USER',
+      }),
+    ).toEqual({ authMode: 'basic', resolvedSapIdentity: 'ALICE' });
+  });
+
+  it('login WITHOUT password (override NOT used) → destination auth + resolved user, NOT the stray login', () => {
+    expect(
+      effectiveSapIdentity({
+        usedBasicOverride: false,
+        sapLogin: 'ALICE',
+        destinationAuthType: 'jwt',
+        resolvedUsername: 'SVC_USER',
+      }),
+    ).toEqual({ authMode: 'jwt', resolvedSapIdentity: 'SVC_USER' });
+  });
+
+  it('no login, no resolved user (principal propagation) → destination auth + null identity', () => {
+    expect(
+      effectiveSapIdentity({
+        usedBasicOverride: false,
+        destinationAuthType: 'jwt',
+        resolvedUsername: null,
+      }),
+    ).toEqual({ authMode: 'jwt', resolvedSapIdentity: null });
   });
 });
