@@ -37,6 +37,10 @@ import { resolveExposition } from './lib/exposition';
 import { computeDumpScope } from './lib/principal';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
+import {
+  applyWriteGuardrail,
+  extractExecutedTools,
+} from './lib/write-guardrail';
 import { runWithSessionId } from './request-session';
 
 /**
@@ -333,6 +337,14 @@ export async function createAgentMcpServerForRequest(
         // PROBLEM banner, no usage footer, no reshaping. This MCP is a thin proxy
         // to the agent; whatever the agent produced is exactly what the caller
         // gets. Diagnostics stay server-side in the log below.
+        //
+        // ONE exception — the executor-honesty guardrail: if the response asserts
+        // a completed write yet NO write tool ran (e.g. a read-only caller whose
+        // role lacks Create*/Update*/Delete*/Activate*), prepend an "unverified"
+        // banner. The tool trace already proves nothing was written; we must not
+        // relay fabricated success to the controller as if it happened.
+        const rawContent = r.value.content ?? '';
+        const guarded = applyWriteGuardrail(rawContent);
         log.info('execute_step done', {
           ok: true,
           destination: targetDestination,
@@ -340,8 +352,12 @@ export async function createAgentMcpServerForRequest(
           toolCallCount: r.value.toolCallCount,
           totalTokens: r.value.usage?.totalTokens,
           stopReason: r.value.stopReason,
+          writeGuardrailWarned: guarded.warned,
+          ...(guarded.warned
+            ? { executedTools: extractExecutedTools(rawContent) }
+            : {}),
         });
-        return textResult(r.value.content ?? '', false);
+        return textResult(guarded.content, false);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });
