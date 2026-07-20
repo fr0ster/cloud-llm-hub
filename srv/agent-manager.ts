@@ -1661,7 +1661,9 @@ async function buildEmbeddedMcpAdapter(
     // Cloud-local tool: NOT in handlerMap, so branch BEFORE the unknown-tool
     // check. Principal-scoped via the ALS dumpScope; the raw login is never in
     // the key/log — only its hash.
-    if (name === 'GetDumpSection') {
+    // Only intercept when core does NOT own this name — consistent with the
+    // corpus/listTools dedupe where a future core GetDumpSection wins.
+    if (name === 'GetDumpSection' && !handlerMap.has('GetDumpSection')) {
       const dumpScope = connectionALS.getStore()?.dumpScope;
       log.info('GetDumpSection dispatch', {
         destination: destinationName,
