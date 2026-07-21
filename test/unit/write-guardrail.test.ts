@@ -1,8 +1,11 @@
 import {
   applyWriteGuardrail,
+  claimedWriteOps,
   claimsCompletedWrite,
   extractExecutedTools,
   hasWriteTool,
+  opSatisfiedByTools,
+  toolMatchesOp,
 } from '../../srv/lib/write-guardrail';
 
 describe('extractExecutedTools', () => {
@@ -115,5 +118,50 @@ describe('applyWriteGuardrail', () => {
     const r = applyWriteGuardrail(readback);
     expect(r.warned).toBe(false);
     expect(r.content).toBe(readback);
+  });
+});
+
+describe('claimedWriteOps', () => {
+  it('picks up both ops from a chained EN claim', () => {
+    expect(claimedWriteOps('The domain was created and activated.')).toEqual(
+      expect.arrayContaining(['created', 'activated']),
+    );
+  });
+  it('picks up a chained RU/UK claim', () => {
+    expect(claimedWriteOps("Об'єкт успішно створено та активовано.")).toEqual(
+      expect.arrayContaining(['created', 'activated']),
+    );
+  });
+  it('returns [] when nothing is claimed', () => {
+    expect(
+      claimedWriteOps('I cannot create it — no create tool is available.'),
+    ).toEqual([]);
+  });
+});
+
+describe('toolMatchesOp', () => {
+  it('maps tool name prefixes to op families', () => {
+    expect(toolMatchesOp('CreateDomain', 'created')).toBe(true);
+    expect(toolMatchesOp('HandlerActivate', 'activated')).toBe(true);
+    expect(toolMatchesOp('UpdateClass', 'updated')).toBe(true);
+    expect(toolMatchesOp('DeleteTable', 'deleted')).toBe(true);
+    expect(toolMatchesOp('ReadDomain', 'created')).toBe(false);
+  });
+});
+
+describe('opSatisfiedByTools', () => {
+  it('is false when no executed tool matches the op', () => {
+    expect(
+      opSatisfiedByTools('activated', ['CreateDomain', 'ReadDomain']),
+    ).toBe(false);
+  });
+  it('is true when a created tool ran', () => {
+    expect(opSatisfiedByTools('created', ['CreateDomain'])).toBe(true);
+  });
+  it('is true when an activated tool ran', () => {
+    expect(opSatisfiedByTools('activated', ['ActivateDomain'])).toBe(true);
+  });
+  it('is true when a deleted tool ran', () => {
+    expect(opSatisfiedByTools('deleted', ['DeleteTable'])).toBe(true);
   });
 });
