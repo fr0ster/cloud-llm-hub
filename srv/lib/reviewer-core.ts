@@ -14,12 +14,18 @@ import {
   type WriteOp,
 } from './write-guardrail';
 
-export type ReviewIssue = {
-  kind: 'unverified-write';
-  claimedOp: WriteOp;
-  expectedToolFamily: string;
-  observedTools: string[];
-};
+export type ReviewIssue =
+  | {
+      kind: 'unverified-write';
+      claimedOp: WriteOp;
+      expectedToolFamily: string;
+      observedTools: string[];
+    }
+  | {
+      kind: 'unsupported-claim';
+      confidence: 'low' | 'medium' | 'high';
+      reasons: string;
+    };
 
 export type ReviewVerdict = { ok: true } | { ok: false; issues: ReviewIssue[] };
 
