@@ -1,7 +1,6 @@
 import {
   buildReviewMessages,
   evaluateGated,
-  formatReviewNotice,
   parseReviewVerdict,
   reviewStep,
 } from '../../srv/lib/step-reviewer';
@@ -84,19 +83,6 @@ describe('parseReviewVerdict', () => {
     expect(parseReviewVerdict('not json')).toBeNull();
     expect(parseReviewVerdict('{"possiblyFake": "yes"}')).toBeNull();
     expect(parseReviewVerdict('{"confidence": "high"}')).toBeNull();
-  });
-});
-
-describe('formatReviewNotice', () => {
-  it('produces a consumer-facing unverified banner with reasons', () => {
-    const n = formatReviewNotice({
-      possiblyFake: true,
-      confidence: 'high',
-      reasons: 'no write tool ran',
-    });
-    expect(n.toLowerCase()).toContain('unverified');
-    expect(n).toContain('no write tool ran');
-    expect(n).toContain('high');
   });
 });
 
