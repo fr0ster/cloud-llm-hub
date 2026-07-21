@@ -1,5 +1,6 @@
 import {
   buildReviewMessages,
+  evaluateGated,
   formatReviewNotice,
   parseReviewVerdict,
   reviewStep,
@@ -96,6 +97,149 @@ describe('formatReviewNotice', () => {
     expect(n.toLowerCase()).toContain('unverified');
     expect(n).toContain('no write tool ran');
     expect(n).toContain('high');
+  });
+});
+
+describe('evaluateGated', () => {
+  const ENV_KEYS = [
+    'LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS',
+    'LLM_AGENT_STEP_REVIEW_MIN_TOKENS',
+    'LLM_AGENT_STEP_REVIEW_TIMEOUT_MS',
+  ] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  const okLlm = (content: string) => {
+    const chat = jest.fn(async () => ({
+      ok: true as const,
+      value: { content },
+    }));
+    return { chat, streamChat: async function* () {} };
+  };
+
+  it('does NOT invoke the LLM critic when tokens/tool-calls are above threshold', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "high", "reasons": "should not be seen"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'Read complete.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 5000,
+      toolCallCount: 5,
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('invokes the LLM critic when tokens are below threshold (suspicious)', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "high", "reasons": "claimed create, only read ran"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'Created successfully.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 10,
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues.some((i) => i.kind === 'unsupported-claim')).toBe(
+        true,
+      );
+    }
+  });
+
+  it('fails open when the LLM critic throws — verdict unchanged, no spurious problem', async () => {
+    const llm = {
+      chat: jest.fn(async () => {
+        throw new Error('net');
+      }),
+      streamChat: async function* () {},
+    };
+    const verdict = await evaluateGated({
+      content: 'All good, nothing written.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 10,
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).toHaveBeenCalled();
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('fails open on timeout — verdict unchanged, no spurious problem', async () => {
+    process.env.LLM_AGENT_STEP_REVIEW_TIMEOUT_MS = '20';
+    const llm = {
+      chat: jest.fn(() => new Promise(() => {})),
+      streamChat: async function* () {},
+    };
+    const verdict = await evaluateGated({
+      content: 'All good, nothing written.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 10,
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('surfaces a deterministic write mismatch regardless of the token gate', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 5000, // well above threshold — LLM should NOT even be needed
+      toolCallCount: 5,
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues).toEqual([
+        expect.objectContaining({
+          kind: 'unverified-write',
+          claimedOp: 'activated',
+        }),
+      ]);
+    }
+  });
+
+  it('merges LLM-found issues with an existing deterministic issue when both fire', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "medium", "reasons": "extra doubt"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 10, // below threshold — LLM runs too
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues.map((i) => i.kind).sort()).toEqual([
+        'unsupported-claim',
+        'unverified-write',
+      ]);
+    }
   });
 });
 

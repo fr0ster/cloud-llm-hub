@@ -1,5 +1,15 @@
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { type StepGateThresholds, stepIsSuspicious } from './step-gate';
+import {
+  evaluateDeterministic,
+  type ReviewIssue,
+  type ReviewVerdict,
+} from './reviewer-core';
+import {
+  loadStepGateThresholds,
+  loadStepReviewTimeoutMs,
+  type StepGateThresholds,
+  stepIsSuspicious,
+} from './step-gate';
 import { applyWriteGuardrail, extractExecutedTools } from './write-guardrail';
 
 export type StepReview = {
@@ -162,6 +172,57 @@ export async function reviewStep(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Deterministic-first, LLM-gated verdict for a step's response.
+ *
+ * `evaluateDeterministic` (write-claim vs. executed-tools) runs unconditionally
+ * — it is authoritative and free, independent of token/tool-call volume. The
+ * LLM critic (`reviewStep`) is spent ONLY when the token gate flags the step as
+ * suspicious (near-zero tokens/tool-calls for a real op); a step above both
+ * thresholds never reaches the LLM. Any LLM-found problem is merged in as an
+ * `unsupported-claim` issue; a throwing/timed-out critic fails open — the
+ * deterministic verdict is returned unchanged, never with a fabricated issue.
+ */
+export async function evaluateGated(input: {
+  content: string;
+  executedTools: string[];
+  totalTokens: number;
+  toolCallCount: number;
+  llm: ILlm;
+}): Promise<ReviewVerdict> {
+  const deterministic = evaluateDeterministic(
+    input.content,
+    input.executedTools,
+  );
+  const thresholds = loadStepGateThresholds(process.env);
+  const suspicious = stepIsSuspicious(
+    { toolCallCount: input.toolCallCount, totalTokens: input.totalTokens },
+    thresholds,
+  );
+  if (!suspicious) return deterministic;
+
+  let review: StepReview | null;
+  try {
+    review = await reviewStep(
+      { task: '', executedTools: input.executedTools, content: input.content },
+      { llm: input.llm, timeoutMs: loadStepReviewTimeoutMs(process.env) },
+    );
+  } catch {
+    review = null;
+  }
+  if (!review?.possiblyFake) return deterministic;
+
+  const llmIssue: ReviewIssue = {
+    kind: 'unsupported-claim',
+    confidence: review.confidence,
+    reasons: review.reasons,
+  };
+  return {
+    ok: false,
+    issues: deterministic.ok ? [llmIssue] : [...deterministic.issues, llmIssue],
+  };
 }
 
 export async function assembleReviewedResponse(
