@@ -42,6 +42,8 @@ import {
   type IRag,
   type IRagBackendWriter,
   type IRagEditor,
+  type IRequestLogger,
+  type ISubAgent,
   NoopDocumentEnricher,
   type RagMetadata,
   type RagResult,
@@ -55,6 +57,7 @@ import {
   SessionManager,
   SmartAgentBuilder,
   type SmartAgentHandle,
+  SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
@@ -1838,15 +1841,18 @@ function getOrCreateSharedLlms(config: AgentConfig): {
 }
 
 /**
- * Build a SmartAgent for a specific destination.
- * Shares LLM, embedder, facts/feedback/state RAG, metrics across all agents.
+ * Shared builder configuration for destination-bound SmartAgents — the tool
+ * loop, tool RAG, skills pool, MCP tools, and resilience/caching knobs common
+ * to BOTH `buildAgentForDestination` (today's single coordinator-less agent)
+ * and `buildExecutorWorker` (Task 7's coordinator-less executor worker), so
+ * the two build paths cannot drift. Deliberately stops short of `.build()` —
+ * callers add any build-specific wiring (e.g. `withRequestLogger`) and build.
  */
-async function buildAgentForDestination(
+async function configureDestinationAgentBuilder(
   mcpAdapter: McpClientAdapter,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
-): Promise<SmartAgentHandle> {
-  const log = cds.log('agent-manager');
+): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
     getOrCreateSharedLlms(config);
   const mainLlm = await mainLlmPromise;
@@ -1926,6 +1932,25 @@ async function buildAgentForDestination(
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
   // (tools have no namespace, but opts carry ragFilter for user isolation).
 
+  return builder;
+}
+
+/**
+ * Build a SmartAgent for a specific destination.
+ * Shares LLM, embedder, facts/feedback/state RAG, metrics across all agents.
+ */
+async function buildAgentForDestination(
+  mcpAdapter: McpClientAdapter,
+  toolsRag: ExpositionFilteringRag,
+  config: AgentConfig,
+): Promise<SmartAgentHandle> {
+  const log = cds.log('agent-manager');
+  const builder = await configureDestinationAgentBuilder(
+    mcpAdapter,
+    toolsRag,
+    config,
+  );
+
   const handle = await builder.build();
 
   // Diagnostic: confirm structured pipeline is active
@@ -1943,6 +1968,33 @@ async function buildAgentForDestination(
   });
 
   return handle;
+}
+
+/**
+ * Build the coordinator-less executor worker (Task 7) — the SAME tool-loop
+ * SmartAgent configuration as `buildAgentForDestination` (via the shared
+ * `configureDestinationAgentBuilder` helper), MINUS any coordinator, PLUS
+ * `withRequestLogger(recLogger)` so the worker's internal ABAP tool calls
+ * land in the shared `RecordingRequestLogger` (Verified fact 9 —
+ * `SmartAgentSubAgent.run` does not forward a requestLogger to the wrapped
+ * agent, so it must be injected at build time). Wrapped as an `ISubAgent` by
+ * reusing the library's own `SmartAgentSubAgent` — no bespoke wrapper.
+ */
+export async function buildExecutorWorker(
+  mcpAdapter: McpClientAdapter,
+  toolsRag: ExpositionFilteringRag,
+  config: AgentConfig,
+  recLogger: IRequestLogger,
+): Promise<ISubAgent> {
+  const builder = await configureDestinationAgentBuilder(
+    mcpAdapter,
+    toolsRag,
+    config,
+  );
+  builder.withRequestLogger(recLogger);
+
+  const handle = await builder.build();
+  return new SmartAgentSubAgent('executor', handle.agent);
 }
 
 /**
