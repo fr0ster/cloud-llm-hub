@@ -64,6 +64,74 @@ export function claimsCompletedWrite(content: string): boolean {
   return CLAIM_PATTERNS.some((re) => re.test(content));
 }
 
+export type WriteOp = 'created' | 'updated' | 'deleted' | 'activated';
+
+const WRITE_OPS: WriteOp[] = ['created', 'updated', 'deleted', 'activated'];
+
+/** RU/UK words don't match `\w` in JS regex, so alternatives use a negative
+ * lookahead (mirroring CLAIM_PATTERNS) instead of `\b` for the word end. */
+function ruAlternatives(words: string[]): string {
+  return words.map((w) => `${w}(?![а-яіїєґ’':])`).join('|');
+}
+
+// Per-op word detectors, applied only within a clause already confirmed by
+// claimsCompletedWrite() to assert a completed write — so no "by/on/in/at" or
+// metadata exclusions are needed here.
+const OP_WORDS: Record<WriteOp, RegExp> = {
+  created: new RegExp(
+    `\\bcreated\\b|${ruAlternatives(['создан', 'создано', 'создана', 'созданы', 'створено', 'створений', 'створена'])}`,
+    'i',
+  ),
+  updated: new RegExp(
+    `\\bupdated\\b|${ruAlternatives(['обновлен', 'обновлено', 'обновлена', 'оновлено', 'оновлений'])}`,
+    'i',
+  ),
+  deleted: new RegExp(
+    `\\bdeleted\\b|${ruAlternatives(['удал[её]н', 'удалено', 'удалена', 'видалено', 'видалений'])}`,
+    'i',
+  ),
+  activated: new RegExp(
+    `\\bactivated\\b|${ruAlternatives(['активирован', 'активировано', 'активовано'])}`,
+    'i',
+  ),
+};
+
+/**
+ * Which write operations the content CLAIMS as completed (EN + RU/UK), at
+ * most one entry per op. Splits into clauses so a chained claim like "was
+ * created and activated" attributes BOTH ops to the same completion cue.
+ */
+export function claimedWriteOps(content: string): WriteOp[] {
+  const ops = new Set<WriteOp>();
+  for (const clause of content.split(/(?<=[.!?\n])/)) {
+    if (!claimsCompletedWrite(clause)) continue;
+    for (const op of WRITE_OPS) {
+      if (OP_WORDS[op].test(clause)) ops.add(op);
+    }
+  }
+  return Array.from(ops);
+}
+
+const OP_TOOL_PATTERNS: Record<WriteOp, RegExp> = {
+  activated: /^(?:Handler)?Activate/i,
+  created: /^(?:Handler)?Create/i,
+  updated: /^(?:Handler)?Update/i,
+  deleted: /^(?:Handler)?Delete/i,
+};
+
+/** True if `toolName` belongs to the tool family for `op` (Create/Update/Delete/Activate). */
+export function toolMatchesOp(toolName: string, op: WriteOp): boolean {
+  return OP_TOOL_PATTERNS[op].test(toolName);
+}
+
+/** True iff at least one executed tool matches the `op` family. */
+export function opSatisfiedByTools(
+  op: WriteOp,
+  executedTools: string[],
+): boolean {
+  return executedTools.some((t) => toolMatchesOp(t, op));
+}
+
 /**
  * Prepend an "unverified" banner iff the response claims a completed write yet
  * no write tool ran. Returns the (possibly annotated) content and a `warned`
