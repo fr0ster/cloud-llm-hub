@@ -191,15 +191,39 @@ export async function establishRequestConnection(
   }
 }
 
+/** Best-effort release of a per-request connection (call in `finally`, AND on
+ * client abort/disconnect). Ends the server-side ADT stateful session first
+ * (releases any edit-lock a mutating tool left open — the "currently
+ * editing"/inactive-object symptom), then clears local state.
+ *
+ * Idempotent and NEVER throws — each step is independently try/catch-guarded,
+ * so a throwing `closeSession` does not skip `reset()`, and calling this twice
+ * (e.g. once from a `req.on('close')` listener and once from the handler's own
+ * `finally`) is always safe. */
+export async function safeStop(connection?: IAbapConnection): Promise<void> {
+  try {
+    await (
+      connection as { closeSession?: () => Promise<void> } | undefined
+    )?.closeSession?.();
+  } catch {
+    // Swallow — best-effort teardown must never throw into the caller's finally.
+  }
+  try {
+    (connection as { reset?: () => void } | undefined)?.reset?.();
+  } catch {
+    // Swallow — same reasoning as above.
+  }
+}
+
 /** Best-effort release of a per-request connection (call in `finally`).
  * Ends the server-side ADT stateful session first (releases any edit-lock a
  * mutating tool left open — the "currently editing"/inactive-object symptom),
- * then clears local state. Never throws. */
+ * then clears local state. Never throws.
+ *
+ * @deprecated Alias for {@link safeStop} — kept for existing call sites.
+ * Prefer calling `safeStop` directly in new code. */
 export async function resetRequestConnection(
   connection?: IAbapConnection,
 ): Promise<void> {
-  await (
-    connection as { closeSession?: () => Promise<void> } | undefined
-  )?.closeSession?.();
-  (connection as { reset?: () => void } | undefined)?.reset?.();
+  await safeStop(connection);
 }

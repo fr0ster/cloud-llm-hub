@@ -37,6 +37,7 @@ import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
 import { computeDumpScope } from './lib/principal';
+import { safeStop } from './lib/request-connection';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
 import {
@@ -123,6 +124,15 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts. Use it to track and budget what the executor spends across your plan.",
 ].join('\n');
+
+/**
+ * `recLogger` is attached to the handle at runtime (agent-manager.ts, Task 10)
+ * but is not part of the library's `SmartAgentHandle` type — optional, since
+ * an LLM-only handle (no destination) has no per-destination recLogger.
+ */
+interface HandleWithRecLogger {
+  recLogger?: { dropRequest(traceId?: string): void };
+}
 
 export interface AgentMcpResult {
   transport: StreamableHTTPServerTransport;
@@ -279,6 +289,16 @@ export async function createAgentMcpServerForRequest(
       }
       const releaseSlot = await execStepSemaphore.acquire();
       let connection: IAbapConnection | undefined;
+      // Handle + traceId are assigned inside the try below but read from the
+      // `finally` (dropRequest), so they must be declared in the outer scope.
+      let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
+      let traceId: string | undefined;
+      // Client abort/disconnect mid-step must still release the ADT edit-lock
+      // (the SM12 orphaned-lock symptom) — safeStop is idempotent, so this
+      // racing with the `finally` teardown below is safe either order.
+      req.on('close', () => {
+        void safeStop(connection);
+      });
       try {
         // Destination from the arg, else the connection's default header.
         const headerDestination = (
@@ -318,10 +338,14 @@ export async function createAgentMcpServerForRequest(
 
         // Per-request responsible person for ADT writes (create/update/delete).
         setRequestResponsible(req.headers);
-        const handle = await getSmartAgent(undefined, targetDestination);
+        handle = await getSmartAgent(undefined, targetDestination);
+        const agentHandle = handle;
 
         // Ephemeral session per call → the executor loads/saves no history.
+        // Doubles as the per-trace telemetry id (Verified fact 10): unique per
+        // call, threaded below as `trace.traceId`, dropped in the `finally`.
         const sessionId = `agent-step-${randomUUID()}`;
+        traceId = sessionId;
         const opts = {
           stream: false,
           externalTools: [],
@@ -349,7 +373,11 @@ export async function createAgentMcpServerForRequest(
         const r = await runWithSessionId(sessionId, () =>
           runWithRequestConnection(
             conn,
-            () => handle.agent.process([{ role: 'user', content: task }], opts),
+            () =>
+              agentHandle.agent.process(
+                [{ role: 'user', content: task }],
+                opts,
+              ),
             dumpScope,
           ),
         );
@@ -431,11 +459,14 @@ export async function createAgentMcpServerForRequest(
       } finally {
         // End the server-side ADT stateful session first (releases any edit-lock
         // a mutating tool left open — the "currently editing" / inactive-object
-        // symptom), THEN clear local state.
-        await (
-          connection as { closeSession?: () => Promise<void> } | undefined
-        )?.closeSession?.();
-        (connection as { reset?: () => void } | undefined)?.reset?.();
+        // symptom), THEN clear local state. Idempotent — safe even if the
+        // `req.on('close')` listener above already ran it.
+        await safeStop(connection);
+        // Free the per-trace telemetry bucket — nobody else calls dropRequest,
+        // so omitting this leaks memory per call (Verified fact 10).
+        (handle as unknown as HandleWithRecLogger)?.recLogger?.dropRequest(
+          traceId,
+        );
         // Release the concurrency slot last, after the session is torn down, so
         // the next queued step starts only once this one's memory is freed.
         releaseSlot();
