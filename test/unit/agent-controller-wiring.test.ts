@@ -13,6 +13,7 @@
 const withRequestLogger = jest.fn();
 const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
+const withSkillManager = jest.fn();
 const buildMock = jest.fn();
 
 function makeChainableBuilder() {
@@ -26,7 +27,7 @@ function makeChainableBuilder() {
   builder.withClassifierLlm = chainable(jest.fn());
   builder.withMcpClients = chainable(jest.fn());
   builder.setToolsRag = chainable(jest.fn());
-  builder.withSkillManager = chainable(jest.fn());
+  builder.withSkillManager = chainable(withSkillManager);
   builder.withEmbedder = chainable(jest.fn());
   builder.withClassification = chainable(jest.fn());
   builder.withLlmCallStrategy = chainable(jest.fn());
@@ -169,6 +170,35 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     } as never);
     expect(plan.plan.nodes[0].agent).toBe('executor');
     expect(deps.workers.has(plan.plan.nodes[0].agent)).toBe(true);
+  });
+
+  it('vectorizes skills for the worker build only — controller build skips them', async () => {
+    // The controller's tool-loop stage is gated off whenever the DAG
+    // coordinator is active (default-pipeline.js: `when:'!coordinatorActive'`),
+    // so its skill vectorization would be 100% wasted real-embedding cost
+    // (18 skills) on every destination init. Only the executor worker build
+    // (buildExecutorWorker, called first) should wire a skill manager.
+    await agentManager.buildAgentForDestination(
+      {} as never,
+      {} as never,
+      config,
+    );
+
+    expect(withSkillManager).toHaveBeenCalledTimes(1);
+  });
+
+  it('buildExecutorWorker alone still wires skills (worker keeps them enabled)', async () => {
+    buildMock.mockReset();
+    buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });
+
+    await agentManager.buildExecutorWorker(
+      {} as never,
+      {} as never,
+      config,
+      new RecordingRequestLogger(),
+    );
+
+    expect(withSkillManager).toHaveBeenCalledTimes(1);
   });
 
   it('buildLlmOnlyAgent never wires a coordinator', async () => {

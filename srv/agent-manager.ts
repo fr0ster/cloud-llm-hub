@@ -1856,6 +1856,7 @@ async function configureDestinationAgentBuilder(
   mcpAdapter: McpClientAdapter,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
+  opts?: { skipSkills?: boolean },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
     getOrCreateSharedLlms(config);
@@ -1913,9 +1914,19 @@ async function configureDestinationAgentBuilder(
   // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
   // injects the matched skill's body into the system message. Wired here (agent
   // level), so chat and execute_step behave identically.
-  const skillsPool = buildSkillsPool();
-  builder.withSkillManager(skillsPool);
-  await logSkillsPool(skillsPool);
+  //
+  // Skipped when `opts.skipSkills` is set — the DAG controller build (see
+  // `buildAgentForDestination`) has its tool-loop stage gated off whenever a
+  // coordinator is active (`default-pipeline.js`: `{id:'tool-loop',
+  // when:'!coordinatorActive'}`), so the controller never consults skills.
+  // Vectorizing them there is a wasted real embedding call (18 skills) on
+  // every destination init and regresses cold-start; the executor worker
+  // (which DOES run the tool-loop) keeps skills enabled.
+  if (!opts?.skipSkills) {
+    const skillsPool = buildSkillsPool();
+    builder.withSkillManager(skillsPool);
+    await logSkillsPool(skillsPool);
+  }
 
   // Share embedder across all RAG queries
   if (sharedEmbedder) builder.withEmbedder(sharedEmbedder);
@@ -1968,10 +1979,15 @@ export async function buildAgentForDestination(
   const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms(config);
   const criticLlm = await mainLlmPromise;
 
+  // Controller build skips skills — its tool-loop stage is gated off
+  // whenever the DAG coordinator is active, so the controller never
+  // consults the skills pool (see `configureDestinationAgentBuilder`).
+  // Only the executor worker above needs the real skill vectorization.
   const builder = await configureDestinationAgentBuilder(
     mcpAdapter,
     toolsRag,
     config,
+    { skipSkills: true },
   );
 
   builder.withRequestLogger(recLogger).withDagCoordinator({
