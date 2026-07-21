@@ -2,7 +2,7 @@
  * `IFinalizer` that runs the honesty reviewer over the executor's output and,
  * on a failed verdict, emits a trailing NOTICE-ONLY chunk via `onPartial`.
  *
- * Task 1 spike (`docs/superpowers/specs/controller-vehicle-spike.md`) proved:
+ * The Task 1 vehicle spike proved:
  * the DAG coordinator forwards every worker `onPartial` content delta LIVE to
  * both `process()` (accumulated) and `streamProcess()` (chunk sequence), and
  * `FinalizerResult.output` is NEVER re-yielded (`dag-coordinator.js:275` yields

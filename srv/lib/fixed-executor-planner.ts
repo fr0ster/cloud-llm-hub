@@ -3,8 +3,7 @@
  * bound to the `executor` worker, using the caller's prompt verbatim as the
  * node goal. No LLM call, no reasoning — deterministic by construction.
  *
- * Task 1 spike (`docs/superpowers/specs/controller-vehicle-spike.md`, section
- * (c)) pinned the exact `DagPlan`/`PlanNode` shapes and confirmed
+ * The Task 1 vehicle spike pinned the exact `DagPlan`/`PlanNode` shapes and confirmed
  * `DagPlan.createdAt` is REQUIRED with no default, and that `node.agent` is
  * how a node binds to a worker in the `workers` Map passed to the DAG
  * coordinator.
