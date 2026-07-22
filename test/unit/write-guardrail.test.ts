@@ -4,8 +4,7 @@ import {
   claimsCompletedWrite,
   extractExecutedTools,
   hasWriteTool,
-  opSatisfiedByTools,
-  toolMatchesOp,
+  isWriteTool,
 } from '../../srv/lib/write-guardrail';
 
 describe('extractExecutedTools', () => {
@@ -139,29 +138,19 @@ describe('claimedWriteOps', () => {
   });
 });
 
-describe('toolMatchesOp', () => {
-  it('maps tool name prefixes to op families', () => {
-    expect(toolMatchesOp('CreateDomain', 'created')).toBe(true);
-    expect(toolMatchesOp('HandlerActivate', 'activated')).toBe(true);
-    expect(toolMatchesOp('UpdateClass', 'updated')).toBe(true);
-    expect(toolMatchesOp('DeleteTable', 'deleted')).toBe(true);
-    expect(toolMatchesOp('ReadDomain', 'created')).toBe(false);
+describe('isWriteTool', () => {
+  it('detects Create/Update/Delete/Activate tool names', () => {
+    expect(isWriteTool('CreateDomain')).toBe(true);
+    expect(isWriteTool('UpdateClass')).toBe(true);
+    expect(isWriteTool('DeleteTable')).toBe(true);
+    expect(isWriteTool('ActivateObjects')).toBe(true);
   });
-});
-
-describe('opSatisfiedByTools', () => {
-  it('is false when no executed tool matches the op', () => {
-    expect(
-      opSatisfiedByTools('activated', ['CreateDomain', 'ReadDomain']),
-    ).toBe(false);
+  it('detects compact-mode Handler* write handlers', () => {
+    expect(isWriteTool('HandlerCreate')).toBe(true);
+    expect(isWriteTool('HandlerActivate')).toBe(true);
   });
-  it('is true when a created tool ran', () => {
-    expect(opSatisfiedByTools('created', ['CreateDomain'])).toBe(true);
-  });
-  it('is true when an activated tool ran', () => {
-    expect(opSatisfiedByTools('activated', ['ActivateDomain'])).toBe(true);
-  });
-  it('is true when a deleted tool ran', () => {
-    expect(opSatisfiedByTools('deleted', ['DeleteTable'])).toBe(true);
+  it('is false for read-only tool names', () => {
+    expect(isWriteTool('ReadDomain')).toBe(false);
+    expect(isWriteTool('GetTableContents')).toBe(false);
   });
 });

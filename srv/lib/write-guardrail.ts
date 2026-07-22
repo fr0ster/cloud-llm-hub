@@ -112,24 +112,9 @@ export function claimedWriteOps(content: string): WriteOp[] {
   return Array.from(ops);
 }
 
-const OP_TOOL_PATTERNS: Record<WriteOp, RegExp> = {
-  activated: /^(?:Handler)?Activate/i,
-  created: /^(?:Handler)?Create/i,
-  updated: /^(?:Handler)?Update/i,
-  deleted: /^(?:Handler)?Delete/i,
-};
-
-/** True if `toolName` belongs to the tool family for `op` (Create/Update/Delete/Activate). */
-export function toolMatchesOp(toolName: string, op: WriteOp): boolean {
-  return OP_TOOL_PATTERNS[op].test(toolName);
-}
-
-/** True iff at least one executed tool matches the `op` family. */
-export function opSatisfiedByTools(
-  op: WriteOp,
-  executedTools: string[],
-): boolean {
-  return executedTools.some((t) => toolMatchesOp(t, op));
+/** True if `toolName` belongs to the write family (Create/Update/Delete/Activate). */
+export function isWriteTool(toolName: string): boolean {
+  return WRITE_TOOL.test(toolName);
 }
 
 /**

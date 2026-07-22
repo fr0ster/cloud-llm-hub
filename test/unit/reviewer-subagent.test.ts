@@ -1,11 +1,18 @@
+import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import { ReviewerSubAgent } from '../../srv/lib/reviewer-subagent';
 
+function record(
+  name: string,
+  content: string | Record<string, unknown>,
+): ToolCallRecord {
+  return { call: { id: '', name, arguments: {} }, result: { content } };
+}
+
 describe('ReviewerSubAgent', () => {
-  // This portable unit hardcodes totalTokens/toolCallCount to 0 (real counts
-  // come from the future finalizer's `getSummary`), so `evaluateGated`'s token
-  // gate is always "suspicious" here and the LLM critic always runs. Use a
-  // benign stub verdict so the deterministic check (the thing under test)
-  // is never overridden by a spurious LLM finding.
+  // This portable unit derives toolCallCount from records.length, so a
+  // handful of records makes `evaluateGated`'s gate suspicious here and the
+  // LLM critic always runs. Use a benign stub verdict so the deterministic
+  // check (the thing under test) is never overridden by a spurious LLM finding.
   const benignLlm = {
     chat: jest.fn(async () => ({
       ok: true as const,
@@ -19,16 +26,18 @@ describe('ReviewerSubAgent', () => {
 
   it('has the expected identity and capabilities', () => {
     const agent = new ReviewerSubAgent({
-      executedToolNames: () => [],
+      getToolRecords: () => [],
       llm: benignLlm as never,
     });
     expect(agent.name).toBe('reviewer');
     expect(agent.capabilities).toEqual({ contextPolicy: 'optional' });
   });
 
-  it('flags a false activation claim without ever setting errorClass', async () => {
+  it('flags a false activation claim (status:inactive) without ever setting errorClass', async () => {
     const agent = new ReviewerSubAgent({
-      executedToolNames: () => ['CreateDomain'],
+      getToolRecords: () => [
+        record('CreateDomain', '{"success":true,"status":"inactive"}'),
+      ],
       llm: benignLlm as never,
     });
     const result = await agent.run({
@@ -50,9 +59,11 @@ describe('ReviewerSubAgent', () => {
     ]);
   });
 
-  it('passes a clean create+activate report with no errorClass', async () => {
+  it('passes a clean create+activate report (status:active) with no errorClass', async () => {
     const agent = new ReviewerSubAgent({
-      executedToolNames: () => ['CreateDomain', 'ActivateDomain'],
+      getToolRecords: () => [
+        record('CreateDomain', '{"success":true,"status":"active"}'),
+      ],
       llm: benignLlm as never,
     });
     const result = await agent.run({
@@ -66,7 +77,7 @@ describe('ReviewerSubAgent', () => {
 
   it('falls back to input.task when input.context is absent', async () => {
     const agent = new ReviewerSubAgent({
-      executedToolNames: () => [],
+      getToolRecords: () => [],
       llm: benignLlm as never,
     });
     const result = await agent.run({
@@ -79,7 +90,7 @@ describe('ReviewerSubAgent', () => {
 
   it('never sets errorClass, even when the review is a problem verdict (Verified fact 2)', async () => {
     const agent = new ReviewerSubAgent({
-      executedToolNames: () => [],
+      getToolRecords: () => [],
       llm: benignLlm as never,
     });
     const result = await agent.run({

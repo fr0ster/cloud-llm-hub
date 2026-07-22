@@ -1,4 +1,4 @@
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import {
   evaluateDeterministic,
   type ReviewIssue,
@@ -7,7 +7,6 @@ import {
 import {
   loadStepGateThresholds,
   loadStepReviewTimeoutMs,
-  stepIsSuspicious,
   stepReviewEnabled,
 } from './step-gate';
 
@@ -173,38 +172,35 @@ export async function reviewStep(
  * both the deterministic write-claim check and the LLM critic — is bypassed
  * and `{ ok: true }` is returned unconditionally. Enabled by default.
  *
- * `evaluateDeterministic` (write-claim vs. executed-tools) runs unconditionally
- * — it is authoritative and free, independent of token/tool-call volume. The
- * LLM critic (`reviewStep`) is spent ONLY when the token gate flags the step as
- * suspicious (near-zero tokens/tool-calls for a real op); a step above both
- * thresholds never reaches the LLM. Any LLM-found problem is merged in as an
- * `unsupported-claim` issue; a throwing/timed-out critic fails open — the
- * deterministic verdict is returned unchanged, never with a fabricated issue.
+ * `evaluateDeterministic` (write-claim vs. tool-RESULT ground truth) runs
+ * unconditionally — it is authoritative and free, independent of tool-call
+ * volume. The LLM critic (`reviewStep`) is spent ONLY when the tool-call
+ * count is at or below `maxToolCalls` (near-zero tool calls for a real op is
+ * suspicious); a step above the threshold never reaches the LLM. Per-trace
+ * token totals are no longer captured (the reviewer now grounds on tool
+ * RESULTS, not the request logger), so the gate is tool-call-count only.
+ * Any LLM-found problem is merged in as an `unsupported-claim` issue; a
+ * throwing/timed-out critic fails open — the deterministic verdict is
+ * returned unchanged, never with a fabricated issue.
  */
 export async function evaluateGated(input: {
   content: string;
-  executedTools: string[];
-  totalTokens: number;
+  records: ToolCallRecord[];
   toolCallCount: number;
   llm: ILlm;
 }): Promise<ReviewVerdict> {
   if (!stepReviewEnabled(process.env)) return { ok: true };
 
-  const deterministic = evaluateDeterministic(
-    input.content,
-    input.executedTools,
-  );
+  const deterministic = evaluateDeterministic(input.content, input.records);
   const thresholds = loadStepGateThresholds(process.env);
-  const suspicious = stepIsSuspicious(
-    { toolCallCount: input.toolCallCount, totalTokens: input.totalTokens },
-    thresholds,
-  );
+  const suspicious = input.toolCallCount <= thresholds.maxToolCalls;
   if (!suspicious) return deterministic;
 
+  const executedTools = input.records.map((r) => r.call.name);
   let review: StepReview | null;
   try {
     review = await reviewStep(
-      { task: '', executedTools: input.executedTools, content: input.content },
+      { task: '', executedTools, content: input.content },
       { llm: input.llm, timeoutMs: loadStepReviewTimeoutMs(process.env) },
     );
   } catch {

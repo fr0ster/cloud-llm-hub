@@ -1,17 +1,28 @@
 /**
- * Unit tests for Task 11: safe-stop + per-request telemetry lifecycle.
+ * Unit tests for safe-stop + per-request tool-record telemetry lifecycle.
  *
  * - `safeStop` (srv/lib/request-connection.ts): idempotent, never-throwing ADT
  *   session teardown — closeSession() then reset(), each independently
  *   swallowed on error.
- * - `RecordingRequestLogger` lifecycle: the contract the channel handlers rely
+ * - `RecordingMcpClient` lifecycle: the contract the channel handlers rely
  *   on in their `finally` — `dropRequest(traceId)` frees the per-trace bucket,
  *   and concurrent traceIds never cross-contaminate.
  */
 
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
-import { RecordingRequestLogger } from '../../srv/lib/recording-request-logger';
+import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { safeStop } from '../../srv/lib/request-connection';
+
+function fakeInner(): IMcpClient {
+  return {
+    listTools: jest.fn(),
+    callTool: jest.fn(async (name: string) => ({
+      ok: true as const,
+      value: { content: `${name}-result` },
+    })),
+  };
+}
 
 type FakeConnection = {
   closeSession: jest.Mock;
@@ -88,55 +99,40 @@ describe('safeStop', () => {
   });
 });
 
-describe('per-request telemetry lifecycle (RecordingRequestLogger)', () => {
-  test('dropRequest(traceId) frees the per-trace bucket after a run', () => {
-    const logger = new RecordingRequestLogger();
+describe('per-request telemetry lifecycle (RecordingMcpClient)', () => {
+  test('dropRequest(traceId) frees the per-trace bucket after a run', async () => {
+    const client = new RecordingMcpClient(fakeInner());
     const traceId = 't1';
 
-    logger.startRequest(traceId);
-    logger.logToolCall({
-      toolName: 'ReadTable',
-      success: true,
-      durationMs: 1,
-      cached: false,
-      requestId: traceId,
-    });
-    expect(logger.executedToolNames(traceId)).toEqual(['ReadTable']);
+    await client.callTool('ReadTable', {}, { trace: { traceId } });
+    expect(client.getToolRecords(traceId).map((r) => r.call.name)).toEqual([
+      'ReadTable',
+    ]);
 
-    logger.endRequest(traceId);
-    logger.dropRequest(traceId);
+    client.dropRequest(traceId);
 
-    expect(logger.executedToolNames(traceId)).toEqual([]);
+    expect(client.getToolRecords(traceId)).toEqual([]);
   });
 
-  test('two concurrent traceIds do not cross-contaminate, and dropping one leaves the other intact', () => {
-    const logger = new RecordingRequestLogger();
+  test('two concurrent traceIds do not cross-contaminate, and dropping one leaves the other intact', async () => {
+    const client = new RecordingMcpClient(fakeInner());
 
-    logger.startRequest('t1');
-    logger.startRequest('t2');
-    logger.logToolCall({
-      toolName: 'ReadTable',
-      success: true,
-      durationMs: 1,
-      cached: false,
-      requestId: 't1',
-    });
-    logger.logToolCall({
-      toolName: 'GetObject',
-      success: true,
-      durationMs: 1,
-      cached: false,
-      requestId: 't2',
-    });
+    await client.callTool('ReadTable', {}, { trace: { traceId: 't1' } });
+    await client.callTool('GetObject', {}, { trace: { traceId: 't2' } });
 
-    expect(logger.executedToolNames('t1')).toEqual(['ReadTable']);
-    expect(logger.executedToolNames('t2')).toEqual(['GetObject']);
+    expect(client.getToolRecords('t1').map((r) => r.call.name)).toEqual([
+      'ReadTable',
+    ]);
+    expect(client.getToolRecords('t2').map((r) => r.call.name)).toEqual([
+      'GetObject',
+    ]);
 
-    logger.endRequest('t1');
-    logger.dropRequest('t1');
+    client.dropRequest('t1');
 
-    expect(logger.executedToolNames('t1')).toEqual([]);
+    expect(client.getToolRecords('t1')).toEqual([]);
     // t2's bucket must be untouched by t1's drop.
-    expect(logger.executedToolNames('t2')).toEqual(['GetObject']);
+    expect(client.getToolRecords('t2').map((r) => r.call.name)).toEqual([
+      'GetObject',
+    ]);
   });
 });

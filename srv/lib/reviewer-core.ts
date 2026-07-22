@@ -1,25 +1,25 @@
 /**
  * Pure deterministic verdict for the reviewer layer: compares what the
- * response CLAIMS to have written against which write tools actually ran.
+ * response CLAIMS to have written against the ACTUAL RESULT of every tool
+ * call in the trace (ground truth), not just which tool NAMES ran.
  *
- * Built on top of `write-guardrail`'s claim/tool detection (Task 3), this
- * module produces a structured `ReviewVerdict` instead of a text banner, so a
- * controller can act on individual issues (one per unverified op) rather than
- * a single yes/no flag.
+ * Tool-name-only matching false-positives: `CreateDomain` defaults to
+ * `activate:true`, so a name match alone cannot tell an activated create from
+ * an inactive one (`activate:false`) — the exact ZDEMO_D_MATNR-class bug this
+ * redesign fixes. `parseToolOutcome` extracts the envelope
+ * (`{success, status, error, message}`) each ABAP tool returns as its
+ * `McpToolResult.content`, so the verdict is grounded in what the tool
+ * actually reported, not what its name implies.
  */
 
-import {
-  claimedWriteOps,
-  opSatisfiedByTools,
-  type WriteOp,
-} from './write-guardrail';
+import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import { claimedWriteOps, isWriteTool, type WriteOp } from './write-guardrail';
 
 export type ReviewIssue =
   | {
       kind: 'unverified-write';
       claimedOp: WriteOp;
-      expectedToolFamily: string;
-      observedTools: string[];
+      reason: string;
     }
   | {
       kind: 'unsupported-claim';
@@ -29,27 +29,151 @@ export type ReviewIssue =
 
 export type ReviewVerdict = { ok: true } | { ok: false; issues: ReviewIssue[] };
 
-const TOOL_FAMILY_LABEL: Record<WriteOp, string> = {
-  created: 'Create*',
-  updated: 'Update*',
-  deleted: 'Delete*',
-  activated: 'Activate*',
+/** A tool call's result reduced to ground-truth facts: did it succeed, what
+ *  status did it report, and what error (if any). */
+export type ToolOutcome = {
+  name: string;
+  ok: boolean;
+  status?: string;
+  error?: string;
 };
 
-/** Deterministic verdict: one `ReviewIssue` per claimed write op unsatisfied by executed tools. */
+/** Best-effort envelope extraction from `McpToolResult.content` — a JSON
+ *  string is parsed; a Record is used directly; anything unparseable yields
+ *  an empty envelope (never throws). */
+function parseEnvelope(
+  content: string | Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof content !== 'string') return content ?? {};
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Ground-truth outcome of a single tool call, from its ACTUAL result — never
+ *  from the tool's name. `ok` is false when the MCP layer reported an error
+ *  OR the envelope explicitly says `success: false`; a MISSING `success`
+ *  field is treated as success (many read tools carry no envelope at all). */
+export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
+  const name = record.call.name;
+  const mcpError = record.result.isError === true;
+  const envelope = parseEnvelope(record.result.content);
+  const envelopeSuccess = envelope.success;
+  const status =
+    typeof envelope.status === 'string' ? envelope.status : undefined;
+  const ok = !mcpError && envelopeSuccess !== false;
+
+  if (ok) return { name, ok: true, status };
+
+  const contentText =
+    typeof record.result.content === 'string'
+      ? record.result.content
+      : JSON.stringify(record.result.content);
+  const error =
+    (typeof envelope.error === 'string' && envelope.error) ||
+    (typeof envelope.message === 'string' && envelope.message) ||
+    contentText;
+  return { name, ok: false, status, error };
+}
+
+const CREATE_TOOL = /^(?:Handler)?Create/i;
+const UPDATE_TOOL = /^(?:Handler)?Update/i;
+const DELETE_TOOL = /^(?:Handler)?Delete/i;
+
+function opSatisfied(op: WriteOp, outcomes: ToolOutcome[]): boolean {
+  switch (op) {
+    case 'activated':
+      return outcomes.some((o) => o.status === 'active');
+    case 'created':
+      return outcomes.some((o) => CREATE_TOOL.test(o.name) && o.ok);
+    case 'deleted':
+      return outcomes.some((o) => DELETE_TOOL.test(o.name) && o.ok);
+    case 'updated':
+      return outcomes.some(
+        (o) => (UPDATE_TOOL.test(o.name) && o.ok) || o.status === 'active',
+      );
+  }
+}
+
+const OP_LABEL: Record<WriteOp, string> = {
+  created: '"created"',
+  updated: '"updated"',
+  deleted: '"deleted"',
+  activated: '"activated"',
+};
+
+function reasonFor(op: WriteOp, outcomes: ToolOutcome[]): string {
+  if (op === 'activated') {
+    return `claims ${OP_LABEL[op]} but no tool result shows status:'active'`;
+  }
+  const familyRe =
+    op === 'created'
+      ? CREATE_TOOL
+      : op === 'deleted'
+        ? DELETE_TOOL
+        : UPDATE_TOOL;
+  const family =
+    op === 'created' ? 'Create*' : op === 'deleted' ? 'Delete*' : 'Update*';
+  const attempted = outcomes.filter((o) => familyRe.test(o.name));
+  if (attempted.length === 0) {
+    return `claims ${OP_LABEL[op]} but no successful ${family} tool ran`;
+  }
+  const failed = attempted.find((o) => !o.ok);
+  if (failed) {
+    return `write tool ${failed.name} returned error: ${failed.error}`;
+  }
+  return `claims ${OP_LABEL[op]} but no successful ${family} tool ran`;
+}
+
+/**
+ * Result-based deterministic verdict: one `ReviewIssue` per claimed write op
+ * unsatisfied by the ACTUAL tool-call results, plus a catch-all issue for any
+ * write tool that reported failure while the content claims a completed write.
+ */
 export function evaluateDeterministic(
   content: string,
-  executedTools: string[],
+  records: ToolCallRecord[],
 ): ReviewVerdict {
+  const claims = claimedWriteOps(content);
+  if (claims.length === 0) return { ok: true };
+
+  const outcomes = records.map(parseToolOutcome);
+  const writeOutcomes = outcomes.filter((o) => isWriteTool(o.name));
+
   const issues: ReviewIssue[] = [];
-  for (const op of claimedWriteOps(content)) {
-    if (opSatisfiedByTools(op, executedTools)) continue;
+  for (const op of claims) {
+    if (opSatisfied(op, outcomes)) continue;
     issues.push({
       kind: 'unverified-write',
       claimedOp: op,
-      expectedToolFamily: TOOL_FAMILY_LABEL[op],
-      observedTools: executedTools,
+      reason: reasonFor(op, outcomes),
     });
   }
+
+  // Regardless of per-op satisfaction: a failed write tool while a completed
+  // write is claimed is direct evidence of a lie (a failed write claimed as
+  // done) — surfaced even when the specific op it maps to was independently
+  // satisfied by some OTHER tool call. Skip a write outcome whose failure was
+  // already cited above (reasonFor embeds the tool name in that case).
+  for (const failedWrite of writeOutcomes.filter((o) => !o.ok)) {
+    if (
+      issues.some(
+        (i) =>
+          i.kind === 'unverified-write' && i.reason.includes(failedWrite.name),
+      )
+    )
+      continue;
+    issues.push({
+      kind: 'unverified-write',
+      claimedOp: claims[0],
+      reason: `write tool ${failedWrite.name} returned error: ${failedWrite.error}`,
+    });
+  }
+
   return issues.length === 0 ? { ok: true } : { ok: false, issues };
 }

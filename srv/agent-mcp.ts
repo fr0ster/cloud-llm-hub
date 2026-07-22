@@ -90,12 +90,12 @@ const EXECUTE_STEP_DESCRIPTION = [
 ].join('\n');
 
 /**
- * `recLogger` is attached to the handle at runtime (agent-manager.ts, Task 10)
- * but is not part of the library's `SmartAgentHandle` type — optional, since
- * an LLM-only handle (no destination) has no per-destination recLogger.
+ * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
+ * part of the library's `SmartAgentHandle` type — optional, since an
+ * LLM-only handle (no destination) has no per-destination recMcp.
  */
-interface HandleWithRecLogger {
-  recLogger?: { dropRequest(traceId?: string): void };
+interface HandleWithRecMcp {
+  recMcp?: { dropRequest(traceId?: string): void };
 }
 
 export interface AgentMcpResult {
@@ -392,9 +392,7 @@ export async function createAgentMcpServerForRequest(
         await safeStop(connection);
         // Free the per-trace telemetry bucket — nobody else calls dropRequest,
         // so omitting this leaks memory per call (Verified fact 10).
-        (handle as unknown as HandleWithRecLogger)?.recLogger?.dropRequest(
-          traceId,
-        );
+        (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
         // Release the concurrency slot last, after the session is torn down, so
         // the next queued step starts only once this one's memory is freed.
         releaseSlot();
