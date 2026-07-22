@@ -34,12 +34,12 @@ import { resolveSessionId } from './session-id';
 const adapter = new AnthropicApiAdapter();
 
 /**
- * `recLogger` is attached to the handle at runtime (agent-manager.ts, Task 10)
- * but is not part of the library's `SmartAgentHandle` type — optional, since
- * an LLM-only handle (no destination) has no per-destination recLogger.
+ * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
+ * part of the library's `SmartAgentHandle` type — optional, since an
+ * LLM-only handle (no destination) has no per-destination recMcp.
  */
-interface HandleWithRecLogger {
-  recLogger?: { dropRequest(traceId?: string): void };
+interface HandleWithRecMcp {
+  recMcp?: { dropRequest(traceId?: string): void };
 }
 
 /**
@@ -210,6 +210,6 @@ export async function handleAnthropicMessages(
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
     // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as HandleWithRecLogger)?.recLogger?.dropRequest(traceId);
+    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
   }
 }

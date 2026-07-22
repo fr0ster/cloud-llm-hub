@@ -19,7 +19,7 @@ import type {
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
 import { renderNotice } from './notify-policy';
-import type { RecordingRequestLogger } from './recording-request-logger';
+import type { RecordingMcpClient } from './recording-mcp-client';
 import { evaluateGated } from './step-reviewer';
 
 export class NoticeFinalizer implements IFinalizer {
@@ -27,25 +27,18 @@ export class NoticeFinalizer implements IFinalizer {
   readonly model?: string;
 
   constructor(
-    private readonly recLogger: RecordingRequestLogger,
+    private readonly recMcp: RecordingMcpClient,
     private readonly criticLlm: ILlm,
   ) {}
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
     const t = input.trace?.traceId;
-    const tools = this.recLogger.executedToolNames(t);
-    const s = this.recLogger.getSummary(t);
-    const totalTokens = Object.values(s.byModel).reduce(
-      (sum, bucket) => sum + bucket.totalTokens,
-      0,
-    );
-    const toolCallCount = s.toolCalls;
+    const records = this.recMcp.getToolRecords(t);
 
     const verdict = await evaluateGated({
       content: input.interpreterOutput,
-      executedTools: tools,
-      totalTokens,
-      toolCallCount,
+      records,
+      toolCallCount: records.length,
       llm: this.criticLlm,
     });
 

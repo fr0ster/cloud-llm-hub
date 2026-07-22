@@ -1,19 +1,21 @@
 /**
- * Task 10 — wiring contract for `buildAgentForDestination`: the DAG
- * coordinator (executor worker + reviewer finalizer) must be assembled with
- * the SAME `RecordingRequestLogger` instance flowing into the worker, the
- * controller's `withRequestLogger`, and the `NoticeFinalizer` — Verified fact
- * 9 (a mismatch silently makes the finalizer see zero executed tools, i.e. a
- * false-positive honesty guard on every write). A live build needs AI Core
- * creds this environment does not have, so `SmartAgentBuilder` and `makeLlm`
- * are mocked (same technique as Task 7's `executor-worker.test.ts`) to
- * capture what the build path DOES, without any network/model work.
+ * Wiring contract for `buildAgentForDestination`: the DAG coordinator
+ * (executor worker + reviewer finalizer) must be assembled with a
+ * `RecordingMcpClient` wrapping the destination's mcpAdapter, passed AS the
+ * mcpAdapter into the executor worker (so the worker's tool calls — with
+ * their RESULTS — are captured), and the SAME instance handed to the
+ * `NoticeFinalizer` so its ground truth reflects what the worker actually
+ * ran. A live build needs AI Core creds this environment does not have, so
+ * `SmartAgentBuilder` and `makeLlm` are mocked (same technique as
+ * `executor-worker.test.ts`) to capture what the build path DOES, without
+ * any network/model work.
  */
 
 const withRequestLogger = jest.fn();
 const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
 const withSkillManager = jest.fn();
+const withMcpClients = jest.fn();
 const buildMock = jest.fn();
 
 function makeChainableBuilder() {
@@ -25,7 +27,7 @@ function makeChainableBuilder() {
     });
   builder.withMainLlm = chainable(jest.fn());
   builder.withClassifierLlm = chainable(jest.fn());
-  builder.withMcpClients = chainable(jest.fn());
+  builder.withMcpClients = chainable(withMcpClients);
   builder.setToolsRag = chainable(jest.fn());
   builder.withSkillManager = chainable(withSkillManager);
   builder.withEmbedder = chainable(jest.fn());
@@ -68,7 +70,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 import * as agentManager from '../../srv/agent-manager';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
-import { RecordingRequestLogger } from '../../srv/lib/recording-request-logger';
+import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 
 const config: AgentConfig = {
   llm: {
@@ -118,41 +120,44 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(handle).toBeDefined();
   });
 
-  it('injects the SAME RecordingRequestLogger into worker, controller, and finalizer', async () => {
+  it('never calls withRequestLogger — RecordingRequestLogger is gone', async () => {
     await agentManager.buildAgentForDestination(
       {} as never,
       {} as never,
       config,
     );
 
-    // withRequestLogger is called twice: once inside buildExecutorWorker
-    // (Task 7), once by buildAgentForDestination for the controller itself.
-    expect(withRequestLogger).toHaveBeenCalledTimes(2);
-    const workerLogger = withRequestLogger.mock.calls[0][0];
-    const controllerLogger = withRequestLogger.mock.calls[1][0];
-
-    expect(workerLogger).toBeInstanceOf(RecordingRequestLogger);
-    expect(controllerLogger).toBe(workerLogger);
-
-    const deps = withDagCoordinator.mock.calls[0][0];
-    const finalizer = deps.finalizer as NoticeFinalizer;
-    // NoticeFinalizer holds the logger privately behind a `readonly` ctor
-    // param — reaching it is the whole point of this identity assertion.
-    expect((finalizer as unknown as { recLogger: unknown }).recLogger).toBe(
-      workerLogger,
-    );
+    expect(withRequestLogger).not.toHaveBeenCalled();
   });
 
-  it('exposes recLogger on the returned handle (same instance)', async () => {
+  it('wires a RecordingMcpClient into the worker (withMcpClients) and into the finalizer — same instance', async () => {
+    await agentManager.buildAgentForDestination(
+      {} as never,
+      {} as never,
+      config,
+    );
+
+    // withMcpClients is called twice: once inside buildExecutorWorker (via
+    // configureDestinationAgentBuilder), once for the controller build.
+    expect(withMcpClients).toHaveBeenCalledTimes(2);
+    const workerMcpClients = withMcpClients.mock.calls[0][0];
+    expect(workerMcpClients[0]).toBeInstanceOf(RecordingMcpClient);
+
+    const deps = withDagCoordinator.mock.calls[0][0];
+    const finalizer = deps.finalizer as unknown as { recMcp: unknown };
+    expect(finalizer.recMcp).toBe(workerMcpClients[0]);
+  });
+
+  it('exposes recMcp on the returned handle (same instance the finalizer holds)', async () => {
     const handle = (await agentManager.buildAgentForDestination(
       {} as never,
       {} as never,
       config,
-    )) as unknown as { recLogger: unknown };
+    )) as unknown as { recMcp: unknown };
 
     const deps = withDagCoordinator.mock.calls[0][0];
-    const finalizer = deps.finalizer as unknown as { recLogger: unknown };
-    expect(handle.recLogger).toBe(finalizer.recLogger);
+    const finalizer = deps.finalizer as unknown as { recMcp: unknown };
+    expect(handle.recMcp).toBe(finalizer.recMcp);
   });
 
   it('binds the worker under the key "executor" — matches the planner node', async () => {
@@ -191,12 +196,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     buildMock.mockReset();
     buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });
 
-    await agentManager.buildExecutorWorker(
-      {} as never,
-      {} as never,
-      config,
-      new RecordingRequestLogger(),
-    );
+    await agentManager.buildExecutorWorker({} as never, {} as never, config);
 
     expect(withSkillManager).toHaveBeenCalledTimes(1);
   });

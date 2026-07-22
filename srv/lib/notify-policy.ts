@@ -13,13 +13,7 @@ import type { ReviewIssue, ReviewVerdict } from './reviewer-core';
 
 function describeIssue(issue: ReviewIssue): string {
   if (issue.kind === 'unverified-write') {
-    const observed = issue.observedTools.length
-      ? issue.observedTools.join(', ')
-      : '(none)';
-    return (
-      `claims "${issue.claimedOp}" but no ${issue.expectedToolFamily} tool ran ` +
-      `(executed tools: ${observed})`
-    );
+    return issue.reason;
   }
   return `unsupported claim (confidence: ${issue.confidence}): ${issue.reasons}`;
 }

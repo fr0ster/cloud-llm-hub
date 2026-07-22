@@ -1,9 +1,17 @@
+import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import {
   buildReviewMessages,
   evaluateGated,
   parseReviewVerdict,
   reviewStep,
 } from '../../srv/lib/step-reviewer';
+
+function record(
+  name: string,
+  content: string | Record<string, unknown>,
+): ToolCallRecord {
+  return { call: { id: '', name, arguments: {} }, result: { content } };
+}
 
 describe('buildReviewMessages', () => {
   it('is skeptical, names executed tools, and demands strict JSON', () => {
@@ -116,14 +124,15 @@ describe('evaluateGated', () => {
     return { chat, streamChat: async function* () {} };
   };
 
-  it('does NOT invoke the LLM critic when tokens/tool-calls are above threshold', async () => {
+  it('does NOT invoke the LLM critic when tool-call count is above threshold', async () => {
     const llm = okLlm(
       '{"possiblyFake": true, "confidence": "high", "reasons": "should not be seen"}',
     );
     const verdict = await evaluateGated({
       content: 'Read complete.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 5000,
+      records: Array.from({ length: 5 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
       toolCallCount: 5,
       llm: llm as never,
     });
@@ -131,14 +140,13 @@ describe('evaluateGated', () => {
     expect(verdict).toEqual({ ok: true });
   });
 
-  it('invokes the LLM critic when tokens are below threshold (suspicious)', async () => {
+  it('invokes the LLM critic when tool-call count is at/below threshold (suspicious)', async () => {
     const llm = okLlm(
       '{"possiblyFake": true, "confidence": "high", "reasons": "claimed create, only read ran"}',
     );
     const verdict = await evaluateGated({
       content: 'Created successfully.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 10,
+      records: [record('ReadDomain', '{"success":true}')],
       toolCallCount: 1,
       llm: llm as never,
     });
@@ -160,8 +168,7 @@ describe('evaluateGated', () => {
     };
     const verdict = await evaluateGated({
       content: 'All good, nothing written.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 10,
+      records: [record('ReadDomain', '{"success":true}')],
       toolCallCount: 1,
       llm: llm as never,
     });
@@ -177,23 +184,23 @@ describe('evaluateGated', () => {
     };
     const verdict = await evaluateGated({
       content: 'All good, nothing written.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 10,
+      records: [record('ReadDomain', '{"success":true}')],
       toolCallCount: 1,
       llm: llm as never,
     });
     expect(verdict).toEqual({ ok: true });
   });
 
-  it('surfaces a deterministic write mismatch regardless of the token gate', async () => {
+  it('surfaces a deterministic write mismatch regardless of the tool-call gate', async () => {
     const llm = okLlm(
       '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 5000, // well above threshold — LLM should NOT even be needed
-      toolCallCount: 5,
+      records: Array.from({ length: 5 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
+      toolCallCount: 5, // well above threshold — LLM should NOT even be needed
       llm: llm as never,
     });
     expect(llm.chat).not.toHaveBeenCalled();
@@ -214,9 +221,8 @@ describe('evaluateGated', () => {
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 10, // below threshold — LLM runs too
-      toolCallCount: 1,
+      records: [record('ReadDomain', '{"success":true}')],
+      toolCallCount: 1, // below threshold — LLM runs too
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -235,8 +241,7 @@ describe('evaluateGated', () => {
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
-      executedTools: ['CreateDomain'],
-      totalTokens: 10,
+      records: [record('CreateDomain', '{"success":true,"status":"inactive"}')],
       toolCallCount: 1,
       llm: llm as never,
     });
@@ -251,8 +256,9 @@ describe('evaluateGated', () => {
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
-      executedTools: ['ReadDomain'],
-      totalTokens: 5000,
+      records: Array.from({ length: 5 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
       toolCallCount: 5,
       llm: llm as never,
     });

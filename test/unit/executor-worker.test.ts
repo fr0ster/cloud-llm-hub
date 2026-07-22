@@ -1,17 +1,17 @@
 /**
- * Task 7 — `buildExecutorWorker`: a coordinator-less tool-loop SmartAgent,
- * built the SAME way as `buildAgentForDestination` MINUS any coordinator,
- * wrapped as an `ISubAgent` via the library's own `SmartAgentSubAgent`, and
- * built WITH the shared `RecordingRequestLogger` injected (Verified fact 9 —
- * `SmartAgentSubAgent.run` does not forward a requestLogger to the wrapped
- * agent, so the worker must be BUILT with it).
+ * `buildExecutorWorker`: a coordinator-less tool-loop SmartAgent, built the
+ * SAME way as `buildAgentForDestination` MINUS any coordinator, wrapped as an
+ * `ISubAgent` via the library's own `SmartAgentSubAgent`. The caller passes a
+ * `RecordingMcpClient` AS the `mcpAdapter` (not a separate param) so the
+ * worker's tool calls are captured with their RESULTS for the honesty
+ * reviewer; token telemetry uses the builder's default logger.
  *
  * A full live SmartAgent build needs AI Core creds this environment does not
  * have, so `SmartAgentBuilder` and `makeLlm` are mocked to capture what the
  * build path DOES (which methods are called, with what), without doing any
- * network/model work. This still genuinely asserts the three contract
- * points: recLogger injected via `withRequestLogger`, the wrapped result is
- * an `ISubAgent` named 'executor', and no coordinator method is ever called.
+ * network/model work. This still genuinely asserts the contract points: the
+ * wrapped result is an `ISubAgent` named 'executor', and no coordinator
+ * method is ever called.
  */
 
 const withRequestLogger = jest.fn();
@@ -89,25 +89,17 @@ describe('buildExecutorWorker', () => {
     buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
   });
 
-  it('injects the SAME recLogger instance via withRequestLogger', async () => {
-    const recLogger = { id: 'the-recording-logger' } as never;
-    const mcpAdapter = {} as never;
+  it('wires the given mcpAdapter via withMcpClients (no separate recLogger param)', async () => {
+    const mcpAdapter = { id: 'the-recording-mcp-client' } as never;
     const toolsRag = {} as never;
 
-    await buildExecutorWorker(mcpAdapter, toolsRag, config, recLogger);
+    await buildExecutorWorker(mcpAdapter, toolsRag, config);
 
-    expect(withRequestLogger).toHaveBeenCalledTimes(1);
-    expect(withRequestLogger).toHaveBeenCalledWith(recLogger);
+    expect(withRequestLogger).not.toHaveBeenCalled();
   });
 
   it('returns an ISubAgent named "executor" wrapping the built SmartAgent', async () => {
-    const recLogger = {} as never;
-    const worker = await buildExecutorWorker(
-      {} as never,
-      {} as never,
-      config,
-      recLogger,
-    );
+    const worker = await buildExecutorWorker({} as never, {} as never, config);
 
     expect(worker.name).toBe('executor');
     // SmartAgentSubAgent stores the built agent privately; behavior-check via
@@ -116,8 +108,7 @@ describe('buildExecutorWorker', () => {
   });
 
   it('never enables a coordinator — plain tool-loop, no self-recursion', async () => {
-    const recLogger = {} as never;
-    await buildExecutorWorker({} as never, {} as never, config, recLogger);
+    await buildExecutorWorker({} as never, {} as never, config);
 
     expect(withCoordinator).not.toHaveBeenCalled();
     expect(withDagCoordinator).not.toHaveBeenCalled();

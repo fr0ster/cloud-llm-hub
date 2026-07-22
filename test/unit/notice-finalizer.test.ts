@@ -1,7 +1,7 @@
-import type { FinalizerInput } from '@mcp-abap-adt/llm-agent';
+import type { FinalizerInput, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { renderNotice } from '../../srv/lib/notify-policy';
-import { RecordingRequestLogger } from '../../srv/lib/recording-request-logger';
+import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 
 function baseInput(overrides: Partial<FinalizerInput>): FinalizerInput {
   return {
@@ -10,6 +10,13 @@ function baseInput(overrides: Partial<FinalizerInput>): FinalizerInput {
     interpreterOutput: '',
     executionTrace: [],
     ...overrides,
+  };
+}
+
+function fakeInner(): IMcpClient {
+  return {
+    listTools: jest.fn(),
+    callTool: jest.fn(),
   };
 }
 
@@ -25,15 +32,13 @@ describe('renderNotice', () => {
         {
           kind: 'unverified-write',
           claimedOp: 'activated',
-          expectedToolFamily: 'Activate*',
-          observedTools: ['CreateDomain'],
+          reason:
+            'claims "activated" but no tool result shows status:\'active\'',
         },
       ],
     });
     expect(notice.startsWith('UNVERIFIED_WRITE:')).toBe(true);
     expect(notice).toMatch(/activated/);
-    expect(notice).toMatch(/Activate\*/);
-    expect(notice).toMatch(/CreateDomain/);
   });
 });
 
@@ -53,27 +58,16 @@ describe('NoticeFinalizer', () => {
     benignLlm.chat.mockClear();
   });
 
-  it('(a) emits a single UNVERIFIED_WRITE notice when the claim outruns the executed tools', async () => {
-    const recLogger = new RecordingRequestLogger();
-    recLogger.startRequest('t1');
-    recLogger.logToolCall({
-      requestId: 't1',
-      toolName: 'CreateDomain',
-      success: true,
-      durationMs: 10,
-      cached: false,
-    });
-    recLogger.logLlmCall({
-      requestId: 't1',
-      component: 'tool-loop',
-      model: 'gpt',
-      promptTokens: 10,
-      completionTokens: 10,
-      totalTokens: 20,
-      durationMs: 5,
-    });
+  it('(a) emits a single UNVERIFIED_WRITE notice when the claim outruns the tool RESULT (activate:false lie)', async () => {
+    const recMcp = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
+      {
+        call: { id: '', name: 'CreateDomain', arguments: {} },
+        result: { content: '{"success":true,"status":"inactive"}' },
+      },
+    ]);
 
-    const finalizer = new NoticeFinalizer(recLogger, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -88,29 +82,19 @@ describe('NoticeFinalizer', () => {
     expect(chunk.kind).toBe('content');
     expect(chunk.delta.startsWith('UNVERIFIED_WRITE:')).toBe(true);
     expect(chunk.delta).toMatch(/activated/);
-    expect(chunk.delta).toMatch(/Activate\*/);
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(b) does not emit a notice when both write ops are backed by executed tools', async () => {
-    const recLogger = new RecordingRequestLogger();
-    recLogger.startRequest('t1');
-    recLogger.logToolCall({
-      requestId: 't1',
-      toolName: 'CreateDomain',
-      success: true,
-      durationMs: 10,
-      cached: false,
-    });
-    recLogger.logToolCall({
-      requestId: 't1',
-      toolName: 'ActivateDomain',
-      success: true,
-      durationMs: 10,
-      cached: false,
-    });
+  it('(b) does not emit a notice when the tool RESULT shows status:active — CreateDomain(activate:true default) is the ex-false-positive, now clean', async () => {
+    const recMcp = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
+      {
+        call: { id: '', name: 'CreateDomain', arguments: {} },
+        result: { content: '{"success":true,"status":"active"}' },
+      },
+    ]);
 
-    const finalizer = new NoticeFinalizer(recLogger, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -124,38 +108,23 @@ describe('NoticeFinalizer', () => {
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(c) fires the deterministic notice on high tokens/tool-calls WITHOUT invoking the LLM critic', async () => {
-    const recLogger = new RecordingRequestLogger();
-    recLogger.startRequest('t1');
-    // Two tool calls (toolCallCount=2 > maxToolCalls default 1) — only a
-    // create-family tool, no Activate*, so the deterministic verdict must
-    // still fire on the "activated" claim.
-    recLogger.logToolCall({
-      requestId: 't1',
-      toolName: 'CreateDomain',
-      success: true,
-      durationMs: 10,
-      cached: false,
-    });
-    recLogger.logToolCall({
-      requestId: 't1',
-      toolName: 'ReadDomain',
-      success: true,
-      durationMs: 10,
-      cached: false,
-    });
-    // High tokens (>= default minTokens 1500) so the gate is not suspicious.
-    recLogger.logLlmCall({
-      requestId: 't1',
-      component: 'tool-loop',
-      model: 'gpt',
-      promptTokens: 1000,
-      completionTokens: 1000,
-      totalTokens: 2000,
-      durationMs: 5,
-    });
+  it('(c) fires the deterministic notice with MANY tool calls (above the toolCallCount gate) WITHOUT invoking the LLM critic', async () => {
+    const recMcp = new RecordingMcpClient(fakeInner());
+    // toolCallCount=2 > maxToolCalls default 1 — only a create-family tool
+    // (status:inactive), no Activate*/status:active — deterministic must
+    // still fire on the "activated" claim, and the gate must not invoke the LLM.
+    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
+      {
+        call: { id: '', name: 'CreateDomain', arguments: {} },
+        result: { content: '{"success":true,"status":"inactive"}' },
+      },
+      {
+        call: { id: '', name: 'ReadDomain', arguments: {} },
+        result: { content: '{"success":true}' },
+      },
+    ]);
 
-    const finalizer = new NoticeFinalizer(recLogger, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -173,17 +142,15 @@ describe('NoticeFinalizer', () => {
   });
 
   it('(d) never emits interpreterOutput via onPartial — notice-only, no duplication', async () => {
-    const recLogger = new RecordingRequestLogger();
-    recLogger.startRequest('t1');
-    recLogger.logToolCall({
-      requestId: 't1',
-      toolName: 'CreateDomain',
-      success: true,
-      durationMs: 10,
-      cached: false,
-    });
+    const recMcp = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
+      {
+        call: { id: '', name: 'CreateDomain', arguments: {} },
+        result: { content: '{"success":true,"status":"active"}' },
+      },
+    ]);
 
-    const finalizer = new NoticeFinalizer(recLogger, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',

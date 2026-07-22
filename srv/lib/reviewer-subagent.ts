@@ -4,15 +4,16 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   SubAgentCapabilities,
+  ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { evaluateGated } from './step-reviewer';
 
 export interface ReviewerSubAgentDeps {
-  /** Executed internal ABAP tool names for a given trace, sourced from the
-   *  shared recording logger (`RecordingRequestLogger.getToolNames(traceId)`
-   *  once Task 7 lands). Keyed by `traceId` so this class stays portable and
-   *  unit-testable with a stub — no dependency on the concrete logger here. */
-  executedToolNames: (traceId?: string) => string[];
+  /** Tool-call records (call + RESULT) for a given trace, sourced from the
+   *  shared `RecordingMcpClient.getToolRecords(traceId)`. Keyed by `traceId`
+   *  so this class stays portable and unit-testable with a stub — no
+   *  dependency on the concrete recording client here. */
+  getToolRecords: (traceId?: string) => ToolCallRecord[];
   llm: ILlm;
 }
 
@@ -41,16 +42,11 @@ export class ReviewerSubAgent implements ISubAgent {
     // `contextPolicy: 'optional'`); when absent, fall back to `task` so this
     // agent also works when dispatched directly with the content as the task.
     const content = input.context ?? input.task;
-    const tools = this.deps.executedToolNames(input.trace?.traceId);
-    // This portable unit has no token/tool-call telemetry of its own — the
-    // future coordinator wiring (or the interim `NoticeFinalizer`) supplies
-    // the real counts from `IRequestLogger.getSummary(traceId)`. Zero here
-    // only affects the LLM-gate threshold check, never the deterministic verdict.
+    const records = this.deps.getToolRecords(input.trace?.traceId);
     const verdict = await evaluateGated({
       content,
-      executedTools: tools,
-      totalTokens: 0,
-      toolCallCount: 0,
+      records,
+      toolCallCount: records.length,
       llm: this.deps.llm,
     });
     return {
