@@ -204,7 +204,7 @@ Access to full ABAP ADT capabilities.
 
 ### 7. **Honesty Guard — claim verification against tool results** *(v6.28+)*
 
-Every channel (`execute_step`, `/v1/chat`, `/v1/messages`) runs through an explicit controller: a coordinator-less executor worker plus a **reviewer** that compares what the response claims to have written against the actual tool results.
+Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) runs through an explicit controller: a coordinator-less executor worker plus a **reviewer** that compares what the response claims to have written against the actual tool results.
 
 **Features:**
 
