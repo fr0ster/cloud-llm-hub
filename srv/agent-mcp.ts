@@ -257,12 +257,16 @@ export async function createAgentMcpServerForRequest(
       // `finally` (dropRequest), so they must be declared in the outer scope.
       let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
       let traceId: string | undefined;
-      // Client abort/disconnect mid-step must still release the ADT edit-lock
-      // (the SM12 orphaned-lock symptom) — safeStop is idempotent, so this
-      // racing with the `finally` teardown below is safe either order.
-      req.on('close', () => {
-        void safeStop(connection);
-      });
+      // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
+      // the request stream's `close` event fires once the BODY is consumed —
+      // right after this JSON-RPC call starts — NOT reliably on client abort.
+      // Wiring safeStop(connection) to it could tear down the ABAP session
+      // (closeSession) while a tool call is still in flight, which is exactly
+      // the orphaned-state failure we're trying to avoid. `res` (the real
+      // socket/response) is not threaded into this per-tool-call scope — it
+      // lives in server.ts's route handler — so there is no safe abort signal
+      // available here. Teardown is left entirely to the `finally` below,
+      // which always runs safeStop(connection) once the step completes.
       try {
         // Destination from the arg, else the connection's default header.
         const headerDestination = (
@@ -387,8 +391,8 @@ export async function createAgentMcpServerForRequest(
       } finally {
         // End the server-side ADT stateful session first (releases any edit-lock
         // a mutating tool left open — the "currently editing" / inactive-object
-        // symptom), THEN clear local state. Idempotent — safe even if the
-        // `req.on('close')` listener above already ran it.
+        // symptom), THEN clear local state. This is the ONLY teardown path now
+        // (see the NOTE above — no premature close-based hook).
         await safeStop(connection);
         // Free the per-trace telemetry bucket — nobody else calls dropRequest,
         // so omitting this leaks memory per call (Verified fact 10).
