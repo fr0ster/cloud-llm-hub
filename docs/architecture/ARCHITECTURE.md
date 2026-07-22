@@ -99,11 +99,12 @@ flowchart LR
 
 | Package | Role | Where used |
 |---------|------|------------|
-| **`core`** (`^4.9.0`) | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
+| **`core`** (`^8.11.0`) | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
-| **`llm-agent`** (`^5.19.1`) | `SmartAgent`, `SmartAgentBuilder`, `McpClientAdapter`, `IRag` — LLM agent with RAG pipeline | `agent-manager.ts` |
+| **`llm-agent`** (`^20.6.0`) | `SmartAgent`, `SmartAgentBuilder`, `McpClientAdapter`, `IRag` — LLM agent with RAG pipeline; DAG-coordinator interfaces (`ISubAgent`, `IFinalizer`) the honesty controller is built on | `agent-manager.ts` |
+| **`adt-clients`** (`^7.6.0`) | ADT HTTP clients underlying the ABAP tools | `mcp-abap-adt` (transitive) |
 | **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
-| **`interfaces`** | Shared types: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
+| **`interfaces`** (`^11.3.0`) | Shared contracts: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
 | **`logger`** | Base logging implementation | `lib/logger.ts` |
 
 ### Implications for developers
@@ -283,7 +284,8 @@ graph TD
 | **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service at path `/mcp`. Exposes `Health()`, `ProbeDestination(destination)`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
 | **MCP Manager** | `mcp-manager.ts` | Core factory. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
 | **Agent Service** | `agent-service.ts` + `.cds` | CAP service at path `/agent`. Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Delegates to `agent-manager.ts`. |
-| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background + on-demand vectorization for all destinations (no privileged primary); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background + on-demand vectorization for all destinations (no privileged primary); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Wires the honesty-controller DAG coordinator: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). |
+| **Honesty Reviewer** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer}.ts` | Result-based honesty guard (v6.28+). `recording-mcp-client.ts` decorates `IMcpClient` to capture each tool's `McpToolResult` per `traceId`; `reviewer-core.ts` + `notice-finalizer.ts` implement `IFinalizer`/`NoticeFinalizer` comparing response claims against captured results; `notify-policy.ts` decides notice wording; `step-reviewer.ts` wires the reviewer into the controller. Kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`. |
 | **OpenAI Handler** | `openai-handler.ts` | OpenAI-compatible HTTP handlers: `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (with destination metadata), `GET /v1/usage`. Reads `X-SAP-Destination` header for per-request destination switching. |
 | **Agent Config** | `agent-config.ts` | Reads `LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`, `LLM_AGENT_MCP_DESTINATION` from env vars. Reads AI Core service binding from `VCAP_SERVICES`. Singleton pattern. |
 | **Auth Service** | `auth.ts` + `.cds` | CAP service at path `/auth`. `CheckAuth()` validates user identity. `CheckRoles(required)` checks specific roles. Used by `server.ts` middleware for `/mcp/*` routes. |
@@ -565,6 +567,32 @@ sequenceDiagram
     Proxy-->>MCP: tool result
     MCP-->>Agent: result for next LLM step
 ```
+
+#### Step 4 — Honesty Controller (DAG coordinator + reviewer) *(v6.28+)*
+
+Every channel that reaches the destination agent — `execute_step`, `/v1/chat/completions`, and `/v1/messages` — now runs through an explicit **controller** built on the imported llm-agent **DAG-coordinator** interfaces, not the bare SmartAgent loop:
+
+```mermaid
+sequenceDiagram
+    participant Chan as execute_step / v1 chat / v1 messages
+    participant Coord as DAG Coordinator
+    participant Exec as Executor Worker (SmartAgent, ISubAgent)
+    participant Rec as RecordingMcpClient
+    participant Rev as Reviewer (NoticeFinalizer / IFinalizer)
+
+    Chan->>Coord: request
+    Coord->>Exec: dispatch (coordinator-less worker)
+    Exec->>Rec: run MCP tools
+    Rec-->>Exec: McpToolResult (captured per traceId)
+    Exec-->>Coord: response text (streamed live to Chan)
+    Coord->>Rev: response CLAIMS vs captured tool RESULTS
+    Rev-->>Chan: trailing UNVERIFIED_WRITE: notice (only on contradiction)
+```
+
+- The SmartAgent itself becomes a **coordinator-less executor worker** — it no longer owns the top-level loop.
+- The reviewer compares what the response text **claims** to have written against the **actual tool results**, not tool names (`CreateDomain` self-activates via `activate:true`, so name-only matching false-positives).
+- **NOTICE-ONLY**: the executor's content still streams live; the notice is appended as a trailing chunk. It is a soft warning ("verify against the system"), never a hard block — the consumer decides.
+- Uniform across all three channels (previously this existed only on `execute_step`). Disabled entirely via `LLM_AGENT_STEP_REVIEW_ENABLED=false`. Not wired into the LLM-only path (no ABAP tools → nothing to verify).
 
 ---
 
@@ -869,6 +897,7 @@ graph TB
 | `VCAP_SERVICES` | `agent-config.ts`, `destinationResolver.ts` | Service bindings (AI Core, Destination, Connectivity) |
 | `MCP_SKIP_AUTO_START` | `env-setup.ts` | Prevents mcp-abap-adt auto-start |
 | `MCP_SKIP_ENV_LOAD` | `env-setup.ts` | Prevents mcp-abap-adt .env loading |
+| `LLM_AGENT_STEP_REVIEW_ENABLED` | `agent-manager.ts` | Honesty guard kill-switch (default: on/`true`); `false` disables the reviewer (`NoticeFinalizer`) entirely — no `UNVERIFIED_WRITE:` notices on any channel |
 
 ### Key HTTP Headers (Per-Request)
 
@@ -1070,6 +1099,14 @@ graph LR
 - Agent instances cached for 30 min (performance optimization only)
 - Fresh auth on every MCP proxy request
 
+### Honesty controller (executor + reviewer)
+
+The controller is explicit, in the agent layer — not baked into the `execute_step` tool. Key decisions:
+
+- **Explicit controller, not an implicit tool wrapper.** Every channel (`execute_step`, `/v1/chat`, `/v1/messages`) is dispatched through a DAG coordinator built on the imported llm-agent interfaces; the SmartAgent runs underneath it as a coordinator-less executor worker (`ISubAgent`). This replaced the interim `execute_step`-only honesty wrapper.
+- **Ground truth = tool RESULTS, not tool names.** `RecordingMcpClient` (`srv/lib/recording-mcp-client.ts`) is a thin `IMcpClient` decorator that captures each executed ABAP tool's `McpToolResult`, scoped per `traceId` and freed after the request. The reviewer parses the write tool's result envelope (`{success, status, error}`) — matching by name alone false-positives, since e.g. `CreateDomain` self-activates via `activate:true`.
+- **Reaction = notify + safe-stop, not a hard block.** On a contradiction the reviewer appends a trailing `UNVERIFIED_WRITE:` notice; it never renders a verdict itself. ADT edit-locks are released (`connection.closeSession()`) on every exit path regardless. This is interim behavior until the llm-agent planner/controller lands upstream.
+
 ---
 
-> **Last updated:** 2026-04-08 | **Source:** Auto-generated from codebase analysis
+> **Last updated:** 2026-07-22 | **Source:** Auto-generated from codebase analysis

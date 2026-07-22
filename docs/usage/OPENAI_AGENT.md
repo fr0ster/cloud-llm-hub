@@ -160,6 +160,8 @@ The SmartAgent behind this API has:
 - **RAG**: Retrieval-Augmented Generation with facts, feedback, and state stores
 - **Multi-turn**: Maintains conversation context within a session
 
+**Note *(v6.28+)*:** a response may end with an `UNVERIFIED_WRITE:` line — a soft warning that a claimed write (create/update/activate) wasn't confirmed by the actual tool results. Verify against the system before relying on it; disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+
 ## Smoke Testing
 
 ```bash

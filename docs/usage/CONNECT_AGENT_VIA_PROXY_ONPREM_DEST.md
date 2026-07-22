@@ -157,6 +157,10 @@ Anthropic-style clients: point `ANTHROPIC_BASE_URL` at `http://localhost:3001`.
   run multiple proxies; change `browser` only to force a non-default browser.
 - **Model:** use `default`, or any the deployment exposes
   (`curl http://localhost:3001/v1/models`).
+- **Trailing `UNVERIFIED_WRITE:` line *(v6.28+)*:** a response may end with one —
+  a soft warning that a claimed create/update/activate wasn't confirmed by the
+  actual tool results. Verify against the system before relying on it; the hub
+  can disable this check entirely via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
 ## If something fails
 

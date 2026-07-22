@@ -202,6 +202,25 @@ Access to full ABAP ADT capabilities.
 - ✅ Batch operations
 - ✅ Rich metadata
 
+### 7. **Honesty Guard — claim verification against tool results** *(v6.28+)*
+
+Every channel (`execute_step`, `/v1/chat`, `/v1/messages`) runs through an explicit controller: a coordinator-less executor worker plus a **reviewer** that compares what the response claims to have written against the actual tool results.
+
+**Features:**
+
+- Result-based ground truth via `RecordingMcpClient` — captures each executed ABAP tool's real result, not just its name (so `CreateDomain(activate:true)` isn't mistaken for a bare read)
+- Appends a trailing `UNVERIFIED_WRITE:` notice when a claim contradicts the captured results
+- NOTICE-ONLY — the executor's content still streams live; the notice never blocks or rewrites the response
+- Uniform across all three channels (previously `execute_step`-only)
+- Env kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`
+
+**Benefits:**
+
+- ✅ Soft warning, not a hard gate — the consumer decides
+- ✅ Catches "created/activated" hallucinations before a human trusts them blind
+- ✅ Same guard everywhere, not just the MCP planner surface
+- ✅ Fully disable-able for deployments that don't want the extra check
+
 ## 🎯 Use Cases
 
 ### 1. AI-Assisted Development

@@ -20,6 +20,8 @@ SmartAgent has **3 fixed RAG stores** and an **array of MCP clients**:
 | `feedback` | User feedback, corrections, preferences |
 | `state` | Session state, conversation context, working memory |
 
+**Note (v6.28+):** the SmartAgent shown above is no longer the top-level object on the request path — it is dispatched as a coordinator-less **executor worker** (`ISubAgent`) under a DAG coordinator, with a **reviewer** (`NoticeFinalizer`) checking response claims against actual tool results afterward. Extension points below (MCP clients, RAG stores, classifier) are still on the SmartAgent/worker itself; the coordinator and reviewer wrap it and generally do not need touching. See `ARCHITECTURE.md` §7 and §16 ("Honesty controller") for the full picture.
+
 All 3 stores implement the same `IRag` interface:
 
 ```typescript
