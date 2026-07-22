@@ -1,7 +1,6 @@
 import type {
   IRequestLogger,
   LlmCallEntry,
-  LlmComponent,
   RagQueryEntry,
   RequestSummary,
   TokenBucket,
@@ -14,16 +13,21 @@ import type {
  * `@mcp-abap-adt/llm-agent-libs`'s `SessionRequestLogger`/`DefaultRequestLogger`
  * `CATEGORY_MAP` so `byCategory` categorizes identically; kept as a local
  * literal (not imported) because the libs package does not re-export it from
- * its public entry point.
+ * its public entry point. Typed `Record<string, ...>` (not
+ * `Record<LlmComponent, ...>`) + a fallback at the lookup site so a NEW
+ * `LlmComponent` added upstream can never break our build — it just falls back.
  */
-const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
+const CATEGORY_MAP: Record<string, TokenCategory> = {
   'tool-loop': 'request',
   classifier: 'auxiliary',
+  'tool-definer': 'auxiliary',
   translate: 'auxiliary',
   'query-expander': 'auxiliary',
   helper: 'auxiliary',
   embedding: 'initialization',
   planner: 'auxiliary',
+  evaluator: 'auxiliary',
+  executor: 'request',
   reviewer: 'auxiliary',
   finalizer: 'auxiliary',
   oracle: 'auxiliary',
@@ -44,6 +48,7 @@ function zeroTokenBucket(): TokenBucket {
 }
 
 function aggregate(bucket: Bucket): RequestSummary {
+  const totals = zeroTokenBucket();
   const byModel: Record<string, TokenBucket> = {};
   const byComponent: Record<string, TokenBucket> = {};
   const byCategory: Record<string, TokenBucket> = {};
@@ -51,6 +56,11 @@ function aggregate(bucket: Bucket): RequestSummary {
 
   for (const call of bucket.llm) {
     totalDurationMs += call.durationMs;
+
+    totals.promptTokens += call.promptTokens;
+    totals.completionTokens += call.completionTokens;
+    totals.totalTokens += call.totalTokens;
+    totals.requests++;
 
     byModel[call.model] ??= zeroTokenBucket();
     const m = byModel[call.model];
@@ -76,6 +86,7 @@ function aggregate(bucket: Bucket): RequestSummary {
   }
 
   return {
+    totals,
     byModel,
     byComponent,
     byCategory,
