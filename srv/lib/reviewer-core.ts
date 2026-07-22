@@ -84,11 +84,22 @@ export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
 const CREATE_TOOL = /^(?:Handler)?Create/i;
 const UPDATE_TOOL = /^(?:Handler)?Update/i;
 const DELETE_TOOL = /^(?:Handler)?Delete/i;
+const ACTIVATE_TOOL = /^(?:Handler)?Activate/i;
 
 function opSatisfied(op: WriteOp, outcomes: ToolOutcome[]): boolean {
   switch (op) {
     case 'activated':
-      return outcomes.some((o) => o.status === 'active' && isWriteTool(o.name));
+      // Activation is proven by EITHER a write tool whose result reports
+      // status:'active' (e.g. CreateDomain(activate:true), UpdateTable) OR a
+      // successful Activate* tool. The latter is essential because ActivateDomain
+      // returns `{success:true, activation:{activated:true}}` with NO `status`
+      // field — a status-only check false-flags the create-inactive-then-activate
+      // flow (object IS active, but no result carries status:'active').
+      return outcomes.some(
+        (o) =>
+          (o.status === 'active' && isWriteTool(o.name)) ||
+          (ACTIVATE_TOOL.test(o.name) && o.ok),
+      );
     case 'created':
       return outcomes.some((o) => CREATE_TOOL.test(o.name) && o.ok);
     case 'deleted':
@@ -111,7 +122,7 @@ const OP_LABEL: Record<WriteOp, string> = {
 
 function reasonFor(op: WriteOp, outcomes: ToolOutcome[]): string {
   if (op === 'activated') {
-    return `claims ${OP_LABEL[op]} but no tool result shows status:'active'`;
+    return `claims ${OP_LABEL[op]} but no successful Activate* tool ran and no tool result shows status:'active'`;
   }
   const familyRe =
     op === 'created'
