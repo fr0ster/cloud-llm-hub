@@ -170,4 +170,44 @@ describe('evaluateDeterministic (result-based)', () => {
     ]);
     expect(verdict).toEqual({ ok: true });
   });
+
+  it('does NOT let a READ tool echoing status:active satisfy an activation claim', () => {
+    const content = 'Domain ZDEMO_D_MATNR has been successfully activated.';
+    const verdict = evaluateDeterministic(content, [
+      record('ReadDomain', '{"success":true,"status":"active"}'),
+    ]);
+    expect(verdict.ok).toBe(false);
+    if (verdict.ok) throw new Error('unreachable');
+    expect(verdict.issues).toEqual([
+      expect.objectContaining({
+        kind: 'unverified-write',
+        claimedOp: 'activated',
+      }),
+    ]);
+  });
+
+  it('still flags a failed CreateDomain claimed as created (per-op rule, no catch-all needed)', () => {
+    const content = 'The domain was created successfully.';
+    const verdict = evaluateDeterministic(content, [
+      record('CreateDomain', '{"success":false,"error":"name conflict"}', true),
+    ]);
+    expect(verdict.ok).toBe(false);
+    if (verdict.ok) throw new Error('unreachable');
+    expect(
+      verdict.issues.some((i) =>
+        (i as { reason: string }).reason.includes(
+          'CreateDomain returned error',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('is clean for an honest create+activate alongside an UNRELATED failed DeleteTable', () => {
+    const content = 'Domain ZDEMO was created and activated successfully.';
+    const verdict = evaluateDeterministic(content, [
+      record('CreateDomain', '{"success":true,"status":"active"}'),
+      record('DeleteTable', '{"success":false,"error":"lock held"}', true),
+    ]);
+    expect(verdict).toEqual({ ok: true });
+  });
 });

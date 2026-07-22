@@ -88,14 +88,16 @@ const DELETE_TOOL = /^(?:Handler)?Delete/i;
 function opSatisfied(op: WriteOp, outcomes: ToolOutcome[]): boolean {
   switch (op) {
     case 'activated':
-      return outcomes.some((o) => o.status === 'active');
+      return outcomes.some((o) => o.status === 'active' && isWriteTool(o.name));
     case 'created':
       return outcomes.some((o) => CREATE_TOOL.test(o.name) && o.ok);
     case 'deleted':
       return outcomes.some((o) => DELETE_TOOL.test(o.name) && o.ok);
     case 'updated':
       return outcomes.some(
-        (o) => (UPDATE_TOOL.test(o.name) && o.ok) || o.status === 'active',
+        (o) =>
+          (UPDATE_TOOL.test(o.name) && o.ok) ||
+          (o.status === 'active' && isWriteTool(o.name)),
       );
   }
 }
@@ -132,8 +134,11 @@ function reasonFor(op: WriteOp, outcomes: ToolOutcome[]): string {
 
 /**
  * Result-based deterministic verdict: one `ReviewIssue` per claimed write op
- * unsatisfied by the ACTUAL tool-call results, plus a catch-all issue for any
- * write tool that reported failure while the content claims a completed write.
+ * unsatisfied by the ACTUAL tool-call results. A failed write tool relevant to
+ * a claimed op is already surfaced by the per-op rule above (no successful
+ * Create/Update/Delete family tool, or no status:active from a write tool),
+ * so no separate catch-all is needed — it only added noise for UNRELATED
+ * failed writes and mislabeled the op (attributing it to `claims[0]`).
  */
 export function evaluateDeterministic(
   content: string,
@@ -143,7 +148,6 @@ export function evaluateDeterministic(
   if (claims.length === 0) return { ok: true };
 
   const outcomes = records.map(parseToolOutcome);
-  const writeOutcomes = outcomes.filter((o) => isWriteTool(o.name));
 
   const issues: ReviewIssue[] = [];
   for (const op of claims) {
@@ -152,26 +156,6 @@ export function evaluateDeterministic(
       kind: 'unverified-write',
       claimedOp: op,
       reason: reasonFor(op, outcomes),
-    });
-  }
-
-  // Regardless of per-op satisfaction: a failed write tool while a completed
-  // write is claimed is direct evidence of a lie (a failed write claimed as
-  // done) — surfaced even when the specific op it maps to was independently
-  // satisfied by some OTHER tool call. Skip a write outcome whose failure was
-  // already cited above (reasonFor embeds the tool name in that case).
-  for (const failedWrite of writeOutcomes.filter((o) => !o.ok)) {
-    if (
-      issues.some(
-        (i) =>
-          i.kind === 'unverified-write' && i.reason.includes(failedWrite.name),
-      )
-    )
-      continue;
-    issues.push({
-      kind: 'unverified-write',
-      claimedOp: claims[0],
-      reason: `write tool ${failedWrite.name} returned error: ${failedWrite.error}`,
     });
   }
 
