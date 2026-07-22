@@ -148,6 +148,30 @@ describe('evaluateDeterministic (result-based)', () => {
     expect(verdict).toEqual({ ok: true });
   });
 
+  it('is clean with the REAL ActivateDomain envelope — success but NO status field (the e2e false-positive)', () => {
+    // ActivateDomain returns {success:true, activation:{activated:true}} with NO
+    // `status` — a status-only check false-flagged this active object. A
+    // successful Activate* tool must satisfy "activated" on its own.
+    const content = 'Domain ZDEMO was created and activated successfully.';
+    const verdict = evaluateDeterministic(content, [
+      record('CreateDomain', '{"success":true,"status":"inactive"}'),
+      record(
+        'ActivateDomain',
+        '{"success":true,"activation":{"activated":true},"message":"activated successfully"}',
+      ),
+    ]);
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('still flags activated when only a READ tool ran (a successful Activate* is required, not a read)', () => {
+    const content = 'Domain ZDEMO was created and activated successfully.';
+    const verdict = evaluateDeterministic(content, [
+      record('CreateDomain', '{"success":true,"status":"inactive"}'),
+      record('ReadDomain', '{"success":true,"status":"inactive"}'),
+    ]);
+    expect(verdict.ok).toBe(false);
+  });
+
   it('flags an unverified delete when no delete tool ran', () => {
     const content = 'The table entry was deleted successfully.';
     const verdict = evaluateDeterministic(content, [
