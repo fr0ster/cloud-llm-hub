@@ -8,6 +8,7 @@ import {
   loadStepGateThresholds,
   loadStepReviewTimeoutMs,
   stepIsSuspicious,
+  stepReviewEnabled,
 } from './step-gate';
 
 export type StepReview = {
@@ -167,6 +168,11 @@ export async function reviewStep(
 /**
  * Deterministic-first, LLM-gated verdict for a step's response.
  *
+ * Kill switch: when `stepReviewEnabled(process.env)` is false (operator set
+ * `LLM_AGENT_STEP_REVIEW_ENABLED` to a non-'true' value), the ENTIRE guard —
+ * both the deterministic write-claim check and the LLM critic — is bypassed
+ * and `{ ok: true }` is returned unconditionally. Enabled by default.
+ *
  * `evaluateDeterministic` (write-claim vs. executed-tools) runs unconditionally
  * — it is authoritative and free, independent of token/tool-call volume. The
  * LLM critic (`reviewStep`) is spent ONLY when the token gate flags the step as
@@ -182,6 +188,8 @@ export async function evaluateGated(input: {
   toolCallCount: number;
   llm: ILlm;
 }): Promise<ReviewVerdict> {
+  if (!stepReviewEnabled(process.env)) return { ok: true };
+
   const deterministic = evaluateDeterministic(
     input.content,
     input.executedTools,
