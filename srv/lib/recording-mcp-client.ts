@@ -11,16 +11,16 @@ import type {
 /**
  * Transparent decorator around an `IMcpClient` that captures every executed
  * tool call WITH its result (ground truth for the honesty reviewer), keyed by
- * `options.trace.traceId`. Mirrors `RecordingRequestLogger`'s
- * cumulative-bucket + per-`requestId`-delta-bucket + `dropRequest` lifecycle,
- * but for `ToolCallRecord`s instead of token/tool-name telemetry.
+ * `options.trace.traceId`. Tool results can be large or sensitive (ABAP
+ * source, dumps) and destination handles are long-lived, so records are kept
+ * ONLY per-`requestId` delta — there is deliberately NO cumulative/session
+ * bucket. A call made without a `trace.traceId` retains nothing.
  *
  * Deliberately dumb: it does NOT parse or interpret `McpToolResult.content` —
  * that belongs to the reviewer (a later step). It only ever forwards the
  * inner client's `Result` unchanged; never swallows or reshapes errors.
  */
 export class RecordingMcpClient implements IMcpClient {
-  private readonly cumulative: ToolCallRecord[] = [];
   private readonly deltas = new Map<string, ToolCallRecord[]>();
 
   /** Present iff `inner` implements it, so callers relying on `?.` see the
@@ -56,7 +56,6 @@ export class RecordingMcpClient implements IMcpClient {
       result,
     };
 
-    this.cumulative.push(record);
     const traceId = options?.trace?.traceId;
     if (traceId) this.deltaFor(traceId).push(record);
 
@@ -72,21 +71,19 @@ export class RecordingMcpClient implements IMcpClient {
     return bucket;
   }
 
-  /** Tool-call records for `requestId`'s delta, or the whole session
-   *  (cumulative) when no id is given. */
+  /** Tool-call records for `requestId`'s delta. No id (or an unknown id)
+   *  yields `[]` — there is no cumulative/session-wide fallback. */
   getToolRecords(requestId?: string): ToolCallRecord[] {
-    if (requestId) return [...(this.deltas.get(requestId) ?? [])];
-    return [...this.cumulative];
+    return requestId ? [...(this.deltas.get(requestId) ?? [])] : [];
   }
 
-  /** Frees `requestId`'s delta bucket. The cumulative bucket is unaffected. */
+  /** Frees `requestId`'s delta bucket. */
   dropRequest(requestId?: string): void {
     if (!requestId) return;
     this.deltas.delete(requestId);
   }
 
   reset(): void {
-    this.cumulative.length = 0;
     this.deltas.clear();
   }
 }

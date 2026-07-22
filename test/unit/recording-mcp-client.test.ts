@@ -91,7 +91,7 @@ describe('RecordingMcpClient', () => {
     });
   });
 
-  test('two traceIds stay isolated; getToolRecords() with no id is the cumulative', async () => {
+  test('two traceIds stay isolated; getToolRecords() with no id is always empty', async () => {
     const inner = fakeInner();
     (inner.callTool as jest.Mock)
       .mockResolvedValueOnce({ ok: true, value: { content: 'a' } })
@@ -110,14 +110,10 @@ describe('RecordingMcpClient', () => {
       'ToolB',
       'ToolC',
     ]);
-    expect(client.getToolRecords().map((r) => r.call.name)).toEqual([
-      'ToolA',
-      'ToolB',
-      'ToolC',
-    ]);
+    expect(client.getToolRecords()).toEqual([]);
   });
 
-  test('dropRequest(t1) frees only that bucket; cumulative is unchanged', async () => {
+  test('dropRequest(t1) frees only that bucket; t2 is unaffected', async () => {
     const inner = fakeInner();
     (inner.callTool as jest.Mock)
       .mockResolvedValueOnce({ ok: true, value: { content: 'a' } })
@@ -127,19 +123,15 @@ describe('RecordingMcpClient', () => {
     await client.callTool('ToolA', {}, { trace: { traceId: 't1' } });
     await client.callTool('ToolB', {}, { trace: { traceId: 't2' } });
 
-    const cumulativeBefore = client.getToolRecords();
     client.dropRequest('t1');
 
     expect(client.getToolRecords('t1')).toEqual([]);
     expect(client.getToolRecords('t2').map((r) => r.call.name)).toEqual([
       'ToolB',
     ]);
-    expect(client.getToolRecords().map((r) => r.call.name)).toEqual(
-      cumulativeBefore.map((r) => r.call.name),
-    );
   });
 
-  test('a call with no traceId lands in the cumulative/default only', async () => {
+  test('a call with no traceId retains nothing', async () => {
     const inner = fakeInner();
     (inner.callTool as jest.Mock).mockResolvedValue({
       ok: true,
@@ -149,7 +141,7 @@ describe('RecordingMcpClient', () => {
     const client = new RecordingMcpClient(inner);
     await client.callTool('ToolX', {});
 
-    expect(client.getToolRecords().map((r) => r.call.name)).toEqual(['ToolX']);
+    expect(client.getToolRecords()).toEqual([]);
     expect(client.getToolRecords('anything')).toEqual([]);
   });
 

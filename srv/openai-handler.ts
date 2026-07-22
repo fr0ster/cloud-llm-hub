@@ -534,10 +534,17 @@ export async function handleChatCompletions(
   }
 
   // Client abort/disconnect mid-request must still release the ADT edit-lock
-  // (the SM12 orphaned-lock symptom) — safeStop is idempotent, so this racing
-  // with the handler's own `finally` teardown below is safe either order.
-  req.on('close', () => {
-    void safeStop(requestConnection);
+  // (the SM12 orphaned-lock symptom). `req`'s `close` event fires once the
+  // request body is consumed — NOT reliably on client abort — so tearing down
+  // the connection there can cut an in-flight tool call. `res`'s `close`
+  // fires when the underlying connection is closed; guarding with
+  // `!res.writableEnded` narrows it to a genuine early client disconnect
+  // (the response hadn't finished yet). safeStop is idempotent, so this
+  // racing with the handler's own `finally` teardown below is safe either order.
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      void safeStop(requestConnection);
+    }
   });
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
