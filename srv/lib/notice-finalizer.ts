@@ -18,7 +18,6 @@ import type {
   IFinalizer,
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
-import cds from '@sap/cds';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { evaluateGated } from './step-reviewer';
@@ -41,28 +40,6 @@ export class NoticeFinalizer implements IFinalizer {
       records,
       toolCallCount: records.length,
       llm: this.criticLlm,
-    });
-
-    // TEMP diagnostic (remove after e2e confirms per-trace capture): surfaces
-    // how many tool records the reviewer actually saw for this traceId, so an
-    // empty-records (traceId-mismatch) false-flag is distinguishable from a
-    // genuine verdict in the deployed logs.
-    cds.log('notice-finalizer').info('review', {
-      traceId: t,
-      records: records.length,
-      tools: records.map((r) => {
-        const c = r.result.content;
-        const sample =
-          typeof c === 'string'
-            ? c.slice(0, 140)
-            : JSON.stringify(c).slice(0, 140);
-        return {
-          name: r.call.name,
-          isError: r.result.isError,
-          content: sample,
-        };
-      }),
-      ok: verdict.ok,
     });
 
     if (!verdict.ok) {
