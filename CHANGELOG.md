@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.28.0] - 2026-07-22
+
+Explicit honesty controller + result-based reviewer, built on the imported `@mcp-abap-adt/llm-agent` DAG-coordinator interfaces; the `@mcp-abap-adt` family migrated to latest.
+
+### Added
+- **Explicit controller — executor + reviewer as `ISubAgent`, honesty guard on every channel.** The SmartAgent now runs as a coordinator-less **executor worker** under a DAG coordinator; a **reviewer** compares what the response CLAIMS to have written against the **actual tool results** and, on a contradiction, appends an `UNVERIFIED_WRITE:` notice (NOTICE-ONLY, live stream preserved). Uniform across `execute_step`, `/v1/chat`, and `/v1/messages` — previously the honesty check existed only on `execute_step`. Env kill-switch `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+- **Result-based ground truth via `RecordingMcpClient`.** A thin `IMcpClient` decorator captures every executed ABAP tool's `McpToolResult` per request (`traceId`-scoped, freed after the request — no cumulative retention). The reviewer parses each write tool's envelope (`{success, status, error}`) so it flags a claim only when the RESULT contradicts it — not by tool name (which false-positives, since `CreateDomain` self-activates via `activate:true`).
+- **Safe-stop.** ADT edit-locks are released (`closeSession`) on every handler exit path; client-abort detection uses `res.on('close')` guarded by `!res.writableEnded` (the request-close hook fired prematurely and could tear down a connection under an in-flight tool).
+
+### Changed
+- **Migrated the `@mcp-abap-adt` family to latest:** `core 8.8→8.11`, `interfaces 9→11`, `llm-agent*/embedders/llms 17→20.6`, `adt-clients 7.4→7.6`, `@modelcontextprotocol/sdk 1.23→1.29`. The DAG-coordinator API the controller depends on is preserved across the bump.
+- Retired the interim `execute_step`-only honesty wrapper and the tool-name-based per-operation matching — both superseded by the result-based reviewer.
+
+### Fixed
+- **Executor "created/activated" hallucinations went unverified.** The executor could claim an object was created/activated while the tools it ran did not do it (e.g. only `ReadDomain` ran, or `CreateDomain(activate:false)` left the object inactive); consumers were told "all ok" blind. The reviewer now surfaces such claims against tool-result ground truth. Validated live on `acme-prod-stg`, including the real `ActivateDomain` envelope (`{success:true, activation:{activated:true}}`, no `status` field) and the MCP parts-array `content` shape.
+
 ## [6.14.2] - 2026-06-04
 
 Per-request SAP mandant, ABAP lockout prevention, log masking, and per-subaccount srv route.

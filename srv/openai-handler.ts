@@ -34,10 +34,7 @@ import {
 import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
 import { resolveExposition } from './lib/exposition';
-import {
-  establishRequestConnection,
-  resetRequestConnection,
-} from './lib/request-connection';
+import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
@@ -56,6 +53,15 @@ function mapStopReason(r: string): string {
 
 function jsonError(message: string, type: string): string {
   return JSON.stringify({ error: { message, type } });
+}
+
+/**
+ * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
+ * part of the library's `SmartAgentHandle` type — optional, since an
+ * LLM-only handle (no destination) has no per-destination recMcp.
+ */
+interface HandleWithRecMcp {
+  recMcp?: { dropRequest(traceId?: string): void };
 }
 
 /**
@@ -527,6 +533,20 @@ export async function handleChatCompletions(
     requestDumpScope = established.dumpScope;
   }
 
+  // Client abort/disconnect mid-request must still release the ADT edit-lock
+  // (the SM12 orphaned-lock symptom). `req`'s `close` event fires once the
+  // request body is consumed — NOT reliably on client abort — so tearing down
+  // the connection there can cut an in-flight tool call. `res`'s `close`
+  // fires when the underlying connection is closed; guarding with
+  // `!res.writableEnded` narrows it to a genuine early client disconnect
+  // (the response hadn't finished yet). safeStop is idempotent, so this
+  // racing with the handler's own `finally` teardown below is safe either order.
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      void safeStop(requestConnection);
+    }
+  });
+
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     // Use destAfter (header OR session/default) — the same destination the
@@ -534,7 +554,7 @@ export async function handleChatCompletions(
     // for session-scoped chats, which would fall to the configured default.
     handle = await getSmartAgent(requestedModel, destAfter);
   } catch (err) {
-    await resetRequestConnection(requestConnection);
+    await safeStop(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
     // Propagate the structured destination_unreachable error from getSmartAgent
     // so clients can distinguish "your SAP system isn't reachable" from generic
@@ -1211,7 +1231,10 @@ export async function handleChatCompletions(
     );
   } finally {
     restoreRagStores();
-    await resetRequestConnection(requestConnection);
+    await safeStop(requestConnection);
+    // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
+    // omitting this leaks memory per request (Verified fact 10).
+    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
   }
 }
 

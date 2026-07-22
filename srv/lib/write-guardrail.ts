@@ -19,7 +19,7 @@ const EXEC_MARKER = /\[SmartAgent: Executing ([A-Za-z0-9_]+)\.\.\.\]/g;
 // Also matches the compact-mode handler names (HandlerCreate/Update/Delete/
 // Activate, exposed when LLM_AGENT_INCLUDE_COMPACT=true) — else a real write via
 // HandlerCreate would be falsely bannered as "no write tool".
-const WRITE_TOOL = /^(?:Handler)?(?:Create|Update|Delete|Activate)/;
+const WRITE_TOOL = /^(?:Handler)?(?:Create|Update|Delete|Activate)/i;
 
 // Completed-write assertions. Passive forms need a completion cue (has been /
 // was / successfully); active/first-person forms are matched directly. All
@@ -62,6 +62,59 @@ export function hasWriteTool(tools: string[]): boolean {
 /** True if the text asserts a COMPLETED write (not metadata, not an instruction). */
 export function claimsCompletedWrite(content: string): boolean {
   return CLAIM_PATTERNS.some((re) => re.test(content));
+}
+
+export type WriteOp = 'created' | 'updated' | 'deleted' | 'activated';
+
+const WRITE_OPS: WriteOp[] = ['created', 'updated', 'deleted', 'activated'];
+
+/** RU/UK words don't match `\w` in JS regex, so alternatives use a negative
+ * lookahead (mirroring CLAIM_PATTERNS) instead of `\b` for the word end. */
+function ruAlternatives(words: string[]): string {
+  return words.map((w) => `${w}(?![а-яіїєґ’':])`).join('|');
+}
+
+// Per-op word detectors, applied only within a clause already confirmed by
+// claimsCompletedWrite() to assert a completed write — so no "by/on/in/at" or
+// metadata exclusions are needed here.
+const OP_WORDS: Record<WriteOp, RegExp> = {
+  created: new RegExp(
+    `\\bcreated\\b|${ruAlternatives(['создан', 'создано', 'создана', 'созданы', 'створено', 'створений', 'створена'])}`,
+    'i',
+  ),
+  updated: new RegExp(
+    `\\bupdated\\b|${ruAlternatives(['обновлен', 'обновлено', 'обновлена', 'оновлено', 'оновлений'])}`,
+    'i',
+  ),
+  deleted: new RegExp(
+    `\\bdeleted\\b|${ruAlternatives(['удал[её]н', 'удалено', 'удалена', 'видалено', 'видалений'])}`,
+    'i',
+  ),
+  activated: new RegExp(
+    `\\bactivated\\b|${ruAlternatives(['активирован', 'активировано', 'активовано'])}`,
+    'i',
+  ),
+};
+
+/**
+ * Which write operations the content CLAIMS as completed (EN + RU/UK), at
+ * most one entry per op. Splits into clauses so a chained claim like "was
+ * created and activated" attributes BOTH ops to the same completion cue.
+ */
+export function claimedWriteOps(content: string): WriteOp[] {
+  const ops = new Set<WriteOp>();
+  for (const clause of content.split(/(?<=[.!?\n])/)) {
+    if (!claimsCompletedWrite(clause)) continue;
+    for (const op of WRITE_OPS) {
+      if (OP_WORDS[op].test(clause)) ops.add(op);
+    }
+  }
+  return Array.from(ops);
+}
+
+/** True if `toolName` belongs to the write family (Create/Update/Delete/Activate). */
+export function isWriteTool(toolName: string): boolean {
+  return WRITE_TOOL.test(toolName);
 }
 
 /**

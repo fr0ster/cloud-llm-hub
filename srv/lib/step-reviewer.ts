@@ -1,6 +1,14 @@
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { type StepGateThresholds, stepIsSuspicious } from './step-gate';
-import { applyWriteGuardrail, extractExecutedTools } from './write-guardrail';
+import type { ILlm, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  evaluateDeterministic,
+  type ReviewIssue,
+  type ReviewVerdict,
+} from './reviewer-core';
+import {
+  loadStepGateThresholds,
+  loadStepReviewTimeoutMs,
+  stepReviewEnabled,
+} from './step-gate';
 
 export type StepReview = {
   possiblyFake: boolean;
@@ -125,14 +133,6 @@ export function parseReviewVerdict(text: string): StepReview | null {
   return null;
 }
 
-export function formatReviewNotice(review: StepReview): string {
-  return (
-    `⚠️ RESULT MAY BE UNVERIFIED (executor-honesty review, confidence: ` +
-    `${review.confidence}): ${review.reasons} — the executor's claim may not ` +
-    `reflect what actually ran. Verify against the system before relying on it.`
-  );
-}
-
 export async function reviewStep(
   input: { task: string; executedTools: string[]; content: string },
   deps: { llm: ILlm; timeoutMs?: number },
@@ -164,84 +164,57 @@ export async function reviewStep(
   }
 }
 
-export async function assembleReviewedResponse(
-  input: {
-    task: string;
-    rawContent: string;
-    toolCallCount: number;
-    totalTokens: number;
-  },
-  deps: {
-    enabled: boolean;
-    thresholds: StepGateThresholds;
-    runReview: (i: {
-      task: string;
-      executedTools: string[];
-      content: string;
-    }) => Promise<StepReview | null>;
-  },
-): Promise<{
+/**
+ * Deterministic-first, LLM-gated verdict for a step's response.
+ *
+ * Kill switch: when `stepReviewEnabled(process.env)` is false (operator set
+ * `LLM_AGENT_STEP_REVIEW_ENABLED` to a non-'true' value), the ENTIRE guard —
+ * both the deterministic write-claim check and the LLM critic — is bypassed
+ * and `{ ok: true }` is returned unconditionally. Enabled by default.
+ *
+ * `evaluateDeterministic` (write-claim vs. tool-RESULT ground truth) runs
+ * unconditionally — it is authoritative and free, independent of tool-call
+ * volume. The LLM critic (`reviewStep`) is spent ONLY when the tool-call
+ * count is at or below `maxToolCalls` (near-zero tool calls for a real op is
+ * suspicious); a step above the threshold never reaches the LLM. Per-trace
+ * token totals are no longer captured (the reviewer now grounds on tool
+ * RESULTS, not the request logger), so the gate is tool-call-count only.
+ * Any LLM-found problem is merged in as an `unsupported-claim` issue; a
+ * throwing/timed-out critic fails open — the deterministic verdict is
+ * returned unchanged, never with a fabricated issue.
+ */
+export async function evaluateGated(input: {
   content: string;
-  writeGuardrailWarned: boolean;
-  reviewWarned: boolean;
-  reviewFailed: boolean;
-}> {
-  // C first — a deterministic write-claim-without-write-tool wins and skips review.
-  const guarded = applyWriteGuardrail(input.rawContent);
-  if (guarded.warned) {
-    return {
-      content: guarded.content,
-      writeGuardrailWarned: true,
-      reviewWarned: false,
-      reviewFailed: false,
-    };
-  }
-  if (
-    !deps.enabled ||
-    !stepIsSuspicious(
-      { toolCallCount: input.toolCallCount, totalTokens: input.totalTokens },
-      deps.thresholds,
-    )
-  ) {
-    return {
-      content: guarded.content,
-      writeGuardrailWarned: false,
-      reviewWarned: false,
-      reviewFailed: false,
-    };
-  }
-  // Fail-open is enforced HERE, not only by the caller: a runReview that throws
-  // (or returns null) must never affect the executor's content.
+  records: ToolCallRecord[];
+  toolCallCount: number;
+  llm: ILlm;
+}): Promise<ReviewVerdict> {
+  if (!stepReviewEnabled(process.env)) return { ok: true };
+
+  const deterministic = evaluateDeterministic(input.content, input.records);
+  const thresholds = loadStepGateThresholds(process.env);
+  const suspicious = input.toolCallCount <= thresholds.maxToolCalls;
+  if (!suspicious) return deterministic;
+
+  const executedTools = input.records.map((r) => r.call.name);
   let review: StepReview | null;
   try {
-    review = await deps.runReview({
-      task: input.task,
-      executedTools: extractExecutedTools(input.rawContent),
-      content: input.rawContent,
-    });
+    review = await reviewStep(
+      { task: '', executedTools, content: input.content },
+      { llm: input.llm, timeoutMs: loadStepReviewTimeoutMs(process.env) },
+    );
   } catch {
     review = null;
   }
-  if (review === null) {
-    return {
-      content: guarded.content,
-      writeGuardrailWarned: false,
-      reviewWarned: false,
-      reviewFailed: true,
-    };
-  }
-  if (review.possiblyFake) {
-    return {
-      content: `${formatReviewNotice(review)}\n\n${guarded.content}`,
-      writeGuardrailWarned: false,
-      reviewWarned: true,
-      reviewFailed: false,
-    };
-  }
+  if (!review?.possiblyFake) return deterministic;
+
+  const llmIssue: ReviewIssue = {
+    kind: 'unsupported-claim',
+    confidence: review.confidence,
+    reasons: review.reasons,
+  };
   return {
-    content: guarded.content,
-    writeGuardrailWarned: false,
-    reviewWarned: false,
-    reviewFailed: false,
+    ok: false,
+    issues: deterministic.ok ? [llmIssue] : [...deterministic.issues, llmIssue],
   };
 }
