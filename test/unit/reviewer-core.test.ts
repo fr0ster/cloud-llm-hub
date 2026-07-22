@@ -163,6 +163,37 @@ describe('evaluateDeterministic (result-based)', () => {
     expect(verdict).toEqual({ ok: true });
   });
 
+  it('extracts status from the MCP parts-array content the adapter actually produces', () => {
+    // The adapter sets McpToolResult.content = result.result, which is the MCP
+    // parts array [{type:'text', text:'…json…'}] — a naive "use the object as-is"
+    // misses `status`, which was the deployed e2e false positive.
+    const content = 'Domain ZDEMO was created and activated successfully.';
+    const wrapped = [
+      { type: 'text', text: '{"success":true,"status":"active"}' },
+    ] as unknown as Record<string, unknown>;
+    const verdict = evaluateDeterministic(content, [
+      {
+        call: { id: '', name: 'CreateDomain', arguments: {} },
+        result: { content: wrapped },
+      },
+    ]);
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('parseToolOutcome unwraps an MCP {content:[{text}]} envelope', () => {
+    const outcome = parseToolOutcome({
+      call: { id: '', name: 'CreateDomain', arguments: {} },
+      result: {
+        content: {
+          content: [
+            { type: 'text', text: '{"success":true,"status":"active"}' },
+          ],
+        } as unknown as Record<string, unknown>,
+      },
+    });
+    expect(outcome).toMatchObject({ ok: true, status: 'active' });
+  });
+
   it('still flags activated when only a READ tool ran (a successful Activate* is required, not a read)', () => {
     const content = 'Domain ZDEMO was created and activated successfully.';
     const verdict = evaluateDeterministic(content, [

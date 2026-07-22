@@ -38,21 +38,49 @@ export type ToolOutcome = {
   error?: string;
 };
 
-/** Best-effort envelope extraction from `McpToolResult.content` — a JSON
- *  string is parsed; a Record is used directly; anything unparseable yields
- *  an empty envelope (never throws). */
-function parseEnvelope(
-  content: string | Record<string, unknown>,
-): Record<string, unknown> {
-  if (typeof content !== 'string') return content ?? {};
-  try {
-    const parsed = JSON.parse(content);
-    return parsed && typeof parsed === 'object'
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
+/** Best-effort envelope extraction from `McpToolResult.content`, robust to the
+ *  shapes the MCP client adapter actually produces:
+ *   - a JSON string → parsed;
+ *   - the core envelope object itself (`{success,status,…}`) → used directly;
+ *   - an MCP-wrapped object `{ content: [{type:'text', text:'…json…'}] | '…' }`
+ *     → the inner `content` is unwrapped recursively;
+ *   - an MCP parts array `[{type:'text', text:'…json…'}]` → the first text part
+ *     that parses to an envelope is used.
+ *  Anything unrecognized yields an empty envelope (never throws). The adapter
+ *  sets `McpToolResult.content = result.result`, so the wrapped/array forms are
+ *  what actually arrive — a naive "use the object as-is" misses `status`. */
+function parseEnvelope(content: unknown): Record<string, unknown> {
+  if (content == null) return {};
+  if (typeof content === 'string') {
+    try {
+      const parsed = JSON.parse(content);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (
+        part &&
+        typeof part === 'object' &&
+        typeof (part as { text?: unknown }).text === 'string'
+      ) {
+        const env = parseEnvelope((part as { text: string }).text);
+        if (Object.keys(env).length > 0) return env;
+      }
+    }
     return {};
   }
+  if (typeof content === 'object') {
+    const obj = content as Record<string, unknown>;
+    if ('success' in obj || 'status' in obj) return obj;
+    if ('content' in obj) return parseEnvelope(obj.content);
+    return obj;
+  }
+  return {};
 }
 
 /** Ground-truth outcome of a single tool call, from its ACTUAL result — never
