@@ -91,6 +91,14 @@ cf deploy mta_archives/cloud-llm-hub_<version>.mtar
 - **Destination mapping**: `GET /v1/destinations/resolve?system=E19.100` - resolve SAP system code to BTP destination name; configured via `DESTINATION_MAPPING` env var
 - **Token**: `GET /v1/token` - return caller's JWT token; UI page at `/chat/webapp/token.html`
 
+### Honesty controller (executor + reviewer)
+
+Every channel (`execute_step`, `/v1/chat`, `/v1/messages`) runs through an explicit **controller** built on the imported llm-agent **DAG-coordinator** interfaces. The SmartAgent is a coordinator-less **executor worker** (`ISubAgent`); a **reviewer** (`NoticeFinalizer` / `IFinalizer`) then compares what the response CLAIMS to have written against the **actual tool results** and, on a contradiction, appends an `UNVERIFIED_WRITE:` notice (NOTICE-ONLY — the executor's content still streams live; the notice is a trailing chunk).
+
+- **Ground truth = tool RESULTS, not names.** `RecordingMcpClient` (a thin `IMcpClient` decorator we construct, `srv/lib/recording-mcp-client.ts`) captures each executed ABAP tool's `McpToolResult` per `traceId`; the reviewer parses the write tool's envelope (`{success, status, error}`). Name-only matching false-positives because `CreateDomain` self-activates via `activate:true`. Records are `traceId`-scoped and freed after the request (no cumulative retention of ABAP result data).
+- **Reaction = notify + safe-stop** (interim, until the llm-agent planner/controller lands): the notice tells the consumer; ADT edit-locks are released (`connection.closeSession()`) on every exit path. It never renders a verdict — the consumer (a human on WebUI, or the planning subagent on the MCP surface) decides.
+- Files: `srv/lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer,step-gate,write-guardrail}.ts`; wired in `srv/agent-manager.ts` (`buildAgentForDestination` + `buildExecutorWorker` + `withDagCoordinator`). Env kill-switch `LLM_AGENT_STEP_REVIEW_ENABLED=false`. Not wired into `buildLlmOnlyAgent` (no ABAP tools → nothing to verify).
+
 ### Authentication
 
 - **Development**: Mocked auth (`alice` has MCP_Connector + MCP_Admin roles, `bob` has MCP_Connector only)
@@ -150,9 +158,11 @@ For non-SAP providers: set `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL`.
 ## Key Dependencies
 
 - `@sap/cds` ^9 - CAP framework
-- `@modelcontextprotocol/sdk` ^1.23.0 - MCP protocol
-- `@mcp-abap-adt/core` ^4.9.0 - ABAP MCP server implementation
-- `@mcp-abap-adt/llm-agent` ^5.18.3 - SmartAgent pipeline, RAG, tool selection
+- `@modelcontextprotocol/sdk` ^1.29.0 - MCP protocol
+- `@mcp-abap-adt/core` ^8.11.0 - ABAP MCP server implementation
+- `@mcp-abap-adt/adt-clients` ^7.6.0 - ADT HTTP clients (talk to SAP)
+- `@mcp-abap-adt/interfaces` ^11.3.0 - shared interface contracts (program against these)
+- `@mcp-abap-adt/llm-agent` ^20.6.0 - SmartAgent pipeline, RAG, tool selection, DAG coordinator
 - `@sap-cloud-sdk/*` - Destination resolution, HTTP client
 
 ## Code Style

@@ -25,55 +25,20 @@ import './env-setup';
 import { randomUUID } from 'node:crypto';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
-import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { getAgentConfig } from './agent-config';
 import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import { resolveExposition } from './lib/exposition';
 import { computeDumpScope } from './lib/principal';
+import { safeStop } from './lib/request-connection';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
-import {
-  loadStepGateThresholds,
-  loadStepReviewTimeoutMs,
-  stepReviewEnabled,
-} from './lib/step-gate';
-import { assembleReviewedResponse, reviewStep } from './lib/step-reviewer';
-import { extractExecutedTools } from './lib/write-guardrail';
 import { runWithSessionId } from './request-session';
-
-type ReviewerLlm = import('@mcp-abap-adt/llm-agent').ILlm;
-let reviewerLlm: ReviewerLlm | null = null;
-/**
- * Lazily build (and cache) the executor-honesty reviewer's own LLM client.
- * Model fallback ends at the executor's own `cfg.llm.model` — NEVER a
- * hardcoded model name, since that may not be deployed for the current
- * provider/resource group and would leave the reviewer silently dead.
- */
-async function getReviewerLlm(): Promise<ReviewerLlm> {
-  if (reviewerLlm) return reviewerLlm;
-  const cfg = getAgentConfig();
-  reviewerLlm = await makeLlm(
-    {
-      provider: cfg.llm.provider,
-      apiKey: cfg.llm.apiKey || 'sap-ai-sdk-managed',
-      baseURL: cfg.llm.baseUrl,
-      model:
-        process.env.LLM_AGENT_REVIEWER_MODEL ||
-        process.env.LLM_AGENT_CLASSIFIER_MODEL ||
-        cfg.llm.model,
-      resourceGroup: cfg.llm.resourceGroup,
-    },
-    0,
-  );
-  return reviewerLlm;
-}
 
 /**
  * Global cap on concurrent `execute_step` executions. The tool contract lets a
@@ -123,6 +88,15 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts. Use it to track and budget what the executor spends across your plan.",
 ].join('\n');
+
+/**
+ * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
+ * part of the library's `SmartAgentHandle` type — optional, since an
+ * LLM-only handle (no destination) has no per-destination recMcp.
+ */
+interface HandleWithRecMcp {
+  recMcp?: { dropRequest(traceId?: string): void };
+}
 
 export interface AgentMcpResult {
   transport: StreamableHTTPServerTransport;
@@ -279,6 +253,20 @@ export async function createAgentMcpServerForRequest(
       }
       const releaseSlot = await execStepSemaphore.acquire();
       let connection: IAbapConnection | undefined;
+      // Handle + traceId are assigned inside the try below but read from the
+      // `finally` (dropRequest), so they must be declared in the outer scope.
+      let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
+      let traceId: string | undefined;
+      // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
+      // the request stream's `close` event fires once the BODY is consumed —
+      // right after this JSON-RPC call starts — NOT reliably on client abort.
+      // Wiring safeStop(connection) to it could tear down the ABAP session
+      // (closeSession) while a tool call is still in flight, which is exactly
+      // the orphaned-state failure we're trying to avoid. `res` (the real
+      // socket/response) is not threaded into this per-tool-call scope — it
+      // lives in server.ts's route handler — so there is no safe abort signal
+      // available here. Teardown is left entirely to the `finally` below,
+      // which always runs safeStop(connection) once the step completes.
       try {
         // Destination from the arg, else the connection's default header.
         const headerDestination = (
@@ -318,10 +306,14 @@ export async function createAgentMcpServerForRequest(
 
         // Per-request responsible person for ADT writes (create/update/delete).
         setRequestResponsible(req.headers);
-        const handle = await getSmartAgent(undefined, targetDestination);
+        handle = await getSmartAgent(undefined, targetDestination);
+        const agentHandle = handle;
 
         // Ephemeral session per call → the executor loads/saves no history.
+        // Doubles as the per-trace telemetry id (Verified fact 10): unique per
+        // call, threaded below as `trace.traceId`, dropped in the `finally`.
         const sessionId = `agent-step-${randomUUID()}`;
+        traceId = sessionId;
         const opts = {
           stream: false,
           externalTools: [],
@@ -349,7 +341,11 @@ export async function createAgentMcpServerForRequest(
         const r = await runWithSessionId(sessionId, () =>
           runWithRequestConnection(
             conn,
-            () => handle.agent.process([{ role: 'user', content: task }], opts),
+            () =>
+              agentHandle.agent.process(
+                [{ role: 'user', content: task }],
+                opts,
+              ),
             dumpScope,
           ),
         );
@@ -370,45 +366,15 @@ export async function createAgentMcpServerForRequest(
         // to the agent; whatever the agent produced is exactly what the caller
         // gets. Diagnostics stay server-side in the log below.
         //
-        // ONE exception — the executor-honesty guardrail: if the response asserts
-        // a completed write yet NO write tool ran (e.g. a read-only caller whose
-        // role lacks Create*/Update*/Delete*/Activate*), prepend an "unverified"
-        // banner. The tool trace already proves nothing was written; we must not
-        // relay fabricated success to the controller as if it happened.
+        // The executor-honesty guard now lives in the DAG coordinator's
+        // `NoticeFinalizer` (see `srv/lib/notice-finalizer.ts`), which runs for
+        // EVERY channel (execute_step, /v1/chat, /v1/messages) and already
+        // embeds an `UNVERIFIED_WRITE:`-style notice into `r.value.content`
+        // when the executor's claim outruns the tools it actually ran. The old
+        // execute_step-only wrapper (`assembleReviewedResponse`) is retired —
+        // re-reviewing here would be redundant with (and could double-flag)
+        // what the coordinator already decided.
         const rawContent = r.value.content ?? '';
-        const assembled = await assembleReviewedResponse(
-          {
-            task,
-            rawContent,
-            toolCallCount: r.value.toolCallCount,
-            totalTokens: r.value.usage?.totalTokens ?? 0,
-          },
-          {
-            enabled: stepReviewEnabled(process.env),
-            thresholds: loadStepGateThresholds(process.env),
-            // Fail-open even if building the reviewer LLM fails (e.g. model not
-            // deployed): the closure returns null, surfaced as reviewFailed below.
-            runReview: async (i) => {
-              try {
-                return await reviewStep(i, {
-                  llm: await getReviewerLlm(),
-                  timeoutMs: loadStepReviewTimeoutMs(process.env),
-                });
-              } catch (err) {
-                log.warn('step reviewer llm unavailable (fail-open)', {
-                  destination: targetDestination,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-                return null;
-              }
-            },
-          },
-        );
-        if (assembled.reviewFailed) {
-          log.info('step reviewer produced no verdict (fail-open)', {
-            destination: targetDestination,
-          });
-        }
         log.info('execute_step done', {
           ok: true,
           destination: targetDestination,
@@ -416,14 +382,8 @@ export async function createAgentMcpServerForRequest(
           toolCallCount: r.value.toolCallCount,
           totalTokens: r.value.usage?.totalTokens,
           stopReason: r.value.stopReason,
-          writeGuardrailWarned: assembled.writeGuardrailWarned,
-          reviewWarned: assembled.reviewWarned,
-          reviewFailed: assembled.reviewFailed,
-          ...(assembled.writeGuardrailWarned || assembled.reviewWarned
-            ? { executedTools: extractExecutedTools(rawContent) }
-            : {}),
         });
-        return textResult(assembled.content, false);
+        return textResult(rawContent, false);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn('execute_step failed', { destination, error: message });
@@ -431,11 +391,12 @@ export async function createAgentMcpServerForRequest(
       } finally {
         // End the server-side ADT stateful session first (releases any edit-lock
         // a mutating tool left open — the "currently editing" / inactive-object
-        // symptom), THEN clear local state.
-        await (
-          connection as { closeSession?: () => Promise<void> } | undefined
-        )?.closeSession?.();
-        (connection as { reset?: () => void } | undefined)?.reset?.();
+        // symptom), THEN clear local state. This is the ONLY teardown path now
+        // (see the NOTE above — no premature close-based hook).
+        await safeStop(connection);
+        // Free the per-trace telemetry bucket — nobody else calls dropRequest,
+        // so omitting this leaks memory per call (Verified fact 10).
+        (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
         // Release the concurrency slot last, after the session is torn down, so
         // the next queued step starts only once this one's memory is freed.
         releaseSlot();

@@ -1,8 +1,10 @@
 import {
   applyWriteGuardrail,
+  claimedWriteOps,
   claimsCompletedWrite,
   extractExecutedTools,
   hasWriteTool,
+  isWriteTool,
 } from '../../srv/lib/write-guardrail';
 
 describe('extractExecutedTools', () => {
@@ -115,5 +117,40 @@ describe('applyWriteGuardrail', () => {
     const r = applyWriteGuardrail(readback);
     expect(r.warned).toBe(false);
     expect(r.content).toBe(readback);
+  });
+});
+
+describe('claimedWriteOps', () => {
+  it('picks up both ops from a chained EN claim', () => {
+    expect(claimedWriteOps('The domain was created and activated.')).toEqual(
+      expect.arrayContaining(['created', 'activated']),
+    );
+  });
+  it('picks up a chained RU/UK claim', () => {
+    expect(claimedWriteOps("Об'єкт успішно створено та активовано.")).toEqual(
+      expect.arrayContaining(['created', 'activated']),
+    );
+  });
+  it('returns [] when nothing is claimed', () => {
+    expect(
+      claimedWriteOps('I cannot create it — no create tool is available.'),
+    ).toEqual([]);
+  });
+});
+
+describe('isWriteTool', () => {
+  it('detects Create/Update/Delete/Activate tool names', () => {
+    expect(isWriteTool('CreateDomain')).toBe(true);
+    expect(isWriteTool('UpdateClass')).toBe(true);
+    expect(isWriteTool('DeleteTable')).toBe(true);
+    expect(isWriteTool('ActivateObjects')).toBe(true);
+  });
+  it('detects compact-mode Handler* write handlers', () => {
+    expect(isWriteTool('HandlerCreate')).toBe(true);
+    expect(isWriteTool('HandlerActivate')).toBe(true);
+  });
+  it('is false for read-only tool names', () => {
+    expect(isWriteTool('ReadDomain')).toBe(false);
+    expect(isWriteTool('GetTableContents')).toBe(false);
   });
 });

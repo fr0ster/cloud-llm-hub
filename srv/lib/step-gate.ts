@@ -1,9 +1,10 @@
 /**
  * Cheap suspicion gate deciding WHETHER to spend an LLM reviewer call on an
- * execute_step result. Not a verdict — just "worth double-checking". A real SAP
- * operation needs tool calls and burns tokens; near-zero of either == suspicious.
+ * execute_step result. Not a verdict — just "worth double-checking". A step at
+ * or below `maxToolCalls` tool calls (near-zero real work for a real SAP
+ * operation) is suspicious enough to warrant the LLM critic.
  */
-export type StepGateThresholds = { maxToolCalls: number; minTokens: number };
+export type StepGateThresholds = { maxToolCalls: number };
 
 /**
  * Parse a strict integer env value >= `min`; empty / non-numeric / trailing junk
@@ -26,22 +27,12 @@ export function loadStepGateThresholds(
 ): StepGateThresholds {
   return {
     maxToolCalls: strictInt(env.LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS, 1, 0),
-    minTokens: strictInt(env.LLM_AGENT_STEP_REVIEW_MIN_TOKENS, 1500, 0),
   };
 }
 
 /** Reviewer hard-timeout (ms), strictly positive; empty/invalid/<=0 → 8000. */
 export function loadStepReviewTimeoutMs(env: NodeJS.ProcessEnv): number {
   return strictInt(env.LLM_AGENT_STEP_REVIEW_TIMEOUT_MS, 8000, 1);
-}
-
-export function stepIsSuspicious(
-  input: { toolCallCount: number; totalTokens: number },
-  t: StepGateThresholds,
-): boolean {
-  return (
-    input.toolCallCount <= t.maxToolCalls || input.totalTokens < t.minTokens
-  );
 }
 
 /**

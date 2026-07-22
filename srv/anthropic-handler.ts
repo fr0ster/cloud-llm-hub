@@ -11,6 +11,7 @@
  * - Stream transformation (internal chunks → Anthropic SSE events)
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   AdapterValidationError,
   AnthropicApiAdapter,
@@ -26,14 +27,20 @@ import {
   isAgentReady,
   runWithRequestConnection,
 } from './agent-manager';
-import {
-  establishRequestConnection,
-  resetRequestConnection,
-} from './lib/request-connection';
+import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { resolveSessionId } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
+
+/**
+ * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
+ * part of the library's `SmartAgentHandle` type — optional, since an
+ * LLM-only handle (no destination) has no per-destination recMcp.
+ */
+interface HandleWithRecMcp {
+  recMcp?: { dropRequest(traceId?: string): void };
+}
 
 /**
  * POST /v1/messages
@@ -108,6 +115,20 @@ export async function handleAnthropicMessages(
     requestDumpScope = established.dumpScope;
   }
 
+  // Client abort/disconnect mid-request must still release the ADT edit-lock
+  // (the SM12 orphaned-lock symptom). `req`'s `close` event fires once the
+  // request body is consumed — NOT reliably on client abort — so tearing down
+  // the connection there can cut an in-flight tool call. `res`'s `close`
+  // fires when the underlying connection is closed; guarding with
+  // `!res.writableEnded` narrows it to a genuine early client disconnect
+  // (the response hadn't finished yet). safeStop is idempotent, so this
+  // racing with the handler's own `finally` teardown below is safe either order.
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      void safeStop(requestConnection);
+    }
+  });
+
   // Get the SmartAgent handle for the SAME destination the connection was
   // established for (resolved above from x-sap-destination / session). Passing
   // it explicitly ensures the agent's MCP tools match the connection — without
@@ -116,7 +137,7 @@ export async function handleAnthropicMessages(
   try {
     handle = await getSmartAgent(undefined, destination);
   } catch (err) {
-    await resetRequestConnection(requestConnection);
+    await safeStop(requestConnection);
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
     res.status(503).json({
@@ -129,9 +150,15 @@ export async function handleAnthropicMessages(
     return;
   }
 
+  // Unique per-request traceId — required for the recording logger's
+  // per-trace bucketing and the finalizer's `getSummary(traceId)` (Verified
+  // fact 10). Merge into any `trace` the adapter already normalized from the
+  // request rather than clobbering it.
+  const traceId = randomUUID();
   const agentOpts = {
     stream,
     ...options,
+    trace: { ...options?.trace, traceId },
   };
 
   // Bind the per-request SAP connection for the whole agent run so MCP tool
@@ -187,6 +214,9 @@ export async function handleAnthropicMessages(
       res.status(500).json(formatted);
     }
   } finally {
-    await resetRequestConnection(requestConnection);
+    await safeStop(requestConnection);
+    // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
+    // omitting this leaks memory per request (Verified fact 10).
+    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
   }
 }

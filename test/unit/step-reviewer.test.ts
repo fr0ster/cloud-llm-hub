@@ -1,9 +1,17 @@
+import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import {
   buildReviewMessages,
-  formatReviewNotice,
+  evaluateGated,
   parseReviewVerdict,
   reviewStep,
 } from '../../srv/lib/step-reviewer';
+
+function record(
+  name: string,
+  content: string | Record<string, unknown>,
+): ToolCallRecord {
+  return { call: { id: '', name, arguments: {} }, result: { content } };
+}
 
 describe('buildReviewMessages', () => {
   it('is skeptical, names executed tools, and demands strict JSON', () => {
@@ -86,16 +94,184 @@ describe('parseReviewVerdict', () => {
   });
 });
 
-describe('formatReviewNotice', () => {
-  it('produces a consumer-facing unverified banner with reasons', () => {
-    const n = formatReviewNotice({
-      possiblyFake: true,
-      confidence: 'high',
-      reasons: 'no write tool ran',
+describe('evaluateGated', () => {
+  const ENV_KEYS = [
+    'LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS',
+    'LLM_AGENT_STEP_REVIEW_MIN_TOKENS',
+    'LLM_AGENT_STEP_REVIEW_TIMEOUT_MS',
+    'LLM_AGENT_STEP_REVIEW_ENABLED',
+  ] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  const okLlm = (content: string) => {
+    const chat = jest.fn(async () => ({
+      ok: true as const,
+      value: { content },
+    }));
+    return { chat, streamChat: async function* () {} };
+  };
+
+  it('does NOT invoke the LLM critic when tool-call count is above threshold', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "high", "reasons": "should not be seen"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'Read complete.',
+      records: Array.from({ length: 5 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
+      toolCallCount: 5,
+      llm: llm as never,
     });
-    expect(n.toLowerCase()).toContain('unverified');
-    expect(n).toContain('no write tool ran');
-    expect(n).toContain('high');
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('invokes the LLM critic when tool-call count is at/below threshold (suspicious)', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "high", "reasons": "claimed create, only read ran"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'Created successfully.',
+      records: [record('ReadDomain', '{"success":true}')],
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues.some((i) => i.kind === 'unsupported-claim')).toBe(
+        true,
+      );
+    }
+  });
+
+  it('fails open when the LLM critic throws — verdict unchanged, no spurious problem', async () => {
+    const llm = {
+      chat: jest.fn(async () => {
+        throw new Error('net');
+      }),
+      streamChat: async function* () {},
+    };
+    const verdict = await evaluateGated({
+      content: 'All good, nothing written.',
+      records: [record('ReadDomain', '{"success":true}')],
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).toHaveBeenCalled();
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('fails open on timeout — verdict unchanged, no spurious problem', async () => {
+    process.env.LLM_AGENT_STEP_REVIEW_TIMEOUT_MS = '20';
+    const llm = {
+      chat: jest.fn(() => new Promise(() => {})),
+      streamChat: async function* () {},
+    };
+    const verdict = await evaluateGated({
+      content: 'All good, nothing written.',
+      records: [record('ReadDomain', '{"success":true}')],
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('surfaces a deterministic write mismatch regardless of the tool-call gate', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      records: Array.from({ length: 5 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
+      toolCallCount: 5, // well above threshold — LLM should NOT even be needed
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues).toEqual([
+        expect.objectContaining({
+          kind: 'unverified-write',
+          claimedOp: 'activated',
+        }),
+      ]);
+    }
+  });
+
+  it('merges LLM-found issues with an existing deterministic issue when both fire', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "medium", "reasons": "extra doubt"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      records: [record('ReadDomain', '{"success":true}')],
+      toolCallCount: 1, // below threshold — LLM runs too
+      llm: llm as never,
+    });
+    expect(llm.chat).toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues.map((i) => i.kind).sort()).toEqual([
+        'unsupported-claim',
+        'unverified-write',
+      ]);
+    }
+  });
+  it('kill switch: returns {ok: true} on a clear write mismatch when disabled, without invoking the LLM critic', async () => {
+    process.env.LLM_AGENT_STEP_REVIEW_ENABLED = 'false';
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "high", "reasons": "should not be seen"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      records: [record('CreateDomain', '{"success":true,"status":"inactive"}')],
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('kill switch: unset env leaves the deterministic mismatch behavior unchanged', async () => {
+    expect(process.env.LLM_AGENT_STEP_REVIEW_ENABLED).toBeUndefined();
+    const llm = okLlm(
+      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      records: Array.from({ length: 5 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
+      toolCallCount: 5,
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues).toEqual([
+        expect.objectContaining({
+          kind: 'unverified-write',
+          claimedOp: 'activated',
+        }),
+      ]);
+    }
   });
 });
 
