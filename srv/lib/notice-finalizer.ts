@@ -50,7 +50,18 @@ export class NoticeFinalizer implements IFinalizer {
     cds.log('notice-finalizer').info('review', {
       traceId: t,
       records: records.length,
-      tools: records.map((r) => r.call.name),
+      tools: records.map((r) => {
+        const c = r.result.content;
+        const sample =
+          typeof c === 'string'
+            ? c.slice(0, 140)
+            : JSON.stringify(c).slice(0, 140);
+        return {
+          name: r.call.name,
+          isError: r.result.isError,
+          content: sample,
+        };
+      }),
       ok: verdict.ok,
     });
 
