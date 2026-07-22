@@ -91,7 +91,7 @@ Use session identity for conversation continuity and tracing. Do not use it as d
 
 ## Honesty guard — result-based claim verification *(v6.28+)*
 
-Every channel (`execute_step`, `/v1/chat`, `/v1/messages`) is dispatched through an explicit controller: the SmartAgent runs as a coordinator-less executor worker under a DAG coordinator, and a **reviewer** afterward compares the response's CLAIMS against the **actual tool results**, not tool names. Ground truth comes from `RecordingMcpClient`, a thin `IMcpClient` decorator that captures each executed ABAP tool's real result per request (freed after the request — no retention). On a contradiction the reviewer appends a trailing `UNVERIFIED_WRITE:` notice — NOTICE-ONLY, the executor's content still streams live, and it is a soft warning the consuming service can choose to surface or ignore, never a hard block.
+Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) is dispatched through an explicit controller: the SmartAgent runs as a coordinator-less executor worker under a DAG coordinator, and a **reviewer** afterward compares the response's CLAIMS against the **actual tool results**, not tool names. Ground truth comes from `RecordingMcpClient`, a thin `IMcpClient` decorator that captures each executed ABAP tool's real result per request (freed after the request — no retention). On a contradiction the reviewer appends a trailing `UNVERIFIED_WRITE:` notice — NOTICE-ONLY, the executor's content still streams live, and it is a soft warning the consuming service can choose to surface or ignore, never a hard block.
 
 Disable entirely with `LLM_AGENT_STEP_REVIEW_ENABLED=false` if your integration doesn't want the extra check.
 
