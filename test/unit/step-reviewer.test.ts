@@ -91,6 +91,7 @@ describe('evaluateGated', () => {
     'LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS',
     'LLM_AGENT_STEP_REVIEW_MIN_TOKENS',
     'LLM_AGENT_STEP_REVIEW_TIMEOUT_MS',
+    'LLM_AGENT_STEP_REVIEW_ENABLED',
   ] as const;
   const saved: Record<string, string | undefined> = {};
 
@@ -224,6 +225,45 @@ describe('evaluateGated', () => {
       expect(verdict.issues.map((i) => i.kind).sort()).toEqual([
         'unsupported-claim',
         'unverified-write',
+      ]);
+    }
+  });
+  it('kill switch: returns {ok: true} on a clear write mismatch when disabled, without invoking the LLM critic', async () => {
+    process.env.LLM_AGENT_STEP_REVIEW_ENABLED = 'false';
+    const llm = okLlm(
+      '{"possiblyFake": true, "confidence": "high", "reasons": "should not be seen"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      executedTools: ['CreateDomain'],
+      totalTokens: 10,
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict).toEqual({ ok: true });
+  });
+
+  it('kill switch: unset env leaves the deterministic mismatch behavior unchanged', async () => {
+    expect(process.env.LLM_AGENT_STEP_REVIEW_ENABLED).toBeUndefined();
+    const llm = okLlm(
+      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
+    );
+    const verdict = await evaluateGated({
+      content: 'The domain has been activated successfully.',
+      executedTools: ['ReadDomain'],
+      totalTokens: 5000,
+      toolCallCount: 5,
+      llm: llm as never,
+    });
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.issues).toEqual([
+        expect.objectContaining({
+          kind: 'unverified-write',
+          claimedOp: 'activated',
+        }),
       ]);
     }
   });
