@@ -178,6 +178,13 @@ The response is Server-Sent Events. Extract the assistant content from each chun
 Keep `[SmartAgent: Executing X...]` markers in the output verbatim — they are
 evidence of real tool calls.
 
+**Server-side signal *(v6.28+)*:** independently of the client-side hallucination
+check below, the hub itself may append a trailing `UNVERIFIED_WRITE:` line when
+its reviewer finds a claimed write (create/update/activate) unsupported by the
+actual tool results. Keep it verbatim too — it is a soft warning, not a hard
+failure — and treat the claim as unconfirmed until verified against the system.
+Disable-able hub-side via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+
 ## Hard rules
 
 - One curl per invocation. Do not split into multiple curls.
