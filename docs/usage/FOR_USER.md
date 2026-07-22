@@ -92,6 +92,10 @@ The assistant streams tokens back to the client as it generates them. The Web UI
 
 Roles are assigned through standard BTP role collections by your platform team. The same hub serves Readers, Analysts, Developers, and Full Admins simultaneously — each sees a different tool surface in the assistant's inventory for their requests. There is no separate per-environment hub for "safe" vs "unsafe" users.
 
+## A response may end with a soft warning
+
+A response can carry a trailing `UNVERIFIED_WRITE:` line. It means the assistant claimed a create/update/activate (or similar) action that the actual tool results did not confirm. Treat it as a soft warning, not proof of failure — verify against the system (e.g. SE11/SM12, or ask the assistant for a raw read-back) before relying on the claim.
+
 ## What it does not replace
 
 - Your SAP authorization model. The hub respects what the destination user can already see.
