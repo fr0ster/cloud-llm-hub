@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.28.1] - 2026-07-23
+
+Documentation-only release: an architecture accuracy pass over `docs/architecture/ARCHITECTURE.md` (no code changes). Every correction was verified against the current `srv/` code.
+
+### Docs
+- **Agent-surface reality.** Corrected the request-lifecycle and top-level diagrams: the `/v1/*` handlers build their connection via `establishRequestConnection` while `/mcp/agent/stream/http` uses its own `buildConnectionForDestination`; the ALS handoff (`runWithRequestConnection`) belongs to `agent-manager.ts`; the legacy `AgentService` OData path is LLM-only (no valid ABAP-tool edge).
+- **Shared tool corpus.** `@mcp-abap-adt/core` is consumed on two paths — `EmbeddableMcpServer` (raw MCP) and `HandlerExporter` (agent in-process); the tool RAG is a single shared corpus vectorized once (`sharedToolsRag`), config-dependent via `getHandlerExporterConfig()`. Aligned the package table, delegation pattern, dependency graph, upgrade guidance, module map, and §15/§16.
+- **Auth model.** `/mcp/*` and `/v1/*` are gated by the Express `requireMcpRole` middleware (`user.is()`), not by `AuthService.CheckAuth/CheckRoles` (a standalone introspection endpoint); documented the tiered XSUAA roles `MCP_Reader < MCP_Analyst < MCP_Developer < MCP_Full` and the mock users (alice/bob/carol/dave).
+- **Config surface.** Rebuilt the §12 environment table against `agent-config.ts` / `agent-manager.ts` / `step-gate.ts`: removed the nonexistent `LLM_AGENT_PIPELINE_MODE` and the phantom `ai-core-models.ts` owner; corrected `DESTINATION_MAPPING`, `LLM_AGENT_RESOURCE_GROUP`, and `LLM_AGENT_MCP_DESTINATION`; added `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_INCLUDE_COMPACT`, `LLM_AGENT_INCLUDE_LOW_LEVEL`, and the reviewer tunables `LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS` / `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`.
+
 ## [6.28.0] - 2026-07-22
 
 Explicit honesty controller + result-based reviewer, built on the imported `@mcp-abap-adt/llm-agent` DAG-coordinator interfaces; the `@mcp-abap-adt` family migrated to latest.
