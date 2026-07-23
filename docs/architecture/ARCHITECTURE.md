@@ -21,7 +21,8 @@
 12. [Configuration & Environment](#12-configuration--environment)
 13. [External Dependencies](#13-external-dependencies)
 14. [Testing Strategy](#14-testing-strategy)
-15. [Key Design Decisions](#15-key-design-decisions)
+15. [Multi-Destination Architecture](#15-multi-destination-architecture-v220)
+16. [Key Design Decisions](#16-key-design-decisions)
 
 ---
 
@@ -34,14 +35,17 @@ graph LR
     subgraph Clients
         CL[Cline / Claude Desktop]
         N8N[n8n / CI-CD]
+        PLAN[Planner e.g. Claude Code]
         APP[Custom Apps]
     end
 
     subgraph "Cloud LLM Hub (CAP)"
         AR[Approuter]
         SRV[CAP Server]
-        MCP_PROXY[MCP Gateway<br/>Stream-HTTP]
-        AGENT[Agent Service<br/>OData]
+        MCP_PROXY[Raw MCP Tools<br/>Stream-HTTP]
+        AGENT_MCP[Agent MCP<br/>execute_step]
+        V1[OpenAI + Anthropic<br/>v1/chat/completions, v1/messages]
+        AGENT_OD[Agent Service OData<br/>legacy]
         AUTH[Auth Service]
     end
 
@@ -52,24 +56,32 @@ graph LR
 
     CL -->|Stream-HTTP| AR
     N8N -->|Stream-HTTP| AR
-    APP -->|OData| AR
+    PLAN -->|Stream-HTTP| AR
+    APP -->|REST / OData| AR
 
     AR --> SRV
     SRV --> MCP_PROXY
-    SRV --> AGENT
+    SRV --> AGENT_MCP
+    SRV --> V1
+    SRV --> AGENT_OD
     SRV --> AUTH
 
     MCP_PROXY -->|ADT Requests| ABAP
-    AGENT -->|LLM Chat| AICORE
-    AGENT -.->|MCP Tools| MCP_PROXY
+    AGENT_MCP -->|LLM Chat| AICORE
+    V1 -->|LLM Chat| AICORE
+    AGENT_OD -->|LLM Chat| AICORE
+    AGENT_MCP -.->|embedded tool handlers<br/>in-process, no HTTP| ABAP
+    V1 -.->|embedded tool handlers<br/>in-process, no HTTP| ABAP
 ```
+
+> The legacy `AgentService` OData path (`AGENT_OD`, `agent-service.ts`) is **LLM-only**: it calls `getSmartAgent()` + `agent.process()` **without** entering the per-request ALS connection scope, so embedded ABAP tool calls throw (`agent-manager.ts` requires a `connectionALS` store) — it has no valid ABAP-tool edge.
 
 **Two runtime paths:**
 
 | Path | Entry Point | Purpose |
 |------|-------------|---------|
-| **MCP Gateway** | `POST /mcp/stream/http` | Orchestrates MCP protocol requests: auth, destination resolution, connection creation, then delegates to embedded `mcp-abap-adt` server; used by AI assistants directly |
-| **Agent Service** | `GET/POST /agent/*` (OData) | LLM-agent endpoint: receives natural language → calls SAP AI Core LLM → uses MCP tools via internal orchestration loop |
+| **Raw MCP tools** | `POST /mcp/stream/http` | Orchestrates MCP protocol requests: auth, destination resolution, connection creation, then delegates to embedded `mcp-abap-adt` server; used by AI assistants directly. No agent involved. |
+| **Agent / LLM surfaces** | `POST /mcp/agent/stream/http` (`execute_step`, `srv/agent-mcp.ts`), `POST /v1/chat/completions` (`srv/openai-handler.ts`), `POST /v1/messages` (`srv/anthropic-handler.ts`) | All three call `getSmartAgent` (`srv/agent-manager.ts`) → the DAG-coordinator controller (executor worker + reviewer, see §7). A legacy secondary surface, the OData `AgentService` (`GET/POST /odata/v4/agent/*`), also exists: its `Chat`/`Health` call `getSmartAgent` (its `GetHistory` returns `[]` and `ClearHistory` is a static-success stub) — not a primary path. |
 
 ---
 
@@ -88,18 +100,18 @@ flowchart LR
     style D fill:#9333ea,color:#fff,font-size:16px
 ```
 
-**Key point:** `mcp-abap-adt` is the **base implementation** of the MCP server. Cloud LLM Hub **delegates all MCP work** to it. The delegation pattern:
+**Key point:** `mcp-abap-adt` is the **base implementation** of the ABAP tools. Cloud LLM Hub **delegates all ABAP tool execution** to it, over two paths that both come from `@mcp-abap-adt/core`:
 
-1. Cloud LLM Hub handles everything **before** MCP: auth, destination resolution, connection creation
-2. Cloud LLM Hub creates `EmbeddableMcpServer` (from `@mcp-abap-adt/core`) and **injects** the connection
-3. From that point, `mcp-abap-adt` does **all** the MCP protocol handling and ABAP tool execution
-4. Cloud LLM Hub never calls ABAP tools directly — it only provides the connection
+1. Cloud LLM Hub handles everything **before** the tools: auth, destination resolution, connection creation — then **injects** the connection.
+2. **Raw MCP path** (`/mcp/stream/http`, `mcp-manager.ts`): Cloud LLM Hub creates an `EmbeddableMcpServer` and injects the connection; from that point `mcp-abap-adt` does **all** the MCP protocol handling and ABAP tool execution.
+3. **Agent path** (`POST /v1/chat/completions`, `POST /v1/messages`, `/mcp/agent/stream/http`, `agent-manager.ts`): the SmartAgent executes the `HandlerExporter` tool corpus **in-process** against the injected connection (no MCP wire protocol) — see §7 and §16. (Other `/v1/*` routes — `/v1/models`, `/v1/usage`, `/v1/destinations/*`, `/v1/token` — are non-chat management routes; some touch `getSmartAgent()`/`refreshDestinations()` for metadata or warm-up, but none execute an agent request against SAP.)
+4. On both paths Cloud LLM Hub never hand-codes ABAP tool logic — it provides the connection and lets `@mcp-abap-adt/core` run the tools.
 
 ### What cloud-llm-hub uses from `@mcp-abap-adt/*`
 
 | Package | Role | Where used |
 |---------|------|------------|
-| **`core`** (`^8.11.0`) | `EmbeddableMcpServer` — the MCP server with all ABAP tools. **This is where all MCP work happens.** | `mcp-manager.ts` |
+| **`core`** (`^8.11.0`) | ABAP tool surface: `EmbeddableMcpServer` (the MCP server exposing all ABAP tools on the raw `/mcp/stream/http` path) **and** `HandlerExporter` (the destination-free tool corpus the SmartAgent executes in-process). | `mcp-manager.ts` (`EmbeddableMcpServer`), `agent-manager.ts` (`HandlerExporter`) |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
 | **`llm-agent`** (`^20.6.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
 | **`llm-agent-libs`** (`^20.6.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
@@ -114,8 +126,8 @@ flowchart LR
 - **Adding/modifying MCP tools** (e.g., new ABAP read operation) → change `mcp-abap-adt`, NOT this project
 - **Adding/modifying transport, auth, routing, BTP integration** → change this project (`srv/`)
 - **Adding new connection type** (e.g., new auth method) → implement `AbapConnection` interface in `srv/connections/`, register in `connectionFactory.ts`
-- **Changing LLM provider behavior** → if it's provider abstraction → `mcp-abap-adt/llm-proxy`; if it's SAP AI Core binding specifics → `agent-manager.ts` in this project
-- **Updating `mcp-abap-adt` version** → update in `package.json`, test that `EmbeddableMcpServer` API hasn't changed, run integration tests
+- **Changing the LLM provider** → set `LLM_AGENT_PROVIDER` (`sap-ai-sdk` default / `openai` / `anthropic` / `deepseek`) plus `LLM_AGENT_API_KEY` / `LLM_AGENT_BASE_URL` (read in `agent-config.ts`); the provider client is built by `makeLlm` from `@mcp-abap-adt/llm-agent-libs`. SAP AI Core binding specifics live in `agent-manager.ts`.
+- **Updating `mcp-abap-adt` version** → update in `package.json`, then verify both `@mcp-abap-adt/core` consumers still match: the `EmbeddableMcpServer` API on the raw MCP path (`mcp-manager.ts`) **and** the `HandlerExporter` tool corpus on the agent path (`agent-manager.ts` — tool listing/exec and its config-dependent tool set), run integration tests
 
 ---
 
@@ -133,10 +145,10 @@ graph TD
     ROOT --> TOOLS_DIR["tools/ — Utility scripts"]
 
     SRV_DIR --> SRV_CORE["Core modules<br/>server.ts, mcp-proxy.ts,<br/>mcp-manager.ts"]
-    SRV_DIR --> SRV_AGENT["Agent modules<br/>agent-service.ts,<br/>agent-manager.ts,<br/>agent-config.ts"]
+    SRV_DIR --> SRV_AGENT["Agent modules<br/>agent-mcp.ts,<br/>openai-handler.ts,<br/>anthropic-handler.ts,<br/>agent-service.ts (legacy),<br/>agent-manager.ts,<br/>agent-config.ts"]
     SRV_DIR --> SRV_AUTH["Auth module<br/>auth.ts, auth.cds"]
     SRV_DIR --> SRV_CONN["connections/<br/>Connection strategies"]
-    SRV_DIR --> SRV_LIB["lib/<br/>errorUtils.ts, logger.ts"]
+    SRV_DIR --> SRV_LIB["lib/<br/>errorUtils.ts, logger.ts,<br/>reviewer-core.ts, step-reviewer.ts,<br/>recording-mcp-client.ts, …"]
     SRV_DIR --> SRV_CDS["CDS models<br/>mcp-proxy.cds,<br/>agent-service.cds"]
 
     style SRV_DIR fill:#2563eb,color:#fff
@@ -150,17 +162,24 @@ graph TD
 ```
 cloud-llm-hub/
 ├── srv/                          # ⭐ All backend logic
-│   ├── server.ts                 # CAP bootstrap, Express middleware, Stream-HTTP endpoint
-│   ├── mcp-proxy.ts              # CAP service handlers (Health, ProbeDestination, InvokeTool)
+│   ├── server.ts                 # CAP bootstrap, Express middleware, Stream-HTTP + /v1/* + agent-MCP routes
+│   ├── mcp-proxy.ts              # CAP service handlers (Health, ProbeDestination, ListDestinations, DiagnoseDestinations, ProbeActiveDestination, InvokeTool)
 │   ├── mcp-proxy.cds             # CDS model for McpProxyService
-│   ├── mcp-manager.ts            # Per-request MCP server creation factory
-│   ├── agent-service.ts          # CAP service handlers for Agent (Chat, Health)
-│   ├── agent-service.cds         # CDS model for AgentService
-│   ├── agent-manager.ts          # LLM provider creation, agent caching, MCP client
+│   ├── mcp-manager.ts            # Per-request MCP server creation factory (raw ABAP tools)
+│   ├── agent-mcp.ts              # `/mcp/agent/stream/http` planner surface: `list_destinations` + `execute_step`
+│   ├── openai-handler.ts         # `/v1/chat/completions`, `/v1/models`, `/v1/usage`, `/v1/destinations/*` handlers
+│   ├── anthropic-handler.ts      # `/v1/messages` (Anthropic Messages API) handler
+│   ├── agent-service.ts          # Legacy CAP OData service handlers for Agent (Chat, Health) — secondary surface
+│   ├── agent-service.cds         # CDS model for AgentService (legacy)
+│   ├── agent-manager.ts          # getSmartAgent, LLM provider creation, per-destination state, DAG-coordinator wiring
 │   ├── agent-config.ts           # Agent configuration from env vars / VCAP_SERVICES
 │   ├── auth.ts                   # CAP AuthService handlers (CheckAuth, CheckRoles)
 │   ├── auth.cds                  # CDS model for AuthService
 │   ├── env-setup.ts              # Environment bootstrap (must be imported first)
+│   ├── request-session.ts / session-id.ts   # Session id resolution for /v1/* requests
+│   ├── rag-handler.ts / rag-tool-dispatcher.ts / rag-collections.ts / collection-ids.ts  # RAG collection management (`/v1/rag/*`)
+│   ├── presets/                  # RAP context + skill presets (`rap-context/`, `rap-skills/`)
+│   ├── skills/                   # Executor skill corpus (creating-*/reading-*/activating-* ABAP RAP skills)
 │   ├── connections/              # Connection strategy implementations
 │   │   ├── index.ts              # Barrel exports
 │   │   ├── connectionFactory.ts  # Factory: picks CloudSdk vs Direct connection
@@ -168,13 +187,28 @@ cloud-llm-hub/
 │   │   ├── destinationResolver.ts     # SAP Cloud SDK destination resolution
 │   │   ├── connectivityProxy.ts       # On-premise Cloud Connector support
 │   │   └── BtpOnPremDestinationConnection.ts  # On-prem connection via proxy
-│   ├── openai-handler.ts         # OpenAI-compatible /v1/* HTTP handlers
-│   └── lib/                      # Shared utilities
+│   └── lib/                      # Shared utilities + honesty-controller support
 │       ├── errorUtils.ts         # Centralized error handling
-│       ├── logger.ts             # Logger adapter wrapping @mcp-abap-adt/logger
+│       ├── logger.ts / log-mask.ts    # Logger adapter wrapping @mcp-abap-adt/logger + secret masking
 │       ├── btp-oauth.ts          # Shared BTP OAuth2 token helper
 │       ├── btp-destinations.ts   # BTP Destination Service client
-│       └── ai-core-models.ts     # AI Core model list (cached)
+│       ├── ai-core-models.ts     # AI Core model list (cached)
+│       ├── recording-mcp-client.ts    # IMcpClient decorator capturing McpToolResult per traceId
+│       ├── reviewer-core.ts / notice-finalizer.ts  # IFinalizer/NoticeFinalizer — compares claims vs captured results
+│       ├── notify-policy.ts      # Notice wording policy
+│       ├── step-reviewer.ts / reviewer-subagent.ts  # evaluateGated — deterministic check + gated LLM critic subagent
+│       ├── step-gate.ts          # Tool-call-count gating for the LLM critic
+│       ├── write-guardrail.ts    # Write-tool result envelope checks
+│       ├── request-connection.ts   # establishRequestConnection + safeStop (release ADT lock on every exit path)
+│       ├── principal.ts / responsible.ts   # principalHash, system scope, responsible-person propagation
+│       ├── dump-buffer.ts / dump-parser.ts / get-dump-section.ts   # Dump section buffering/parsing for GetDumpSection
+│       ├── composite-skill-manager.ts / skills-pool.ts / skill-expositions.ts / exposition.ts  # Skill RAG exposure + role-based exposition levels
+│       ├── cloud-local-tools.ts       # Merges this repo's own MCP tools into the shared tool corpus (dedup by name)
+│       ├── fixed-executor-planner.ts  # `IPlanner` that skips planning — deterministic 1-node DAG bound to the executor
+│       ├── probe-classifier.ts / active-probe.ts  # Destination-reachability probe classification (DiagnoseDestinations / ProbeActiveDestination)
+│       ├── sap-ai-core-embedder.ts    # AI Core embedder client
+│       ├── basic-to-bearer.ts    # Auth header conversion
+│       └── semaphore.ts          # Bounded concurrency primitive (`execute_step` cap)
 ├── app/
 │   ├── chat/webapp/              # Browser chat UI (vanilla HTML/JS)
 │   │   └── index.html            # Terminal-style chat, file artifact cards, streaming parser
@@ -193,24 +227,31 @@ cloud-llm-hub/
 
 ```mermaid
 graph TD
-    subgraph ENTRY["Layer 1 — Entry Points  (CAP auto-loaded)"]
+    subgraph ENTRY["Layer 1 — Entry Points"]
         direction LR
         A["server.ts
         ━━━━━━━━━
-        CAP Bootstrap
-        Express middleware
-        Stream-HTTP endpoint
+        CAP bootstrap + Express middleware
+        registers /mcp/* and /v1/* routes
         Auth middleware"]
+        AM["agent-mcp.ts (primary)
+        ━━━━━━━━━
+        /mcp/agent/stream/http
+        list_destinations + execute_step"]
+        OH["openai-handler.ts (primary)
+        ━━━━━━━━━
+        /v1/chat/completions"]
+        AH["anthropic-handler.ts (primary)
+        ━━━━━━━━━
+        /v1/messages"]
         B["mcp-proxy.ts
         ━━━━━━━━━
-        CAP OData handlers
-        Health check
-        ProbeDestination"]
-        C["agent-service.ts
+        OData McpProxyService
+        Health / Probe / List / Diagnose"]
+        C["agent-service.ts (legacy)
         ━━━━━━━━━
-        CAP OData handlers
-        Chat endpoint
-        Health check"]
+        OData AgentService
+        Chat / Health"]
     end
 
     subgraph CORE["Layer 2 — Core Logic"]
@@ -228,10 +269,10 @@ graph TD
         Per-request lifecycle"]
         F["agent-manager.ts
         ━━━━━━━━━
-        createLLMProvider
-        getAgent
-        Agent caching
-        MCP client config"]
+        getSmartAgent
+        buildAgentForDestination
+        buildExecutorWorker
+        buildEmbeddedMcpAdapter"]
     end
 
     subgraph INFRA["Layer 3 — Infrastructure"]
@@ -256,18 +297,33 @@ graph TD
         Env var reading"]
     end
 
-    A --> E
+    A -.->|"cds auto-wire, no TS import"| E
     A --> D
-    B --> D
+    A --> AM
+    A --> OH
+    A --> AH
+    A --> F
+    A --> I
+    AM --> F
+    AM --> G
+    AM --> H
+    OH --> F
+    OH --> H
+    AH --> F
+    AH --> H
     C --> F
+    B --> H
 
     D --> G
     D --> H
     F --> I
-    F -.->|MCP tools| D
+    F --> H
     G --> H
 
     style A fill:#dc2626,color:#fff
+    style AM fill:#dc2626,color:#fff
+    style OH fill:#dc2626,color:#fff
+    style AH fill:#dc2626,color:#fff
     style B fill:#dc2626,color:#fff
     style C fill:#dc2626,color:#fff
     style D fill:#ea580c,color:#fff
@@ -282,15 +338,17 @@ graph TD
 
 | Module | File | Responsibility |
 |--------|------|---------------|
-| **CAP Bootstrap** | `server.ts` | Registers Express middleware on `cds.on('bootstrap')`. Mounts `/mcp/stream/http` POST endpoint. Handles Content-Type normalization for Cline. Calls `requireAuth` → `AuthService.CheckAuth` before each request. |
-| **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service at path `/mcp`. Exposes `Health()`, `ProbeDestination(destination)`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
-| **MCP Manager** | `mcp-manager.ts` | Core factory. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
-| **Agent Service** | `agent-service.ts` + `.cds` | CAP service at path `/agent`. Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Delegates to `agent-manager.ts`. |
-| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (MCP adapter + tools RAG). Shared embedder and facts/feedback/state RAG stores across destinations. Background + on-demand vectorization for all destinations (no privileged primary); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Wires the honesty-controller DAG coordinator: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). |
-| **Honesty Reviewer** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer}.ts` | Result-based honesty guard (v6.28+). `recording-mcp-client.ts` decorates `IMcpClient` to capture each tool's `McpToolResult` per `traceId`; `reviewer-core.ts` + `notice-finalizer.ts` implement `IFinalizer`/`NoticeFinalizer` comparing response claims against captured results; `notify-policy.ts` decides notice wording; `step-reviewer.ts` provides `evaluateGated` (deterministic check + a tool-call-count-gated LLM critic) which `NoticeFinalizer` invokes. The controller wiring itself lives in `agent-manager.ts` (`buildAgentForDestination` → `builder.withDagCoordinator({ …, finalizer: new NoticeFinalizer(recMcp, …) })`). Kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`. |
-| **OpenAI Handler** | `openai-handler.ts` | OpenAI-compatible HTTP handlers: `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (with destination metadata), `GET /v1/usage`. Reads `X-SAP-Destination` header for per-request destination switching. |
-| **Agent Config** | `agent-config.ts` | Reads `LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`, `LLM_AGENT_MCP_DESTINATION` from env vars. Reads AI Core service binding from `VCAP_SERVICES`. Singleton pattern. |
-| **Auth Service** | `auth.ts` + `.cds` | CAP service at path `/auth`. `CheckAuth()` validates user identity. `CheckRoles(required)` checks specific roles. Used by `server.ts` middleware for `/mcp/*` routes. |
+| **CAP Bootstrap** | `server.ts` | Registers Express middleware on `cds.on('bootstrap')`. Mounts `/mcp/stream/http`, `/mcp/agent/stream/http`, and all `/v1/*` routes. Handles Content-Type normalization for Cline. Guards `/mcp/*` and `/v1/*` with a manual Express middleware chain — `context` (CAP `cds.context`) → `wrappedAuth` (`createBasicToBearerMiddleware` over CAP's built-in auth) → `requireMcpRole` (local: 401 if `user.is('anonymous')`, 403 unless `user.is()` matches an `MCP_*` role) → `authJsonErrorHandler`. It does **not** call the `AuthService` OData handlers. |
+| **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service annotated `@path: 'mcp-proxy'` (mounted at `/odata/v4/mcp-proxy/`). Exposes `Health()`, `ProbeDestination(destination)`, `ListDestinations()`, `DiagnoseDestinations()`, `ProbeActiveDestination()`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
+| **MCP Manager** | `mcp-manager.ts` | Core factory for the raw-tools path. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
+| **Agent MCP** | `agent-mcp.ts` | `POST /mcp/agent/stream/http` planner/controller surface — exposes `list_destinations` and `execute_step` (delegate ONE step to the SmartAgent executor via `getSmartAgent`). Connection built lazily per call from `x-sap-*` headers; concurrency capped by `Semaphore` (`EXEC_STEP_MAX_CONCURRENCY=2`). This is a **primary** agent entry point. |
+| **OpenAI Handler** | `openai-handler.ts` | `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (destination metadata), `GET /v1/usage`, `/v1/destinations/*`. Reads `X-SAP-Destination` header for per-request destination switching. **Primary** agent entry point. |
+| **Anthropic Handler** | `anthropic-handler.ts` | `POST /v1/messages` — Anthropic Messages API, translated to the SmartAgent pipeline via `getSmartAgent`; enables Claude CLI via `ANTHROPIC_BASE_URL`. **Primary** agent entry point. |
+| **Agent Service (legacy)** | `agent-service.ts` + `.cds` | CAP service annotated `@path: 'agent'` (mounted at `/odata/v4/agent/`). Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Only `Chat`/`Health` delegate to `agent-manager.ts` via `getSmartAgent`; `GetHistory` returns `[]` and `ClearHistory` is a static-success stub. **Secondary/legacy** surface — not the primary chat path (see §1). |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (each destination's own `McpClientAdapter`). The **tool RAG is a single shared corpus vectorized once** (`sharedToolsRag`, from the destination-independent `HandlerExporter`) and reused by every destination; the embedder and facts/feedback/state RAG stores are likewise shared. Background + on-demand **initialization** for all destinations (no privileged primary; the tool corpus is vectorized once, not per destination); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Wires the honesty-controller DAG coordinator: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). Consumed by `agent-mcp.ts`, `openai-handler.ts`, `anthropic-handler.ts`, and the legacy `agent-service.ts`. |
+| **Honesty Reviewer** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer,step-gate,write-guardrail}.ts` | Result-based honesty guard (v6.28+). `recording-mcp-client.ts` decorates `IMcpClient` to capture each tool's `McpToolResult` per `traceId`; `reviewer-core.ts` + `notice-finalizer.ts` implement `IFinalizer`/`NoticeFinalizer` comparing response claims against captured results; `notify-policy.ts` decides notice wording; `step-reviewer.ts` (gated by `step-gate.ts`) provides `evaluateGated` (deterministic check + a tool-call-count-gated LLM critic) which `NoticeFinalizer` invokes; `write-guardrail.ts` checks the write tool's result envelope. The controller wiring itself lives in `agent-manager.ts` (`buildAgentForDestination` → `builder.withDagCoordinator({ …, finalizer: new NoticeFinalizer(recMcp, …) })`). Kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`. |
+| **Agent Config** | `agent-config.ts` | Singleton that assembles runtime config from `LLM_AGENT_*` env vars: provider/auth (`LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`, `LLM_AGENT_BASE_URL`, `LLM_AGENT_RESOURCE_GROUP`), model params (`LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`), agent behaviour (`LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_HISTORY_RECENCY_WINDOW`), and MCP wiring (`LLM_AGENT_MCP_DESTINATION`, `LLM_AGENT_MCP_ENDPOINT`). Also reads the AI Core service binding from `VCAP_SERVICES`. See §12 for per-var semantics. |
+| **Auth Service** | `auth.ts` + `.cds` | Standalone CAP OData service annotated `@path: 'auth'` (mounted at `/odata/v4/auth/`). `CheckAuth()` returns the caller's identity, `CheckRoles(required)` reports which roles they hold — a **diagnostic/introspection endpoint** clients can call directly. It is **not** in the `/mcp/*` or `/v1/*` request path — those are gated by `server.ts`'s `requireMcpRole` middleware (`user.is()`), not by this service. |
 | **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → `createAbapConnection` (direct). |
 | **CloudSdk Connection** | `connections/CloudSdkAbapConnection.ts` | `AbapConnection` implementation using `executeHttpRequest` from SAP Cloud SDK. Auto destination resolution, auth, proxy, CSRF token management. |
 | **Destination Resolver** | `connections/destinationResolver.ts` | Resolves BTP Destination to `SapConfig` via `getDestination()`. Handles `BasicAuthentication`, `OAuth2ClientCredentials`, `OAuth2SAMLBearerAssertion`. |
@@ -306,17 +364,42 @@ graph TD
 
 ```mermaid
 graph TB
-    subgraph "Entry Points (CAP auto-loads)"
+    subgraph "Entry Points (CAP auto-loads server.ts; server.ts wires the rest as Express routes)"
         server_ts["server.ts"]
+        agent_mcp_ts["agent-mcp.ts
+        (execute_step, primary)"]
+        openai_handler_ts["openai-handler.ts
+        (/v1/chat/completions, primary)"]
+        anthropic_handler_ts["anthropic-handler.ts
+        (/v1/messages, primary)"]
         mcp_proxy_ts["mcp-proxy.ts"]
-        agent_service_ts["agent-service.ts"]
+        agent_service_ts["agent-service.ts
+        (legacy /odata/v4/agent)"]
         auth_ts["auth.ts"]
     end
 
     subgraph "Core Logic"
-        mcp_manager["mcp-manager.ts"]
-        agent_manager["agent-manager.ts"]
+        mcp_manager["mcp-manager.ts
+        (raw /mcp/stream/http only)"]
+        agent_manager["agent-manager.ts
+        getSmartAgent
+        buildAgentForDestination
+        buildExecutorWorker
+        buildEmbeddedMcpAdapter"]
         agent_config["agent-config.ts"]
+        request_conn["lib/request-connection.ts
+        establishRequestConnection"]
+    end
+
+    subgraph "Honesty controller (lib/)"
+        fixed_planner["fixed-executor-planner.ts"]
+        notice_finalizer["notice-finalizer.ts"]
+        recording_mcp["recording-mcp-client.ts"]
+        reviewer_core["reviewer-core.ts"]
+        notify_policy["notify-policy.ts"]
+        step_reviewer["step-reviewer.ts"]
+        step_gate["step-gate.ts"]
+        write_guardrail["write-guardrail.ts"]
     end
 
     subgraph "connections/"
@@ -331,15 +414,33 @@ graph TB
     subgraph "lib/"
         error_utils["errorUtils.ts"]
         logger_mod["logger.ts"]
+        log_mask["log-mask.ts"]
+        principal_ts["principal.ts"]
+        responsible_ts["responsible.ts"]
+        exposition_ts["exposition.ts"]
+        semaphore_ts["semaphore.ts"]
+        agent_mgr_libs["dump-buffer/dump-parser/get-dump-section,
+        skills-pool/composite-skill-manager/skill-expositions,
+        sap-ai-core-embedder, btp-destinations,
+        cloud-local-tools (lib/) + srv/rag-collections.ts
+        (grouped agent-manager helpers)"]
     end
 
     subgraph "External Packages"
-        mcp_adt_core["@mcp-abap-adt/core"]
+        mcp_adt_core["@mcp-abap-adt/core
+        EmbeddableMcpServer, HandlerExporter"]
         mcp_adt_conn["@mcp-abap-adt/connection"]
         mcp_adt_hv["@mcp-abap-adt/header-validator"]
         mcp_adt_iface["@mcp-abap-adt/interfaces"]
         mcp_adt_logger["@mcp-abap-adt/logger"]
-        mcp_adt_llm["@mcp-abap-adt/llm-proxy"]
+        mcp_adt_llm_agent["@mcp-abap-adt/llm-agent
+        ISubAgent, IFinalizer, IMcpClient (contracts/types)"]
+        mcp_adt_llm_agent_mcp["@mcp-abap-adt/llm-agent-mcp
+        McpClientAdapter"]
+        mcp_adt_llm_agent_libs["@mcp-abap-adt/llm-agent-libs
+        SmartAgent, SmartAgentBuilder, DagPlanInterpreter"]
+        mcp_adt_openai_embedder["@mcp-abap-adt/openai-embedder
+        OpenAiEmbedder"]
         mcp_sdk["@modelcontextprotocol/sdk"]
         sap_cds["@sap/cds"]
         sap_cloud_sdk["@sap-cloud-sdk/*"]
@@ -351,35 +452,96 @@ graph TB
     %% server.ts dependencies
     server_ts --> env_setup
     server_ts --> mcp_manager
+    server_ts --> agent_mcp_ts
+    server_ts --> openai_handler_ts
+    server_ts --> anthropic_handler_ts
+    server_ts --> agent_manager
+    server_ts --> agent_config
     server_ts --> error_utils
     server_ts --> sap_cds
 
-    %% mcp-proxy.ts dependencies
+    %% mcp-proxy.ts dependencies (log-mask is a static import; errorUtils is a lazy
+    %% dynamic import() used only on the probe error path)
     mcp_proxy_ts --> sap_cds
     mcp_proxy_ts --> sap_cloud_sdk
+    mcp_proxy_ts --> log_mask
     mcp_proxy_ts --> error_utils
 
-    %% mcp-manager.ts dependencies
+    %% mcp-manager.ts dependencies (raw /mcp/stream/http path — NOT the agent's tool path)
     mcp_manager --> env_setup
     mcp_manager --> conn_factory
     mcp_manager --> conn_index
     mcp_manager --> dest_resolver
     mcp_manager --> error_utils
+    mcp_manager --> exposition_ts
+    mcp_manager --> log_mask
     mcp_manager --> logger_mod
     mcp_manager --> mcp_adt_core
     mcp_manager --> mcp_adt_conn
     mcp_manager --> mcp_adt_hv
     mcp_manager --> mcp_adt_iface
     mcp_manager --> mcp_sdk
+    mcp_manager --> sap_cds
 
-    %% agent-service.ts dependencies
+    %% primary agent handlers: request-connection + getSmartAgent, converging on agent-manager.ts
+    agent_mcp_ts --> request_conn
+    agent_mcp_ts --> agent_manager
+    agent_mcp_ts --> conn_factory
+    agent_mcp_ts --> dest_resolver
+    agent_mcp_ts --> exposition_ts
+    agent_mcp_ts --> principal_ts
+    agent_mcp_ts --> responsible_ts
+    agent_mcp_ts --> semaphore_ts
+    openai_handler_ts --> request_conn
+    openai_handler_ts --> agent_manager
+    openai_handler_ts --> exposition_ts
+    anthropic_handler_ts --> request_conn
+    anthropic_handler_ts --> agent_manager
+
+    %% agent-service.ts dependencies (legacy secondary surface, same agent-manager)
     agent_service_ts --> agent_config
     agent_service_ts --> agent_manager
-    agent_service_ts --> mcp_adt_llm
 
-    %% agent-manager.ts dependencies
+    %% request-connection.ts dependencies
+    request_conn --> mcp_adt_conn
+    request_conn --> mcp_adt_iface
+    request_conn --> conn_factory
+    request_conn --> dest_resolver
+    request_conn --> log_mask
+    request_conn --> principal_ts
+    request_conn --> responsible_ts
+
+    %% agent-manager.ts dependencies — tools come from the EMBEDDED in-process
+    %% adapter (HandlerExporter + McpClientAdapter), never from mcp-manager.ts
     agent_manager --> agent_config
-    agent_manager --> mcp_adt_llm
+    agent_manager --> mcp_adt_llm_agent
+    agent_manager --> mcp_adt_llm_agent_mcp
+    agent_manager --> mcp_adt_llm_agent_libs
+    agent_manager --> mcp_adt_core
+    agent_manager --> mcp_adt_openai_embedder
+    agent_manager --> dest_resolver
+    agent_manager --> logger_mod
+    agent_manager --> agent_mgr_libs
+    agent_manager --> fixed_planner
+    agent_manager --> notice_finalizer
+    agent_manager --> recording_mcp
+
+    %% honesty controller lib dependencies
+    fixed_planner --> mcp_adt_llm_agent
+    notice_finalizer --> mcp_adt_llm_agent
+    notice_finalizer --> notify_policy
+    notice_finalizer --> recording_mcp
+    notice_finalizer --> step_reviewer
+    recording_mcp --> mcp_adt_llm_agent
+    reviewer_core --> mcp_adt_llm_agent
+    reviewer_core --> write_guardrail
+    notify_policy --> reviewer_core
+    step_reviewer --> mcp_adt_llm_agent
+    step_reviewer --> reviewer_core
+    step_reviewer --> step_gate
+
+    %% principal.ts / responsible.ts dependencies
+    responsible_ts --> mcp_adt_core
 
     %% agent-config.ts dependencies
     agent_config --> sap_cds
@@ -422,6 +584,9 @@ graph TB
     error_utils --> mcp_adt_conn
 
     style server_ts fill:#dc2626,color:#fff
+    style agent_mcp_ts fill:#dc2626,color:#fff
+    style openai_handler_ts fill:#dc2626,color:#fff
+    style anthropic_handler_ts fill:#dc2626,color:#fff
     style mcp_manager fill:#ea580c,color:#fff
     style agent_manager fill:#ea580c,color:#fff
     style conn_factory fill:#2563eb,color:#fff
@@ -442,13 +607,12 @@ This is the primary flow when an AI assistant (Cline, Claude Desktop) sends an M
 sequenceDiagram
     participant Client as AI Assistant
     participant AR as Approuter
-    participant MW as server.ts
-    participant Auth as AuthService
+    participant MW as server.ts middleware<br/>(wrappedAuth + requireMcpRole)
 
     Client->>AR: POST /mcp/stream/http
     AR->>MW: Forward with JWT
-    MW->>Auth: CheckAuth(req)
-    Auth-->>MW: authenticated, id, roles
+    MW->>MW: wrappedAuth (basic→bearer, populates cds.context.user)
+    MW->>MW: requireMcpRole — 401 if anonymous,<br/>403 unless user.is(MCP_* role)
     MW->>MW: handleStreamHTTP(req, res)
 ```
 
@@ -522,53 +686,59 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
-#### Step 1 — Config + Provider
+> This is the flow through the **primary** agent surfaces — `/mcp/agent/stream/http` (`execute_step`), `/v1/chat/completions`, `/v1/messages`. The two `/v1/*` handlers build their per-request connection via `establishRequestConnection` (`request-connection.ts`); `/mcp/agent/stream/http` builds its own via the local `buildConnectionForDestination` in `agent-mcp.ts`. All three then call `getSmartAgent` directly (not via the legacy `AgentService` OData endpoint), enter the per-request ALS scope through `runWithRequestConnection` (exported from `agent-manager.ts`), and converge on the same DAG-coordinator controller shown in Step 4. The legacy `/odata/v4/agent/Chat` endpoint (`agent-service.ts`) also delegates to `getSmartAgent`, but is a secondary surface — see §4 and §11.
+
+#### Step 1 — Connection + Agent Handle
 
 ```mermaid
 sequenceDiagram
-    participant Client as App / User
-    participant Srv as AgentService
-    participant Cfg as agent-config.ts
+    participant Client as AI Assistant / App
+    participant Handler as openai-handler.ts /<br/>anthropic-handler.ts /<br/>agent-mcp.ts
+    participant Conn as request-connection.ts (/v1/*) /<br/>agent-mcp.ts local builder (/mcp/agent)
     participant Mgr as agent-manager.ts
 
-    Client->>Srv: POST /agent/Chat {message}
-    Srv->>Cfg: getAgentConfig()
-    Cfg-->>Srv: model, temperature, AI Core binding
-    Srv->>Mgr: createLLMProvider(config)
-    Mgr->>Mgr: Get OAuth2 token from AI Core
-    Mgr-->>Srv: SapCoreAIProvider
+    Client->>Handler: POST /v1/chat/completions |<br/>/v1/messages | /mcp/agent/stream/http
+    Handler->>Conn: establishRequestConnection (/v1/*) |<br/>buildConnectionForDestination (/mcp/agent)
+    Conn-->>Handler: per-request AbapConnection (from x-sap-* headers)
+    Handler->>Mgr: getSmartAgent(model?, destination?)
+    Mgr-->>Handler: SmartAgentHandle (per-destination, cached)
 ```
 
-#### Step 2 — LLM Call
+#### Step 2 — Run the Agent
 
 ```mermaid
 sequenceDiagram
-    participant Srv as AgentService
-    participant Provider as SapCoreAIProvider
-    participant AICore as SAP AI Core
+    participant Handler as Handler
+    participant Mgr as agent-manager.ts
+    participant Handle as SmartAgentHandle
 
-    Srv->>Provider: provider.chat(messages)
-    Provider->>AICore: POST /chat/completions
-    AICore-->>Provider: LLM response
-    Provider-->>Srv: response.content
-    Srv-->>Srv: return to client
+    Handler->>Mgr: runWithRequestConnection(connection, () => handle.agent.process(messages, opts))
+    Mgr->>Mgr: connectionALS.run(connection, ...) — per-request ALS scope
+    Mgr->>Handle: handle.agent.process(messages, opts)
+    Handle-->>Handler: response text (streamed or JSON)
 ```
 
-#### Step 3 — Agent Mode (optional, with MCP tools)
+#### Step 3 — Inside `handle.agent.process` (tool-select + embedded MCP tools)
 
 ```mermaid
 sequenceDiagram
-    participant Agent as SapCoreAIAgent
-    participant MCP as MCPClientWrapper
-    participant Proxy as /mcp/stream/http
+    participant Handle as SmartAgentHandle (DAG coordinator)
+    participant RAG as Tools RAG (ExpositionFilteringRag)
+    participant Exec as Executor Worker (SmartAgent)
+    participant Adapter as McpClientAdapter<br/>(embedded, in-process)
+    participant ABAP as SAP ABAP (via connectionALS)
 
-    Agent->>MCP: connect to own MCP Gateway
-    Agent->>Agent: LLM decides which tool to call
-    Agent->>MCP: call MCP tool
-    MCP->>Proxy: POST /mcp/stream/http
-    Proxy-->>MCP: tool result
-    MCP-->>Agent: result for next LLM step
+    Handle->>RAG: semantic tool search (top-K)
+    RAG-->>Handle: candidate tool set
+    Handle->>Exec: dispatch step
+    Exec->>Adapter: call tool (embedded MCP client)
+    Adapter->>ABAP: HandlerExporter handler → ADT HTTP call
+    ABAP-->>Adapter: ADT response
+    Adapter-->>Exec: McpToolResult
+    Exec-->>Handle: response text for this step
 ```
+
+There is **no HTTP self-call** to `/mcp/stream/http` here: `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) wires the executor's tools straight to the in-process `HandlerExporter` from `@mcp-abap-adt/core`, wrapped by `McpClientAdapter` (`transport: 'embedded'`). See §16 "Agent Tool Access: Embedded, Not Self-Loop-HTTP" for the full picture.
 
 #### Step 4 — Honesty Controller (DAG coordinator + reviewer) *(v6.28+)*
 
@@ -602,60 +772,60 @@ sequenceDiagram
 
 ```mermaid
 graph TB
-    subgraph XSUAA["XSUAA Security Model"]
-        S1["proxyAccess"]
-        S2["MCP_Connect"]
-        S3["MCP_Read"]
-        S4["MCP_Admin"]
-        S5["MCP_Connector"]
+    subgraph XSUAA["XSUAA Security Model (tiered, cumulative scopes)"]
+        S1["MCP_Reader<br/>scope"]
+        S2["MCP_Analyst<br/>scope"]
+        S3["MCP_Developer<br/>scope"]
+        S4["MCP_Full<br/>scope"]
 
-        RT1["CloudLLMHubProxy
-        Role Template"] --> S1
-        RT2["MCP_Connector
-        Role Template"] --> S2
-        RT2 --> S3
-        RT3["MCP_Admin
-        Role Template"] --> S4
+        RT1["MCP_Reader<br/>Role Template"] --> S1
+        RT2["MCP_Analyst<br/>Role Template"] --> S1
+        RT2 --> S2
+        RT3["MCP_Developer<br/>Role Template"] --> S1
         RT3 --> S2
         RT3 --> S3
+        RT4["MCP_Full<br/>Role Template"] --> S1
+        RT4 --> S2
+        RT4 --> S3
+        RT4 --> S4
 
-        RC1["Cloud LLM Hub Proxy Access"] --> RT1
-        RC2["MCP Connector Access"] --> RT2
-        RC3["MCP Admin Access"] --> RT3
+        RC1["MCP Reader Access"] --> RT1
+        RC2["MCP Analyst Access"] --> RT2
+        RC3["MCP Developer Access"] --> RT3
+        RC4["MCP Full Access"] --> RT4
     end
 
-    subgraph AUTH_FLOW["Runtime Auth Flow"]
+    subgraph AUTH_FLOW["Runtime Auth Flow (/mcp, /v1)"]
         REQ["Incoming Request
         + JWT / Basic Auth"]
-        MW["Express Middleware
-        ensureAuth"]
-        CAPS["cds.connect.to
-        AuthService"]
-        CA["CheckAuth handler
-        auth.ts"]
-        CR["CheckRoles handler
-        auth.ts"]
+        WA["wrappedAuth
+        basic→bearer, populates
+        cds.context.user"]
+        RMR["requireMcpRole
+        user.is() role check"]
 
-        REQ --> MW
-        MW --> CAPS
-        CAPS --> CA
-        CA -->|Success| HANDLER["MCP/Agent Handler"]
-        CA -->|401| REJECT["Reject Unauthorized"]
-        HANDLER -.-> CR
+        REQ --> WA
+        WA -->|user.is('anonymous')| REJECT401["401 Unauthorized"]
+        WA -->|authenticated| RMR
+        RMR -->|no MCP_* role| REJECT403["403 Forbidden"]
+        RMR -->|user.is(MCP_* role)| HANDLER["MCP / Agent / v1 Handler"]
     end
 
     style RC1 fill:#f59e0b,color:#000
     style RC2 fill:#f59e0b,color:#000
     style RC3 fill:#f59e0b,color:#000
-    style CA fill:#16a34a,color:#fff
+    style RC4 fill:#f59e0b,color:#000
+    style RMR fill:#16a34a,color:#fff
 ```
+
+> The role check runs **before** the handler, inside the Express middleware chain (`requireMcpRole`, `user.is(...)`), not as a post-handler step. The `AuthService` OData handlers (`CheckAuth`/`CheckRoles`, `auth.ts`) are a separate introspection endpoint (`/odata/v4/auth/`), not part of this path.
 
 ### Auth Modes
 
 | Environment | Auth Kind | Details |
 |------------|-----------|---------|
-| **Development** (`cds watch`) | Mocked | Users `alice` (MCP_Connector + MCP_Admin) and `bob` (MCP_Connector) |
-| **Production** (BTP) | XSUAA JWT | Token validated by CAP middleware, roles from JWT claims |
+| **Development** (`cds watch`) | Mocked | Tiered mock users (`package.json`): `alice` (`MCP_Full`+`MCP_Developer`+`MCP_Analyst`+`MCP_Reader`), `bob` (`MCP_Developer`+`MCP_Analyst`+`MCP_Reader`), `carol` (`MCP_Analyst`+`MCP_Reader`), `dave` (`MCP_Reader` only) |
+| **Production** (BTP) | XSUAA JWT | Token validated by CAP middleware; roles from JWT claims — one of `MCP_Reader` / `MCP_Analyst` / `MCP_Developer` / `MCP_Full` (cumulative), enforced by `requireMcpRole` |
 
 ---
 
@@ -820,20 +990,23 @@ The `mta.yaml` build step runs:
 
 ```mermaid
 graph LR
-    subgraph "McpProxyService (@path: /mcp)"
+    subgraph "McpProxyService (@path: mcp-proxy, mounted /odata/v4/mcp-proxy/)"
         MH["Health() → HealthStatus"]
         MPD["ProbeDestination(dest) → DestinationProbeResult"]
+        MLD["ListDestinations() → DestinationStatus[]"]
+        MDD["DiagnoseDestinations() → DestinationDiagnostic[]"]
+        MPA["ProbeActiveDestination() → DestinationDiagnostic"]
         MIT["InvokeTool(request) → ProxyResult  ⚠️ DEPRECATED"]
     end
 
-    subgraph "AgentService (@path: /agent)"
+    subgraph "AgentService (@path: agent, mounted /odata/v4/agent/) — legacy secondary surface"
         AC["Chat(message) → String"]
         AGH["GetHistory() → ChatMessage[]"]
         ACH["ClearHistory() → {success, message}"]
         AAH["Health() → AgentHealthStatus"]
     end
 
-    subgraph "AuthService (@path: /auth)"
+    subgraph "AuthService (@path: auth, mounted /odata/v4/auth/)"
         ACA["CheckAuth() → AuthInfo"]
         ACR["CheckRoles(required) → RoleCheckResult"]
     end
@@ -843,6 +1016,8 @@ graph LR
     style AC fill:#16a34a,color:#fff
     style ACA fill:#dc2626,color:#fff
 ```
+
+**Note:** the primary agent/LLM surfaces (`/mcp/agent/stream/http` `execute_step`, `/v1/chat/completions`, `/v1/messages`) are plain Express routes, not CDS services — they are not in this diagram. See §1 and §7.
 
 **Note:** The Stream-HTTP MCP endpoint (`POST /mcp/stream/http`) is **not** a CDS function — it is a custom Express route registered in `server.ts` during `cds.on('bootstrap')`.
 
@@ -864,7 +1039,9 @@ graph TB
         AC2["agent-config.ts"]
         ES["env-setup.ts"]
         DR2["destinationResolver.ts"]
-        MM2["mcp-manager.ts"]
+        MM2["mcp-manager.ts<br/>(raw /mcp/stream/http path)"]
+        RC["request-connection.ts<br/>establishRequestConnection<br/>(/v1/chat/completions, /v1/messages)"]
+        AM["agent-mcp.ts<br/>buildConnectionForDestination<br/>(/mcp/agent/stream/http)"]
     end
 
     ENV -->|LLM_AGENT_*| AC2
@@ -872,9 +1049,16 @@ graph TB
     VCAP -->|destination credentials| DR2
     DEF_ENV -->|VCAP_SERVICES mock| DR2
     DOT_ENV -->|LLM keys| ES
-    HEADERS -->|X-SAP-Destination<br/>X-SAP-URL<br/>Authorization| MM2
+    HEADERS -->|X-SAP-Destination<br/>X-SAP-URL, Authorization| MM2
+    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client| RC
+    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>Authorization| AM
+    RC -->|resolveDestinationSapConfig| DR2
+    MM2 -->|resolveDestinationSapConfig| DR2
+    AM -->|resolveDestinationSapConfig| DR2
 
     style HEADERS fill:#dc2626,color:#fff
+    style RC fill:#dc2626,color:#fff
+    style AM fill:#dc2626,color:#fff
     style ENV fill:#f59e0b,color:#000
     style VCAP fill:#f59e0b,color:#000
 ```
@@ -886,20 +1070,27 @@ graph TB
 | `LLM_AGENT_MODEL` | `agent-config.ts` | LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`) |
 | `LLM_AGENT_TEMPERATURE` | `agent-config.ts` | Temperature (0.0–2.0, default: 0.7) |
 | `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
-| `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts` | Optional "warm this first" BTP Destination hint (NOT privileged; does not block startup) |
+| `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts`, `agent-manager.ts` | BTP Destination with two roles: (1) a "warm this first" startup hint (NOT privileged; does not block startup), and (2) the **implicit default destination** `getSmartAgent()` uses when a request passes no destination (`requestedDestination \|\| config.mcp.destination`, `agent-manager.ts`). Unset → LLM-only mode at startup |
 | `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Max ms `getSmartAgent` waits for a destination to vectorize before erroring (default: 90000) |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | MCP proxy URL (optional, auto-detected) |
-| `LLM_AGENT_RESOURCE_GROUP` | `ai-core-models.ts` | AI Core resource group (default: `default`) |
+| `LLM_AGENT_RESOURCE_GROUP` | `agent-config.ts`, `agent-manager.ts` | AI Core resource group; read into `llm.resourceGroup` (`agent-config.ts`) and passed to `makeLlm`, the embedder, and the tool-RAG store / embedding-bundle fingerprint (`agent-manager.ts`). Default: `default` |
 | `LLM_AGENT_PROVIDER` | `agent-config.ts` | LLM provider (`sap-ai-sdk` \| `openai` \| `anthropic` \| `deepseek`, default: `sap-ai-sdk`) |
 | `LLM_AGENT_API_KEY` | `agent-config.ts` | API key for non-SAP LLM providers (OpenAI, Anthropic, DeepSeek) |
 | `LLM_AGENT_BASE_URL` | `agent-config.ts` | Base URL for LLM provider API (required for OpenAI-compatible endpoints) |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | `agent-config.ts` | Max recent messages to LLM (older excluded, available via RAG) |
-| `LLM_AGENT_PIPELINE_MODE` | `agent-config.ts` | Agent pipeline mode (`default` \| `pipeline`, default: `default`) |
-| `DESTINATION_MAPPING` | `agent-config.ts` | JSON mapping of destination names to display labels or aliases |
+| `LLM_AGENT_MODE` | `agent-config.ts` | SmartAgent mode (`smart` \| `pass` \| `hard`, default: `smart`) |
+| `LLM_AGENT_MAX_ITERATIONS` | `agent-config.ts` | Max tool-loop iterations (default: `10`) |
+| `LLM_AGENT_RAG_TYPE` | `agent-config.ts` | RAG backend (`in-memory` \| `ollama`, default: `in-memory`) |
+| `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Number of tools selected per query by the tool-intent RAG (default: `5`; too-low K makes outcome-phrased requests miss tools) |
+| `LLM_AGENT_INCLUDE_COMPACT` | `agent-manager.ts` (`getHandlerExporterConfig`) | Opt-in (`true`; default OFF): add the generic compact/low-level handlers (`HandlerCreate`, `HandlerActivate`, …) to the shared tool corpus alongside the high-level named tools. Changes both the RAG tool list and the callable embedded adapter |
+| `LLM_AGENT_INCLUDE_LOW_LEVEL` | `agent-manager.ts` (`getHandlerExporterConfig`) | Opt-in (`true`; default OFF): add the low handler group to the shared tool corpus. Same dual effect (RAG list + embedded adapter) as `LLM_AGENT_INCLUDE_COMPACT` |
+| `DESTINATION_MAPPING` | `agent-manager.ts` | Comma-separated `system=destination` map (e.g. `DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS`); parsed at startup, resolves a SAP system code to a BTP destination name via `resolveSystemDestination()` (backs `GET /v1/destinations/resolve`) |
 | `VCAP_SERVICES` | `agent-config.ts`, `destinationResolver.ts` | Service bindings (AI Core, Destination, Connectivity) |
 | `MCP_SKIP_AUTO_START` | `env-setup.ts` | Prevents mcp-abap-adt auto-start |
 | `MCP_SKIP_ENV_LOAD` | `env-setup.ts` | Prevents mcp-abap-adt .env loading |
 | `LLM_AGENT_STEP_REVIEW_ENABLED` | `agent-manager.ts` | Honesty guard kill-switch (default: on/`true`); `false` disables the reviewer (`NoticeFinalizer`) entirely — no `UNVERIFIED_WRITE:` notices on any channel |
+| `LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS` | `lib/step-gate.ts` | Gate for the reviewer's LLM critic layer: the critic runs only when the request's executed tool-call count is `<=` this value (default: `1`, min `0`). The deterministic result check always runs regardless |
+| `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` | `lib/step-gate.ts` | Hard timeout (ms) for the reviewer's LLM critic call (default: `8000`; empty/invalid/`<=0` → `8000`) |
 
 ### Key HTTP Headers (Per-Request)
 
@@ -921,12 +1112,14 @@ graph TB
 ```mermaid
 graph TB
     subgraph "@mcp-abap-adt ecosystem"
-        CORE["@mcp-abap-adt/core<br/>EmbeddableMcpServer"]
+        CORE["@mcp-abap-adt/core<br/>EmbeddableMcpServer (raw MCP),<br/>HandlerExporter (agent in-process)"]
         CONN_PKG["@mcp-abap-adt/connection<br/>AbapConnection, SapConfig,<br/>createAbapConnection"]
         HV_PKG["@mcp-abap-adt/header-validator<br/>validateAuthHeaders"]
         IFACE["@mcp-abap-adt/interfaces<br/>Header constants, ILogger,<br/>IAdtResponse"]
         LOG_PKG["@mcp-abap-adt/logger<br/>defaultLogger"]
-        LLM_PKG["@mcp-abap-adt/llm-proxy<br/>SapCoreAIProvider,<br/>SapCoreAIAgent,<br/>MCPClientWrapper"]
+        LLM_PKG["@mcp-abap-adt/llm-agent<br/>ISubAgent, IFinalizer,<br/>IMcpClient (contracts/types)"]
+        LLM_MCP_PKG["@mcp-abap-adt/llm-agent-mcp<br/>McpClientAdapter"]
+        LLM_LIBS_PKG["@mcp-abap-adt/llm-agent-libs<br/>SmartAgent, SmartAgentBuilder,<br/>DagPlanInterpreter"]
     end
 
     subgraph "MCP Protocol"
@@ -1014,6 +1207,7 @@ graph TB
         FACTS["Facts RAG Store"]
         FB["Feedback RAG Store"]
         STATE["State RAG Store"]
+        TOOLS["Tools RAG Store<br/>(shared corpus,<br/>vectorized once)"]
     end
 
     subgraph "Per-Destination State Map"
@@ -1023,19 +1217,21 @@ graph TB
     end
 
     D1 --> MCP1["McpClientAdapter"]
-    D1 --> RAG1["Tools RAG Store"]
     D2 --> MCP2["McpClientAdapter"]
-    D2 --> RAG2["Tools RAG Store"]
+    D3 --> MCP3["McpClientAdapter"]
 
-    EMB --> RAG1
-    EMB --> RAG2
+    D1 -->|toolsRag| TOOLS
+    D2 -->|toolsRag| TOOLS
+    D3 -->|toolsRag| TOOLS
+
+    EMB --> TOOLS
 
     style D1 fill:#16a34a,color:#fff
     style D2 fill:#f59e0b,color:#000
     style D3 fill:#6b7280,color:#fff
 ```
 
-Each destination has its own `McpClientAdapter` (MCP connection) and `Tools RAG Store` (vectorized tool descriptions). The embedder and facts/feedback/state RAG stores are shared.
+Each destination has its own `McpClientAdapter` (MCP connection), but the `Tools RAG Store` is a **single shared corpus** — tools come from `HandlerExporter` and, for a given include-config, are identical for every SAP system, so it is vectorized **once** (`sharedToolsRag` / `ensureSharedToolsVectorized`, `agent-manager.ts`) and each destination's `toolsRag` points at it. (The corpus contents are config-dependent, not fixed: `getHandlerExporterConfig()` — driven by `LLM_AGENT_INCLUDE_COMPACT` / `LLM_AGENT_INCLUDE_LOW_LEVEL` — is the single source of truth shared by the RAG tool list and the callable embedded adapter, so they never diverge; the sharing is across destinations, for whatever config is active.) The embedder and facts/feedback/state RAG stores are likewise shared. See §"Shared tool corpus" in CLAUDE.md.
 
 **Note:** The tools RAG store uses a `NamespaceIgnoringRag` wrapper that strips `ragFilter` before querying. This is because tools have no namespace — unlike domain RAG stores which use `ragFilter.namespace` to separate collections.
 
@@ -1045,7 +1241,7 @@ Each destination has its own `McpClientAdapter` (MCP connection) and `Tools RAG 
 2. `initBackgroundDestinations()` fires (non-blocking) and warms **all** destinations equally:
    - Fetches all BTP destinations via Destination Service API
    - Registers ALL as `pending` immediately (visible in UI)
-   - Vectorizes each sequentially in background (the `LLM_AGENT_MCP_DESTINATION` hint, if set, goes first)
+   - Initializes each destination sequentially in background (the `LLM_AGENT_MCP_DESTINATION` hint, if set, goes first). The **tool corpus is vectorized only once** into the shared `sharedToolsRag` — `initDestination()` reuses it with **no per-destination re-vectorization** (`agent-manager.ts`); per-destination init only wires the `McpClientAdapter` + the **generic** executor skills pool (`buildSkillsPool()`, identical for every destination; the DAG-controller build skips it via `skipSkills`)
 3. A request to a not-yet-ready destination **waits** (bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`, default 90s) in `getSmartAgent` and is served once ready — instead of erroring `agent not initialized`. Concurrent inits are deduped via `ensureDestinationInit`.
 4. UI polls `GET /v1/models` every 15s to update destination status
 
@@ -1081,25 +1277,26 @@ All destination-based connections use `executeHttpRequest` from `@sap-cloud-sdk/
 - Cloud Connector proxy routing
 - Token refresh
 
-### Agent Self-Loop Pattern
+### Agent Tool Access: Embedded, Not Self-Loop-HTTP
 
-The Agent Service connects its MCP client **back to its own MCP proxy endpoint** (`/mcp/stream/http`) with the destination header. This means the LLM agent uses the same MCP infrastructure that external AI assistants use.
+The agent does **not** call its own `/mcp/stream/http` over HTTP. `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) builds an **in-process** MCP client: `HandlerExporter` (`@mcp-abap-adt/core`) yields tool handlers directly, which are wrapped in `MCPClientWrapper` with `transport: 'embedded'` and adapted to `IMcpClient` via `McpClientAdapter`. The per-request ABAP connection is injected into the handler context (via `connectionALS`), not resolved through an HTTP round-trip. This means the LLM agent uses the same tool handlers that `mcp-abap-adt` exposes over `/mcp/stream/http`, without an actual network hop.
 
 ```mermaid
 graph LR
-    AGENT[Agent Service] -->|"POST /mcp/stream/http<br/>X-SAP-Destination: ABAP_SYS"| PROXY[MCP Proxy]
-    PROXY --> ABAP[ABAP System]
+    AGENT[SmartAgent / Executor] -->|in-process call| ADAPTER[McpClientAdapter<br/>MCPClientWrapper transport=embedded]
+    ADAPTER --> HANDLERS[HandlerExporter tool handlers]
+    HANDLERS --> ABAP[ABAP System]
 
     style AGENT fill:#16a34a,color:#fff
-    style PROXY fill:#2563eb,color:#fff
+    style ADAPTER fill:#2563eb,color:#fff
 ```
 
 ### Stateless by Default
 
-- `MCP_ENABLE_SESSION_STORAGE=false` by default
-- No in-memory session store between requests
-- Agent instances cached for 30 min (performance optimization only)
-- Fresh auth on every MCP proxy request
+- **Raw MCP protocol** (`/mcp/stream/http`) is stateless per request: `MCP_ENABLE_SESSION_STORAGE=false` by default, no cross-request MCP session store
+- **Exception — `/v1/chat/completions` server-managed sessions:** the OpenAI handler keeps a process-local `sessionStore` of chat history keyed by session+user (`openai-handler.ts`), expired after 30 min of inactivity by a periodic cleanup (`SESSION_TTL_MS`). This is conversation history, not connection or agent state
+- **Agent handles** (`SmartAgentHandle`) are cached **per destination for the process lifetime** — reused across requests, cleared only on shutdown cleanup (no TTL). The 30-min TTL above applies to OpenAI chat history, not to agent instances
+- Fresh auth on every **SAP-touching** request — the raw MCP path and the agent/tool-execution endpoints (`/mcp/stream/http`, `/mcp/agent/stream/http`, `POST /v1/chat/completions`, `POST /v1/messages`) build a per-request SAP connection from the caller's credentials, never a cached connection. The non-SAP-connection routes (`/v1/models`, `/v1/usage`, `/v1/destinations/*`, `/v1/token`) create no per-request SAP connection — some touch `getSmartAgent()`/`refreshDestinations()` for metadata or destination warm-up, but none open a caller-credentialed ABAP connection
 
 ### Honesty controller (executor + reviewer)
 
