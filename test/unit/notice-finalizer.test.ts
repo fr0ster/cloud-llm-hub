@@ -58,7 +58,13 @@ describe('NoticeFinalizer', () => {
     benignLlm.chat.mockClear();
   });
 
-  it('(a) emits a single UNVERIFIED_WRITE notice when the claim outruns the tool RESULT (activate:false lie)', async () => {
+  // Under the DAG coordinator (llm-agent #166) the interpreter's onPartial goes
+  // to the session log ONLY — the FINALIZER's onPartial is the single
+  // client-facing content source (streaming AND the accumulated process()
+  // result). So the finalizer MUST re-emit interpreterOutput as content first,
+  // then any trailing notice.
+
+  it('(a) emits the answer content FIRST, then a single trailing UNVERIFIED_WRITE notice when the claim outruns the tool RESULT', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
       {
@@ -77,15 +83,20 @@ describe('NoticeFinalizer', () => {
 
     const result = await finalizer.finalize(input);
 
-    expect(onPartial).toHaveBeenCalledTimes(1);
-    const chunk = onPartial.mock.calls[0][0];
-    expect(chunk.kind).toBe('content');
-    expect(chunk.delta.startsWith('UNVERIFIED_WRITE:')).toBe(true);
-    expect(chunk.delta).toMatch(/activated/);
+    expect(onPartial).toHaveBeenCalledTimes(2);
+    // [0] = the executor's answer (client-facing content)
+    expect(onPartial.mock.calls[0][0].kind).toBe('content');
+    expect(onPartial.mock.calls[0][0].delta).toBe(input.interpreterOutput);
+    // [1] = the trailing honesty notice
+    expect(onPartial.mock.calls[1][0].kind).toBe('content');
+    expect(
+      onPartial.mock.calls[1][0].delta.startsWith('UNVERIFIED_WRITE:'),
+    ).toBe(true);
+    expect(onPartial.mock.calls[1][0].delta).toMatch(/activated/);
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(b) does not emit a notice when the tool RESULT shows status:active — CreateDomain(activate:true default) is the ex-false-positive, now clean', async () => {
+  it('(b) emits ONLY the answer content (no notice) when the tool RESULT shows status:active — CreateDomain(activate:true) is clean', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
       {
@@ -104,15 +115,14 @@ describe('NoticeFinalizer', () => {
 
     const result = await finalizer.finalize(input);
 
-    expect(onPartial).not.toHaveBeenCalled();
+    expect(onPartial).toHaveBeenCalledTimes(1);
+    expect(onPartial.mock.calls[0][0].kind).toBe('content');
+    expect(onPartial.mock.calls[0][0].delta).toBe(input.interpreterOutput);
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(c) fires the deterministic notice with MANY tool calls (above the toolCallCount gate) WITHOUT invoking the LLM critic', async () => {
+  it('(c) fires the deterministic trailing notice with MANY tool calls (above the toolCallCount gate) WITHOUT invoking the LLM critic — answer still comes first', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
-    // toolCallCount=2 > maxToolCalls default 1 — only a create-family tool
-    // (status:inactive), no Activate*/status:active — deterministic must
-    // still fire on the "activated" claim, and the gate must not invoke the LLM.
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
       {
         call: { id: '', name: 'CreateDomain', arguments: {} },
@@ -134,14 +144,16 @@ describe('NoticeFinalizer', () => {
 
     const result = await finalizer.finalize(input);
 
-    expect(onPartial).toHaveBeenCalledTimes(1);
-    const chunk = onPartial.mock.calls[0][0];
-    expect(chunk.delta.startsWith('UNVERIFIED_WRITE:')).toBe(true);
+    expect(onPartial).toHaveBeenCalledTimes(2);
+    expect(onPartial.mock.calls[0][0].delta).toBe(input.interpreterOutput);
+    expect(
+      onPartial.mock.calls[1][0].delta.startsWith('UNVERIFIED_WRITE:'),
+    ).toBe(true);
     expect(benignLlm.chat).not.toHaveBeenCalled();
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(d) never emits interpreterOutput via onPartial — notice-only, no duplication', async () => {
+  it('(d) re-emits interpreterOutput as the client-facing content (single source under DAG #166) — no answer is lost', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
       {
@@ -158,11 +170,30 @@ describe('NoticeFinalizer', () => {
       onPartial,
     });
 
+    await finalizer.finalize(input);
+
+    const contentDeltas = onPartial.mock.calls
+      .map((c) => c[0])
+      .filter((chunk) => chunk.kind === 'content')
+      .map((chunk) => chunk.delta);
+    expect(contentDeltas).toContain(input.interpreterOutput);
+  });
+
+  it('(e) emits nothing when the executor produced no output and there is no contradiction (empty answer stays empty, no stray delta)', async () => {
+    const recMcp = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([]);
+
+    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const onPartial = jest.fn();
+    const input = baseInput({
+      interpreterOutput: '',
+      trace: { traceId: 't1' },
+      onPartial,
+    });
+
     const result = await finalizer.finalize(input);
 
-    for (const call of onPartial.mock.calls) {
-      expect(call[0].delta).not.toContain(input.interpreterOutput);
-    }
-    expect(result.output).toBe(input.interpreterOutput);
+    expect(onPartial).not.toHaveBeenCalled();
+    expect(result.output).toBe('');
   });
 });
