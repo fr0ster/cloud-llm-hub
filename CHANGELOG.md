@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.28.4] - 2026-07-24
+
+Critical fix: the v6.28.0 honesty controller silently dropped the response on every channel.
+
+### Fixed
+- **Empty response on streaming AND non-streaming.** Under the DAG coordinator (`@mcp-abap-adt/llm-agent` #166) the interpreter's `onPartial` (the executor's content + heartbeats) is routed to the session log only — the finalizer's `onPartial` is the single client-facing content source. Our notice-only `NoticeFinalizer` emitted no content, so `/v1/chat/completions` (WebUI), `/v1/messages`, and `execute_step` (MCP) all returned an empty answer. `NoticeFinalizer` now re-emits `interpreterOutput` as content, then the trailing notice — identical for streaming and non-streaming, no duplication.
+- **SSE connection timeout on long tool loops.** The swallowed heartbeats let the idle stream be closed (~22s → "No response" on multi-round dump queries). Added an independent SSE keep-alive (`: keep-alive` every 10s) to the `openai-handler` and `anthropic-handler` streaming paths.
+- Live-validated on acme-prod-stg (DEV WebUI): dump queries return full results (25–41s runs, past the old cutoff).
+
+### Known follow-up
+- Answer is delivered as one content delta at finalize, not token-by-token. Restoring live token-by-token streaming needs the coordinator to forward the interpreter's `onPartial` to the client — tracked upstream (fr0ster/llm-agent#246).
+
 ## [6.28.3] - 2026-07-24
 
 Follow-up to the v6.28.2 dependency sweep — closes the last 2 fixable Dependabot alerts.
