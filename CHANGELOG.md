@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.28.2] - 2026-07-24
+
+Dependency security sweep — closes 30 of 32 open Dependabot alerts across all four manifests (root + both approuter lockfiles + abap-dump-monitor). Lockfile-only, no source changes.
+
+### Security
+- **axios** (HIGH + MEDIUM) → `1.18.1`. Root already at 1.18.1; both approuters pin axios exactly via `@sap/approuter`, so added an `axios: ^1.18.0` override alongside the existing `ws@8`.
+- **fast-uri** (HIGH) → `3.1.4`; **fast-xml-parser** (HIGH) → `5.10.1`; **brace-expansion** (HIGH) → `2.1.2` / `1.1.16`; **body-parser** (LOW) → `1.20.6`.
+- Regenerated both stale approuter lockfiles: `@sap/approuter` 20.8.2 → `22.0.3` (matches the declared `^22.0.3`); `ws@8.21.0` override preserved.
+
+### Known remaining
+- `@hono/node-server` (2× MEDIUM, GHSA-frvp-7c67-39w9) stays at 1.19.14 — transitive of `@modelcontextprotocol/sdk@1.29.0` (pins `^1.19.9`; the 2.0.5 patch is a major outside that range). The vulnerable path (`serve-static` traversal on Windows) is not reachable on our Linux CF runtime. Tracked upstream (typescript-sdk #2531); re-check on every deps/SDK change.
+
 ## [6.28.1] - 2026-07-23
 
 Documentation-only release: an architecture accuracy pass over `docs/architecture/ARCHITECTURE.md` (no code changes). Every correction was verified against the current `srv/` code.
