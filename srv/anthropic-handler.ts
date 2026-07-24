@@ -177,6 +177,18 @@ export async function handleAnthropicMessages(
         Connection: 'keep-alive',
       });
 
+      // Independent SSE keep-alive — see openai-handler for the rationale: the
+      // DAG coordinator routes the executor's heartbeats to the session log
+      // only (llm-agent #166), so a long tool loop would idle the connection
+      // past the CF router / client timeout before the finalizer emits. SSE
+      // comment lines are ignored by clients, harmless during active streaming.
+      const KEEPALIVE_MS = 10_000;
+      const keepAlive = setInterval(() => {
+        if (!res.writableEnded) res.write(': keep-alive\n\n');
+      }, KEEPALIVE_MS);
+      if (typeof keepAlive.unref === 'function') keepAlive.unref();
+      res.on('close', () => clearInterval(keepAlive));
+
       try {
         await runAgent(async () => {
           const sseStream = adapter.transformStream(
@@ -193,6 +205,7 @@ export async function handleAnthropicMessages(
         // If headers already sent, we can only close the connection
       }
 
+      clearInterval(keepAlive);
       res.end();
       return;
     }

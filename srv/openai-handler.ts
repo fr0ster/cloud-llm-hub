@@ -834,6 +834,21 @@ export async function handleChatCompletions(
         ...invalidToolsHeader,
       });
 
+      // Independent SSE keep-alive. Under the DAG coordinator the executor's
+      // heartbeats are routed to the session log only (llm-agent #166), so
+      // during a long tool loop NOTHING flows on the wire until the finalizer
+      // emits — the CF router / browser would close the idle connection
+      // (observed: dump queries "No response" at ~22s). This comment-only tick
+      // keeps the socket alive regardless of what the coordinator forwards.
+      // Comments are ignored by SSE clients, so it is harmless during active
+      // streaming too.
+      const KEEPALIVE_MS = 10_000;
+      const keepAlive = setInterval(() => {
+        if (!res.writableEnded) res.write(': keep-alive\n\n');
+      }, KEEPALIVE_MS);
+      if (typeof keepAlive.unref === 'function') keepAlive.unref();
+      res.on('close', () => clearInterval(keepAlive));
+
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
 
@@ -1132,6 +1147,7 @@ export async function handleChatCompletions(
         );
       }
 
+      clearInterval(keepAlive);
       res.write('data: [DONE]\n\n');
       res.end();
       return;

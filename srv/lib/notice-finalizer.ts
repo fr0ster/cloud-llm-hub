@@ -1,15 +1,29 @@
 /**
- * `IFinalizer` that runs the honesty reviewer over the executor's output and,
- * on a failed verdict, emits a trailing NOTICE-ONLY chunk via `onPartial`.
+ * `IFinalizer` that surfaces the executor's answer to the client and, on a
+ * failed honesty verdict, appends a trailing NOTICE.
  *
- * The Task 1 vehicle spike proved:
- * the DAG coordinator forwards every worker `onPartial` content delta LIVE to
- * both `process()` (accumulated) and `streamProcess()` (chunk sequence), and
- * `FinalizerResult.output` is NEVER re-yielded (`dag-coordinator.js:275` yields
- * only `{content:'', finishReason:'stop'}`). So the executor's content is
- * ALREADY fully streamed by the time this finalizer runs — re-emitting
- * `interpreterOutput` here would duplicate it verbatim (confirmed empirically
- * in the spike). Hence: notice-only, never the interpreter output.
+ * WHY it re-emits the answer (fixed 2026-07-24, was a notice-only regression):
+ * under the DAG coordinator (`@mcp-abap-adt/llm-agent` #166) the interpreter's
+ * `onPartial` — the executor's live content AND heartbeats — is routed to the
+ * session log ONLY (`dag-coordinator.js`: `interpreterOnPartial`). The
+ * FINALIZER's `onPartial` is the SINGLE client-facing content source: it is what
+ * `streamProcess()` yields to the SSE client, and what `process()` accumulates
+ * into the non-streaming result (`agent.js`: `content += chunk.value.content`).
+ * `FinalizerResult.output` is NOT re-yielded by the coordinator. So a finalizer
+ * that emits no content leaves BOTH streaming (`/v1/*` WebUI) and non-streaming
+ * (`execute_step` / MCP subagent) clients with an empty response.
+ *
+ * The earlier "notice-only" design assumed the coordinator streamed the
+ * executor's content live — true before the 20.x coordinator change, false
+ * after it. Hence: emit `interpreterOutput` as content first, then any trailing
+ * notice. Emitting it once (the coordinator does not also yield `output`) means
+ * no duplication in either mode.
+ *
+ * NOTE (streaming granularity): this delivers the answer as ONE content delta at
+ * finalize time, not token-by-token. Restoring live token-by-token streaming
+ * requires the coordinator to forward the interpreter's `onPartial` to the
+ * client (upstream). Connection keep-alive during the run is handled at the SSE
+ * handler layer (openai-handler / anthropic-handler heartbeat).
  */
 
 import type {
@@ -32,8 +46,13 @@ export class NoticeFinalizer implements IFinalizer {
   ) {}
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
-    const t = input.trace?.traceId;
-    const records = this.recMcp.getToolRecords(t);
+    // The executor's answer — the single client-facing content source (see file
+    // header). Empty output → no stray delta.
+    if (input.interpreterOutput) {
+      input.onPartial?.({ kind: 'content', delta: input.interpreterOutput });
+    }
+
+    const records = this.recMcp.getToolRecords(input.trace?.traceId);
 
     const verdict = await evaluateGated({
       content: input.interpreterOutput,
@@ -42,12 +61,12 @@ export class NoticeFinalizer implements IFinalizer {
       llm: this.criticLlm,
     });
 
+    // Trailing NOTICE (after the answer) on a contradiction — NOTICE-ONLY
+    // reaction: the consumer decides what to do; we never render a verdict.
     if (!verdict.ok) {
       input.onPartial?.({ kind: 'content', delta: renderNotice(verdict) });
     }
 
-    // FinalizerResult.output is NOT re-yielded by the coordinator (only
-    // onPartial deltas reach the consumer) — returning it as-is is inert.
     return { output: input.interpreterOutput };
   }
 }
