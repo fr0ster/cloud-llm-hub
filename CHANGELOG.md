@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.28.3] - 2026-07-24
+
+Follow-up to the v6.28.2 dependency sweep — closes the last 2 fixable Dependabot alerts.
+
+### Security
+- **body-parser** (LOW) → `2.3.0` in both approuter lockfiles. `@sap/approuter@22.0.3` pins body-parser exactly at 2.2.2, so added a `body-parser: ^2.3.0` override alongside the existing `ws`/`axios` ones in `app/router/package.json` and `docs/examples/abap-dump-monitor/app/router/package.json` (v6.28.2 fixed axios/fast-uri there but missed body-parser).
+
+### Known remaining
+- Only `@hono/node-server` (2× MEDIUM, GHSA-frvp-7c67-39w9) stays open — transitive of `@modelcontextprotocol/sdk@1.29.0` (pins `^1.19.9`); not reachable on Linux CF. Tracked upstream (typescript-sdk #2531).
+
 ## [6.28.2] - 2026-07-24
 
 Dependency security sweep — closes 30 of 32 open Dependabot alerts across all four manifests (root + both approuter lockfiles + abap-dump-monitor). Lockfile-only, no source changes.
