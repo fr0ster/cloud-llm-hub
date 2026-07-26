@@ -279,6 +279,36 @@ private async fetchCsrfToken(url: string): Promise<string> {
 - Cloud SDK automatically adds authentication from Destination
 - Cloud SDK automatically handles proxy via Cloud Connector
 
+### Stateful sessions & the orphaned-lock fix (`CloudSdkAbapConnection`)
+
+An ADT write runs a **stateful chain** — `validate → create → LOCK → update → unlock → activate` —
+and **every request must stay on one connection to the one app-server instance behind the
+connectivity proxy**, or the session (and its edit-lock) is lost with a **400 "Session not found"**
+and the object is left created-but-locked (orphaned). On the BTP connectivity path two things are
+needed to hold that session — both handled inside `CloudSdkAbapConnection`:
+
+1. **Client-generated `SAP_SESSIONID_<SID>_<CLIENT>`.** SAP issues no such cookie on this path
+   (only `sap-contextid`), so the client provides it: a stable, unique base64url value (suffix
+   derived from the server's `sap-XSRF_<SID>_<CLIENT>`), generated **once and never changed for the
+   connection's lifetime**, sent on every request. A real server-issued value always wins.
+2. **One keep-alive socket per connector** (a `maxSockets: 1` keep-alive **`httpAgent`** on every
+   `executeHttpRequest`). Cloud SDK otherwise builds a fresh agent per call over a shared socket
+   pool, so a **cold** chain can send LOCK on one socket/tunnel and the follow-up GET on another →
+   session not found. Pinning to one socket keeps the whole chain on one tunnel → one instance.
+   **Only `httpAgent` is overridden** — on-prem ADT reaches the Cloud Connector over plain HTTP;
+   `httpsAgent` is left to the SDK, which owns destination TLS (TrustAll / trust store / client-cert
+   mTLS), so HTTPS destinations keep their TLS config.
+
+Rules of thumb: **one destination = one session = one connector = one connection**; and **never
+blind-retry a stateful ADT write** on a session error (it piles up locked/duplicate objects — the
+old 400-retry was removed). A `SESSION_LOST` WARN logs any residual anomaly with the session
+context. The standalone `@mcp-abap-adt` direct connection is immune because its **persistent axios
+socket** already provides #2 for free; `CloudSdkAbapConnection` has to recreate both explicitly.
+
+**Why it hit domains but not classes:** `updateDomain` is read-modify-write (a stateful **GET right
+after LOCK**), which is the request that scattered on a cold pool; class source update is a direct
+PUT with no post-LOCK read.
+
 ### Authentication Flow
 
 **Direct Connection (Basic):**

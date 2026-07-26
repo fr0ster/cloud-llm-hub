@@ -1,7 +1,8 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import '../env-setup';
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import http from 'node:http';
 import type {
   AbapConnection,
   AbapRequestOptions,
@@ -33,6 +34,52 @@ export class CloudSdkAbapConnection implements AbapConnection {
   /** True once this connection has run any stateful request — so cleanup knows
    * it must terminate the server-side ADT session (which may hold an edit-lock). */
   private wentStateful = false;
+  /**
+   * App-server stickiness (the orphaned-lock fix).
+   *
+   * On the BTP connectivity forward-proxy path SAP does NOT issue a
+   * `SAP_SESSIONID_<SID>_<CLIENT>` routing cookie (only `sap-contextid`), so a
+   * stateful lock chain's follow-up request (e.g. the domain update's
+   * read-modify-write GET after LOCK) scatters to a DIFFERENT ABAP app-server →
+   * 400 "Session not found" → the edit-lock is orphaned. mcp-abap-adt avoids this
+   * only because its persistent socket keeps one TCP connection to one instance.
+   *
+   * We instead generate a stable `SAP_SESSIONID_<SID>_<CLIENT>` ourselves and send
+   * it on every request so the SAP Web Dispatcher pins the whole chain to one
+   * app-server. Stable per connection (hence per destination, since a connection
+   * targets one destination); if the server ever issues a real one it wins. */
+  private generatedSapSessionId: string | null = null;
+  /**
+   * ONE keep-alive socket per connector (one destination = one session = one
+   * connector = one connection). SAP Cloud SDK's `executeHttpRequest` otherwise
+   * builds a fresh agent per call and draws from a shared socket pool, so a cold
+   * lock chain can send LOCK on one socket/tunnel and the follow-up GET on
+   * another — and the ADT stateful session (bound to that tunnel) is then "not
+   * found", orphaning the edit-lock. `maxSockets: 1` + keepAlive forces every
+   * request of the chain (CSRF → validate → create → LOCK → update → unlock →
+   * activate) down the SAME socket → the same tunnel → the one app-server behind
+   * the connectivity proxy, so the session holds even on a cold start. Requests
+   * on one connector are sequential, so a single socket never bottlenecks.
+   *
+   * ONLY `httpAgent` is overridden — on-prem ADT reaches the Cloud Connector over
+   * PLAIN HTTP (axios picks the agent by target protocol), so this is the agent
+   * that carries the stateful chain. `httpsAgent` is deliberately LEFT to the SAP
+   * Cloud SDK: it builds destination-specific TLS (TrustAll / custom trust store /
+   * client-cert mTLS) via getAgentConfig(destination), and overriding it would
+   * drop that config for HTTPS destinations. (HTTPS on-prem, if ever needed, must
+   * copy the SDK's TLS options rather than replace the agent.)
+   */
+  private keepAliveHttpAgent: http.Agent | null = null;
+
+  private getHttpAgent(): http.Agent {
+    if (!this.keepAliveHttpAgent) {
+      this.keepAliveHttpAgent = new http.Agent({
+        keepAlive: true,
+        maxSockets: 1,
+      });
+    }
+    return this.keepAliveHttpAgent;
+  }
 
   constructor(
     private readonly config: SapConfig,
@@ -89,6 +136,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           method: 'GET',
           url: `${baseUrl}/sap/bc/adt/compatibility/graph`,
           timeout: 12_000,
+          httpAgent: this.getHttpAgent(),
           headers: {
             ...(await this.getAuthHeaders()),
             'sap-adt-connection-id': this.sessionId,
@@ -180,6 +228,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           // Server-side timeout: the browser AbortController only stops the UI
           // wait, not this Cloud SDK request.
           timeout: 12_000,
+          httpAgent: this.getHttpAgent(),
           headers: {
             ...(await this.getAuthHeaders()),
             ...(cookie ? { Cookie: cookie } : {}),
@@ -207,6 +256,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
     this.csrfToken = null;
     this.cookieJar.clear();
     this.cachedBaseUrl = null;
+    // End-of-request cleanup: close the pinned keep-alive socket.
+    this.keepAliveHttpAgent?.destroy();
+    this.keepAliveHttpAgent = null;
   }
 
   /**
@@ -230,9 +282,37 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   /**
+   * Inject a self-generated `SAP_SESSIONID_<SID>_<CLIENT>` so the SAP Web
+   * Dispatcher pins the stateful lock chain to one app-server (see
+   * `generatedSapSessionId`). The `<SID>_<CLIENT>` suffix (e.g. DEV_100) is
+   * derived from the server's own `sap-XSRF_<SID>_<CLIENT>` cookie (present after
+   * the first response). Only injects ours when the server has NOT issued a real
+   * SAP_SESSIONID (mergeSetCookies stores that first, and we never overwrite it).
+   */
+  private ensureGeneratedSessionCookie(): void {
+    const xsrfKey = [...this.cookieJar.keys()].find((k) =>
+      /^sap-XSRF_/i.test(k),
+    );
+    if (!xsrfKey) return; // suffix not known yet (no response captured)
+    const cookieName = `SAP_SESSIONID_${xsrfKey.replace(/^sap-XSRF_/i, '')}`;
+    if (this.cookieJar.has(cookieName)) return; // real server-issued one wins
+    if (!this.generatedSapSessionId) {
+      // base64url (URL-safe: no +, /, or = padding) so the value never trips a
+      // cookie parser, while resembling the server's own base64 SAP_SESSIONID
+      // format. Generated ONCE and never changed for the connection's lifetime
+      // (a new connection = a new session = a new value) — this constancy is what
+      // keeps the ADT stateful session (LOCK → update → unlock) bound to one value
+      // on the single app-server instance behind the connectivity proxy.
+      this.generatedSapSessionId = randomBytes(24).toString('base64url');
+    }
+    this.cookieJar.set(cookieName, this.generatedSapSessionId);
+  }
+
+  /**
    * Build Cookie header string from the jar (name1=value1; name2=value2).
    */
   private getCookieHeader(): string | null {
+    this.ensureGeneratedSessionCookie();
     if (this.cookieJar.size === 0) return null;
     return [...this.cookieJar.entries()]
       .map(([name, value]) => `${name}=${value}`)
@@ -315,8 +395,32 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private async refreshCsrf(requestUrl: string): Promise<void> {
     if (!this.csrfRefreshing) {
       this.csrfRefreshing = (async () => {
-        this.cookieJar.clear();
+        // A CSRF refresh must NOT drop session/affinity cookies. SAP pins the
+        // stateful ADT session (created on LOCK) to an app-server via
+        // `SAP_SESSIONID_<sid>_<client>` and tracks it via `sap-contextid`.
+        // The old code cleared the WHOLE jar — and a POST/PUT in the middle of a
+        // lock→update→unlock chain triggers a CSRF refresh — which wiped those
+        // cookies, so the next request 400'd "Session not found" and the
+        // edit-lock was orphaned (object left locked). More frequent on a cold
+        // instance (background warmup drives extra CSRF churn), hence it looked
+        // intermittent/warm-up-dependent — and pre-migration prod showed it too.
+        // Only the CSRF token (an HTTP header) needs to reset here: drop just the
+        // transient CSRF cookie, keep everything else (session + affinity).
+        const dropped: string[] = [];
+        for (const name of [...this.cookieJar.keys()]) {
+          if (/csrf|xsrf/i.test(name)) {
+            this.cookieJar.delete(name);
+            dropped.push(name);
+          }
+        }
         this.csrfToken = null;
+        // Drop only the transient CSRF/XSRF cookie on refresh; the ADT session
+        // cookies (sap-contextid, our SAP_SESSIONID) MUST survive, else the
+        // stateful lock chain loses its session and orphans the edit-lock.
+        logger.debug('CSRF refresh (session cookies preserved)', {
+          type: 'CSRF_REFRESH',
+          dropped,
+        });
         try {
           return await this.fetchCsrfToken(requestUrl);
         } finally {
@@ -388,9 +492,21 @@ export class CloudSdkAbapConnection implements AbapConnection {
             method: 'GET',
             url: csrfUrl,
             timeout: csrfTimeoutMs,
+            httpAgent: this.getHttpAgent(),
             headers: {
               ...(await this.getAuthHeaders()),
               ...CSRF_CONFIG.REQUIRED_HEADERS,
+              // Send OUR client-generated stateful-session id on the discovery
+              // fetch too. This is the request where SAP establishes the HTTP
+              // session and sets the app-server-affinity cookie
+              // (SAP_SESSIONID_<sid>_<client>). Without the connection-id here,
+              // SAP established that session under a DIFFERENT context than the
+              // lock chain (which does send it), so the app-server pin did not
+              // carry — the first stateful request (LOCK) scattered and the
+              // GET/UNLOCK 400'd "Session not found" (cold-start orphaned lock).
+              // Binding the discovery to the same connection-id lets the whole
+              // lock→update→unlock chain resume one session on one app-server.
+              'sap-adt-connection-id': this.sessionId,
               ...(csrfCookie ? { Cookie: csrfCookie } : {}),
             },
           },
@@ -619,7 +735,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       }
     }
 
-    logger.info(`Executing ${normalizedMethod} request to: ${requestUrl}`, {
+    logger.debug(`Executing ${normalizedMethod} request to: ${requestUrl}`, {
       type: 'REQUEST_INFO',
       url: requestUrl,
       method: normalizedMethod,
@@ -645,6 +761,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           url: requestUrl,
           headers: requestHeaders,
           timeout: requestTimeoutMs,
+          httpAgent: this.getHttpAgent(),
           // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
           params: params as Record<string, any> | undefined,
           // Keep original data type (string for XML, object for JSON).
@@ -657,13 +774,45 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
       // Capture cookies from response to maintain session affinity
       // Critical for stateful sessions: lock → update → unlock → activate chain
-      this.mergeSetCookies(
-        response.headers?.['set-cookie'] as string | string[] | undefined,
-      );
+      const rawSetCookie = response.headers?.['set-cookie'] as
+        | string
+        | string[]
+        | undefined;
+      this.mergeSetCookies(rawSetCookie);
 
       // Convert Cloud SDK response to IAdtResponse format
       return this.convertToAdtResponse<T, D>(response, requestUrl);
     } catch (error: unknown) {
+      // Anomaly log (INFO): a stateful request that lost its ADT session despite
+      // the generated SAP_SESSIONID. This is the orphaned-lock symptom — normally
+      // it never fires, so it's cheap and pinpoints the rare cases in production
+      // (which request, on which destination, and the session context sent).
+      {
+        const e = error as {
+          response?: { status?: number; data?: unknown };
+        };
+        const body = e?.response?.data;
+        if (
+          e?.response?.status === 400 &&
+          typeof body === 'string' &&
+          /session/i.test(body)
+        ) {
+          const sidKey = [...this.cookieJar.keys()].find((k) =>
+            /^SAP_SESSIONID_/.test(k),
+          );
+          logger.warn('ADT stateful session lost mid-chain', {
+            type: 'SESSION_LOST',
+            method: normalizedMethod,
+            url: requestUrl,
+            destinationName: this.destinationName,
+            sessionType: this.sessionType,
+            connId: this.sessionId?.slice(0, 8),
+            sapSessionId: sidKey
+              ? `${sidKey}=${(this.cookieJar.get(sidKey) ?? '').slice(0, 8)}…`
+              : 'NONE',
+          });
+        }
+      }
       // Use synchronized error handling from errorUtils
       // In development (cds watch), TypeScript files are executed directly, so use .ts extension
       // In production (compiled), files are .js
@@ -725,6 +874,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
               url: requestUrl,
               headers: retryHeaders,
               timeout: requestTimeoutMs,
+              httpAgent: this.getHttpAgent(),
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
               params: params as Record<string, any> | undefined,
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
@@ -743,74 +893,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
         }
       }
 
-      // If session timed out (400), clear stale cookies/CSRF and retry once
-      const responseData = (error as { response?: { data?: string } })?.response
-        ?.data;
-      const isSessionTimeout =
-        (errorObj?.response?.status === 400 || errorObj?.statusCode === 400) &&
-        typeof responseData === 'string' &&
-        (responseData.includes('Session') || responseData.includes('session'));
-      if (isSessionTimeout) {
-        logger.info(
-          'Session timed out, clearing cookies/CSRF and retrying request',
-          { url: requestUrl },
-        );
-        this.cookieJar.clear();
-        this.csrfToken = null;
-
-        try {
-          // Re-fetch CSRF for mutation requests
-          const retryHeaders = { ...requestHeaders };
-          delete retryHeaders.Cookie;
-          if (normalizedMethod === 'POST' || normalizedMethod === 'PUT') {
-            this.csrfToken = await this.fetchCsrfToken(requestUrl);
-            retryHeaders['x-csrf-token'] = this.csrfToken;
-          }
-          const cookieAfterReset = this.getCookieHeader();
-          if (cookieAfterReset) {
-            retryHeaders.Cookie = cookieAfterReset;
-          }
-
-          const retryResponse = await executeHttpRequest(
-            { destinationName: this.destinationName },
-            {
-              method: normalizedMethod as
-                | 'GET'
-                | 'POST'
-                | 'PUT'
-                | 'DELETE'
-                | 'PATCH',
-              url: requestUrl,
-              headers: retryHeaders,
-              timeout: requestTimeoutMs,
-              // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
-              params: params as Record<string, any> | undefined,
-              // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
-              data: data as any,
-            },
-          );
-
-          this.mergeSetCookies(
-            retryResponse.headers?.['set-cookie'] as
-              | string
-              | string[]
-              | undefined,
-          );
-          return this.convertToAdtResponse<T, D>(retryResponse, requestUrl);
-        } catch (retryError: unknown) {
-          logErrorSafely(
-            logger,
-            'ADT request retry (session reset)',
-            retryError,
-            {
-              url: requestUrl,
-              method: normalizedMethod,
-              destinationName: this.destinationName,
-            },
-          );
-          throw retryError;
-        }
-      }
+      // NOTE: intentionally NO retry on a 400 "Session not found". A stateful
+      // write (create/lock/update) may have ALREADY executed server-side before
+      // the follow-up request scattered; blindly re-running it just PILES UP
+      // locked/duplicate objects. The right fix is to not scatter in the first
+      // place (see the generated SAP_SESSIONID app-server stickiness in
+      // getCookieHeader), not to retry. Let the error propagate.
 
       // Enrich the error message with the shared connectivity-proxy classifier
       // so MCP clients (curl, Cline, goose, IDE integrations) see "tunnel_timeout
