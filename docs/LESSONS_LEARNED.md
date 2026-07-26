@@ -15,6 +15,7 @@ Each lesson file has a YAML frontmatter block (`date`, `branch`, `subaccount`, `
 | 2026-06-11 | [UpdateClass "not locked" — stateless PUT after lock, BASIS-version-dependent](lessons/2026-06-11-update-lock-stateless-put-basis-version.md) | main | nvcr (DS4) |
 | 2026-06-17 | [Chat login "non ISO-8859-1 code point" — Cyrillic homoglyph password](lessons/2026-06-17-cyrillic-homoglyph-password-fetch-header.md) | main | nvcr (CR2) |
 | 2026-06-29 | [GetStructuresList lost appends on S/4 — hard-coded XML namespace prefix dropped a 6 MB response](lessons/2026-06-29-where-used-ns-prefix-ds4.md) | main | nvcr (DS4) |
+| 2026-07-26 | [Orphaned ADT edit-locks on domain writes — client must generate SAP_SESSIONID + pin one socket](lessons/2026-07-26-adt-stateful-session-sapsessionid.md) | fix/adt-session-affinity | ai-applications (E19) |
 
 ## Adding a new lesson
 

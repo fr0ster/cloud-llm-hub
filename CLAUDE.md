@@ -110,6 +110,14 @@ Every channel (`execute_step`, `/v1/chat`, `/v1/messages`) runs through an expli
 - Uses SAP Cloud SDK (`@sap-cloud-sdk/http-client`) for destination resolution
 - Supports on-premise systems via Cloud Connector (Connectivity service)
 - Connection types: BTP Destination (CloudSdkAbapConnection) and Direct (createAbapConnection)
+- **Stateful ADT sessions (orphaned-lock fix):** an ADT write chain (LOCK → update → unlock →
+  activate) must stay on ONE connection to the ONE instance behind the connectivity proxy.
+  `CloudSdkAbapConnection` holds it two ways: (1) a **client-generated stable
+  `SAP_SESSIONID_<SID>_<CLIENT>`** (SAP issues none on this path — client owns it), and (2) **one
+  keep-alive socket per connector** (`maxSockets:1` on every `executeHttpRequest`) so a cold chain
+  doesn't scatter LOCK and the follow-up GET across pool sockets. **Never blind-retry a stateful
+  write** on a session error (piles up locks). One destination = one session = one connector = one
+  connection. See `docs/contributors/CONNECTION_ARCHITECTURE.md` + `docs/lessons/2026-07-26-*`.
 
 ### Destination lifecycle (equal, lazy, block-until-ready)
 
