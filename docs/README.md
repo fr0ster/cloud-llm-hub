@@ -36,6 +36,10 @@ Getting started, OpenAI agent, and troubleshooting.
 
 Deploy and verify production instances.
 
+- [Readiness Questionnaire](deployment/READINESS_QUESTIONNAIRE.md) — customer-facing pre-deployment assessment
+- [Reading the Questionnaire](deployment/READINESS_ASSESSMENT.md) — internal interpretation guide
+- [Installation Summary](deployment/INSTALLATION_SUMMARY.md)
+- [Installation Plan](deployment/INSTALLATION_PLAN.md)
 - [Deploy Guide](deployment/DEPLOY_GUIDE.md)
 - [Quick Deploy](deployment/QUICK_DEPLOY.md)
 - [Testing After Deployment](deployment/TESTING_AFTER_DEPLOYMENT.md)

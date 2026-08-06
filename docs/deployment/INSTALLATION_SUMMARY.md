@@ -2,7 +2,12 @@
 
 For effort estimation. Full details: [INSTALLATION_PLAN.md](INSTALLATION_PLAN.md).
 
-Two deployment scenarios: **SAP AI Core** (enterprise, BTP-native) or **OpenAI-compatible provider** (any API: OpenAI, Azure OpenAI, Ollama, vLLM, etc.).
+Three deployment scenarios: **A — SAP AI Core** (enterprise, BTP-native), **B — external provider** (OpenAI-compatible APIs such as OpenAI, Azure OpenAI, Ollama or vLLM, plus the natively supported Anthropic and DeepSeek APIs), or **C — custom provider** (a proprietary interface that needs an adapter; see below).
+
+> **Which scenario applies at a given customer** comes out of the [Readiness Questionnaire](READINESS_QUESTIONNAIRE.md);
+> [READINESS_ASSESSMENT.md](READINESS_ASSESSMENT.md) maps the answers to a scenario and to the
+> effort adjustments the tables below do not include. The estimates here assume every prerequisite
+> is already in place.
 
 ---
 
@@ -38,16 +43,19 @@ Two deployment scenarios: **SAP AI Core** (enterprise, BTP-native) or **OpenAI-c
 
 ---
 
-## Scenario B: OpenAI-Compatible Provider
+## Scenario B: External Provider
 
-No SAP AI Core needed. Works with any OpenAI-compatible API.
+No SAP AI Core needed. Works with any OpenAI-compatible API, and also with the native Anthropic and DeepSeek APIs — `LLM_AGENT_PROVIDER` supports `anthropic` and `deepseek` directly, so "not OpenAI-compatible" alone does not push a customer into Scenario C.
+
+> **Embeddings come from the same endpoint as chat.** For any non-AI-Core provider the embedder is built against the same `LLM_AGENT_BASE_URL` and `LLM_AGENT_API_KEY`; there is no separate embedding endpoint. Providers without OpenAI-compatible `/embeddings` — including native Anthropic and DeepSeek — must run with `LLM_AGENT_RAG_TYPE: "in-memory"`, which makes tool selection keyword-only.
 
 ### Prerequisites
 
 | Requirement | Who | Lead time |
 |-------------|-----|-----------|
 | BTP Subaccount (CF enabled) + entitlements (XSUAA, Destination, Connectivity) | Global Account Admin | 1-5 days |
-| OpenAI-compatible API access (API key + base URL) | LLM Provider | Available immediately |
+| LLM API access — OpenAI-compatible, or the native Anthropic or DeepSeek API (API key + base URL) | LLM Provider | Available immediately |
+| Embeddings on that same base URL, if vector RAG is wanted — otherwise `LLM_AGENT_RAG_TYPE: "in-memory"` | LLM Provider | Available immediately |
 | BTP Destination to SAP system | Basis / BTP Admin | 30 min - 2 hours |
 | Cloud Connector (on-prem only) | Basis Admin | 2-4 hours |
 | SAP system user + ICF services `/sap/bc/adt` | Basis Admin | 1-4 hours |
@@ -101,11 +109,13 @@ If the customer has a proprietary or non-standard LLM API, a custom provider mus
 
 > **All prerequisites must be validated before starting.** A missing prerequisite discovered mid-installation forces a pause (often waiting for another team), then restart from rebuild + redeploy. This can turn a 2-hour job into a multi-day effort.
 
-### Compatible OpenAI Providers (Scenario B)
+### Compatible Providers (Scenario B)
 
 | Provider | Base URL | Notes |
 |----------|----------|-------|
 | OpenAI | `https://api.openai.com/v1` | Direct OpenAI API |
+| Anthropic | `https://api.anthropic.com` | Native API, `LLM_AGENT_PROVIDER=anthropic` — no `/chat/completions` needed |
+| DeepSeek | `https://api.deepseek.com` | Native API, `LLM_AGENT_PROVIDER=deepseek` |
 | Azure OpenAI | `https://<resource>.openai.azure.com/openai/deployments/<model>/v1` | Azure deployment |
 | Ollama | `http://localhost:11434/v1` | Local, free |
 | vLLM | `http://localhost:8000/v1` | Self-hosted |

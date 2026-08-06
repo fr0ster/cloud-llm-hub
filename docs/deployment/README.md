@@ -4,6 +4,8 @@ Deploy and verify Cloud LLM Hub on SAP BTP.
 
 ## Documents
 
+- [**Readiness Questionnaire**](READINESS_QUESTIONNAIRE.md) — send to the customer before scoping: BTP, LLM provider, AI usage permission, SAP access
+- [**Reading the Questionnaire**](READINESS_ASSESSMENT.md) — internal: answer → blocker / scenario / effort
 - [**Installation Summary**](INSTALLATION_SUMMARY.md) — effort estimation for stakeholders
 - [**Installation Plan**](INSTALLATION_PLAN.md) — step-by-step from scratch (~45 min), prerequisites, entitlements
 - [**Deploy Guide**](DEPLOY_GUIDE.md) — MTA extension setup, build, and deploy

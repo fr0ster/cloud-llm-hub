@@ -4,6 +4,11 @@ Step-by-step guide to deploy Cloud LLM Hub from scratch on a new BTP subaccount.
 
 ## Prerequisites
 
+> **At a new customer, start with the [Readiness Questionnaire](READINESS_QUESTIONNAIRE.md).** It is
+> written to be sent as-is and covers what this checklist assumes is already decided: whether a BTP
+> subaccount exists, which LLM we may use, whether AI usage is permitted at all, and what SAP access
+> we get. Interpret the returned answers with [READINESS_ASSESSMENT.md](READINESS_ASSESSMENT.md).
+
 > **Validate all prerequisites before starting.** If a missing prerequisite is discovered during installation (e.g., entitlement not assigned, ICF service not activated, Cloud Connector path not whitelisted), the process must be paused until the responsible team resolves it. After the fix, the installation restarts from Step 4 (rebuild + redeploy). When multiple teams are involved (Basis, BTP Admin, Security), this can turn a 2-hour installation into a multi-day effort. Completing the checklist below upfront avoids this.
 
 Before starting, ensure the following are in place:
@@ -24,7 +29,7 @@ The following entitlements must be available in the subaccount:
 | **Authorization & Trust Management (XSUAA)** | `application` | Authentication, role-based access | Yes |
 | **Destination Service** | `lite` | Route requests to SAP ABAP systems | Yes |
 | **Connectivity Service** | `lite` | On-premise system access via Cloud Connector | Yes (for on-prem SAP) |
-| **Cloud Foundry Runtime** | — | Application runtime (256 MB min) | Yes |
+| **Cloud Foundry Runtime** | — | Application runtime (2.5 GB min per environment: 2 GB backend + 512 MB approuter) | Yes |
 | **SAP HANA Cloud** | — | Not required (no database) | No |
 
 ### SAP AI Core Setup
