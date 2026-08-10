@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@cap-js/sqlite": "2.4.0",
-    "@modelcontextprotocol/sdk": "^1.23.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@sap-cloud-sdk/connectivity": "^4",
     "@sap-cloud-sdk/http-client": "^4",
     "@sap/cds": "^9",
