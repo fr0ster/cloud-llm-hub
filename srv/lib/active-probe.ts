@@ -91,8 +91,20 @@ export async function runActiveDestinationProbe(
     destinationName: resolved.destinationName,
   }) as unknown as {
     probe(path: string): Promise<{ httpCode: number; rawMessage: string }>;
+    closeSession?: () => Promise<void>;
   };
-  const { httpCode, rawMessage } = await conn.probe(PROBE_PATH);
+
+  // Building a connection costs one SAP session: CloudSdkAbapConnection presents
+  // a SAP_SESSIONID of its own, and SAP holds a session per distinct value until
+  // it times out. This probe runs on a UI cadence, so without the release below
+  // it mints a session every few seconds and never gives one back.
+  let httpCode: number;
+  let rawMessage: string;
+  try {
+    ({ httpCode, rawMessage } = await conn.probe(PROBE_PATH));
+  } finally {
+    await conn.closeSession?.();
+  }
   const latencyMs = now() - t0;
 
   const { status, hint } = classifyProbe(

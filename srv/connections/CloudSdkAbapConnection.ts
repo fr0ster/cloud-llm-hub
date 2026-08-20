@@ -121,9 +121,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * Sending ONE stateless request for the same `sap-adt-connection-id` tells ADT
    * to drop the stateful session now, freeing the (already-persisted, inactive)
    * object for activation. Best-effort: never throws — this is a cleanup path.
+   *
+   * It also closes a session this connection merely OPENED without ever going
+   * stateful. `ensureGeneratedSessionCookie` mints a `SAP_SESSIONID` per
+   * connection, and SAP keeps a session per distinct value until it times out —
+   * so a connection built only to read or probe still costs one session. Every
+   * connection we open must be closed, whatever it turned out to be used for.
    */
   async closeSession(): Promise<void> {
-    if (!this.wentStateful) return;
+    // Nothing was ever opened on the server side: no stateful chain, and no
+    // session cookie of ours was presented.
+    if (!this.wentStateful && !this.generatedSapSessionId) return;
     this.wentStateful = false;
     this.sessionType = 'stateless';
     try {
@@ -146,7 +154,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           },
         },
       );
-      logger.debug('ADT stateful session closed', {
+      logger.debug('ADT session closed', {
         sessionId: this.sessionId?.substring(0, 8),
       });
     } catch (err) {
@@ -154,6 +162,16 @@ export class CloudSdkAbapConnection implements AbapConnection {
       logger.warn('closeSession (ADT session release) failed', {
         error: String(err),
       });
+    } finally {
+      // Drop our session identity so a second call cannot re-present it, and so
+      // a reused connection does not keep answering for a session we just
+      // released. A later request mints a fresh one only if it needs one.
+      if (this.generatedSapSessionId) {
+        for (const key of [...this.cookieJar.keys()]) {
+          if (/^SAP_SESSIONID_/i.test(key)) this.cookieJar.delete(key);
+        }
+        this.generatedSapSessionId = null;
+      }
     }
   }
 
