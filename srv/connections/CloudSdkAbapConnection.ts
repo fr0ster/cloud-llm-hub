@@ -129,15 +129,69 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * connection we open must be closed, whatever it turned out to be used for.
    */
   async closeSession(): Promise<void> {
-    // Nothing was ever opened on the server side: no stateful chain, and no
-    // session cookie of ours was presented.
-    if (!this.wentStateful && !this.generatedSapSessionId) return;
+    // A SAP_SESSIONID the SERVER issued is a session that exists on the server
+    // and is ours to give back. One we generated ourselves is only app-server
+    // stickiness (see ensureGeneratedSessionCookie) and names no server session,
+    // so it is never grounds for a logoff.
+    const serverSession = this.hasServerIssuedSession();
+    if (!this.wentStateful && !this.generatedSapSessionId && !serverSession) {
+      return;
+    }
+    const wasStateful = this.wentStateful;
     this.wentStateful = false;
     this.sessionType = 'stateless';
     try {
       const baseUrl = await this.getBaseUrl();
       this.enforceClientCookie();
-      const cookie = this.getCookieHeader();
+      // Built WITHOUT minting: getCookieHeader() would generate a session id
+      // here, at the very moment we are handing one back.
+      const cookie = this.cookieHeader();
+      if (wasStateful || this.generatedSapSessionId) {
+        await this.endAdtStatefulSession(baseUrl, cookie);
+      }
+      if (serverSession) {
+        await this.icfLogoff(baseUrl, cookie);
+      }
+    } catch (err) {
+      // Never let session cleanup break the request flow.
+      logger.warn('closeSession (ADT session release) failed', {
+        error: String(err),
+      });
+    } finally {
+      // Drop our session identity so a second call cannot re-present it, and so
+      // a reused connection does not keep answering for a session we just
+      // released. A later request mints a fresh one only if it needs one.
+      for (const key of [...this.cookieJar.keys()]) {
+        if (/^SAP_SESSIONID_/i.test(key)) this.cookieJar.delete(key);
+      }
+      this.generatedSapSessionId = null;
+    }
+  }
+
+  /**
+   * True when the cookie jar holds a `SAP_SESSIONID_*` that did NOT come from
+   * `ensureGeneratedSessionCookie` — i.e. the server opened a session for us.
+   */
+  private hasServerIssuedSession(): boolean {
+    for (const [name, value] of this.cookieJar.entries()) {
+      if (!/^SAP_SESSIONID_/i.test(name)) continue;
+      if (value !== this.generatedSapSessionId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * End the ADT STATEFUL session for this `sap-adt-connection-id`, releasing an
+   * edit-lock a mutating tool left open. This is an ADT concern and is NOT what
+   * gives the platform session back — see {@link icfLogoff}.
+   *
+   * Best-effort: never throws, so a failure here cannot skip the logoff.
+   */
+  private async endAdtStatefulSession(
+    baseUrl: string,
+    cookie: string | null,
+  ): Promise<void> {
+    try {
       await executeHttpRequest(
         { destinationName: this.destinationName },
         {
@@ -158,20 +212,56 @@ export class CloudSdkAbapConnection implements AbapConnection {
         sessionId: this.sessionId?.substring(0, 8),
       });
     } catch (err) {
-      // Never let session cleanup break the request flow.
-      logger.warn('closeSession (ADT session release) failed', {
+      logger.warn('ADT stateful session release failed', {
         error: String(err),
       });
-    } finally {
-      // Drop our session identity so a second call cannot re-present it, and so
-      // a reused connection does not keep answering for a session we just
-      // released. A later request mints a fresh one only if it needs one.
-      if (this.generatedSapSessionId) {
-        for (const key of [...this.cookieJar.keys()]) {
-          if (/^SAP_SESSIONID_/i.test(key)) this.cookieJar.delete(key);
-        }
-        this.generatedSapSessionId = null;
-      }
+    }
+  }
+
+  /**
+   * Tell the platform we are finished with the session it opened.
+   *
+   * On an on-premise system the logon IS the establishing request — ADT
+   * publishes no session resource to close, so `/sap/public/bc/icf/logoff` is
+   * the mechanism, and it is the platform's rather than ADT's. Without it every
+   * connect() leaves a session behind, which is what SM04 shows as a growing
+   * list opened by `P=/sap/bc/adt/discovery`.
+   *
+   * Only ever sent while holding the session cookie: the session limit is per
+   * USER and the pool is shared with that user's SAP GUI logons, so a connector
+   * that tidied up sessions it did not open would eventually close somebody's
+   * GUI.
+   *
+   * The response's cookies are deliberately NOT adopted — a teardown must not
+   * feed the session identity of a connection on its way out.
+   *
+   * Best-effort: never throws, and says nothing about what the server then did.
+   */
+  private async icfLogoff(
+    baseUrl: string,
+    cookie: string | null,
+  ): Promise<void> {
+    try {
+      await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: 'GET',
+          url: `${baseUrl}/sap/public/bc/icf/logoff`,
+          timeout: 12_000,
+          httpAgent: this.getHttpAgent(),
+          headers: {
+            ...(await this.getAuthHeaders()),
+            ...(cookie ? { Cookie: cookie } : {}),
+          },
+        },
+      );
+      logger.debug('Told the server the session is finished', {
+        sessionId: this.sessionId?.substring(0, 8),
+      });
+    } catch (err) {
+      logger.warn('ICF logoff (session release) failed', {
+        error: String(err),
+      });
     }
   }
 
@@ -253,6 +343,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
           },
         },
       );
+      // Keep the session cookie this answered with. The probe is an
+      // authenticated call, so the server may open a session for it — and a
+      // session whose cookie we discarded can never be given back, because
+      // holding the cookie is the whole permission to end one. Merging here is
+      // what lets closeSession() log the probe's session off.
+      this.mergeSetCookies(
+        response.headers?.['set-cookie'] as string | string[] | undefined,
+      );
       return {
         httpCode: response.status || 200,
         rawMessage: trim(response.data),
@@ -331,6 +429,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
    */
   private getCookieHeader(): string | null {
     this.ensureGeneratedSessionCookie();
+    return this.cookieHeader();
+  }
+
+  /**
+   * The jar as a Cookie header, WITHOUT minting a session id.
+   *
+   * Teardown reads the jar through this: {@link getCookieHeader} would generate
+   * a `SAP_SESSIONID` at the very moment the session is being handed back,
+   * opening one more than it closes.
+   */
+  private cookieHeader(): string | null {
     if (this.cookieJar.size === 0) return null;
     return [...this.cookieJar.entries()]
       .map(([name, value]) => `${name}=${value}`)
