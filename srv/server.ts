@@ -31,6 +31,7 @@ import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
+import { needsSapConnection } from './lib/mcp-request';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   clearSession,
@@ -130,9 +131,16 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
       });
     }
 
-    // Create NEW MCP server for this request (per-request architecture)
-    const result = await createMCPServerForRequest(req);
+    // Create NEW MCP server for this request (per-request architecture).
+    // The ABAP connection is opened only when the message actually reaches SAP.
+    const establish = needsSapConnection(body);
+    const result = await createMCPServerForRequest(req, { establish });
     cleanup = result.cleanup;
+    if (!establish) {
+      log.debug('MCP request answered without opening a SAP session', {
+        method: isMcpRequestBody(body) ? body.method : 'batch',
+      });
+    }
 
     log.debug('MCP server created for request', {
       connectionType: result.connection.constructor.name,

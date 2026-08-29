@@ -259,11 +259,19 @@ export interface McpServerResult {
  * - NO token refresh - client must send valid token each request
  *
  * @param req - HTTP request with SAP configuration in headers
+ * @param opts.establish - Whether to open the ABAP connection now. `connect()`
+ *   is the establishing call, so it COSTS ONE SAP SESSION — pass false for
+ *   JSON-RPC methods that never reach SAP (`initialize`, `tools/list`, `ping`,
+ *   notifications). An MCP client that pings every 10s would otherwise log on
+ *   and off every 10s. Defaults to true so any caller that does not classify
+ *   its request keeps the old, always-connect behaviour.
  * @returns MCP server, connection, transport, and cleanup function
  */
 export async function createMCPServerForRequest(
   req: Request,
+  opts: { establish?: boolean } = {},
 ): Promise<McpServerResult> {
+  const establish = opts.establish !== false;
   const log = cds.log('mcp-manager');
 
   try {
@@ -297,7 +305,12 @@ export async function createMCPServerForRequest(
       destinationName: destination?.destinationName,
     });
     try {
-      await connection.connect();
+      // Only when this request actually reaches SAP. EmbeddableMcpServer's
+      // constructor merely stores the connection (its handler registry is built
+      // from a null-connection context), and the wrapper lambdas call
+      // getConnection() lazily — so an unconnected connection is safe to inject
+      // and costs nothing on the ABAP side.
+      if (establish) await connection.connect();
     } catch (connectErr) {
       const error = new Error(
         `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
