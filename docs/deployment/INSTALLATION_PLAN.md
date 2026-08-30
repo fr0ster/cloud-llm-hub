@@ -25,34 +25,45 @@ The following entitlements must be available in the subaccount:
 
 | Service | Plan | Purpose | Required |
 |---------|------|---------|----------|
-| **SAP AI Core** | `extended` | LLM inference (GPT, Claude, Gemini via SAP AI Core Orchestration) | Yes |
+| **SAP AI Core** | `extended` | LLM inference (GPT, Claude, Gemini via SAP AI Core Orchestration) | **Scenario A only** |
 | **Authorization & Trust Management (XSUAA)** | `application` | Authentication, role-based access | Yes |
 | **Destination Service** | `lite` | Route requests to SAP ABAP systems | Yes |
 | **Connectivity Service** | `lite` | On-premise system access via Cloud Connector | Yes (for on-prem SAP) |
 | **Cloud Foundry Runtime** | — | Application runtime (2.5 GB min per environment: 2 GB backend + 512 MB approuter) | Yes |
 | **SAP HANA Cloud** | — | Not required (no database) | No |
 
+The AI Core resource in `mta.yaml` is declared `active: false` and `optional: true`, so it is
+inactive unless a `.mtaext` turns it on. Scenario B (an external provider — OpenAI-compatible, or
+the native Anthropic or DeepSeek API) needs no AI Core entitlement at all.
+
 ### SAP AI Core Setup
 
-- [ ] SAP AI Core instance provisioned and service key created
+- [ ] SAP AI Core instance provisioned. A **service key is not needed for a normal MTA deploy** — the binding delivers credentials via `VCAP_SERVICES`. Create one only for the manual `AICORE_*` env-var path (AI Core living in a different subaccount than the app)
 - [ ] At least one LLM model deployed (e.g., `anthropic--claude-4.5-sonnet`, `gpt-4.1-mini`)
 - [ ] Embedding model deployed (`text-embedding-3-small`)
 - [ ] Resource group configured (default: `default`)
 
-> **No AI Core?** The service can start without AI Core binding (`active: false` in `.mtaext`). MCP proxy endpoints will work, but `/v1/chat/completions` and agent features will be unavailable. Useful for testing MCP connectivity first.
+> **No AI Core?** That alone does not disable the agent. Set `LLM_AGENT_PROVIDER` to `openai`,
+> `anthropic` or `deepseek`, supply `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL` via `cf set-env`
+> (see Step 2), and every endpoint —
+> including `/v1/chat/completions` — works exactly as in Scenario A.
+>
+> Only when **no** provider is configured at all does the deployment fall back to MCP-proxy-only:
+> the raw tool surface still serves requests, the agent endpoints do not. That is a useful way to
+> test SAP connectivity before any LLM decision has been made.
 
 ### SAP ABAP System
 
 - [ ] SAP system accessible from BTP (Cloud Connector for on-prem, or direct for cloud)
 - [ ] BTP Destination configured pointing to the SAP system
 - [ ] System user or communication arrangement for RFC/ADT access
-- [ ] ICF services activated: `/sap/bc/adt` (ADT), `/sap/bc/http` (HTTP)
+- [ ] ICF service activated: `/sap/bc/adt` (ADT) — the only endpoint the runtime uses
 
 > **No SAP system yet?** You can deploy without a SAP destination. The service starts, Chat UI loads, LLM responds — but MCP tools won't be available. Add `LLM_AGENT_MCP_DESTINATION` later and redeploy.
 
 ### Local Tools
 
-- [ ] Node.js 20+ installed
+- [ ] Node.js 22+ installed (`package.json` requires `>=22.0.0`; CI runs 22)
 - [ ] Cloud Foundry CLI (`cf`) installed and logged in
 - [ ] MTA Build Tool (`mbt`) — install via `npm install -g mbt`
 - [ ] Git access to the repository
@@ -71,42 +82,76 @@ npm install
 
 ### Step 2: Create MTA Extension File (10 min)
 
-Copy the template and fill in your subaccount-specific values:
+Templates live in `docs/deployment/templates/`. Pick the one for your scenario and copy it to the
+repository root as `.mtaext`:
 
 ```bash
-cp .mtaext.template .mtaext
+# Scenario A — SAP AI Core
+cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
+
+# Scenario B — external provider
+cp docs/deployment/templates/mcp-openai.mtaext.template .mtaext      # OpenAI-compatible
+cp docs/deployment/templates/mcp-anthropic.mtaext.template .mtaext   # native Anthropic
+
+# No SAP system yet (LLM chat only) / no LLM yet (MCP proxy only)
+cp docs/deployment/templates/llm-only.mtaext.template .mtaext
+cp docs/deployment/templates/mcp-only.mtaext.template .mtaext
 ```
 
-Edit `.mtaext` — minimum required parameters:
+Then edit it. What you must actually set depends on the scenario — there is no universal minimum:
+
+| Deployment | Must set | Notes |
+|------------|----------|-------|
+| **Any** | `APPROUTER_HOST` | Subdomain for UI access |
+| **Scenario A** — SAP AI Core | `LLM_AGENT_MODEL`, and the AI Core resource switched to `active: true` | The model must be deployed in your AI Core instance |
+| **Scenario B** — external provider | `LLM_AGENT_PROVIDER` and `LLM_AGENT_MODEL` in `.mtaext`; `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL` via `cf set-env` **after** deploying (see below) | Leave the AI Core resource inactive |
+| **With SAP access** (both scenarios) | `LLM_AGENT_MCP_DESTINATION` | Without it the app starts in LLM-only mode: chat works, ABAP tools do not |
 
 ```yaml
 parameters:
-  # LLM Model (must be deployed in your AI Core instance)
+  # Approuter host (subdomain for UI access)
+  APPROUTER_HOST: "<your-subdomain>-cloud-llm-hub"
+
+  # LLM model — for Scenario A it must be deployed in your AI Core instance
   LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"
 
   # SAP system destination (configured in BTP Cockpit > Destinations)
   LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
 
-  # Classifier model (cheaper model for classification tasks)
-  LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
-
-  # Embedding model for RAG semantic search
-  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
-
-  # RAG type: "vector" (semantic search) or "in-memory" (keyword only)
-  LLM_AGENT_RAG_TYPE: "vector"
-
-  # System-to-destination mapping for CALM/external service routing
-  DESTINATION_MAPPING: "DEV.100=S4HANA_DEV"
-
-  # Approuter host (subdomain for UI access)
-  APPROUTER_HOST: "<your-subdomain>-cloud-llm-hub"
-
-# Enable AI Core service binding
+# Scenario A only — enable the AI Core service binding
 resources:
   - name: cloud-llm-hub-ai-core
     active: true
 ```
+
+**Scenario B — the API key and base URL are not `.mtaext` parameters.** `mta.yaml` does not
+declare `LLM_AGENT_API_KEY` or `LLM_AGENT_BASE_URL`, so a value placed in `.mtaext` is silently
+dropped and never reaches the container — and a secret does not belong in an extension descriptor
+anyway. Set them on the deployed app instead:
+
+```bash
+cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY  "<your-api-key>"
+cf set-env cloud-llm-hub-srv LLM_AGENT_BASE_URL "https://api.openai.com/v1"
+cf restart cloud-llm-hub-srv
+```
+
+Strictly speaking `LLM_AGENT_MODEL` also has a code fallback (`gpt-4o-mini`) and
+`LLM_AGENT_MCP_DESTINATION` may be empty, but neither default is useful in a real deployment —
+treat the table above as the practical minimum.
+
+**Everything else is optional** — the defaults below are what a deployment gets if you leave the
+parameter out. Add one only when you actually need to change the behaviour:
+
+| Parameter | Default | When you need it |
+|-----------|---------|------------------|
+| `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Only to route classification to a cheaper model. A separate deployed model is not a prerequisite |
+| `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` | Only when your provider names the model differently |
+| `LLM_AGENT_RAG_TYPE` | `in-memory` (keyword-only) | Set to `vector` for semantic tool selection — requires a reachable embeddings endpoint |
+| `DESTINATION_MAPPING` | empty | Only for CALM or other external callers that address systems as `DEV.100` instead of a destination name |
+| `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Tuning how many tools reach the model |
+
+For Scenario B, replace the AI Core block with `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
+`LLM_AGENT_BASE_URL`, and leave the AI Core resource inactive.
 
 ### Step 3: Configure BTP Destination (10 min)
 
@@ -121,7 +166,7 @@ In BTP Cockpit → Subaccount → Destinations, manually create the destination:
 
 2. For on-premise systems — ensure Cloud Connector is configured:
    - Virtual host mapped to the SAP system
-   - Access control for `/sap/bc/adt/**` and `/sap/bc/http/**`
+   - Access control for `/sap/bc/adt/**`
 
 > This step is mandatory — without a destination the agent has no SAP system to connect to and MCP tools will not load.
 
@@ -253,17 +298,18 @@ POST https://<SRV_URL>/mcp/stream/http
 Header: X-SAP-Destination: <destination-name>
 ```
 
-### Deploy without AI Core (LLM-less mode)
+### Deploy without AI Core
 
-Set `active: false` for AI Core in `.mtaext`:
+AI Core is already inactive in `mta.yaml` (`active: false`, `optional: true`), so there is nothing
+to switch off — simply do not activate it in `.mtaext`.
 
-```yaml
-resources:
-  - name: cloud-llm-hub-ai-core
-    active: false
-```
+What you get then depends on whether another provider is configured:
 
-MCP proxy works. Agent endpoints return 503.
+- **External provider set** (`LLM_AGENT_PROVIDER` = `openai` | `anthropic` | `deepseek`, plus
+  `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL`) — this is Scenario B. The agent and
+  `/v1/chat/completions` work normally; no AI Core involved.
+- **No provider at all** — MCP-proxy-only mode. The raw tool surface works; the agent endpoints do
+  not. Fine for validating SAP connectivity first.
 
 ### Add additional SAP destinations
 
@@ -323,13 +369,13 @@ Override `APPROUTER_HOST` in `.mtaext` to use a meaningful subdomain instead of 
 
 **Symptom**: First tool call works, subsequent iterations fail with `code: 500, location: "LLM Module"`.
 
-**Resolution**: This is a known SAP AI Core Orchestration issue with streaming + Anthropic models + tool use. The service uses `FallbackLlmCallStrategy` — it automatically falls back to non-streaming on failure. If persistent, set `LLM_AGENT_PIPELINE_MODE: "default"` which uses non-streaming by default.
+**Resolution**: This is a known SAP AI Core Orchestration issue with streaming + Anthropic models + tool use. The service uses `FallbackLlmCallStrategy` — it automatically falls back to non-streaming on failure. (An earlier version of this entry suggested a pipeline-mode variable; `mta.yaml` still passes one, but no code reads it, so setting it changes nothing.)
 
 ### Token usage unexpectedly high
 
 **Symptom**: Simple requests consume 50K+ input tokens.
 
-**Resolution**: Check `LLM_AGENT_PIPELINE_MODE`. Structured pipeline mode adds overhead from reranker and custom handlers. Default mode matches PoC (~17K tokens). Also verify `ragQueryK` (default: 5) and `refreshToolsPerIteration: false`.
+**Resolution**: Check how many tools reach the model. `LLM_AGENT_RAG_QUERY_K` is set to **15** in `mta.yaml`, so that — not the code fallback of `5` — is what a BTP deployment runs with; lowering it cuts input tokens directly. Also verify `refreshToolsPerIteration: false`.
 
 ---
 
@@ -359,14 +405,20 @@ cf logs cloud-llm-hub-srv --recent | grep -i error
 ```
 
 Common causes:
-- Missing AI Core binding → check `active: true` in `.mtaext`
+- No LLM provider at all → either activate the AI Core binding (`active: true` in `.mtaext`) **or** set `LLM_AGENT_PROVIDER` with `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL`
 - Missing destination → verify destination name matches `LLM_AGENT_MCP_DESTINATION`
 - Missing entitlements → check subaccount entitlements in BTP Cockpit
 
 ### "Agent initialization failed"
 
+Scenario A (SAP AI Core):
 - AI Core model not deployed → deploy model in AI Launchpad
 - Wrong model name → check `LLM_AGENT_MODEL` matches deployed model ID
+
+Scenario B (external provider):
+- Wrong or missing `LLM_AGENT_BASE_URL` / `LLM_AGENT_API_KEY`
+- `LLM_AGENT_MODEL` not offered by that provider
+- Egress to the provider endpoint not allowlisted from Cloud Foundry
 
 ### MCP tools not loading
 

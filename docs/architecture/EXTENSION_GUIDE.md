@@ -2,13 +2,23 @@
 
 How to extend Cloud LLM Hub with persistent RAG, domain-specific knowledge stores, additional MCP servers, and custom ABAP/ADT tools.
 
+<!-- docs-check:proposed-env — this guide names configuration that does not exist
+     yet, by design; the env-name check is skipped here. -->
+
 ## Current Architecture
 
 ```
-SmartAgent (singleton, built via SmartAgentBuilder)
-├── LLM: sap-ai-sdk pipeline → @sap-ai-sdk/orchestration → SAP AI Core
-├── MCP: [ABAP] — MCPClientWrapper → McpClientAdapter → /mcp/stream/http
-├── RAG: InMemoryRag (facts + feedback + state)
+SmartAgent — one cached handle PER DESTINATION (`agentHandles`, agent-manager.ts),
+              built via SmartAgentBuilder
+├── LLM: makeLlm(LLM_AGENT_PROVIDER)
+│        sap-ai-sdk (default) → SAP AI Core, or openai / anthropic / deepseek
+├── MCP: [ABAP] — MCPClientWrapper { transport: 'embedded' } → McpClientAdapter
+│        → HandlerExporter handlers IN-PROCESS (no HTTP, no self-loop).
+│        The adapter is built over a placeholder connection; the real ABAP
+│        connection arrives per request through connectionALS.
+├── RAG: facts + feedback + state, plus a tools corpus vectorized ONCE and
+│        shared by every destination (`sharedToolsRag`).
+│        Backend per LLM_AGENT_RAG_TYPE: keyword-only `in-memory`, else vector.
 └── Classifier + Assembler (built-in defaults)
 ```
 
@@ -74,15 +84,15 @@ Load from env vars (comma-separated list or individual vars):
 ### Step 2: Create MCP clients in `srv/agent-manager.ts`
 
 ```typescript
-import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
-import { McpClientAdapter } from '@mcp-abap-adt/llm-agent/dist/smart-agent/adapters/mcp-client-adapter';
+import { MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 
-// Build array of MCP adapters
-const mcpAdapters: McpClientAdapter[] = [];
-
-// 1. Always add the ABAP MCP client (existing self-loop)
-const abapMcpClient = new MCPClientWrapper(buildMCPConfig(config, req));
-mcpAdapters.push(new McpClientAdapter(abapMcpClient));
+// 1. The ABAP client is already built for you — it is EMBEDDED, not an HTTP
+//    self-loop. agent-manager.ts creates it with `transport: 'embedded'` over
+//    the HandlerExporter handlers, so there is no URL to point at.
+//    START from it: today the builder is called `.withMcpClients([mcpAdapter])`,
+//    so any external client must be ADDED to that array, never replace it —
+//    dropping it costs the agent every ABAP tool.
+const mcpAdapters: McpClientAdapter[] = [mcpAdapter];
 
 // 2. Add each configured MCP server
 for (const server of config.mcpServers) {
@@ -134,7 +144,12 @@ curl http://localhost:4004/odata/v4/agent/Health() \
   -H "Authorization: Basic YWxpY2U6" | jq
 ```
 
-The `mcp` array in the health response will show status of each connected MCP server.
+`Health()` does **not** list the servers individually — it reduces them to one
+boolean. The handler (`srv/agent-service.ts`) returns `status`, `agentReady`,
+`mcpConnected` (true only when every MCP client reports ok), `llmProvider`,
+`llmDestination`, `model`, `mcpDestination` and `timestamp`. So a newly added
+server shows up only as `mcpConnected` flipping to false when it is unhealthy;
+to see per-server detail, log it in `agent-manager.ts` or extend the handler.
 
 ### Summary: What to Touch
 
@@ -143,7 +158,7 @@ The `mcp` array in the health response will show status of each connected MCP se
 | `srv/agent-config.ts` | Add `McpServerConfig` interface + env var parsing |
 | `srv/agent-manager.ts` | Loop over configs, create `MCPClientWrapper` + `McpClientAdapter` per server |
 | `mta.yaml` | Add parameter placeholders + env vars |
-| `.mtaext.template` | Add placeholder values |
+| `docs/deployment/templates/*.mtaext.template` | Add placeholder values |
 | `.mtaext` | Add actual values |
 
 That's it. No changes needed in `@mcp-abap-adt/core`, `openai-handler.ts`, or `agent-service.ts` — they are MCP-agnostic.
@@ -170,15 +185,15 @@ That's it. No changes needed in `@mcp-abap-adt/core`, `openai-handler.ts`, or `a
 |------|--------|
 | `srv/rag/hana-vector-rag.ts` | **New.** Implement `IRag` interface for HANA Vector Engine |
 | `srv/agent-config.ts` | Add env vars: `RAG_BACKEND`, `RAG_HANA_URL`, `RAG_HANA_SCHEMA` |
-| `srv/agent-manager.ts` | Pass persistent RAG instances to `.withRag({ facts, feedback, state })` |
+| `srv/agent-manager.ts` | Register the store through the builder's RAG API — `setToolsRag`, `setHistoryRag`, `addRagCollection`, `addRagProvider`, `setRagRegistry`. There is no `withRag({facts, feedback, state})` method |
 | `mta.yaml` | Add HANA Cloud resource binding |
-| `.mtaext.template` | Add RAG backend config vars |
+| `docs/deployment/templates/*.mtaext.template` | Add RAG backend config vars |
 
 **Implementation pattern:**
 
 ```typescript
 // srv/rag/hana-vector-rag.ts
-import type { IRag } from '@mcp-abap-adt/llm-agent/dist/smart-agent/interfaces/rag';
+import type { IRag } from '@mcp-abap-adt/llm-agent';
 
 export class HanaVectorRag implements IRag {
   constructor(private schema: string, private tableName: string) {}
@@ -204,19 +219,21 @@ export class HanaVectorRag implements IRag {
 **In agent-manager.ts:**
 
 ```typescript
-// Replace:
-rag: { type: 'in-memory' }
-
-// With:
+// Replace the in-memory default (LLM_AGENT_RAG_TYPE=in-memory) with the
+// persistent store, registering it through the builder's actual RAG API.
 const persistentRag = new HanaVectorRag(config.rag.schema, 'agent_memory');
-builder.withRag({
-  facts: persistentRag,
-  feedback: persistentRag,
-  state: persistentRag,
-});
+
+builder.setHistoryRag(persistentRag);
+// addRagCollection takes ONE object: { name, rag, editor?, meta?, idempotent? }
+builder.addRagCollection({ name: 'facts', rag: persistentRag });
+builder.addRagCollection({ name: 'feedback', rag: persistentRag });
+// setToolsRag is already wired by agent-manager.ts to the SHARED tool corpus —
+// only override it if you also want tool intents in HANA.
 ```
 
-Using the same instance for all 3 stores is fine — data is separated by SmartAgent internally via metadata.
+Reusing one instance across collections is fine: entries are separated by
+namespace metadata. Check the exact signatures against the installed
+`SmartAgentBuilder` before writing code — this API has moved before.
 
 ---
 
@@ -283,7 +300,7 @@ for (const doc of docs) {
 
 **Goal:** Add new MCP tools for interacting with ABAP systems via ADT (ABAP Development Tools) API.
 
-The ABAP MCP tools live in the `@mcp-abap-adt/core` package (separate repo). Cloud-llm-hub **does not implement ABAP tools** — it only proxies MCP requests to the embedded `@mcp-abap-adt` server via `/mcp/stream/http`.
+The ABAP MCP tools live in the `@mcp-abap-adt/core` package (separate repo). Cloud-llm-hub **does not implement ABAP tools**. It exposes them two ways: the raw `/mcp/stream/http` surface for external MCP clients, and — for the agent itself — the same handlers called **in-process** through an embedded `MCPClientWrapper`, with no HTTP hop.
 
 **Where ABAP tools are defined:**
 
@@ -362,7 +379,7 @@ SmartAgent supports **multiple MCP clients** via `.withMcpClients([...])`. Addin
 
 ```
 SmartAgent
-├── MCP Client 1: ABAP → /mcp/stream/http → SAP ABAP system
+├── MCP Client 1: ABAP → embedded HandlerExporter handlers (in-process, no HTTP)
 └── MCP Client 2: JIRA → jira-mcp-server → Atlassian JIRA API
 ```
 
@@ -383,14 +400,14 @@ SmartAgent
 | `srv/agent-config.ts` | Add `LLM_AGENT_JIRA_MCP_URL`, `LLM_AGENT_JIRA_API_TOKEN` |
 | `srv/agent-manager.ts` | Create second MCPClientWrapper + McpClientAdapter, add to `.withMcpClients([abap, jira])` |
 | `mta.yaml` | Add JIRA env vars |
-| `.mtaext.template` | Add JIRA config placeholders |
+| `docs/deployment/templates/*.mtaext.template` | Add JIRA config placeholders |
 
 **In agent-manager.ts:**
 
 ```typescript
-// ABAP MCP client (existing)
-const abapMcpClient = new MCPClientWrapper(buildMCPConfig(config, req));
-const abapAdapter = new McpClientAdapter(abapMcpClient);
+// ABAP MCP client — already built by agent-manager.ts as an EMBEDDED client
+// (`transport: 'embedded'`) over the HandlerExporter handlers. Shown here only
+// to place the new client next to it; you do not construct this one yourself.
 
 // JIRA MCP client (new)
 const jiraMcpClient = new MCPClientWrapper({
@@ -422,9 +439,10 @@ CAP Express (port 4004)
 └── /v1/usage                     → token usage
 
 SmartAgent
-├── LLM: SAP AI Core (gpt-4o-mini / claude-3-5-sonnet / deepseek-chat)
+├── LLM: makeLlm(LLM_AGENT_PROVIDER) — SAP AI Core by default,
+│        or openai / anthropic / deepseek
 ├── MCP Clients:
-│   ├── ABAP → /mcp/stream/http → SAP system
+│   ├── ABAP → embedded handlers, in-process (no HTTP self-loop)
 │   └── JIRA → jira-mcp-server → Atlassian API
 ├── RAG (persistent, HANA Vector):
 │   ├── facts:    abap-knowledge + client-data + tools (namespaced)
@@ -445,7 +463,7 @@ SmartAgent
 | `srv/custom-mcp-server.ts` | — | — | **New** (Option B) | — |
 | `@mcp-abap-adt/core` | — | — | Modify (Option A) | — |
 | `mta.yaml` | Modify | — | — | Modify |
-| `.mtaext.template` | Modify | Modify | Modify | Modify |
+| `docs/deployment/templates/*.mtaext.template` | Modify | Modify | Modify | Modify |
 
 **New env vars summary:**
 

@@ -238,7 +238,7 @@ receives the assistant's text exactly as it streamed, including
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `ERROR: missing x-sap-destination` | The caller's prompt did not include a destination name | Add `Destination: <NAME>` at the end of the prompt. |
-| `ERROR: proxy unreachable` | Local approuter on `:3001` is not running, or it points at the wrong subaccount | Start the proxy (`npx mcp-abap-adt-proxy …` or your project's launcher). Verify it targets the subaccount that hosts the requested destination. |
+| `ERROR: proxy unreachable` | Local approuter on `:3001` is not running, or it points at the wrong subaccount | Start the proxy (`npx @mcp-abap-adt/proxy …` — the binary is named `mcp-abap-adt-proxy`, but no package of that bare name exists on npm, so `npx` needs the scoped name — or your project's launcher). Verify it targets the subaccount that hosts the requested destination. |
 | Response with `WARN: response likely fabricated` | The SmartAgent answered from memory rather than calling tools | Re-issue with a more explicit tool-call instruction (`Call ReadProgram exactly once. Return …`). Treat the current answer as unverified. |
 | Sub-agent runs but returns empty | The prompt did not name a tool or a target object | Make the prompt explicit. The sub-agent is a gateway, not a generalist. |
 | `subagent_type "cloud-llm-hub" not found` | Agent file missing, malformed front-matter, or Claude Code session was started before the file existed | Verify `~/.claude/agents/cloud-llm-hub.md` exists. Restart Claude Code. |

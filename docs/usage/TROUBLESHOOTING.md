@@ -12,7 +12,7 @@ Quick reference for common issues and solutions when using Cloud LLM Hub.
 ```bash
 # Health check
 curl -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/odata/v4/mcp/Health\(\)
+     http://localhost:4004/odata/v4/mcp-proxy/Health\(\)
 
 # Expected: {"status":"UP","timestamp":"..."}
 ```
@@ -63,7 +63,7 @@ cf env cloud-llm-hub-srv
 ```bash
 # Verify header is present
 curl -v -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/odata/v4/mcp/Health\(\)
+     http://localhost:4004/odata/v4/mcp-proxy/Health\(\)
 ```
 
 **2. Refresh XSUAA Token:**
@@ -201,27 +201,30 @@ destination's `sap-client` **or** the per-request `x-sap-client` header.
 **1. Check User Roles:**
 
 ```bash
-# Development users
-# alice: MCP_Connector, MCP_Admin
-# bob: MCP_Connector
+# Development users (mocked auth, see package.json cds.requires.auth)
+# alice: MCP_Full, MCP_Developer, MCP_Analyst, MCP_Reader
+# bob:   MCP_Developer, MCP_Analyst, MCP_Reader
+# carol: MCP_Analyst, MCP_Reader
+# dave:  MCP_Reader
 
 # Verify with correct user
 curl -H "Authorization: Basic YWxpY2U6" \  # alice
-     http://localhost:4004/odata/v4/mcp/Health\(\)
+     http://localhost:4004/odata/v4/mcp-proxy/Health\(\)
 ```
 
 **2. Verify XSUAA Scopes:**
 
 - Check `xs-security.json` for required scopes
 - Ensure role collections are configured
-- Verify user has `MCP_Connector` role
+- Verify the user holds one of `MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`
 
 **3. Check Production Roles:**
 
 ```bash
 # In BTP Cockpit
 # Go to Security → Role Collections
-# Assign MCP_Connector role to user
+# Assign one of: MCP Reader Access, MCP Analyst Access,
+#                MCP Developer Access, MCP Full Access
 ```
 
 ---
@@ -260,7 +263,7 @@ curl -v https://your-sap-system.com/sap/bc/adt/discovery
 ```bash
 # Probe destination
 curl -H "Authorization: Basic YWxpY2U6" \
-     "http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=SAP_DEV_DEST"
+     "http://localhost:4004/odata/v4/mcp-proxy/ProbeDestination?destination=SAP_DEV_DEST"
 ```
 
 **3. Check Network/Firewall:**
@@ -320,14 +323,16 @@ curl -u username:password \
 - Check destination credentials in BTP Cockpit
 - Verify authentication type matches
 
-**4. Reset MCP Session:**
+**4. There is no MCP session to reset.**
+
+The transport runs in stateless mode (`sessionIdGenerator: undefined`,
+`srv/mcp-manager.ts`) and a fresh server is built per request, so a plain call
+is already a clean one:
 
 ```bash
-# Omit Mcp-Session-Id header to force re-initialization
 curl -X POST \
      -H "Authorization: Basic YWxpY2U6" \
-     -H "Content-Type: application/x-ndjson" \
-     # NO Mcp-Session-Id header
+     -H "Content-Type: application/json" \
      --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
      http://localhost:4004/mcp/stream/http
 ```
@@ -424,38 +429,23 @@ cf restage cloud-llm-hub-srv
 
 **Solutions:**
 
-**1. Check Session Management:**
+**1. Do not send a session header.**
+
+The endpoint is stateless — it issues no `Mcp-Session-Id` and ignores one if
+sent. Each call is independent:
 
 ```bash
-# First request: Omit Mcp-Session-Id
 curl -X POST \
      -H "Authorization: Basic YWxpY2U6" \
-     -H "Content-Type: application/x-ndjson" \
+     -H "Content-Type: application/json" \
      --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
      http://localhost:4004/mcp/stream/http
-
-# Response includes: Mcp-Session-Id: <session-id>
-
-# Subsequent requests: Include Mcp-Session-Id
-curl -X POST \
-     -H "Authorization: Basic YWxpY2U6" \
-     -H "Mcp-Session-Id: <session-id-from-previous-response>" \
-     -H "Content-Type: application/x-ndjson" \
-     --data '{"jsonrpc":"2.0","id":2,"method":"tools/call",...}' \
-     http://localhost:4004/mcp/stream/http
 ```
 
-**2. Reset Session:**
+**2. Credential rotation needs no reset.**
 
-```bash
-# Omit Mcp-Session-Id to force re-initialization
-# Useful after credential rotation
-```
-
-**3. Reset When Needed:**
-
-- The proxy creates MCP server instances per request (no server cache)
-- Omit `Mcp-Session-Id` to force re-initialization
+A new server instance is created per request from that request's own `x-sap-*`
+headers, so the next call already uses the new credentials.
 
 ---
 
@@ -510,9 +500,13 @@ npm exec -- tsc --noEmit
 
 ### "Invalid Request: Server already initialized"
 
-**Cause:** MCP session already exists, but request doesn't include `Mcp-Session-Id`.
+**Cause:** Two `initialize` calls reached the same MCP server instance. This is
+not a session-header problem — the transport is stateless and issues no
+`Mcp-Session-Id`; a server is created per request.
 
-**Solution:** Include `Mcp-Session-Id` header from previous response, or omit it to reset.
+**Solution:** Send `initialize` once per connection, then go straight to
+`tools/list` / `tools/call`. Do not add a session header — it is neither issued
+nor required.
 
 ---
 
@@ -544,10 +538,7 @@ npm exec -- tsc --noEmit
 
 ### Additional Resources
 
-- [API Reference](API_REFERENCE.md) - Complete API specification
-- [MCP Proxy Usage](MCP_PROXY_USAGE.md) - Detailed usage guide
-- [Debugging Guide](DEBUGGING.md) - Debugging techniques
-- [MCP Config Update How-To](MCP_CONFIG_UPDATE_HOWTO.md) - Configuration help
+- [API Reference](../architecture/API_REFERENCE.md) - Complete API specification
 
 ### Support Channels
 

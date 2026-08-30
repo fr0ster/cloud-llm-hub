@@ -1,283 +1,93 @@
-# LLM Proxy Configuration Usage Guide
+# SmartAgent Configuration
 
-## Overview
+How cloud-llm-hub configures the agent. Everything here is read by
+`srv/agent-config.ts`, which assembles a singleton config from `LLM_AGENT_*`
+environment variables — there is no config file. The one thing a request can
+change is the **model**: `/v1/chat/completions` passes `body.model` into
+`getSmartAgent`, which hot-swaps it for every cached agent, not just the caller.
+Provider and credentials are process-wide.
 
-The LLM agent is configured through parameters when creating an instance. All necessary settings for connecting to the MCP server are passed via `mcpConfig` or `mcpClient`.
+> **Rewritten against the code.** Earlier revisions documented a
+> constructor-based agent with its own connect step and response shape. That API
+> is gone: the agent is built by `SmartAgentBuilder` in `srv/agent-manager.ts`
+> and reached through `getSmartAgent()`. See git history for the previous text.
 
-## Configuration via Parameters
+## Where values come from
 
-### Example 1: Destination Mode
+| Source | When |
+|--------|------|
+| `.env` in the repo root | Local development only — `srv/env-setup.ts` loads it when neither `VCAP_APPLICATION` nor `CF_INSTANCE_INDEX` is set |
+| `.mtaext` parameters → `mta.yaml` → `cloud-llm-hub-srv.properties` | Deployed, for every variable `mta.yaml` declares |
+| `cf set-env` | Deployed, for secrets `mta.yaml` deliberately does not declare — `LLM_AGENT_API_KEY` and `LLM_AGENT_BASE_URL` |
 
-When using SAP Destination Service, specify the destination name in headers:
+There is **no HTTP-header override** for provider credentials — headers naming
+an LLM vendor or key are not read anywhere. SAP connection headers (`x-sap-*`)
+are a different mechanism and do apply per request.
 
-```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+## Variables
 
-const agent = new Agent({
-  llmProvider: new OpenAIProvider({
-    apiKey: process.env.OPENAI_API_KEY!,
-    model: 'gpt-4o-mini',
-  }),
-  mcpConfig: {
-    url: 'http://localhost:4004/mcp/stream/http',
-    headers: {
-      'Authorization': 'Basic YWxpY2U6',
-      'X-SAP-Destination': 'SAP_DEV_DEST',
-    },
-  },
-});
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `LLM_AGENT_PROVIDER` | `sap-ai-sdk` | `sap-ai-sdk`, `openai`, `anthropic` or `deepseek` |
+| `LLM_AGENT_MODEL` | `gpt-4o-mini` | Model id; for SAP AI Core it must be deployed in AI Launchpad |
+| `LLM_AGENT_API_KEY` | — | Non-SAP providers only. Set with `cf set-env`, never in `.mtaext` |
+| `LLM_AGENT_BASE_URL` | — | Non-SAP providers only. Also used for the embedder |
+| `LLM_AGENT_RESOURCE_GROUP` | `default` | SAP AI Core resource group |
+| `LLM_AGENT_MCP_DESTINATION` | empty | Default BTP destination; empty means LLM-only mode |
+| `LLM_AGENT_RAG_TYPE` | `in-memory` | `in-memory` is keyword-only; any other value takes the vector path |
+| `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Tools returned per query by the tool-intent RAG |
+| `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model id |
+| `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
+| `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS` | provider defaults | Sampling parameters |
+| `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
+| `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
+| `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
 
-await agent.connect();
-const response = await agent.process('What tools are available?');
-console.log(response.message);
+`LLM_AGENT_STEP_REVIEW_ENABLED=false` switches off the honesty controller's
+reviewer (`srv/agent-manager.ts`).
+
+## Scenario A — SAP AI Core
+
+```yaml
+parameters:
+  LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
+
+resources:
+  - name: cloud-llm-hub-ai-core
+    active: true
 ```
 
-### Example 2: Direct Mode (without Destination)
+Credentials arrive through the service binding in `VCAP_SERVICES`; no key is set
+by hand.
 
-If not using Destination Service, you can pass SAP parameters directly:
+## Scenario B — external provider
 
-```typescript
-const agent = new Agent({
-  llmProvider: new OpenAIProvider({
-    apiKey: process.env.OPENAI_API_KEY!,
-  }),
-  mcpConfig: {
-    url: 'http://localhost:4004/mcp/stream/http',
-    headers: {
-      'Authorization': 'Basic YWxpY2U6',
-      'X-SAP-URL': 'https://my-sap-system.example.com',
-      'X-SAP-Auth-Type': 'jwt',
-      'X-SAP-JWT-Token': process.env.SAP_JWT_TOKEN!,
-      'X-SAP-Client': '100',
-    },
-  },
-});
-
-await agent.connect();
-const response = await agent.process('What tools are available?');
+```yaml
+parameters:
+  LLM_AGENT_PROVIDER: "openai"
+  LLM_AGENT_MODEL: "gpt-4o"
+  LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
 ```
 
-### Example 3: Using Pre-configured MCP Client
+then, after deploying:
 
-You can also create the MCP client separately and pass it to the agent:
-
-```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
-
-const mcpClient = new MCPClientWrapper({
-  url: 'http://localhost:4004/mcp/stream/http',
-  headers: {
-    'Authorization': 'Basic YWxpY2U6',
-    'X-SAP-Destination': 'SAP_DEV_DEST',
-  },
-});
-
-const agent = new Agent({
-  llmProvider: new OpenAIProvider({
-    apiKey: process.env.OPENAI_API_KEY!,
-  }),
-  mcpClient: mcpClient,
-});
-
-await agent.connect();
+```bash
+cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY  "<your-api-key>"
+cf set-env cloud-llm-hub-srv LLM_AGENT_BASE_URL "https://api.openai.com/v1"
+cf restart cloud-llm-hub-srv
 ```
 
-### Example 4: Auto-Detection of Transport
+`mta.yaml` declares neither of those two, so a value placed in `.mtaext` is
+dropped silently.
 
-The agent can automatically detect the transport type from the URL:
+Native Anthropic and DeepSeek work the same way, with one caveat: the embedder
+is built against the **same** base URL as chat, and neither serves an
+OpenAI-compatible `/embeddings`. Set `LLM_AGENT_RAG_TYPE: "in-memory"` for those,
+which makes tool selection keyword-only.
 
-```typescript
-// Auto-detects 'stream-http' from URL
-const agent = new Agent({
-  llmProvider: new OpenAIProvider({ apiKey: process.env.OPENAI_API_KEY! }),
-  mcpConfig: {
-    url: 'http://localhost:4004/mcp/stream/http', // Auto-detects 'stream-http'
-    headers: {
-      'Authorization': 'Basic YWxpY2U6',
-      'X-SAP-Destination': 'SAP_DEV_DEST',
-    },
-  },
-});
+## See also
 
-// Or explicitly specify transport
-const agent2 = new Agent({
-  llmProvider: new OpenAIProvider({ apiKey: process.env.OPENAI_API_KEY! }),
-  mcpConfig: {
-    transport: 'sse', // Explicitly set to SSE
-    url: 'http://localhost:4004/mcp/stream/sse',
-    headers: {
-      'Authorization': 'Basic YWxpY2U6',
-      'X-SAP-Destination': 'SAP_DEV_DEST',
-    },
-  },
-});
-```
-
-## Available Headers
-
-### Authentication Headers
-
-- `Authorization`: Basic or Bearer token for MCP proxy authentication
-  - Basic: `Basic YWxpY2U6` (base64 encoded username:password)
-  - Bearer: `Bearer <JWT_TOKEN>`
-
-### SAP Configuration Headers (Destination Mode)
-
-- `X-SAP-Destination`: Name of the destination in SAP BTP Destination Service
-
-### SAP Configuration Headers (Direct Mode)
-
-- `X-SAP-URL`: Direct SAP system URL
-- `X-SAP-Auth-Type`: Authentication type (`jwt` or `basic`)
-- `X-SAP-JWT-Token`: SAP JWT token (for JWT auth)
-- `X-SAP-Username`: SAP username (for Basic auth)
-- `X-SAP-Password`: SAP password (for Basic auth)
-- `X-SAP-Client`: SAP client number
-
-## Transport Types
-
-### stdio
-
-For local processes and CLI tools:
-
-```typescript
-mcpConfig: {
-  transport: 'stdio',
-  command: 'node',
-  args: ['path/to/mcp-server.js'],
-}
-```
-
-### sse (Server-Sent Events)
-
-For one-way streaming from server to client:
-
-```typescript
-mcpConfig: {
-  transport: 'sse',
-  url: 'http://localhost:4004/mcp/stream/sse',
-  headers: { /* ... */ },
-}
-```
-
-### stream-http (Streamable HTTP)
-
-For bidirectional NDJSON streaming (recommended for production):
-
-```typescript
-mcpConfig: {
-  transport: 'stream-http',
-  url: 'http://localhost:4004/mcp/stream/http',
-  headers: { /* ... */ },
-}
-```
-
-### auto
-
-Automatically detect transport from URL (default):
-
-```typescript
-mcpConfig: {
-  transport: 'auto', // or omit this field
-  url: 'http://localhost:4004/mcp/stream/http', // Will detect 'stream-http'
-  headers: { /* ... */ },
-}
-```
-
-## Complete Example
-
-```typescript
-import { Agent, OpenAIProvider } from '@mcp-abap-adt/llm-proxy';
-
-async function main() {
-  // Create agent with configuration
-  const agent = new Agent({
-    llmProvider: new OpenAIProvider({
-      apiKey: process.env.OPENAI_API_KEY!,
-      model: 'gpt-4o-mini',
-      temperature: 0.7,
-    }),
-    mcpConfig: {
-      url: 'http://localhost:4004/mcp/stream/http',
-      headers: {
-        'Authorization': 'Basic YWxpY2U6',
-        'X-SAP-Destination': 'SAP_DEV_DEST',
-      },
-      timeout: 30000,
-    },
-    maxIterations: 5,
-  });
-
-  // Connect to MCP server
-  await agent.connect();
-
-  // Process user message
-  const response = await agent.process('List all available ABAP classes');
-  
-  if (response.error) {
-    console.error('Error:', response.error);
-  } else {
-    console.log('Response:', response.message);
-  }
-
-  // Get conversation history
-  const history = agent.getHistory();
-  console.log('History:', history);
-}
-```
-
-## Error Handling
-
-```typescript
-try {
-  const agent = new Agent({
-    llmProvider: new OpenAIProvider({ apiKey: process.env.OPENAI_API_KEY! }),
-    mcpConfig: {
-      url: 'http://localhost:4004/mcp/stream/http',
-      headers: {
-        'Authorization': 'Basic YWxpY2U6',
-        'X-SAP-Destination': 'SAP_DEV_DEST',
-      },
-    },
-  });
-
-  await agent.connect();
-  const response = await agent.process('What tools are available?');
-  
-  if (response.error) {
-    console.error('Agent error:', response.error);
-  } else {
-    console.log('Success:', response.message);
-  }
-} catch (error: any) {
-  console.error('Failed to create or connect agent:', error.message);
-}
-```
-
-## Best Practices
-
-1. **Store sensitive data in environment variables:**
-   ```typescript
-   headers: {
-     'Authorization': `Basic ${Buffer.from(`${process.env.MCP_USER}:${process.env.MCP_PASS}`).toString('base64')}`,
-     'X-SAP-Destination': process.env.SAP_DESTINATION!,
-   }
-   ```
-
-2. **Use appropriate transport for your use case:**
-   - Development: `stdio` or `sse`
-   - Production: `stream-http`
-
-3. **Handle connection errors:**
-   ```typescript
-   try {
-     await agent.connect();
-   } catch (error) {
-     console.error('Connection failed:', error);
-     // Retry or fallback logic
-   }
-   ```
-
-4. **Reuse agent instance:**
-   - Create agent once and reuse for multiple requests
-   - Connection is maintained between requests
+- `srv/agent-config.ts` — the single place these variables are read
+- [ARCHITECTURE.md §12](../architecture/ARCHITECTURE.md) — per-variable semantics
+- [Installation Plan](../deployment/INSTALLATION_PLAN.md) — which of these a deployment actually needs

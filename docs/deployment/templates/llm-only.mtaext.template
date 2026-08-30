@@ -3,7 +3,7 @@
 # Requires: SAP AI Core or external LLM API key
 #
 # Usage:
-#   cp docs/deployment/llm-only.mtaext.template .mtaext
+#   cp docs/deployment/templates/llm-only.mtaext.template .mtaext
 #   # Edit values below
 #   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 
@@ -28,7 +28,6 @@ parameters:
   LLM_AGENT_RESOURCE_GROUP: "default"
   LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
   LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
-  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
   # Approuter route host (unique for parallel deploy)

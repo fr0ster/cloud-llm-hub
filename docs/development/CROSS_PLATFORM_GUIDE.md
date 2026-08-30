@@ -110,7 +110,7 @@ Present in: root, `mcp-abap-adt`
    cds build
    
    # LLM proxy is installed from npm
-   npm install @mcp-abap-adt/llm-proxy
+   npm install @mcp-abap-adt/proxy
    
    # In submodules/mcp-abap-adt
    cd submodules/mcp-abap-adt

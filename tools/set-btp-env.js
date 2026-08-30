@@ -11,23 +11,19 @@
  *   npm run deploy:set-env
  *
  *   # Option 2: Export variables first, then run script
- *   export OPENAI_API_KEY="sk-proj-your-key-here"
+ *   export LLM_AGENT_API_KEY="sk-proj-your-key-here"
  *   npm run deploy:set-env
  *
  *   # Option 3: Use CF CLI directly (if you prefer)
- *   export OPENAI_API_KEY="sk-proj-your-key-here"
- *   cf set-env cloud-llm-hub-srv OPENAI_API_KEY "$OPENAI_API_KEY"
+ *   export LLM_AGENT_API_KEY="sk-proj-your-key-here"
+ *   cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY "$LLM_AGENT_API_KEY"
  *   cf restage cloud-llm-hub-srv
  *
  * Environment variables to set (read from .env file or process.env):
- *   - OPENAI_API_KEY
- *   - OPENAI_MODEL (optional)
- *   - OPENAI_ORG (optional)
- *   - OPENAI_PROJECT (optional)
- *   - ANTHROPIC_API_KEY (optional)
- *   - ANTHROPIC_MODEL (optional)
- *   - DEEPSEEK_API_KEY (optional)
- *   - DEEPSEEK_MODEL (optional)
+ *   - LLM_AGENT_API_KEY
+ *   - LLM_AGENT_BASE_URL
+ *   - LLM_AGENT_PROVIDER (optional — usually set in .mtaext)
+ *   - LLM_AGENT_MODEL (optional — usually set in .mtaext)
  *
  * Note: API keys should NOT be stored in mta.yaml for security reasons.
  * This script allows setting them via CF CLI after deployment.
@@ -53,24 +49,16 @@ if (existsSync(envPath)) {
   );
 }
 
-// Environment variables to set
+// Environment variables to set.
+//
+// These are exactly the names srv/agent-config.ts reads. The script previously
+// set vendor-prefixed names (OPENAI_API_KEY, LLM_PROVIDER and so on), which the
+// runtime never looks at — the app came up with no credentials and no error.
 const envVars = {
-  // OpenAI
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-  OPENAI_ORG: process.env.OPENAI_ORG,
-  OPENAI_PROJECT: process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ,
-
-  // Anthropic
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
-
-  // DeepSeek
-  DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
-  DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL,
-
-  // LLM Provider selection
-  LLM_PROVIDER: process.env.LLM_PROVIDER,
+  LLM_AGENT_PROVIDER: process.env.LLM_AGENT_PROVIDER,
+  LLM_AGENT_MODEL: process.env.LLM_AGENT_MODEL,
+  LLM_AGENT_API_KEY: process.env.LLM_AGENT_API_KEY,
+  LLM_AGENT_BASE_URL: process.env.LLM_AGENT_BASE_URL,
 };
 
 function main() {
@@ -127,7 +115,8 @@ function main() {
       '   Set variables in .env file or as process.env before running this script.',
     );
     console.log('\n   Example:');
-    console.log('     export OPENAI_API_KEY="sk-proj-your-key-here"');
+    console.log('     export LLM_AGENT_API_KEY="sk-proj-your-key-here"');
+    console.log('     export LLM_AGENT_BASE_URL="https://api.openai.com/v1"');
     console.log('     npm run deploy:set-env');
     process.exit(0);
   }

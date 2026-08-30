@@ -113,7 +113,7 @@ In `~/.continue/config.yaml`:
 
 ```yaml
 models:
-  - model: default
+  - model: <id from GET /v1/models>
     title: Cloud LLM Hub
     provider: openai
     apiBase: https://your-app.cfapps.eu10.hana.ondemand.com/v1
@@ -125,7 +125,7 @@ models:
 In Cursor Settings -> Models -> OpenAI API Key:
 - API Key: `<XSUAA_JWT_TOKEN>`
 - Base URL: `https://your-app.cfapps.eu10.hana.ondemand.com/v1`
-- Model: `default`
+- Model: the id from `GET /v1/models`
 
 ## Request Format
 
@@ -178,4 +178,3 @@ See `.env.example` for token setup instructions.
 
 - [MCP Proxy Connection](MCP_CONNECTION.md) - Connecting to MCP Stream-HTTP endpoint
 - [CAP Express Auth](../development/CAP_EXPRESS_AUTH.md) - How auth works on custom routes
-- [Consumer Guide](CONSUMER_GUIDE.md) - General consumer guide

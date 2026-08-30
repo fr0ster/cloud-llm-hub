@@ -4,129 +4,100 @@
 
 To test the LLM agent in `cloud-llm-hub`, you need:
 
-1. **OpenAI API Key** - Required for LLM provider
+1. **A configured LLM provider** — SAP AI Core by default (`LLM_AGENT_PROVIDER=sap-ai-sdk`,
+   credentials from the service binding). An API key is needed only for an external
+   provider
 2. **Running cloud-llm-hub** - CAP service must be running
-3. **MCP Proxy accessible** - Agent connects to MCP proxy endpoint (runs with CAP)
-4. **SAP Configuration** - Either destination or direct SAP connection (passed via headers)
+3. **SAP Configuration** - Either a destination or a direct SAP connection, passed via `x-sap-*` headers
 
 **Important Architecture Note:**
-- Agent doesn't know about SAP destinations - it only works with MCP client
-- `cloud-llm-hub` wrapper (`agent-manager.ts`) extracts SAP config from request headers
-- Wrapper creates MCP client with proper headers and passes it to agent
-- Agent is agnostic to SAP - it just works with MCP
+- The agent does **not** call the MCP proxy over HTTP. `agent-manager.ts` gives it an
+  embedded MCP client (`transport: 'embedded'`) over the HandlerExporter handlers,
+  so tool calls run in-process
+- The agent knows nothing about SAP destinations. The per-request ABAP connection is
+  built from the request's `x-sap-*` headers and reaches each tool call through
+  `connectionALS`
 
 ## LLM Provider Configuration
 
-API keys can be provided in three ways, depending on your environment:
+Provider configuration reaches the service in two ways:
 
-### Option 1: HTTP Headers (Runtime Override)
+> **There is no header-based provider override.** Per-request headers naming an
+> LLM vendor or key are read by nothing — no handler and no `env-setup.ts` code
+> path (a stale comment in `srv/env-setup.ts` still suggests otherwise). The
+> provider is process-wide: `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`,
+> `LLM_AGENT_BASE_URL`, `LLM_AGENT_MODEL`. Only SAP connection headers
+> (`x-sap-*`) are per request.
 
-Pass API keys via HTTP headers in each request (works for both local and BTP):
-
-```bash
-# OpenAI
-X-OpenAI-API-Key: sk-proj-your-key-here
-X-OpenAI-Model: gpt-4o-mini (optional)
-X-OpenAI-Org: org-your-org-id (optional)
-X-OpenAI-Project: proj-your-project-id (optional)
-
-# Anthropic
-X-Anthropic-API-Key: sk-ant-your-key-here
-X-LLM-Provider: anthropic
-X-Anthropic-Model: claude-3-5-sonnet-20241022 (optional)
-
-# DeepSeek
-X-DeepSeek-API-Key: sk-your-key-here
-X-LLM-Provider: deepseek
-X-DeepSeek-Model: deepseek-chat (optional)
-```
-
-### Option 2: Local Development (.env file)
+### Option 1: Local Development (.env file)
 
 For local development, create a `.env` file in the **project root** (`cloud-llm-hub/.env`):
 
 ```bash
-# Option 1: Copy from agent's .env (recommended - if you already have it configured)
-touch .env
-
-# Option 2: Copy template (if starting fresh)
-cp .env.template .env
-
-# Edit .env with your API keys
-nano .env  # or use your favorite editor
+cp .env.example .env
+# then edit it with your provider settings
 ```
 
-**Important:** 
-- `.env` file location: `cloud-llm-hub/.env` (project root)
-- **This `.env` file is from the agent** - it's the same configuration used by `cloud-llm-hub/.env`
-- The agent's `.env` file (`cloud-llm-hub/.env`) is used for standalone agent testing
-- The root `.env` file (`cloud-llm-hub/.env`) is used by cloud-llm-hub service for local development
-- **Both files should have the same content** - you can copy from agent to root: `touch .env`
+**Important:** there is one `.env`, in the repository root, and it is loaded only
+outside Cloud Foundry (`srv/env-setup.ts` checks `VCAP_APPLICATION` and
+`CF_INSTANCE_INDEX`). Deployed instances take their configuration from the
+environment, never from a file.
 
 Example `.env` file (in project root - same as agent's .env):
 ```env
-# OpenAI Configuration
-OPENAI_API_KEY=sk-proj-your-key-here
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_ORG=org-your-org-id
-OPENAI_PROJECT=proj-your-project-id
+# One provider per deployment. srv/agent-config.ts reads only LLM_AGENT_* —
+# vendor-prefixed variable names are read by nothing.
+LLM_AGENT_PROVIDER=openai
+LLM_AGENT_MODEL=gpt-4o-mini
+LLM_AGENT_API_KEY=sk-proj-your-key-here
+LLM_AGENT_BASE_URL=https://api.openai.com/v1
 
-# Anthropic (Claude) Configuration
-ANTHROPIC_API_KEY=sk-ant-your-key-here
-ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
-
-# DeepSeek Configuration
-DEEPSEEK_API_KEY=sk-your-key-here
-DEEPSEEK_MODEL=deepseek-chat
-
-# LLM Provider Selection
-LLM_PROVIDER=openai
+# Anthropic instead:
+#   LLM_AGENT_PROVIDER=anthropic
+#   LLM_AGENT_MODEL=claude-3-5-sonnet-20241022
+#   LLM_AGENT_BASE_URL=https://api.anthropic.com
+#
+# DeepSeek instead:
+#   LLM_AGENT_PROVIDER=deepseek
+#   LLM_AGENT_MODEL=deepseek-chat
+#   LLM_AGENT_BASE_URL=https://api.deepseek.com
 ```
 
 The `.env` file is automatically loaded when running locally (not in BTP).
 
-**File Locations:**
-- `cloud-llm-hub/.env` - **This is the agent's .env file** (copied from `cloud-llm-hub/.env`)
-  - Used by `srv/env-setup.ts` for cloud-llm-hub service local development
-  - Used by `tools/set-btp-env.js` for BTP deployment script
-  - **Same content as agent's .env** - copy with: `touch .env`
-- `cloud-llm-hub/.env` - Original agent's .env file
-  - Used by `node_modules/@mcp-abap-adt/llm-proxy/src/cli.ts` for standalone agent testing
-  - **Copy this to root for cloud-llm-hub**: `touch .env`
+**File Location:** there is one file — `.env` in the repository root.
+- `srv/env-setup.ts` loads it for local development (only when not running in CF)
+- `tools/set-btp-env.js` reads the same variables from the environment when
+  pushing them to a deployed app
 
-### Option 3: BTP Deployment (Environment Variables)
+### Option 2: BTP Deployment (Environment Variables)
 
 For BTP deployment, set environment variables after deployment:
 
 **Option A: Using npm script with .env file (recommended - no export needed):**
 ```bash
-# 1. Create .env file with your API keys (see Option 2 above)
+# 1. Create .env file with your API keys (see Option 1 above)
 # 2. Run the script - it reads from .env automatically
 npm run deploy:set-env
 ```
 
 **Option B: Using npm script with exported variables:**
 ```bash
-# Export variables first
-export OPENAI_API_KEY="sk-proj-your-key-here"
-export OPENAI_MODEL="gpt-4o-mini"
+export LLM_AGENT_PROVIDER="openai"
+export LLM_AGENT_MODEL="gpt-4o-mini"
+export LLM_AGENT_API_KEY="sk-proj-your-key-here"
+export LLM_AGENT_BASE_URL="https://api.openai.com/v1"
 
-# Run script
 npm run deploy:set-env
 ```
 
 **Option C: Direct CF CLI (if you prefer):**
 ```bash
-# Export variables
-export OPENAI_API_KEY="sk-proj-your-key-here"
-export OPENAI_MODEL="gpt-4o-mini"
-
-# Set in CF directly
-cf set-env cloud-llm-hub-srv OPENAI_API_KEY "$OPENAI_API_KEY"
-cf set-env cloud-llm-hub-srv OPENAI_MODEL "$OPENAI_MODEL"
-cf set-env cloud-llm-hub-srv OPENAI_ORG "$OPENAI_ORG"  # if set
-cf set-env cloud-llm-hub-srv OPENAI_PROJECT "$OPENAI_PROJECT"  # if set
-cf restage cloud-llm-hub-srv
+# LLM_AGENT_PROVIDER and LLM_AGENT_MODEL are usually set in .mtaext; only the
+# two secrets have to be set on the app, because mta.yaml does not declare them.
+cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY  "sk-proj-your-key-here"
+cf set-env cloud-llm-hub-srv LLM_AGENT_BASE_URL "https://api.openai.com/v1"
+cf restart cloud-llm-hub-srv
 ```
 
 **Why use the script?**
@@ -142,18 +113,17 @@ cf restage cloud-llm-hub-srv
 - ✅ **DO** use the `npm run deploy:set-env` script for convenience
 
 **Priority Order:**
-1. HTTP headers (highest priority - runtime override)
-2. Environment variables (set via CF CLI or .env file)
-3. Error if none provided
+1. Environment variables on the deployed app (`cf set-env`), or `.env` locally
+2. Error if none provided
+
+There is no third source: per-request headers cannot select a provider or supply
+a key.
 
 ## Starting the Service
 
 ```bash
 # Install dependencies (if not done)
 npm install
-
-# Build llm-agent submodule
-npm install @mcp-abap-adt/llm-proxy && npm install && npm run build && cd ../..
 
 # Start CAP service
 cds watch --profile development
@@ -178,101 +148,86 @@ curl -X GET \
   "status": "READY",
   "agentReady": true,
   "mcpConnected": true,
-  "llmProvider": "OpenAI",
-  "timestamp": "2025-11-06T15:00:00.000Z"
+  "llmProvider": "SAP Core AI",
+  "llmDestination": "sap-ai-sdk",
+  "model": "anthropic--claude-4.5-sonnet",
+  "mcpDestination": "S4HANA_DEV",
+  "timestamp": "2026-08-13T15:00:00.000Z"
 }
 ```
+
+> `llmProvider` and `llmDestination` are **hardcoded** in `srv/agent-service.ts`
+> and always report SAP AI Core, whatever `LLM_AGENT_PROVIDER` is set to. Read
+> `model` and the app's environment instead; do not use this endpoint to confirm
+> which provider is active.
 
 ### 2. Chat with Agent
 
-**Using GET (with API key in header):**
+> **The legacy OData `Chat` is LLM-only.** `srv/agent-service.ts` calls
+> `getSmartAgent()` with no destination and never enters the per-request
+> connection scope, so ABAP tool calls throw. `X-SAP-Destination` is ignored
+> here. Use it to check that the LLM answers at all — nothing more.
 
 ```bash
 curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='What tools are available?')" \
-  -H "Authorization: Basic YWxpY2U6" \
-  -H "X-OpenAI-API-Key: sk-proj-your-key-here" \
-  -H "X-SAP-Destination: SAP_DEV_DEST"
-```
-
-**Or using POST (for longer messages):**
-
-```bash
-curl -X POST \
-  "http://localhost:4004/odata/v4/agent/Chat" \
-  -H "Authorization: Basic YWxpY2U6" \
-  -H "Content-Type: application/json" \
-  -H "X-OpenAI-API-Key: sk-proj-your-key-here" \
-  -H "X-SAP-Destination: SAP_DEV_DEST" \
-  -d '{
-    "message": "What ABAP classes are available in the system?"
-  }'
-```
-
-**With Anthropic:**
-
-```bash
-curl -X POST \
-  "http://localhost:4004/odata/v4/agent/Chat" \
-  -H "Authorization: Basic YWxpY2U6" \
-  -H "Content-Type: application/json" \
-  -H "X-Anthropic-API-Key: sk-ant-your-key-here" \
-  -H "X-LLM-Provider: anthropic" \
-  -H "X-SAP-Destination: SAP_DEV_DEST" \
-  -d '{
-    "message": "What tools are available?"
-  }'
-```
-
-**With DeepSeek:**
-
-```bash
-curl -X POST \
-  "http://localhost:4004/odata/v4/agent/Chat" \
-  -H "Authorization: Basic YWxpY2U6" \
-  -H "Content-Type: application/json" \
-  -H "X-DeepSeek-API-Key: sk-your-key-here" \
-  -H "X-LLM-Provider: deepseek" \
-  -H "X-SAP-Destination: SAP_DEV_DEST" \
-  -d '{
-    "message": "What tools are available?"
-  }'
-```
-
-**Expected Response:**
-```json
-{
-  "@odata.context": "$metadata#Edm.String",
-  "value": "Based on the available tools, I can help you find ABAP classes..."
-}
-```
-
-### 3. Get Conversation History
-
-```bash
-curl -X GET \
-  "http://localhost:4004/odata/v4/agent/GetHistory()" \
+  "http://localhost:4004/odata/v4/agent/Chat(message='Reply with the word OK')" \
   -H "Authorization: Basic YWxpY2U6"
 ```
 
-**Expected Response:**
+**To test ABAP tools, use the OpenAI-compatible endpoint** — it establishes the
+connection from the request's own headers:
+
+```bash
+curl -X POST http://localhost:4004/v1/chat/completions \
+  -H "Authorization: Basic YWxpY2U6" \
+  -H "Content-Type: application/json" \
+  -H "X-SAP-Destination: SAP_DEV_DEST" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "What ABAP classes exist in package $TMP?"}]
+  }'
+```
+
+**With another provider:** the request does not change. The provider is chosen
+by `LLM_AGENT_PROVIDER` on the server, not per call — switching from OpenAI to
+Anthropic or DeepSeek means changing the environment and restarting, not editing
+the curl.
+
+**Expected Response** (OpenAI-compatible — `/v1/chat/completions` does not return
+OData shapes):
 ```json
 {
-  "@odata.context": "$metadata#ChatMessage",
-  "value": [
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "gpt-4o-mini",
+  "choices": [
     {
-      "role": "user",
-      "content": "What tools are available?",
-      "timestamp": "2025-11-06T15:00:00.000Z"
-    },
-    {
-      "role": "assistant",
-      "content": "Based on the available tools...",
-      "timestamp": "2025-11-06T15:00:01.000Z"
+      "index": 0,
+      "message": { "role": "assistant", "content": "The package contains ..." },
+      "finish_reason": "stop"
     }
-  ]
+  ],
+  "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
 }
 ```
+
+The OData `Chat` function, by contrast, returns `{ "@odata.context": "...", "value": "..." }`.
+
+### 3. Conversation History (not implemented)
+
+`GetHistory()` returns an empty array unconditionally and `ClearHistory()`
+reports success without clearing anything — both are stubs in
+`srv/agent-service.ts`:
+
+```bash
+curl -X GET "http://localhost:4004/odata/v4/agent/GetHistory()" \
+  -H "Authorization: Basic YWxpY2U6"
+# → { "value": [] }   always
+```
+
+Real conversation history lives in the OpenAI handler's per-session store
+(`sessionStore` in `srv/openai-handler.ts`, 30-minute inactivity TTL) and is not
+exposed through this OData service.
 
 ### 4. Clear History
 
@@ -297,102 +252,89 @@ curl -X POST \
 ### Setup
 
 1. **Create a new request**
-2. **Set URL:** `http://localhost:4004/odata/v4/agent/Chat`
-3. **Method:** GET or POST
+2. **Set URL:** `http://localhost:4004/v1/chat/completions`
+3. **Method:** POST
 4. **Headers:**
    - `Authorization: Basic YWxpY2U6`
-   - `X-SAP-Destination: SAP_DEV_DEST` (if using destination mode)
-   - `Content-Type: application/json` (for POST)
+   - `Content-Type: application/json`
+   - `X-SAP-Destination: SAP_DEV_DEST`
 
-### GET Request Example
-
-**URL:**
-```
-http://localhost:4004/odata/v4/agent/Chat(message='Hello, what can you do?')
-```
-
-**Headers:**
-```
-Authorization: Basic YWxpY2U6
-X-SAP-Destination: SAP_DEV_DEST
-```
-
-### POST Request Example
-
-**URL:**
-```
-http://localhost:4004/odata/v4/agent/Chat
-```
-
-**Headers:**
-```
-Authorization: Basic YWxpY2U6
-Content-Type: application/json
-X-SAP-Destination: SAP_DEV_DEST
-```
+Use `/v1/chat/completions`, not the OData `Chat` — only this path establishes the
+per-request ABAP connection, so only here do the tools work.
 
 **Body (JSON):**
 ```json
 {
-  "message": "List all available ABAP tools and explain what they do"
+  "model": "gpt-4o-mini",
+  "messages": [
+    { "role": "user", "content": "List all available ABAP tools and explain what they do" }
+  ]
 }
 ```
 
 ## Testing Scenarios
 
-### Scenario 1: Basic Chat
+### Scenario 1: LLM only — no SAP involved
+
+The one case the legacy OData endpoint is good for: proving the model answers.
 
 ```bash
 curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='Hello')" \
-  -H "Authorization: Basic YWxpY2U6" \
-  -H "X-SAP-Destination: SAP_DEV_DEST"
+  "http://localhost:4004/odata/v4/agent/Chat(message='Reply with the word OK')" \
+  -H "Authorization: Basic YWxpY2U6"
 ```
 
-### Scenario 2: Query Available Tools
+### Scenario 2: Query available tools
 
 ```bash
-curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='What MCP tools are available?')" \
-  -H "Authorization: Basic YWxpY2U6" \
-  -H "X-SAP-Destination: SAP_DEV_DEST"
-```
-
-### Scenario 3: Complex Query
-
-```bash
-curl -X POST \
-  "http://localhost:4004/odata/v4/agent/Chat" \
+curl -X POST http://localhost:4004/v1/chat/completions \
   -H "Authorization: Basic YWxpY2U6" \
   -H "Content-Type: application/json" \
   -H "X-SAP-Destination: SAP_DEV_DEST" \
-  -d '{
-    "message": "Can you help me find all ABAP classes that contain the word 'Customer' in their name?"
-  }'
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"What ABAP tools are available?"}]}'
 ```
+
+### Scenario 3: A query that must reach the system
+
+```bash
+curl -X POST http://localhost:4004/v1/chat/completions \
+  -H "Authorization: Basic YWxpY2U6" \
+  -H "Content-Type: application/json" \
+  -H "X-SAP-Destination: SAP_DEV_DEST" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Find ABAP classes whose name contains CUSTOMER"}]}'
+```
+
+If a tool call is attempted through the OData `Chat` endpoint instead, it throws:
+that path never enters the per-request connection scope.
 
 ## Troubleshooting
 
-### Error: "OPENAI_API_KEY environment variable is required"
+### Error: the provider reports a missing API key
 
-**Solution:** Set the environment variable:
+**Solution:** set the variable the code actually reads — `LLM_AGENT_API_KEY`
+(with `LLM_AGENT_BASE_URL` for the endpoint):
 ```bash
-export OPENAI_API_KEY="sk-your-key-here"
+export LLM_AGENT_API_KEY="sk-your-key-here"
+export LLM_AGENT_BASE_URL="https://api.openai.com/v1"
 ```
+Deployed, set both with `cf set-env` and restart — `mta.yaml` does not carry them.
 
-### Error: "MCP client configuration required"
+### A tool call fails with a connection error
 
-**Solution:** Ensure MCP endpoint is accessible and headers are correct. Check:
-- MCP proxy is running
-- Endpoint URL is correct
-- Authentication headers are valid
+There is no MCP endpoint to check — the agent calls the ABAP handlers in-process.
+What can be missing is the **per-request connection**, so check:
+- the request carries `X-SAP-Destination` (or the direct-mode `x-sap-*` headers)
+- the destination exists and is reachable — `GET /odata/v4/mcp-proxy/ProbeDestination?destination=<name>`
+- the call goes through `/v1/*` or the agent MCP surface, not the legacy OData `Chat`,
+  which never establishes a connection
 
 ### Error: "Connection failed" or "MCP server not ready"
 
 **Solution:**
-1. Check MCP proxy health: `GET /odata/v4/mcp/Health()`
-2. Verify SAP destination is configured correctly
-3. Check MCP proxy logs for connection errors
+1. Check the service health endpoint: `GET /odata/v4/mcp-proxy/Health()`
+   (that is this app's own OData service, not a separate process)
+2. Verify the SAP destination is configured correctly
+3. Check the app logs for ADT connection errors
 
 ### Agent returns empty response
 
@@ -408,7 +350,13 @@ export OPENAI_API_KEY="sk-your-key-here"
 
 ## Quick Test Script
 
-A test script is available at `test/test-agent.sh`:
+> **`test/test-agent.sh` is out of date — do not treat its output as a verdict.**
+> It sends `X-SAP-Core-AI-*` headers that nothing reads, drives LLM+MCP through
+> the legacy OData `Chat` (which cannot call ABAP tools), and assumes every
+> provider goes through SAP AI Core. Use the curl calls above until it is
+> rewritten.
+
+For reference, the script lives at `test/test-agent.sh`:
 
 ```bash
 # Make it executable (if not already)
@@ -424,10 +372,20 @@ cd test
 
 ## Expected Behavior
 
-1. **First request:** Agent initializes, connects to MCP proxy, gets tools list
-2. **Subsequent requests:** Agent reuses connection, processes messages faster
-3. **History:** Maintains conversation context across requests
-4. **Errors:** Returns descriptive error messages
+1. **First request for a destination:** the agent is built and its tool corpus is
+   ready — `getSmartAgent` waits, bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`
+   (90 s), rather than failing fast. The tool corpus itself is vectorized once
+   and shared by every destination
+2. **Subsequent requests:** the agent handle is reused from `agentHandles` for
+   the process lifetime. The **ABAP connection is not** — it is created per
+   request from that request's `x-sap-*` headers and passed through
+   `connectionALS`
+3. **Tools:** called in-process through the embedded MCP client; there is no HTTP
+   hop to the proxy
+4. **History:** kept only by `/v1/chat/completions`, in a per-session store with
+   a 30-minute inactivity TTL. The OData history endpoints are stubs
+5. **Errors:** descriptive messages; a destination that has not finished
+   initializing yields a retryable 503
 
 ## Next Steps
 

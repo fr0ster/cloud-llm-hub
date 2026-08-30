@@ -121,15 +121,21 @@ The proxy replaces `Authorization`, so the **API key is any placeholder**.
 
 > If you changed `httpPort`, use **that** port in the URLs below.
 
+> **Model value.** Use the id `GET /v1/models` returns — it reports the model the
+> deployment is actually running. Any other value is passed through to
+> `getSmartAgent` as a requested model and, if it differs from the active one,
+> triggers a **global** hot-swap that affects every caller (see
+> ARCHITECTURE.md §7). Matching the reported id avoids that entirely.
+
 **Cursor** — Settings → Models → OpenAI:
 - Base URL: `http://localhost:3001/v1`
 - API Key: `proxy` *(any value — the proxy replaces it)*
-- Model: `default`
+- Model: the id from `GET /v1/models`
 
 **Continue** — `~/.continue/config.yaml`:
 ```yaml
 models:
-  - model: default
+  - model: <id from GET /v1/models>
     provider: openai
     apiBase: http://localhost:3001/v1
     apiKey: proxy

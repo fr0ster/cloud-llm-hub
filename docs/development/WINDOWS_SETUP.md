@@ -37,7 +37,7 @@ This will check:
 npm install
 
 # LLM proxy is installed from npm
-npm install @mcp-abap-adt/llm-proxy
+npm install @mcp-abap-adt/proxy
 ```
 
 ## Common Issues
@@ -109,7 +109,7 @@ cd ..\..
 npm start
 
 # Or with cds watch
-npm run cds-watch
+npx cds watch --profile development
 ```
 
 ### Before Committing

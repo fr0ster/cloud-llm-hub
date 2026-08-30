@@ -4,12 +4,16 @@
 
 After deploying to SAP BTP, ensure:
 
-1. ✅ **SAP AI Core service** is bound to the app (via mta.yaml)
-2. ✅ **SAP AI Core destination** (optional) - only if you want to use destination instead of service binding
-3. ✅ **Models/providers** are configured in SAP AI Core Launchpad
-4. ✅ **XSUAA token** for authentication
+1. ✅ **SAP AI Core credentials** reach the app one of three ways — the service
+   binding via `VCAP_SERVICES` (bind it in `mta.yaml`), a ready-made
+   `AICORE_SERVICE_KEY`, or the full `AICORE_*` set that `agent-config.ts`
+   assembles into one
+2. ✅ **Models** are deployed in SAP AI Core Launchpad
+3. ✅ **XSUAA token** for authentication
 
-**Note:** If SAP AI Core service is bound via mta.yaml, you don't need to configure a destination. The service binding is used automatically. Destination is only needed if you want to point to a different AI Core instance or need additional configuration.
+**Note:** there is no "AI Core destination" option — the runtime never reads a
+destination name for AI Core. Destinations are for SAP ABAP systems. To point at
+an AI Core instance in another subaccount, use the `AICORE_*` variables.
 
 ## Getting Your Deployment URL
 
@@ -45,7 +49,9 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 
 ### Scenario 1: LLM Only (Without MCP)
 
-Test the agent with LLM only, without MCP tools.
+Test the agent with LLM only. The legacy OData `Chat` used here cannot call ABAP
+tools — it never enters the per-request connection scope — which is exactly why
+it suits an LLM-only check.
 
 #### 1. Health Check
 
@@ -53,21 +59,16 @@ Test the agent with LLM only, without MCP tools.
 BASE_URL="https://your-app.cfapps.eu10.hana.ondemand.com"
 TOKEN="your-xsuaa-token"
 
-# Option 1: Using service binding (no destination needed)
 curl -X GET \
   "$BASE_URL/odata/v4/agent/Health()" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
-  -H "Accept: application/json" | jq '.'
-
-# Option 2: Using destination (if configured)
-curl -X GET \
-  "$BASE_URL/odata/v4/agent/Health()" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
   -H "Accept: application/json" | jq '.'
 ```
+
+`Health` takes no request context — the handler signature is `(_req)` and it
+ignores headers entirely, reporting on the server's own configuration. Passing
+`X-SAP-Destination` changes nothing, and `mcpConnected: true` requires
+`LLM_AGENT_MCP_DESTINATION` to be set in the deployment, not in the request.
 
 **Expected Response:**
 ```json
@@ -77,9 +78,10 @@ curl -X GET \
   "agentReady": true,
   "mcpConnected": false,
   "llmProvider": "SAP Core AI",
-  "destination": "SAP_AI_CORE_DEST",
-  "model": "gpt-4o-mini",
-  "timestamp": "2025-11-06T15:00:00.000Z"
+  "llmDestination": "sap-ai-sdk",
+  "model": "<whatever LLM_AGENT_MODEL is set to>",
+  "mcpDestination": "<whatever LLM_AGENT_MCP_DESTINATION is set to>",
+  "timestamp": "<current time>"
 }
 ```
 
@@ -92,8 +94,6 @@ curl -X POST \
   "$BASE_URL/odata/v4/agent/Chat" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
   -d '{
     "message": "Hello! Can you introduce yourself?"
   }' | jq '.'
@@ -107,62 +107,52 @@ curl -X POST \
 }
 ```
 
-#### 3. Chat with Different Models
+#### 3. Changing the model or provider
 
-Test different LLM providers through SAP AI Core:
+**Model — yes, per request.** `/v1/chat/completions` reads `body.model` and
+passes it to `getSmartAgent(requestedModel, ...)`:
 
-**OpenAI (via SAP AI Core):**
 ```bash
-curl -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
+curl -X POST "$BASE_URL/v1/chat/completions" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
-  -d '{
-    "message": "What is 2+2?"
-  }' | jq '.'
+  -d '{"model":"anthropic--claude-4.5-sonnet","messages":[{"role":"user","content":"What is 2+2?"}]}'
 ```
 
-**Anthropic (via SAP AI Core):**
-```bash
-curl -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: claude-3-5-sonnet-20241022" \
-  -d '{
-    "message": "What is 2+2?"
-  }' | jq '.'
-```
+> ⚠️ The switch is **not** scoped to your request. `agent-manager.ts` performs a
+> hot-swap: it builds a new LLM and assigns it to *every* cached agent handle,
+> then records it as the current model. The next caller — anyone — keeps the
+> model you asked for until someone asks for another. Treat it as changing a
+> global setting through a request, not as an isolated override.
+>
+> The legacy OData `Chat` has no such parameter; it always uses the current model.
 
-**DeepSeek (via SAP AI Core):**
+**Provider and credentials — no.** `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
+`LLM_AGENT_BASE_URL` are read once from the environment, so changing those means:
+
 ```bash
-curl -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: deepseek-chat" \
-  -d '{
-    "message": "What is 2+2?"
-  }' | jq '.'
+cf set-env cloud-llm-hub-srv LLM_AGENT_PROVIDER "anthropic"
+cf restart cloud-llm-hub-srv
 ```
 
 ### Scenario 2: LLM + MCP (With Tools)
 
-Test the agent with MCP tools integration.
+Test the agent with MCP tools integration. **These calls go to
+`/v1/chat/completions`, not to the OData `Chat` used in Scenario 1** — only the
+`/v1` path establishes the per-request ABAP connection, so only there do tools
+actually execute.
 
 #### 1. Health Check (With MCP)
+
+The call is the same one as in Scenario 1 — `Health` ignores request headers, so
+there is no "with destination" variant. What changes is the deployment: with
+`LLM_AGENT_MCP_DESTINATION` set and that destination initialized, `mcpConnected`
+turns true.
 
 ```bash
 curl -X GET \
   "$BASE_URL/odata/v4/agent/Health()" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
-  -H "X-SAP-Destination: SAP_DEV_DEST" \
   -H "Accept: application/json" | jq '.'
 ```
 
@@ -174,34 +164,41 @@ curl -X GET \
   "agentReady": true,
   "mcpConnected": true,
   "llmProvider": "SAP Core AI",
-  "destination": "SAP_AI_CORE_DEST",
-  "model": "gpt-4o-mini",
-  "timestamp": "2025-11-06T15:00:00.000Z"
+  "llmDestination": "sap-ai-sdk",
+  "model": "<whatever LLM_AGENT_MODEL is set to>",
+  "mcpDestination": "<whatever LLM_AGENT_MCP_DESTINATION is set to>",
+  "timestamp": "<current time>"
 }
 ```
 
-**Note:** `mcpConnected: true` means agent can use MCP tools.
+**Note:** `mcpConnected: true` means every MCP client reported healthy. It says
+nothing about the destination a *request* asks for — that connection is built
+per request, in the `/v1` and agent-MCP paths only.
 
 #### 2. Chat with MCP Tools
 
 ```bash
 curl -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
+  "$BASE_URL/v1/chat/completions" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
   -H "X-SAP-Destination: SAP_DEV_DEST" \
   -d '{
-    "message": "What tools are available?"
+    "model": "gpt-4o-mini",
+    "messages": [{ "role": "user", "content": "What tools are available?" }]
   }' | jq '.'
 ```
 
-**Expected Response:**
+**Expected Response** (OpenAI-compatible):
 ```json
 {
-  "@odata.context": "$metadata#Edm.String",
-  "value": "I have access to tools like 'GetProgram', 'GetClass', 'GetFunctionModule'..."
+  "object": "chat.completion",
+  "choices": [
+    { "index": 0,
+      "message": { "role": "assistant", "content": "I have access to GetProgram, GetClass, GetFunctionModule ..." },
+      "finish_reason": "stop" }
+  ],
+  "usage": { "total_tokens": 0 }
 }
 ```
 
@@ -209,22 +206,25 @@ curl -X POST \
 
 ```bash
 curl -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
+  "$BASE_URL/v1/chat/completions" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: gpt-4o-mini" \
   -H "X-SAP-Destination: SAP_DEV_DEST" \
   -d '{
-    "message": "List all ABAP classes in package Z_MY_PACKAGE"
+    "model": "gpt-4o-mini",
+    "messages": [{ "role": "user", "content": "List all ABAP classes in package Z_MY_PACKAGE" }]
   }' | jq '.'
 ```
 
-**Expected Response:**
+**Expected Response** (OpenAI-compatible):
 ```json
 {
-  "@odata.context": "$metadata#Edm.String",
-  "value": "Here are the ABAP classes in package Z_MY_PACKAGE:\n1. ZCL_MY_CLASS\n2. ZCL_ANOTHER_CLASS\n..."
+  "object": "chat.completion",
+  "choices": [
+    { "index": 0,
+      "message": { "role": "assistant", "content": "Here are the ABAP classes in package Z_MY_PACKAGE: ZCL_MY_CLASS, ZCL_ANOTHER_CLASS ..." },
+      "finish_reason": "stop" }
+  ]
 }
 ```
 
@@ -237,106 +237,66 @@ The agent will:
 
 ## Quick Test Script
 
-Create a test script for easy testing:
+`test/test-agent-btp.sh` runs the three checks above in order: Health, an
+LLM-only chat through the OData endpoint, and — when a SAP destination is given
+— an ABAP tool call through `/v1`.
 
 ```bash
-#!/bin/bash
-# test/test-agent-btp.sh
-
-BASE_URL="${BASE_URL:-https://your-app.cfapps.eu10.hana.ondemand.com}"
-TOKEN="${TOKEN:-$(cf oauth-token)}"
-AI_CORE_DEST="${SAP_CORE_AI_DESTINATION:-SAP_AI_CORE_DEST}"
-MODEL="${SAP_CORE_AI_MODEL:-gpt-4o-mini}"
-SAP_DEST="${SAP_DESTINATION:-}"
-
-echo "🧪 Testing LLM Proxy on BTP"
-echo "================================"
-echo "Base URL: $BASE_URL"
-echo "AI Core Destination: $AI_CORE_DEST"
-echo "Model: $MODEL"
-echo ""
-
-# Health Check
-echo "1️⃣ Health Check..."
-curl -s -X GET \
-  "$BASE_URL/odata/v4/agent/Health()" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-SAP-Core-AI-Destination: $AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: $MODEL" \
-  ${SAP_DEST:+-H "X-SAP-Destination: $SAP_DEST"} \
-  -H "Accept: application/json" | jq '.' || echo "❌ Failed"
-echo ""
-
-# LLM Only Test
-echo "2️⃣ Chat Test (LLM Only)..."
-curl -s -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "X-SAP-Core-AI-Destination: $AI_CORE_DEST" \
-  -H "X-SAP-Core-AI-Model: $MODEL" \
-  -d '{"message": "Hello! Can you introduce yourself?"}' | jq '.' || echo "❌ Failed"
-echo ""
-
-# LLM + MCP Test (if SAP destination provided)
-if [ -n "$SAP_DEST" ]; then
-  echo "3️⃣ Chat Test (LLM + MCP)..."
-  curl -s -X POST \
-    "$BASE_URL/odata/v4/agent/Chat" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -H "X-SAP-Core-AI-Destination: $AI_CORE_DEST" \
-    -H "X-SAP-Core-AI-Model: $MODEL" \
-    -H "X-SAP-Destination: $SAP_DEST" \
-    -d '{"message": "What tools are available?"}' | jq '.' || echo "❌ Failed"
-  echo ""
-fi
-
-echo "✅ Test completed!"
-```
-
-**Usage:**
-```bash
-# Set variables
 export BASE_URL="https://your-app.cfapps.eu10.hana.ondemand.com"
-export SAP_CORE_AI_DESTINATION="SAP_AI_CORE_DEST"
-export SAP_CORE_AI_MODEL="gpt-4o-mini"
-export SAP_DESTINATION="SAP_DEV_DEST"  # Optional, for MCP testing
+export SAP_DESTINATION="SAP_DEV_DEST"   # optional; without it step 3 is skipped
 
-# Run script
 bash test/test-agent-btp.sh
 ```
+
+The script takes no model or provider argument. Those come from the
+application's own environment, and sending a model in the request body would
+hot-swap it for every cached agent — see *Changing the model or provider* above.
 
 ## Troubleshooting
 
 ### ❌ "SAP AI Core access is required"
 
+There is no destination-based option — the runtime never reads a destination
+name for AI Core.
+
 **Solution:**
-- **If using service binding (recommended):** Ensure SAP AI Core service is bound via mta.yaml. No additional configuration needed.
-- **If using destination:** 
-  - Set `SAP_CORE_AI_DESTINATION` environment variable in CF:
-    ```bash
-    cf set-env cloud-llm-hub-srv SAP_CORE_AI_DESTINATION SAP_AI_CORE_DEST
-    cf restage cloud-llm-hub-srv
-    ```
-  - Or pass via header: `X-SAP-Core-AI-Destination: SAP_AI_CORE_DEST`
-  - Configure destination in Destination service (BTP Cockpit) pointing to your AI Core instance
+- **Service binding (recommended):** activate the `cloud-llm-hub-ai-core`
+  resource in `.mtaext`; credentials arrive through `VCAP_SERVICES` and nothing
+  else needs setting.
+- **Cross-subaccount:** set all four `AICORE_*` variables. `agent-config.ts`
+  assembles `AICORE_SERVICE_KEY` only when every one of them is present, so a
+  partial set produces nothing:
+  ```bash
+  cf set-env cloud-llm-hub-srv AICORE_AUTH_URL      "https://<subaccount>.authentication.<region>.hana.ondemand.com"
+  cf set-env cloud-llm-hub-srv AICORE_CLIENT_ID     "sb-<guid>|aicore!b540"
+  cf set-env cloud-llm-hub-srv AICORE_CLIENT_SECRET "<secret>"
+  cf set-env cloud-llm-hub-srv AICORE_BASE_URL      "https://api.ai.prod.<region>.aws.ml.hana.ondemand.com"
+  cf restage cloud-llm-hub-srv
+  ```
 
 ### ❌ "SAP AI Core API error"
 
 **Solution:**
-- Verify SAP AI Core destination is configured in Destination service
-- Check destination URL points to correct AI Core instance
-- Verify models are configured in SAP AI Core Launchpad
-- Check AI Core service is bound to app: `cf services | grep ai-core`
+- Check the AI Core service is bound: `cf services | grep ai-core`
+- Verify the model named by `LLM_AGENT_MODEL` is deployed in AI Launchpad —
+  an entitlement without a deployed model is not enough
+- On the cross-subaccount path, confirm all four `AICORE_*` variables are set
 
 ### ❌ `mcpConnected: false` when expecting `true`
 
+`Health` reports the server's own state and ignores request headers, so no
+`X-SAP-Destination` on the health call can change this.
+
 **Solution:**
-- Verify SAP destination is configured (for MCP connection)
-- Check MCP proxy is accessible: `curl $BASE_URL/odata/v4/mcp/Health()`
-- Verify `X-SAP-Destination` header is provided
-- Check CAP service logs for MCP connection errors
+- Verify `LLM_AGENT_MCP_DESTINATION` is set on the app: `cf env cloud-llm-hub-srv | grep MCP_DESTINATION`
+- Give that destination time to initialize — vectorization is bounded by
+  `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (90 s by default) and `mcpConnected` stays
+  false until an agent handle exists
+- Confirm the destination itself resolves: `curl "$BASE_URL/odata/v4/mcp-proxy/ProbeDestination?destination=<name>"`
+- For a **tool call** through `/v1`, verify the request carries
+  `X-SAP-Destination` — that header builds the per-request connection. It has no
+  bearing on `Health`, which reports server state only
+- Check CAP service logs for ADT connection errors
 
 ### ❌ "401 Unauthorized"
 
@@ -349,20 +309,23 @@ bash test/test-agent-btp.sh
 
 After deployment, set these environment variables (all optional if using service binding):
 
+There are no HTTP headers for any of these — the application reads them once
+from its environment.
+
 ```bash
-# Optional: Only if using destination instead of service binding
-cf set-env cloud-llm-hub-srv SAP_CORE_AI_DESTINATION SAP_AI_CORE_DEST
+cf set-env cloud-llm-hub-srv LLM_AGENT_MODEL       anthropic--claude-4.5-sonnet
+cf set-env cloud-llm-hub-srv LLM_AGENT_TEMPERATURE 0.7
+cf set-env cloud-llm-hub-srv LLM_AGENT_MAX_TOKENS  32000
 
-# Optional (can also be passed via headers)
-cf set-env cloud-llm-hub-srv SAP_CORE_AI_MODEL gpt-4o-mini
-cf set-env cloud-llm-hub-srv SAP_CORE_AI_TEMPERATURE 0.7
-cf set-env cloud-llm-hub-srv SAP_CORE_AI_MAX_TOKENS 2000
-
-# Restage to apply changes
-cf restage cloud-llm-hub-srv
+# Restart to apply changes
+cf restart cloud-llm-hub-srv
 ```
 
-**Note:** If SAP AI Core service is bound via mta.yaml, you don't need to set `SAP_CORE_AI_DESTINATION`. The service binding is used automatically.
+`SAP_CORE_AI_MODEL`, `SAP_CORE_AI_TEMPERATURE` and `SAP_CORE_AI_MAX_TOKENS` are
+still honoured as legacy fallbacks (`agent-config.ts`), but prefer the
+`LLM_AGENT_*` names above.
+
+**Note:** with the AI Core service bound through `mta.yaml`, credentials come from `VCAP_SERVICES` automatically — nothing needs setting by hand. The `AICORE_*` variables exist only for the cross-subaccount case.
 
 ## Next Steps
 

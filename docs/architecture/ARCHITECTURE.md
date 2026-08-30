@@ -51,7 +51,13 @@ graph LR
 
     subgraph "SAP Backend"
         ABAP[SAP ABAP System]
-        AICORE[SAP AI Core]
+    end
+
+    LLM{{"makeLlm()<br/>one provider per deployment"}}
+
+    subgraph "LLM (LLM_AGENT_PROVIDER)"
+        AICORE["SAP AI Core<br/>sap-ai-sdk — default"]
+        EXT["External provider<br/>openai / anthropic / deepseek<br/>via LLM_AGENT_BASE_URL"]
     end
 
     CL -->|Stream-HTTP| AR
@@ -67,9 +73,11 @@ graph LR
     SRV --> AUTH
 
     MCP_PROXY -->|ADT Requests| ABAP
-    AGENT_MCP -->|LLM Chat| AICORE
-    V1 -->|LLM Chat| AICORE
-    AGENT_OD -->|LLM Chat| AICORE
+    AGENT_MCP -->|LLM Chat| LLM
+    V1 -->|LLM Chat| LLM
+    AGENT_OD -->|LLM Chat| LLM
+    LLM --> AICORE
+    LLM --> EXT
     AGENT_MCP -.->|embedded tool handlers<br/>in-process, no HTTP| ABAP
     V1 -.->|embedded tool handlers<br/>in-process, no HTTP| ABAP
 ```
@@ -728,9 +736,9 @@ sequenceDiagram
     participant Adapter as McpClientAdapter<br/>(embedded, in-process)
     participant ABAP as SAP ABAP (via connectionALS)
 
-    Handle->>RAG: semantic tool search (top-K)
-    RAG-->>Handle: candidate tool set
-    Handle->>Exec: dispatch step
+    Handle->>Exec: dispatch step (FixedExecutorPlanner returns a 1-node DAG,<br/>so the coordinator plans nothing)
+    Exec->>RAG: semantic tool search (top-K)
+    RAG-->>Exec: candidate tool set
     Exec->>Adapter: call tool (embedded MCP client)
     Adapter->>ABAP: HandlerExporter handler → ADT HTTP call
     ABAP-->>Adapter: ADT response
@@ -933,15 +941,15 @@ classDiagram
 graph TB
     subgraph "SAP BTP Space"
         subgraph "Applications"
-            APPROUTER["cloud-llm-hub<br/>(Approuter)<br/>━━━━━━━━━<br/>Type: approuter.nodejs<br/>Memory: 256MB"]
-            SRV_APP["cloud-llm-hub-srv<br/>(CAP Server)<br/>━━━━━━━━━<br/>Type: nodejs<br/>Instances: 1"]
+            APPROUTER["cloud-llm-hub<br/>(Approuter)<br/>━━━━━━━━━<br/>Type: approuter.nodejs<br/>Memory: 512M"]
+            SRV_APP["cloud-llm-hub-srv<br/>(CAP Server)<br/>━━━━━━━━━<br/>Type: nodejs<br/>Instances: 1<br/>Memory: 2048M"]
         end
 
         subgraph "Services (Resources)"
             XSUAA["cloud-llm-hub-auth<br/>━━━━━━━━━<br/>Service: xsuaa<br/>Plan: application"]
             DEST["cloud-llm-hub-destination<br/>━━━━━━━━━<br/>Service: destination<br/>Plan: lite"]
             CONN["cloud-llm-hub-connectivity<br/>━━━━━━━━━<br/>Service: connectivity<br/>Plan: lite"]
-            AICORE_SVC["cloud-llm-hub-ai-core<br/>━━━━━━━━━<br/>Service: aicore<br/>Plan: extended"]
+            AICORE_SVC["cloud-llm-hub-ai-core<br/>━━━━━━━━━<br/>Service: aicore<br/>Plan: extended<br/>active: false by default"]
         end
 
         APPROUTER -->|"srv-api<br/>destination"| SRV_APP
@@ -955,13 +963,15 @@ graph TB
     subgraph "External"
         SCC["SAP Cloud Connector"]
         ABAP_SYS["SAP ABAP<br/>On-Premise"]
-        AI_CORE["SAP AI Core<br/>LLM Inference"]
+        AI_CORE["SAP AI Core<br/>LLM Inference<br/>(Scenario A)"]
+        EXT_LLM["External LLM API<br/>OpenAI-compatible / Anthropic / DeepSeek<br/>(Scenario B)"]
     end
 
     CONN -.->|"ConnectorID"| SCC
     SCC -.-> ABAP_SYS
     DEST -->|"Destination config"| ABAP_SYS
-    AICORE_SVC --> AI_CORE
+    AICORE_SVC -.->|"Scenario A only"| AI_CORE
+    SRV_APP -.->|"LLM_AGENT_BASE_URL + API key<br/>(cf set-env)"| EXT_LLM
 
     style APPROUTER fill:#f59e0b,color:#000
     style SRV_APP fill:#2563eb,color:#fff
@@ -969,20 +979,25 @@ graph TB
     style DEST fill:#7c3aed,color:#fff
     style CONN fill:#7c3aed,color:#fff
     style AICORE_SVC fill:#7c3aed,color:#fff
+    style EXT_LLM fill:#6b7280,color:#fff
 ```
 
 ### MTA Build & Deploy
 
 ```
-npm run build:mta    →  mbt build → gen/mta_archives/cloud-llm-hub.tar
-npm run deploy       →  cf deploy gen/mta_archives/cloud-llm-hub.tar
+npm run build:mta    →  mbt build → gen/mta_archives/cloud-llm-hub.mtar
+npm run deploy       →  cf deploy gen/mta_archives/cloud-llm-hub.mtar
 ```
 
-The `mta.yaml` build step runs:
-1. `npm ci` — install dependencies
+The `mta.yaml` build runs, in `before-all`:
+1. remove `node_modules`, then `npm ci` — a clean install
 2. `npx cds build --production` — compile CDS models to `gen/srv`
-3. `npm ci --omit=dev` — reinstall without devDeps in gen/srv
-4. Aggressive cleanup (~16MB final size)
+3. copy `app/chat/webapp` into `gen/srv`
+
+and then, in the srv module's own build step:
+
+4. `npm ci --omit=dev --omit=optional` — reinstall in `gen/srv` without dev or optional dependencies
+5. cleanup of files not needed at runtime
 
 ---
 
@@ -1045,7 +1060,8 @@ graph TB
     end
 
     ENV -->|LLM_AGENT_*| AC2
-    VCAP -->|aicore binding| AC2
+    VCAP -->|aicore binding — Scenario A| AC2
+    ENV -->|LLM_AGENT_API_KEY, LLM_AGENT_BASE_URL<br/>via cf set-env — Scenario B| AC2
     VCAP -->|destination credentials| DR2
     DEF_ENV -->|VCAP_SERVICES mock| DR2
     DOT_ENV -->|LLM keys| ES
@@ -1072,7 +1088,7 @@ graph TB
 | `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts`, `agent-manager.ts` | BTP Destination with two roles: (1) a "warm this first" startup hint (NOT privileged; does not block startup), and (2) the **implicit default destination** `getSmartAgent()` uses when a request passes no destination (`requestedDestination \|\| config.mcp.destination`, `agent-manager.ts`). Unset → LLM-only mode at startup |
 | `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Max ms `getSmartAgent` waits for a destination to vectorize before erroring (default: 90000) |
-| `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | MCP proxy URL (optional, auto-detected) |
+| `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | **Inert.** Read into `config.mcp.endpoint` and logged at startup, but no runtime path consumes it — the agent calls embedded handlers, not an MCP URL. Setting it changes nothing |
 | `LLM_AGENT_RESOURCE_GROUP` | `agent-config.ts`, `agent-manager.ts` | AI Core resource group; read into `llm.resourceGroup` (`agent-config.ts`) and passed to `makeLlm`, the embedder, and the tool-RAG store / embedding-bundle fingerprint (`agent-manager.ts`). Default: `default` |
 | `LLM_AGENT_PROVIDER` | `agent-config.ts` | LLM provider (`sap-ai-sdk` \| `openai` \| `anthropic` \| `deepseek`, default: `sap-ai-sdk`) |
 | `LLM_AGENT_API_KEY` | `agent-config.ts` | API key for non-SAP LLM providers (OpenAI, Anthropic, DeepSeek) |
@@ -1080,8 +1096,8 @@ graph TB
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | `agent-config.ts` | Max recent messages to LLM (older excluded, available via RAG) |
 | `LLM_AGENT_MODE` | `agent-config.ts` | SmartAgent mode (`smart` \| `pass` \| `hard`, default: `smart`) |
 | `LLM_AGENT_MAX_ITERATIONS` | `agent-config.ts` | Max tool-loop iterations (default: `10`) |
-| `LLM_AGENT_RAG_TYPE` | `agent-config.ts` | RAG backend (`in-memory` \| `ollama`, default: `in-memory`) |
-| `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Number of tools selected per query by the tool-intent RAG (default: `5`; too-low K makes outcome-phrased requests miss tools) |
+| `LLM_AGENT_RAG_TYPE` | `agent-config.ts`, `agent-manager.ts` | Selects the tool-intent RAG mode. `in-memory` (the default) is keyword-only and builds **no** embedder (`agent-manager.ts`: `if (ragType === 'in-memory') return null`). **Any other value** — every deployment template sets `vector` — takes the vector path, with the embedder chosen by `LLM_AGENT_PROVIDER`. There is no separate Ollama backend, despite the `RagType` union in `agent-config.ts` still naming `ollama` |
+| `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Number of tools selected per query by the tool-intent RAG. Code fallback is `5`, but `mta.yaml` sets `15` — that is what a BTP deployment runs with. Too-low K makes outcome-phrased requests miss tools |
 | `LLM_AGENT_INCLUDE_COMPACT` | `agent-manager.ts` (`getHandlerExporterConfig`) | Opt-in (`true`; default OFF): add the generic compact/low-level handlers (`HandlerCreate`, `HandlerActivate`, …) to the shared tool corpus alongside the high-level named tools. Changes both the RAG tool list and the callable embedded adapter |
 | `LLM_AGENT_INCLUDE_LOW_LEVEL` | `agent-manager.ts` (`getHandlerExporterConfig`) | Opt-in (`true`; default OFF): add the low handler group to the shared tool corpus. Same dual effect (RAG list + embedded adapter) as `LLM_AGENT_INCLUDE_COMPACT` |
 | `DESTINATION_MAPPING` | `agent-manager.ts` | Comma-separated `system=destination` map (e.g. `DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS`); parsed at startup, resolves a SAP system code to a BTP destination name via `resolveSystemDestination()` (backs `GET /v1/destinations/resolve`) |
@@ -1231,7 +1247,7 @@ graph TB
     style D3 fill:#6b7280,color:#fff
 ```
 
-Each destination has its own `McpClientAdapter` (MCP connection), but the `Tools RAG Store` is a **single shared corpus** — tools come from `HandlerExporter` and, for a given include-config, are identical for every SAP system, so it is vectorized **once** (`sharedToolsRag` / `ensureSharedToolsVectorized`, `agent-manager.ts`) and each destination's `toolsRag` points at it. (The corpus contents are config-dependent, not fixed: `getHandlerExporterConfig()` — driven by `LLM_AGENT_INCLUDE_COMPACT` / `LLM_AGENT_INCLUDE_LOW_LEVEL` — is the single source of truth shared by the RAG tool list and the callable embedded adapter, so they never diverge; the sharing is across destinations, for whatever config is active.) The embedder and facts/feedback/state RAG stores are likewise shared. See §"Shared tool corpus" in CLAUDE.md.
+Each destination has its own cached `McpClientAdapter`, but that adapter is **not** an ABAP connection: it wraps the embedded handlers and is built over a *placeholder* connection (`agent-manager.ts`: "Handler context with a placeholder connection"). The real connection is created per request and reaches each tool call through `connectionALS` — see the Embedded and Stateless sections below. The `Tools RAG Store`, meanwhile, is a **single shared corpus** — tools come from `HandlerExporter` and, for a given include-config, are identical for every SAP system, so it is vectorized **once** (`sharedToolsRag` / `ensureSharedToolsVectorized`, `agent-manager.ts`) and each destination's `toolsRag` points at it. (The corpus contents are config-dependent, not fixed: `getHandlerExporterConfig()` — driven by `LLM_AGENT_INCLUDE_COMPACT` / `LLM_AGENT_INCLUDE_LOW_LEVEL` — is the single source of truth shared by the RAG tool list and the callable embedded adapter, so they never diverge; the sharing is across destinations, for whatever config is active.) The embedder and facts/feedback/state RAG stores are likewise shared. See §"Shared tool corpus" in CLAUDE.md.
 
 **Note:** The tools RAG store uses a `NamespaceIgnoringRag` wrapper that strips `ragFilter` before querying. This is because tools have no namespace — unlike domain RAG stores which use `ragFilter.namespace` to separate collections.
 

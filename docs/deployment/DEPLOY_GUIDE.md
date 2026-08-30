@@ -12,7 +12,7 @@
 
 ```bash
 # Copy template
-cp .mtaext.template .mtaext
+cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
 
 # Edit .mtaext with your actual values
 # Replace all YOUR_* placeholders
@@ -42,42 +42,32 @@ modules:
 
 ### Option 1: Using npm scripts (Recommended)
 
-Add these scripts to your `package.json`:
-
-```json
-{
-  "scripts": {
-    "build": "cds build && mbt build -t gen --mtar mta.tar -e .mtaext",
-    "deploy": "cf deploy gen/mta.tar"
-  }
-}
-```
-
-Then run:
+The repository already ships these — do not redefine them:
 
 ```bash
-npm run build
-npm run deploy
+npm run build      # npx cds b
+npm run build:mta  # npx mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar
+npm run deploy     # cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services -f
 ```
+
+Run `build:mta` then `deploy`. Note that `deploy` already passes `-e .mtaext`, so the extension
+descriptor must exist at the repository root.
 
 ### Option 2: Manual commands
 
-#### 1. Build CDS
+#### 1. Build the MTA archive
+
+`mta.yaml` runs `npx cds build --production` in its `before-all` step, so a separate `cds build`
+is not needed here.
 
 ```bash
-cds build
+mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar -e .mtaext
 ```
 
-#### 2. Build MTA Archive
+#### 2. Deploy to Cloud Foundry
 
 ```bash
-mbt build -t gen --mtar mta.tar -e .mtaext
-```
-
-#### 3. Deploy to Cloud Foundry
-
-```bash
-cf deploy gen/mta.tar
+cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services
 ```
 
 ## Troubleshooting
@@ -102,7 +92,7 @@ modules:
 
 ## Files
 
-- `.mtaext.template` - Template (committed to Git)
+- `docs/deployment/templates/*.mtaext.template` - Templates, one per scenario (committed to Git)
 - `.mtaext` - Your config (NOT committed, in .gitignore)
 - `mta.yaml` - MTA descriptor (committed to Git)
 

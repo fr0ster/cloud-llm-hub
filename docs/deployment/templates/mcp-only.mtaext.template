@@ -2,7 +2,7 @@
 # Use case: Connect Cline/Claude Desktop directly to SAP via MCP protocol
 #
 # Usage:
-#   cp docs/deployment/mcp-only.mtaext.template .mtaext
+#   cp docs/deployment/templates/mcp-only.mtaext.template .mtaext
 #   # Edit values below
 #   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 

@@ -42,7 +42,6 @@ Required roles (assign via BTP Cockpit -> Security -> Role Collections):
 | `Content-Type`      | Yes      | `application/json`                       |
 | `Accept`            | Yes      | `application/json, text/event-stream`    |
 | `X-SAP-Destination` | Yes      | BTP Destination name (e.g. `S4HANA_DEV`) |
-| `Mcp-Session-Id`    | After init | Session ID returned by initialize      |
 
 ## Connection Flow
 
@@ -69,7 +68,7 @@ curl -X POST "$BASE_URL/mcp/stream/http" \
   }'
 ```
 
-Response includes `Mcp-Session-Id` header — use it in subsequent requests.
+The transport is **stateless** (`sessionIdGenerator: undefined`, `srv/mcp-manager.ts`): no `Mcp-Session-Id` is returned and none is needed. Every request stands alone and carries its own `x-sap-*` headers.
 
 ### Step 2: List Available Tools
 
@@ -79,7 +78,6 @@ curl -X POST "$BASE_URL/mcp/stream/http" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "X-SAP-Destination: S4HANA_DEV" \
-  -H "Mcp-Session-Id: $SESSION_ID" \
   -d '{"jsonrpc": "2.0", "id": "2", "method": "tools/list"}'
 ```
 
@@ -93,7 +91,6 @@ curl -X POST "$BASE_URL/mcp/stream/http" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "X-SAP-Destination: S4HANA_DEV" \
-  -H "Mcp-Session-Id: $SESSION_ID" \
   -d '{
     "jsonrpc": "2.0",
     "id": "3",
@@ -194,10 +191,10 @@ In addition to MCP, CAP OData services provide health checks:
 curl "$BASE_URL/odata/v4/auth/CheckAuth()" -H "Authorization: Bearer $JWT"
 
 # MCP health
-curl "$BASE_URL/odata/v4/mcp/Health()" -H "Authorization: Bearer $JWT"
+curl "$BASE_URL/odata/v4/mcp-proxy/Health()" -H "Authorization: Bearer $JWT"
 
 # Probe destination connectivity
-curl "$BASE_URL/odata/v4/mcp/ProbeDestination(destination='S4HANA_DEV')" \
+curl "$BASE_URL/odata/v4/mcp-proxy/ProbeDestination(destination='S4HANA_DEV')" \
   -H "Authorization: Bearer $JWT"
 
 # Agent health
@@ -267,4 +264,3 @@ See `.env.example` for token setup instructions.
 
 - [OpenAI-Compatible Agent](OPENAI_AGENT.md) - Connect via OpenAI API
 - [CAP Express Auth](../development/CAP_EXPRESS_AUTH.md) - How auth works on custom routes
-- [MCP Proxy Usage](MCP_PROXY_USAGE.md) - Legacy MCP proxy documentation

@@ -2,7 +2,7 @@
 
 ## McpProxyService (@path: 'mcp-proxy')
 
-⚠️ **IMPORTANT**: All McpProxyService endpoints require authorization with scope `MCP_Connector` (`@requires: 'MCP_Connector'`)
+⚠️ **IMPORTANT**: Authorization differs by surface. The OData endpoints of `McpProxyService` need an authenticated XSUAA user — there is no `@requires` annotation on the service in the CDS model, so no particular role is enforced there. The raw `/mcp/**` and `/v1/**` routes are different: `requireMcpRole` in `srv/server.ts` rejects a token that carries none of **`MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`** with 403. A valid JWT alone is not enough for those.
 
 > **Note**: The CDS service path was changed from `'mcp'` to `'mcp-proxy'` to avoid
 > conflicting with custom Express routes on `/mcp/stream/http`. See
@@ -13,7 +13,7 @@
 - **Method**: GET
 - **URL**: `/odata/v4/mcp-proxy/Health()`
 - **Parameters**: none
-- **Authorization**: ✅ Required - scope `MCP_Connector` needed
+- **Authorization**: ✅ Authenticated XSUAA user required (OData surface — no specific scope enforced; `/mcp/**` and `/v1/**` additionally require an MCP role)
 - **Example**:
   ```bash
   GET http://localhost:4004/odata/v4/mcp-proxy/Health()
@@ -29,7 +29,7 @@
 - **Or via positional parameter**: `/odata/v4/mcp-proxy/ProbeDestination(destination='NAME')`
 - **Parameters**:
   - `destination` (String, required) - destination name
-- **Authorization**: ✅ Required - scope `MCP_Connector` needed
+- **Authorization**: ✅ Authenticated XSUAA user required (OData surface — no specific scope enforced)
 - **Implementation**: Uses SAP Cloud SDK's `executeHttpRequest` for automatic destination resolution, authentication, and proxy configuration.
 - **Examples**:
 
@@ -65,9 +65,10 @@ These endpoints are registered directly in Express and bypass CAP's OData layer.
 
 - **Method**: POST
 - **URL**: `/mcp/stream/http`
-- **Authorization**: ✅ Required - scope `MCP_Connector` needed
-- **Content-Type**: `application/json` (NDJSON streaming)
-- **Purpose**: Bidirectional NDJSON streaming transport for MCP protocol
+- **Authorization**: ✅ Authenticated XSUAA user **with an MCP role** — `requireMcpRole` in `srv/server.ts` returns 403 unless the token carries `MCP_Reader`, `MCP_Analyst`, `MCP_Developer` or `MCP_Full`
+- **Content-Type**: `application/json` — exactly **one** JSON-RPC message per request (`srv/server.ts` runs a single `JSON.parse` over the whole body)
+- **Accept**: `application/json, text/event-stream` — the response is SSE when the server streams progress
+- **Purpose**: MCP Streamable HTTP transport, **stateless** (`sessionIdGenerator: undefined`) — no `Mcp-Session-Id` is issued or expected
 - **Headers** (optional):
   - `X-MCP-Timeout`: Request timeout in milliseconds (default: 10000ms in debug, 5000ms in production)
   - `X-Request-Timeout`: Alternative header for timeout
@@ -101,7 +102,7 @@ Two methods are available:
 
 ```
 GET /odata/v4/mcp-proxy/ProbeDestination?destination=S4HANA
-GET /odata/v4/auth/CheckRoles?required=["MCP_Connector"]
+GET /odata/v4/auth/CheckRoles?required=["MCP_Developer"]
 ```
 
 **B) Positional parameters in URL**
@@ -252,7 +253,7 @@ curl -X POST \
 ### Error: "Forbidden" or "Unauthorized"
 
 - Check if Authorization header is set
-- Check if the token contains the required scope (`MCP_Connector`)
+- Check if the token contains one of the issued scopes (`MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`)
 - For development, check if the user exists in `package.json` → `cds.requires.auth[development].users`
 
 ### Error: "Function not found" or 404

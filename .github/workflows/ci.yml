@@ -31,6 +31,9 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
       
+      - name: Check docs against the project
+        run: node tools/check-docs.js
+
       - name: Build
         run: npx cds build
       
@@ -40,4 +43,5 @@ jobs:
           echo "✅ All checks passed!"
           echo "- Biome: OK"
           echo "- TypeScript: OK"
+          echo "- Docs: OK"
           echo "- Build: OK"

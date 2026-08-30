@@ -3,8 +3,8 @@
 # Requires: API key and base URL for your LLM provider
 #
 # Usage:
-#   cp docs/deployment/mcp-openai.mtaext.template .mtaext
-#   # Edit values below (API key, base URL, model)
+#   cp docs/deployment/templates/mcp-openai.mtaext.template .mtaext
+#   # Edit values below (model, destination)
 #   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 
 _schema-version: '3.3.0'
@@ -15,8 +15,14 @@ version: 1.0.0
 parameters:
   # LLM Provider
   LLM_AGENT_PROVIDER: "openai"
-  LLM_AGENT_API_KEY: "<your-api-key>"              # OpenAI API key or compatible
-  LLM_AGENT_BASE_URL: "https://api.openai.com/v1"  # Or Azure/Ollama/vLLM URL
+
+  # NOTE: LLM_AGENT_API_KEY and LLM_AGENT_BASE_URL are deliberately NOT set here.
+  # mta.yaml does not declare them, so a value put in this file never reaches the
+  # container — and a secret does not belong in a committed extension descriptor.
+  # Set them after deploying:
+  #   cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY "<your-api-key>"
+  #   cf set-env cloud-llm-hub-srv LLM_AGENT_BASE_URL "<your-base-url>"
+  #   cf restart cloud-llm-hub-srv
 
   # LLM Model Configuration
   LLM_AGENT_MODEL: "gpt-4o"

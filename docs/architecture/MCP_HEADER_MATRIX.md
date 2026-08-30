@@ -24,7 +24,7 @@ The sections below list the minimum YAML keys and the headers they populate for 
 - `sap.url` → header `X-SAP-URL`.
 - `sap.client` → header `X-SAP-Client`.
 - `sap.auth.type: basic` → header `X-SAP-Auth-Type: basic`.
-- `sap.auth.username` → header `X-SAP-Username`.
+- `sap.auth.username` → header `X-SAP-Login`.
 - `sap.auth.password` → header `X-SAP-Password`.
 - `mcp.auth.username` + `mcp.auth.password` → `Authorization: Basic <base64>`.
 
@@ -81,7 +81,7 @@ Applies to `direct-jwt.yaml` and the `cloud-internet` template when `sap.auth.ty
 | `x-sap-auth-type`   | Yes         | `jwt`                | Derived from `sap.auth.type`                                                     |
 | `x-sap-jwt-token`   | Yes         | Bearer token for SAP | `sap.auth.token` (e.g. `serviceKey` → `sap-abap.credentials.jwt`, file, command) |
 | `authorization`     | Yes (proxy) | `Bearer <token>`     | `mcp.auth` (typically `serviceKey` → `mcp-xsuaa.access_token`)                   |
-| `x-sap-username`    | No          | _Removed_            | Script clears to avoid mixing auth modes                                         |
+| `x-sap-login`    | No          | _Removed_            | Script clears to avoid mixing auth modes                                         |
 | `x-sap-password`    | No          | _Removed_            | Script clears to avoid mixing auth modes                                         |
 | Destination headers | No          | _Removed_            | `x-sap-destination`, `x-sap-connectivity-*` cleared automatically                |
 
@@ -94,7 +94,7 @@ Applies to `direct-basic.yaml` (or any `sap.auth.type: basic`).
 | `x-sap-url`         | Yes         | SAP endpoint            | Literal `sap.url`                      |
 | `x-sap-client`      | Yes         | SAP client number       | Literal `sap.client`                   |
 | `x-sap-auth-type`   | Yes         | `basic`                 | Derived from `sap.auth.type`           |
-| `x-sap-username`    | Yes         | Technical user name     | `sap.auth.username` (env, const, etc.) |
+| `x-sap-login`    | Yes         | Technical user name     | `sap.auth.username` (env, const, etc.) |
 | `x-sap-password`    | Yes         | Technical user password | `sap.auth.password`                    |
 | `authorization`     | Yes (proxy) | `Basic <base64>`        | `mcp.auth` with username/password      |
 | `x-sap-jwt-token`   | No          | _Removed_               | Script clears JWT header               |

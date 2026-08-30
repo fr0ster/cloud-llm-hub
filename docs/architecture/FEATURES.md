@@ -9,7 +9,7 @@
 
 ### 1. **LLM Agent with RAG Pipeline** *(v2.1+)*
 
-SmartAgent powered by SAP AI Core with intelligent tool selection via vector similarity.
+SmartAgent with intelligent tool selection via vector similarity. The LLM provider is configurable through `LLM_AGENT_PROVIDER` — SAP AI Core by default, or OpenAI-compatible, Anthropic and DeepSeek APIs.
 
 **Features:**
 
@@ -33,7 +33,7 @@ Automatic discovery and management of multiple SAP ABAP systems.
 **Features:**
 
 - BTP Destination Service auto-discovery of SAP systems
-- Per-destination tool vectorization with background processing
+- Tool corpus vectorized **once** and shared by every destination (`sharedToolsRag`), warmed in the background
 - Live destination status in UI (ready/vectorizing/pending/error)
 - Per-request destination switching via `X-SAP-Destination` header
 - Destination mapping — map a short system code to a BTP destination name for cleaner client configuration
@@ -356,7 +356,7 @@ const objects = await client.getObjectList('CLAS', 'Z_MY_PACKAGE');
 Built-in health endpoint for monitoring.
 
 ```bash
-curl https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/Health\(\)
+curl https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp-proxy/Health\(\)
 ```
 
 ### 2. **Destination Diagnostics**
@@ -364,7 +364,7 @@ curl https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/Health\(\)
 Test destination connectivity before use.
 
 ```bash
-curl "https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp/ProbeDestination?destination=SAP_DEST"
+curl "https://your-app.cfapps.eu10.hana.ondemand.com/odata/v4/mcp-proxy/ProbeDestination?destination=SAP_DEST"
 ```
 
 ### 3. **Template Generation**
@@ -412,11 +412,9 @@ mcpConnection:
 
 ## 🚀 Get Started Now
 
-1. **[⚡ Quick Setup](QUICK_SETUP.md)** - 60-second guide
-2. **[🚀 Getting Started](GETTING_STARTED.md)** - Complete onboarding
-3. **[🔌 Integration Examples](INTEGRATIONS.md)** - Ready-to-use code
+1. **[🚀 Getting Started](../usage/GETTING_STARTED.md)** - Complete onboarding
 
-**Ready to try it?** Follow the [Quick Setup Guide](QUICK_SETUP.md) and get connected in 60 seconds!
+**Ready to try it?** Follow the [Getting Started guide](../usage/GETTING_STARTED.md).
 
 ---
 

@@ -83,16 +83,15 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Streamable HTTP & Session Handling
 
-- The proxy exposes the Stream-HTTP endpoint (`POST /mcp/stream/http`) implemented in `srv/mcp-proxy.ts`.
+- The proxy exposes the Stream-HTTP endpoint (`POST /mcp/stream/http`). The route is registered in `srv/server.ts`; the per-request MCP server and transport are built in `srv/mcp-manager.ts`. (`srv/mcp-proxy.ts` is the OData service — Health, ProbeDestination, ListDestinations.)
 - An **OpenAI-compatible chat endpoint** (`POST /v1/chat/completions`) and an **Anthropic Messages API endpoint** (`POST /v1/messages`) are also available. The Anthropic endpoint enables Claude CLI connections via the `ANTHROPIC_BASE_URL` environment variable — it translates the Anthropic message format through the SmartAgent pipeline and streams back Anthropic-compatible SSE events.
 - Embedded MCP servers are created per request in `srv/mcp-manager.ts` (no server instance cache).
-- The first Streamable HTTP request **must** omit the `Mcp-Session-Id` header. The proxy returns a generated session ID which clients must echo in subsequent calls.
-- Dropping the header (or restarting the proxy) forces a clean re-initialization, which is useful after rotating SAP credentials or clearing stale state.
+- The transport is **stateless** (`sessionIdGenerator: undefined` in `srv/mcp-manager.ts`): no `Mcp-Session-Id` is issued and none is expected. Every request carries its own `x-sap-*` headers and gets its own server instance, so there is no session to re-initialize.
 - Detailed connection and session examples are documented in [`docs/usage/MCP_CONNECTION.md`](docs/usage/MCP_CONNECTION.md) and the [`Stream-HTTP` API reference](docs/architecture/API_REFERENCE.md#12-stream-http).
 
 ## Destination Diagnostics
 
-- `GET /mcp/ProbeDestination?destination=<name>` (CAP function) resolves a Destination service entry using SAP Cloud SDK's `executeHttpRequest`, establishes connectivity (including Connectivity proxy when required for on-premise destinations), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, authentication type, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints. The implementation leverages SAP Cloud SDK for automatic destination resolution, authentication handling, and proxy configuration.
+- `GET /odata/v4/mcp-proxy/ProbeDestination?destination=<name>` (CAP function) resolves a Destination service entry using SAP Cloud SDK's `executeHttpRequest`, establishes connectivity (including Connectivity proxy when required for on-premise destinations), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, authentication type, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints. The implementation leverages SAP Cloud SDK for automatic destination resolution, authentication handling, and proxy configuration.
 
 ## Authentication & Connectivity
 
@@ -108,10 +107,10 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 
 ## Tooling & Tests
 
-- **Code Quality**: ESLint and Prettier configured for consistent code style.
-  - Run `npm run lint` to check for issues.
-  - Run `npm run lint:fix` to auto-fix issues.
-  - Run `npm run format` to format code with Prettier.
+- **Code Quality**: Biome configured for consistent code style (it replaced ESLint and Prettier).
+  - Run `npm run lint:check` to check for issues.
+  - Run `npm run lint` to auto-fix them.
+  - Run `npm run format` to format code.
 - **Integration tests**: YAML-driven test runner via `npm test` (requires `test/integration.yaml` config).
   - Copy `test/integration.yaml.template` to `test/integration.yaml` and fill in your values.
   - Supports both local and BTP deployments, configures SAP context (direct/destination mode).
@@ -193,10 +192,11 @@ Sensitive configuration (like LLM model names, destination names) should not be 
 
 1. Copy the template:
    ```bash
-   cp mta-config.mtaext.template mta-config.mtaext
+   cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
    ```
-2. Edit `mta-config.mtaext` with your real values. This file is git-ignored.
-3. Deploy with the configuration:
+2. Edit `.mtaext` with your real values. This file is git-ignored.
+3. Build and deploy:
    ```bash
-   cf deploy gen/mta_archives/cloud-llm-hub.tar -e mta-config.mtaext --abort-on-error --delete-services
+   npm run build:mta   # mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar
+   npm run deploy      # cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext
    ```

@@ -3,7 +3,7 @@
 # Requires: SAP AI Core service binding with deployed models
 #
 # Usage:
-#   cp docs/deployment/mcp-sap-ai-core.mtaext.template .mtaext
+#   cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
 #   # Edit values below
 #   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 
@@ -33,8 +33,6 @@ parameters:
   # Embedding model for RAG semantic search
   LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
 
-  # Presentation model (fast model for formatting final responses)
-  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
 
   # Handler sets to expose (readonly, high, low, compact, search, system)
 

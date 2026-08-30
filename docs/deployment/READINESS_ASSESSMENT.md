@@ -100,7 +100,7 @@ for answers to 3.2 and 3.3 in the very first conversation.
 | 4.2 | On-premise | Cloud Connector is on the critical path | Confirm 4.3; add 2–4 hours, more if the Cloud Connector team is a separate organization |
 | 4.2 | SAP BTP ABAP environment | Simplest case — no Cloud Connector needed | Direct destination, Internet proxy type |
 | 4.3 | Cloud Connector not registered for this subaccount | **Blocker for on-premise access.** Registration is per subaccount — an existing Cloud Connector for another subaccount does not count | Cloud Connector admin registers it; also needs access control for `/sap/bc/adt/**` |
-| 4.4 | ICF services not activated | **Blocker** — no ADT, no tools | Basis activates `/sap/bc/adt` and `/sap/bc/http` in SICF. Usually fast once the right person is asked |
+| 4.4 | ICF service not activated | **Blocker** — no ADT, no tools | Basis activates `/sap/bc/adt` in SICF. That is the only endpoint the runtime uses. Usually fast once the right person is asked |
 | 4.5 | No technical user | Blocker until created | Add 1–4 hours; in regulated environments this can require a formal request |
 | 4.6 | Display-only authorizations | Read and analysis tools work; anything that writes fails at runtime with an authorization error | Match this to the role collections at 5.4 — do not hand out Developer if the backend user cannot write |
 | 4.7 | Read-only required | Restricts us to Reader and Analyst role collections | Confirms a smaller, faster, easier-to-approve scope. Often the right first step |

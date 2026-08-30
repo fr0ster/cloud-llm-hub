@@ -435,7 +435,7 @@ Additional Properties:
 **HTTP Request to cloud-llm-hub:**
 
 ```http
-POST /mcp/stream-http
+POST /mcp/stream/http
 Host: cloud-llm-hub.cfapps.eu10.hana.ondemand.com
 Content-Type: application/json
 X-SAP-Destination: PROD_S4HANA
@@ -498,7 +498,7 @@ Access Control: Allow /sap/bc/adt/*
 **HTTP Request:**
 
 ```http
-POST /mcp/stream-http
+POST /mcp/stream/http
 X-SAP-Destination: ONPREM_ECC
 
 {
@@ -603,10 +603,7 @@ it('should use direct connection for sapConfig', async () => {
 - [SAP Cloud SDK Documentation](https://sap.github.io/cloud-sdk/)
 - [BTP Destination Service](https://help.sap.com/docs/connectivity/sap-btp-connectivity-cf/destinations)
 - [Cloud Connector](https://help.sap.com/docs/connectivity/sap-btp-connectivity-cf/cloud-connector)
-- [mcp-abap-adt Documentation](../submodules/mcp-abap-adt/README.md)
-- [Integration Architecture](INTEGRATION_ARCHITECTURE.md) - Overall integration architecture
-- [MCP ABAP ADT Usage](MCP_ABAP_ADT_USAGE.md) - Library usage guide
-- [Code Sharing Policy](CODE_SHARING_POLICY.md) - Duplication policy
+- [mcp-abap-adt (upstream repository)](https://github.com/fr0ster/mcp-abap-adt)
 
 ---
 

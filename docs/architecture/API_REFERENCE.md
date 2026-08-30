@@ -31,7 +31,7 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 
 ### 1. Health Check
 
-**Endpoint:** `GET /odata/v4/mcp/Health()`
+**Endpoint:** `GET /odata/v4/mcp-proxy/Health()`
 
 **Description:** Returns health status of the MCP proxy service.
 
@@ -56,14 +56,14 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 
 ```bash
 curl -H "Authorization: Basic YWxpY2U6" \
-     http://localhost:4004/odata/v4/mcp/Health\(\)
+     http://localhost:4004/odata/v4/mcp-proxy/Health\(\)
 ```
 
 ---
 
 ### 2. Probe Destination
 
-**Endpoint:** `GET /odata/v4/mcp/ProbeDestination?destination={name}`
+**Endpoint:** `GET /odata/v4/mcp-proxy/ProbeDestination?destination={name}`
 
 **Description:** Tests destination connectivity and configuration using SAP Cloud SDK.
 
@@ -106,7 +106,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 ```bash
 curl -H "Authorization: Basic YWxpY2U6" \
-     "http://localhost:4004/odata/v4/mcp/ProbeDestination?destination=SAP_DEV_DEST"
+     "http://localhost:4004/odata/v4/mcp-proxy/ProbeDestination?destination=SAP_DEV_DEST"
 ```
 
 ---
@@ -375,32 +375,31 @@ curl -X POST -H "Authorization: Bearer <token>" \
 
 **Endpoint:** `POST /mcp/stream/http`
 
-**Description:** Bidirectional NDJSON streaming for MCP communication.
+**Description:** MCP Streamable HTTP. **One JSON-RPC message per HTTP request** — `srv/server.ts` reads the whole body and runs a single `JSON.parse`, so a body holding several objects is a parse error. The transport is stateless (`sessionIdGenerator: undefined`), so each request stands alone. Responses stream back as SSE when the tool emits progress.
 
 **Authentication:** Required
 
 **Headers:**
 
 - `Authorization` (required) - Basic or Bearer token
-- `Content-Type: application/x-ndjson` (required)
-- `Mcp-Session-Id` (optional) - Session ID for follow-up requests
+- `Content-Type: application/json` (required)
+- `Accept: application/json, text/event-stream` (required)
 - `X-SAP-Destination` (optional) - Destination name for destination mode
 - `X-SAP-URL` (optional) - Direct SAP URL for direct mode
 - `X-SAP-Client` (optional) - SAP client number
 - `X-SAP-Auth-Type` (optional) - `jwt` or `basic`
-- `X-SAP-Auth-Token` (optional) - SAP JWT token (for direct mode)
+- `X-SAP-JWT-Token` (optional) - SAP JWT token (for direct mode)
 
 **Request Body:**
 
-- Content-Type: `application/x-ndjson`
-- Format: Newline-delimited JSON
-- Each line is a complete JSON-RPC 2.0 request
+- Content-Type: `application/json`
+- Exactly one JSON-RPC 2.0 request object
 
 **Response:**
 
-- Content-Type: `application/x-ndjson`
-- Format: Newline-delimited JSON
-- Each line is a complete JSON-RPC 2.0 response
+- `application/json` for a plain result, or `text/event-stream` when the server
+  streams progress — hence the required `Accept` above
+- One JSON-RPC 2.0 response per request
 
 **Status Codes:**
 
@@ -412,15 +411,23 @@ curl -X POST -H "Authorization: Bearer <token>" \
 **Example:**
 
 ```bash
+# One JSON-RPC message per request — the server reads the whole body and runs a
+# single JSON.parse (srv/server.ts), so two objects in one body is a parse error.
 curl -X POST \
      -H "Authorization: Basic YWxpY2U6" \
-     -H "Content-Type: application/x-ndjson" \
+     -H "Content-Type: application/json" \
+     -H "Accept: application/json, text/event-stream" \
      -H "X-SAP-Destination: SAP_DEV_DEST" \
-     --data-binary @- \
-     http://localhost:4004/mcp/stream/http <<EOF
-{"jsonrpc":"2.0","id":1,"method":"tools/list"}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"GetObjectList","arguments":{"objectType":"CLAS"}}}
-EOF
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+     http://localhost:4004/mcp/stream/http
+
+curl -X POST \
+     -H "Authorization: Basic YWxpY2U6" \
+     -H "Content-Type: application/json" \
+     -H "Accept: application/json, text/event-stream" \
+     -H "X-SAP-Destination: SAP_DEV_DEST" \
+     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"GetObjectList","arguments":{"objectType":"CLAS"}}}' \
+     http://localhost:4004/mcp/stream/http
 ```
 
 **Response Format:**
@@ -432,10 +439,10 @@ EOF
 
 **Session Management:**
 
-- First request: Omit `Mcp-Session-Id` header
-- Response includes: `Mcp-Session-Id: <session-id>` header
-- Subsequent requests: Include `Mcp-Session-Id: <session-id>` header
-- To reset: Omit `Mcp-Session-Id` header or restart proxy
+There is none. The transport is created with `sessionIdGenerator: undefined`
+(`srv/mcp-manager.ts`), i.e. stateless mode: the server issues no
+`Mcp-Session-Id` and expects none back. Each request builds its own MCP server
+from its own `x-sap-*` headers, so there is nothing to reset.
 
 ---
 
@@ -479,7 +486,7 @@ curl -X POST \
      -H "X-SAP-Destination: SAP_NO_AUTH_DEST" \
      -H "X-SAP-Login: MY_USER" \
      -H "X-SAP-Password: MY_PASS" \
-     -H "Content-Type: application/x-ndjson" \
+     -H "Content-Type: application/json" \
      https://your-app.cfapps.eu10.hana.ondemand.com/mcp/stream/http
 ```
 
@@ -490,8 +497,8 @@ curl -X POST \
 - `X-SAP-URL: <sap-url>` (required)
 - `X-SAP-Client: <client-number>` (required)
 - `X-SAP-Auth-Type: jwt|basic` (required)
-- `X-SAP-Auth-Token: <token>` (for JWT)
-- OR `X-SAP-Username: <username>` and `X-SAP-Password: <password>` (for Basic)
+- `X-SAP-JWT-Token: <token>` (for JWT)
+- OR `X-SAP-Login: <username>` and `X-SAP-Password: <password>` (for Basic)
 
 **Description:** Direct connection to SAP system without Destination service.
 
@@ -508,7 +515,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
      -H "X-SAP-URL: https://sap.example.com" \
      -H "X-SAP-Client: 200" \
      -H "X-SAP-Auth-Type: jwt" \
-     -H "X-SAP-Auth-Token: <sap-jwt-token>" \
+     -H "X-SAP-JWT-Token: <sap-jwt-token>" \
      http://localhost:4004/mcp/stream/http
 ```
 
@@ -638,9 +645,7 @@ For the full list of available tools, see the ABAP ADT MCP server documentation 
 
 ## Additional Resources
 
-- [MCP Proxy Usage Guide](MCP_PROXY_USAGE.md) - Detailed usage examples
 - [MCP Header Matrix](MCP_HEADER_MATRIX.md) - Header configuration reference
-- [MCP Config Update How-To](MCP_CONFIG_UPDATE_HOWTO.md) - Configuration automation
 
 ---
 

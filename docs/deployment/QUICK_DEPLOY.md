@@ -10,36 +10,21 @@
 ### Full build and deploy
 
 ```bash
-# 1. Build everything
-cds build && mbt build -t gen --mtar mta.tar -e .mtaext
+# 1. Build the MTA archive (mta.yaml's before-all already runs cds build)
+npm run build:mta
 
 # 2. Deploy to CF
-cf deploy gen/mta.tar
+npm run deploy
 ```
 
-### Or use npm scripts
-
-Add to `package.json`:
-
-```json
-"scripts": {
-  "mta:build": "cds build && mbt build -t gen --mtar mta.tar -e .mtaext",
-  "mta:deploy": "cf deploy gen/mta.tar"
-}
-```
-
-Then:
-
-```bash
-npm run mta:build
-npm run mta:deploy
-```
+These scripts already exist in `package.json`; there is nothing to add. They produce
+`gen/mta_archives/cloud-llm-hub.mtar` and deploy it with `-e .mtaext`.
 
 ## Quick Setup
 
 1. **Create `.mtaext`** from template:
    ```bash
-   cp .mtaext.template .mtaext
+   cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
    ```
 
 2. **Edit `.mtaext`** - replace `YOUR_*` values:
@@ -48,13 +33,13 @@ npm run mta:deploy
 
 3. **Build and deploy**:
    ```bash
-   cds build && mbt build -t gen --mtar mta.tar -e .mtaext
-   cf deploy gen/mta.tar
+   npm run build && npm run build:mta
+   npm run deploy
    ```
 
 ## Files
 
-- `.mtaext.template` - Template (in Git)
+- `docs/deployment/templates/*.mtaext.template` - Templates, one per scenario (in Git)
 - `.mtaext` - Your config (NOT in Git, in .gitignore)
 - `mta.yaml` - MTA descriptor
 - `DEPLOY_GUIDE.md` - Full deployment guide

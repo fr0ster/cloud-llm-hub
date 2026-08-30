@@ -3,7 +3,7 @@
 # Note: Change the ID to avoid conflicts with production deployment
 #
 # Usage:
-#   cp docs/deployment/staging.mtaext.template .mtaext
+#   cp docs/deployment/templates/staging.mtaext.template .mtaext
 #   # Edit values below (especially ID and APPROUTER_HOST)
 #   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 #
@@ -32,7 +32,6 @@ parameters:
   # Classifier, embedding, presentation models
   LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
   LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
-  LLM_AGENT_PRESENTATION_MODEL: "gemini-2.5-flash"
 
   # Handler sets
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"

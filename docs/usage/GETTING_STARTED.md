@@ -170,8 +170,6 @@ node tools/update-cline-connection.js \
 - ✅ YAML-driven configuration
 - ✅ One-command updates
 
-**More details:** See [docs/MCP_CONFIG_UPDATE_HOWTO.md](./MCP_CONFIG_UPDATE_HOWTO.md)
-
 ### CI/CD Integration
 
 **GitHub Actions Example:**
@@ -379,9 +377,7 @@ Cloud LLM Hub provides access to all MCP tools from the underlying ABAP ADT serv
 ## 📚 Next Steps
 
 1. **Explore Templates:** Check `docs/templates/mcp-config/` for ready-to-use configurations
-2. **Read Usage Guide:** See [MCP Proxy Usage](./MCP_PROXY_USAGE.md) for detailed endpoint documentation
-3. **Configure Updates:** See [MCP Config Update How-To](./MCP_CONFIG_UPDATE_HOWTO.md) for automation
-4. **Test Integration:** Use `npm test` to verify your setup
+2. **Test Integration:** Use `npm test` to verify your setup
 
 ## 🆘 Need Help?
 

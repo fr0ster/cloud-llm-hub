@@ -80,7 +80,7 @@ Owner / contact: ______________________
 | 4.1 | Which SAP systems are in scope? Please list SID, client, product (S/4HANA, ECC, SAP BTP ABAP environment) and release for each. | |
 | 4.2 | Are these systems on-premise, hosted, or cloud (SAP BTP ABAP environment / RISE)? | |
 | 4.3 | Is a Cloud Connector installed, and is it registered for the target BTP subaccount? (Each subaccount requires its own registration.) | |
-| 4.4 | Are the ICF services `/sap/bc/adt` and `/sap/bc/http` activated on the target systems? | |
+| 4.4 | Is the ICF service `/sap/bc/adt` activated on the target systems? | |
 | 4.5 | Is a technical or communication user available for ADT access, or does one need to be created? Who creates it? | |
 | 4.6 | Which authorizations will that user have? (Display only / development / full) | |
 | 4.7 | Are **write operations** permitted — creating and changing ABAP objects — or is read-only access required? | |

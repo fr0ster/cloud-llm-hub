@@ -23,7 +23,7 @@ Three deployment scenarios: **A — SAP AI Core** (enterprise, BTP-native), **B 
 | Cloud Connector (on-prem only) | Basis Admin | 2-4 hours |
 | SAP system user + ICF services `/sap/bc/adt` | Basis Admin | 1-4 hours |
 
-### Installation (7 steps, ~2 hours)
+### Installation (6 steps, ~2 hours)
 
 1. Clone repo, `npm install`
 2. Create `.mtaext` — set `LLM_AGENT_MODEL`, `LLM_AGENT_MCP_DESTINATION`, AI Core active
@@ -62,17 +62,18 @@ No SAP AI Core needed. Works with any OpenAI-compatible API, and also with the n
 
 > **No AI Core entitlement required.** Set AI Core resource to `active: false` in `.mtaext`.
 
-### Installation (7 steps, ~2 hours)
+### Installation (6 steps, ~2 hours)
 
 1. Clone repo, `npm install`
 2. Create `.mtaext` — key parameters:
    ```yaml
    LLM_AGENT_PROVIDER: "openai"
-   LLM_AGENT_API_KEY: "sk-..."
-   LLM_AGENT_BASE_URL: "https://api.openai.com/v1"  # or any compatible endpoint
    LLM_AGENT_MODEL: "gpt-4o"
    LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"
    ```
+   The API key and base URL are **not** `.mtaext` parameters — `mta.yaml` does not declare them.
+   Set them after the deploy: `cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY "..."`,
+   the same for `LLM_AGENT_BASE_URL`, then `cf restart cloud-llm-hub-srv`.
 3. Create BTP Destination to SAP system (manual, BTP Cockpit)
 4. Build (`npx mbt build`) and deploy (`cf deploy`)
 5. Assign role collections to users
