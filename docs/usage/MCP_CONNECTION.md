@@ -23,12 +23,34 @@ npm run get:key && npm run get:token
 
 Required roles (assign via BTP Cockpit -> Security -> Role Collections):
 
-| Role Collection      | Roles Included                                  | Access Level |
+| Role Collection      | Roles Included                                  | Tool groups reachable |
 |----------------------|-------------------------------------------------|--------------|
-| MCP Reader Access    | MCP_Reader                                      | Read-only    |
-| MCP Analyst Access   | MCP_Reader + MCP_Analyst                        | Read + analyze |
-| MCP Developer Access | MCP_Reader + MCP_Analyst + MCP_Developer         | Read + write (compact) |
-| MCP Full Access      | MCP_Reader + MCP_Analyst + MCP_Developer + MCP_Full | Full access  |
+| MCP Reader Access    | MCP_Reader                                      | `readonly`, `search` |
+| MCP Analyst Access   | MCP_Reader + MCP_Analyst                        | + `system` (SQL, dumps, profiling) |
+| MCP Developer Access | MCP_Reader + MCP_Analyst + MCP_Developer         | + `high` (create / change objects) |
+| MCP Full Access      | MCP_Reader + MCP_Analyst + MCP_Developer + MCP_Full | + `compact`, `low` |
+
+### The role decides what may RUN, not just what is offered
+
+Your roles are checked twice, and the second check is the one that matters:
+
+1. **Retrieval** — tool search only returns tools your roles cover, so the model is
+   normally not even aware of the rest.
+2. **Execution** — every tool call is authorized before it runs.
+
+The second exists because the first cannot be complete: if you name a tool in your
+prompt, the model will ask for it by name whether or not search offered it. Without
+role checks at execution, a read-only caller could reach a create tool that way.
+
+So a `MCP_Reader` asking for `CreateDomain` explicitly gets:
+
+```
+Tool "CreateDomain" was not executed: it belongs to the "high" group and your roles
+grant only [readonly, search]. Asking for it by name does not grant it — a different
+MCP role is required.
+```
+
+This is not a retry-able condition. Get the role assigned, or use a tool your role covers.
 
 **References:**
 - [SAP BTP Role Collections](https://help.sap.com/docs/btp/sap-business-technology-platform/role-collections-and-roles)

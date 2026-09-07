@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.29.0] - 2026-09-07
+
+Security: MCP roles are now enforced when a tool RUNS, not only when tools are retrieved.
+
+### Fixed
+- **A tool named in the prompt bypassed role checks.** Role handling stopped at the RAG filter, which decides only which tools are *offered* to the model. A model that asks for a tool **by name** — which is what happens when the user names it in the prompt — went straight to `invokeEmbeddedTool`, which looked the name up in a handler map holding the full tool set and cached per **destination, not per user**. A caller holding only `MCP_Reader` could execute a create/modify tool on `execute_step`, `/v1/chat/completions` and `/v1/messages`. (`/mcp/stream/http` was already safe: its registry is built from the caller's exposition.)
+- **`/v1/messages` had no role handling at all** — it never resolved exposition, so tool retrieval on the Anthropic channel was unfiltered too.
+- **`MCP_CONNECTION.md` described the wrong tool groups** for MCP Developer (`compact` is `MCP_Full` only; Developer grants `high`).
+
+### Added
+- `assertToolAllowed` (`srv/lib/tool-authorization.ts`), called before any dispatch in `invokeEmbeddedTool` — including the cloud-local `GetDumpSection` branch and its recursive `RuntimeGetDumpById` call. Refusal is explicit that naming a tool does not grant it, so the model does not retry.
+- Fail-closed on both unknowns: a caller with no resolved roles, and a tool absent from the exposition map, are both refused. An unclassified tool does not inherit access by being unclassified.
+- `MCP_ROLES` and `resolveExpositionForUser` in `srv/lib/exposition.ts`. Each channel had its own copy of the role list, which is how `/v1/messages` came to have none. Each channel now resolves permissions once and uses that same value for both the RAG filter and the execution check, so offered and allowed cannot drift apart.
+- Troubleshooting entries for both refusal messages.
+
+### Unchanged
+- The role → tool-group mapping: `readonly` + `search` for any MCP role, `system` from Analyst, `high` from Developer, `compact` + `low` for Full only.
+
 ## [6.28.4] - 2026-07-24
 
 Critical fix: the v6.28.0 honesty controller silently dropped the response on every channel.

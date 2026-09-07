@@ -498,6 +498,34 @@ npm exec -- tsc --noEmit
 
 ## 📋 Common Error Messages
 
+### "Tool ... was not executed: it belongs to the ... group"
+
+**Cause:** Your MCP roles do not cover that tool. The check runs at execution, so
+it fires even when you named the tool yourself in the prompt and the model asked
+for it by name.
+
+The message states the tool's group and the groups your roles grant, for example
+`"high"` needed against `[readonly, search]`.
+
+**Solution:** Have the matching role collection assigned (see
+[MCP_CONNECTION.md](MCP_CONNECTION.md) for the group each role grants), or use a
+tool your current role covers. Retrying will not help — nothing about the request
+changes the answer.
+
+---
+
+### "Tool ... was not executed: the caller's permissions could not be determined"
+
+**Cause:** The request carries no MCP role at all — usually a token without any
+`MCP_*` scope, or a token from the wrong XSUAA instance.
+
+**Solution:** Check the token's scopes (`npm run get:token`, then decode) and that
+the role collection is assigned to your user in the subaccount the app is deployed
+to. Deliberately fail-closed: an unidentifiable caller is refused rather than
+given a default level of access.
+
+---
+
 ### "Invalid Request: Server already initialized"
 
 **Cause:** Two `initialize` calls reached the same MCP server instance. This is
