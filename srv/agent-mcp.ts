@@ -33,7 +33,7 @@ import { z } from 'zod';
 import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
-import { resolveExposition } from './lib/exposition';
+import { resolveExpositionForUser } from './lib/exposition';
 import { computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import { setRequestResponsible } from './lib/responsible';
@@ -190,11 +190,7 @@ export async function createAgentMcpServerForRequest(
   // Captured once (the user/roles are stable for the request); the destination
   // is per call, so it is read from the tool arguments below.
   const userId = cds.context?.user?.id ?? 'anonymous';
-  const exposition = resolveExposition(
-    ['MCP_Reader', 'MCP_Analyst', 'MCP_Developer', 'MCP_Full'].filter(
-      (role) => cds.context?.user?.is?.(role) ?? false,
-    ),
-  );
+  const exposition = resolveExpositionForUser(cds.context?.user);
 
   const server = new McpServer({
     name: 'cloud-llm-hub-agent',
@@ -347,6 +343,7 @@ export async function createAgentMcpServerForRequest(
                 opts,
               ),
             dumpScope,
+            exposition,
           ),
         );
 

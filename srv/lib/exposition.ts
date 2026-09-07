@@ -11,6 +11,39 @@ export type ExpositionLevel =
   | 'low';
 
 /**
+ * Every MCP role, in one place.
+ *
+ * Each channel used to carry its own copy of this list, which is how
+ * `/v1/messages` ended up with no role handling at all — there was nothing
+ * central to notice was missing.
+ */
+export const MCP_ROLES = [
+  'MCP_Reader',
+  'MCP_Analyst',
+  'MCP_Developer',
+  'MCP_Full',
+] as const;
+
+/** Minimal shape of the CAP user object — `cds.context?.user`. */
+export interface RoleBearer {
+  is?: (role: string) => boolean;
+}
+
+/**
+ * Exposition groups the given caller's roles grant.
+ *
+ * Returns `[]` for a caller with no MCP role, which every consumer must treat
+ * as "deny" — see `assertToolAllowed`.
+ */
+export function resolveExpositionForUser(
+  user: RoleBearer | undefined,
+): ExpositionLevel[] {
+  return resolveExposition(
+    MCP_ROLES.filter((role) => user?.is?.(role) ?? false),
+  );
+}
+
+/**
  * Resolve MCP exposition groups based on user roles.
  *
  * Role hierarchy (each higher role includes all lower):

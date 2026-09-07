@@ -27,6 +27,7 @@ import {
   isAgentReady,
   runWithRequestConnection,
 } from './agent-manager';
+import { resolveExpositionForUser } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { resolveSessionId } from './session-id';
 
@@ -155,17 +156,33 @@ export async function handleAnthropicMessages(
   // fact 10). Merge into any `trace` the adapter already normalized from the
   // request rather than clobbering it.
   const traceId = randomUUID();
+
+  // The caller's permissions. This channel previously resolved none at all —
+  // no role filtering on which tools were offered, and nothing to authorize a
+  // tool call against. Both are fixed here from one value, so they agree.
+  const callerExposition = resolveExpositionForUser(cds.context?.user);
+
   const agentOpts = {
     stream,
     ...options,
+    ragFilter: {
+      ...(options as { ragFilter?: Record<string, unknown> })?.ragFilter,
+      exposition: callerExposition,
+    },
     trace: { ...options?.trace, traceId },
   };
 
   // Bind the per-request SAP connection for the whole agent run so MCP tool
-  // calls inside the pipeline see it (ALS store survives the async hops).
+  // calls inside the pipeline see it (ALS store survives the async hops), and
+  // the caller's exposition so those tool calls can be authorized.
   const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
     requestConnection
-      ? runWithRequestConnection(requestConnection, fn, requestDumpScope)
+      ? runWithRequestConnection(
+          requestConnection,
+          fn,
+          requestDumpScope,
+          callerExposition,
+        )
       : fn();
 
   try {
