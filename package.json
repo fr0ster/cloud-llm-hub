@@ -83,6 +83,7 @@
     "deploy:set-env": "node tools/set-btp-env.js",
     "generate:intents": "npx tsx tools/generate-tool-intents.ts",
     "sync:version": "node tools/sync-version.js",
+    "gen:tool-exposition": "npx tsx tools/generate-tool-exposition.ts",
     "bump:version": "node tools/bump-version.js",
     "version": "node tools/sync-version.js && git add mta.yaml",
     "prepare": "husky || true"

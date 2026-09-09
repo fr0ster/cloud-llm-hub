@@ -44,6 +44,9 @@ sk.json
 !package.json
 !xs-security*.json
 !package-lock.json
+# Committed test fixtures. tool-exposition.json is the snapshot that makes any
+# change to who may execute what visible in review — it MUST be tracked.
+!test/fixtures/*.json
 !tsconfig.json
 !xs-security.json
 !**/xs-security.json

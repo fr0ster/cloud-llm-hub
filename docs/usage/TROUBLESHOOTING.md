@@ -505,7 +505,7 @@ it fires even when you named the tool yourself in the prompt and the model asked
 for it by name.
 
 The message states the tool's group and the groups your roles grant, for example
-`"high"` needed against `[readonly, search]`.
+`"high"` needed against `[readonly, search, system]`.
 
 **Solution:** Have the matching role collection assigned (see
 [MCP_CONNECTION.md](MCP_CONNECTION.md) for the group each role grants), or use a

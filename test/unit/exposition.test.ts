@@ -1,100 +1,75 @@
-import { resolveExposition } from '../../srv/lib/exposition';
+import {
+  MCP_ROLES,
+  resolveExposition,
+  resolveExpositionForUser,
+} from '../../srv/lib/exposition';
 
+// Two levels, split by EFFECT rather than by the upstream group's API level:
+// Reader gets everything that changes nothing, Developer adds everything that
+// changes something. The four XSUAA roles map onto those two so that nobody
+// already assigned a role collection loses access.
 describe('resolveExposition', () => {
-  it('returns empty array for user without MCP_Reader role', () => {
+  const READER = ['readonly', 'search', 'system'];
+  const DEVELOPER = [...READER, 'high', 'compact'];
+
+  const sorted = (v: string[]) => [...v].sort();
+
+  it('gives nothing to a caller without an MCP role', () => {
     expect(resolveExposition([])).toEqual([]);
     expect(resolveExposition(['SomeOtherRole'])).toEqual([]);
   });
 
-  it('returns readonly + search for MCP_Reader', () => {
-    const result = resolveExposition(['MCP_Reader']);
-    expect(result).toEqual(['readonly', 'search']);
+  it.each([
+    ['MCP_Reader', READER],
+    ['MCP_Analyst', READER],
+    ['MCP_Developer', DEVELOPER],
+    ['MCP_Full', DEVELOPER],
+  ])('%s resolves to its level', (role, expected) => {
+    expect(sorted(resolveExposition([role]))).toEqual(sorted(expected));
   });
 
-  it('adds system for MCP_Analyst', () => {
-    const result = resolveExposition(['MCP_Reader', 'MCP_Analyst']);
-    expect(result).toContain('readonly');
-    expect(result).toContain('search');
-    expect(result).toContain('system');
-    expect(result).not.toContain('high');
-    expect(result).not.toContain('compact');
-  });
-
-  it('adds high for MCP_Developer', () => {
-    const result = resolveExposition([
-      'MCP_Reader',
-      'MCP_Analyst',
-      'MCP_Developer',
-    ]);
-    expect(result).toContain('readonly');
-    expect(result).toContain('search');
-    expect(result).toContain('system');
-    expect(result).toContain('high');
-    expect(result).not.toContain('compact');
-  });
-
-  it('adds compact for MCP_Full', () => {
-    const result = resolveExposition([
-      'MCP_Reader',
-      'MCP_Analyst',
-      'MCP_Developer',
-      'MCP_Full',
-    ]);
-    expect(result).toContain('readonly');
-    expect(result).toContain('search');
-    expect(result).toContain('system');
-    expect(result).toContain('high');
-    expect(result).toContain('compact');
-  });
-
-  it('MCP_Analyst alone grants base + system (any MCP role grants base)', () => {
-    expect(resolveExposition(['MCP_Analyst'])).toEqual([
-      'readonly',
-      'search',
-      'system',
-    ]);
-  });
-
-  it('MCP_Developer alone grants base + system + high', () => {
-    expect(resolveExposition(['MCP_Developer'])).toEqual([
-      'readonly',
-      'search',
-      'system',
-      'high',
-    ]);
-  });
-
-  it('combines Analyst + Developer roles additively', () => {
-    const result = resolveExposition([
-      'MCP_Reader',
-      'MCP_Analyst',
-      'MCP_Developer',
-    ]);
-    expect(result).toEqual(['readonly', 'search', 'system', 'high']);
-  });
-
-  it('MCP_Reader + MCP_Developer auto-includes Analyst level', () => {
-    const result = resolveExposition(['MCP_Reader', 'MCP_Developer']);
-    expect(result).toEqual(['readonly', 'search', 'system', 'high']);
-  });
-
-  it('grants low only to MCP_Full', () => {
-    expect(resolveExposition(['MCP_Full'])).toContain('low');
-    // Lower roles never reach the low-level generic handlers.
-    expect(resolveExposition(['MCP_Developer'])).not.toContain('low');
-    expect(resolveExposition(['MCP_Analyst'])).not.toContain('low');
-    expect(resolveExposition(['MCP_Reader'])).not.toContain('low');
+  it('is additive — the union of whatever the caller holds', () => {
+    expect(sorted(resolveExposition(['MCP_Reader', 'MCP_Developer']))).toEqual(
+      sorted(DEVELOPER),
+    );
   });
 
   it('produces no duplicates with overlapping roles', () => {
-    const result = resolveExposition([
-      'MCP_Reader',
-      'MCP_Analyst',
-      'MCP_Developer',
-      'MCP_Full',
-      'MCP_Reader',
-    ]);
-    const unique = [...new Set(result)];
-    expect(result).toEqual(unique);
+    const result = resolveExposition([...MCP_ROLES]);
+    expect(new Set(result).size).toBe(result.length);
+  });
+
+  // `low` is the low-level write API — 87 of its 116 tools create, update,
+  // delete or lock. Nothing needs it today, so no role carries it. It stays a
+  // known level so a tool tagged `low` is classified, and therefore refused,
+  // rather than unclassified.
+  it('grants `low` to no role', () => {
+    for (const role of MCP_ROLES) {
+      expect(resolveExposition([role])).not.toContain('low');
+    }
+    expect(resolveExposition([...MCP_ROLES])).not.toContain('low');
   });
 });
+
+describe('resolveExpositionForUser', () => {
+  const userWith = (...roles: string[]) => ({
+    is: (r: string) => roles.includes(r),
+  });
+
+  it('reads the roles off the CAP user', () => {
+    expect(
+      sortedLevels(resolveExpositionForUser(userWith('MCP_Developer'))),
+    ).toEqual(sortedLevels(resolveExposition(['MCP_Developer'])));
+  });
+
+  it('denies a user with no roles, and an absent user', () => {
+    expect(resolveExpositionForUser(userWith())).toEqual([]);
+    expect(resolveExpositionForUser(undefined)).toEqual([]);
+    // A user object without `is` at all — mocked auth, or a malformed context.
+    expect(resolveExpositionForUser({})).toEqual([]);
+  });
+});
+
+function sortedLevels(v: string[]): string[] {
+  return [...v].sort();
+}

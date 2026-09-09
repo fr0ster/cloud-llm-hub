@@ -34,6 +34,12 @@ jobs:
       - name: Check docs against the project
         run: node tools/check-docs.js
 
+      # Unit tests were NOT part of this workflow, which is how a test reading a
+      # fixture that was never committed reached review with CI green. Lint and
+      # tsc cannot see a missing file that is only read at runtime.
+      - name: Unit tests
+        run: npm run test:unit
+
       - name: Build
         run: npx cds build
       

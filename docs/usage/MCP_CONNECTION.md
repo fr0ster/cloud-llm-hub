@@ -23,12 +23,44 @@ npm run get:key && npm run get:token
 
 Required roles (assign via BTP Cockpit -> Security -> Role Collections):
 
-| Role Collection      | Roles Included                                  | Tool groups reachable |
+There are **two levels**, and the line between them is *effect*: does the tool
+change anything in the system?
+
+| Level | What it reaches | Tools your role allows |
+|-------|-----------------|---------|
+| **Reader** | everything that changes nothing — reading objects and source, search, and system diagnostics (structure, where-used, dumps, profiler data, `GetSqlQuery`) | up to **64** |
+| **Developer** | Reader, plus the high-level and compact tools that change things — create / update / delete / activate, and running ABAP | up to **247** |
+
+Of the 363 tools in total, the remaining **116** are the low-level API
+(`*Low`) and are reachable by **nobody** — see the last note below.
+
+**"Up to", because your role is not the only filter.** These are the counts your
+role permits. The server then drops any tool that does not apply to the system
+behind your destination — each tool declares an `available_in`, and an
+on-premise destination and an ABAP Cloud one therefore expose different sets.
+So `tools/list` returns *at most* these numbers, and the exact figure depends on
+which destination you connect to.
+
+The four XSUAA roles map onto those two, so nothing has to be reassigned:
+
+| Role Collection      | Roles Included                                  | Level |
 |----------------------|-------------------------------------------------|--------------|
-| MCP Reader Access    | MCP_Reader                                      | `readonly`, `search` |
-| MCP Analyst Access   | MCP_Reader + MCP_Analyst                        | + `system` (SQL, dumps, profiling) |
-| MCP Developer Access | MCP_Reader + MCP_Analyst + MCP_Developer         | + `high` (create / change objects) |
-| MCP Full Access      | MCP_Reader + MCP_Analyst + MCP_Developer + MCP_Full | + `compact`, `low` |
+| MCP Reader Access    | MCP_Reader                                      | Reader |
+| MCP Analyst Access   | MCP_Reader + MCP_Analyst                        | Reader |
+| MCP Developer Access | MCP_Reader + MCP_Analyst + MCP_Developer         | Developer |
+| MCP Full Access      | MCP_Reader + MCP_Analyst + MCP_Developer + MCP_Full | Developer |
+
+For new assignments, use **MCP Reader Access** or **MCP Developer Access**. The
+other two are kept only so existing users keep working.
+
+Two consequences worth knowing:
+
+- **Running ABAP is a Developer action.** `RuntimeRunClass` and
+  `RuntimeRunProgram` sit in the upstream `system` group with the diagnostics,
+  but executing arbitrary code can change anything, so they are grouped with
+  the write tools.
+- **The low-level API (`*Low`) is granted to nobody.** 87 of its 116 tools
+  create, update, delete or lock; nothing needs them today.
 
 ### The role decides what may RUN, not just what is offered
 
@@ -46,8 +78,8 @@ So a `MCP_Reader` asking for `CreateDomain` explicitly gets:
 
 ```
 Tool "CreateDomain" was not executed: it belongs to the "high" group and your roles
-grant only [readonly, search]. Asking for it by name does not grant it — a different
-MCP role is required.
+grant only [readonly, search, system]. Asking for it by name does not grant it — a
+different MCP role is required.
 ```
 
 This is not a retry-able condition. Get the role assigned, or use a tool your role covers.
@@ -103,7 +135,10 @@ curl -X POST "$BASE_URL/mcp/stream/http" \
   -d '{"jsonrpc": "2.0", "id": "2", "method": "tools/list"}'
 ```
 
-Available tools depend on the user's MCP roles (Reader/Analyst/Developer/Full).
+Which tools come back depends on two filters: your role (a Reader is allowed up
+to 64, a Developer up to 247) and the destination's system type, which drops
+tools that do not apply to it. The list is therefore never longer than your
+role's count, and usually shorter.
 
 ### Step 3: Call a Tool
 

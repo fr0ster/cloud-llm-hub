@@ -24,13 +24,14 @@ describe('assertToolAllowed', () => {
         assertToolAllowed('SearchObject', 'search', roles),
       ).not.toThrow();
     }
-    // system is Analyst and above — a bare reader must not get it
-    expect(() =>
-      assertToolAllowed('GetSqlQuery', 'system', developer),
-    ).not.toThrow();
-    expect(() => assertToolAllowed('GetSqlQuery', 'system', reader)).toThrow(
-      ToolAuthorizationError,
-    );
+    // `system` is diagnostics — it changes nothing, so every role reaches it.
+    // The tools in that group that DO change something are re-tagged to `high`
+    // (see exposition-roles.test.ts).
+    for (const roles of [reader, developer, full]) {
+      expect(() =>
+        assertToolAllowed('GetSqlQuery', 'system', roles),
+      ).not.toThrow();
+    }
   });
 
   it('refuses a create tool for a reader, however it was asked for', () => {
@@ -51,11 +52,14 @@ describe('assertToolAllowed', () => {
     ).not.toThrow();
   });
 
-  it('keeps low-level handlers to MCP_Full', () => {
-    expect(() => assertToolAllowed('AdtRequest', 'low', developer)).toThrow(
-      ToolAuthorizationError,
-    );
-    expect(() => assertToolAllowed('AdtRequest', 'low', full)).not.toThrow();
+  it('grants the low-level write API to nobody, not even MCP_Full', () => {
+    // 87 of the 116 `low` tools create, update, delete or lock. Nothing needs
+    // them today, so no role carries the level.
+    for (const roles of [reader, developer, full]) {
+      expect(() => assertToolAllowed('AdtRequest', 'low', roles)).toThrow(
+        ToolAuthorizationError,
+      );
+    }
   });
 
   // Fail-closed. Both unknowns mean "no".

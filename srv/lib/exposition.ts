@@ -44,51 +44,70 @@ export function resolveExpositionForUser(
 }
 
 /**
+ * Tools that the upstream `system` group carries but that CHANGE the system.
+ *
+ * The upstream groups are cut by API LEVEL, not by effect: `system` is mostly
+ * diagnostics (structure, where-used, dumps, profiler data) but also carries
+ * arbitrary ABAP execution. Since the role boundary here is "does it change
+ * anything", these are re-tagged to `high` so they land with the write tools
+ * where they belong.
+ *
+ * `RuntimeCreateProfilerTraceParameters` is included deliberately: it only
+ * configures a trace, but it is a POST that leaves state behind, and the rule
+ * for anything uncertain is the restrictive side.
+ */
+export const SYSTEM_TOOLS_THAT_WRITE: Readonly<
+  Record<string, ExpositionLevel>
+> = {
+  RuntimeRunClass: 'high',
+  RuntimeRunProgram: 'high',
+  RuntimeRunClassWithProfiling: 'high',
+  RuntimeRunProgramWithProfiling: 'high',
+  RuntimeCreateProfilerTraceParameters: 'high',
+};
+
+/**
  * Resolve MCP exposition groups based on user roles.
  *
- * Role hierarchy (each higher role includes all lower):
- * - MCP_Reader:    readonly + search
- * - MCP_Analyst:   readonly + search + system
- * - MCP_Developer: readonly + search + system + high
- * - MCP_Full:      readonly + search + system + high + compact
+ * **Two levels, split by effect, not by API level:**
  *
- * Any MCP_* role grants at least readonly + search as base.
- * Roles are additive — users with multiple roles get the union of tool sets.
+ * - **Reader** — everything that changes nothing: `readonly`, `search` and
+ *   `system` (minus {@link SYSTEM_TOOLS_THAT_WRITE}, re-tagged to `high`).
+ * - **Developer** — Reader plus everything that changes something: `high` and
+ *   `compact`.
+ *
+ * `low` is granted to NOBODY. It is the low-level write API — 87 of its 116
+ * tools create, update, delete or lock — and nothing needs it today. It stays
+ * in {@link ExpositionLevel} so a tool carrying it is classified (and therefore
+ * refused) rather than unclassified.
+ *
+ * The four XSUAA roles map onto the two levels rather than being removed, so
+ * nobody already assigned a collection loses access:
+ *
+ * | Role          | Level     |
+ * |---------------|-----------|
+ * | MCP_Reader    | Reader    |
+ * | MCP_Analyst   | Reader    |
+ * | MCP_Developer | Developer |
+ * | MCP_Full      | Developer |
+ *
+ * Note this widens Reader (it now reaches `system` diagnostics such as dumps
+ * and `GetSqlQuery`) and narrows MCP_Full (it no longer reaches `low`).
+ *
+ * Roles are additive — the union of whatever the caller holds.
  */
 export function resolveExposition(userRoles: string[]): ExpositionLevel[] {
   const roles = new Set(userRoles);
 
-  // Any MCP role grants base access
-  const hasMcpRole =
-    roles.has('MCP_Reader') ||
-    roles.has('MCP_Analyst') ||
-    roles.has('MCP_Developer') ||
-    roles.has('MCP_Full');
+  const hasAnyMcpRole = MCP_ROLES.some((role) => roles.has(role));
+  if (!hasAnyMcpRole) return [];
 
-  if (!hasMcpRole) return [];
+  // Reader: everything that changes nothing.
+  const exposition: ExpositionLevel[] = ['readonly', 'search', 'system'];
 
-  // Base: readonly + search for any MCP role
-  const exposition: ExpositionLevel[] = ['readonly', 'search'];
-
-  // Analyst adds system; Developer includes Analyst level
-  if (
-    roles.has('MCP_Analyst') ||
-    roles.has('MCP_Developer') ||
-    roles.has('MCP_Full')
-  ) {
-    exposition.push('system');
-  }
-
-  // Developer adds high; Full includes Developer level
+  // Developer: everything that changes something.
   if (roles.has('MCP_Developer') || roles.has('MCP_Full')) {
-    exposition.push('high');
-  }
-
-  // Full adds compact + low (the low-level generic handlers, opt-in via
-  // LLM_AGENT_INCLUDE_LOW_LEVEL — only the highest role may reach them).
-  if (roles.has('MCP_Full')) {
-    exposition.push('compact');
-    exposition.push('low');
+    exposition.push('high', 'compact');
   }
 
   return exposition;
