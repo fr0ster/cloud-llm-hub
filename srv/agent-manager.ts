@@ -135,8 +135,49 @@ const SKILL_RAG_K = (() => {
 const isSkillId = (id: unknown): boolean =>
   typeof id === 'string' && id.startsWith('skill:');
 
+/**
+ * Which collection a tool belongs in, from its exposition group.
+ *
+ * The boundary is the ROLE boundary — exactly what `resolveExposition` grants —
+ * NOT a fresh judgement about which tools modify. `high` is not a synonym for
+ * modifiable: roughly 70 of its 156 tools are reads (GetPackage, GetDomain,
+ * GetTable…). Deriving a second opinion here is how a collection drifts away
+ * from the boundary the execution check actually enforces.
+ */
+export function collectionFor(
+  exposition: string | undefined,
+): 'reader' | 'writer' {
+  return exposition === 'high' ||
+    exposition === 'compact' ||
+    exposition === 'low'
+    ? 'writer'
+    : 'reader';
+}
+
 export class ExpositionFilteringRag implements IRag, IRagEditor {
-  constructor(private inner: IRag) {}
+  /**
+   * Two collections, searched separately.
+   *
+   * A tool a role cannot run is not in the collection that role searches, so it
+   * cannot reach the model's context at all. The post-filter below stays as a
+   * second line — cheap, and it still catches a tool that entered the wrong
+   * collection — but it is no longer the only thing standing between a reader
+   * and CreateDomain.
+   *
+   * `writer` is optional so a single-store construction (tests, in-memory mode)
+   * keeps working: everything then lives in `inner` and behaves as before.
+   */
+  constructor(
+    private inner: IRag,
+    private writerStore?: IRag,
+  ) {}
+
+  /** The store a given exposition's entries live in. */
+  private storeFor(exposition: string | undefined): IRag {
+    return this.writerStore && collectionFor(exposition) === 'writer'
+      ? this.writerStore
+      : this.inner;
+  }
 
   // Skill ids (`skill:<name>`) already vectorized into THIS shared store. The
   // llm-agent builder re-runs its skill-vectorization loop on every build(), and
@@ -154,48 +195,108 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     metadata: Record<string, unknown>,
     options?: CallOptions,
   ) {
-    const writer = this.inner.writer?.();
-    if (!writer) throw new Error('Inner RAG is not editable');
     const { id: rawId, ...rest } = metadata;
     const id = typeof rawId === 'string' ? rawId : '';
     if (!id) throw new Error('metadata.id is required for upsert');
+    // Route here too. This is the RUNTIME vectorization path (vectorizeToolDocs
+    // calls it), taken whenever the embedding bundle is unusable and in
+    // in-memory mode — so writing everything to `inner` would put high/compact
+    // tools in the reader collection exactly when the bundle fast path is not
+    // available.
+    const target = this.storeFor((rest as { exposition?: string }).exposition);
+    const writer = target.writer?.() ?? this.inner.writer?.();
+    if (!writer) throw new Error('Inner RAG is not editable');
     const res = await writer.upsertRaw(id, text, rest, options);
     if (!res.ok) return res;
     return { ok: true as const, value: { id } };
   }
 
+  /** Both collections, so nothing that touches one silently misses the other. */
+  private get stores(): IRag[] {
+    return this.writerStore ? [this.inner, this.writerStore] : [this.inner];
+  }
+
+  // An id lives in exactly one collection, but the caller does not know which —
+  // so delete/get/clear/health must span both or they return the wrong answer
+  // for every writer-collection entry.
   async deleteById(id: string, options?: CallOptions) {
-    const writer = this.inner.writer?.();
-    if (!writer) throw new Error('Inner RAG is not editable');
-    return writer.deleteByIdRaw(id, options);
+    const writers = this.stores.map((s) => s.writer?.()).filter(Boolean);
+    if (writers.length === 0) throw new Error('Inner RAG is not editable');
+    // deleteByIdRaw returns Result<boolean>. The id lives in ONE collection, so
+    // the other legitimately answers false — returning the last store's answer
+    // would report a successful delete as false. OR the booleans, and surface
+    // the first real error instead of letting a later success bury it.
+    let deletedSomewhere = false;
+    for (const w of writers) {
+      // biome-ignore lint/style/noNonNullAssertion: filtered above
+      const res = await w!.deleteByIdRaw(id, options);
+      if (!res.ok) return res;
+      deletedSomewhere = deletedSomewhere || res.value;
+    }
+    return { ok: true as const, value: deletedSomewhere };
   }
 
   async getById(id: string, options?: CallOptions) {
-    return this.inner.getById(id, options);
+    // Stop at the first ERROR rather than walking past it — otherwise a failing
+    // store is masked by the other one's legitimate "not here".
+    let last = await this.inner.getById(id, options);
+    if (!last.ok || last.value) return last;
+    for (const store of this.stores.slice(1)) {
+      last = await store.getById(id, options);
+      if (!last.ok || last.value) return last;
+    }
+    return last;
   }
 
   writer(): IRagBackendWriter | undefined {
     const inner = this.inner.writer?.();
     if (!inner) return undefined;
     const seen = this.vectorizedSkillIds;
+    // Route each entry to the collection its exposition belongs to. The
+    // embedding bundle already carries `exposition` on every entry, so the
+    // split costs no regeneration — and getting this wrong is silent: the
+    // fingerprint check fails, everything re-vectorizes at runtime, nothing
+    // errors, the cold start just goes back to 90 seconds.
+    const pick = (metadata: RagMetadata | undefined): IRagBackendWriter => {
+      const target = this.storeFor(
+        (metadata as { exposition?: string } | undefined)?.exposition,
+      );
+      return (target === this.inner ? inner : target.writer?.()) ?? inner;
+    };
     // Dedup skill:* re-vectorization (see vectorizedSkillIds above). Everything
     // else passes straight through.
     return {
-      async upsertRaw(id, text, metadata, options) {
+      upsertRaw: async (id, text, metadata, options) => {
         if (id.startsWith('skill:') && seen.has(id)) {
           return { ok: true as const, value: undefined };
         }
-        const res = await inner.upsertRaw(id, text, metadata, options);
+        const res = await pick(metadata).upsertRaw(id, text, metadata, options);
         if (res.ok && id.startsWith('skill:')) seen.add(id);
         return res;
       },
-      async deleteByIdRaw(id, options) {
+      deleteByIdRaw: async (id, options) => {
         if (id.startsWith('skill:')) seen.delete(id);
-        return inner.deleteByIdRaw(id, options);
+        // Both collections are asked (the id is in one, the caller cannot know
+        // which), and the booleans are OR-ed: a successful delete in either must
+        // not be reported as false because the other did not hold it.
+        let deletedSomewhere = false;
+        for (const store of this.stores) {
+          const w = store === this.inner ? inner : store.writer?.();
+          if (!w) continue;
+          const res = await w.deleteByIdRaw(id, options);
+          if (!res.ok) return res;
+          deletedSomewhere = deletedSomewhere || res.value;
+        }
+        return { ok: true as const, value: deletedSomewhere };
       },
       ...(inner.clearAll && {
         clearAll: async () => {
           seen.clear();
+          for (const store of this.stores.slice(1)) {
+            const res = await store.writer?.()?.clearAll?.();
+            // A store that failed to clear is not a store that cleared.
+            if (res && !res.ok) return res;
+          }
           // biome-ignore lint/style/noNonNullAssertion: guarded by the spread condition
           return inner.clearAll!();
         },
@@ -208,14 +309,13 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
           metadata: RagMetadata,
           options?: CallOptions,
         ) => {
-          // biome-ignore lint/style/noNonNullAssertion: guarded by the spread condition
-          const res = await inner.upsertPrecomputedRaw!(
-            id,
-            text,
-            vector,
-            metadata,
-            options,
-          );
+          const target = pick(metadata);
+          // The spread condition guarantees inner has it; the routed target may
+          // not, so fall back rather than assert.
+          const write =
+            target.upsertPrecomputedRaw ?? inner.upsertPrecomputedRaw;
+          if (!write) return { ok: true as const, value: undefined };
+          const res = await write(id, text, vector, metadata, options);
           if (res.ok && id.startsWith('skill:')) seen.add(id);
           return res;
         },
@@ -242,7 +342,32 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // many skills live in this store (the writer tracks them), so add that headroom
     // to GUARANTEE k tools are reachable even when all skills rank first.
     const overFetchK = k * 3 + this.vectorizedSkillIds.size;
-    const result = await this.inner.query(embedding, overFetchK, cleanOpts);
+
+    // TWO SEPARATE SEARCHES, each with its own k — the budget is not divided.
+    // Step 1 always runs against the reader collection. Step 2 runs against the
+    // writer collection ONLY when the caller's roles grant that level, so a
+    // tool the role cannot execute never enters the model's context: it is not
+    // in a collection this caller searches.
+    //
+    // With no role we search the reader collection alone — the same fail-closed
+    // rule the post-filter applies below.
+    const grantsWriteLevel = (allowedExpositions ?? []).some(
+      (e) => collectionFor(e) === 'writer',
+    );
+    const searches = [this.inner.query(embedding, overFetchK, cleanOpts)];
+    if (this.writerStore && grantsWriteLevel) {
+      searches.push(this.writerStore.query(embedding, overFetchK, cleanOpts));
+    }
+    const parts = await Promise.all(searches);
+    const failed = parts.find((r) => !r.ok);
+    const result = failed
+      ? failed
+      : {
+          ok: true as const,
+          value: parts
+            .flatMap((r) => (r.ok ? r.value : []))
+            .sort((a, b) => b.score - a.score),
+        };
 
     // Give tools their full k budget; cap skills at the top SKILL_RAG_K by score.
     // Input rows are score-descending from the inner store, so slicing keeps the best.
@@ -334,7 +459,12 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
   }
 
   async healthCheck() {
-    return this.inner.healthCheck();
+    let last = await this.inner.healthCheck();
+    for (const store of this.stores.slice(1)) {
+      if (!last.ok) return last;
+      last = await store.healthCheck();
+    }
+    return last;
   }
 }
 
@@ -843,7 +973,12 @@ async function createToolsRagStore(
   resourceGroup?: string,
 ): Promise<ExpositionFilteringRag> {
   const embedding = getOrCreateEmbedder(resourceGroup);
-  if (!embedding) return new ExpositionFilteringRag(new InMemoryRag());
+  if (!embedding) {
+    // Two stores here too. In-memory is the DEFAULT rag type, not a rare
+    // compatibility path — leaving it single-store would mean the isolation
+    // this class exists for does not apply in the common configuration.
+    return new ExpositionFilteringRag(new InMemoryRag(), new InMemoryRag());
+  }
 
   const config = getAgentConfig();
   const helperLlm = await makeLlm(
@@ -860,18 +995,21 @@ async function createToolsRagStore(
   // Enrichment is handled in vectorizeToolDocs() — either from cache or via
   // IntentEnricher for uncached tools. VectorRag always uses NoopDocumentEnricher
   // since enriched text is supplied pre-built at upsert time.
-  const toolsVectorRag = new VectorRag(embedding.embedder, {
-    vectorWeight: 0.7,
-    keywordWeight: 0.3,
-    queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
-    documentEnrichers: [new NoopDocumentEnricher()],
-  });
-  const fallback = new FallbackRag(
-    toolsVectorRag,
-    new InMemoryRag(),
-    embedding.breaker,
-  );
-  return new ExpositionFilteringRag(fallback);
+  // One backend per collection. They are separate stores, not one store with a
+  // tag: a tool a role cannot run must not be searchable by that role at all.
+  const makeBackend = () =>
+    new FallbackRag(
+      new VectorRag(embedding.embedder, {
+        vectorWeight: 0.7,
+        keywordWeight: 0.3,
+        queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
+        documentEnrichers: [new NoopDocumentEnricher()],
+      }),
+      new InMemoryRag(),
+      embedding.breaker,
+    );
+
+  return new ExpositionFilteringRag(makeBackend(), makeBackend());
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,7 +1671,10 @@ async function initBackgroundDestinations(): Promise<void> {
       if (!destinationStates.has(dest.name)) {
         destinationStates.set(dest.name, {
           mcpAdapter: null,
-          toolsRag: new ExpositionFilteringRag(new InMemoryRag()),
+          toolsRag: new ExpositionFilteringRag(
+            new InMemoryRag(),
+            new InMemoryRag(),
+          ),
           toolCount: 0,
           status: 'pending',
           proxyType: dest.proxyType,
