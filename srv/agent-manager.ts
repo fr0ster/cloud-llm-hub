@@ -61,7 +61,7 @@ import cds from '@sap/cds';
 
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
-import type { ExpositionLevel } from './lib/exposition';
+import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
 import { NoticeFinalizer } from './lib/notice-finalizer';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
@@ -105,7 +105,20 @@ function getToolIntentCache(): typeof toolIntentCache {
 // On query, strips the user/destination namespace (tools have no namespace) but
 // post-filters results to only return tools whose exposition is in the caller's
 // allowed set (from ragFilter.exposition).
-// If ragFilter.exposition is not set, all tools are returned (backwards compat).
+//
+// FAIL-CLOSED on two different absences, and they mean opposite things:
+//   - ragFilter.exposition MISSING  → fall back to Reader level. Measured on
+//     staging: some pipeline steps search without one, and returning everything
+//     there handed CreateDomain to a caller holding only MCP_Reader.
+//   - ragFilter.exposition EMPTY [] → deny all. An empty set is a caller with no
+//     MCP role, not a caller we failed to ask about.
+//
+// A tool carrying NO exposition tag is dropped either way — being unclassified
+// must not be a way past the filter.
+//
+// SKILLS are not governed by roles. A skill is instruction TEXT and grants
+// nothing; the tool it describes is what the role gates, and assertToolAllowed
+// refuses the call itself.
 // ---------------------------------------------------------------------------
 
 // Cap how many `skill:*` entries a single RAG query may surface. Skills and tools
@@ -246,7 +259,11 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         k,
         overFetchK,
         totalResults: result.value.length,
-        exposition: allowedExpositions ?? 'all',
+        // The EFFECTIVE value, not the requested one: with no role the filter
+        // falls back to reader level, and logging 'all' there would describe
+        // the opposite of what actually happened.
+        exposition: allowedExpositions ?? resolveExposition(['MCP_Reader']),
+        roleFilterReceived: !!allowedExpositions,
         results: result.value.map((r) => ({
           id: r.metadata.id,
           score: Math.round(r.score * 1000) / 1000,
@@ -256,17 +273,22 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     }
 
     if (!result.ok) return result;
-    // No role filter (e.g. no exposition passed): still cap skills so they can't
-    // crowd tools, but skip exposition post-filtering.
-    if (!allowedExpositions) {
-      return { ok: true as const, value: capSkills(result.value) };
-    }
+    // No role filter reached us. Measured on staging: some pipeline steps search
+    // without one, and this branch used to return EVERYTHING — 56 tools
+    // including CreateDomain — to a reader. Execution was still refused, but the
+    // model wasted iterations on calls it could never make, and the first of the
+    // two lines of defence was doing nothing.
+    //
+    // Fail-closed like every other unknown here: offer only what EVERY role may
+    // run. Skills are not role-governed and pass through untouched.
+    const effectiveExpositions =
+      allowedExpositions ?? resolveExposition(['MCP_Reader']);
 
     // Post-filter by allowed exposition levels. A tool WITHOUT an exposition
     // tag is excluded when a role filter is active — otherwise an un-tagged tool
     // (e.g. a group not mapped in getToolExpositionMap) would bypass role-based
     // filtering and reach every role. Every exposed tool must carry an exposition.
-    const allowed = new Set(allowedExpositions);
+    const allowed = new Set(effectiveExpositions);
     const filtered = result.value.filter((r) => {
       // Skills are instruction TEXT, not callable tools. `exposition` gates tool
       // ACCESS; a skill cannot be invoked, so role-filtering it would only hide
@@ -277,14 +299,17 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       // untagged TOOL must still be dropped (the v6.22.0 bypass fix).
       const id = r.metadata.id;
       if (typeof id === 'string' && id.startsWith('skill:')) {
-        // A skill is instruction TEXT, not a callable tool — but a WRITE skill
-        // (creating-*/activating-*) handed to a read-only caller makes the
-        // executor narrate a create it cannot perform (no write tool is granted),
-        // fabricating success. So a TAGGED skill is gated by the SAME exposition
-        // as the tools it drives; an UNtagged skill still passes (harmless
-        // instructions — preserves the default for any future/consumer skill).
-        const skillExpo = SKILL_EXPOSITIONS[id.slice('skill:'.length)];
-        return !skillExpo || allowed.has(skillExpo);
+        // Skills are NOT governed by roles. A skill is instruction TEXT, not a
+        // callable tool, so it grants nothing on its own.
+        //
+        // This used to gate tagged skills, on the grounds that a write skill
+        // handed to a read-only caller makes the executor narrate a create it
+        // cannot perform. That reasoning belonged to a version where nothing
+        // stopped the call itself: the executor found no write tool, did
+        // nothing, and described success. Now the call is refused explicitly by
+        // assertToolAllowed, so the executor gets a real error to report instead
+        // of silence to paper over.
+        return true;
       }
       return (
         !!r.metadata.exposition && allowed.has(r.metadata.exposition as string)
@@ -445,7 +470,6 @@ import {
 } from './lib/get-dump-section';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
-import { SKILL_EXPOSITIONS } from './lib/skill-expositions';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
 import { CollectionRegistry } from './rag-collections';
 

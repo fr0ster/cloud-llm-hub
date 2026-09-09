@@ -27,17 +27,19 @@ describe('ExpositionFilteringRag exposition filter', () => {
     expect(ids).toContain('skill:some-consumer-skill');
   });
 
-  it('drops a WRITE skill for a role lacking its exposition', async () => {
-    // read-only caller: no 'high' → the creating-domain skill must NOT reach the
-    // executor (else it narrates a create it cannot perform — the hallucination).
+  it('keeps a WRITE skill for a read-only caller, but not its tool', async () => {
+    // Skills are NOT governed by roles: a skill is instruction text and grants
+    // nothing. The TOOL it describes is what the role gates, and the call is
+    // refused by assertToolAllowed — so the executor gets a real error to
+    // report rather than silently narrating a create it never performed.
     const rag = new ExpositionFilteringRag(innerWith(rows) as any);
     const res = await rag.query({} as never, 10, {
       ragFilter: { exposition: ['readonly', 'search', 'system'] },
     });
     if (!res.ok) throw new Error('query failed');
     const ids = res.value.map((r) => r.metadata.id);
-    expect(ids).not.toContain('skill:creating-domain');
-    expect(ids).not.toContain('tool:CreateDomain'); // its tool is gated too
+    expect(ids).toContain('skill:creating-domain');
+    expect(ids).not.toContain('tool:CreateDomain');
   });
 
   it('keeps a WRITE skill for a role that has its exposition', async () => {
@@ -62,11 +64,16 @@ describe('ExpositionFilteringRag exposition filter', () => {
     expect(ids).toContain('tool:CreateDomain');
   });
 
-  it('returns everything when no role filter is active', async () => {
+  it('falls back to reader level when no role filter reaches it', async () => {
+    // Measured on staging: some pipeline steps search without a role filter,
+    // and this used to return everything — CreateDomain included — to a reader.
+    // Unknown caller now means the least privilege, not all of it.
     const rag = new ExpositionFilteringRag(innerWith(rows) as any);
     const res = await rag.query({} as never, 10, {});
     if (!res.ok) throw new Error('query failed');
-    expect(res.value).toHaveLength(4);
+    const ids = res.value.map((r) => r.metadata.id);
+    expect(ids).not.toContain('tool:CreateDomain');
+    expect(ids).toContain('skill:creating-domain'); // skills are not role-gated
   });
 });
 
@@ -98,13 +105,14 @@ describe('ExpositionFilteringRag — skill K cap (LLM_AGENT_SKILL_RAG_K, default
     expect(ids).not.toContain('skill:s5'); // lowest dropped
   });
 
-  it('caps skills even when no role filter is active', async () => {
+  it('caps skills when no role filter reaches it, and drops write tools', async () => {
     const rag = new ExpositionFilteringRag(innerWith(many) as any);
     const res = await rag.query({} as never, 10, {});
     if (!res.ok) throw new Error('query failed');
     const ids = res.value.map((r) => r.metadata.id);
     expect(count(ids, 'skill:')).toBe(3);
-    expect(count(ids, 'tool:')).toBe(2);
+    // Both fixture tools are `high`; an unknown caller gets reader level.
+    expect(count(ids, 'tool:')).toBe(0);
   });
 
   it('recovers a tool ranked below k*3 when many skills outrank it', async () => {

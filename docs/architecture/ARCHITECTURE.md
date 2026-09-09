@@ -210,7 +210,8 @@ cloud-llm-hub/
 │       ├── request-connection.ts   # establishRequestConnection + safeStop (release ADT lock on every exit path)
 │       ├── principal.ts / responsible.ts   # principalHash, system scope, responsible-person propagation
 │       ├── dump-buffer.ts / dump-parser.ts / get-dump-section.ts   # Dump section buffering/parsing for GetDumpSection
-│       ├── composite-skill-manager.ts / skills-pool.ts / skill-expositions.ts / exposition.ts  # Skill RAG exposure + role-based exposition levels
+│       ├── composite-skill-manager.ts / skills-pool.ts   # Skill RAG exposure (skills are NOT role-gated)
+│       ├── exposition.ts / tool-exposition-map.ts / tool-authorization.ts  # Role → tool-group levels, and the execution check
 │       ├── cloud-local-tools.ts       # Merges this repo's own MCP tools into the shared tool corpus (dedup by name)
 │       ├── fixed-executor-planner.ts  # `IPlanner` that skips planning — deterministic 1-node DAG bound to the executor
 │       ├── probe-classifier.ts / active-probe.ts  # Destination-reachability probe classification (DiagnoseDestinations / ProbeActiveDestination)
@@ -428,7 +429,7 @@ graph TB
         exposition_ts["exposition.ts"]
         semaphore_ts["semaphore.ts"]
         agent_mgr_libs["dump-buffer/dump-parser/get-dump-section,
-        skills-pool/composite-skill-manager/skill-expositions,
+        skills-pool/composite-skill-manager,
         sap-ai-core-embedder, btp-destinations,
         cloud-local-tools (lib/) + srv/rag-collections.ts
         (grouped agent-manager helpers)"]
