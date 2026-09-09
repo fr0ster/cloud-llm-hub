@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.31.0] - 2026-09-09
+
+CAP 10, plus the retrieval half of the role model and the dependency work behind both.
+
+### Changed
+- **@sap/cds 9.9.5 → 10.1.0** (and `@sap/cds-dk`). No source changes — the CDS surface is 3 files / 141 lines. Verified live on staging against DEV, in two separate deploys so an auth-library regression could not be mistaken for a CAP one.
+- **@cap-js/sqlite 2.4.1 → 3.1.0** and **@cap-js/cds-typer pinned to ^0.41.1**. Both gated the major, and both were *our* problem, not SAP's: sqlite had simply never been updated, and cds-typer was declared as `>=0.1` — loose enough that npm could resolve an old build whose peer excluded cds 10. A range that accepts anything ever published makes a build depend on the day it runs.
+- **@sap/approuter 22.0.3 → 23.0.0**, **@sap/xssec → 4.15.0**, **@sap/xsenv → 6.2.2**.
+
+### Fixed
+- **RAG tool search failed OPEN when no role reached it.** Measured on staging: of three searches on one request, two ran with `exposition: 'all'` and returned all 56 tools — `CreateDomain` included — to a caller holding only `MCP_Reader`. Execution was still refused, so this was never a way to perform a write, but the first of the two lines of defence was doing nothing. An absent role now resolves to Reader level; an empty one still denies everything.
+- The debug line reported the *requested* exposition rather than the effective one, so it printed `'all'` for exactly the case where Reader level had been applied — stating the opposite of what happened, in the line anyone debugging role filtering would read.
+
+### Removed
+- **Role-gating of skills.** A skill is instruction text and grants nothing; the tool it describes is what the role gates. The old gating was reasoned from a version where nothing stopped the call itself — the executor found no write tool, did nothing, and described success. Now the call is refused explicitly, so the executor has a real error to report.
+- `srv/lib/skill-expositions.ts` and its test — a mapping table stating a policy nobody enforces reads as the rule to whoever finds it next.
+
+### Security
+- Dependabot alerts 34 → 4. All high severity closed. Lockfiles refreshed by re-resolution, **without overrides**.
+- The remaining four are deliberate, and both are bundles we do not control: `qs` under `@sap/cds-dk` (a devDependency, and forcing it would push it outside the range its own bundled express declares) and `decode-uri-component` inside `@sap/approuter`. The latter cannot be updated at all — 0.5.0 is ESM while the `query-string` 0.2.x that requires it is CommonJS, so the override would not load rather than merely risk breaking.
+
+
 ## [6.30.0] - 2026-09-09
 
 Two roles instead of four, split by what a tool DOES rather than which upstream group it sits in.
