@@ -53,6 +53,13 @@ The four XSUAA roles map onto those two, so nothing has to be reassigned:
 For new assignments, use **MCP Reader Access** or **MCP Developer Access**. The
 other two are kept only so existing users keep working.
 
+**The MCP role is not the only gate.** Every ABAP tool runs under **your own SAP
+credentials** — the hub keeps no service user and fails closed without them — so
+SAP's own authorizations apply on top. `GetSqlQuery` reads what your SAP user is
+allowed to read, not whatever it asks for; a create tool still needs the ABAP
+authority to create. The MCP role decides which tools you may invoke; the SAP
+system decides what they may do.
+
 Two consequences worth knowing:
 
 - **Running ABAP is a Developer action.** `RuntimeRunClass` and

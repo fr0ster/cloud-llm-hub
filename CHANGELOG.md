@@ -11,7 +11,7 @@ Two roles instead of four, split by what a tool DOES rather than which upstream 
 ### Changed
 - **The role boundary is now effect, not API level.** Reader reaches everything that changes nothing; Developer adds everything that changes something. The upstream handler groups are cut by API level and each mixes both — `system` carries 5 writes among 30 tools, `low` carries 87 among 116 — so "Reader = everything except `high`" would have handed a reader `DeletePackageLow`.
 - **`MCP_Analyst` now resolves to Reader and `MCP_Full` to Developer.** The roles are kept, not removed, so nobody already holding a role collection loses access. For new assignments use only **MCP Reader Access** or **MCP Developer Access**.
-- **Reader widens.** It now reaches the `system` diagnostics: object structure, where-used, dumps, profiler data and `GetSqlQuery` — which reads any table. This follows from "reads go to Reader"; previously it required `MCP_Analyst`.
+- **Reader widens.** It now reaches the `system` diagnostics: object structure, where-used, dumps, profiler data and `GetSqlQuery`. This follows from "reads go to Reader"; previously it required `MCP_Analyst`. Note the MCP role is not the last line of defence: every ABAP tool runs under the CALLER's own SAP credentials (fail-closed, no service user), so SAP's own authorizations decide what those tools may actually read or change.
 - **`MCP_Full` narrows.** It no longer reaches the `low` group.
 - Running ABAP is a Developer action: `RuntimeRunClass`, `RuntimeRunProgram`, their profiling variants and `RuntimeCreateProfilerTraceParameters` are re-tagged out of `system`. Executing arbitrary code can change anything.
 
