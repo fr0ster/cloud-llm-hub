@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.30.0] - 2026-09-09
+
+Two roles instead of four, split by what a tool DOES rather than which upstream group it sits in.
+
+### Changed
+- **The role boundary is now effect, not API level.** Reader reaches everything that changes nothing; Developer adds everything that changes something. The upstream handler groups are cut by API level and each mixes both — `system` carries 5 writes among 30 tools, `low` carries 87 among 116 — so "Reader = everything except `high`" would have handed a reader `DeletePackageLow`.
+- **`MCP_Analyst` now resolves to Reader and `MCP_Full` to Developer.** The roles are kept, not removed, so nobody already holding a role collection loses access. For new assignments use only **MCP Reader Access** or **MCP Developer Access**.
+- **Reader widens.** It now reaches the `system` diagnostics: object structure, where-used, dumps, profiler data and `GetSqlQuery` — which reads any table. This follows from "reads go to Reader"; previously it required `MCP_Analyst`.
+- **`MCP_Full` narrows.** It no longer reaches the `low` group.
+- Running ABAP is a Developer action: `RuntimeRunClass`, `RuntimeRunProgram`, their profiling variants and `RuntimeCreateProfilerTraceParameters` are re-tagged out of `system`. Executing arbitrary code can change anything.
+
+### Removed
+- **The low-level API (`*Low`, 116 tools) is granted to no role.** Nothing needs it today. The level is kept in the map so such a tool is *classified* — and therefore refused by the execution check — rather than unclassified.
+
+### Added
+- `test/fixtures/tool-exposition.json` — the full tool → level map (363 tools), committed. A change to who may execute what now appears as a **diff in review** instead of happening quietly when an upstream release moves a tool between groups. Regenerate with `npm run gen:tool-exposition`; regenerating is not approval.
+- Completeness tests (every tool classified, no reader reaches a write level, `low` reaches nobody) and an effect probe that drives reader-level handlers against a recording connection and fails on an unexplained non-GET. The probe is a cross-check, not a classifier: it drives 8 of 68 handlers, and `GetVirtualFoldersLow` is a POST that reads, so HTTP method cannot decide effect on its own.
+- **Unit tests now run in CI.** They did not, which is how a test reading an uncommitted fixture reached review with CI green.
+
+### Fixed
+- `MCP_CONNECTION.md` stated tool counts that were both wrong and unqualified. The per-role figures are upper bounds: `BaseMcpServer` additionally drops tools whose `available_in` does not match the destination's system type, so `tools/list` returns at most them.
+
 ## [6.29.0] - 2026-09-07
 
 Security: MCP roles are now enforced when a tool RUNS, not only when tools are retrieved.
