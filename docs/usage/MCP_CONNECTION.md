@@ -57,7 +57,12 @@ other two are kept only so existing users keep working.
 credentials** — the hub keeps no service user and fails closed without them — so
 SAP's own authorizations apply on top. `GetSqlQuery` reads what your SAP user is
 allowed to read, not whatever it asks for; a create tool still needs the ABAP
-authority to create. The MCP role decides which tools you may invoke; the SAP
+authority to create.
+
+It is also a smaller step than it looks: `ReadTable` and `GetTableContents` are
+already `readonly`, so a Reader could always read table contents. `GetSqlQuery`
+adds a **selection condition** over the same data under the same SAP
+authorizations — it is `ReadTable` with a WHERE clause, not new reach. The MCP role decides which tools you may invoke; the SAP
 system decides what they may do.
 
 Two consequences worth knowing:
