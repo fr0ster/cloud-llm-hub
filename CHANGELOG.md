@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.32.0] - 2026-09-09
+
+The tool corpus is split into two RAG collections along the role boundary.
+
+### Changed
+- **A tool a role cannot run is no longer in the collection that role searches.** Until now the write tools sat in the same store and a post-filter kept them out — which failed open on the paths that lost the role filter (measured on staging: two of three searches per request returned `CreateDomain` to an `MCP_Reader`). Now they are not there to be filtered.
+- **Two separate searches, each with its own K.** Step 1 always queries the reader collection; step 2 queries the writer collection only when the caller's roles grant that level. The budget is not divided, so a Developer sees more tools than a Reader rather than the same number split in half.
+- The split is by the **role boundary**, not by whether a tool modifies. `high` is not a synonym for modifiable — roughly 70 of its 156 tools are reads (`GetPackage`, `GetDomain`, `GetTable`). A second opinion about what modifies is how a collection drifts from the boundary `assertToolAllowed` enforces.
+
+### Notes
+- **The embedding bundle needs no regeneration**: all 237 entries already carry `exposition`, so the loader routes them from data already in the file. The runtime corpus is larger (247) and the difference is covered by the existing partial-supplement path.
+- In-memory mode gets two stores as well. It is the default RAG type, not a rare compatibility path, so leaving it single-store would have meant the isolation did not apply in the common configuration.
+- The post-filter is kept as a second line — it still drops a tool carrying no exposition tag at all.
+
+
 ## [6.31.0] - 2026-09-09
 
 CAP 10, plus the retrieval half of the role model and the dependency work behind both.
