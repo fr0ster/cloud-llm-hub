@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.32.1] - 2026-09-10
+
+Restores write tools to the agent channels. v6.32.0 hid them from every role.
+
+### Fixed
+- **No agent channel offered a single write tool, whatever the caller's roles.** A caller holding all four role collections was told there is no MCP tool that creates an ABAP domain. Two changes from 2026-09-09 combined: v6.31.0 made a missing role filter fall back to Reader level, and v6.32.0 made the role decide *where to search* rather than only what to filter. The pipeline selects tools **twice** per request — the first run carries the caller's options, the second rebuilds its own and arrives with none — and it is the second selection that reaches the model. Measured on prod: the first search saw all four roles, queried both collections and put `CreateDomain` top at 0.738; the second fell back to Reader, queried the reader collection alone and offered fifteen read tools. Before the fail-closed change the same gap existed but meant "offer everything", so it never showed.
+- The caller's exposition is now read from the request store when the options lose it — the same value `assertToolAllowed` enforces on, so the two lines of defence cannot disagree about who is asking. With neither source, Reader level still stands.
+- **Every channel now logs WHO the caller is**, not only what they may run. A `client_credentials` token runs as CAP's `system` user and carries the scopes its xsuaa *client* was granted; the person who started that client is not in the token, so their role collections are never consulted. That is indistinguishable from broken role resolution, and it was diagnosed as such — the chat and Anthropic channels logged no roles at all. The two 403 paths now name the technical caller instead of telling its operator to assign a role collection that cannot help.
+
+### Notes
+- The collections were always populated correctly, and both are searchable — the first search returning 64 rows from each proves it. The fault was on the read side: the second query never asked the writer collection.
+
 ## [6.32.0] - 2026-09-09
 
 The tool corpus is split into two RAG collections along the role boundary.

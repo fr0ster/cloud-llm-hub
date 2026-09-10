@@ -829,6 +829,18 @@ graph TB
 
 > The role check runs **before** the handler, inside the Express middleware chain (`requireMcpRole`, `user.is(...)`), not as a post-handler step. The `AuthService` OData handlers (`CheckAuth`/`CheckRoles`, `auth.ts`) are a separate introspection endpoint (`/odata/v4/auth/`), not part of this path.
 
+> **Where the caller's roles reach the rest of the request.** `requireMcpRole` only
+> admits or refuses. What the caller may see and run is carried by their
+> *exposition* — the tool groups their roles grant — and it travels two ways:
+> in the agent's request options, and in the request-scoped store
+> (`connectionALS`). The RAG reads the options first and the store second; the
+> execution check (`assertToolAllowed`) reads the store. Two sources rather than
+> one because the options do not always survive: the pipeline selects tools twice
+> per request and the second run rebuilds its own options. Losing the exposition
+> there means the search silently falls back to Reader level and queries only the
+> reader collection — the tool a Developer needs is never offered, and nothing
+> reports an error. With neither source, Reader level stands: fail-closed.
+
 ### Auth Modes
 
 | Environment | Auth Kind | Details |
