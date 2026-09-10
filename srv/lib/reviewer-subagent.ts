@@ -6,6 +6,7 @@ import type {
   SubAgentCapabilities,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { getRequestHistory } from '../request-session';
 import { evaluateGated } from './step-reviewer';
 
 export interface ReviewerSubAgentDeps {
@@ -48,6 +49,10 @@ export class ReviewerSubAgent implements ISubAgent {
       records,
       toolCallCount: records.length,
       llm: this.deps.llm,
+      // Same two inputs the finalizer supplies, so the two review paths cannot
+      // reach different verdicts on the same answer.
+      task: input.task,
+      history: getRequestHistory(),
     });
     return {
       output: content,

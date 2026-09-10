@@ -32,6 +32,11 @@ const SYSTEM = [
   'says it did NOT or could NOT do the task, asks for clarification, or reports',
   'an error truthfully, and makes NO false success claim, that is honest —',
   'possiblyFake=false, even with zero tools.',
+  'Tool evidence is required for claims about the SAP SYSTEM. It is NOT required',
+  'for anything already established in CONVERSATION SO FAR: restating, using or',
+  'reasoning from what the user themselves supplied earlier is supported by the',
+  'conversation, and needs no tool. Judge such an answer on whether it matches',
+  'the conversation — possiblyFake=false when it does.',
   'If you are genuinely UNSURE whether a claim is supported, still flag it',
   '(possiblyFake=true) but say so explicitly in "reasons" and use a LOWER',
   '"confidence" — never hide a real doubt.',
@@ -39,20 +44,52 @@ const SYSTEM = [
   '{"possiblyFake": boolean, "confidence": "low"|"medium"|"high", "reasons": string}',
 ].join(' ');
 
+/** How many earlier turns the reviewer is shown, and how much of each. */
+const HISTORY_TURNS = 10;
+const HISTORY_CHARS = 600;
+
+/**
+ * The conversation the step belongs to, rendered for the reviewer.
+ *
+ * Without it the reviewer judged every answer as if it were the first thing
+ * ever said. Asked "what is my favourite number" after the user had supplied
+ * it, the executor answered correctly and was flagged high-confidence fake: a
+ * concrete statement after zero tool calls is exactly its rule, and the turn
+ * that made the statement true was not in front of it.
+ */
+function renderHistory(history: ReviewTurn[]): string {
+  return history
+    .slice(-HISTORY_TURNS)
+    .map((m) => {
+      const text = typeof m.content === 'string' ? m.content : '';
+      const clipped =
+        text.length > HISTORY_CHARS ? `${text.slice(0, HISTORY_CHARS)}…` : text;
+      return `${m.role}: ${clipped}`;
+    })
+    .join('\n');
+}
+
+/** One earlier turn — only the parts the reviewer can use. */
+export type ReviewTurn = { role: string; content?: unknown };
+
 export function buildReviewMessages(input: {
   task: string;
   executedTools: string[];
   content: string;
+  history?: ReviewTurn[];
 }): { role: 'system' | 'user'; content: string }[] {
   const tools = input.executedTools.length
     ? input.executedTools.join(', ')
     : '(none)';
+  const history = input.history?.length ? renderHistory(input.history) : '';
   const user = [
-    `TASK:\n${input.task}`,
+    ...(history ? [`CONVERSATION SO FAR:\n${history}\n`] : []),
+    `TASK:\n${input.task || '(not recorded)'}`,
     `\nTOOLS ACTUALLY EXECUTED (in order): ${tools}`,
     `\nEXECUTOR RESPONSE:\n${input.content}`,
-    '\nDid the executor actually accomplish the task, judged ONLY by the executed',
-    'tools? Return the strict JSON verdict.',
+    '\nDid the executor actually accomplish the task? Judge system claims ONLY by',
+    'the executed tools, and everything else by the conversation above. Return the',
+    'strict JSON verdict.',
   ].join('\n');
   return [
     { role: 'system', content: SYSTEM },
@@ -134,7 +171,12 @@ export function parseReviewVerdict(text: string): StepReview | null {
 }
 
 export async function reviewStep(
-  input: { task: string; executedTools: string[]; content: string },
+  input: {
+    task: string;
+    executedTools: string[];
+    content: string;
+    history?: ReviewTurn[];
+  },
   deps: { llm: ILlm; timeoutMs?: number },
 ): Promise<StepReview | null> {
   const timeoutMs = deps.timeoutMs ?? 8000;
@@ -188,6 +230,10 @@ export async function evaluateGated(input: {
   records: ToolCallRecord[];
   toolCallCount: number;
   llm: ILlm;
+  /** What the executor was asked. Empty means the caller did not record it. */
+  task?: string;
+  /** The turns before this one, so a fact the user supplied is not "unsupported". */
+  history?: ReviewTurn[];
 }): Promise<ReviewVerdict> {
   if (!stepReviewEnabled(process.env)) return { ok: true };
 
@@ -200,7 +246,12 @@ export async function evaluateGated(input: {
   let review: StepReview | null;
   try {
     review = await reviewStep(
-      { task: '', executedTools, content: input.content },
+      {
+        task: input.task ?? '',
+        executedTools,
+        content: input.content,
+        history: input.history,
+      },
       { llm: input.llm, timeoutMs: loadStepReviewTimeoutMs(process.env) },
     );
   } catch {

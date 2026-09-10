@@ -13,6 +13,67 @@ function record(
   return { call: { id: '', name, arguments: {} }, result: { content } };
 }
 
+// The reviewer used to receive an empty task and no earlier turns, so it judged
+// every answer as the first thing ever said. Asked "what is my favourite number"
+// after the user had supplied 42, the executor answered "42" and was flagged
+// high-confidence fake: a concrete statement after zero tool calls is exactly
+// its rule, and the turn that made the statement true was not in front of it.
+describe('buildReviewMessages — the conversation the step belongs to', () => {
+  const history = [
+    { role: 'user', content: 'my favourite number is 42' },
+    { role: 'assistant', content: 'noted' },
+  ];
+
+  it('shows the earlier turns and the task', () => {
+    const [, user] = buildReviewMessages({
+      task: 'What is my favourite number?',
+      executedTools: [],
+      content: '42',
+      history,
+    });
+    expect(user.content).toContain('CONVERSATION SO FAR');
+    expect(user.content).toContain('user: my favourite number is 42');
+    expect(user.content).toContain('What is my favourite number?');
+  });
+
+  it('says so when the caller recorded no task, rather than showing a blank', () => {
+    const [, user] = buildReviewMessages({
+      task: '',
+      executedTools: [],
+      content: '42',
+    });
+    expect(user.content).toContain('(not recorded)');
+    expect(user.content).not.toContain('CONVERSATION SO FAR');
+  });
+
+  it('tells the reviewer that the conversation is evidence too', () => {
+    const [system] = buildReviewMessages({
+      task: 't',
+      executedTools: [],
+      content: 'c',
+    });
+    expect(system.content).toContain('CONVERSATION SO FAR');
+    expect(system.content).toContain('SAP SYSTEM');
+  });
+
+  it('caps how much conversation it carries', () => {
+    const long = Array.from({ length: 30 }, (_, i) => ({
+      role: 'user',
+      content: `turn ${i} ${'x'.repeat(2000)}`,
+    }));
+    const [, user] = buildReviewMessages({
+      task: 't',
+      executedTools: [],
+      content: 'c',
+      history: long,
+    });
+    // Oldest turns dropped, and each surviving turn clipped.
+    expect(user.content).not.toContain('turn 0 ');
+    expect(user.content).toContain('turn 29 ');
+    expect(user.content).toContain('…');
+  });
+});
+
 describe('buildReviewMessages', () => {
   it('is skeptical, names executed tools, and demands strict JSON', () => {
     const [sys, user] = buildReviewMessages({

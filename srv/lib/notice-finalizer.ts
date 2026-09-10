@@ -32,6 +32,7 @@ import type {
   IFinalizer,
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
+import { getRequestHistory } from '../request-session';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { evaluateGated } from './step-reviewer';
@@ -59,6 +60,12 @@ export class NoticeFinalizer implements IFinalizer {
       records,
       toolCallCount: records.length,
       llm: this.criticLlm,
+      // What was asked, and the conversation it was asked in. Both were absent
+      // before: the reviewer received an empty task and no earlier turns, so it
+      // judged every answer as the first thing ever said and flagged correct
+      // ones — "42", after the user had supplied 42 — as unsupported.
+      task: input.objective || input.prompt,
+      history: getRequestHistory(),
     });
 
     // Trailing NOTICE (after the answer) on a contradiction — NOTICE-ONLY
