@@ -18,10 +18,11 @@
 > it was a service-to-service consumer. Nothing in `xs-security.json` and nothing in
 > our filtering was wrong.
 >
-> Fixed in v6.32.1 (write tools reach the agent channels again) and v6.32.2
-> (`describeCaller` reports identity beside permissions on all four channels; the two
-> 403 paths name a technical caller instead of telling its operator to assign a role
-> collection that cannot help).
+> Both fixes shipped in **v6.32.1**: write tools reach the agent channels again, and
+> `describeCaller` reports identity beside permissions on all four channels, with the
+> two 403 paths naming a technical caller instead of telling its operator to assign a
+> role collection that cannot help. (v6.32.2 is a different fix — the executor's
+> conversation — and is not part of this.)
 >
 > **The user's own proxy was never the problem.** An earlier draft here concluded it
 > fell back to a service key, from a missing session file and the existence of such a
@@ -73,10 +74,17 @@ without ever checking the model is reachable, and `FallbackRag` then degrades to
 keyword store on embedding failures — so a missing or unreachable model still yields
 answers, just quietly worse ones. Four decisions:
 
-**Default.** `LLM_AGENT_RAG_TYPE` defaults to `vector`. `in-memory` remains
-selectable and is honest about what it is: with it set, the agent surfaces are
-disabled by the same rule below. It stays useful for unit tests and for the MCP-only
-deployment shape.
+**Default — and this is a BREAKING change, not a tidy-up.** `LLM_AGENT_RAG_TYPE`
+defaults to `in-memory` **today** (`agent-config.ts`). Flipping it to `vector` changes
+the behaviour of every deployment that never set it, and the same change turns a
+documented, working mode into one where all three agent surfaces answer 503. That it
+affects only two known targets is not the test; the variable and the mode are public.
+
+So it ships with a migration note saying what an operator on the old default must now
+do, and `RagType`, the configuration reference and the deployment docs are updated in
+the same change. `in-memory` remains selectable and honest about what it is: with it
+set, the agent surfaces are disabled by the rule below, and it stays useful for unit
+tests and the MCP-only deployment shape.
 
 **Readiness, not construction.** At startup, and on the destination-init path, embed a
 fixed canary string. Success marks the embedder healthy; failure marks it unhealthy
@@ -98,13 +106,24 @@ transient by nature, and 503 tells a client to retry rather than to change its r
 | `/v1/messages` | `{ type: 'error', error: { type: 'api_error', message } }` |
 | `execute_step` | tool error carrying the same message |
 
-The message names the missing configuration (`AICORE_*` or `LLM_AGENT_EMBEDDING_*`)
-and the failure reason from the probe. `/mcp/stream/http` and `/health` are unaffected
+The message names the missing configuration and the failure reason from the probe.
+The variables that actually exist are `LLM_AGENT_EMBEDDING_MODEL`, plus `AICORE_*` for
+the AI Core path or `LLM_AGENT_BASE_URL` / `LLM_AGENT_API_KEY` for an OpenAI-compatible
+one. There is no `LLM_AGENT_EMBEDDING_*` family — an earlier draft implied one, and a
+message naming a variable nobody can set is worse than a vague one. `/mcp/stream/http` and `/health` are unaffected
 — an embedder outage must not make the MCP proxy look down.
+
+**Recovery, or "transient" is a lie.** As drafted the canary runs at startup and on
+destination-init only, and a fallback event flips the embedder to unhealthy — so
+nothing ever flips it back and a thirty-second outage disables the agent until the next
+restart or re-init. Unhealthy therefore needs a way out: after a cooldown the next
+agent request re-probes before refusing, and a success restores service. Whether the
+probe runs in the background on a timer or lazily on the first request past the
+cooldown is an implementation choice; having neither is not.
 
 **A transient outage does take the agent down for its duration.** That is the intended
 trade: better a retryable 503 than answers selected by keyword match over 360 tools
-without anyone knowing.
+without anyone knowing. "Its duration" only means what it says once recovery exists.
 
 ## The six collections
 
@@ -114,7 +133,7 @@ without anyone knowing.
 | **tools · writer** | startup, from the bundle | exposition groups `high`, `compact`, `low` | `MCP_Developer` / `MCP_Full` |
 | **skills** | startup, optionally, from disk | **configuration** — shapes prompt enrichment on every request | everyone |
 | **user** | runtime, by the consumer through a tool, or by the LLM asked to save | that user's own material | its owner |
-| **session** | runtime — **automatically, every turn** (v6.33.0), and by the consumer through a tool | recall of earlier turns; that session's material | its owner, that session |
+| **session** | runtime — every turn **on `/v1/chat/completions` only** (v6.33.0); other channels and consumer-driven writes unbuilt | recall of earlier turns; that session's material | its owner, that session |
 | **global** | **not by us** — already present in the vector DB | shared knowledge | a role that does not exist yet |
 
 Two distinctions that are easy to lose:
@@ -124,14 +143,31 @@ Two distinctions that are easy to lose:
   runtime, and are not role-governed.
 - **Global collections are not ingested by us.** They exist independently. Our side is
   only the access decision — a role policy and collection selection, no ingestion.
-- **The session collection already exists, and not in the shape drafted here.**
-  v6.33.0 writes every completed turn into the `history` store the pipeline had been
+- **The session collection half-exists, and knowing exactly which half matters.**
+  v6.33.0 writes completed turns into the `history` store the pipeline had been
   querying since before this design — always returning nothing, because nothing wrote
   to it. It lives beside `CollectionRegistry` rather than inside it, holds 200 turns
-  per conversation, and is forgotten when the session is cleared. Consumer-driven
-  writes through a tool remain unbuilt. Reconcile the two before extending either:
-  one session collection with two ways in, or two collections with different
-  lifetimes, is a decision this design has not yet made.
+  per conversation, and is forgotten when the session is cleared.
+
+  Three limits, stated because the row above would otherwise promise more than the
+  code does:
+
+  1. **One channel.** `recordTurnForRecall` is called from `openai-handler.ts` only.
+     `/v1/messages` and `execute_step` run the same agent against the same store and
+     write nothing to it, so a conversation held on either recalls nothing later.
+  2. **The upstream writer is inert, and would be wrong if it were not.**
+     `HistoryUpsertHandler` is skipped because `semanticHistoryEnabled` is never set.
+     Were it enabled it would call `upsertRaw(id, summary, {})` — no `owner` — and
+     `SessionHistoryRag.query` returns only rows carrying one. Such entries would be
+     unreadable, uncounted against the 200-turn limit, and untouched by
+     `forgetOwner()`: invisible cost that never expires. Whoever enables it must give
+     the handler the owner first.
+  3. **Consumer-driven writes through a tool remain unbuilt**, which is the shape this
+     design originally described.
+
+  So the reconciliation is not cosmetic. One session collection with several ways in,
+  or two with different lifetimes, is a decision this design has not made — and it
+  should be made before a second writer is added to the first.
 
 ## Two axes, not three
 
