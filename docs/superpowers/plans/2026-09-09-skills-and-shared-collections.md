@@ -1,99 +1,19 @@
-# Plan — role-scoped tool collections (2026-09-09)
+# Plan — skills and shared RAG collections (2026-09-09)
 
 ## TL;DR
 
-Split the tool corpus into two RAG collections along the **role boundary**, and search
-them separately. A tool a role cannot run is then not in the collection that role
-searches — so it cannot reach the model's context at all, and "the filter did not get
-the role" stops being a possible failure.
+The **tool** side of this is done and shipped in v6.32.0 — two collections split by
+the role boundary, searched separately. What remains is the other axis: where skills
+live, and the shared collections that are coming.
 
-## Why, given the filter already exists
+## Context: what already shipped
 
-`v6.31.0` made the filter fail closed: no role → Reader level. That closes the hole,
-but by defaulting rather than by construction — the write tools are still *in* the
-collection being searched, and a post-filter is what keeps them out.
+Tool collections are split by role (`collectionFor()` in `srv/agent-manager.ts`),
+each searched separately with its own K, and the embedding bundle routes into them
+from the `exposition` its entries already carry. Verified on all three environments —
+`Shared tool corpus ready (bundle) { loaded: 225, supplemented: 0 }`.
 
-Measured on staging before the fix: of three searches on one request, two ran with
-`exposition: 'all'` and returned all 56 tools, `CreateDomain` among them, to a caller
-holding only `MCP_Reader`. `roleFilterReceived: false` in the debug log still marks
-those steps — the source was never found.
-
-Split collections make that class of bug impossible instead of defaulted away.
-
-## The split is by ROLE, not by semantics
-
-Do **not** route by "does it modify". `high` is not a synonym for modifiable — of its
-156 tools roughly 70 are reads (`GetPackage`, `GetDomain`, `GetTable`, `GetDdl`, …).
-Deriving a second opinion about what modifies is how the boundary drifts from the one
-actually enforced.
-
-The boundary is what `resolveExposition` already computes:
-
-| Collection | Contents | Count |
-|---|---|---|
-| **reader** | `readonly` + `search` + `system` | 64 |
-| **developer** | `high` + `compact` | 183 |
-
-`low` is placed in the **writer** collection. No role grants that level, so it is
-unreachable either way — but giving it a home keeps `collectionFor()` total, rather
-than leaving a group that maps to nothing.
-
-## The bundle needs no regeneration
-
-`srv/tool-embeddings.json` carries `exposition` on **every one of its 237 entries**:
-
-```
-readonly 34 · system 31 · search 4 · high 168
-```
-
-So the loader routes each precomputed entry into its collection from data already in
-the file. This matters: regenerating the bundle would need live AI Core credentials,
-and a mis-load silently costs the 90-second cold start back (the fingerprint check
-fails, everything re-vectorizes at runtime, nothing errors — it just goes slow).
-
-**Verify explicitly** that a cold start still loads from the bundle after the split.
-
-## Search
-
-Two **separate** searches, each with its own K — the budget is not divided:
-
-```
-step 1: search(reader collection, k)        always
-step 2: search(developer collection, k)     only if the role grants that level
-        merge, rank
-```
-
-A Developer therefore sees more tools than a Reader, which is the intent.
-
-Generalise on the role's granted levels rather than hardcoding two, so a third
-collection later needs no restructuring.
-
-**Skills are out of scope of the split itself** and are not role-governed
-(v6.31.0). Mechanically today they route to the **reader** collection, because a
-skill carries no `exposition`.
-
-### Next: give skills their own collection
-
-Decided 2026-09-10. Skills currently live in the SHARED TOOLS STORE —
-`upsertRaw('skill:<name>', text, {})` in `agent-manager.ts`, and the class comment
-records it: *"Skill ids already vectorized into THIS shared store"*. The agent's
-`ragStores` are `['tools', 'history']`; there is no skills store.
-
-That is why `skill-select.js` iterates **every** store looking for `skill:`-prefixed
-ids — including the tool store. It is also why the two searches per request that
-arrive without a role filter reach our collections at all.
-
-Moving skills to an ordinary RAG collection of their own:
-
-| Effect | |
-|---|---|
-| Skills leave the tool collections | the "entry with no exposition → reader" special case disappears with them |
-| `skill-select` queries only the skills store | it stops touching tool storage |
-| The `exposition: 'all'` searches | stop reaching our collections — the open `roleFilterReceived: false` question closes structurally |
-
-So this is not an upstream issue after all: `skill-select` iterating all stores is
-reasonable given skills could be anywhere. The problem is ours — we put skills in
-the tool store.
+That closed the retrieval half of the role model. The rest is below.
 
 #### Collections are partitioned on more than one axis
 
