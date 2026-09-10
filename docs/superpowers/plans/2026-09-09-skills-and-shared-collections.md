@@ -6,6 +6,36 @@ The **tool** side of this is done and shipped in v6.32.0 — two collections spl
 the role boundary, searched separately. What remains is the other axis: where skills
 live, and the shared collections that are coming.
 
+## The collection model, as stated by the owner (2026-09-10)
+
+Four kinds, distinguished by **who fills them and when** — not by storage:
+
+| Kind | Filled | Purpose | Access |
+|---|---|---|---|
+| **skills** | optionally at startup, pre-configured | **configuration** for enriching every request's context — the consumer's prompt | everyone |
+| **user** | at runtime, by the consumer through a dedicated tool, or by the LLM asked to save something | that user's own material | its owner |
+| **session** | same, but scoped to the session | same, shorter-lived | its owner, that session |
+| **global** | **not at startup** — they simply exist in the vector DB | shared knowledge | **requires a role**, which does not exist yet |
+
+Two things follow that are easy to miss:
+
+- **Skills are configuration, not knowledge.** They shape how the prompt is built on
+  every request. That is why they are not role-governed (v6.31.0) and why they are
+  filled from disk at startup rather than written to at runtime.
+- **Global collections are not created by us.** They are already in the vector DB;
+  our side is only the access decision. So the work is a role → collection policy and
+  fail-closed pre-query selection, not ingestion.
+
+**Prerequisite, stated plainly:** without a vectorizing text model the agent cannot
+work at all. Any store arrangement assumes an embedder is present.
+
+> Note for whoever implements this: that last point sits awkwardly against the code,
+> which has a no-embedder path (`createToolsRagStore` returns in-memory stores when
+> `getOrCreateEmbedder` yields nothing), and against a review comment claiming
+> in-memory is the default RAG type for native Anthropic/DeepSeek. Settle which is
+> true before building on either — the answer changes whether that branch needs the
+> same collection treatment or should fail loudly instead.
+
 ## Context: what already shipped
 
 Tool collections are split by role (`collectionFor()` in `srv/agent-manager.ts`),
