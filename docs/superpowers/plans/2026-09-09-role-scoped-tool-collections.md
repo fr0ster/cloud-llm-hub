@@ -68,10 +68,67 @@ A Developer therefore sees more tools than a Reader, which is the intent.
 Generalise on the role's granted levels rather than hardcoding two, so a third
 collection later needs no restructuring.
 
-**Skills are out of scope** and are not role-governed (v6.31.0). Note what that
-means mechanically here: a skill carries no `exposition`, so it routes to the
-**reader** collection — which is the collection searched on every request, so
-skills keep reaching every caller exactly as before.
+**Skills are out of scope of the split itself** and are not role-governed
+(v6.31.0). Mechanically today they route to the **reader** collection, because a
+skill carries no `exposition`.
+
+### Next: give skills their own collection
+
+Decided 2026-09-10. Skills currently live in the SHARED TOOLS STORE —
+`upsertRaw('skill:<name>', text, {})` in `agent-manager.ts`, and the class comment
+records it: *"Skill ids already vectorized into THIS shared store"*. The agent's
+`ragStores` are `['tools', 'history']`; there is no skills store.
+
+That is why `skill-select.js` iterates **every** store looking for `skill:`-prefixed
+ids — including the tool store. It is also why the two searches per request that
+arrive without a role filter reach our collections at all.
+
+Moving skills to an ordinary RAG collection of their own:
+
+| Effect | |
+|---|---|
+| Skills leave the tool collections | the "entry with no exposition → reader" special case disappears with them |
+| `skill-select` queries only the skills store | it stops touching tool storage |
+| The `exposition: 'all'` searches | stop reaching our collections — the open `roleFilterReceived: false` question closes structurally |
+
+So this is not an upstream issue after all: `skill-select` iterating all stores is
+reasonable given skills could be anywhere. The problem is ours — we put skills in
+the tool store.
+
+#### Collections are partitioned on more than one axis
+
+Recorded 2026-09-10, and it changes the shape of the above: **a skills collection is
+not a singleton.** RAG collections here are partitioned **by user**, and
+session-scoped ones **by session** on top of that. The machinery already exists for
+the user knowledge collections — namespace `${userId}:${destination}`,
+`getCollectionRegistry()`, `resolveRouteId()`, and the hourly
+`sweepExpiredSessions()` that reaps expired session collections.
+
+So "give skills their own collection" means giving them the same partitioning as the
+other non-tool collections, not one global store beside the tool ones. That also
+keeps the two axes clean and separate:
+
+| Axis | Applies to | Isolates by |
+|---|---|---|
+| **role** | tool collections | what the caller may execute |
+| **ownership** | skills, user knowledge | user, and session where session-scoped |
+
+They are different questions — one is about permission, the other about whose data it
+is — and the tool split deliberately does not touch the second.
+
+**Where the work is:** route skill upserts into a skills collection resolved through
+the existing per-user/per-session registry rather than the shared tools store, add it
+to the agent's `ragStores` where they are assembled (`buildAgentForDestination`), and
+drop the skill-id special cases from `ExpositionFilteringRag` (the
+`vectorizedSkillIds` dedup guard moves with them).
+
+Note the dedup guard exists because the builder re-vectorizes skills on every
+`build()`, once per destination against the same shared store. Per-user collections
+multiply that: check what the guard has to become before assuming it just moves.
+
+**Verify:** `ragStoreKeys` in the pipeline diagnostic shows `skills`; a request logs
+no `tool-rag` search without a role filter; skills still reach the executor (the
+RAP prompts that depend on them still work).
 
 ## Where the work is
 
