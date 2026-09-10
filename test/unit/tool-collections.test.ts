@@ -1,4 +1,8 @@
-import { collectionFor, ExpositionFilteringRag } from '../../srv/agent-manager';
+import {
+  collectionFor,
+  ExpositionFilteringRag,
+  runWithRequestConnection,
+} from '../../srv/agent-manager';
 
 type Row = { score: number; metadata: Record<string, unknown> };
 
@@ -132,6 +136,54 @@ describe('role-scoped tool collections', () => {
       'tool:CreateDomain',
     );
     expect(writer.stats.queries).toBe(0);
+  });
+
+  // Measured on prod: the pipeline runs tool selection twice, and the second
+  // run — the one whose result reaches the model — rebuilds its own options and
+  // arrives with no ragFilter. Falling back to Reader there hid every write tool
+  // from every role, so a caller holding MCP_Full was told no tool creates a
+  // domain. The request store carries the same value the execution check
+  // enforces on, so it answers when the options do not.
+  it('falls back to the request store when the options lose the filter', async () => {
+    const reader = fakeStore();
+    const writer = fakeStore();
+    const rag = new ExpositionFilteringRag(reader as never, writer as never);
+    const w = rag.writer();
+    if (!w) throw new Error('no writer');
+    await w.upsertRaw('tool:GetTable', 't', { exposition: 'readonly' });
+    await w.upsertRaw('tool:CreateDomain', 't', { exposition: 'high' });
+
+    const res = await runWithRequestConnection(
+      {} as never,
+      // No ragFilter at all — exactly what the second selection passes.
+      () => rag.query({} as never, 10, {}),
+      undefined,
+      ['readonly', 'search', 'system', 'high', 'compact'],
+    );
+    if (!res.ok) throw new Error('query failed');
+    expect(writer.stats.queries).toBe(1);
+    expect(res.value.map((r) => r.metadata.id)).toContain('tool:CreateDomain');
+  });
+
+  it('still denies when neither the options nor the request store carry a role', async () => {
+    const reader = fakeStore();
+    const writer = fakeStore();
+    const rag = new ExpositionFilteringRag(reader as never, writer as never);
+    const w = rag.writer();
+    if (!w) throw new Error('no writer');
+    await w.upsertRaw('tool:CreateDomain', 't', { exposition: 'high' });
+
+    const res = await runWithRequestConnection(
+      {} as never,
+      () => rag.query({} as never, 10, {}),
+      undefined,
+      undefined,
+    );
+    if (!res.ok) throw new Error('query failed');
+    expect(writer.stats.queries).toBe(0);
+    expect(res.value.map((r) => r.metadata.id)).not.toContain(
+      'tool:CreateDomain',
+    );
   });
 
   // The RUNTIME vectorization path — taken whenever the embedding bundle is

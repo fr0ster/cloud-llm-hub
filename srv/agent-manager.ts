@@ -332,7 +332,28 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     },
   ) {
     const log = cds.log('tool-rag');
-    const allowedExpositions = options?.ragFilter?.exposition;
+    // The caller's exposition, from the request options when the pipeline
+    // forwards them and from the request-scoped store when it does not.
+    //
+    // It does not always forward them. The pipeline runs tool selection TWICE
+    // per request: once from the orchestrator, which passes our options
+    // through, and once from the pipeline handler, which rebuilds its own —
+    // and it is the SECOND selection that reaches the model. Measured on prod:
+    // the first search saw all four roles and put CreateDomain top with 0.738;
+    // the second arrived with no filter, fell back to Reader, searched the
+    // reader collection alone and offered fifteen read tools. The model then
+    // answered, correctly for what it was given, that no tool creates a domain.
+    //
+    // The ALS store is the same value `assertToolAllowed` enforces on, so the
+    // two lines of defence cannot disagree about who is asking — and it
+    // survives every async hop, which is precisely what options did not.
+    const allowedExpositions =
+      options?.ragFilter?.exposition ?? connectionALS.getStore()?.exposition;
+    const expositionSource = options?.ragFilter?.exposition
+      ? 'ragFilter'
+      : connectionALS.getStore()?.exposition
+        ? 'request-store'
+        : 'none';
     // Strip ragFilter — tools use exposition metadata, not namespace
     const { ragFilter: _unused, ...cleanOpts } = options ?? {};
     // Over-fetch so that (a) exposition post-filtering doesn't starve results and
@@ -389,6 +410,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         // the opposite of what actually happened.
         exposition: allowedExpositions ?? resolveExposition(['MCP_Reader']),
         roleFilterReceived: !!allowedExpositions,
+        expositionSource,
         results: result.value.map((r) => ({
           id: r.metadata.id,
           score: Math.round(r.score * 1000) / 1000,
@@ -398,11 +420,16 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     }
 
     if (!result.ok) return result;
-    // No role filter reached us. Measured on staging: some pipeline steps search
-    // without one, and this branch used to return EVERYTHING — 56 tools
-    // including CreateDomain — to a reader. Execution was still refused, but the
-    // model wasted iterations on calls it could never make, and the first of the
-    // two lines of defence was doing nothing.
+    // Neither the options nor the request store named a role. Measured on
+    // staging: some pipeline steps search without one, and this branch used to
+    // return EVERYTHING — 56 tools including CreateDomain — to a reader.
+    // Execution was still refused, but the model wasted iterations on calls it
+    // could never make, and the first of the two lines of defence was doing
+    // nothing.
+    //
+    // Reaching here now means the request has no bound exposition at all, not
+    // merely that one pipeline step dropped it: that case is answered from the
+    // request store above.
     //
     // Fail-closed like every other unknown here: offer only what EVERY role may
     // run. Skills are not role-governed and pass through untouched.
