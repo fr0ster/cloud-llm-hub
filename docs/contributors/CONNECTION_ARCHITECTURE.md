@@ -279,6 +279,121 @@ private async fetchCsrfToken(url: string): Promise<string> {
 - Cloud SDK automatically adds authentication from Destination
 - Cloud SDK automatically handles proxy via Cloud Connector
 
+### The three "sessions" — do not conflate them
+
+Three different things get called a session in this codebase, and mixing them up has produced real
+bugs. They are independent: one being on or off says nothing about the others.
+
+| # | Name used here | Between | Identified by | Ended by |
+|---|---|---|---|---|
+| 1 | **MCP session** | client ↔ cloud-llm-hub | `Mcp-Session-Id` | — *(we run without one: `sessionIdGenerator: undefined`)* |
+| 2 | **ABAP session** | cloud-llm-hub ↔ ABAP | the **server-issued** `SAP_SESSIONID_<SID>_<CLIENT>` | ICF logoff (see below) |
+| 3 | **ADT stateful mode** | *inside* an ABAP session | `x-sap-adt-sessiontype` | the same header set to `stateless` |
+
+The word "stateless" is ambiguous on its own — always say **which** of the three.
+
+> A `SAP_SESSIONID` **we generated ourselves** does not belong in row 2. It is app-server
+> stickiness only and names no server session, which is why `closeSession()` compares the cookie's
+> *value* against `generatedSapSessionId` and never logs off on the strength of our own.
+
+**An ABAP session is the server's entity, not ours.** We do not create it: the logon *is* the
+establishing request, and the server hands the cookie back. We can only hold it or return it.
+
+**ADT stateful mode is also the server's entity**, layered on top of a session, and it exists for
+one purpose: to bind **locks** to that session. Reads do not need it, and the server saves
+resources by not keeping a context between requests. This is why a read-only connection and a
+mutating chain cost the server very different things.
+
+### Returning an ABAP session
+
+#### What this code does today
+
+`CloudSdkAbapConnection.closeSession()` runs **one or two** requests, and which ones is decided by
+what the connection is actually holding — not by any notion of system type:
+
+| Condition | Request sent |
+|---|---|
+| the chain went stateful, or we minted an id | `GET /sap/bc/adt/compatibility/graph` with `x-sap-adt-sessiontype: stateless` — ends ADT stateful mode, releasing an edit-lock |
+| the jar holds a **server-issued** `SAP_SESSIONID` | `GET /sap/public/bc/icf/logoff` with that cookie — gives the ABAP session back |
+
+> **Known gap: the ABAP Cloud session lifecycle is not implemented.**
+>
+> Cloud (`ProxyType: Internet`) destinations are a **supported** scenario, not a future one:
+> `request-connection.ts` has a dedicated path for them (destination JWT / OAuth2SAMLBearerAssertion
+> principal propagation), there are unit tests for a cloud destination without caller credentials,
+> and the deployment docs offer SAP BTP ABAP Environment over an Internet destination.
+>
+> What is missing is the session half. `CloudSdkAbapConnection` never sends the
+> `POST /sap/bc/adt/core/http/sessions` that **creates** an ABAP Cloud security session, and
+> `closeSession()` sends the ICF logoff **only when the server issued a `SAP_SESSIONID`**. Per
+> upstream's measurement, an ABAP Cloud system without that create request answers with
+> `sap-usercontext` and `sap-XSRF_*` and **no session at all** — so on such a system there is
+> nothing for a lock to be bound to and nothing to release. Reads are unaffected; mutating chains
+> are the exposure. This is a present gap in a supported configuration, not a risk to plan for.
+
+`systemType` in `mcp-manager.ts` **is** derived automatically, from `destination.proxyType` — but
+it selects which *tools* to expose (on-prem-only tools such as `CreateProgram`), and has nothing to
+do with how a session is released.
+
+**Only ever log off while holding the session cookie.** The session limit is per USER and the pool
+is shared with that user's SAP GUI logons, so a connector that tidied up sessions it did not open
+would eventually close somebody's GUI.
+
+#### How upstream modelled it in v5 — historical, and already superseded
+
+> **Read this as history, not as a target.** `@mcp-abap-adt/connection` is at **8.0.1**
+> as of 2026-09-09, and the `SessionStrategy` described below no longer exists there:
+> opening and closing a session is now part of the wire itself
+> (`IAdtTransport.open()/close()`). What stays true is the *mechanism* — the two ways
+> a session is taken back — not the shape of the code around it. We remain on 1.10.2
+> because `core@8.13.0` still pins `connection ^1.10.0`.
+
+`@mcp-abap-adt/connection` **5.0.0** split this into two strategies:
+
+| | On-premise (`IcfSessionStrategy`) | ABAP Cloud (`CloudSecuritySessionStrategy`) |
+|---|---|---|
+| Opened by | the logon = the establishing call | `POST /sap/bc/adt/core/http/sessions`, `x-sap-security-session: create` |
+| Returned by | `GET /sap/public/bc/icf/logoff` + the session cookie | `DELETE` on the address the server published |
+| ADT session resource | does not exist | exists |
+
+Its key design rule, and the reason this matters for closing the gap above: **the system
+type is declared by picking `AdtOnPremConnector` or `AdtCloudConnector`, never inferred.**
+`/sap/bc/adt/core/http/sessions` answers on on-premise too, so asking the server tells you an
+endpoint exists — not which kind of system you reached. Credential type and host name decide
+nothing.
+
+In both models the release call is a **notification, not a command**: it says "we are finished with
+this session". Whether the system frees it now, later, or keeps it to reuse is the system's
+business.
+
+### Locks: why cleanup is mandatory, and what to do when it fails
+
+**Dropping the connection does NOT end the session.** The connection object is ours and dies with
+the request; the ABAP session is the server's and lives on **until it times out**, holding the
+object as *"currently editing"*. That is the whole reason every connection built here is closed
+explicitly, and the reason a `closeSession()` that released nothing was a live defect rather than
+an inefficiency. Cleanup is best-effort in its *implementation* — it never throws into the caller —
+but it is not optional in its *intent*.
+
+- **`lock` turns ADT stateful mode on; `unlock` turns it off.** The mode is scoped to the lock's
+  life, not the request's.
+- **That restore sits on the happy path.** In `@mcp-abap-adt/adt-clients` the on/off calls are
+  asymmetric (152 `stateful` vs 147 `stateless`) and few sit in `finally`, so a chain that dies
+  before `unlock` leaves the mode on. `closeSession()` is what covers this today: it ends stateful
+  mode and then hands the session back, whatever the chain did. If connections are ever pooled and
+  reused, the pool must perform that normalisation itself rather than trust the handler.
+- **A lock is bound to the ABAP session.** Ending the session releases the lock — the guaranteed
+  lever when the state is uncertain, and the reason the logoff is worth sending even after a failed
+  stateless call.
+- **A held lock announces itself.** The next attempt to edit that object fails with *"user X is
+  currently editing"* — an ADT session lock, not an SM12 enqueue. If we track which session took
+  the lock, that error is attributable and recoverable: log that session off and the lock goes with
+  it.
+
+The design consequence is about **recovery, not permission**: cleanup must also be diagnosable, so
+that the case where it fails has a way out other than waiting for the server timeout. It does not
+make a skipped cleanup acceptable.
+
 ### Stateful sessions & the orphaned-lock fix (`CloudSdkAbapConnection`)
 
 An ADT write runs a **stateful chain** — `validate → create → LOCK → update → unlock → activate` —
@@ -287,10 +402,16 @@ connectivity proxy**, or the session (and its edit-lock) is lost with a **400 "S
 and the object is left created-but-locked (orphaned). On the BTP connectivity path two things are
 needed to hold that session — both handled inside `CloudSdkAbapConnection`:
 
-1. **Client-generated `SAP_SESSIONID_<SID>_<CLIENT>`.** SAP issues no such cookie on this path
-   (only `sap-contextid`), so the client provides it: a stable, unique base64url value (suffix
-   derived from the server's `sap-XSRF_<SID>_<CLIENT>`), generated **once and never changed for the
-   connection's lifetime**, sent on every request. A real server-issued value always wins.
+1. **Client-generated `SAP_SESSIONID_<SID>_<CLIENT>` — as a FALLBACK.** When the server issues no
+   such cookie, the client provides one: a stable, unique base64url value (suffix derived from the
+   server's `sap-XSRF_<SID>_<CLIENT>`), generated **once and never changed for the connection's
+   lifetime**, sent on every request. A real server-issued value always wins —
+   `ensureGeneratedSessionCookie` returns early when one is already in the jar.
+
+   > Measured on DEV (2026-08-21): that system **does** issue its own `SAP_SESSIONID_DEV_100` on
+   > every CSRF fetch, so the generated id never applies there. An earlier version of this document
+   > claimed SAP issues none on this path; that was wrong, and acting on it is why the first attempt
+   > at releasing read-only sessions released nothing.
 2. **One keep-alive socket per connector** (a `maxSockets: 1` keep-alive **`httpAgent`** on every
    `executeHttpRequest`). Cloud SDK otherwise builds a fresh agent per call over a shared socket
    pool, so a **cold** chain can send LOCK on one socket/tunnel and the follow-up GET on another →
