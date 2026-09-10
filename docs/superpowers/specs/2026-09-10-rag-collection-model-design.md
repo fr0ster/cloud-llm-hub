@@ -9,49 +9,35 @@
 > Diagnosed 2026-09-10. **Roles resolve correctly. Identity did not.** The design's
 > assumption holds and it may go to implementation.
 >
-> **What the prod log actually showed.** Pairing each `Resolved MCP exposition` line
-> with the request logger by correlation id, every `/mcp` call in the buffer reads:
+> Pairing each `Resolved MCP exposition` line with the request logger by correlation
+> id, every `/mcp` call in the prod buffer read `userId: 'system'` with a single
+> `MCP_Analyst` role. `system` is CAP's name for a `client_credentials` token
+> (`jwt-auth.js`): roles come from the token's own `scope` array, so a technical token
+> carries what ITS xsuaa client was granted and the person who started it is not in the
+> token at all. The combination looked impossible because it was never a user token —
+> it was a service-to-service consumer. Nothing in `xs-security.json` and nothing in
+> our filtering was wrong.
 >
-> ```
-> userId: 'system'      roles: [ 'MCP_Analyst' ]
-> ```
+> Fixed in v6.32.1 (write tools reach the agent channels again) and v6.32.2
+> (`describeCaller` reports identity beside permissions on all four channels; the two
+> 403 paths name a technical caller instead of telling its operator to assign a role
+> collection that cannot help).
 >
-> `system` is CAP's name for a **`client_credentials` token**
-> (`@sap/cds/lib/srv/middlewares/auth/jwt-auth.js`, lines 61-72): roles come from the
-> token's `scope` array with the `xsappname` prefix stripped, and any
-> `client_credentials` / `client_x509` grant is renamed to `system`. A technical token
-> carries the scopes ITS xsuaa client was granted. The human who started the client is
-> not in the token at all, so their role collections are never read.
->
-> That is why the combination looked impossible: it was never a user token. Nothing in
-> `xs-security.json` was wrong, and nothing in our filtering was wrong.
->
-> **Confirmed against the live tenant.** A `client_credentials` token fetched with the
-> proxy's own cached service key (`~/.config/mcp-abap-adt/service-keys/mcp.json`, the
-> `cloud-llm-hub-auth` client) carries exactly one MCP scope — `MCP_Reader`, from the
-> descriptor's `authorities`. Reader level. No write groups. Which is precisely what
-> "cannot find the tools even to create a domain" looks like from the consumer's side.
->
-> **Why every channel failed alike.** All four read the same `cds.context.user`. The
-> fault was never in a channel, so no channel escaped it.
->
-> **What changed here.** Observability, not behaviour. `describeCaller` reports id,
-> technical flag, roles and exposition together, and all four channels log it; the two
-> 403 paths now say when the caller is a technical client, because telling that
-> operator to "assign a role collection" sends them to their own BTP user, where the
-> roles already are and where changing them cannot help.
->
-> **What remains, and it is not ours.** A client that authenticates with
-> `client_credentials` can only ever hold what that client was granted. To act with a
-> person's roles the client must authenticate AS the person — the browser
-> authorization-code flow that `scripts/start-proxy.sh` documents. Note there is no
-> `mcp.env` session file beside the other destinations, and `AuthBroker` has an
-> explicit fall-back to the service key when the session path fails.
+> **The user's own proxy was never the problem.** An earlier draft here concluded it
+> fell back to a service key, from a missing session file and the existence of such a
+> path in `AuthBroker`. That was wrong: the running proxy holds an
+> `authorization_code` token under the user's name with all four MCP scopes, confirmed
+> through `GET /v1/token`. The credential a proxy actually uses is read live or asked
+> about, never inferred — its token is refreshed daily, so anything on disk describes
+> yesterday.
 
 Six collections, distinguished by **who fills them and when**. Two axes govern access:
 **scope** (global / user / session) and **authorization** (public / owner / role). The
-tool half shipped in v6.32.0; this design covers the rest — skills, user and session
-collections, and the global ones that need a role.
+tool half shipped in v6.32.0 — and did not work until v6.32.1, which is worth knowing
+before trusting the pattern: the split was correct, but the caller's roles never
+reached the second of the two tool searches the pipeline runs, so every role was
+silently capped at reader level. This design covers the rest — skills, user and
+session collections, and the global ones that need a role.
 
 And it settles the embedder question: without a vectorizing model **only the raw MCP
 channel works**; every agent channel answers 5xx.
@@ -128,7 +114,7 @@ without anyone knowing.
 | **tools · writer** | startup, from the bundle | exposition groups `high`, `compact`, `low` | `MCP_Developer` / `MCP_Full` |
 | **skills** | startup, optionally, from disk | **configuration** — shapes prompt enrichment on every request | everyone |
 | **user** | runtime, by the consumer through a tool, or by the LLM asked to save | that user's own material | its owner |
-| **session** | runtime, same | same, shorter-lived | its owner, that session |
+| **session** | runtime — **automatically, every turn** (v6.33.0), and by the consumer through a tool | recall of earlier turns; that session's material | its owner, that session |
 | **global** | **not by us** — already present in the vector DB | shared knowledge | a role that does not exist yet |
 
 Two distinctions that are easy to lose:
@@ -138,6 +124,14 @@ Two distinctions that are easy to lose:
   runtime, and are not role-governed.
 - **Global collections are not ingested by us.** They exist independently. Our side is
   only the access decision — a role policy and collection selection, no ingestion.
+- **The session collection already exists, and not in the shape drafted here.**
+  v6.33.0 writes every completed turn into the `history` store the pipeline had been
+  querying since before this design — always returning nothing, because nothing wrote
+  to it. It lives beside `CollectionRegistry` rather than inside it, holds 200 turns
+  per conversation, and is forgotten when the session is cleared. Consumer-driven
+  writes through a tool remain unbuilt. Reconcile the two before extending either:
+  one session collection with two ways in, or two collections with different
+  lifetimes, is a decision this design has not yet made.
 
 ## Two axes, not three
 
