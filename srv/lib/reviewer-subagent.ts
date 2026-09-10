@@ -47,7 +47,6 @@ export class ReviewerSubAgent implements ISubAgent {
     const verdict = await evaluateGated({
       content,
       records,
-      toolCallCount: records.length,
       llm: this.deps.llm,
       // Same two inputs the finalizer supplies, so the two review paths cannot
       // reach different verdicts on the same answer.

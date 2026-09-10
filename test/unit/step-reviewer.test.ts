@@ -38,14 +38,18 @@ describe('buildReviewMessages — tools are shown by outcome, not by name', () =
     expect(user.content).toContain('GetDomain → failed, error=not found');
   });
 
-  it('tells the critic not to demand a separate Activate* call', () => {
+  it('tells the reviewer that tools are not its concern at all', () => {
+    // The whole class of false notices came from this reviewer reasoning about
+    // tool lists. Whether the right tool ran is a deterministic question with a
+    // deterministic answer; asking a language model to guess at it produced
+    // three wrong warnings in one day.
     const [system] = buildReviewMessages({
       task: 't',
       executedTools: [],
       content: 'c',
     });
-    expect(system.content).toContain('status=active');
-    expect(system.content).toContain('Activate*');
+    expect(system.content).toContain('Do NOT reason about tools');
+    expect(system.content).toContain('Never flag');
   });
 
   it('still accepts bare names', () => {
@@ -86,14 +90,26 @@ describe('buildReviewMessages — the conversation the step belongs to', () => {
     expect(user.content).not.toContain('CONVERSATION SO FAR');
   });
 
-  it('tells the reviewer that the conversation is evidence too', () => {
+  it('tells the reviewer that the conversation is available to the response', () => {
     const [system] = buildReviewMessages({
       task: 't',
       executedTools: [],
       content: 'c',
     });
     expect(system.content).toContain('CONVERSATION SO FAR');
-    expect(system.content).toContain('SAP SYSTEM');
+    expect(system.content).toContain('not an invention');
+  });
+
+  it('puts the user request in front of the composed task', () => {
+    const [, user] = buildReviewMessages({
+      request: 'зроби елемент даних на основі того домена',
+      task: 'Task: create a data element',
+      executedTools: [],
+      content: 'done',
+    });
+    expect(user.content).toContain('USER REQUEST');
+    expect(user.content).toContain('зроби елемент даних');
+    expect(user.content).toContain('TASK (as composed for the executor)');
   });
 
   it('caps how much conversation it carries', () => {
@@ -115,18 +131,19 @@ describe('buildReviewMessages — the conversation the step belongs to', () => {
 });
 
 describe('buildReviewMessages', () => {
-  it('is skeptical, names executed tools, and demands strict JSON', () => {
+  it('asks one question and demands strict JSON', () => {
     const [sys, user] = buildReviewMessages({
+      request: 'Create domain ZDEMO_D_MATNR then activate it',
       task: 'Create domain ZDEMO_D_MATNR then activate it',
       executedTools: ['ReadDomain'],
       content: 'The domain has been created and is active.',
     });
     expect(sys.role).toBe('system');
-    expect(sys.content.toLowerCase()).toContain('skeptic');
+    expect(sys.content).toContain('ONE question');
     expect(sys.content).toContain('JSON');
-    // Honest non-accomplishment must NOT be flagged as fake...
+    // Honest non-accomplishment must NOT be flagged as fake.
     expect(sys.content.toLowerCase()).toContain('honest');
-    // ...but a genuine doubt must still be surfaced explicitly.
+    // And an unsure reviewer must stay quiet rather than warn on a good answer.
     expect(sys.content.toLowerCase()).toContain('unsure');
     expect(user.content).toContain('ReadDomain');
     expect(user.content).toContain('Create domain ZDEMO_D_MATNR');
@@ -225,22 +242,6 @@ describe('evaluateGated', () => {
     return { chat, streamChat: async function* () {} };
   };
 
-  it('does NOT invoke the LLM critic when tool-call count is above threshold', async () => {
-    const llm = okLlm(
-      '{"possiblyFake": true, "confidence": "high", "reasons": "should not be seen"}',
-    );
-    const verdict = await evaluateGated({
-      content: 'Read complete.',
-      records: Array.from({ length: 5 }, () =>
-        record('ReadDomain', '{"success":true}'),
-      ),
-      toolCallCount: 5,
-      llm: llm as never,
-    });
-    expect(llm.chat).not.toHaveBeenCalled();
-    expect(verdict).toEqual({ ok: true });
-  });
-
   it('invokes the LLM critic when tool-call count is at/below threshold (suspicious)', async () => {
     const llm = okLlm(
       '{"possiblyFake": true, "confidence": "high", "reasons": "claimed create, only read ran"}',
@@ -248,7 +249,6 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'Created successfully.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 0,
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -265,23 +265,24 @@ describe('evaluateGated', () => {
   // "near-zero work", the critic was summoned, saw no Activate*, and called a
   // correct answer fake. One executed tool is evidence; it belongs to the
   // deterministic check, which reads what the tool reported.
-  it('does not summon the critic when a tool actually ran', async () => {
-    let called = false;
-    const llm = {
-      chat: async () => {
-        called = true;
-        return { ok: true as const, value: { content: '{}' } };
-      },
-    };
+
+  // No gate any more. The critic answers whether the response delivered what the
+  // user asked, which no tool record can settle, so it runs on every step
+  // whatever ran during it. Tool count used to decide this and was wrong both
+  // ways: at one call it judged every honest single-tool create, at zero it saw
+  // only what the deterministic check already covers.
+  it('runs on every step, however much work was done', async () => {
+    const llm = okLlm(
+      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
+    );
     const verdict = await evaluateGated({
-      content: 'Data element created and activated',
-      records: [
-        record('CreateDataElement', { success: true, status: 'active' }),
-      ],
-      toolCallCount: 1,
+      content: 'Read the domain; its type is CHAR 10.',
+      records: Array.from({ length: 7 }, () =>
+        record('ReadDomain', '{"success":true}'),
+      ),
       llm: llm as never,
     });
-    expect(called).toBe(false);
+    expect(llm.chat).toHaveBeenCalled();
     expect(verdict.ok).toBe(true);
   });
 
@@ -295,7 +296,6 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'All good, nothing written.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 0,
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -311,12 +311,14 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'All good, nothing written.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 0,
       llm: llm as never,
     });
     expect(verdict).toEqual({ ok: true });
   });
 
+  // The gate no longer turns on how much was done: a response ASSERTING a
+  // completed write is what invites the critic, however many tools ran. The
+  // deterministic verdict stands on its own either way.
   it('surfaces a deterministic write mismatch regardless of the tool-call gate', async () => {
     const llm = okLlm(
       '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
@@ -326,10 +328,11 @@ describe('evaluateGated', () => {
       records: Array.from({ length: 5 }, () =>
         record('ReadDomain', '{"success":true}'),
       ),
-      toolCallCount: 5, // well above threshold — LLM should NOT even be needed
       llm: llm as never,
     });
-    expect(llm.chat).not.toHaveBeenCalled();
+    // Consulted, because the response claims an activation to verify — and it
+    // found nothing wrong, so only the deterministic issue remains.
+    expect(llm.chat).toHaveBeenCalled();
     expect(verdict.ok).toBe(false);
     if (!verdict.ok) {
       expect(verdict.issues).toEqual([
@@ -348,7 +351,6 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 0, // nothing ran — the critic is spent
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -368,7 +370,6 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
       records: [record('CreateDomain', '{"success":true,"status":"inactive"}')],
-      toolCallCount: 0,
       llm: llm as never,
     });
     expect(llm.chat).not.toHaveBeenCalled();
@@ -385,10 +386,8 @@ describe('evaluateGated', () => {
       records: Array.from({ length: 5 }, () =>
         record('ReadDomain', '{"success":true}'),
       ),
-      toolCallCount: 5,
       llm: llm as never,
     });
-    expect(llm.chat).not.toHaveBeenCalled();
     expect(verdict.ok).toBe(false);
     if (!verdict.ok) {
       expect(verdict.issues).toEqual([

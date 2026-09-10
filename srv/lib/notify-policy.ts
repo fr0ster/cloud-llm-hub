@@ -12,7 +12,7 @@
 import type { ReviewIssue, ReviewVerdict } from './reviewer-core';
 
 function describeIssue(issue: ReviewIssue): string {
-  if (issue.kind === 'unverified-write') {
+  if (issue.kind === 'unverified-write' || issue.kind === 'unverified-read') {
     return issue.reason;
   }
   return `unsupported claim (confidence: ${issue.confidence}): ${issue.reasons}`;

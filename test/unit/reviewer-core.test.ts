@@ -266,3 +266,44 @@ describe('evaluateDeterministic (result-based)', () => {
     expect(verdict).toEqual({ ok: true });
   });
 });
+
+// The tool-count signal, kept as a check of its own rather than as a gate on
+// whether to ask an LLM. Nothing was called, and the response says it read the
+// system: it cannot have read what it never asked for. Conditioned on ZERO
+// calls on purpose — "I read the table" is ordinary prose everywhere else.
+describe('a read claimed with nothing called', () => {
+  const nothing: never[] = [];
+  const oneRead = [
+    {
+      call: { id: '', name: 'ReadDomain', arguments: {} },
+      result: { content: '{"success":true}' },
+    },
+  ] as never;
+
+  it('flags a fabricated read, in either language', () => {
+    for (const text of [
+      'I read the domain ZDEMO_TEST; its type is CHAR 10.',
+      'Прочитав домен ZDEMO_TEST, тип CHAR 10.',
+    ]) {
+      const v = evaluateDeterministic(text, nothing);
+      expect(v.ok).toBe(false);
+      if (!v.ok) expect(v.issues[0].kind).toBe('unverified-read');
+    }
+  });
+
+  it('leaves alone everything that is not a fabricated read', () => {
+    for (const text of [
+      'Hello! How can I help you today?',
+      'I cannot read that domain without a destination.',
+      'I will read the domain next.',
+    ]) {
+      expect(evaluateDeterministic(text, nothing).ok).toBe(true);
+    }
+  });
+
+  it('says nothing once a tool has actually run', () => {
+    expect(
+      evaluateDeterministic('I read the domain ZDEMO_TEST.', oneRead).ok,
+    ).toBe(true);
+  });
+});

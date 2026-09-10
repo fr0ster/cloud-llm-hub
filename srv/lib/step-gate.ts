@@ -1,22 +1,16 @@
 /**
- * Cheap suspicion gate deciding WHETHER to spend an LLM reviewer call on an
- * execute_step result. Not a verdict — just "worth double-checking".
+ * Operator controls for the honesty reviewer.
  *
- * Suspicious means the executor claimed work on the ABAP system and called
- * NOTHING to do it. That is the reviewer's own rule, stated in its prompt:
- * flag "a concrete system fact or success after zero tool calls".
+ * There used to be a suspicion GATE here: a tool-call count below which the LLM
+ * critic was thought worth spending. It was a cost proxy from when the critic
+ * reasoned about tools, and it was wrong in both directions — at one call it
+ * summoned a judge to every honest single-tool create, at zero it left the
+ * critic only cases the deterministic check already answers for free. The
+ * critic now answers whether the response delivered what the USER asked, which
+ * is worth asking of every step, so the proxy is gone rather than retuned.
  *
- * The default used to be 1, which invited the critic on every single-tool step
- * — and a compact create that activates itself IS a single-tool step. Asked to
- * judge, the critic obliged: it saw one `CreateDataElement`, no `Activate*`,
- * and called a correct answer possibly fake. The gate was looser than the rule
- * it gates, so it kept summoning a judge to the one case most easily misread.
- *
- * A step that ran even one tool is left to `evaluateDeterministic`, which is
- * free, unconditional, and grounded in the tool RESULTS rather than a
- * judgement about them.
+ * What remains is a timeout and a master switch.
  */
-export type StepGateThresholds = { maxToolCalls: number };
 
 /**
  * Parse a strict integer env value >= `min`; empty / non-numeric / trailing junk
@@ -34,14 +28,6 @@ function strictInt(
   return Number.isInteger(n) && n >= min && String(n) === t ? n : def;
 }
 
-export function loadStepGateThresholds(
-  env: NodeJS.ProcessEnv,
-): StepGateThresholds {
-  return {
-    maxToolCalls: strictInt(env.LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS, 0, 0),
-  };
-}
-
 /** Reviewer hard-timeout (ms), strictly positive; empty/invalid/<=0 → 8000. */
 export function loadStepReviewTimeoutMs(env: NodeJS.ProcessEnv): number {
   return strictInt(env.LLM_AGENT_STEP_REVIEW_TIMEOUT_MS, 8000, 1);
@@ -50,6 +36,9 @@ export function loadStepReviewTimeoutMs(env: NodeJS.ProcessEnv): number {
 /**
  * Reviewer master switch. Enabled ONLY when unset or exactly 'true'; any other
  * value ('false', '0', '', ...) disables — matching the documented semantics.
+ *
+ * With the gate gone this is the only way to stop paying for the critic, so it
+ * carries more weight than it used to.
  */
 export function stepReviewEnabled(env: NodeJS.ProcessEnv): boolean {
   return (env.LLM_AGENT_STEP_REVIEW_ENABLED ?? 'true') === 'true';

@@ -121,7 +121,7 @@ describe('NoticeFinalizer', () => {
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(c) fires the deterministic trailing notice with MANY tool calls (above the toolCallCount gate) WITHOUT invoking the LLM critic — answer still comes first', async () => {
+  it('(c) fires the deterministic trailing notice with MANY tool calls — answer still comes first', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
       {
@@ -149,7 +149,10 @@ describe('NoticeFinalizer', () => {
     expect(
       onPartial.mock.calls[1][0].delta.startsWith('UNVERIFIED_WRITE:'),
     ).toBe(true);
-    expect(benignLlm.chat).not.toHaveBeenCalled();
+    // The response asserts a completed write, so the critic IS consulted — it is
+    // the claim, not the amount of work, that decides. It found nothing, so the
+    // deterministic issue is the only one that reaches the reader.
+    expect(benignLlm.chat).toHaveBeenCalled();
     expect(result.output).toBe(input.interpreterOutput);
   });
 

@@ -6,11 +6,7 @@ import {
   type ReviewVerdict,
   type ToolOutcome,
 } from './reviewer-core';
-import {
-  loadStepGateThresholds,
-  loadStepReviewTimeoutMs,
-  stepReviewEnabled,
-} from './step-gate';
+import { loadStepReviewTimeoutMs, stepReviewEnabled } from './step-gate';
 
 export type StepReview = {
   possiblyFake: boolean;
@@ -18,33 +14,38 @@ export type StepReview = {
   reasons: string;
 };
 
+/**
+ * What the critic is asked.
+ *
+ * The first version asked a NAME question: it carried a table saying "create
+ * needs a Create* tool, activate needs Activate*", and then flagged an
+ * activation claim backed by a lone `CreateDataElement`. It did what it was
+ * told. Patching a results rule on top left the table standing, so the prompt
+ * contradicted itself — hence this rewrite around a single question: does each
+ * asserted outcome match what the executed tools REPORTED?
+ *
+ * The unsure-then-flag bias is narrowed rather than kept whole. It was written
+ * for a reviewer of writes, but applied to every answer it turns ordinary
+ * ambiguity into a notice, and a notice nobody trusts protects nobody.
+ */
 const SYSTEM = [
-  'You are a strict, skeptical REVIEWER of an ABAP executor agent — NOT its',
-  'assistant. The executor was asked to do a task and produced a response.',
-  'Assume it MAY have hallucinated: claimed results it never actually produced.',
-  'Ground your judgement ONLY in the tools it ACTUALLY executed. A real ABAP',
-  'operation needs the matching MCP tool: create needs a Create* tool, activate',
-  'needs Activate*, delete needs Delete*, update needs Update*, read needs',
-  'Read*/Get*.',
-  'Flag possiblyFake=true ONLY when the executor ASSERTS an outcome or result',
-  'the executed tools do not support — e.g. claims created/activated but no',
-  'Create*/Activate* ran, or states a concrete system fact or success after zero',
-  'tool calls.',
-  'Do NOT flag an HONEST report of non-accomplishment: if the executor openly',
-  'says it did NOT or could NOT do the task, asks for clarification, or reports',
-  'an error truthfully, and makes NO false success claim, that is honest —',
-  'possiblyFake=false, even with zero tools.',
-  'Judge a tool by its RESULT, not by its name. A create or update tool that',
-  'reports status=active DID activate the object as part of its own call — a',
-  'separate Activate* tool is NOT required, and demanding one is wrong.',
-  'Tool evidence is required for claims about the SAP SYSTEM. It is NOT required',
-  'for anything already established in CONVERSATION SO FAR: restating, using or',
-  'reasoning from what the user themselves supplied earlier is supported by the',
-  'conversation, and needs no tool. Judge such an answer on whether it matches',
-  'the conversation — possiblyFake=false when it does.',
-  'If you are genuinely UNSURE whether a claim is supported, still flag it',
-  '(possiblyFake=true) but say so explicitly in "reasons" and use a LOWER',
-  '"confidence" — never hide a real doubt.',
+  'You are a REVIEWER of an ABAP executor agent — NOT its assistant.',
+  'You answer exactly ONE question: does the RESPONSE deliver what the USER',
+  'REQUEST asked for?',
+  'Compare them directly. A response has NOT delivered the request when it acts',
+  'on a different object, performs a different operation, does only part of what',
+  'was asked, or answers a question that was not the one asked — however',
+  'confidently it reads.',
+  'Do NOT reason about tools. Which tools ran, whether one was missing, and what',
+  'they returned are checked separately and are none of your concern. Never flag',
+  'a response because a tool you expected is absent.',
+  'A response that openly says it did NOT or could NOT do the task, asks for',
+  'clarification, or reports an error truthfully HAS delivered an honest answer',
+  'to the request — possiblyFake=false.',
+  'Anything the user established earlier in CONVERSATION SO FAR is available to',
+  'the response; using it is not an invention.',
+  'When you are genuinely unsure, do not flag. A warning on a correct answer',
+  'costs more than it saves.',
   'Reply with STRICT JSON ONLY, no prose:',
   '{"possiblyFake": boolean, "confidence": "low"|"medium"|"high", "reasons": string}',
 ].join(' ');
@@ -95,6 +96,9 @@ function renderHistory(history: ReviewTurn[]): string {
 export type ReviewTurn = { role: string; content?: unknown };
 
 export function buildReviewMessages(input: {
+  /** What the USER asked, in their own words. The composed task is the
+   *  coordinator's restatement, and a restatement can drift. */
+  request?: string;
   task: string;
   /** Names OR outcomes. A bare name cannot say whether the tool succeeded, and
    *  a create tool that activates as part of its own call reports that only in
@@ -109,12 +113,12 @@ export function buildReviewMessages(input: {
   const history = input.history?.length ? renderHistory(input.history) : '';
   const user = [
     ...(history ? [`CONVERSATION SO FAR:\n${history}\n`] : []),
-    `TASK:\n${input.task || '(not recorded)'}`,
+    ...(input.request ? [`USER REQUEST:\n${input.request}\n`] : []),
+    `TASK (as composed for the executor):\n${input.task || '(not recorded)'}`,
     `\nTOOLS ACTUALLY EXECUTED (in order): ${tools}`,
     `\nEXECUTOR RESPONSE:\n${input.content}`,
-    '\nDid the executor actually accomplish the task? Judge system claims ONLY by',
-    'the executed tools, and everything else by the conversation above. Return the',
-    'strict JSON verdict.',
+    '\nDoes the response deliver what the user asked for? Return the strict JSON',
+    'verdict.',
   ].join('\n');
   return [
     { role: 'system', content: SYSTEM },
@@ -197,6 +201,7 @@ export function parseReviewVerdict(text: string): StepReview | null {
 
 export async function reviewStep(
   input: {
+    request?: string;
     task: string;
     executedTools: (string | ToolOutcome)[];
     content: string;
@@ -239,12 +244,12 @@ export async function reviewStep(
  * both the deterministic write-claim check and the LLM critic — is bypassed
  * and `{ ok: true }` is returned unconditionally. Enabled by default.
  *
- * `evaluateDeterministic` (write-claim vs. tool-RESULT ground truth) runs
- * unconditionally — it is authoritative and free, independent of tool-call
- * volume. The LLM critic (`reviewStep`) is spent ONLY when the tool-call count
- * is at or below `maxToolCalls`, which now defaults to ZERO: claimed work with
- * nothing called to do it. A step that ran even one tool is left to the
- * deterministic check, which reads what those tools actually reported. Per-trace
+ * Two independent checks, neither standing in for the other.
+ *
+ * `evaluateDeterministic` (write-claim vs. tool-RESULT ground truth) answers
+ * what tools prove: it is authoritative, free, and needs no judgement.
+ * `reviewStep` answers the one thing no comparison of tool records can — does
+ * the response deliver what the USER asked for — and runs on every step. Per-trace
  * token totals are no longer captured (the reviewer now grounds on tool
  * RESULTS, not the request logger), so the gate is tool-call-count only.
  * Any LLM-found problem is merged in as an `unsupported-claim` issue; a
@@ -254,9 +259,10 @@ export async function reviewStep(
 export async function evaluateGated(input: {
   content: string;
   records: ToolCallRecord[];
-  toolCallCount: number;
   llm: ILlm;
-  /** What the executor was asked. Empty means the caller did not record it. */
+  /** What the USER asked, verbatim. */
+  request?: string;
+  /** The coordinator's composed task. Empty means the caller did not record it. */
   task?: string;
   /** The turns before this one, so a fact the user supplied is not "unsupported". */
   history?: ReviewTurn[];
@@ -264,16 +270,24 @@ export async function evaluateGated(input: {
   if (!stepReviewEnabled(process.env)) return { ok: true };
 
   const deterministic = evaluateDeterministic(input.content, input.records);
-  const thresholds = loadStepGateThresholds(process.env);
-  const suspicious = input.toolCallCount <= thresholds.maxToolCalls;
-  if (!suspicious) return deterministic;
 
+  // No gate. There used to be one, counting tool calls as a proxy for "little
+  // was done, so be suspicious" — and it was wrong in both directions: at one
+  // call it summoned a judge to every honest single-tool create, at zero it
+  // left the critic only the cases the deterministic check already answers for
+  // free. The proxy made sense while the critic reasoned about tools. It no
+  // longer does: the critic answers whether the response delivered what the
+  // user asked, which is worth asking of every step whatever ran during it.
+  //
+  // The cost is one LLM call per step, accepted deliberately. The kill switch
+  // above turns off the whole guard when it is not.
   // Outcomes, not names — the same ground truth `evaluateDeterministic` reads.
   const executedTools = input.records.map(parseToolOutcome);
   let review: StepReview | null;
   try {
     review = await reviewStep(
       {
+        request: input.request,
         task: input.task ?? '',
         executedTools,
         content: input.content,

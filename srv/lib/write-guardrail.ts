@@ -74,6 +74,31 @@ export function claimsCompletedWrite(content: string): boolean {
   return CLAIM_PATTERNS.some((re) => re.test(content));
 }
 
+/**
+ * First-person assertions of having READ from the system.
+ *
+ * Deliberately narrow, and only ever consulted when ZERO tools ran. "I read the
+ * table" is unremarkable prose in most contexts; it is proof of invention only
+ * when the record shows nothing was asked of the system. That condition is what
+ * lets these patterns stay simple instead of trying to tell a report from a
+ * plan.
+ *
+ * Slavic entries use the same negative lookahead as the write patterns, because
+ * JS word boundaries are defined on Latin characters and never match beside
+ * Cyrillic.
+ */
+const READ_CLAIM_PATTERNS: RegExp[] = [
+  /\bI(?:(?:'|’)ve|\s+(?:have|just|now|successfully))*\s+(?:read|retrieved|fetched|queried|looked\s+up)\b/i,
+  /\b(?:has|have)\s+been\s+(?:read|retrieved|fetched|queried)\b/i,
+  /\baccording\s+to\s+the\s+(?:system|table|database)\b/i,
+  /(?:прочитав|прочитал|прочитано|отримав|получил|отримано|получено|зчитав|считал|переглянув|просмотрел)(?![а-яіїєґ’':])/i,
+];
+
+/** True if the text asserts it READ something from the system. */
+export function claimsCompletedRead(content: string): boolean {
+  return READ_CLAIM_PATTERNS.some((re) => re.test(content));
+}
+
 export type WriteOp = 'created' | 'updated' | 'deleted' | 'activated';
 
 const WRITE_OPS: WriteOp[] = ['created', 'updated', 'deleted', 'activated'];

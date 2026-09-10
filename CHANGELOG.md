@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.34.0] - 2026-09-10
+
+The honesty reviewer is split along the line between what can be proven and what needs judgement.
+
+### Changed
+- **The LLM reviewer no longer reasons about tools, and now answers one question: does the response deliver what the USER asked for?** Its old prompt carried a name-matching table ("create needs a Create* tool, activate needs Activate*") and every false notice this session came from following it. Which tools ran and what they returned is a question with a deterministic answer, and asking a language model to guess at it produced three wrong warnings in one day. The prompt now forbids it outright, and the reviewer is given the user's request verbatim alongside the coordinator's composed task — a restatement can drift, and a response that satisfies the restatement while missing the request is the failure worth catching.
+- **The reviewer runs on every step.** The tool-call gate is gone, along with `LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS`. It was a cost proxy from when the reviewer reasoned about tools, and it was wrong in both directions: at one call it summoned a judge to every honest single-tool create, at zero it left the reviewer only cases the deterministic check already answers for free. Whether a response delivered what was asked is worth asking of every step. `LLM_AGENT_STEP_REVIEW_ENABLED=false` is now the only way to stop paying for it.
+- When unsure, the reviewer stays quiet instead of flagging. The old instruction was to flag anyway at lower confidence; applied to every answer it turned ordinary ambiguity into warnings, and a warning nobody trusts protects nobody.
+
+### Added
+- **A read claimed with nothing called is now caught deterministically.** The write half of this rule already existed — a creation claim is unsupported when no successful `Create*` ran — but a fabricated READ carries no write words and slipped past. Conditioned on ZERO tool calls on purpose: "I read the table" is ordinary prose everywhere else, and becomes proof of invention only when the record shows nothing was asked of the system. Reported as its own issue kind rather than folded into the write one.
+
+### Notes
+- Not done: the third signal, an unusually small token spend. Per-trace token counting was removed earlier and has to be put back before it can be used.
+
 ## [6.33.2] - 2026-09-10
 
 ### Changed

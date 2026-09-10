@@ -13,12 +13,29 @@
  */
 
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
-import { claimedWriteOps, isWriteTool, type WriteOp } from './write-guardrail';
+import {
+  claimedWriteOps,
+  claimsCompletedRead,
+  isWriteTool,
+  type WriteOp,
+} from './write-guardrail';
 
 export type ReviewIssue =
   | {
       kind: 'unverified-write';
       claimedOp: WriteOp;
+      reason: string;
+    }
+  | {
+      /**
+       * Nothing was called, and the response says it read the system anyway.
+       *
+       * Conditioned on ZERO tool calls on purpose: a claim to have read
+       * something is ordinary prose in almost every other context, and only
+       * becomes proof of invention when the record shows nothing was asked of
+       * the system at all.
+       */
+      kind: 'unverified-read';
       reason: string;
     }
   | {
@@ -183,10 +200,27 @@ export function evaluateDeterministic(
   content: string,
   records: ToolCallRecord[],
 ): ReviewVerdict {
+  const outcomes = records.map(parseToolOutcome);
+
+  // Zero calls and a claim to have read the system: the executor cannot have
+  // read what it never asked for. Checked BEFORE the write claims, and
+  // independently of them — a fabricated read carries no write words, so
+  // returning early on "no write claimed" would step straight past it.
+  if (outcomes.length === 0 && claimsCompletedRead(content)) {
+    return {
+      ok: false,
+      issues: [
+        {
+          kind: 'unverified-read',
+          reason:
+            'claims to have read from the system, but no MCP tool was called at all',
+        },
+      ],
+    };
+  }
+
   const claims = claimedWriteOps(content);
   if (claims.length === 0) return { ok: true };
-
-  const outcomes = records.map(parseToolOutcome);
 
   const issues: ReviewIssue[] = [];
   for (const op of claims) {

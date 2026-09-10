@@ -1,44 +1,7 @@
 import {
-  loadStepGateThresholds,
   loadStepReviewTimeoutMs,
   stepReviewEnabled,
 } from '../../srv/lib/step-gate';
-
-describe('loadStepGateThresholds', () => {
-  // Zero, deliberately: suspicious means claimed work with NOTHING called to do
-  // it, which is the rule the reviewer's own prompt states. At 1 the gate
-  // summoned the critic on every single-tool step, and a compact create that
-  // activates itself is a single-tool step — it called a correct answer fake.
-  it('spends the critic only when no tool ran at all', () => {
-    expect(loadStepGateThresholds({})).toEqual({
-      maxToolCalls: 0,
-    });
-  });
-  it('reads valid env overrides', () => {
-    expect(
-      loadStepGateThresholds({
-        LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS: '3',
-      } as NodeJS.ProcessEnv),
-    ).toEqual({ maxToolCalls: 3 });
-  });
-  it('falls back to defaults on empty / invalid / negative / non-integer', () => {
-    for (const bad of ['', '  ', 'abc', '-1', '1.5']) {
-      expect(
-        loadStepGateThresholds({
-          LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS: bad,
-        } as NodeJS.ProcessEnv),
-      ).toEqual({ maxToolCalls: 0 });
-    }
-  });
-  it('accepts an explicit widening', () => {
-    // An operator who wants the old behaviour back sets it to 1.
-    expect(
-      loadStepGateThresholds({
-        LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS: '1',
-      } as NodeJS.ProcessEnv).maxToolCalls,
-    ).toBe(1);
-  });
-});
 
 describe('stepReviewEnabled', () => {
   it('is enabled when unset or exactly "true"', () => {
