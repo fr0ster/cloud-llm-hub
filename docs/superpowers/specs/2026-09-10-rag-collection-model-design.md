@@ -3,7 +3,7 @@
 ## TL;DR
 
 Six collections, distinguished by **who fills them and when**. Two axes govern access:
-**scope** (global / user / session) and **authorization** (public / role-gated). The
+**scope** (global / user / session) and **authorization** (public / owner / role). The
 tool half shipped in v6.32.0; this design covers the rest — skills, user and session
 collections, and the global ones that need a role.
 
@@ -12,35 +12,39 @@ channel works**; every agent channel answers 5xx.
 
 ## The embedder is a per-channel requirement, not a global one
 
+**Owner's decision:** without a vectorizing model only the raw MCP channel serves;
+every agent channel answers 5xx.
+
 | Channel | Without an embedder |
 |---|---|
-| `POST /mcp/stream/http` | **works** — no RAG involved; the client selects tools itself |
-| `POST /v1/chat/completions` | **5xx** — the text vectorization model is unavailable |
-| `POST /v1/messages` | **5xx** — same |
-| `execute_step` (`/mcp/agent/stream/http`) | **5xx** — same |
+| `POST /mcp/stream/http` | **works** — no retrieval involved; the client selects tools itself |
+| `POST /v1/chat/completions` | **5xx**, naming the missing configuration |
+| `POST /v1/messages` | **5xx** |
+| `execute_step` (`/mcp/agent/stream/http`) | **5xx** |
 
-The agent cannot select tools without retrieval, so it must not pretend to. The raw
-MCP proxy has no such dependency: it exposes the tool set directly and the connecting
-client does the choosing.
+**This is a quality decision, not a technical impossibility.** An earlier draft here
+claimed the agent "cannot select tools without retrieval" — that is false.
+`InMemoryRag` performs real keyword retrieval, and `LLM_AGENT_RAG_TYPE=in-memory` is
+a documented mode. The actual argument is that keyword-only selection over a
+360-tool corpus is not good enough to stand behind: tool descriptions are
+paraphrases of intent, which is what vectors match and keywords do not.
 
-**What changes:** `createToolsRagStore` currently falls back to keyword-only
-`InMemoryRag` when `getOrCreateEmbedder()` yields nothing. That silent degradation
-goes. The agent paths fail with a clear message naming the missing configuration; the
-MCP path is untouched.
+So the change is: stop serving agent requests at a quality we do not accept, and say
+so explicitly rather than degrade silently. `createToolsRagStore` currently falls back
+to `InMemoryRag` when `getOrCreateEmbedder()` yields nothing; on the agent paths that
+fallback goes.
 
-**Open — needs checking before implementation:** whether any deployed target actually
-runs without an embedder today. `acme-sandbox` and `customer-b` use non-AI-Core providers
-(`LLM_AGENT_PROVIDER=openai` / native Anthropic), and it is not yet established
-whether they configure an embedding model separately. If one does, this change turns
-a working deployment into 5xx, and it needs a migration note rather than a silent
-switch.
+**Compatibility, settled:** `acme-sandbox` reaches the same AI Core, so it is
+unaffected. `customer-b` is out of scope. No other target runs without an embedder, so no
+migration note is required — but the implementation should still verify each target's
+embedder configuration before the switch rather than trusting this line.
 
 ## The six collections
 
 | Collection | Filled | Purpose | Access |
 |---|---|---|---|
-| **tools · reader** | startup, from the embedding bundle | tools that change nothing | any MCP role |
-| **tools · writer** | startup, from the bundle | tools that change something | `MCP_Developer` / `MCP_Full` |
+| **tools · reader** | startup, from the embedding bundle | exposition groups `readonly`, `search`, `system` | any MCP role |
+| **tools · writer** | startup, from the bundle | exposition groups `high`, `compact`, `low` | `MCP_Developer` / `MCP_Full` |
 | **skills** | startup, optionally, from disk | **configuration** — shapes prompt enrichment on every request | everyone |
 | **user** | runtime, by the consumer through a tool, or by the LLM asked to save | that user's own material | its owner |
 | **session** | runtime, same | same, shorter-lived | its owner, that session |
@@ -61,10 +65,18 @@ Two distinctions that are easy to lose:
 | Axis | Values |
 |---|---|
 | **scope** | `global` · `user` · `session` |
-| **authorization** | public · role-gated |
+| **authorization** | `public` · `owner` · `role` |
 
-A role-gated shared collection is `scope: global` plus an access policy. A physically
-separate store is *how* the boundary is enforced, not evidence of another axis.
+`owner` is **implied by scope and not configurable**: a `user` collection is reachable
+by its owner, a `session` collection by its owner within that session. There is no
+setting that opens someone else's collection to a role — ownership and role are
+answers to different questions, and mixing them would let a role read private
+material.
+
+Configurable policy therefore applies to `global` collections only: they are `public`
+or `role`-gated. A role-gated shared collection is `scope: global` plus that policy. A
+physically separate store is *how* the boundary is enforced, not evidence of another
+axis.
 
 ## Access is decided BEFORE the search, never after
 
@@ -101,6 +113,43 @@ may still hold, or may be exactly what a role policy now answers. Restoring it n
 
 The role itself does not exist yet. This design accounts for such collections without
 creating the role.
+
+### Operational contract
+
+"Already in the vector DB, we only select" is not enough to build from. Six questions,
+answered:
+
+**Where the catalogue comes from.** A declared list in configuration —
+`LLM_AGENT_GLOBAL_COLLECTIONS`, a JSON array of `{ physicalName, displayName,
+requiredRoles }`. Not discovery from the backend: discovery would make the set of
+readable collections depend on what happens to exist in the database, which is the
+opposite of fail-closed. If it is not declared, it does not exist for us.
+
+**How collection → roles is expressed.** In that same entry, `requiredRoles: []` means
+public; a non-empty list means the caller needs **at least one** of them. The list is
+role NAMES, resolved against the caller's XSUAA roles directly — not through
+`resolveExposition`, which answers in tool-group levels and must not learn about
+knowledge.
+
+**An unknown collection.** Refused. A name not in the declared catalogue is not
+searched, whatever the request says.
+
+**An unknown role in `requiredRoles`.** The collection becomes unreachable, and this
+is logged at startup as a configuration error. A role nobody can hold is fail-closed
+by construction, but silently so — hence the log.
+
+**Attaching to an existing backend collection.** The registry gains a read-only
+attachment path: given `physicalName`, bind to it without creating or migrating.
+`CollectionMeta` grows `scope: 'global'` and `requiredRoles`. Note that the Qdrant and
+HANA backends are placeholders today, so the first implementation targets whichever
+backend actually holds this content — establish that before writing code.
+
+**Metadata visibility.** The listing API shows a global collection's `displayName` and
+whether the caller may search it — never its contents, and never collections the
+caller cannot reach. Ingestion being external does not make the catalogue secret, but
+it does not make it public either.
+
+None of this creates content or roles; it is the resolver's contract.
 
 ## Skills: the unknown that sizes the work
 
