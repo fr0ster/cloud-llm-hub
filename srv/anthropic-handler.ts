@@ -27,7 +27,7 @@ import {
   isAgentReady,
   runWithRequestConnection,
 } from './agent-manager';
-import { resolveExpositionForUser } from './lib/exposition';
+import { describeCaller } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { resolveSessionId } from './session-id';
 
@@ -160,7 +160,9 @@ export async function handleAnthropicMessages(
   // The caller's permissions. This channel previously resolved none at all —
   // no role filtering on which tools were offered, and nothing to authorize a
   // tool call against. Both are fixed here from one value, so they agree.
-  const callerExposition = resolveExpositionForUser(cds.context?.user);
+  const caller = describeCaller(cds.context?.user);
+  log.info('MCP caller', caller);
+  const callerExposition = caller.exposition;
 
   const agentOpts = {
     stream,

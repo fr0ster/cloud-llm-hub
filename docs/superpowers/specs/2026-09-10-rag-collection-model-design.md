@@ -4,47 +4,49 @@
 
 ## TL;DR
 
-> ## ⛔ BLOCKED — roles do not resolve correctly in production
+> ## ✅ RESOLVED — the caller was a technical client, not a person
 >
-> Observed 2026-09-10 on `acme-prod` prod, and **not** specific to the WebUI —
-> it reproduces on other channels too. This design assumes the caller's roles reach
-> collection selection. Right now they do not, so it must not go to implementation
-> until the cause is known.
+> Diagnosed 2026-09-10. **Roles resolve correctly. Identity did not.** The design's
+> assumption holds and it may go to implementation.
 >
-> **The anomaly, from the prod log (`mcp-manager`), six occurrences:**
+> **What the prod log actually showed.** Pairing each `Resolved MCP exposition` line
+> with the request logger by correlation id, every `/mcp` call in the buffer reads:
 >
 > ```
-> Resolved MCP exposition for user roles {
->   roles: [ 'MCP_Analyst' ],
->   exposition: [ 'readonly', 'search', 'system' ]
-> }
+> userId: 'system'      roles: [ 'MCP_Analyst' ]
 > ```
 >
-> **That combination cannot exist under our own configuration.** `xs-security.json`
-> was checked and is correct: every role template includes the ones below it —
-> `MCP_Analyst` grants scopes `MCP_Reader` **and** `MCP_Analyst`. So
-> `user.is('MCP_Reader')` returning false while `user.is('MCP_Analyst')` returns true
-> is not something role assignment can produce.
+> `system` is CAP's name for a **`client_credentials` token**
+> (`@sap/cds/lib/srv/middlewares/auth/jwt-auth.js`, lines 61-72): roles come from the
+> token's `scope` array with the `xsappname` prefix stripped, and any
+> `client_credentials` / `client_x509` grant is renamed to `system`. A technical token
+> carries the scopes ITS xsuaa client was granted. The human who started the client is
+> not in the token at all, so their role collections are never read.
 >
-> Both channels filter identically (`allMcpRoles.filter(r => user?.is?.(r))` in
-> `mcp-manager.ts:339`, `resolveExpositionForUser` on the chat path), so the fault is
-> upstream of our filtering — in the token, or in how CAP derives roles from scopes.
+> That is why the combination looked impossible: it was never a user token. Nothing in
+> `xs-security.json` was wrong, and nothing in our filtering was wrong.
 >
-> **Ruled out:**
-> - role assignment — the user holds all eight collections (4 prod + 4 staging)
-> - a stale token predating assignment — would not drop `MCP_Reader` selectively
-> - a different `xsappname` — the user works on prod with prod collections assigned
-> - our filtering code — identical on both channels, and it reads what it is given
+> **Confirmed against the live tenant.** A `client_credentials` token fetched with the
+> proxy's own cached service key (`~/.config/mcp-abap-adt/service-keys/mcp.json`, the
+> `cloud-llm-hub-auth` client) carries exactly one MCP scope — `MCP_Reader`, from the
+> descriptor's `authorities`. Reader level. No write groups. Which is precisely what
+> "cannot find the tools even to create a domain" looks like from the consumer's side.
 >
-> **Next step:** decode a live token from `GET /v1/token` and compare its `scope`
-> array against what `user.is()` answers for each of the four roles, in the same
-> request. That is the only place the two views meet.
+> **Why every channel failed alike.** All four read the same `cds.context.user`. The
+> fault was never in a channel, so no channel escaped it.
 >
-> **Fix observability first:** the chat channel logs no roles at all — only
-> `mcp-manager` does. Add the same line beside `callerExposition` in
-> `openai-handler.ts`. It changes no behaviour and is the difference between
-> diagnosing this and guessing at it.
-
+> **What changed here.** Observability, not behaviour. `describeCaller` reports id,
+> technical flag, roles and exposition together, and all four channels log it; the two
+> 403 paths now say when the caller is a technical client, because telling that
+> operator to "assign a role collection" sends them to their own BTP user, where the
+> roles already are and where changing them cannot help.
+>
+> **What remains, and it is not ours.** A client that authenticates with
+> `client_credentials` can only ever hold what that client was granted. To act with a
+> person's roles the client must authenticate AS the person — the browser
+> authorization-code flow that `scripts/start-proxy.sh` documents. Note there is no
+> `mcp.env` session file beside the other destinations, and `AuthBroker` has an
+> explicit fall-back to the service key when the session path fails.
 
 Six collections, distinguished by **who fills them and when**. Two axes govern access:
 **scope** (global / user / session) and **authorization** (public / owner / role). The

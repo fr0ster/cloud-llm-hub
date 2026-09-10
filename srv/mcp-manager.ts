@@ -25,7 +25,7 @@ import {
   resolveDestinationSapConfig,
 } from './connections/destinationResolver';
 import { logErrorSafely } from './lib/errorUtils';
-import { resolveExposition } from './lib/exposition';
+import { describeCaller } from './lib/exposition';
 import { maskLoginForLog } from './lib/log-mask';
 import { loggerAdapter } from './lib/logger';
 
@@ -328,27 +328,22 @@ export async function createMCPServerForRequest(
       authType: sapConfig.authType,
     });
 
-    // Resolve exposition based on user roles from CAP auth (cds.context.user)
-    const user = cds.context?.user;
-    const allMcpRoles = [
-      'MCP_Reader',
-      'MCP_Analyst',
-      'MCP_Developer',
-      'MCP_Full',
-    ];
-    const userRoles: string[] = allMcpRoles.filter(
-      (role) => user?.is?.(role) ?? false,
-    );
-    const exposition = resolveExposition(userRoles);
+    // Resolve exposition from CAP auth (cds.context.user). `describeCaller`
+    // reports WHO as well as WHAT, because the two are routinely confused: a
+    // technical token runs as `system` with the client's own scopes, so a human
+    // holding every role collection can still arrive here as reader-only.
+    const caller = describeCaller(cds.context?.user);
+    const exposition = caller.exposition;
 
     if (exposition.length === 0) {
-      throw new Error('Access denied: user has no MCP roles assigned');
+      throw new Error(
+        caller.technical
+          ? `Access denied: authenticated as technical client "${caller.id}" (client_credentials), which holds no MCP scope. A human's role collections do not apply to a technical token.`
+          : 'Access denied: user has no MCP roles assigned',
+      );
     }
 
-    log.info('Resolved MCP exposition for user roles', {
-      roles: userRoles,
-      exposition,
-    });
+    log.info('Resolved MCP exposition for caller', caller);
 
     // Create NEW EmbeddableMcpServer with injected connection.
     // systemType derived from destination.proxyType so onprem-only tools

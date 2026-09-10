@@ -26,7 +26,43 @@ export const MCP_ROLES = [
 
 /** Minimal shape of the CAP user object — `cds.context?.user`. */
 export interface RoleBearer {
+  id?: string;
   is?: (role: string) => boolean;
+}
+
+/** Who the request is actually running as, and what that grants. */
+export interface CallerIdentity {
+  /** `cds.context.user.id`. CAP names every technical token `system`. */
+  id: string;
+  /**
+   * True for a `client_credentials` / `client_x509` token.
+   *
+   * This is the distinction that is easy to miss and expensive to miss: CAP
+   * derives roles from the TOKEN's scopes (`jwt-auth.js`), so a technical token
+   * carries whatever ITS xsuaa client was granted. The human who started the
+   * client is not in the token at all, and their role collections are never
+   * consulted. A caller holding every collection still lands on the client's
+   * one scope — which reads, from the outside, exactly like broken roles.
+   */
+  technical: boolean;
+  roles: string[];
+  exposition: ExpositionLevel[];
+}
+
+/**
+ * Resolve the caller's identity and permissions together, for logging.
+ *
+ * Every channel logs this so that "no create tools" can be told apart from
+ * "authenticated as a technical client" without guessing.
+ */
+export function describeCaller(user: RoleBearer | undefined): CallerIdentity {
+  const roles = MCP_ROLES.filter((role) => user?.is?.(role) ?? false);
+  return {
+    id: user?.id ?? 'anonymous',
+    technical: user?.is?.('system-user') ?? false,
+    roles,
+    exposition: resolveExposition(roles),
+  };
 }
 
 /**

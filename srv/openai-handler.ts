@@ -33,10 +33,7 @@ import {
 } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
-import {
-  type ExpositionLevel,
-  resolveExpositionForUser,
-} from './lib/exposition';
+import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
@@ -433,7 +430,9 @@ export async function handleChatCompletions(
   // The caller's permissions, resolved ONCE and used for two different jobs:
   // the RAG filter (which tools are offered) and the ALS binding (which tools
   // may actually run). They must agree, so they come from the same value.
-  const callerExposition = resolveExpositionForUser(cds.context?.user);
+  const caller = describeCaller(cds.context?.user);
+  log.info('MCP caller', caller);
+  const callerExposition = caller.exposition;
 
   /** `withRequestConnection` with this caller's permissions already bound, so
    *  no call site can forget them. */

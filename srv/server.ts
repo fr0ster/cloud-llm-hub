@@ -296,10 +296,17 @@ cds.on('bootstrap', (app: Application) => {
     }
     const hasRole = MCP_ROLES.some((role) => user.is(role));
     if (!hasRole) {
+      // A technical token gets a different message on purpose. Telling the
+      // operator of a client_credentials client to "assign a role collection"
+      // sends them to their own BTP user, where the roles already are and
+      // where changing them cannot help — the token carries the CLIENT's
+      // scopes, not theirs.
+      const technical = user.is('system-user');
       res.status(403).json({
         error: 'Forbidden',
-        message:
-          'Access denied: user has no MCP roles. Assign MCP_Reader, MCP_Analyst, MCP_Developer, or MCP_Full role collection.',
+        message: technical
+          ? `Access denied: authenticated as technical client "${user.id}" (client_credentials). Its xsuaa client holds no MCP scope; a human's role collections do not apply. Grant the scope to the client, or authenticate as a user.`
+          : 'Access denied: user has no MCP roles. Assign MCP_Reader, MCP_Analyst, MCP_Developer, or MCP_Full role collection.',
       });
       return;
     }

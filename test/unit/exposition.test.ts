@@ -1,4 +1,5 @@
 import {
+  describeCaller,
   MCP_ROLES,
   resolveExposition,
   resolveExpositionForUser,
@@ -48,6 +49,45 @@ describe('resolveExposition', () => {
       expect(resolveExposition([role])).not.toContain('low');
     }
     expect(resolveExposition([...MCP_ROLES])).not.toContain('low');
+  });
+});
+
+// The failure this exists to make visible: a human holding every role
+// collection reaches the server through a client_credentials client and lands
+// on that CLIENT's single scope. CAP names such a caller `system` and derives
+// roles from the token alone, so nothing about the human is knowable here.
+describe('describeCaller', () => {
+  const userWith = (id: string, ...roles: string[]) => ({
+    id,
+    is: (r: string) => roles.includes(r),
+  });
+
+  it('reports a human caller by id, roles and exposition', () => {
+    const c = describeCaller(userWith('someone@example.com', 'MCP_Developer'));
+    expect(c.id).toBe('someone@example.com');
+    expect(c.technical).toBe(false);
+    expect(c.roles).toEqual(['MCP_Developer']);
+    expect(c.exposition).toContain('high');
+  });
+
+  it('marks a technical caller, whatever scope it happens to hold', () => {
+    // CAP sets id 'system' and role 'system-user' for client_credentials.
+    const c = describeCaller(userWith('system', 'system-user', 'MCP_Analyst'));
+    expect(c.technical).toBe(true);
+    expect(c.id).toBe('system');
+    expect(c.roles).toEqual(['MCP_Analyst']);
+    // Analyst is reader-level: no write groups, which is what "cannot find the
+    // create tools" looks like from the consumer's side.
+    expect(c.exposition).not.toContain('high');
+  });
+
+  it('denies an unauthenticated caller without throwing', () => {
+    expect(describeCaller(undefined)).toEqual({
+      id: 'anonymous',
+      technical: false,
+      roles: [],
+      exposition: [],
+    });
   });
 });
 
