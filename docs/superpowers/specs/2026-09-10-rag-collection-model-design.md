@@ -32,14 +32,49 @@ a documented mode. The actual argument is that keyword-only selection over a
 paraphrases of intent, which is what vectors match and keywords do not.
 
 So the change is: stop serving agent requests at a quality we do not accept, and say
-so explicitly rather than degrade silently. `createToolsRagStore` currently falls back
-to `InMemoryRag` when `getOrCreateEmbedder()` yields nothing; on the agent paths that
-fallback goes.
+so explicitly rather than degrade silently.
 
-**Compatibility, settled:** `acme-sandbox` reaches the same AI Core, so it is
-unaffected. `customer-b` is out of scope. No other target runs without an embedder, so no
-migration note is required — but the implementation should still verify each target's
-embedder configuration before the switch rather than trusting this line.
+### How that is actually enforced
+
+Removing the `getOrCreateEmbedder() === null` fallback is **not sufficient**, and an
+earlier draft implied it was. That function returns null only for
+`LLM_AGENT_RAG_TYPE=in-memory`. In vector mode the embedder client is constructed
+without ever checking the model is reachable, and `FallbackRag` then degrades to the
+keyword store on embedding failures — so a missing or unreachable model still yields
+answers, just quietly worse ones. Four decisions:
+
+**Default.** `LLM_AGENT_RAG_TYPE` defaults to `vector`. `in-memory` remains
+selectable and is honest about what it is: with it set, the agent surfaces are
+disabled by the same rule below. It stays useful for unit tests and for the MCP-only
+deployment shape.
+
+**Readiness, not construction.** At startup, and on the destination-init path, embed a
+fixed canary string. Success marks the embedder healthy; failure marks it unhealthy
+with the reason. This is what the agent surfaces consult — not whether a client object
+exists.
+
+**FallbackRag keeps failing over, but not into a lie.** Its keyword fallback stays for
+resilience *within* a request, since a half-answer beats a dropped one mid-conversation
+— but a fallback event flips the embedder to unhealthy, so the NEXT request is refused
+rather than silently served at keyword quality. Degradation becomes visible instead of
+permanent.
+
+**The contract on refusal.** All three agent surfaces answer **503** — the condition is
+transient by nature, and 503 tells a client to retry rather than to change its request:
+
+| Surface | Shape |
+|---|---|
+| `/v1/chat/completions` | `{ error: { message, type: 'service_unavailable', code: 'EMBEDDER_UNAVAILABLE' } }` |
+| `/v1/messages` | `{ type: 'error', error: { type: 'api_error', message } }` |
+| `execute_step` | tool error carrying the same message |
+
+The message names the missing configuration (`AICORE_*` or `LLM_AGENT_EMBEDDING_*`)
+and the failure reason from the probe. `/mcp/stream/http` and `/health` are unaffected
+— an embedder outage must not make the MCP proxy look down.
+
+**A transient outage does take the agent down for its duration.** That is the intended
+trade: better a retryable 503 than answers selected by keyword match over 360 tools
+without anyone knowing.
 
 ## The six collections
 
@@ -123,8 +158,8 @@ answered:
 
 **Where the catalogue comes from.** A declared list in configuration — a **proposed,
 not-yet-existing** env var (working name: `LLM_AGENT_GLOBAL_COLLECTIONS`), holding a
-JSON array of `{ physicalName, displayName, requiredRoles }`. Not discovery from the
-backend: discovery would make the set of
+JSON array of `{ backend, physicalName, displayName, requiredRoles }`. Not discovery
+from the backend: discovery would make the set of
 readable collections depend on what happens to exist in the database, which is the
 opposite of fail-closed. If it is not declared, it does not exist for us.
 
@@ -137,20 +172,51 @@ knowledge.
 **An unknown collection.** Refused. A name not in the declared catalogue is not
 searched, whatever the request says.
 
-**An unknown role in `requiredRoles`.** The collection becomes unreachable, and this
-is logged at startup as a configuration error. A role nobody can hold is fail-closed
-by construction, but silently so — hence the log.
+**What counts as a known role.** The authoritative catalogue is the bundled
+`xs-security.json` — its `role-templates`, which is what BTP can actually assign. A
+name outside that set is unknown, including the future global-access role until it is
+added there. That keeps one source of truth rather than a second list drifting beside
+it.
 
-**Attaching to an existing backend collection.** The registry gains a read-only
-attachment path: given `physicalName`, bind to it without creating or migrating.
-`CollectionMeta` grows `scope: 'global'` and `requiredRoles`. Note that the Qdrant and
-HANA backends are placeholders today, so the first implementation targets whichever
-backend actually holds this content — establish that before writing code.
+**An unknown role in `requiredRoles`.** The collection becomes unreachable, logged at
+startup as a configuration error. A role nobody can hold is fail-closed by
+construction, but silently so — hence the log.
 
-**Metadata visibility.** The listing API shows a global collection's `displayName` and
-whether the caller may search it — never its contents, and never collections the
-caller cannot reach. Ingestion being external does not make the catalogue secret, but
-it does not make it public either.
+**Schema validation, fail-closed.** `requiredRoles` is validated per entry:
+
+| Value | Meaning |
+|---|---|
+| explicitly `[]` | public |
+| non-empty array of known roles | at least one required |
+| **missing, `null`, not an array, or containing an unknown role** | **unreachable** |
+
+Note the asymmetry, and that it is deliberate: absent is *not* the same as empty.
+Empty means someone decided this is public; absent means nobody decided anything. A
+malformed or half-parsed entry must never open a collection, which is exactly what
+would happen if the two were treated alike. A rejected entry is logged with the reason
+and the collection stays out of every caller's list.
+
+**Which backend, and how it attaches.** `backend` is **explicit in the entry**
+(`'qdrant' | 'hana'`) and never inferred: the same `physicalName` can exist in more
+than one provider, and guessing would make the choice depend on registration order.
+
+Attachment is **read-only**: given `(backend, physicalName)`, bind to an existing
+collection — never create it, never migrate it, never write to it. If the named
+backend is not registered, the collection is unreachable and that is logged at startup
+as a configuration error, exactly like an unknown role.
+
+`CollectionMeta` grows `scope: 'global'`, `backend`, and `requiredRoles`.
+
+**Both backends are placeholders today** — neither is registered. So the first
+implementation must register the one that actually holds this content, and that choice
+is a prerequisite of this work rather than part of it: it decides which client, which
+auth, and which deployment binding. Settle it before writing the resolver.
+
+**Metadata visibility.** The listing API returns **only the collections this caller
+may search**, with `displayName` and `scope` — never contents. An earlier draft also
+carried a "may the caller search it" flag, which in such a list is always true; the
+flag is dropped rather than the filtering, because showing a name a caller cannot use
+leaks the catalogue for no benefit.
 
 None of this creates content or roles; it is the resolver's contract.
 
