@@ -1,8 +1,10 @@
 import type { ILlm, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import {
   evaluateDeterministic,
+  parseToolOutcome,
   type ReviewIssue,
   type ReviewVerdict,
+  type ToolOutcome,
 } from './reviewer-core';
 import {
   loadStepGateThresholds,
@@ -32,6 +34,9 @@ const SYSTEM = [
   'says it did NOT or could NOT do the task, asks for clarification, or reports',
   'an error truthfully, and makes NO false success claim, that is honest —',
   'possiblyFake=false, even with zero tools.',
+  'Judge a tool by its RESULT, not by its name. A create or update tool that',
+  'reports status=active DID activate the object as part of its own call — a',
+  'separate Activate* tool is NOT required, and demanding one is wrong.',
   'Tool evidence is required for claims about the SAP SYSTEM. It is NOT required',
   'for anything already established in CONVERSATION SO FAR: restating, using or',
   'reasoning from what the user themselves supplied earlier is supported by the',
@@ -43,6 +48,23 @@ const SYSTEM = [
   'Reply with STRICT JSON ONLY, no prose:',
   '{"possiblyFake": boolean, "confidence": "low"|"medium"|"high", "reasons": string}',
 ].join(' ');
+
+/**
+ * One executed tool, as ground truth rather than a name.
+ *
+ * The critic used to be handed names alone and reasoned from them: told that
+ * only `CreateDataElement` ran, it declared the executor's "activated" claim
+ * unsupported because no `Activate*` appeared. But a create tool activates as
+ * part of its own call, and says so in its RESULT. The deterministic layer has
+ * always read that envelope; the critic never saw it.
+ */
+function describeTool(t: string | ToolOutcome): string {
+  if (typeof t === 'string') return t;
+  const parts = [t.ok ? 'ok' : 'failed'];
+  if (t.status) parts.push(`status=${t.status}`);
+  if (t.error) parts.push(`error=${t.error}`);
+  return `${t.name} → ${parts.join(', ')}`;
+}
 
 /** How many earlier turns the reviewer is shown, and how much of each. */
 const HISTORY_TURNS = 10;
@@ -74,12 +96,15 @@ export type ReviewTurn = { role: string; content?: unknown };
 
 export function buildReviewMessages(input: {
   task: string;
-  executedTools: string[];
+  /** Names OR outcomes. A bare name cannot say whether the tool succeeded, and
+   *  a create tool that activates as part of its own call reports that only in
+   *  its RESULT. */
+  executedTools: (string | ToolOutcome)[];
   content: string;
   history?: ReviewTurn[];
 }): { role: 'system' | 'user'; content: string }[] {
   const tools = input.executedTools.length
-    ? input.executedTools.join(', ')
+    ? input.executedTools.map(describeTool).join('; ')
     : '(none)';
   const history = input.history?.length ? renderHistory(input.history) : '';
   const user = [
@@ -173,7 +198,7 @@ export function parseReviewVerdict(text: string): StepReview | null {
 export async function reviewStep(
   input: {
     task: string;
-    executedTools: string[];
+    executedTools: (string | ToolOutcome)[];
     content: string;
     history?: ReviewTurn[];
   },
@@ -242,7 +267,8 @@ export async function evaluateGated(input: {
   const suspicious = input.toolCallCount <= thresholds.maxToolCalls;
   if (!suspicious) return deterministic;
 
-  const executedTools = input.records.map((r) => r.call.name);
+  // Outcomes, not names — the same ground truth `evaluateDeterministic` reads.
+  const executedTools = input.records.map(parseToolOutcome);
   let review: StepReview | null;
   try {
     review = await reviewStep(

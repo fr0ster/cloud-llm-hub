@@ -18,6 +18,46 @@ function record(
 // after the user had supplied 42, the executor answered "42" and was flagged
 // high-confidence fake: a concrete statement after zero tool calls is exactly
 // its rule, and the turn that made the statement true was not in front of it.
+// The critic used to be handed tool NAMES. Told that only CreateDataElement ran,
+// it declared the executor's "activated" claim unsupported because no Activate*
+// appeared — and attached a high-confidence notice to a data element that had in
+// fact been created AND activated. A create tool activates as part of its own
+// call and reports it in the RESULT, which the deterministic layer has always
+// read and the critic never saw.
+describe('buildReviewMessages — tools are shown by outcome, not by name', () => {
+  it('renders success, status and error from the result', () => {
+    const [, user] = buildReviewMessages({
+      task: 'create a data element',
+      executedTools: [
+        { name: 'CreateDataElement', ok: true, status: 'active' },
+        { name: 'GetDomain', ok: false, error: 'not found' },
+      ],
+      content: 'created and activated',
+    });
+    expect(user.content).toContain('CreateDataElement → ok, status=active');
+    expect(user.content).toContain('GetDomain → failed, error=not found');
+  });
+
+  it('tells the critic not to demand a separate Activate* call', () => {
+    const [system] = buildReviewMessages({
+      task: 't',
+      executedTools: [],
+      content: 'c',
+    });
+    expect(system.content).toContain('status=active');
+    expect(system.content).toContain('Activate*');
+  });
+
+  it('still accepts bare names', () => {
+    const [, user] = buildReviewMessages({
+      task: 't',
+      executedTools: ['ReadDomain'],
+      content: 'c',
+    });
+    expect(user.content).toContain('ReadDomain');
+  });
+});
+
 describe('buildReviewMessages — the conversation the step belongs to', () => {
   const history = [
     { role: 'user', content: 'my favourite number is 42' },

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.33.1] - 2026-09-10
+
+### Fixed
+- **The LLM critic reasoned from tool NAMES and contradicted the ground truth beside it.** A data element was created and activated; only `CreateDataElement` appears in the log, because a create tool activates as part of its own call and reports `status: 'active'` in its RESULT (verified in `handleCreateDataElement`). The critic, handed names alone, concluded that "no `Activate*` ran, therefore the activation claim is unsupported" and attached a high-confidence notice to a correct answer. That is the exact name-only fallacy the deterministic layer was built to avoid, and which it already avoids — `opSatisfied` accepts a write tool reporting `status: 'active'` as proof of activation.
+- The critic now receives the same outcomes the deterministic layer reads: each tool as `name → ok|failed, status=…, error=…`. The prompt states the rule explicitly — judge a tool by its result, and do not demand a separate `Activate*` call from a create that already reports the object active.
+
 ## [6.33.0] - 2026-09-10
 
 Earlier turns become findable again after they fall out of the recency window.
