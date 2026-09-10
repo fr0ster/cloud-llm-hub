@@ -85,6 +85,13 @@ collection is a different kind of answer — decide whether it belongs in that f
 or beside it, rather than overloading the exposition groups with something that is
 not a tool group.
 
+**First unknown to settle — it decides the size of this.** We do not upsert skills;
+the **llm-agent builder** does, on every `build()`, into whichever store it is given.
+`ragStores` appears once in `agent-manager.ts`, and only to read its keys. So moving
+skills is not "redirect our upsert" — it is "hand the builder a different store", and
+whether its API accepts one is unverified. Check that before estimating anything else
+here.
+
 **Where the work is:** route skill upserts into a skills collection resolved through
 the existing per-user/per-session registry rather than the shared tools store, add it
 to the agent's `ragStores` where they are assembled (`buildAgentForDestination`), and
