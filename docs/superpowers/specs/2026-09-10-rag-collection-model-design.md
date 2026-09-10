@@ -4,6 +4,48 @@
 
 ## TL;DR
 
+> ## ⛔ BLOCKED — roles do not resolve correctly in production
+>
+> Observed 2026-09-10 on `acme-prod` prod, and **not** specific to the WebUI —
+> it reproduces on other channels too. This design assumes the caller's roles reach
+> collection selection. Right now they do not, so it must not go to implementation
+> until the cause is known.
+>
+> **The anomaly, from the prod log (`mcp-manager`), six occurrences:**
+>
+> ```
+> Resolved MCP exposition for user roles {
+>   roles: [ 'MCP_Analyst' ],
+>   exposition: [ 'readonly', 'search', 'system' ]
+> }
+> ```
+>
+> **That combination cannot exist under our own configuration.** `xs-security.json`
+> was checked and is correct: every role template includes the ones below it —
+> `MCP_Analyst` grants scopes `MCP_Reader` **and** `MCP_Analyst`. So
+> `user.is('MCP_Reader')` returning false while `user.is('MCP_Analyst')` returns true
+> is not something role assignment can produce.
+>
+> Both channels filter identically (`allMcpRoles.filter(r => user?.is?.(r))` in
+> `mcp-manager.ts:339`, `resolveExpositionForUser` on the chat path), so the fault is
+> upstream of our filtering — in the token, or in how CAP derives roles from scopes.
+>
+> **Ruled out:**
+> - role assignment — the user holds all eight collections (4 prod + 4 staging)
+> - a stale token predating assignment — would not drop `MCP_Reader` selectively
+> - a different `xsappname` — the user works on prod with prod collections assigned
+> - our filtering code — identical on both channels, and it reads what it is given
+>
+> **Next step:** decode a live token from `GET /v1/token` and compare its `scope`
+> array against what `user.is()` answers for each of the four roles, in the same
+> request. That is the only place the two views meet.
+>
+> **Fix observability first:** the chat channel logs no roles at all — only
+> `mcp-manager` does. Add the same line beside `callerExposition` in
+> `openai-handler.ts`. It changes no behaviour and is the difference between
+> diagnosing this and guessing at it.
+
+
 Six collections, distinguished by **who fills them and when**. Two axes govern access:
 **scope** (global / user / session) and **authorization** (public / owner / role). The
 tool half shipped in v6.32.0; this design covers the rest — skills, user and session
