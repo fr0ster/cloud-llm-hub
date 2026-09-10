@@ -1,5 +1,7 @@
 # Design — RAG collection model (2026-09-10)
 
+<!-- docs-check:proposed-env — this spec names configuration that does not exist yet -->
+
 ## TL;DR
 
 Six collections, distinguished by **who fills them and when**. Two axes govern access:
@@ -119,9 +121,10 @@ creating the role.
 "Already in the vector DB, we only select" is not enough to build from. Six questions,
 answered:
 
-**Where the catalogue comes from.** A declared list in configuration —
-`LLM_AGENT_GLOBAL_COLLECTIONS`, a JSON array of `{ physicalName, displayName,
-requiredRoles }`. Not discovery from the backend: discovery would make the set of
+**Where the catalogue comes from.** A declared list in configuration — a **proposed,
+not-yet-existing** env var (working name: `LLM_AGENT_GLOBAL_COLLECTIONS`), holding a
+JSON array of `{ physicalName, displayName, requiredRoles }`. Not discovery from the
+backend: discovery would make the set of
 readable collections depend on what happens to exist in the database, which is the
 opposite of fail-closed. If it is not declared, it does not exist for us.
 
