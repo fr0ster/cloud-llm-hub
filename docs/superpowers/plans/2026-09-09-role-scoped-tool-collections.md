@@ -116,6 +116,55 @@ keeps the two axes clean and separate:
 They are different questions — one is about permission, the other about whose data it
 is — and the tool split deliberately does not touch the second.
 
+#### Shared collections: a scope VALUE, not a third axis
+
+Recorded 2026-09-10, corrected after review. There will also be **shared
+collections** — content available to everyone, or to holders of some specific role
+added later. That is *not* a third partitioning axis. It is two existing ones taking
+particular values:
+
+| | Values |
+|---|---|
+| **scope** | `global` \| `user` \| `session` |
+| **authorization** | public \| role-gated |
+
+A role-gated shared collection is simply `scope: global` plus an access policy. A
+physically separate store is *how* that boundary gets enforced, not evidence of
+another axis.
+
+**And `global` has to come back before any of this.** It is not merely absent — it
+was removed: `srv/rag-handler.ts` answers `400 "global collections are no longer
+supported"`, and `srv/rag-collections.ts` admits only `user | session`. So the work
+starts by finding out why it was dropped, not by re-adding it. Whatever the reason
+was may still apply, or may be exactly the gap a role policy now fills.
+
+Restoring it needs three things, and the third is the one worth stating: the scope
+model back to `global`, an access policy (role → collection) held **beside**
+`resolveExposition` rather than inside it, and **fail-closed pre-query selection** —
+the collection is chosen before the search runs, never filtered out of the results
+afterwards.
+
+The "available to everyone" case is easy: `scope: global`, public, searched on every
+request.
+
+The **role-gated** case is not, and it is worth seeing why before it is built. For
+tools, the retrieval filter is only the FIRST of two lines — `assertToolAllowed`
+refuses the call whatever retrieval offered, which is why the leak we measured cost
+wasted iterations rather than access. **A knowledge collection has no second line.**
+Nothing executes; the content simply enters the prompt. Whatever gates retrieval IS
+the control.
+
+So a role-gated shared collection cannot be a post-filter over a shared store, the
+way tool filtering began. It has to be a separate collection queried only when the
+role grants it — the shape this plan already builds for tools, for a reason that
+applies even more strongly here.
+
+This also extends the role axis beyond tools: `resolveExposition` answers only in
+tool-group levels (`readonly`, `high`, …) today. A role that grants a knowledge
+collection is a different kind of answer — decide whether it belongs in that function
+or beside it, rather than overloading the exposition groups with something that is
+not a tool group.
+
 **Where the work is:** route skill upserts into a skills collection resolved through
 the existing per-user/per-session registry rather than the shared tools store, add it
 to the agent's `ragStores` where they are assembled (`buildAgentForDestination`), and
