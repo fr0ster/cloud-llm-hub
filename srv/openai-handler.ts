@@ -26,6 +26,7 @@ import {
   getCurrentDestination,
   getCurrentModel,
   getDestinationStates,
+  getSharedHistoryRag,
   getSmartAgent,
   isAgentReady,
   runWithRequestConnection,
@@ -35,6 +36,7 @@ import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { turnOwner } from './lib/session-history-rag';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
@@ -223,9 +225,45 @@ export function appendToSession(
   }
 }
 
+/**
+ * Store the completed turn for semantic recall, beside the verbatim store.
+ *
+ * The two answer different questions. `appendToSession` keeps the last turns
+ * word for word, which is what resolves "that domain" on the very next
+ * message. This one survives the recency window: many turns later, when the
+ * wording is gone, a similar question still finds what the object was called.
+ *
+ * Fire-and-forget on purpose. The answer has already been sent; a failure to
+ * remember it must not surface as an error on a request that succeeded.
+ */
+function recordTurnForRecall(
+  sessionId: string,
+  userId: string,
+  lastUser: Message,
+  answer: string,
+): void {
+  const rag = getSharedHistoryRag();
+  if (!rag) return;
+  const question = extractText(lastUser.content);
+  if (!question || !answer) return;
+  void rag
+    .recordTurn({
+      owner: turnOwner(userId, sessionId),
+      userText: question,
+      assistantText: answer,
+    })
+    .catch(() => {});
+}
+
 /** Clear session history for a specific user */
 export function clearSession(sessionId: string, userId: string): void {
   sessionStore.delete(sessionStoreKey(sessionId, userId));
+  // The recall store holds the same conversation in another shape. Clearing one
+  // and leaving the other would let a cleared session keep answering from turns
+  // the user believes they deleted.
+  void getSharedHistoryRag()
+    ?.forgetOwner(turnOwner(userId, sessionId))
+    .catch(() => {});
 }
 
 /**
@@ -1173,6 +1211,7 @@ export async function handleChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
+          recordTurnForRecall(sessionId, userId, lastUser, accumulatedContent);
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
@@ -1275,6 +1314,7 @@ export async function handleChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
+        recordTurnForRecall(sessionId, userId, lastUser, finalContent);
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.

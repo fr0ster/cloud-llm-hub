@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.33.0] - 2026-09-10
+
+Earlier turns become findable again after they fall out of the recency window.
+
+### Added
+- **The `history` RAG store is written to.** The pipeline has queried it on every request all along — the `rag_query_history` line, always `resultCount: 0` — and nothing ever wrote a turn into it. The context assembler's own note says messages beyond the recency window of 20 "are available via RAG stores if needed"; they were not. Each completed turn is now stored, so a question many turns later still finds what an object was called once the wording is gone.
+- **The answer is stored, not only the request.** The upstream turn record carries an empty `assistantText`, so recall would have returned that a domain was asked for and never what it was called — the one fact worth keeping. Object names are lifted out of the answer and appended, so a long tool-heavy reply clipped at 1200 characters still surfaces them.
+- **Recall is scoped to the conversation asking.** Upstream registers `history` with scope `global`, and the query handler adds a session filter only for scope `session`, so an unscoped store would let one person's turns reach another's context. Turns carry an owner (`user:session`) and the store returns only matching rows; outside a request it returns nothing rather than everything.
+- **The store is bounded.** It outlives every request in the process. Each conversation keeps its most recent 200 turns, and clearing a session forgets all of them — leaving them behind would let a cleared session keep answering from turns the user believes they deleted.
+
+### Notes
+- Two mechanisms, different jobs. The verbatim turns bound to the request (v6.32.2) resolve "that domain" on the very next message, deterministically. This one answers "what was that domain called" much later, by similarity. Neither replaces the other: retrieval ranks by similarity, not recency, so it is the wrong tool for resolving a reference to the previous turn.
+- Cost is one embedding per turn. Tool selection keeps its English translation; the history store is searched with the caller's original wording, matching how the turns were written.
+
 ## [6.32.3] - 2026-09-10
 
 Two false alarms removed from the honesty reviewer.
