@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.32.2] - 2026-09-10
+
+Session history reaches the model again.
+
+### Fixed
+- **Every request looked like a first one.** Ask the agent to create a domain, then say "make a data element from that domain", and it answered that it needs the domain name. The channel assembled the turns correctly — the server-side store returned them and the request log showed all three — but they stopped at the planner. The DAG coordinator composes each worker's prompt as a single deterministic STRING (`composeNodeTask`: `Task: …`), and `SmartAgentSubAgent` hands that string to the agent, which reads an array as a conversation and a string as a lone message with no history. So the executor — the pass whose answer the user sees — ran with `messageCount: 2`: one system message and one user message.
+- The turns preceding the new user message now ride the request scope (`runWithSessionId`) and are re-attached inside the executor. Only the string form is rewritten; an array already carries its own history. A worker running outside a request (startup warm-up) sees no turns and behaves as before. Both `/v1/chat/completions` and `/v1/messages` bind them, so the two channels cannot drift.
+
 ## [6.32.1] - 2026-09-10
 
 Restores write tools to the agent channels. v6.32.0 hid them from every role.

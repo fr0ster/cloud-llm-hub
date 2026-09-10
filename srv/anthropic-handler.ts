@@ -29,6 +29,7 @@ import {
 } from './agent-manager';
 import { describeCaller } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
@@ -177,15 +178,32 @@ export async function handleAnthropicMessages(
   // Bind the per-request SAP connection for the whole agent run so MCP tool
   // calls inside the pipeline see it (ALS store survives the async hops), and
   // the caller's exposition so those tool calls can be authorized.
+  //
+  // The turns before the new user message ride along too: the coordinator
+  // composes the executor's prompt as a single string, which the agent reads as
+  // a lone message, so without this the conversation stops at the planner and
+  // every request looks like a first one.
+  const priorTurns = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return messages.slice(0, i);
+    }
+    return [];
+  })();
+
   const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
-    requestConnection
-      ? runWithRequestConnection(
-          requestConnection,
-          fn,
-          requestDumpScope,
-          callerExposition,
-        )
-      : fn();
+    runWithSessionId(
+      undefined,
+      () =>
+        requestConnection
+          ? runWithRequestConnection(
+              requestConnection,
+              fn,
+              requestDumpScope,
+              callerExposition,
+            )
+          : fn(),
+      priorTurns,
+    );
 
   try {
     // --- Streaming ---
