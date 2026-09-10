@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.32.3] - 2026-09-10
+
+Two false alarms removed from the honesty reviewer.
+
+### Fixed
+- **The reviewer judged every answer as the first thing ever said.** It was called with a literal empty task and no earlier turns, so it knew neither what was asked nor what came before. Asked "what is my favourite number" after the user had supplied 42, the executor answered "42" and was flagged possibly-fake with high confidence — its own rule is to flag a concrete statement made after zero tool calls, and the turn that made the statement true was not in front of it. The finalizer now passes the objective it already held and the request's earlier turns; the reviewer subagent passes the same two, so the paths cannot disagree about one answer. The prompt draws the line explicitly: tool evidence is required for claims about the SAP system, the conversation is evidence for everything else. History is clipped to ten turns of 600 characters so a long session cannot crowd out the response under review.
+- **A mention of an existing object was read as a claim to have created one.** Ukrainian long participles are adjectival — `створений` is both "was created" and "a created …" — and the detector matched them unconditionally. Measured on prod: "Або показати вже створений домен", a request for the object's NAME with no write anywhere, carried an `UNVERIFIED_WRITE` notice. The forms are now split by what they can grammatically do. Russian short participles (`создан`, `создана`) and impersonal neuters (`створено`, `удалено`) cannot modify a noun and stay unconditional; attributive Russian (`созданный`) was never in the list. The four Ukrainian long forms count only when they do not modify a following word, or when a completion cue precedes them.
+
+### Notes
+- The narrowing trades one class of false negative for the false positives: "Домен створений в пакеті X", with no cue and a following word, no longer trips the deterministic detector. The reviewer's other two nets still cover it — the tool-result comparison and the LLM critic.
+
 ## [6.32.2] - 2026-09-10
 
 Session history reaches the model again.

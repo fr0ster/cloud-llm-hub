@@ -35,9 +35,19 @@ const CLAIM_PATTERNS: RegExp[] = [
   // Heading/status line "Created domain X", "✅ Created …" at a line start —
   // excludes "Created by/on/:" metadata and mid-sentence "created" prose.
   /(?:^|\n)\s*(?:[✅✔✓*\-•]\s*)?(?:created|updated|deleted|activated)\b(?!\s*:|\s+(?:by|on|in|at))/im,
-  // RU/UK past participles ("создан", "створено") — excluded when part of a
-  // longer word ("создание" = creation) or a "Создан:" metadata label.
-  /(?:успешно|успішно)?\s*(?:создан|создано|создана|созданы|обновлен|обновлено|обновлена|удал[её]н|удалено|удалена|активирован|активировано|створено|створений|створена|оновлено|оновлений|видалено|видалений|активовано)(?![а-яіїєґ’':])/i,
+  // RU/UK participles that are PREDICATIVE by form and cannot modify a noun:
+  // Russian short forms ("создан", "создана") and impersonal neuters
+  // ("створено", "удалено"). Attributive Russian would be "созданный", which is
+  // deliberately absent. Excluded when part of a longer word ("создание" =
+  // creation) or a "Создан:" metadata label.
+  /(?:успешно|успішно)?\s*(?:создан|создано|создана|созданы|обновлен|обновлено|обновлена|удал[её]н|удалено|удалена|активирован|активировано|створено|оновлено|видалено|активовано)(?![а-яіїєґ’':])/i,
+  // Ukrainian LONG forms are adjectival: "створений" is both "was created" and
+  // "a created …". Measured: "Або показати вже створений домен" — a request for
+  // the object's name, with no write anywhere — was read as a completed write
+  // and carried an UNVERIFIED_WRITE notice. So these count only when they are
+  // NOT modifying a following word, or when a completion cue precedes them.
+  /(?:^|[^а-яіїєґa-z])успішно\s+(?:створений|створена|оновлений|видалений)(?![а-яіїєґ’':])/i,
+  /(?:створений|створена|оновлений|видалений)(?![а-яіїєґ’':])(?!\s+[а-яіїєґ])/i,
 ];
 
 const WARNING =

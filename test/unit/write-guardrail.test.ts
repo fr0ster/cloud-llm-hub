@@ -154,3 +154,38 @@ describe('isWriteTool', () => {
     expect(isWriteTool('GetTableContents')).toBe(false);
   });
 });
+
+// Ukrainian long participles are adjectival: "створений" is both "was created"
+// and "a created …". Measured on prod — "Або показати вже створений домен", a
+// request for the object's NAME with no write anywhere, was read as a completed
+// write and carried an UNVERIFIED_WRITE notice under an answer that created
+// nothing. A notice nobody can trust is worse than no notice.
+describe('attributive participles are not claims', () => {
+  it('does not read a mention of an existing object as a write', () => {
+    for (const text of [
+      'Або показати вже створений домен, з якого потрібно виходити',
+      'оновлений домен потрібно активувати',
+      'Вкажіть раніше створений об єкт',
+    ]) {
+      expect(claimsCompletedWrite(text)).toBe(false);
+    }
+  });
+
+  it('still reads the predicative forms as claims', () => {
+    for (const text of [
+      'Домен ZDEMO_TEST створений.',
+      'Домен успішно створений у пакеті $TMP',
+      'Домен ZDEMO_TEST створено.',
+      'Обєкт створено та активовано',
+      'Домен оновлений.',
+    ]) {
+      expect(claimsCompletedWrite(text)).toBe(true);
+    }
+  });
+
+  it('leaves the Russian short forms unconditional — they cannot modify a noun', () => {
+    // Attributive Russian is "созданный", which the pattern deliberately omits.
+    expect(claimsCompletedWrite('Домен создан.')).toBe(true);
+    expect(claimsCompletedWrite('Домен создан в пакете $TMP')).toBe(true);
+  });
+});
