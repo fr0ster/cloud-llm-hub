@@ -248,7 +248,7 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'Created successfully.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 1,
+      toolCallCount: 0,
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -258,6 +258,31 @@ describe('evaluateGated', () => {
         true,
       );
     }
+  });
+
+  // The case that produced three false notices in a row: a compact create that
+  // activates itself runs exactly ONE tool. At the old threshold that counted as
+  // "near-zero work", the critic was summoned, saw no Activate*, and called a
+  // correct answer fake. One executed tool is evidence; it belongs to the
+  // deterministic check, which reads what the tool reported.
+  it('does not summon the critic when a tool actually ran', async () => {
+    let called = false;
+    const llm = {
+      chat: async () => {
+        called = true;
+        return { ok: true as const, value: { content: '{}' } };
+      },
+    };
+    const verdict = await evaluateGated({
+      content: 'Data element created and activated',
+      records: [
+        record('CreateDataElement', { success: true, status: 'active' }),
+      ],
+      toolCallCount: 1,
+      llm: llm as never,
+    });
+    expect(called).toBe(false);
+    expect(verdict.ok).toBe(true);
   });
 
   it('fails open when the LLM critic throws — verdict unchanged, no spurious problem', async () => {
@@ -270,7 +295,7 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'All good, nothing written.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 1,
+      toolCallCount: 0,
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -286,7 +311,7 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'All good, nothing written.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 1,
+      toolCallCount: 0,
       llm: llm as never,
     });
     expect(verdict).toEqual({ ok: true });
@@ -323,7 +348,7 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
       records: [record('ReadDomain', '{"success":true}')],
-      toolCallCount: 1, // below threshold — LLM runs too
+      toolCallCount: 0, // nothing ran — the critic is spent
       llm: llm as never,
     });
     expect(llm.chat).toHaveBeenCalled();
@@ -343,7 +368,7 @@ describe('evaluateGated', () => {
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
       records: [record('CreateDomain', '{"success":true,"status":"inactive"}')],
-      toolCallCount: 1,
+      toolCallCount: 0,
       llm: llm as never,
     });
     expect(llm.chat).not.toHaveBeenCalled();

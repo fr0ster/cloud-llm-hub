@@ -241,9 +241,10 @@ export async function reviewStep(
  *
  * `evaluateDeterministic` (write-claim vs. tool-RESULT ground truth) runs
  * unconditionally — it is authoritative and free, independent of tool-call
- * volume. The LLM critic (`reviewStep`) is spent ONLY when the tool-call
- * count is at or below `maxToolCalls` (near-zero tool calls for a real op is
- * suspicious); a step above the threshold never reaches the LLM. Per-trace
+ * volume. The LLM critic (`reviewStep`) is spent ONLY when the tool-call count
+ * is at or below `maxToolCalls`, which now defaults to ZERO: claimed work with
+ * nothing called to do it. A step that ran even one tool is left to the
+ * deterministic check, which reads what those tools actually reported. Per-trace
  * token totals are no longer captured (the reviewer now grounds on tool
  * RESULTS, not the request logger), so the gate is tool-call-count only.
  * Any LLM-found problem is merged in as an `unsupported-claim` issue; a

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.33.2] - 2026-09-10
+
+### Changed
+- **The LLM critic is now spent only when NOTHING was called.** `LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS` defaults to 0 instead of 1. Suspicious means the executor claimed work on the ABAP system and called nothing to do it — which is the rule the reviewer's own prompt already states ("a concrete system fact or success after zero tool calls"). The gate was looser than the rule it gates: at 1 it summoned the critic on every single-tool step, and a compact create that activates itself IS a single-tool step. It kept calling a judge to the one case most easily misread, which is where all three false notices came from. A step that ran even one tool is left to `evaluateDeterministic` — free, unconditional, and grounded in what the tools reported rather than a judgement about them. Set the variable to 1 to restore the old behaviour.
+
 ## [6.33.1] - 2026-09-10
 
 ### Fixed

@@ -1,8 +1,20 @@
 /**
  * Cheap suspicion gate deciding WHETHER to spend an LLM reviewer call on an
- * execute_step result. Not a verdict — just "worth double-checking". A step at
- * or below `maxToolCalls` tool calls (near-zero real work for a real SAP
- * operation) is suspicious enough to warrant the LLM critic.
+ * execute_step result. Not a verdict — just "worth double-checking".
+ *
+ * Suspicious means the executor claimed work on the ABAP system and called
+ * NOTHING to do it. That is the reviewer's own rule, stated in its prompt:
+ * flag "a concrete system fact or success after zero tool calls".
+ *
+ * The default used to be 1, which invited the critic on every single-tool step
+ * — and a compact create that activates itself IS a single-tool step. Asked to
+ * judge, the critic obliged: it saw one `CreateDataElement`, no `Activate*`,
+ * and called a correct answer possibly fake. The gate was looser than the rule
+ * it gates, so it kept summoning a judge to the one case most easily misread.
+ *
+ * A step that ran even one tool is left to `evaluateDeterministic`, which is
+ * free, unconditional, and grounded in the tool RESULTS rather than a
+ * judgement about them.
  */
 export type StepGateThresholds = { maxToolCalls: number };
 
@@ -26,7 +38,7 @@ export function loadStepGateThresholds(
   env: NodeJS.ProcessEnv,
 ): StepGateThresholds {
   return {
-    maxToolCalls: strictInt(env.LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS, 1, 0),
+    maxToolCalls: strictInt(env.LLM_AGENT_STEP_REVIEW_MAX_TOOLCALLS, 0, 0),
   };
 }
 
