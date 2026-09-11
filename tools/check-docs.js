@@ -284,7 +284,29 @@ function checkRoutes(file, lines, routes) {
 }
 
 /**
- * A `@mcp-abap-adt/<pkg>` named in the docs must be installed.
+ * Packages named in the docs that are absent ON PURPOSE.
+ *
+ * The rule below exists to catch stale install snippets, and it must keep
+ * catching them. But some absences are the point being made: these two are the
+ * copyleft halves of packages this service deliberately does not embed, and
+ * explaining that requires naming them. Without this list the docs could only
+ * stay green by never mentioning what we avoid, which is the opposite of what
+ * the licence documentation is for.
+ */
+const NOT_INSTALLED_ON_PURPOSE = new Map([
+  [
+    'core',
+    'the standalone ADT MCP server, AGPL-3.0-only — we embed @mcp-abap-adt/lib instead',
+  ],
+  [
+    'llm-agent-server',
+    'the standalone agent server, GPL-3.0-only — we embed the library halves',
+  ],
+]);
+
+/**
+ * A `@mcp-abap-adt/<pkg>` named in the docs must be installed, unless it is
+ * listed above as deliberately absent.
  *
  * `@mcp-abap-adt/llm-proxy` — the family's former name — survived in nine
  * imports and install commands long after the package was split into
@@ -294,8 +316,8 @@ function checkRoutes(file, lines, routes) {
 function checkScopedPackages(file, lines, installed) {
   lines.forEach((line, i) => {
     for (const m of line.matchAll(/@mcp-abap-adt\/([a-z0-9-]+)/g)) {
-      if (!installed.has(m[1]))
-        fail(file, i + 1, `package @mcp-abap-adt/${m[1]} is not installed`);
+      if (installed.has(m[1]) || NOT_INSTALLED_ON_PURPOSE.has(m[1])) continue;
+      fail(file, i + 1, `package @mcp-abap-adt/${m[1]} is not installed`);
     }
   });
 }
@@ -390,9 +412,26 @@ const expectedArtefact = mtarMatch ? `${mtarMatch[1]}/${mtarMatch[2]}` : null;
 const routes = serverRoutes();
 const envNames = knownEnvNames();
 
-const installedScoped = new Set(
-  fs.readdirSync(path.join(ROOT, 'node_modules/@mcp-abap-adt')),
-);
+// Every `@mcp-abap-adt/*` this product SHIPS, hoisted or not. A package a
+// direct dependency pulls in lives under that dependency's own node_modules
+// when versions conflict — it is still distributed, and the docs may still
+// name it. Reading only the top level called such a package missing and asked
+// the docs to stop mentioning what we actually ship.
+const installedScoped = (() => {
+  const found = new Set();
+  const walk = (dir) => {
+    const scoped = path.join(dir, '@mcp-abap-adt');
+    if (fs.existsSync(scoped)) {
+      for (const p of fs.readdirSync(scoped)) {
+        found.add(p);
+        const nested = path.join(scoped, p, 'node_modules');
+        if (fs.existsSync(nested)) walk(nested);
+      }
+    }
+  };
+  walk(path.join(ROOT, 'node_modules'));
+  return found;
+})();
 
 const moduleMemory = new Map(
   (mta.modules || [])

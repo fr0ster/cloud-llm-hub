@@ -3,19 +3,47 @@ Copyright 2025-2026 Oleksii Kyslytsia
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
-This product depends on software from the mcp-abap-adt project
-(https://github.com/fr0ster/mcp-abap-adt):
+This product depends on software from the mcp-abap-adt and llm-agent projects
+(https://github.com/fr0ster/mcp-abap-adt, https://github.com/fr0ster/llm-agent).
+The list below is what this product actually ships, and it changes when the
+dependencies do — regenerate it from the lockfile rather than editing by hand.
 
-  @mcp-abap-adt/lib           Apache-2.0
-  @mcp-abap-adt/adt-clients   LGPL-3.0-only
-  @mcp-abap-adt/connection    LGPL-3.0-only
-  @mcp-abap-adt/interfaces    LGPL-3.0-only
-  @mcp-abap-adt/logger        LGPL-3.0-only
+Apache-2.0
 
-The four LGPL-3.0-only packages are linked at runtime. Their terms apply to
-those packages, not to this work: LGPL does not reach the code that links a
-library. Any distribution of this product must carry their licence text and
-leave the recipient able to replace them with a modified version.
+  @mcp-abap-adt/lib               the ADT handlers and the embeddable MCP server
 
-The standalone ADT MCP server, @mcp-abap-adt/core, is AGPL-3.0-only and is
-deliberately NOT a dependency of this product.
+LGPL-3.0-only
+
+  @mcp-abap-adt/llm-agent         and llm-agent-libs, llm-agent-mcp, llm-agent-rag
+  @mcp-abap-adt/anthropic-llm     and deepseek-llm, openai-llm
+  @mcp-abap-adt/openai-embedder   and ollama-embedder, sap-aicore-embedder
+  @mcp-abap-adt/sap-aicore-llm
+  @mcp-abap-adt/qdrant-rag
+
+MIT
+
+  @mcp-abap-adt/adt-clients       and connection, interfaces, logger
+  @mcp-abap-adt/auth-broker       and auth-providers, auth-stores
+  @mcp-abap-adt/header-validator
+
+The LGPL-3.0-only packages are linked at runtime, as ordinary npm dependencies
+resolved from node_modules. Nothing is bundled: this product ships no browser
+bundle containing them and performs no static linking. Their terms apply to
+those packages, not to the code that links them. Any distribution of this
+product must carry their licence text and leave the recipient able to replace
+them with a modified version — which, given they remain separate packages on
+disk, means replacing a directory.
+
+Several of the MIT packages above are being relicensed to LGPL-3.0-only
+upstream. This notice follows the versions in the lockfile, not the intent, and
+is updated when those versions are adopted.
+
+Two sibling packages are deliberately NOT dependencies of this product:
+@mcp-abap-adt/core, the standalone ADT MCP server (AGPL-3.0-only), and
+@mcp-abap-adt/llm-agent-server (GPL-3.0-only). This product embeds the library
+halves instead.
+
+This product also bundles JSZip (app/chat/webapp/vendor/jszip.min.js),
+Copyright (c) 2009-2016 Stuart Knightley and contributors, dual-licensed under
+the MIT licence or GPLv3. The licence header is preserved in the file itself.
+JSZip bundles pako, released under the MIT licence.
