@@ -284,48 +284,65 @@ function checkRoutes(file, lines, routes) {
 }
 
 /**
- * Places where a package that is NOT installed may still be named.
+ * Places where a package that is NOT installed may still be named, and HOW MANY
+ * TIMES.
  *
- * The rule below exists to catch stale install snippets and stale operational
- * prose, and it must keep catching both. An earlier version of this exemption
- * allowed `@mcp-abap-adt/core` ANYWHERE, which let the opposite of its purpose
- * through: six documents went on claiming this runtime executes tools from
- * core, and the extension guide went on telling contributors to publish it,
- * while the code had moved to `@mcp-abap-adt/lib`. A blanket pardon for a
- * package name pardons the sentences that are wrong about it too.
+ * Two earlier versions of this exemption were each too generous, in the same
+ * way. The first pardoned the package NAME everywhere, so six documents went on
+ * claiming this runtime executes ABAP tools from core while the code had moved
+ * to lib. The second pardoned a whole FILE, which would let a seventh such
+ * sentence be added to a pardoned file and never noticed.
  *
- * So the exemption is per FILE. Each entry is a place that has a reason to name
- * something absent — a contrast, or a record of what was true then. Anywhere
- * else, naming an uninstalled package is still a failure, which is what makes
- * this rule worth having.
+ * So the count is pinned. Each of these files has a reason to name something
+ * absent exactly once — a contrast, or a lesson recording what was true when it
+ * was written. Adding another mention changes the count and fails, which is not
+ * a claim that the new mention is wrong: it is a requirement that someone look
+ * at it and say so.
  */
 const NAMED_THOUGH_ABSENT = new Map([
-  ['CLAUDE.md', ['core']],
-  ['docs/usage/GETTING_STARTED.md', ['core']],
-  ['docs/architecture/EXTENSION_GUIDE.md', ['core']],
+  ['CLAUDE.md', { core: 1 }],
+  ['docs/usage/GETTING_STARTED.md', { core: 1 }],
+  ['docs/architecture/EXTENSION_GUIDE.md', { core: 1 }],
   [
     'docs/superpowers/plans/2026-08-31-abap-cloud-session-lifecycle.md',
-    ['core'],
+    { core: 1 },
   ],
   // Lessons record what was true when they were written. Rewriting them to
   // today's package names would destroy the evidence they exist to keep.
   [
     'docs/lessons/2026-06-11-update-lock-stateless-put-basis-version.md',
-    ['core'],
+    { core: 1 },
   ],
-  ['docs/lessons/2026-06-29-where-used-ns-prefix-cld.md', ['core']],
+  ['docs/lessons/2026-06-29-where-used-ns-prefix-cld.md', { core: 1 }],
 ]);
 
 function checkScopedPackages(file, lines, installed) {
   // `file` arrives absolute; the map is keyed the way `fail()` reports, so the
   // entries stay readable and match what a reviewer sees in the output.
-  const allowedHere = NAMED_THOUGH_ABSENT.get(path.relative(ROOT, file)) ?? [];
+  const budget = {
+    ...(NAMED_THOUGH_ABSENT.get(path.relative(ROOT, file)) ?? {}),
+  };
   lines.forEach((line, i) => {
     for (const m of line.matchAll(/@mcp-abap-adt\/([a-z0-9-]+)/g)) {
-      if (installed.has(m[1]) || allowedHere.includes(m[1])) continue;
-      fail(file, i + 1, `package @mcp-abap-adt/${m[1]} is not installed`);
+      const pkg = m[1];
+      if (installed.has(pkg)) continue;
+      if (budget[pkg] > 0) {
+        budget[pkg] -= 1;
+        continue;
+      }
+      fail(file, i + 1, `package @mcp-abap-adt/${pkg} is not installed`);
     }
   });
+  // A mention that disappeared matters too: the allowance is then describing
+  // something no longer there, and the next stale sentence would inherit it.
+  for (const [pkg, left] of Object.entries(budget)) {
+    if (left > 0)
+      fail(
+        file,
+        1,
+        `allowance for @mcp-abap-adt/${pkg} is ${left} too high — update NAMED_THOUGH_ABSENT`,
+      );
+  }
 }
 
 /** "512M", "2048MB", "2G" → megabytes. */
