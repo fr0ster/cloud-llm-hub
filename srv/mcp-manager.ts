@@ -2,8 +2,6 @@
 import './env-setup';
 
 import type { AbapConnection, SapConfig } from '@mcp-abap-adt/connection';
-import { ReadVsGetDedupStrategy } from '@mcp-abap-adt/core/handlers';
-import { EmbeddableMcpServer } from '@mcp-abap-adt/core/server';
 import { validateAuthHeaders } from '@mcp-abap-adt/header-validator';
 import {
   HEADER_AUTHORIZATION,
@@ -12,6 +10,8 @@ import {
   HEADER_SAP_LOGIN,
   HEADER_SAP_PASSWORD,
 } from '@mcp-abap-adt/interfaces';
+import { EmbeddableMcpServer } from '@mcp-abap-adt/lib/embeddable';
+import { ReadVsGetDedupStrategy } from '@mcp-abap-adt/lib/handlers';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';

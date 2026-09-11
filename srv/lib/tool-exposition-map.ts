@@ -18,7 +18,7 @@ import {
   ReadOnlyHandlersGroup,
   SearchHandlersGroup,
   SystemHandlersGroup,
-} from '@mcp-abap-adt/core/handlers';
+} from '@mcp-abap-adt/lib/handlers';
 import type { ExpositionLevel } from './exposition';
 import { SYSTEM_TOOLS_THAT_WRITE } from './exposition';
 

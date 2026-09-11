@@ -1,0 +1,21 @@
+cloud-llm-hub
+Copyright 2025-2026 Oleksii Kyslytsia
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product depends on software from the mcp-abap-adt project
+(https://github.com/fr0ster/mcp-abap-adt):
+
+  @mcp-abap-adt/lib           Apache-2.0
+  @mcp-abap-adt/adt-clients   LGPL-3.0-only
+  @mcp-abap-adt/connection    LGPL-3.0-only
+  @mcp-abap-adt/interfaces    LGPL-3.0-only
+  @mcp-abap-adt/logger        LGPL-3.0-only
+
+The four LGPL-3.0-only packages are linked at runtime. Their terms apply to
+those packages, not to this work: LGPL does not reach the code that links a
+library. Any distribution of this product must carry their licence text and
+leave the recipient able to replace them with a modified version.
+
+The standalone ADT MCP server, @mcp-abap-adt/core, is AGPL-3.0-only and is
+deliberately NOT a dependency of this product.

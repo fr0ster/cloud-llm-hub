@@ -15,7 +15,7 @@
  * lightweight request-connection helper does not have to import the heavy
  * agent-manager module.
  */
-import { setSystemContext } from '@mcp-abap-adt/core/utils';
+import { setSystemContext } from '@mcp-abap-adt/lib/utils';
 import cds from '@sap/cds';
 
 export function setRequestResponsible(headers: Record<string, unknown>): void {

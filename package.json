@@ -7,10 +7,10 @@
     "@mcp-abap-adt/anthropic-llm": "^20.6.0",
     "@mcp-abap-adt/auth-broker": "^1.0.7",
     "@mcp-abap-adt/connection": "^1.10.0",
-    "@mcp-abap-adt/core": "^8.11.0",
     "@mcp-abap-adt/deepseek-llm": "^20.6.0",
     "@mcp-abap-adt/header-validator": "^0.1.8",
     "@mcp-abap-adt/interfaces": "^11.3.0",
+    "@mcp-abap-adt/lib": "^10.0.0",
     "@mcp-abap-adt/llm-agent": "^20.6.0",
     "@mcp-abap-adt/llm-agent-libs": "^20.6.0",
     "@mcp-abap-adt/llm-agent-mcp": "^20.6.0",
@@ -88,7 +88,7 @@
     "version": "node tools/sync-version.js && git add mta.yaml",
     "prepare": "husky || true"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": true,
   "engines": {
     "node": ">=22.0.0",

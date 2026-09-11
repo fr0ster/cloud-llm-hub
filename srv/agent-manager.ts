@@ -18,9 +18,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
-import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
-import { setSystemContext } from '@mcp-abap-adt/core/utils';
+import type { HandlerContext } from '@mcp-abap-adt/lib/handlers';
+import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import { setSystemContext } from '@mcp-abap-adt/lib/utils';
 import {
   type CallOptions,
   CircuitBreaker,
