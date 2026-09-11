@@ -78,8 +78,9 @@ answers, just quietly worse ones. Four decisions:
 **Default — and this is a BREAKING change, not a tidy-up.** `LLM_AGENT_RAG_TYPE`
 defaults to `in-memory` **today** (`agent-config.ts`). Flipping it to `vector` changes
 the behaviour of every deployment that never set it, and the same change turns a
-documented, working mode into one where all three agent surfaces answer 503. That it
-affects only two known targets is not the test; the variable and the mode are public.
+documented, working mode into one where every agent surface refuses — 503 on the two
+HTTP channels, a tool error on `execute_step`. That it affects only two known targets
+is not the test; the variable and the mode are public.
 
 So it ships with a migration note saying what an operator on the old default must now
 do, and `RagType`, the configuration reference and the deployment docs are updated in
@@ -134,8 +135,8 @@ Probing per request would aim a burst at the very service that is failing, and w
 make the refusal cost grow with load.
 
 **A transient outage does take the agent down for its duration.** That is the intended
-trade: better a retryable 503 than answers selected by keyword match over 360 tools
-without anyone knowing. "Its duration" only means what it says once recovery exists.
+trade: better a retryable refusal than answers selected by keyword match over 360
+tools without anyone knowing. "Its duration" only means what it says once recovery exists.
 
 ## The six collections
 
