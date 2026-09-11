@@ -41,19 +41,20 @@ silently capped at reader level. This design covers the rest — skills, user an
 session collections, and the global ones that need a role.
 
 And it settles the embedder question: without a vectorizing model **only the raw MCP
-channel works**; every agent channel answers 5xx.
+channel works**; every agent channel refuses — the two HTTP ones with 503, and
+`execute_step` with a tool error, because an MCP tool has no HTTP status to return.
 
 ## The embedder is a per-channel requirement, not a global one
 
 **Owner's decision:** without a vectorizing model only the raw MCP channel serves;
-every agent channel answers 5xx.
+every agent channel refuses.
 
 | Channel | Without an embedder |
 |---|---|
 | `POST /mcp/stream/http` | **works** — no retrieval involved; the client selects tools itself |
-| `POST /v1/chat/completions` | **5xx**, naming the missing configuration |
-| `POST /v1/messages` | **5xx** |
-| `execute_step` (`/mcp/agent/stream/http`) | **5xx** |
+| `POST /v1/chat/completions` | **503**, naming the missing configuration |
+| `POST /v1/messages` | **503** |
+| `execute_step` (`/mcp/agent/stream/http`) | **MCP tool error** (`isError: true`) inside a successful JSON-RPC response |
 
 **This is a quality decision, not a technical impossibility.** An earlier draft here
 claimed the agent "cannot select tools without retrieval" — that is false.
@@ -97,8 +98,13 @@ resilience *within* a request, since a half-answer beats a dropped one mid-conve
 rather than silently served at keyword quality. Degradation becomes visible instead of
 permanent.
 
-**The contract on refusal.** All three agent surfaces answer **503** — the condition is
-transient by nature, and 503 tells a client to retry rather than to change its request:
+**The contract on refusal — and it is NOT uniform.** The two HTTP channels answer
+**503**, because the condition is transient and 503 tells a client to retry rather than
+to change its request. `execute_step` cannot: it is an MCP **tool**, and its transport
+already succeeded by the time the tool runs. It returns a tool result with
+`isError: true` (`textResult(text, true)` in `agent-mcp.ts`) carrying the same message.
+Writing "all three answer 503" would describe a response the surface is not able to
+produce:
 
 | Surface | Shape |
 |---|---|
@@ -120,6 +126,12 @@ restart or re-init. Unhealthy therefore needs a way out: after a cooldown the ne
 agent request re-probes before refusing, and a success restores service. Whether the
 probe runs in the background on a timer or lazily on the first request past the
 cooldown is an implementation choice; having neither is not.
+
+**Recovery is single-flight.** When the cooldown has elapsed and several requests
+arrive together, exactly one probe runs and the rest await its result — the same
+shape as `ensureDestinationInit`, which already dedups concurrent initialisation.
+Probing per request would aim a burst at the very service that is failing, and would
+make the refusal cost grow with load.
 
 **A transient outage does take the agent down for its duration.** That is the intended
 trade: better a retryable 503 than answers selected by keyword match over 360 tools
@@ -311,8 +323,19 @@ deliberately made embedding-free.
 
 ## Testing
 
-- **Per-channel embedder requirement** — MCP path answers normally with no embedder;
-  each agent channel answers 5xx with the configuration named.
+- **Per-channel embedder requirement** — the MCP path answers normally with no
+  embedder; `/v1/chat/completions` and `/v1/messages` answer 503 with the
+  configuration named; `execute_step` answers a successful JSON-RPC response whose
+  tool result carries `isError: true` and the same message. Assert the SHAPE per
+  channel, not one shared expectation — the two are different contracts and a test
+  asserting 503 everywhere would fail on the one surface that cannot return it.
+- **Recovery state machine** — four assertions, in order: a fallback event marks the
+  embedder unhealthy; a request before the cooldown elapses is refused **without**
+  probing; the first request after it triggers exactly ONE probe even when several
+  arrive together; a successful probe restores the agent channels, and a failed one
+  starts the cooldown again. Assert the probe COUNT, not just the outcome — a
+  recovery that probes per request turns an outage into a stampede against the
+  service that is already failing.
 - **Pre-query selection** — a caller lacking the role never queries the global
   collection. Assert on a query COUNTER, not on filtered results: the difference
   between this design and a post-filter is precisely that the store is not asked.
