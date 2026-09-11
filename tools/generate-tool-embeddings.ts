@@ -107,14 +107,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Read core version early (fail before spending embeds). core's package.json
-  // is not exposed via `exports`, so read the file directly.
+  // Read the tool library's version early (fail before spending embeds). Its
+  // package.json is not exposed via `exports`, so read the file directly. The
+  // field in the bundle header is still called `coreVersion`: the handlers moved
+  // from @mcp-abap-adt/core to @mcp-abap-adt/lib in lib 10, and renaming the
+  // field would invalidate every bundle already generated for no gain.
   const coreVersion = JSON.parse(
     fs.readFileSync(
-      path.resolve(
-        __dirname,
-        '../node_modules/@mcp-abap-adt/core/package.json',
-      ),
+      path.resolve(__dirname, '../node_modules/@mcp-abap-adt/lib/package.json'),
       'utf-8',
     ),
   ).version as string;

@@ -10,7 +10,7 @@
     "@mcp-abap-adt/deepseek-llm": "^20.6.0",
     "@mcp-abap-adt/header-validator": "^0.1.8",
     "@mcp-abap-adt/interfaces": "^11.3.0",
-    "@mcp-abap-adt/lib": "^10.0.0",
+    "@mcp-abap-adt/lib": "^10.0.1",
     "@mcp-abap-adt/llm-agent": "^20.6.0",
     "@mcp-abap-adt/llm-agent-libs": "^20.6.0",
     "@mcp-abap-adt/llm-agent-mcp": "^20.6.0",

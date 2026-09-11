@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Licence is Apache-2.0** (was MIT, which was a mistake rather than a
+  decision). Nothing is revoked: the repository is private on both remotes and
+  was never published to npm, so no MIT grant left the access list.
+
+- **The ADT tools come from `@mcp-abap-adt/lib` ^10.0.1**, not
+  `@mcp-abap-adt/core`. mcp-abap-adt 10 split into a library under Apache-2.0
+  and a standalone server under AGPL-3.0-only, so that embedding the tools does
+  not put an AGPL server this service never runs into its dependency tree.
+
+  | Before | After |
+  |---|---|
+  | `@mcp-abap-adt/core/handlers` | `@mcp-abap-adt/lib/handlers` |
+  | `@mcp-abap-adt/core/utils` | `@mcp-abap-adt/lib/utils` |
+  | `@mcp-abap-adt/core/server` | `@mcp-abap-adt/lib/embeddable` |
+
+  Same exported names, same signatures, same code. `NOTICE` records what is
+  underneath: four LGPL-3.0-only packages linked at runtime, whose terms do not
+  reach this repository's own code.
+
+  10.0.1 rather than 10.0.0 because 10.0.0 shipped `typesVersions` out of step
+  with `exports`, and this project is on the classic `moduleResolution: "node"`,
+  which reads the former. On 10.0.0 the types of `EmbeddableMcpServer` were
+  unreachable without a `paths` override; on 10.0.1 the override is gone.
+
+## [Unreleased]
+
 ## [6.34.0] - 2026-09-10
 
 The honesty reviewer is split along the line between what can be proven and what needs judgement.
