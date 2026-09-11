@@ -161,7 +161,7 @@ to see per-server detail, log it in `agent-manager.ts` or extend the handler.
 | `docs/deployment/templates/*.mtaext.template` | Add placeholder values |
 | `.mtaext` | Add actual values |
 
-That's it. No changes needed in `@mcp-abap-adt/core`, `openai-handler.ts`, or `agent-service.ts` — they are MCP-agnostic.
+That's it. No changes needed in `@mcp-abap-adt/lib`, `openai-handler.ts`, or `agent-service.ts` — they are MCP-agnostic.
 
 ---
 
@@ -300,12 +300,12 @@ for (const doc of docs) {
 
 **Goal:** Add new MCP tools for interacting with ABAP systems via ADT (ABAP Development Tools) API.
 
-The ABAP MCP tools live in the `@mcp-abap-adt/core` package (separate repo). Cloud-llm-hub **does not implement ABAP tools**. It exposes them two ways: the raw `/mcp/stream/http` surface for external MCP clients, and — for the agent itself — the same handlers called **in-process** through an embedded `MCPClientWrapper`, with no HTTP hop.
+The ABAP MCP tools live in the `@mcp-abap-adt/lib` package (separate repo). Cloud-llm-hub **does not implement ABAP tools**. It exposes them two ways: the raw `/mcp/stream/http` surface for external MCP clients, and — for the agent itself — the same handlers called **in-process** through an embedded `MCPClientWrapper`, with no HTTP hop.
 
 **Where ABAP tools are defined:**
 
 ```
-@mcp-abap-adt/core (external package)
+@mcp-abap-adt/lib (external package)
 └── src/tools/
     ├── search-object.ts      — search ABAP objects
     ├── read-class.ts         — read class source code
@@ -316,14 +316,17 @@ The ABAP MCP tools live in the `@mcp-abap-adt/core` package (separate repo). Clo
 
 **Two options to add new ABAP/ADT tools:**
 
-**Option A — Contribute to `@mcp-abap-adt/core` (recommended):**
+**Option A — Contribute to `@mcp-abap-adt/lib` (recommended):**
 
 If the tool is generic and useful for any ABAP system (e.g. "read CDS view", "list transport requests"), contribute it upstream:
 
-1. Clone `@mcp-abap-adt` repo
+1. Clone the `mcp-abap-adt` repo — it publishes two packages from one tree:
+   `@mcp-abap-adt/lib` (the handlers and the embeddable server, Apache-2.0,
+   what this service consumes) and `@mcp-abap-adt/core` (the standalone server,
+   AGPL-3.0-only, which this service does not depend on)
 2. Add tool in `src/tools/` following existing patterns
 3. Register tool in the MCP server tool list
-4. Publish new version of `@mcp-abap-adt/core`
+4. Publish a new version of `@mcp-abap-adt/lib`
 5. Update version in `cloud-llm-hub/package.json`
 
 No changes needed in cloud-llm-hub — the proxy passes all MCP requests through transparently.
@@ -461,7 +464,7 @@ SmartAgent
 | `tools/ingest-abap-docs.ts` | — | **New** | — | — |
 | `tools/ingest-client-data.ts` | — | **New** | — | — |
 | `srv/custom-mcp-server.ts` | — | — | **New** (Option B) | — |
-| `@mcp-abap-adt/core` | — | — | Modify (Option A) | — |
+| `@mcp-abap-adt/lib` | — | — | Modify (Option A) | — |
 | `mta.yaml` | Modify | — | — | Modify |
 | `docs/deployment/templates/*.mtaext.template` | Modify | Modify | Modify | Modify |
 
@@ -484,7 +487,7 @@ Recommended sequence:
 
 1. **Persistent RAG** — foundation for everything else
 2. **ABAP Knowledge ingestion** — immediate value for ABAP development assistant
-3. **Custom ABAP/ADT tools** — extend ABAP capabilities (contribute to `@mcp-abap-adt/core` or build custom)
+3. **Custom ABAP/ADT tools** — extend ABAP capabilities (contribute to `@mcp-abap-adt/lib` or build custom)
 4. **JIRA MCP** — extends agent capabilities to project management
 5. **Client Data ingestion** — requires understanding of client's data model
 

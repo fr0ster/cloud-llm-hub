@@ -22,15 +22,30 @@ All notable changes to this project will be documented in this file. The format 
   | `@mcp-abap-adt/core/server` | `@mcp-abap-adt/lib/embeddable` |
 
   Same exported names, same signatures, same code. `NOTICE` records what is
-  underneath: four LGPL-3.0-only packages linked at runtime, whose terms do not
-  reach this repository's own code.
+  underneath: twelve LGPL-3.0-only packages linked at runtime, whose terms do
+  not reach this repository's own code.
 
   10.0.1 rather than 10.0.0 because 10.0.0 shipped `typesVersions` out of step
   with `exports`, and this project is on the classic `moduleResolution: "node"`,
   which reads the former. On 10.0.0 the types of `EmbeddableMcpServer` were
   unreachable without a `paths` override; on 10.0.1 the override is gone.
 
-## [Unreleased]
+- **The llm-agent family moves 20.9.5 → 22.1.0.** Three of the packages this
+  product ships — `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag` — declared
+  NO `license` field at 20.9.5, in the tarball and in the registry alike. A
+  package without one is more restrictive than any copyleft, not less. At
+  22.1.0 every package in the family is LGPL-3.0-only. Two majors, and not one
+  line of this repository's code had to change.
+
+- **`@mcp-abap-adt/adt-clients` is no longer a declared dependency.** It was
+  imported in zero files. `lib` keeps its own copy, which the tree already
+  carried nested.
+
+- **`NOTICE` describes the tree rather than the intention**, and now includes
+  JSZip, vendored into the browser assets and previously absent from it.
+
+- **`docs:check` learned two facts it lacked**: a package can be absent on
+  purpose, and a package can be shipped without being hoisted to the top level.
 
 ## [6.34.0] - 2026-09-10
 

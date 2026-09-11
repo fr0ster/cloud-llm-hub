@@ -108,12 +108,12 @@ flowchart LR
     style D fill:#9333ea,color:#fff,font-size:16px
 ```
 
-**Key point:** `mcp-abap-adt` is the **base implementation** of the ABAP tools. Cloud LLM Hub **delegates all ABAP tool execution** to it, over two paths that both come from `@mcp-abap-adt/core`:
+**Key point:** `mcp-abap-adt` is the **base implementation** of the ABAP tools. Cloud LLM Hub **delegates all ABAP tool execution** to it, over two paths that both come from `@mcp-abap-adt/lib`:
 
 1. Cloud LLM Hub handles everything **before** the tools: auth, destination resolution, connection creation — then **injects** the connection.
 2. **Raw MCP path** (`/mcp/stream/http`, `mcp-manager.ts`): Cloud LLM Hub creates an `EmbeddableMcpServer` and injects the connection; from that point `mcp-abap-adt` does **all** the MCP protocol handling and ABAP tool execution.
 3. **Agent path** (`POST /v1/chat/completions`, `POST /v1/messages`, `/mcp/agent/stream/http`, `agent-manager.ts`): the SmartAgent executes the `HandlerExporter` tool corpus **in-process** against the injected connection (no MCP wire protocol) — see §7 and §16. (Other `/v1/*` routes — `/v1/models`, `/v1/usage`, `/v1/destinations/*`, `/v1/token` — are non-chat management routes; some touch `getSmartAgent()`/`refreshDestinations()` for metadata or warm-up, but none execute an agent request against SAP.)
-4. On both paths Cloud LLM Hub never hand-codes ABAP tool logic — it provides the connection and lets `@mcp-abap-adt/core` run the tools.
+4. On both paths Cloud LLM Hub never hand-codes ABAP tool logic — it provides the connection and lets `@mcp-abap-adt/lib` run the tools.
 
 ### What cloud-llm-hub uses from `@mcp-abap-adt/*`
 
@@ -135,7 +135,7 @@ flowchart LR
 - **Adding/modifying transport, auth, routing, BTP integration** → change this project (`srv/`)
 - **Adding new connection type** (e.g., new auth method) → implement `AbapConnection` interface in `srv/connections/`, register in `connectionFactory.ts`
 - **Changing the LLM provider** → set `LLM_AGENT_PROVIDER` (`sap-ai-sdk` default / `openai` / `anthropic` / `deepseek`) plus `LLM_AGENT_API_KEY` / `LLM_AGENT_BASE_URL` (read in `agent-config.ts`); the provider client is built by `makeLlm` from `@mcp-abap-adt/llm-agent-libs`. SAP AI Core binding specifics live in `agent-manager.ts`.
-- **Updating `mcp-abap-adt` version** → update in `package.json`, then verify both `@mcp-abap-adt/core` consumers still match: the `EmbeddableMcpServer` API on the raw MCP path (`mcp-manager.ts`) **and** the `HandlerExporter` tool corpus on the agent path (`agent-manager.ts` — tool listing/exec and its config-dependent tool set), run integration tests
+- **Updating `mcp-abap-adt` version** → update in `package.json`, then verify both `@mcp-abap-adt/lib` consumers still match: the `EmbeddableMcpServer` API on the raw MCP path (`mcp-manager.ts`) **and** the `HandlerExporter` tool corpus on the agent path (`agent-manager.ts` — tool listing/exec and its config-dependent tool set), run integration tests
 
 ---
 
@@ -436,7 +436,7 @@ graph TB
     end
 
     subgraph "External Packages"
-        mcp_adt_core["@mcp-abap-adt/core
+        mcp_adt_core["@mcp-abap-adt/lib
         EmbeddableMcpServer, HandlerExporter"]
         mcp_adt_conn["@mcp-abap-adt/connection"]
         mcp_adt_hv["@mcp-abap-adt/header-validator"]
@@ -747,7 +747,7 @@ sequenceDiagram
     Exec-->>Handle: response text for this step
 ```
 
-There is **no HTTP self-call** to `/mcp/stream/http` here: `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) wires the executor's tools straight to the in-process `HandlerExporter` from `@mcp-abap-adt/core`, wrapped by `McpClientAdapter` (`transport: 'embedded'`). See §16 "Agent Tool Access: Embedded, Not Self-Loop-HTTP" for the full picture.
+There is **no HTTP self-call** to `/mcp/stream/http` here: `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) wires the executor's tools straight to the in-process `HandlerExporter` from `@mcp-abap-adt/lib`, wrapped by `McpClientAdapter` (`transport: 'embedded'`). See §16 "Agent Tool Access: Embedded, Not Self-Loop-HTTP" for the full picture.
 
 #### Step 4 — Honesty Controller (DAG coordinator + reviewer) *(v6.28+)*
 
@@ -1140,7 +1140,7 @@ graph TB
 ```mermaid
 graph TB
     subgraph "@mcp-abap-adt ecosystem"
-        CORE["@mcp-abap-adt/core<br/>EmbeddableMcpServer (raw MCP),<br/>HandlerExporter (agent in-process)"]
+        CORE["@mcp-abap-adt/lib<br/>EmbeddableMcpServer (raw MCP),<br/>HandlerExporter (agent in-process)"]
         CONN_PKG["@mcp-abap-adt/connection<br/>AbapConnection, SapConfig,<br/>createAbapConnection"]
         HV_PKG["@mcp-abap-adt/header-validator<br/>validateAuthHeaders"]
         IFACE["@mcp-abap-adt/interfaces<br/>Header constants, ILogger,<br/>IAdtResponse"]
@@ -1307,7 +1307,7 @@ All destination-based connections use `executeHttpRequest` from `@sap-cloud-sdk/
 
 ### Agent Tool Access: Embedded, Not Self-Loop-HTTP
 
-The agent does **not** call its own `/mcp/stream/http` over HTTP. `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) builds an **in-process** MCP client: `HandlerExporter` (`@mcp-abap-adt/core`) yields tool handlers directly, which are wrapped in `MCPClientWrapper` with `transport: 'embedded'` and adapted to `IMcpClient` via `McpClientAdapter`. The per-request ABAP connection is injected into the handler context (via `connectionALS`), not resolved through an HTTP round-trip. This means the LLM agent uses the same tool handlers that `mcp-abap-adt` exposes over `/mcp/stream/http`, without an actual network hop.
+The agent does **not** call its own `/mcp/stream/http` over HTTP. `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) builds an **in-process** MCP client: `HandlerExporter` (`@mcp-abap-adt/lib`) yields tool handlers directly, which are wrapped in `MCPClientWrapper` with `transport: 'embedded'` and adapted to `IMcpClient` via `McpClientAdapter`. The per-request ABAP connection is injected into the handler context (via `connectionALS`), not resolved through an HTTP round-trip. This means the LLM agent uses the same tool handlers that `mcp-abap-adt` exposes over `/mcp/stream/http`, without an actual network hop.
 
 ```mermaid
 graph LR

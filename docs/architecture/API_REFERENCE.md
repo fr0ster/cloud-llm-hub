@@ -639,7 +639,7 @@ Cloud LLM Hub implements the Model Context Protocol (MCP) specification. All MCP
 }
 ```
 
-For the full list of available tools, see the ABAP ADT MCP server documentation for `@mcp-abap-adt/core`.
+For the full list of available tools, see the ABAP ADT MCP server documentation for `@mcp-abap-adt/lib`.
 
 ---
 

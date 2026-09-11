@@ -284,39 +284,45 @@ function checkRoutes(file, lines, routes) {
 }
 
 /**
- * Packages named in the docs that are absent ON PURPOSE.
+ * Places where a package that is NOT installed may still be named.
  *
- * The rule below exists to catch stale install snippets, and it must keep
- * catching them. But some absences are the point being made: these two are the
- * copyleft halves of packages this service deliberately does not embed, and
- * explaining that requires naming them. Without this list the docs could only
- * stay green by never mentioning what we avoid, which is the opposite of what
- * the licence documentation is for.
+ * The rule below exists to catch stale install snippets and stale operational
+ * prose, and it must keep catching both. An earlier version of this exemption
+ * allowed `@mcp-abap-adt/core` ANYWHERE, which let the opposite of its purpose
+ * through: six documents went on claiming this runtime executes tools from
+ * core, and the extension guide went on telling contributors to publish it,
+ * while the code had moved to `@mcp-abap-adt/lib`. A blanket pardon for a
+ * package name pardons the sentences that are wrong about it too.
+ *
+ * So the exemption is per FILE. Each entry is a place that has a reason to name
+ * something absent — a contrast, or a record of what was true then. Anywhere
+ * else, naming an uninstalled package is still a failure, which is what makes
+ * this rule worth having.
  */
-const NOT_INSTALLED_ON_PURPOSE = new Map([
+const NAMED_THOUGH_ABSENT = new Map([
+  ['CLAUDE.md', ['core']],
+  ['docs/usage/GETTING_STARTED.md', ['core']],
+  ['docs/architecture/EXTENSION_GUIDE.md', ['core']],
   [
-    'core',
-    'the standalone ADT MCP server, AGPL-3.0-only — we embed @mcp-abap-adt/lib instead',
+    'docs/superpowers/plans/2026-08-31-abap-cloud-session-lifecycle.md',
+    ['core'],
   ],
+  // Lessons record what was true when they were written. Rewriting them to
+  // today's package names would destroy the evidence they exist to keep.
   [
-    'llm-agent-server',
-    'the standalone agent server, GPL-3.0-only — we embed the library halves',
+    'docs/lessons/2026-06-11-update-lock-stateless-put-basis-version.md',
+    ['core'],
   ],
+  ['docs/lessons/2026-06-29-where-used-ns-prefix-cld.md', ['core']],
 ]);
 
-/**
- * A `@mcp-abap-adt/<pkg>` named in the docs must be installed, unless it is
- * listed above as deliberately absent.
- *
- * `@mcp-abap-adt/llm-proxy` — the family's former name — survived in nine
- * imports and install commands long after the package was split into
- * llm-agent-libs / llm-agent-mcp / openai-llm, so every one of those snippets
- * failed at `npm install`.
- */
 function checkScopedPackages(file, lines, installed) {
+  // `file` arrives absolute; the map is keyed the way `fail()` reports, so the
+  // entries stay readable and match what a reviewer sees in the output.
+  const allowedHere = NAMED_THOUGH_ABSENT.get(path.relative(ROOT, file)) ?? [];
   lines.forEach((line, i) => {
     for (const m of line.matchAll(/@mcp-abap-adt\/([a-z0-9-]+)/g)) {
-      if (installed.has(m[1]) || NOT_INSTALLED_ON_PURPOSE.has(m[1])) continue;
+      if (installed.has(m[1]) || allowedHere.includes(m[1])) continue;
       fail(file, i + 1, `package @mcp-abap-adt/${m[1]} is not installed`);
     }
   });
