@@ -77,8 +77,12 @@ describe('throttleMessage', () => {
 describe('the configured wait budget', () => {
   const load = () => {
     jest.resetModules();
-    // biome-ignore lint/suspicious/noExplicitAny: module reload for env tests
-    const mod = require('../../srv/agent-config') as any;
+    const mod = require('../../srv/agent-config') as {
+      clearAgentConfig: () => void;
+      getAgentConfig: () => {
+        llm: { whenThrottled: { maxTotalWaitMs: number } };
+      };
+    };
     mod.clearAgentConfig();
     return mod.getAgentConfig();
   };
