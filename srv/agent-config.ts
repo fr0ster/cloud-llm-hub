@@ -54,6 +54,17 @@ export interface AgentConfig {
 
     /** SAP AI Core resource group (sap-ai-sdk only) */
     resourceGroup?: string;
+
+    /**
+     * What the provider does when the LLM service throttles it (HTTP 429).
+     *
+     * Only the wait budget is set here. The library's default is 60 seconds,
+     * which is at or past what our callers wait: a chat client that gives up
+     * at 60 gets a cut connection instead of the answer the policy can give,
+     * which names the seconds to come back in. Waiting less than the caller
+     * means we always get to say it.
+     */
+    whenThrottled: { maxTotalWaitMs: number };
   };
 
   /**
@@ -110,6 +121,12 @@ export function loadAgentConfig(): AgentConfig {
   // LLM Configuration
   const provider = (process.env.LLM_AGENT_PROVIDER ||
     'sap-ai-sdk') as LlmProvider;
+
+  // Deliberately below the client timeouts we see (Cline and the chat UI both
+  // sit around a minute): the point of a budget is to run out before the caller
+  // does, so the "retry in N seconds" answer still reaches them.
+  const throttleMaxWaitMs =
+    Number(process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS) || 20_000;
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
@@ -164,6 +181,7 @@ export function loadAgentConfig(): AgentConfig {
       apiKey: apiKey || undefined,
       baseUrl: baseUrl || undefined,
       resourceGroup,
+      whenThrottled: { maxTotalWaitMs: throttleMaxWaitMs },
     },
     mcp: {
       destination: mcpDestination,
@@ -180,6 +198,10 @@ export function loadAgentConfig(): AgentConfig {
 
   log.info('Agent configuration loaded', {
     provider: config.llm.provider,
+    // Logged because it is the setting nobody can otherwise confirm arrived:
+    // it only shows itself under load, as the difference between an answer and
+    // a dropped connection.
+    throttleMaxWaitMs: config.llm.whenThrottled.maxTotalWaitMs,
     model: config.llm.model,
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',

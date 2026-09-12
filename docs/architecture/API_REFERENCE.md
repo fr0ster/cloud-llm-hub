@@ -582,11 +582,16 @@ implementing per-user, per-IP and per-connection limits before opening it to a
 wide audience.
 
 **Outbound (the LLM provider)** — handled since v6.35, by the provider itself
-(`@mcp-abap-adt/llm-agent` 22.2.0). A `429` from SAP AI Core, OpenAI or
+(`@mcp-abap-adt/llm-agent` 23.0.0). A `429` from SAP AI Core, OpenAI or
 Anthropic is answered where the HTTP response is still intact: backoff with
 jitter, `Retry-After` honoured when the server sends one, and one shared pause
 per quota so concurrent callers do not each rediscover the same closed limit.
-Defaults are five attempts or sixty seconds of waiting, whichever comes first.
+
+The wait budget is **20 seconds** here, not the library's sixty. A budget that
+expires when the caller does never gets to deliver its answer: our chat clients
+give up around a minute, so the policy must give up well before that and say
+when to come back. Override with `LLM_AGENT_THROTTLE_MAX_WAIT_MS`; the value in
+force is logged at startup, since it shows itself only under load.
 
 This service therefore does **not** retry a rate limit of its own. Another
 request into a quota the server has just said is closed only earns another

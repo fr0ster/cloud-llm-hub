@@ -121,9 +121,9 @@ flowchart LR
 |---------|------|------------|
 | **`lib`** (`^10.0.1`) | ABAP tool surface: `EmbeddableMcpServer` (the MCP server exposing all ABAP tools on the raw `/mcp/stream/http` path) **and** `HandlerExporter` (the destination-free tool corpus the SmartAgent executes in-process). | `mcp-manager.ts` (`EmbeddableMcpServer`), `agent-manager.ts` (`HandlerExporter`) |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
-| **`llm-agent`** (`^22.2.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
-| **`llm-agent-libs`** (`^22.2.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
-| **`llm-agent-mcp`** (`^22.2.0`) | `McpClientAdapter` — wraps the embedded MCP client as an `IMcpClient` | `agent-manager.ts` |
+| **`llm-agent`** (`^23.0.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
+| **`llm-agent-libs`** (`^23.0.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
+| **`llm-agent-mcp`** (`^23.0.0`) | `McpClientAdapter` — wraps the embedded MCP client as an `IMcpClient` | `agent-manager.ts` |
 | **`adt-clients`** (via `lib`, not declared here) | ADT HTTP clients underlying the ABAP tools | `mcp-abap-adt` (transitive) |
 | **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
 | **`interfaces`** (`^11.3.0`) | Shared contracts: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |

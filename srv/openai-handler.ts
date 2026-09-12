@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  findRateLimit,
+  findThrottled,
   type Message,
   normalizeAndValidateExternalTools,
   toToolCallDelta,
@@ -93,17 +93,22 @@ function withRequestConnection<T>(
  * The provider answers 429 itself since llm-agent 22.2.0: it backs off, honours
  * `Retry-After`, and holds one shared pause per quota so concurrent callers do
  * not each rediscover the same closed limit. By the time an error reaches this
- * handler that policy is spent, and the error says so — `findRateLimit` reads
+ * handler that policy is spent, and the error says so — `findThrottled` reads
  * the fact off the error or its cause chain.
  *
  * Retrying here would undo the point of the shared pause: another request into
  * a quota the server has just said is closed, earning another penalty.
  */
-export function rateLimitOf(
+export function throttleOf(
   error: unknown,
-): { retryAfterSeconds?: number } | undefined {
-  const marked = findRateLimit(error);
-  if (marked) return { retryAfterSeconds: marked.retryAfterSeconds };
+): { retryAfterSeconds?: number; reason?: string } | undefined {
+  const marked = findThrottled(error);
+  if (marked) {
+    return {
+      retryAfterSeconds: marked.retryAfterSeconds,
+      reason: marked.reason,
+    };
+  }
   // Fallback for an error that lost the marker on the way up, e.g. one rebuilt
   // by a layer that keeps only the message. A structured status first, then the
   // status named in the text on a WORD BOUNDARY — never a bare includes('429'),
@@ -135,9 +140,7 @@ export function rateLimitOf(
 }
 
 /** What the caller is told once the provider's own policy is spent. */
-export function rateLimitMessage(limit: {
-  retryAfterSeconds?: number;
-}): string {
+export function throttleMessage(limit: { retryAfterSeconds?: number }): string {
   const seconds = limit.retryAfterSeconds;
   if (seconds === undefined || !Number.isFinite(seconds)) {
     return 'The AI service is rate-limited right now. Please try again shortly.';
@@ -988,9 +991,9 @@ export async function handleChatCompletions(
                       error: err.message,
                       causes,
                     });
-                    const limit = rateLimitOf(err);
+                    const limit = throttleOf(err);
                     const userMessage = limit
-                      ? rateLimitMessage(limit)
+                      ? throttleMessage(limit)
                       : err.message;
                     res.write(
                       `data: ${jsonError(userMessage, 'server_error')}\n\n`,
@@ -1113,9 +1116,9 @@ export async function handleChatCompletions(
                   stack:
                     streamErr instanceof Error ? streamErr.stack : undefined,
                 });
-                const streamLimit = rateLimitOf(streamErr);
+                const streamLimit = throttleOf(streamErr);
                 const userMessage = streamLimit
-                  ? rateLimitMessage(streamLimit)
+                  ? throttleMessage(streamLimit)
                   : errMsg;
                 res.write(
                   `data: ${jsonError(userMessage, 'server_error')}\n\n`,
@@ -1236,11 +1239,11 @@ export async function handleChatCompletions(
       durationMs: Date.now() - t0,
     });
 
-    const resultLimit = result.ok ? undefined : rateLimitOf(result.error);
+    const resultLimit = result.ok ? undefined : throttleOf(result.error);
     const finalContent = result.ok
       ? result.value.content || '(no response)'
       : resultLimit
-        ? rateLimitMessage(resultLimit)
+        ? throttleMessage(resultLimit)
         : `Error: ${result.error.message}`;
 
     const finalFinishReason = result.ok
