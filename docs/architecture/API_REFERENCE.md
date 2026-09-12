@@ -577,11 +577,28 @@ All endpoints return errors in the following format:
 
 ## Rate Limiting
 
-Currently, no rate limiting is enforced. Consider implementing:
+**Inbound** — no limit is enforced on callers of this service. Consider
+implementing per-user, per-IP and per-connection limits before opening it to a
+wide audience.
 
-- **Per-user limits:** 1000 requests/minute
-- **Per-IP limits:** 100 requests/minute
-- **Connection limits:** 10 concurrent connections per user
+**Outbound (the LLM provider)** — handled since v6.35, by the provider itself
+(`@mcp-abap-adt/llm-agent` 22.2.0). A `429` from SAP AI Core, OpenAI or
+Anthropic is answered where the HTTP response is still intact: backoff with
+jitter, `Retry-After` honoured when the server sends one, and one shared pause
+per quota so concurrent callers do not each rediscover the same closed limit.
+Defaults are five attempts or sixty seconds of waiting, whichever comes first.
+
+This service therefore does **not** retry a rate limit of its own. Another
+request into a quota the server has just said is closed only earns another
+penalty and lengthens the window. When the provider's policy is spent, the
+caller is told, and told when to come back:
+
+```
+The AI service is rate-limited right now. Please try again in about 42 seconds.
+```
+
+The number is the server's own `Retry-After`, carried on the error rather than
+guessed at.
 
 ---
 
