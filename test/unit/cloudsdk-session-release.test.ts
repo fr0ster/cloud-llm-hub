@@ -195,6 +195,39 @@ describe('CloudSdkAbapConnection — platform session (ICF logoff)', () => {
     }
   });
 
+  // A hang-up on the logoff is the normal outcome: it travels the pinned socket
+  // the session used, so ending the session ends the connection before the reply
+  // is written. Measured on DEV — this fired on every poll while SM05 showed no
+  // accumulated sessions. Reported as a failure it sends the reader hunting a
+  // leak that is not there.
+  it('does not report the expected hang-up as a failure', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExec.mockImplementation(
+      async (_dest: unknown, opts: { url?: string }) => {
+        if (String(opts?.url ?? '').includes('/sap/public/bc/icf/logoff')) {
+          throw new Error('socket hang up');
+        }
+        return {
+          status: 200,
+          data: '',
+          headers: {
+            'set-cookie': [
+              'sap-XSRF_DEV_100=abc; path=/',
+              'SAP_SESSIONID_DEV_100=SERVER_ISSUED; path=/',
+            ],
+          },
+        };
+      },
+    );
+
+    const c = makeConn();
+    await get(c);
+    // Must not throw, and must not surface as a warning.
+    await expect(c.closeSession()).resolves.toBeUndefined();
+    expect(logoffCalls()).toHaveLength(1);
+    warn.mockRestore();
+  });
+
   it('is idempotent — a second close does not log off twice', async () => {
     const c = makeConn();
     await get(c);
