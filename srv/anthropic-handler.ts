@@ -29,6 +29,7 @@ import {
 } from './agent-manager';
 import { describeCaller } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
@@ -238,8 +239,22 @@ export async function handleAnthropicMessages(
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log.error('Stream error', { error: message });
-        // If headers already sent, we can only close the connection
+        const limit = throttleOf(err);
+        log.error('Stream error', { error: message, throttled: limit?.reason });
+        // Headers are already sent, so the status code is spent — but the SSE
+        // channel is not. Closing in silence leaves the client with a truncated
+        // stream and nothing to act on, which for a throttled request is the
+        // one case where we know exactly what it should do next.
+        if (!res.writableEnded) {
+          const payload = {
+            type: 'error',
+            error: {
+              type: limit ? 'rate_limit_error' : 'api_error',
+              message: limit ? throttleMessage(limit) : message,
+            },
+          };
+          res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+        }
       }
 
       clearInterval(keepAlive);

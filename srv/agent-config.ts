@@ -125,8 +125,7 @@ export function loadAgentConfig(): AgentConfig {
   // Deliberately below the client timeouts we see (Cline and the chat UI both
   // sit around a minute): the point of a budget is to run out before the caller
   // does, so the "retry in N seconds" answer still reaches them.
-  const throttleMaxWaitMs =
-    Number(process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS) || 20_000;
+  const throttleMaxWaitMs = readThrottleMaxWaitMs();
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
@@ -219,6 +218,36 @@ export function loadAgentConfig(): AgentConfig {
  * Configuration is loaded once and cached
  */
 let cachedConfig: AgentConfig | null = null;
+
+/** The default wait budget, in milliseconds. See `whenThrottled` on the config. */
+export const DEFAULT_THROTTLE_MAX_WAIT_MS = 20_000;
+
+/**
+ * Read the wait budget from the environment.
+ *
+ * `Number(v) || default` was wrong in three directions at once: a negative
+ * number and `Infinity` both passed straight through to the library, a
+ * fractional value was never rounded, and an explicit `0` — the one value an
+ * operator writes deliberately, meaning do not wait at all — was indistinguish-
+ * able from nonsense and silently became the default.
+ *
+ * Zero is honoured. Anything that is not a whole, finite, non-negative number
+ * of milliseconds is refused loudly rather than half-applied, because this
+ * setting shows itself only under load.
+ */
+function readThrottleMaxWaitMs(): number {
+  const raw = process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS;
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_THROTTLE_MAX_WAIT_MS;
+  }
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw new Error(
+      `Invalid LLM_AGENT_THROTTLE_MAX_WAIT_MS: expected a whole number of milliseconds, 0 or more, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return n;
+}
 
 export function getAgentConfig(): AgentConfig {
   if (!cachedConfig) {

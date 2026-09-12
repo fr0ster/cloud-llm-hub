@@ -273,6 +273,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
       //
       // Anything else IS worth a warning: it means the request failed before
       // the server could act on it.
+      //
+      // The compromise, stated plainly: a hang-up does not PROVE the server
+      // processed the logoff — the same three codes would appear if the
+      // connection died on the way out. It is demoted because the measurement
+      // above says which of the two actually happens here, and because the
+      // alternative warns on every release and hides the rare real one in the
+      // noise. SM05 remains the ground truth; if sessions ever do accumulate,
+      // this line is where to look first.
       const text = String(err);
       if (/socket hang up|ECONNRESET|EPIPE/i.test(text)) {
         logger.debug('Session release closed the connection, as expected', {

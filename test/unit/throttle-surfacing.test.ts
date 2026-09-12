@@ -1,4 +1,4 @@
-import { throttleMessage, throttleOf } from '../../srv/openai-handler';
+import { throttleMessage, throttleOf } from '../../srv/lib/throttle-surfacing';
 
 /**
  * Since llm-agent 22.2.0 the provider answers 429 itself — backing off,
@@ -103,8 +103,61 @@ describe('the configured wait budget', () => {
     expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(35_000);
   });
 
-  it('falls back to the default on an unusable value', () => {
-    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = 'soon';
+  it('honours an explicit zero, which means do not wait at all', () => {
+    // The one value an operator writes deliberately. `Number(v) || default`
+    // could not tell it from nonsense and quietly substituted 20s.
+    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '0';
+    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(0);
+  });
+
+  it('refuses a value it cannot honour, rather than half-applying it', () => {
+    for (const bad of ['soon', '-1', 'Infinity', '1.5', 'NaN']) {
+      process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = bad;
+      expect(() => load()).toThrow(/LLM_AGENT_THROTTLE_MAX_WAIT_MS/);
+    }
+  });
+
+  it('uses the default when the variable is absent or blank', () => {
+    delete process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS;
     expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(20_000);
+    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '   ';
+    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(20_000);
+  });
+});
+
+describe('the Anthropic stream reports an exhausted policy', () => {
+  // A promise kept on one of three channels is not kept: the OpenAI path
+  // reported it, this one closed the stream in silence.
+  const sseErrorFor = (err: unknown) => {
+    const limit = throttleOf(err);
+    return {
+      type: 'error',
+      error: {
+        type: limit ? 'rate_limit_error' : 'api_error',
+        message: limit
+          ? throttleMessage(limit)
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      },
+    };
+  };
+
+  it('names the Anthropic error type a client can act on', () => {
+    const throttled = Object.assign(new Error('SAP AI SDK streaming error'), {
+      throttled: true,
+      attempts: 5,
+      retryAfterSeconds: 30,
+      reason: 'budget',
+    });
+    const payload = sseErrorFor(throttled);
+    expect(payload.error.type).toBe('rate_limit_error');
+    expect(payload.error.message).toContain('30 seconds');
+  });
+
+  it('leaves an ordinary failure as an api_error with its own message', () => {
+    const payload = sseErrorFor(new Error('Class ZCL_X not found'));
+    expect(payload.error.type).toBe('api_error');
+    expect(payload.error.message).toBe('Class ZCL_X not found');
   });
 });
