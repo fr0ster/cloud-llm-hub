@@ -177,10 +177,28 @@ own: the call goes back to the tail of our own queue and is tried again when our
 rate next allows. That is not a guess about their server, it is our own pacing,
 and it turns an unanswerable question into an ordinary wait.
 
-The bound on both is the caller. A pipeline retrying into a refusal that never
-clears — a spend cap, say — keeps retrying until whoever called gives up, or
-until the service stops. We do not cut it, because deciding it is hopeless would
-be a guess of exactly the kind this design refuses.
+**Both need a bound that we own**, and "the caller will give up" is not one.
+`execute_step` has no reliable client-abort signal — the code says so where the
+close hook would go — and it holds its slot until the pipeline ends. So a
+pipeline retrying into a refusal that never clears, a spend cap say, would hold
+memory, an ADT session and a live slot for ever, turn away every new caller, and
+outlast a graceful shutdown. A guarantee of completion would have become a
+guarantee of hanging.
+
+Two bounds, both ours and neither a guess about the server:
+
+**A lifetime per admitted pipeline.** How long we are willing to hold our own
+resources for one request. It is the same kind of decision as memory, made by
+whoever deploys, and it is about us rather than about when the quota reopens.
+When it expires the pipeline fails, and that failure is ours and reported as
+such.
+
+**Shutdown cancels.** Stopping cancels admitted work rather than waiting for it.
+The alternative is a restage that never completes because something is retrying
+into a wall.
+
+So the guarantee reads exactly: **no `429` ends an admitted pipeline.** Our own
+lifetime cap can, and shutdown can. Both are visible, configured, and ours.
 
 The refusal travels the path already built for throttling
 (`srv/lib/throttle-surfacing.ts`): the message as content on
@@ -298,10 +316,46 @@ module that built it. A sixth construction site cannot quietly bypass the
 gatekeeper, because creating one means deliberately going around the single
 door.
 
-The two wrappers are thin. On the LLM side ours implements `ILlmRateLimiter`,
-the interface `RateLimiterLlm` already calls — the decorator sits outermost, so
-even a retry passes through. On the embedder side it is an `IEmbedder` wrapper.
-Both call the same gatekeeper.
+### One acquire per HTTP attempt
+
+This is the invariant, and it rules out the obvious wiring.
+
+`RateLimiterLlm` calls `acquire()` **once** and then hands off to the chain:
+
+```ts
+async chat(...) {
+  await this.limiter.acquire();
+  return this.inner.chat(...);   // retries happen in here, unaccounted
+}
+```
+
+Its own header says the opposite — "rate limiter sits outermost so that retry
+attempts also respect the limit" — and that is not what the code does. Every
+retry inside `RetryLlm`, and every attempt of the provider's own
+`runWithThrottleRetry` loop, is a request the window never saw. Under exactly
+the conditions the gatekeeper exists for, the accounting would be quietly wrong.
+
+So the retrying moves **above** the accounting, and ours is the outermost `ILlm`:
+
+```
+GatedLlm (ours)
+  loop:
+    await gatekeeper.acquire(quota)   ← every attempt, not every call
+    result = await inner.chat(...)
+    if throttled: wait as told, or re-queue when nothing was told; continue
+    otherwise: return
+```
+
+The rule that follows, and that the plan must enforce: **nothing below the
+gated wrapper may retry.** The provider's strategy is `ReportThrottling`, which
+surfaces the refusal instead of absorbing it, and `RetryLlm` is not composed for
+a gated LLM. A retry we do not see is a request we do not count.
+
+On the embedder side the same shape, minus the seam: an `IEmbedder` wrapper with
+the same loop. Both call the same gatekeeper.
+
+The `ILlmRateLimiter` seam is then not what we use. It admits one call and
+cannot see the attempts inside it, which is the whole problem.
 
 ## The configuration contract
 
@@ -315,6 +369,7 @@ has to be written down here, or the ownership is a claim rather than a fact.
 | `LLM_GATEKEEPER_QUOTAS` | JSON: a map of quota key to `{ limit, windowMs }`. `limit` is a positive integer of request starts, `windowMs` a positive integer, defaulting to 60000 | no rate limiting; calls pass straight through |
 | `LLM_GATEKEEPER_QUOTA_OF_MODEL` | JSON: a map of model name to quota key, for deployments where several models share one limit | each model is its own quota key |
 | `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` | positive integer: how many pipelines may be admitted at once, across all channels | no door on the chat channels; `execute_step` keeps its existing semaphore |
+| `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` | positive integer: how long we will hold our own resources for one admitted pipeline before failing it | no lifetime cap, so a pipeline retrying into a permanent refusal holds its slot until shutdown |
 
 Example, for a deployment whose tenant meters two models separately:
 
@@ -345,7 +400,8 @@ startup rather than falling back to a default that hides the mistake.
 - every `limit` and `windowMs` is a positive safe integer
 - every value in `LLM_GATEKEEPER_QUOTA_OF_MODEL` names a key that exists in
   `LLM_GATEKEEPER_QUOTAS`
-- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is a positive safe integer
+- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` and `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS`
+  are positive safe integers
 - a model with no mapping and no entry of its own is not an error: it is
   ungated, and that is logged once at startup so it is visible rather than
   silent
@@ -386,6 +442,13 @@ would have to change with it.
 **A rolling deploy doubles it briefly.** Even at one instance, the old process
 drains while the new one admits. For those minutes we run two windows. Recorded
 as a known mode rather than discovered in logs later.
+
+**A permanent refusal costs a slot until the lifetime expires.** Nothing below
+us can tell a spend cap from a busy minute, and neither can we. So a pipeline
+meeting one holds its place, retrying on our own pacing, until the lifetime cap
+ends it. Sized generously that is a slot lost for a long time; sized meanly it
+cuts work that would have succeeded. There is no reading of the refusal that
+avoids the trade.
 
 **The guarantee costs throughput at the door.** Capacity has to be reserved for
 what admitted pipelines might yet ask for, not for what they are asking now. A
@@ -430,7 +493,7 @@ other side: how often the server refused us despite our accounting.
 
 ## Testing
 
-Three properties, because they are what this shape gets wrong:
+These properties, because they are what this shape gets wrong:
 
 - **No lost wake-up.** The state "waiters present, no dispatch scheduled" must
   never exist.
@@ -450,8 +513,15 @@ Three properties, because they are what this shape gets wrong:
   because "a 429 delays, it does not interrupt" is the property the guarantee
   is built on.
 
-Plus: a refusal at a full queue carries the right number, and shutdown behaves
-as a full queue.
+- **A full door refuses without a number.** No `Retry-After`, no seconds in the
+  text: the door is full of running pipelines, and we do not measure how long
+  they run. Asserted, because the previous version of this design invented a
+  number here from the quota queue, which is a different resource entirely.
+- **Every attempt is accounted.** A call that meets two `429`s before succeeding
+  records three starts in the window, not one. This is what fails if anything
+  below the gated wrapper starts retrying again.
+- **Shutdown cancels admitted work** rather than waiting for it, and the
+  lifetime cap ends a pipeline that would otherwise retry for ever.
 
 ## Relationship to what already exists
 
@@ -463,10 +533,10 @@ behind the door would only kill work in flight, which is the failure the door
 exists to prevent. Admitted pipelines therefore use `WaitAsTold` with no attempt
 cap.
 
-The behaviour that replaces it — wait as told, otherwise re-queue — is the
-gatekeeper's, not a strategy's, because only the gatekeeper knows our pacing. So
-what the provider gets for admitted work is a strategy that never gives up, and
-the re-queueing happens above it.
+The behaviour that replaces it — wait as told, otherwise re-queue — belongs to
+the gated wrapper, not to a strategy, because only that layer can take a permit
+for each attempt. What the provider gets for admitted work is therefore
+`ReportThrottling`: surface the refusal, absorb nothing, retry nothing.
 
 Whether `WaitIfShortEnough` survives anywhere depends on whether anything still
 calls a model outside an admitted pipeline. Startup tool vectorization is the candidate:
