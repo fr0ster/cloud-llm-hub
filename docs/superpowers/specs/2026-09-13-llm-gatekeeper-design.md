@@ -131,18 +131,21 @@ more quota, or split it into separately limited groups — not a code change.
 
 ## What the caller sees
 
-Three outcomes. We cut none of them.
+Two outcomes at the door, and one guarantee behind it. We cut none of them.
 
-**Admitted.** Room in the window. No delay, nothing observable.
+**Turned away at the door.** Too many pipelines are already live for the memory
+this deployment bought. The caller is told, with roughly how long the work in
+front would take. Nothing was started, so nothing is left half-done.
 
-**Parked, then admitted.** No room in the window, room in the queue. The call
-waits its turn and proceeds, however long that takes. No ceiling is imposed on
-the wait and none is promised: a caller stays for as long as it stays, and if
-its own timeout fires first that is its decision, not our failure.
+**Let in.** From here the answer is coming. It may be slow: the pipeline's calls
+queue behind everyone else's, in order of arrival, with no ceiling on the wait
+and none promised. A caller stays for as long as it stays, and if its own
+timeout fires first that is its decision, not our failure.
 
-**Refused.** The queue is full: arrivals outpace the rate at which the quota
-lets us drain it, and there is nowhere to put this one. The caller is told how
-long to wait and leaves.
+**The guarantee: a pipeline that was let in is never refused.** If a session was
+allowed to start work, that work completes, however slowly. This is what makes
+the door worth having — a refusal there declines a whole request cleanly,
+instead of killing one halfway with an ADT lock still held.
 
 The refusal travels the path already built for throttling
 (`srv/lib/throttle-surfacing.ts`): the message as content on
@@ -155,46 +158,80 @@ formatters need one input shape fed from two sources — the library's marker an
 our own refusal.
 
 The refusal says nothing about the caller. It is not "you sent too much"; it is
-"we have no room". Queue length is therefore the only knob, and it means how
-much backlog we can hold — see Sizing.
+"we have no room". The knob is therefore how many pipelines may live at once —
+see Sizing.
 
 ## Sizing
 
-The queue length is a statement about **resources**, not about anyone's
-patience. A caller does not tell us how long it will wait, and is not asked: it
-either stays connected for as long as the queue takes, or — when there is no
-room to hold it — is turned away. Its own timeout is its own business. Ours is
-not to cut it and not to refuse it while we still have room.
+**The knob is how many pipelines may live at once.** Everything else follows
+from it: the queue, the waits, the refusals.
 
-So the number is set from what we can hold, and what we can hold is bought.
-Memory on BTP is a price: 256 MB or 2 GB is a decision by whoever deploys, and
-the chain runs money, memory, queue length, backlog held, callers turned away.
-Nothing in the code fixes any link of it.
+That number is bought. Memory on BTP is a price, and the chain runs money,
+memory, live pipelines, backlog held, callers turned away. Nothing in the code
+fixes any link of it.
 
-Memory buys two different things, and only the second is the queue.
+Memory buys two different things, and only the second is capacity.
 
 **The floor** is what it takes to do the work at all. We found ours painfully:
 the container was raised to 2 GB because one heavy agent step — the 258-tool
 corpus, skill injection, 32k-token buffers, accumulated iteration context — was
-killing a gigabyte. Below the floor the service does not run, and the queue is
-beside the point. 256 MB is not a shorter queue; it is a different service, one
-that cannot hold a single heavy step.
+killing a gigabyte. Below the floor the service does not run. 256 MB is not a
+smaller capacity; it is a different service, one that cannot hold a single heavy
+step.
 
-**Above the floor** is the queue. A place in it is nearly free; the **waiter**
-is not. A parked pipeline holds its whole context, and parked ones spike memory
-the same way running ones do. So the length is how many such contexts fit in
-what is left, and whoever deploys sets it in their `.mtaext`, beside the memory
-it depends on. 2 GB against 4 GB is the decision that actually buys queue.
+**Above the floor** is how many live pipelines fit, and that is the setting
+whoever deploys puts in their `.mtaext`, beside the memory it depends on. 2 GB
+against 4 GB is the decision that actually buys capacity.
 
-A length of zero is a valid setting, not a misconfiguration: refuse as soon as
-the window is full, hold nothing. It must behave, because it is the honest
-choice for a deployment that would rather answer quickly than wait.
+### Why the queue needs no size of its own
 
-The wait that results is worth knowing even though it is not a promise: length
-divided by rate. At 78 requests per minute a queue of 39 means the last in line
-waits about 30 seconds. If that is longer than callers tolerate, whoever deploys
-needs more quota, not a shorter queue — a shorter queue converts waiting into
-refusals, which is worse for the same load.
+A pipeline's calls on one quota are bounded, so the queue's capacity is derived
+rather than configured. With `P` live pipelines:
+
+| quota | outstanding calls per pipeline | queue capacity |
+|---|---|---|
+| main model | 1 — the tool loop awaits each call before the next | `P` |
+| embedding model | the parallel RAG fan-out, since `tool-select` and `skill-select` issue their queries through `Promise.all` | `P × fan-out` |
+
+Sized that way the queue can never be full for a pipeline that was let in, which
+is what turns the guarantee into arithmetic rather than hope. The reserve is not
+a separate mechanism; it is the absence of a second limit.
+
+The fan-out must be measured, not assumed to be one. If a future handler issues
+LLM calls in parallel the same way RAG queries are issued, the capacity for that
+quota changes with it, and the derivation is the thing to revisit.
+
+### What the waiting looks like
+
+The wait that results is worth knowing even though it is not promised: queue
+length divided by rate. At 78 requests per minute a queue of 39 means the last
+in line waits about 30 seconds. If that is longer than callers tolerate, whoever
+deploys needs more quota, not fewer pipelines — fewer pipelines converts waiting
+into refusals at the same load.
+
+A capacity of one is a valid setting, not a misconfiguration: one pipeline at a
+time, everyone else turned away at the door. It must behave, because it is the
+honest choice for a small deployment that would rather answer quickly than
+queue.
+
+## The door
+
+Admission is a separate act from queueing, and it happens once per request that
+starts a pipeline.
+
+Half of it already exists. `execute_step` holds a semaphore of two
+(`EXEC_STEP_MAX_CONCURRENCY`), so that channel already caps live pipelines and
+already parks the excess. Its reason was memory, and it is the same reason.
+
+The chat channels have no door at all. `/v1/chat/completions` and `/v1/messages`
+start a pipeline per request with nothing counting them. That is where the work
+is: one counter of live pipelines, shared across every channel, with the
+existing semaphore folded into it rather than left beside it. Two independent
+caps on the same resource would each be wrong about the other.
+
+A pipeline is counted as live from the moment it is admitted until it finishes
+or fails. It is not released while it waits on a quota — waiting is exactly when
+it still holds its context.
 
 ## Entrances
 
@@ -258,8 +295,17 @@ would have to change with it.
 drains while the new one admits. For those minutes we run two windows. Recorded
 as a known mode rather than discovered in logs later.
 
-**Shutdown looks like a full queue.** Stopping means no capacity for new
-arrivals, which is the refusal that already exists. No separate mechanism.
+**The guarantee costs throughput at the door.** Capacity has to be reserved for
+what admitted pipelines might yet ask for, not for what they are asking now. A
+deployment sized for pipelines that each make twenty calls turns callers away
+earlier than one sized for pipelines that make two, at the same memory. The
+alternative is refusing work in flight, which is what the guarantee exists to
+prevent.
+
+**Shutdown looks like a full door.** Stopping means no capacity for new
+arrivals, which is the refusal the door already gives. Admitted pipelines still
+finish, which is the same guarantee under a different cause. No separate
+mechanism.
 
 ## Shared code and forks
 
@@ -300,8 +346,12 @@ Three properties, because they are what this shape gets wrong:
   `TokenBucketRateLimiter` fails.
 - **The limit holds under pressure.** Twenty simultaneous callers against a
   limit of five produce exactly five starts in the window.
-- **A queue of zero refuses instead of holding**, and a queue of one holds
-  exactly one. The degenerate settings are settings.
+- **A capacity of one admits one and turns away the rest.** The degenerate
+  setting is a setting.
+- **An admitted pipeline is never refused.** Fill the capacity, then drive every
+  admitted pipeline through more calls than the window allows: all of them
+  complete, none is turned away. This is the guarantee, so it is the test that
+  matters most.
 
 Plus: a refusal at a full queue carries the right number, and shutdown behaves
 as a full queue.
