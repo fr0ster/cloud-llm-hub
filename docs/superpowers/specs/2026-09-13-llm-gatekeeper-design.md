@@ -196,21 +196,19 @@ Stopping cancels rather than waiting: the alternative is a restage that never
 completes because something is retrying into a wall. Cancellation is a
 mechanism, not a wish — see Cancellation below.
 
-**What bounds a held resource is idleness, not duration.** The two are
-different in kind and it is worth being exact about why. A duration cap cuts
-something that is running, so it overrules whoever was deciding. An idle bound
-fires only when nothing is running at all — there is no decision to pre-empt,
-and nothing in flight to tear. It releases what is already finished with.
+**And no clock is needed over a session either, because none is ever idle.**
+`execute_step` closes its ADT session in the same `finally` that releases the
+slot, and before releasing it (`srv/agent-mcp.ts`): request, work, teardown,
+slot. One session per request, nothing surviving a step.
 
-`execute_step` today closes its ADT session in the same `finally` that releases
-the slot, before releasing it (`srv/agent-mcp.ts`): request, work, teardown,
-slot. Nothing survives a step, which is the safe default and stays the default.
-The alternative a deployment may configure is a session kept across steps and
-closed after a stated idleness — worth having because an ADT write chain wants
-one connection, and worth naming as a trade, because a session that outlives a
-step can also carry a lock past it, and then the idle close is the only thing
-that releases it. Which of the two applies is configuration; both are ours, and
-neither is a clock over running work.
+An idle bound was considered and dropped. It would be a clock over a *silent*
+session rather than over running work, which is a different and defensible
+instrument — but it has no user here. `execute_step` is how a subagent
+connects, and a subagent's request is the whole unit: there is no gap between
+steps for a session to sit through, so nothing would ever be idle for it to
+collect. A session kept across steps would also carry a lock across them, which
+is the failure this service already learned to avoid. One per request, and no
+setting.
 
 So the guarantee reads exactly as it did above: **no `429` ends an admitted
 pipeline.** Only shutdown does, and a call to a dependency that is gone fails
@@ -580,7 +578,6 @@ has to be written down here, or the ownership is a claim rather than a fact.
 | `LLM_GATEKEEPER_QUOTAS` | JSON: a map of quota key to `{ limit, windowMs }`. `limit` is a positive integer of request starts, `windowMs` a positive integer, defaulting to 60000 | no rate limiting; calls pass straight through |
 | `LLM_GATEKEEPER_QUOTA_OF_MODEL` | JSON: a map of model name to quota key, for deployments where several models share one limit | each model is its own quota key |
 | `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` | positive integer: how many pipelines may be admitted at once, across all channels | no door on the chat channels; `execute_step` keeps its existing semaphore |
-| `LLM_GATEKEEPER_SESSION_IDLE_MS` | positive integer: close a kept ADT session after this much idleness. Only meaningful with a kept session; it never touches a session doing work | no kept session — `execute_step` tears its session down at the end of every step, as it does today |
 
 Example, for a deployment whose tenant meters two models separately:
 
@@ -611,8 +608,7 @@ startup rather than falling back to a default that hides the mistake.
 - every `limit` and `windowMs` is a positive safe integer
 - every value in `LLM_GATEKEEPER_QUOTA_OF_MODEL` names a key that exists in
   `LLM_GATEKEEPER_QUOTAS`
-- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` and `LLM_GATEKEEPER_SESSION_IDLE_MS` are
-  positive safe integers
+- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is a positive safe integer
 - a model with no mapping and no entry of its own is not an error: it is
   ungated, and that is logged once at startup so it is visible rather than
   silent
@@ -874,9 +870,8 @@ These properties, because they are what this shape gets wrong:
 - **Shutdown cancels admitted work** rather than waiting for it, and nothing
   else of ours ends an admitted pipeline — a throttled one is slowed, never
   cut, however long it takes.
-- **An idle session closes; a busy one does not.** With a kept session
-  configured, idleness past the stated interval tears it down, and a session
-  with a call in flight is left alone however long the call runs.
+- **A session does not outlive its step.** The ADT session is torn down before
+  the slot is released, so a freed slot never means a session still open.
 - **A closed destination refuses arrivals and spares the admitted.** With MCP
   unreachable for one destination, a new request for it is refused with a `503`
   carrying our probe interval, a request for another destination is served, and
