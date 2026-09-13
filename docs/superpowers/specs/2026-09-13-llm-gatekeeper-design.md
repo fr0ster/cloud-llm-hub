@@ -269,11 +269,23 @@ quota changes with it, and the derivation is the thing to revisit.
 
 ### What the waiting looks like
 
-The wait **inside** is worth knowing even though it is not promised: queue
-length divided by rate. At 78 requests per minute a queue of 39 means a call at
-the back waits about 30 seconds. If that is longer than callers tolerate,
-whoever deploys needs more quota, not fewer pipelines — fewer pipelines converts
-waiting into refusals at the same load.
+The wait **inside** is worth knowing even though it is not promised, and it is
+worth computing rather than estimating. A sliding window releases a permit when
+a particular start ages out of it, so the caller at position *k* waits until the
+*k*-th oldest start leaves — a time the window already knows exactly, because it
+is holding that timestamp. The gate can therefore answer "how long" precisely,
+and should, since that is the number worth logging.
+
+Queue length divided by rate is the same answer **only when arrivals are
+spread evenly**, and they are not: a burst that spends the whole window in two
+seconds leaves everyone behind it waiting out the rest of the minute, not the
+fraction the division suggests. At 78 requests per minute a queue of 39 is
+about 30 seconds of wait if the traffic was smooth and close to 60 if it
+arrived in a clump. Sizing should assume the clump.
+
+If the wait is longer than callers tolerate, whoever deploys needs more quota,
+not fewer pipelines — fewer pipelines converts waiting into refusals at the
+same load.
 
 This number describes the quota queue and says nothing about the door. A
 pipeline slot frees when a pipeline finishes, which depends on work we do not
@@ -298,6 +310,17 @@ start a pipeline per request with nothing counting them. That is where the work
 is: one counter of live pipelines, shared across every channel, with the
 existing semaphore folded into it rather than left beside it. Two independent
 caps on the same resource would each be wrong about the other.
+
+**And there is a fourth channel, which is easy to miss because it is not an
+Express route.** The CAP service exposes `AgentService.Chat` at `/agent`
+(`srv/agent-service.cds`, `srv/agent-service.ts`), and its handler calls
+`agent.process(message)` straight through. It starts a pipeline exactly like
+the others and would be counted by none of them. Listing entrances by the
+routes one remembers is how a door gets bypassed, so it is named here: either
+it goes through admission with the rest, or it is deleted from the public API.
+Deciding which belongs to the plan, and the question worth asking there is
+whether anything still calls it — it takes no destination and no per-request
+credentials, so it cannot reach a SAP system the way the other three can.
 
 A pipeline is counted as live from the moment it is admitted until it finishes
 or fails. It is not released while it waits on a quota — waiting is exactly when
@@ -795,17 +818,28 @@ knows a key, a limit and a window, and where those come from is configuration.
 
 ## Observability
 
-Four numbers per quota:
+Three scopes, because the three refusals in this design belong to different
+things and adding them up would answer nothing.
 
-- starts inside the window
-- waiters in the queue
-- how long the caller just admitted had waited
-- refusals
+**Per quota** — starts inside the window, waiters in the queue, and how long
+the caller just admitted had waited. No refusals here: the quota queue does not
+refuse anyone. It admits everything and orders it, which is the whole point of
+having it.
+
+**The door, once** — refusals, and how many pipelines are live. It is a single
+global count, not a per-quota one: a pipeline is turned away before it makes
+its first model call, so there is no quota to charge the refusal to.
+
+**Per destination** — refusals caused by that destination being closed, and
+whether it currently is. This is availability, not rate, and mixing it into a
+quota's numbers would make an unreachable SAP system look like a full model
+quota.
 
 Together they answer the one question asked under load: are we hitting our own
 limit or someone else's. A deep queue with no `429`s means ours is set too low.
 An empty queue with `429`s arriving means another consumer is spending the
-tenant's minute.
+tenant's minute. Door refusals rising while queues stay shallow means memory is
+the binding constraint, not rate.
 
 The throttle observer already in llm-agent (`setThrottleObserver`) gives the
 other side: how often the server refused us despite our accounting.
@@ -859,6 +893,13 @@ These properties, because they are what this shape gets wrong:
 - **The refusal's `Retry-After` matches the schedule.** Refused just before a
   probe, the header says seconds and not the whole interval; with no probe
   scheduled, there is no header.
+- **Every entrance is counted, including the CAP one.** A pipeline started
+  through `AgentService.Chat` fills a door slot like any other, or the endpoint
+  is gone. Asserted by driving each channel to capacity in turn, because a door
+  with one way around it is not a door.
+- **A health check never waits.** With the quota shut, `healthCheck` reports
+  throttled at once rather than sitting out the interval, and it still spends a
+  permit, because it is still a request the window must see.
 - **RAG down is carried, not fatal.** The same destination still answers with
   every tool available and a line in the log, because choosing tools worse is
   not the same as having none.
@@ -893,11 +934,29 @@ the gated wrapper, not to a strategy, because only that layer can take a permit
 for each attempt. What the provider gets for admitted work is therefore
 `ReportThrottling`: surface the refusal, absorb nothing, retry nothing.
 
-Whether `WaitIfShortEnough` survives anywhere depends on whether anything still
-calls a model outside an admitted pipeline. Startup tool vectorization is the candidate:
-it embeds hundreds of documents before any request exists, so there is no door
-in front of it and no caller to protect. Deciding that is part of the
-implementation plan, not this design.
+**Model calls outside any pipeline exist, and they need a policy of their own.**
+Leaving them as a "candidate" was a gap: two are already here, and they are not
+alike.
+
+**Startup tool vectorization** embeds hundreds of documents before any request
+exists. Nobody is waiting for it and it spends real quota, so it is gated —
+a permit per attempt like everything else — and waits as told. It has no door
+slot, because it is not a pipeline and holds no session.
+
+**Health checks** are the opposite. `AgentService.Health` and the model probe
+behind the OpenAI surface call `agent.healthCheck()` (`srv/agent-service.ts`,
+`srv/openai-handler.ts`), and a liveness probe that waits out a `Retry-After`
+is not a liveness probe — it is a hung request with no lifetime over it. So a
+health call takes its permit like any other request, because it is one, but its
+strategy is `ReportThrottling`: a `429` makes it report the quota as throttled,
+immediately, which is a true and useful answer. It never waits and never
+re-queues.
+
+The rule underneath both: **every model call takes a permit, and only work with
+somebody waiting on it gets a door slot.** Whether `WaitIfShortEnough` survives
+anywhere is then answered — it does not. Waiting as told covers the batch case,
+reporting covers the probe case, and the ceiling it existed to enforce belonged
+to a world without a door.
 
 The library's own gate stays as it is. It is a local safety net keyed on
 something it inferred, and after this it should almost never fire: if it does,
