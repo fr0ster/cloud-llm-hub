@@ -121,9 +121,9 @@ flowchart LR
 |---------|------|------------|
 | **`lib`** (`^10.0.1`) | ABAP tool surface: `EmbeddableMcpServer` (the MCP server exposing all ABAP tools on the raw `/mcp/stream/http` path) **and** `HandlerExporter` (the destination-free tool corpus the SmartAgent executes in-process). | `mcp-manager.ts` (`EmbeddableMcpServer`), `agent-manager.ts` (`HandlerExporter`) |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
-| **`llm-agent`** (`^23.0.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
-| **`llm-agent-libs`** (`^23.0.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
-| **`llm-agent-mcp`** (`^23.0.0`) | `McpClientAdapter` — wraps the embedded MCP client as an `IMcpClient` | `agent-manager.ts` |
+| **`llm-agent`** (`^24.1.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
+| **`llm-agent-libs`** (`^24.1.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
+| **`llm-agent-mcp`** (`^24.1.0`) | `McpClientAdapter` — wraps the embedded MCP client as an `IMcpClient` | `agent-manager.ts` |
 | **`adt-clients`** (via `lib`, not declared here) | ADT HTTP clients underlying the ABAP tools | `mcp-abap-adt` (transitive) |
 | **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
 | **`interfaces`** (`^11.3.0`) | Shared contracts: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
@@ -1325,6 +1325,69 @@ graph LR
 - **Exception — `/v1/chat/completions` server-managed sessions:** the OpenAI handler keeps a process-local `sessionStore` of chat history keyed by session+user (`openai-handler.ts`), expired after 30 min of inactivity by a periodic cleanup (`SESSION_TTL_MS`). This is conversation history, not connection or agent state
 - **Agent handles** (`SmartAgentHandle`) are cached **per destination for the process lifetime** — reused across requests, cleared only on shutdown cleanup (no TTL). The 30-min TTL above applies to OpenAI chat history, not to agent instances
 - Fresh auth on every **SAP-touching** request — the raw MCP path and the agent/tool-execution endpoints (`/mcp/stream/http`, `/mcp/agent/stream/http`, `POST /v1/chat/completions`, `POST /v1/messages`) build a per-request SAP connection from the caller's credentials, never a cached connection. The non-SAP-connection routes (`/v1/models`, `/v1/usage`, `/v1/destinations/*`, `/v1/token`) create no per-request SAP connection — some touch `getSmartAgent()`/`refreshDestinations()` for metadata or destination warm-up, but none open a caller-credentialed ABAP connection
+
+### Upstream throttling is a 5xx to our caller, never a 429
+
+When SAP AI Core throttles us, `@mcp-abap-adt/llm-agent` establishes the facts —
+this is a 429, the server named this interval, the quota is shut until then —
+and leaves the decision to its consumer. We are that consumer. The decisions are
+ours, and they are these.
+
+**The caller gets a 5xx with `Retry-After`, not `429`.** A `429` says *this
+caller* sent too many requests, which is wrong twice over. The caller does not
+set the rate: it arrives with one question. And the traffic is not one-to-one —
+a single chat request fans out into as many LLM calls as the tool loop needs, so
+a consumer's request count says nothing about how much upstream quota it spends.
+A client acting on a `429` would throttle itself for a limit it never reached.
+What actually happened is that we are temporarily unable to answer and know when
+we will be able to.
+
+The exact status follows the dialect of the channel. `/v1/messages` speaks
+Anthropic's, where `overloaded_error` is paired with `529` — sending their error
+type under a different status would be a pairing their clients have never seen.
+`Retry-After` applies to it as it would to a `503`.
+
+**Every channel says when to come back**, in the shape that channel speaks: the
+message as response content on `/v1/chat/completions`, an Anthropic
+`overloaded_error` envelope with `529` on `/v1/messages` (as an SSE `error`
+event when streaming, where the type travels without a status), and the step's
+error text for `execute_step`. The number is the
+server's own, carried on the error rather than guessed at. The formatters live
+in `srv/lib/throttle-surfacing.ts` so a test exercises what the handlers run;
+a test that rebuilds an envelope beside a handler stays green when the handler
+stops sending it.
+
+**We do not retry a rate limit ourselves.** A second request into a quota the
+server has just closed earns another penalty and lengthens the very window it
+was waiting out. The handler used to do this — twice, with a fixed one- and
+two-second wait — and could not see a `Retry-After`, the header being long gone
+by the time an error reached it.
+
+**Detection reads a fact, not a substring.** `findThrottled` walks the error's
+cause chain for the marker the provider attached. The fallback, for an error
+that lost it on the way up, takes a structured status first and then the status
+on a *word boundary* — the old matcher called anything containing `429` a rate
+limit, so a question about object `4290` was answered with an apology about an
+overloaded AI service.
+
+**Where the waiting decision sits.** Ours, not the library's, because only we
+know our callers give up around a minute. Since llm-agent 24.0.0 that decision
+is a strategy rather than a number, and ours is `WaitIfShortEnough`
+(`srv/lib/throttle-strategy.ts`): wait while the **total** stays short enough to
+be worth waiting, report anything longer with the number attached. The total,
+not the interval in hand — five twenty-second intervals are a hundred seconds
+and a cut connection. A caller told to try
+again in ninety seconds has something to act on; a caller whose connection was
+cut at sixty has nothing. The ceiling is `LLM_AGENT_THROTTLE_MAX_WAIT_MS`,
+20 seconds by default.
+
+Deliberately **not** an `AbortSignal` on the call, though the library accepts
+one. A signal bounds the whole agent run, and a tool loop legitimately takes
+minutes — the deadline we want applies to waiting for a quota, not to doing the
+work.
+
+The reasoning for the library refusing to choose any of this for us is in
+llm-agent's `docs/ARCHITECTURE.md`, under Server-governed throttling.
 
 ### Honesty controller (executor + reviewer)
 

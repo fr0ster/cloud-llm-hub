@@ -64,6 +64,7 @@ jest.mock('@mcp-abap-adt/llm-agent-libs', () => {
 
 import type { AgentConfig } from '../../srv/agent-config';
 import { buildExecutorWorker } from '../../srv/agent-manager';
+import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 
 const config: AgentConfig = {
   llm: {
@@ -73,7 +74,7 @@ const config: AgentConfig = {
     maxTokens: 2000,
     apiKey: 'test-key',
     baseUrl: 'http://localhost',
-    whenThrottled: { maxTotalWaitMs: 20_000 },
+    whenThrottled: new WaitIfShortEnough(20_000),
   },
   mcp: { destination: 'TEST_DEST' },
   agent: {

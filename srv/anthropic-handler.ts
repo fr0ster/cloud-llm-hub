@@ -29,7 +29,12 @@ import {
 } from './agent-manager';
 import { describeCaller } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
-import { anthropicErrorPayload, throttleOf } from './lib/throttle-surfacing';
+import {
+  anthropicErrorPayload,
+  retryAfterHeader,
+  statusForError,
+  throttleOf,
+} from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
@@ -276,7 +281,11 @@ export async function handleAnthropicMessages(
       // caller deciding whether to retry, so the throttled case is shaped here
       // and everything else keeps the adapter's formatting exactly as before.
       if (limit) {
-        res.status(429).json(anthropicErrorPayload(result.error));
+        const retryAfter = retryAfterHeader(result.error);
+        if (retryAfter) res.setHeader('Retry-After', retryAfter);
+        res
+          .status(statusForError(result.error))
+          .json(anthropicErrorPayload(result.error));
       } else {
         res
           .status(500)

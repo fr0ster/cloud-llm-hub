@@ -38,7 +38,7 @@ are a different mechanism and do apply per request.
 | `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Tools returned per query by the tool-intent RAG |
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model id |
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
-| `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | How long a request may wait out an LLM-side `429` in total. Deliberately below the client timeout, so the "retry in N seconds" answer still reaches the caller instead of a cut connection. `0` means do not wait at all; a value that is not a whole number of milliseconds is refused at startup |
+| `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | The longest LLM-side `429` interval we will wait out. Anything longer is reported to the caller with the number attached, rather than holding a connection past the point it will be cut. `0` means never wait; a value that is not a whole number of milliseconds is refused at startup |
 | `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS` | provider defaults | Sampling parameters |
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |

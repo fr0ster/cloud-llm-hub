@@ -79,10 +79,12 @@ export function throttleMessage(limit: { retryAfterSeconds?: number }): string {
 /**
  * The Anthropic error envelope, throttled or not.
  *
- * `rate_limit_error` is Anthropic's own type for this, so a client that already
- * handles their API needs no special case from us. Used on both the streaming
- * and the non-streaming path — they differ in how it is delivered, not in what
- * it says.
+ * `overloaded_error` is Anthropic's own type for an upstream that is
+ * temporarily over capacity, which is what this is. Not `rate_limit_error`:
+ * that one blames the caller for its own request rate, and the caller neither
+ * sets the rate nor spends the quota one request at a time. Used on both the
+ * streaming and the non-streaming path — they differ in how it is delivered,
+ * not in what it says.
  */
 export function anthropicErrorPayload(error: unknown): {
   type: 'error';
@@ -93,15 +95,42 @@ export function anthropicErrorPayload(error: unknown): {
   return {
     type: 'error',
     error: {
-      type: limit ? 'rate_limit_error' : 'api_error',
+      type: limit ? 'overloaded_error' : 'api_error',
       message: limit ? throttleMessage(limit) : fallback,
     },
   };
 }
 
-/** The HTTP status for a failed request: 429 when the quota is what failed. */
+/**
+ * The HTTP status for a failed request on the Anthropic-compatible channel.
+ *
+ * `529`, and not `429`. A `429` says THIS caller sent too many requests, and
+ * that is not what happened: the caller does not set the rate, and the traffic
+ * is not one-to-one — a single chat request fans out into as many LLM calls as
+ * the tool loop needs, so a consumer's request count says nothing about how
+ * much upstream quota it spends.
+ *
+ * `529` rather than `503` because this endpoint speaks Anthropic's dialect, and
+ * in that dialect `overloaded_error` is paired with `529`. A client written
+ * against their API already knows what to do with it; sending their error type
+ * under a different status would be a pairing they have never seen. `Retry-After`
+ * applies to it exactly as it would to a `503`.
+ */
 export function statusForError(error: unknown): number {
-  return throttleOf(error) ? 429 : 500;
+  return throttleOf(error) ? 529 : 500;
+}
+
+/**
+ * The `Retry-After` value, in whole seconds, or undefined when unknown.
+ *
+ * The message carries the same number in prose for a human; a client retrying
+ * on its own reads the header. RFC 9110 wants a non-negative integer, so the
+ * remaining pause is rounded up — early is worse than late here.
+ */
+export function retryAfterHeader(error: unknown): string | undefined {
+  const seconds = throttleOf(error)?.retryAfterSeconds;
+  if (seconds === undefined || !Number.isFinite(seconds)) return undefined;
+  return String(Math.max(0, Math.ceil(seconds)));
 }
 
 /**

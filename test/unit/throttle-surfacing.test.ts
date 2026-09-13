@@ -1,6 +1,7 @@
 import {
   anthropicErrorPayload,
   failureText,
+  retryAfterHeader,
   statusForError,
   throttleMessage,
   throttleOf,
@@ -80,54 +81,92 @@ describe('throttleMessage', () => {
   });
 });
 
-describe('the configured wait budget', () => {
+describe('the configured wait ceiling', () => {
   const load = () => {
     jest.resetModules();
     const mod = require('../../srv/agent-config') as {
       clearAgentConfig: () => void;
       getAgentConfig: () => {
-        llm: { whenThrottled: { maxTotalWaitMs: number } };
+        llm: {
+          whenThrottled: { name: string; decide: (c: unknown) => unknown };
+        };
       };
     };
     mod.clearAgentConfig();
     return mod.getAgentConfig();
   };
 
+  const decideFor = (seconds: number | undefined) =>
+    load().llm.whenThrottled.decide({
+      source: 'response',
+      attempt: 1,
+      retryAfterSeconds: seconds,
+      waitedMs: 0,
+    }) as { retry: boolean; reason?: string; waitMs: number };
+
   afterEach(() => {
     delete process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS;
     jest.resetModules();
   });
 
-  it('runs out before the caller does, rather than at the same moment', () => {
-    // The library default is 60s, which is where our chat clients give up. A
-    // budget that expires with the caller never gets to say "retry in N".
-    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(20_000);
+  it('installs our own strategy, not the library default', () => {
+    // The library decides nothing on purpose. We can decide, because we know
+    // our callers give up around a minute.
+    expect(load().llm.whenThrottled.name).toBe('wait-if-short-enough');
   });
 
-  it('takes an override from the environment', () => {
+  it('waits out an interval short enough to be worth waiting', () => {
+    expect(decideFor(5)).toEqual({ waitMs: 5000, retry: true });
+  });
+
+  it('counts the intervals together, not one at a time', () => {
+    // Five twenty-second intervals are not five short waits. An earlier version
+    // looked only at the interval in hand and would have waited a hundred
+    // seconds — the cut connection this strategy exists to prevent.
+    const strategy = load().llm.whenThrottled;
+    const decide = (seconds: number, waitedMs: number) =>
+      strategy.decide({
+        source: 'response',
+        attempt: 1,
+        retryAfterSeconds: seconds,
+        waitedMs,
+      }) as { retry: boolean; reason?: string };
+
+    expect(decide(15, 0).retry).toBe(true);
+    expect(decide(15, 10_000).retry).toBe(false);
+    expect(decide(15, 10_000).reason).toBe('budget-spent');
+  });
+
+  it('reports an interval longer than we will hold a connection', () => {
+    // A caller told "try again in ninety seconds" has something to act on; a
+    // caller whose connection was cut at sixty has nothing.
+    const decision = decideFor(90);
+    expect(decision.retry).toBe(false);
+    expect(decision.reason).toBe('longer-than-we-wait');
+    expect(decision.waitMs).toBe(90_000);
+  });
+
+  it('reports rather than guessing when the server named nothing', () => {
+    const decision = decideFor(undefined);
+    expect(decision.retry).toBe(false);
+    expect(decision.reason).toBe('no-interval');
+  });
+
+  it('takes the ceiling from the environment', () => {
     process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '35000';
-    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(35_000);
+    expect(decideFor(30).retry).toBe(true);
   });
 
-  it('honours an explicit zero, which means do not wait at all', () => {
-    // The one value an operator writes deliberately. `Number(v) || default`
-    // could not tell it from nonsense and quietly substituted 20s.
+  it('honours an explicit zero, which means never wait', () => {
     process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '0';
-    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(0);
+    expect(decideFor(1).retry).toBe(false);
   });
 
-  it('refuses a value it cannot honour, rather than half-applying it', () => {
+  it('refuses a ceiling it cannot honour', () => {
     for (const bad of ['soon', '-1', 'Infinity', '1.5', 'NaN']) {
       process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = bad;
       expect(() => load()).toThrow(/LLM_AGENT_THROTTLE_MAX_WAIT_MS/);
     }
-  });
-
-  it('uses the default when the variable is absent or blank', () => {
-    delete process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS;
-    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(20_000);
-    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '   ';
-    expect(load().llm.whenThrottled.maxTotalWaitMs).toBe(20_000);
   });
 });
 
@@ -143,10 +182,10 @@ describe('the wire shapes every channel sends', () => {
       reason: 'budget',
     });
 
-  it('names the Anthropic error type a client already handles', () => {
+  it('names an upstream overload, not a caller who sent too much', () => {
     const payload = anthropicErrorPayload(throttled(30));
     expect(payload.type).toBe('error');
-    expect(payload.error.type).toBe('rate_limit_error');
+    expect(payload.error.type).toBe('overloaded_error');
     expect(payload.error.message).toContain('30 seconds');
   });
 
@@ -156,11 +195,36 @@ describe('the wire shapes every channel sends', () => {
     expect(payload.error.message).toBe('Class ZCL_X not found');
   });
 
-  it('answers 429 for a closed quota and 500 for our own failure', () => {
-    // 500 tells a client the fault is ours and the request is not worth
-    // repeating. For a quota that reopens in seconds, both halves are wrong.
-    expect(statusForError(throttled(12))).toBe(429);
+  it('answers 529 for a closed quota, not 429', () => {
+    // 429 says THIS caller sent too many requests. It did not: the caller does
+    // not set the rate, and one chat request fans out into as many LLM calls as
+    // the tool loop needs, so its request count says nothing about the quota it
+    // spends. Temporarily unable, and we know when — that is a 5xx.
+    //
+    // 529 of them, because this endpoint speaks Anthropic's dialect, where
+    // overloaded_error is paired with 529. Their type under another status is
+    // a pairing their clients have never seen.
+    expect(statusForError(throttled(12))).toBe(529);
     expect(statusForError(new Error('Class ZCL_X not found'))).toBe(500);
+  });
+
+  it('puts the same number in Retry-After, rounded up', () => {
+    // Prose for a human, header for a client retrying on its own. Rounded up
+    // because waking early means walking back into a closed quota.
+    expect(retryAfterHeader(throttled(12.2))).toBe('13');
+    expect(retryAfterHeader(throttled(30))).toBe('30');
+    expect(
+      retryAfterHeader(new Error('Class ZCL_X not found')),
+    ).toBeUndefined();
+  });
+
+  it('omits the header when the server never said how long', () => {
+    const noNumber = Object.assign(new Error('429'), {
+      throttled: true,
+      attempts: 5,
+      reason: 'attempts',
+    });
+    expect(retryAfterHeader(noNumber)).toBeUndefined();
   });
 
   it('gives the planner the same fact in the shape execute_step has', () => {

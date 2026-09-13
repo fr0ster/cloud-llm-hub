@@ -22,7 +22,12 @@
  * - LLM_AGENT_EXPOSITION: (deprecated — tool filtering now role-based via RAG)
  */
 
+import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import {
+  DEFAULT_MAX_THROTTLE_WAIT_MS,
+  WaitIfShortEnough,
+} from './lib/throttle-strategy';
 
 export type SmartAgentMode = 'smart' | 'pass' | 'hard';
 export type RagType = 'in-memory' | 'ollama';
@@ -58,13 +63,11 @@ export interface AgentConfig {
     /**
      * What the provider does when the LLM service throttles it (HTTP 429).
      *
-     * Only the wait budget is set here. The library's default is 60 seconds,
-     * which is at or past what our callers wait: a chat client that gives up
-     * at 60 gets a cut connection instead of the answer the policy can give,
-     * which names the seconds to come back in. Waiting less than the caller
-     * means we always get to say it.
+     * Since llm-agent 24.0.0 this is a strategy, not a number: the library
+     * establishes the facts and leaves the decision to whoever can see who is
+     * waiting. That is us. See `srv/lib/throttle-strategy.ts`.
      */
-    whenThrottled: { maxTotalWaitMs: number };
+    whenThrottled: IThrottleStrategy;
   };
 
   /**
@@ -123,9 +126,9 @@ export function loadAgentConfig(): AgentConfig {
     'sap-ai-sdk') as LlmProvider;
 
   // Deliberately below the client timeouts we see (Cline and the chat UI both
-  // sit around a minute): the point of a budget is to run out before the caller
-  // does, so the "retry in N seconds" answer still reaches them.
-  const throttleMaxWaitMs = readThrottleMaxWaitMs();
+  // sit around a minute): a wait must end before the caller does, so the
+  // "try again in N seconds" answer still reaches them.
+  const throttleStrategy = new WaitIfShortEnough(readThrottleMaxWaitMs());
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
@@ -180,7 +183,7 @@ export function loadAgentConfig(): AgentConfig {
       apiKey: apiKey || undefined,
       baseUrl: baseUrl || undefined,
       resourceGroup,
-      whenThrottled: { maxTotalWaitMs: throttleMaxWaitMs },
+      whenThrottled: throttleStrategy,
     },
     mcp: {
       destination: mcpDestination,
@@ -200,7 +203,8 @@ export function loadAgentConfig(): AgentConfig {
     // Logged because it is the setting nobody can otherwise confirm arrived:
     // it only shows itself under load, as the difference between an answer and
     // a dropped connection.
-    throttleMaxWaitMs: config.llm.whenThrottled.maxTotalWaitMs,
+    throttleStrategy: config.llm.whenThrottled.name,
+    throttleMaxWaitMs: readThrottleMaxWaitMs(),
     model: config.llm.model,
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',
@@ -219,8 +223,8 @@ export function loadAgentConfig(): AgentConfig {
  */
 let cachedConfig: AgentConfig | null = null;
 
-/** The default wait budget, in milliseconds. See `whenThrottled` on the config. */
-export const DEFAULT_THROTTLE_MAX_WAIT_MS = 20_000;
+/** The longest single wait we will hold a caller for. */
+export const DEFAULT_THROTTLE_MAX_WAIT_MS = DEFAULT_MAX_THROTTLE_WAIT_MS;
 
 /**
  * Read the wait budget from the environment.

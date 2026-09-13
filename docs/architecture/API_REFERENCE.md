@@ -602,7 +602,7 @@ that channel speaks:
 | Channel | What arrives |
 |---|---|
 | `/v1/chat/completions` | the message as the response content, streaming or not |
-| `/v1/messages` non-streaming | HTTP `429` with Anthropic's `rate_limit_error` envelope |
+| `/v1/messages` non-streaming | HTTP `529` with `Retry-After`, and Anthropic's `overloaded_error` envelope — the pairing their own API uses |
 | `/v1/messages` streaming | an SSE `error` event carrying the same envelope |
 | `execute_step` (MCP) | the message as the step's `ERROR on destination …` text |
 
@@ -610,9 +610,19 @@ that channel speaks:
 The AI service is rate-limited right now. Please try again in about 42 seconds.
 ```
 
-The status is `429` rather than `500` where a status is sent at all: `500` tells
-a client the fault is ours and the request is not worth repeating, and for a
-quota that reopens in seconds both halves of that are wrong.
+The status is a 5xx, not `429`. A `429` says **this caller** sent too many
+requests, and that is not what happened twice over: the caller does not set the
+rate, and the traffic is not one-to-one — a single chat request fans out into as
+many LLM calls as the tool loop needs, so one consumer request says nothing
+about how much upstream quota it spends. What did happen is that the service is
+temporarily unable to answer and knows when it will be able to.
+
+Which 5xx follows the channel's dialect: `/v1/messages` answers `529`, the status
+Anthropic pairs with `overloaded_error`, so a client written against their API
+needs no special case from us.
+
+The header carries whole seconds, rounded up. The same number is in the message
+text for a human to read; a client retrying on its own reads the header.
 
 The number is the server's own `Retry-After`, carried on the error rather than
 guessed at.
