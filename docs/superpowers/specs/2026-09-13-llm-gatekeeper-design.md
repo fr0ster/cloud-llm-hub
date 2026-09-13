@@ -200,6 +200,11 @@ such.
 The alternative is a restage that never completes because something is retrying
 into a wall.
 
+Both are cancellation, and cancellation is a mechanism, not a wish — see
+Cancellation below. Racing a timer against the pipeline's promise would report
+a failure while the pipeline carried on holding memory, a lock and a live slot,
+which is the leak the door exists to prevent.
+
 So the guarantee reads exactly as it did above: **no `429` ends an admitted
 pipeline.** Our own lifetime cap can, and shutdown can. Both are visible,
 configured, and ours — and because they are the only two, the lifetime is not
@@ -341,21 +346,53 @@ retry inside `RetryLlm`, and every attempt of the provider's own
 `runWithThrottleRetry` loop, is a request the window never saw. Under exactly
 the conditions the gatekeeper exists for, the accounting would be quietly wrong.
 
-So the retrying moves **above** the accounting, and ours is the outermost `ILlm`:
+So the retrying moves **above** the accounting. Ours is the outermost wrapper
+*we* construct, and it takes the permit closest to the wire:
 
 ```
-GatedLlm (ours)
-  loop:
-    await gatekeeper.acquire(quota)   ← every attempt, not every call
-    result = await inner.chat(...)
-    if throttled: wait as told, or re-queue when nothing was told; continue
-    otherwise: return
+RetryLlm (the builder's, above us — see below)
+  GatedLlm (ours)
+    loop:
+      await gatekeeper.acquire(quota)   ← every attempt, not every call
+      result = await inner.chat(...)
+      if throttled: wait as told, or re-queue when nothing was told; continue
+      otherwise: return
 ```
 
-The rule that follows, and that the plan must enforce: **nothing below the
-gated wrapper may retry.** The provider's strategy is `ReportThrottling`, which
-surfaces the refusal instead of absorbing it, and `RetryLlm` is not composed for
-a gated LLM. A retry we do not see is a request we do not count.
+The rule that follows, and that the plan must enforce, is about the span
+between the permit and the wire: **nothing between the permit and the
+transport may retry.** The provider's strategy is therefore
+`ReportThrottling`, which surfaces the refusal instead of absorbing it. A retry
+taken inside one gated call is a request we do not count.
+
+#### `RetryLlm` stays, and stays above us
+
+It is worth being exact about this, because the rule above reads at first like
+"delete the retry decorator", and deleting it would be a regression that has
+nothing to do with rate limits.
+
+`RetryLlm` does not only retry `429`. The builder composes it by default with
+`retryOn: [429, 500, 502, 503]` and three attempts, so it is also what carries
+us over a provider's transient gateway failure. Dropping it would turn a single
+`502` into a failed pipeline.
+
+It does not have to be dropped, because of where the builder puts it: it wraps
+whatever main LLM is handed in, which is our gated wrapper. Every attempt it
+makes therefore **re-enters** the gate and takes its own permit, and the
+invariant holds without us reimplementing transport-failure retry. What must
+not exist is a retry *inside* one gated call, which is the provider's own loop
+and nothing else.
+
+Two consequences the plan must respect:
+
+- **Our own refusals must not look retryable.** A pipeline ended by the
+  lifetime cap is our decision, not a server's; it carries no throttling marker
+  and no retryable status, or `RetryLlm` would try three more times something we
+  had already given up on.
+- **The other construction sites have no retry today.** The builder wraps only
+  the main LLM, so the reviewer, helpers, classifier and embedder call their
+  providers bare. Gating them removes nothing. Whether they deserve transport
+  retry is a real question and a separate one; this design does not answer it.
 
 On the embedder side the same shape, minus the seam: an `IEmbedder` wrapper with
 the same loop. Both call the same gatekeeper.
@@ -403,6 +440,54 @@ keyed on something it infers, which is not ours to reach into. Nor would we want
 to — it is the one thing that stops us spending a request on a quota a sibling
 call has just been told is closed. What it must not do is take that refusal out
 of our window.
+
+## Cancellation
+
+The lifetime cap and shutdown are the only two endings we own, so how they end
+a pipeline has to be written down. Otherwise "the pipeline fails" means a
+`Promise.race` that resolves early: the caller is told, the slot is freed, and
+the work goes on underneath with its ADT session still open. The memory bound
+the door was bought for would be gone, and nothing would look wrong.
+
+**One controller per admitted pipeline.** The door creates it at admission, and
+it is part of what admission hands back. It is aborted by exactly two things:
+the lifetime timer, and shutdown aborting every live controller at once. No
+other code aborts it.
+
+**Its signal travels as `CallOptions.signal`**, which is the path the library
+already has. Along it the signal reaches:
+
+- the provider's transport, which passes it to the SDK's own request
+- the throttle waits in llm-agent, where `waitUntilOpen(signal)` and the
+  backoff sleeps take it and throw on abort
+- the tool loop, which checks it at the top of every iteration
+- the stepper's MCP calls, which take it as an argument
+- the reviewer, finalizer and evaluator roles, which receive it in their
+  diagnostic-only subset of the options
+
+Two of our own waits must take it too, and they are where a deadline is most
+likely to land: the wait in the gatekeeper's queue, and the wait-as-told
+between attempts. A pipeline parked behind a quota is a pipeline doing nothing
+but holding a slot.
+
+**What it does not do is tear out a call in flight.** An ADT request already on
+the wire runs to its answer; the tool loop's check is at an iteration boundary.
+So cancellation means *no further work starts*, and the honest phrasing of the
+cap is that it bounds when unwinding begins, not when it ends.
+
+**Teardown order, and who frees the slot.** The abort unwinds the pipeline; the
+existing safe-stop runs on the way out and releases the ADT session, exactly as
+it already does on every exit path; the caller is answered with our own
+failure; and the slot is released last, by the same `finally` that ran the
+teardown. The timer frees nothing — it only aborts. A slot freed by the timer
+would let the door admit a replacement while the old pipeline still held its
+memory and its lock, which is the double-booking this whole section exists to
+rule out.
+
+**Shutdown is the same path, aborted all at once**, plus one difference: it
+does not wait for the slots to come back before the process exits. What it
+guarantees is that the abort was delivered and the ADT sessions were asked to
+close, not that every socket closed first.
 
 ## The configuration contract
 
@@ -503,6 +588,11 @@ would have to change with it.
 drains while the new one admits. For those minutes we run two windows. Recorded
 as a known mode rather than discovered in logs later.
 
+**The lifetime cap is not a hard bound on the slot.** It bounds when unwinding
+starts. A pipeline inside one long ADT call frees its slot when that call
+answers, because we do not tear a request off the wire. So sizing should assume
+a tail past the cap rather than treat it as a deadline.
+
 **A permanent refusal costs a slot until the lifetime expires.** Nothing below
 us can tell a spend cap from a busy minute, and neither can we. So a pipeline
 meeting one holds its place, retrying on our own pacing, until the lifetime cap
@@ -588,6 +678,15 @@ These properties, because they are what this shape gets wrong:
   gate opens.
 - **Shutdown cancels admitted work** rather than waiting for it, and the
   lifetime cap ends a pipeline that would otherwise retry for ever.
+- **Cancellation reaches the waits, and the slot outlives the report.** A
+  pipeline parked in the gatekeeper's queue and one parked in a wait-as-told
+  both leave when the signal fires, and in both the slot is still held at the
+  moment the caller is answered, and released only after safe-stop has run.
+  Written against the observable order, because a `Promise.race` passes every
+  other test on this list.
+- **A `502` still retries.** Three attempts as today, three permits taken, one
+  per attempt. This is what fails if the gated wrapper is mistaken for a reason
+  to drop `RetryLlm`.
 
 ## Relationship to what already exists
 
