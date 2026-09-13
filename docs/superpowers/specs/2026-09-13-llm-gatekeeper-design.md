@@ -166,13 +166,29 @@ either stays connected for as long as the queue takes, or — when there is no
 room to hold it — is turned away. Its own timeout is its own business. Ours is
 not to cut it and not to refuse it while we still have room.
 
-So the number is set from what we can hold. A place in the queue is nearly free;
-the **waiter** is not. A parked pipeline holds its whole context — messages,
-tool results, token buffers. This container was raised to 2 GB because
-concurrent heavy pipelines spike memory, and parked ones spike it the same way.
-The queue length is therefore roughly "how many live pipelines fit in the
-container", and whoever deploys sets it in their `.mtaext`, beside the
-memory it depends on.
+So the number is set from what we can hold, and what we can hold is bought.
+Memory on BTP is a price: 256 MB or 2 GB is a decision by whoever deploys, and
+the chain runs money, memory, queue length, backlog held, callers turned away.
+Nothing in the code fixes any link of it.
+
+Memory buys two different things, and only the second is the queue.
+
+**The floor** is what it takes to do the work at all. We found ours painfully:
+the container was raised to 2 GB because one heavy agent step — the 258-tool
+corpus, skill injection, 32k-token buffers, accumulated iteration context — was
+killing a gigabyte. Below the floor the service does not run, and the queue is
+beside the point. 256 MB is not a shorter queue; it is a different service, one
+that cannot hold a single heavy step.
+
+**Above the floor** is the queue. A place in it is nearly free; the **waiter**
+is not. A parked pipeline holds its whole context, and parked ones spike memory
+the same way running ones do. So the length is how many such contexts fit in
+what is left, and whoever deploys sets it in their `.mtaext`, beside the memory
+it depends on. 2 GB against 4 GB is the decision that actually buys queue.
+
+A length of zero is a valid setting, not a misconfiguration: refuse as soon as
+the window is full, hold nothing. It must behave, because it is the honest
+choice for a deployment that would rather answer quickly than wait.
 
 The wait that results is worth knowing even though it is not a promise: length
 divided by rate. At 78 requests per minute a queue of 39 means the last in line
@@ -284,6 +300,8 @@ Three properties, because they are what this shape gets wrong:
   `TokenBucketRateLimiter` fails.
 - **The limit holds under pressure.** Twenty simultaneous callers against a
   limit of five produce exactly five starts in the window.
+- **A queue of zero refuses instead of holding**, and a queue of one holds
+  exactly one. The degenerate settings are settings.
 
 Plus: a refusal at a full queue carries the right number, and shutdown behaves
 as a full queue.
