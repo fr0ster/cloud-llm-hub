@@ -491,22 +491,25 @@ and would have passed the signal down; the adapter never gives it one. On the
 streaming path the check is per chunk, which is the same story with a shorter
 gap.
 
-This is a real hole and it is directly upstream of us, which makes patching
-llm-agent the obvious move. It is the wrong one, twice over.
+It is a defect and it is fixable upstream: forwarding a signal the interface
+already carries is plumbing, not policy, and would not put a deadline of the
+library's own into a layer that cannot see our callers. But this design must
+not be built on that fix, for a reason that has nothing to do with who owns
+which layer.
 
-**It is not the layer's problem to solve.** A deadline belongs to whoever is
-waiting at the other end. That is the reasoning this whole family of changes
-has followed — the library was stripped of every number it had invented
-precisely because it cannot see our callers — and reaching back into it to add
-a cancellation policy would undo that on the last page.
+**The door's correctness cannot rest on how well anything below it cancels.**
+Even with the signal delivered, a request already on the wire may still be
+running when we report — that is exactly how the ADT calls behave, and we have
+written it into this section twice already. So the slot has to wait for the
+work to settle in either case. Make that wait conditional on a library version
+and the memory bound becomes a thing that is true of some deployments.
 
-**And cancellation is not actually what the door needs.** What the door
-protects is a count of live pipelines against memory. It needs to know that a
-slot is free before it sells it again. An abandoned HTTP request is not an
-abandoned pipeline: it holds a socket and a response buffer, takes no ADT lock,
-opens no session, spawns no retry, and its permit was spent before it left. It
-is a cost, not a leak — and it is a cost we can account for without anyone's
-permission, because **we are the ones who started it.**
+**And what the door needs is not cancellation anyway.** It protects a count of
+live pipelines against memory, so it needs to know a slot is free before
+selling it again. An abandoned HTTP request is not an abandoned pipeline: a
+socket and a response buffer, no ADT lock, no session, no retry, and its permit
+spent before it left. That is a cost, not a leak — and a cost we can account
+for without anyone's cooperation, because **we are the ones who started it.**
 
 So the rule is accounting rather than cancellation: **the slot is released when
 the last transport promise this pipeline started has settled**, not when the
@@ -523,8 +526,10 @@ is whatever the remote end and the operating system decide. A deployment on one
 of them should configure a client timeout; without one, the slot's release has
 no bound we can name, and this design would rather say so than pretend.
 
-Worth reporting upstream all the same: an adapter that accepts a signal and
-drops it is a defect whether or not we route around it.
+Forwarding the signal upstream would shorten that tail to nothing, and it stays
+worth doing whenever llm-agent is next open. It is an improvement to this
+design, not a prerequisite of it: nothing here changes if it lands, except the
+length of the tail.
 
 **Teardown order, and who frees the slot.** The abort unwinds the pipeline; the
 existing safe-stop runs on the way out and releases the ADT session, exactly as
