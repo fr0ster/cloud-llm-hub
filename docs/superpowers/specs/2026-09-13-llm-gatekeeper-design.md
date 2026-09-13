@@ -640,12 +640,52 @@ issue is precisely that a disconnect must **not** kill in-flight work. Nobody
 is waiting for the answer; SAP is still waiting for the rest of the chain.
 
 So the listener stops tearing anything down and becomes a note: the caller is
-gone, stop writing to a dead socket. The pipeline runs to its natural end, the
-register empties, `safeStop` runs, the slot is freed. The cost is a slot held
-for an answer nobody will read, and it is the right cost — the alternative is
-paid by a human in SM12.
+gone. The pipeline runs to its natural end, the register empties, `safeStop`
+runs, the slot is freed. Shutdown remains the one thing that aborts.
 
-Shutdown remains the one thing that aborts.
+**"Stop writing" has to be built, not intended.** The handlers write to the
+response unconditionally once streaming has begun
+(`srv/openai-handler.ts`, `srv/anthropic-handler.ts`), and a write to a closed
+socket throws. Caught by the pipeline, that throw ends the run — and the
+guarantee this section just made would be undone by the very listener meant to
+honour it. So the note detaches the output sink: after it, every chunk and
+every closing envelope is dropped before it reaches the socket, and no write
+error can be raised into the pipeline at all. Not "guarded", replaced.
+
+**And the caller may come back while the first pipeline is still running.**
+This document says at the top that a program has its own timeout and may retry
+on its own, and carrying the first pipeline to the end makes that a real
+collision: two runs of the same prompt against the same system, the second
+starting while the first is midway through `create` / change / `activate`. That
+is the duplicate write the outage section forbids one tool call at a time,
+arriving one pipeline at a time instead.
+
+Three things bear on it, and only the third is ours to add.
+
+*SAP serialises the overlap it can see.* An ADT enqueue is held for the object
+being edited, so a second run reaching the same object gets "currently editing"
+rather than a silent second change. That is a visible failure, not corruption —
+and it is the same lock this design works hard not to orphan.
+
+*An idempotency key is not available.* Nothing that calls us sends one, and a
+key derived from the prompt cannot tell a retry from a caller legitimately
+asking for the same step twice, which is ordinary in a plan that repeats a
+create across packages.
+
+*So the rule we add is narrow and about caller-less work only.* While a
+pipeline whose caller has disconnected is still running for a given session and
+destination, a new request from that same session and destination is refused,
+saying so — the earlier one is still finishing. It is not deduplication and
+does not pretend to be: it closes the collision that our own "finish the work"
+promise creates, and touches nothing else. Requests from a caller that is still
+there run in parallel exactly as they do today, which matters because parallel
+`execute_step` is established as safe here.
+
+The residue is honest and small: a retry arriving *after* the orphaned pipeline
+has finished is a new request against a system that may already carry the
+change, and it fails the way a repeat always does — "already exists", or a
+read-back that shows the work done. That is a consumer's judgement to make with
+a read, which is what the planner is for.
 
 Nothing frees a slot early. A slot freed while the pipeline still held memory
 and a lock would let the door admit a replacement on top of it, which is the
@@ -1029,6 +1069,14 @@ These properties, because they are what this shape gets wrong:
   end, with teardown after it. Asserted on ordering, because a test that only
   counts the slot passes while the connection is pulled out from under a live
   write.
+- **A dead socket cannot fail the run.** Disconnect mid-stream, then let the
+  pipeline emit several more chunks and its closing envelope: all are dropped,
+  none throws, and the run reaches its natural end. This is the test that
+  fails if the sink is guarded rather than detached.
+- **A retry from the same caller is refused while the orphan runs.** Same
+  session, same destination, second request during the first's caller-less
+  tail: refused with the reason, and no second write chain starts. A request
+  from a caller that is still connected, in parallel, is unaffected.
 - **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
   back, and it proceeds without waiting for the expiry its timer was set to.
 - **An unknown model is a bad request, not an overload.** With quotas
