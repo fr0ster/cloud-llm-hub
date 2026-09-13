@@ -657,21 +657,48 @@ sent and whose answer never came is the hard one: the ADT call is asynchronous
 in substance, so we cannot tell an applied change from a lost one, and the
 system may well have applied it. Retrying is the worst available option — a
 second attempt at the same change, against the rule this repository already
-wrote down. Assuming success is worse still. So it is reported as what it is:
-the executor's response carries the `UNVERIFIED_WRITE:` notice the reviewer
-already emits when a claim is not backed by a tool result
-(`srv/lib/notice-finalizer.ts`), and the ADT session is released on the way out
-as it is on every exit path. The consumer — a human on the WebUI, or the
-planning agent on the MCP surface — reads back and decides. That mechanism
-exists; this section only names it as the answer here.
+wrote down. Assuming success is worse still. So it is reported as what it is,
+and the consumer — a human on the WebUI, or the planning agent on the MCP
+surface — reads back and decides.
 
-**The refusal carries a number, and it is ours.** `503`, never a `500`, and
-`Retry-After` set to the interval of our own unreachable-destination probe —
-five minutes today (`srv/agent-manager.ts`). It is not an estimate of when SAP
-returns, which we cannot know any more than we know how long the pipelines
-behind a full door will run. It is a statement that we will not even have
-looked before then, so coming back sooner is certainly wasted. That makes it
-the same kind of number as the queue's own pacing: ours, observable, and true.
+Saying it reuses the existing `UNVERIFIED_WRITE:` notice was too quick, and two
+things have to be built for that sentence to be true.
+
+**The notice cannot come from the finalizer.** `NoticeFinalizer` runs only when
+the interpreter returned a result; on an execution failure the coordinator sets
+its error and returns without calling it
+(`pipeline/handlers/dag-coordinator.js` in llm-agent-libs). An outage is an
+execution failure, so there is no executor response to append anything to. The
+notice therefore belongs on **our** error path — the same place that already
+composes `execute_step`'s failure text and the chat channels' error envelopes
+(`srv/lib/throttle-surfacing.ts`) — built from what was recorded, not from a
+response that does not exist.
+
+**And the recording has to happen at dispatch.** `RecordingMcpClient` writes
+its record *after* awaiting the call (`srv/lib/recording-mcp-client.ts`), so a
+transport error that throws leaves no trace that a write was ever sent —
+precisely the case we need to report. The record must be opened before the
+call and closed when an answer arrives, so that "sent, unanswered" is a state
+the error path can read rather than an absence it must infer.
+
+With those two, the failure a caller receives names the tool, the object and
+the fact that we do not know whether it applied, and the ADT session is
+released on the way out as on every exit path.
+
+**The refusal carries a number, and it has to be the true one.** `503`, never a
+`500`, and `Retry-After` set to the time remaining until we next look at that
+destination. Not the probe interval: the retry today is one process-wide
+`setInterval` (`srv/agent-manager.ts`), whose phase has nothing to do with when
+any particular destination failed, so a caller refused a second before a tick
+would be told to wait five minutes while the recheck happens immediately. A
+header that is wrong in both directions is worse than none.
+
+So the scheduler records `nextProbeAt` per destination, and the header is the
+remainder, rounded up. When nothing is scheduled — the timer stops once every
+destination is reachable — there is no header, for the same reason the full
+door carries none: we would be inventing it. What this number says is that we
+will not have looked before then, which is ours to know, unlike when SAP
+returns, which is not.
 
 **Degrading silently is not on the table.** `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK`
 already defaults to off, and an uninitialised destination already answers a
@@ -824,10 +851,14 @@ These properties, because they are what this shape gets wrong:
   a pipeline already inside it is not cut by us — it fails only if it actually
   calls the missing server.
 - **An unanswered write is reported, never repeated.** A tool call that was
-  sent and whose answer never arrived produces one `UNVERIFIED_WRITE:` notice
-  and no second call, with the ADT session released. Asserted by counting calls
-  at the transport, because a single retry hidden anywhere below turns this
-  from a report into a duplicated change.
+  sent and whose answer never arrived produces one unverified-write failure and
+  no second call, with the ADT session released. Two assertions, because each
+  fails on its own: the transport sees exactly one call, and the failure the
+  caller receives names the write — which it cannot do unless the record was
+  opened at dispatch rather than written after the answer.
+- **The refusal's `Retry-After` matches the schedule.** Refused just before a
+  probe, the header says seconds and not the whole interval; with no probe
+  scheduled, there is no header.
 - **RAG down is carried, not fatal.** The same destination still answers with
   every tool available and a line in the log, because choosing tools worse is
   not the same as having none.
