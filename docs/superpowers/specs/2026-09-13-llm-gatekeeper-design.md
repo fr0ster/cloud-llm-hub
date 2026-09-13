@@ -129,6 +129,14 @@ counts the free places, takes exactly that many from the head, and resolves
 them. So the limit cannot be exceeded under contention, and twenty parked
 callers never wake together to race.
 
+**A place can also open early, and the timer will not know.** Giving a permit
+back frees room now, not at the expiry the timer was set for, so `giveBack`
+must run the dispatcher — the same one, immediately, rescheduling its timer
+from the window as it stands afterwards. Without that a waiter sleeps until an
+expiry that has nothing to do with the room it could already have had. It is
+the lost-wake-up defect in a second costume, and it is tested as its own case
+rather than left to the general one.
+
 This is the defect that rules out `TokenBucketRateLimiter` from llm-agent, which
 otherwise fits the seam: each waiter computes its own delay and, on waking,
 records a start **without re-checking**, so N parked callers record N starts past
@@ -567,11 +575,30 @@ before it left. That is a cost, not a leak — and a cost we can account for
 without anyone's cooperation, because **we are the ones who started it.**
 
 So the rule is accounting rather than cancellation: **the slot is released when
-the last transport promise this pipeline started has settled**, not when the
-pipeline reported. Our gated wrapper is the caller of `inner.chat`, so it is
-already holding every one of those promises; on abort it stops waiting and
-starts no further attempt, and it hands what is still pending to the slot,
-which waits for it before freeing.
+the last outstanding call this pipeline started has settled**, not when the
+pipeline reported.
+
+An earlier draft put that bookkeeping in the gated LLM wrapper, and that was
+too narrow by exactly the calls that matter most. The wrapper sees model calls;
+it never sees a tool call. Those go through `McpClientAdapter`, which races the
+caller's signal around `client.callTool` — so on abort the pipeline is answered
+while the embedded promise underneath keeps running an ADT write, and the
+`finally` would run `safeStop` and free the slot on top of it. That is the
+double-booking this section exists to rule out, arriving through the one path
+the rule did not cover.
+
+The register therefore belongs to the **admission handle**, not to any one
+wrapper. Everything a pipeline starts is registered against it before the call
+leaves and deregistered when it settles, whichever kind of call it is; the slot
+is freed by the same `finally` only after that register is empty. One place,
+because two would disagree.
+
+Two consequences for the plan. The embedded handler must take the
+`AbortSignal` the library now hands it — `callToolHandler` currently accepts
+`(name, args)` and drops the third argument (`srv/agent-manager.ts`), so an
+abort reaches the wrapper and stops there. And a tool call must be registered
+at dispatch, which is the same moment the recording has to open for the
+unverified-write case: one hook, two readers.
 
 What 25.0.0 buys is how long that wait lasts. With the signal delivered, an
 aborted LLM request ends rather than running to the provider's own answer, so
@@ -645,8 +672,13 @@ startup rather than falling back to a default that hides the mistake.
   seen long after startup and a typo would silently un-gate every subsequent
   main call. The check therefore happens **at the swap**, not at boot: with
   `LLM_GATEKEEPER_QUOTAS` set, a model that names neither a quota entry nor a
-  mapping is rejected with the same refusal shape as any other, naming the
-  model and the variable. With no quotas configured at all nothing is gated and
+  mapping is rejected — but **not** with this design's refusal shape. A door
+  refusal and a throttle refusal both say "not now"; a program reading either
+  is right to come back. An unconfigured model name will never become valid, so
+  answering it with `529`, a retryable `503` or "try again shortly" invites a
+  retry loop that cannot succeed. It is a bad request and it is answered as
+  one: `400` with an `invalid_request_error`, naming the model and the variable
+  that would have to list it. With no quotas configured at all nothing is gated and
   nothing is rejected, exactly as today
 
 The values in force are logged at startup, for the same reason the throttle
@@ -660,20 +692,17 @@ full, we are not able. It belongs in this document because both end at the same
 place — a caller told no — and because getting the second one wrong undoes the
 guarantee the first one buys.
 
-**The decision is ours, and the library must not make it for us.** llm-agent
-already has the seam: `IMcpFailureClassifier` names two kinds, `unavailable`
-and `tool-error`, which is exactly the distinction that matters — a server that
-is gone versus a tool that ran and failed. What it does not yet have is a
-wrapper that asks. `MCPClientWrapper` catches any transport error and decides
-by itself to disconnect, reconnect and **call the tool again**. On an ABAP
-write that is a second attempt at the same change, against the rule this
-repository learned the hard way and wrote down: never blind-retry a stateful
-write, because the retries pile up locks.
+**The decision is ours, and nothing below us should be making it.** llm-agent
+has the seam for the fact: `IMcpFailureClassifier` names two kinds,
+`unavailable` and `tool-error`, which is exactly the distinction that matters —
+a server that is gone versus a tool that ran and failed. This service wires no
+classifier at all, which is why nothing here closes a destination today.
 
 So the shape is the same as everywhere else in this design. The library
-establishes the fact — the server is unreachable — and we decide what follows.
-Nothing below us retries, reconnects on its own, or converts an outage into a
-quieter-looking degradation.
+establishes the fact and we decide what follows. Nothing below us may retry,
+reconnect on its own, or convert an outage into a quieter-looking degradation —
+and on our transport the third of those is the live risk, not the first two.
+The section below says where.
 
 **What we decide, stated plainly.**
 
@@ -946,6 +975,16 @@ These properties, because they are what this shape gets wrong:
   through `AgentService.Chat` fills a door slot like any other, or the endpoint
   is gone. Asserted by driving each channel to capacity in turn, because a door
   with one way around it is not a door.
+- **The slot outlives an aborted tool call, not only an aborted model call.**
+  Abort a pipeline mid-write: the caller is answered, and the door still
+  refuses an arrival until the embedded promise settles. Written against the
+  MCP path specifically, because the LLM path passed this while the MCP path
+  had no register at all.
+- **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
+  back, and it proceeds without waiting for the expiry its timer was set to.
+- **An unknown model is a bad request, not an overload.** With quotas
+  configured, a `body.model` naming no quota answers `400`
+  `invalid_request_error` — never `529`, never a retryable `503`.
 - **A health check never waits.** With the quota shut, `healthCheck` reports
   throttled at once rather than sitting out the interval, and it still spends a
   permit, because it is still a request the window must see.
