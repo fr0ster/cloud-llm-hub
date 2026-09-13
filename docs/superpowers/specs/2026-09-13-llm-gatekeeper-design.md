@@ -372,9 +372,14 @@ It is worth being exact about this, because the rule above reads at first like
 nothing to do with rate limits.
 
 `RetryLlm` does not only retry `429`. The builder composes it by default with
-`retryOn: [429, 500, 502, 503]` and three attempts, so it is also what carries
-us over a provider's transient gateway failure. Dropping it would turn a single
-`502` into a failed pipeline.
+`retryOn: [429, 500, 502, 503]`, so it is also what carries us over a
+provider's transient gateway failure. Dropping it would turn a single `502`
+into a failed pipeline.
+
+Its `maxAttempts: 3` counts **retries, not attempts**: the loop starts at zero,
+calls, and gives up once the counter reaches the maximum, which is the first
+call plus three more. Four requests, therefore four permits — worth stating,
+because a limit sized against the wrong number of them is off by a third.
 
 It does not have to be dropped, because of where the builder puts it: it wraps
 whatever main LLM is handed in, which is our gated wrapper. Every attempt it
@@ -474,6 +479,13 @@ but holding a slot.
 the wire runs to its answer; the tool loop's check is at an iteration boundary.
 So cancellation means *no further work starts*, and the honest phrasing of the
 cap is that it bounds when unwinding begins, not when it ends.
+
+**One seam in the library drops the signal, and we must keep not using it.**
+`LlmAdapter`, which presents an agent as an `ILlm`, builds the inner call's
+options without the signal and only stops waiting for the promise. An abort
+there reports promptly and leaves the work running — the exact shape this
+section rejects. Nothing in this repository constructs it today, and the plan
+must not introduce it on a gated path.
 
 **Teardown order, and who frees the slot.** The abort unwinds the pipeline; the
 existing safe-stop runs on the way out and releases the ADT session, exactly as
@@ -684,9 +696,10 @@ These properties, because they are what this shape gets wrong:
   moment the caller is answered, and released only after safe-stop has run.
   Written against the observable order, because a `Promise.race` passes every
   other test on this list.
-- **A `502` still retries.** Three attempts as today, three permits taken, one
-  per attempt. This is what fails if the gated wrapper is mistaken for a reason
-  to drop `RetryLlm`.
+- **A `502` still retries.** Four attempts at the default `maxAttempts: 3`,
+  which counts retries after the first call, and four permits — one per
+  attempt. Two things fail this: mistaking the gated wrapper for a reason to
+  drop `RetryLlm`, and reading the option's name as the number of requests.
 
 ## Relationship to what already exists
 
