@@ -462,7 +462,6 @@ other code aborts it.
 **Its signal travels as `CallOptions.signal`**, which is the path the library
 already has. Along it the signal reaches:
 
-- the provider's transport, which passes it to the SDK's own request
 - the throttle waits in llm-agent, where `waitUntilOpen(signal)` and the
   backoff sleeps take it and throw on abort
 - the tool loop, which checks it at the top of every iteration
@@ -480,21 +479,61 @@ the wire runs to its answer; the tool loop's check is at an iteration boundary.
 So cancellation means *no further work starts*, and the honest phrasing of the
 cap is that it bounds when unwinding begins, not when it ends.
 
-**One seam in the library drops the signal, and we must keep not using it.**
-`LlmAdapter`, which presents an agent as an `ILlm`, builds the inner call's
-options without the signal and only stops waiting for the promise. An abort
-there reports promptly and leaves the work running — the exact shape this
-section rejects. Nothing in this repository constructs it today, and the plan
-must not introduce it on a gated path.
+### The LLM request is one of those, and it is not the library's fault we thought otherwise
+
+`makeLlm` does not hand back a provider. Every branch of it returns
+`new LlmAdapter(new LlmProviderBridge(provider), …)`, so the object we gate is
+an adapter, and the adapter builds the inner call's options from four fields —
+temperature, maxTokens, topP, stop. The signal is not among them. It races the
+promise instead: on abort the adapter reports at once and the HTTP request goes
+on to its answer with nobody left holding it. The bridge below is transparent
+and would have passed the signal down; the adapter never gives it one. On the
+streaming path the check is per chunk, which is the same story with a shorter
+gap.
+
+This is a real hole and it is directly upstream of us, which makes patching
+llm-agent the obvious move. It is the wrong one, twice over.
+
+**It is not the layer's problem to solve.** A deadline belongs to whoever is
+waiting at the other end. That is the reasoning this whole family of changes
+has followed — the library was stripped of every number it had invented
+precisely because it cannot see our callers — and reaching back into it to add
+a cancellation policy would undo that on the last page.
+
+**And cancellation is not actually what the door needs.** What the door
+protects is a count of live pipelines against memory. It needs to know that a
+slot is free before it sells it again. An abandoned HTTP request is not an
+abandoned pipeline: it holds a socket and a response buffer, takes no ADT lock,
+opens no session, spawns no retry, and its permit was spent before it left. It
+is a cost, not a leak — and it is a cost we can account for without anyone's
+permission, because **we are the ones who started it.**
+
+So the rule is accounting rather than cancellation: **the slot is released when
+the last transport promise this pipeline started has settled**, not when the
+pipeline reported. Our gated wrapper is the caller of `inner.chat`, so it is
+already holding every one of those promises; on abort it stops waiting and
+starts no further attempt, and it hands what is still pending to the slot,
+which waits for it before freeing.
+
+The tail is then the provider's own transport timeout, and that is worth
+checking per deployment rather than assuming. The SAP AI Core provider sets one
+explicitly — sixty seconds on a call, a hundred and twenty on a stream. The
+direct Anthropic, OpenAI and DeepSeek providers set none, so on those the tail
+is whatever the remote end and the operating system decide. A deployment on one
+of them should configure a client timeout; without one, the slot's release has
+no bound we can name, and this design would rather say so than pretend.
+
+Worth reporting upstream all the same: an adapter that accepts a signal and
+drops it is a defect whether or not we route around it.
 
 **Teardown order, and who frees the slot.** The abort unwinds the pipeline; the
 existing safe-stop runs on the way out and releases the ADT session, exactly as
 it already does on every exit path; the caller is answered with our own
 failure; and the slot is released last, by the same `finally` that ran the
-teardown. The timer frees nothing — it only aborts. A slot freed by the timer
-would let the door admit a replacement while the old pipeline still held its
-memory and its lock, which is the double-booking this whole section exists to
-rule out.
+teardown and waited out any transport promise still in flight. The timer frees
+nothing — it only aborts. A slot freed by the timer would let the door admit a
+replacement while the old pipeline still held its memory and its lock, which is
+the double-booking this whole section exists to rule out.
 
 **Shutdown is the same path, aborted all at once**, plus one difference: it
 does not wait for the slots to come back before the process exits. What it
@@ -601,9 +640,11 @@ drains while the new one admits. For those minutes we run two windows. Recorded
 as a known mode rather than discovered in logs later.
 
 **The lifetime cap is not a hard bound on the slot.** It bounds when unwinding
-starts. A pipeline inside one long ADT call frees its slot when that call
-answers, because we do not tear a request off the wire. So sizing should assume
-a tail past the cap rather than treat it as a deadline.
+starts. A pipeline inside one long ADT call, or one abandoned LLM call, frees
+its slot when that call answers, because nothing here tears a request off the
+wire. The tail is the transport's timeout: named on the SAP AI Core path,
+unnamed on the direct-provider paths unless the deployment sets one. So sizing
+should assume a tail past the cap rather than treat it as a deadline.
 
 **A permanent refusal costs a slot until the lifetime expires.** Nothing below
 us can tell a spend cap from a busy minute, and neither can we. So a pipeline
@@ -696,6 +737,11 @@ These properties, because they are what this shape gets wrong:
   moment the caller is answered, and released only after safe-stop has run.
   Written against the observable order, because a `Promise.race` passes every
   other test on this list.
+- **An abandoned LLM call still holds its slot.** Abort a pipeline while its
+  transport promise is pending: the caller is answered, and the door still
+  refuses a new arrival until that promise settles. This is the one the
+  adapter's dropped signal would otherwise cost us, and it fails the moment the
+  slot is released on the report instead of on the settle.
 - **A `502` still retries.** Four attempts at the default `maxAttempts: 3`,
   which counts retries after the first call, and four permits — one per
   attempt. Two things fail this: mistaking the gated wrapper for a reason to
