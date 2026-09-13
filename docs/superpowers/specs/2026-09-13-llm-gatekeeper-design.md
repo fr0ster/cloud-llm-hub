@@ -158,18 +158,29 @@ session was allowed to start work, that work completes, however slowly. This is
 what makes the door worth having — a refusal there declines a whole request
 cleanly, instead of killing one halfway with an ADT lock still held.
 
-The guarantee has to be made true, not merely stated. An admitted pipeline uses
-`WaitAsTold` with no attempt cap, not `WaitIfShortEnough`: a server that names
-an interval is waited out however long it is. The ceiling in
-`WaitIfShortEnough` existed to protect a caller's connection from a wait we
-could not predict, and the door now protects capacity instead, so the ceiling
-would only reintroduce the failure this section exists to prevent — a request
-killed in flight.
+The guarantee rests on one property of a `429`: **it delays, it does not
+interrupt.** A refusal with an interval is a statement about when, not about
+whether. So behind the door a `429` is never a reason to stop, and an admitted
+pipeline finishes or fails for some other reason entirely.
 
-**Its one exception, stated rather than hidden:** a `429` carrying no interval.
-There is nothing to wait for, and the case exists — Anthropic omits the header
-for a spend-cap refusal, which never clears by waiting. An admitted pipeline can
-therefore still end in a provider failure. It cannot end in one of ours.
+That has to be built, not assumed. Two cases, and neither ends the pipeline:
+
+**The server named an interval.** Wait it out, however long, and try again. No
+attempt cap. This is `WaitAsTold`, not `WaitIfShortEnough`: the ceiling in the
+latter protected a caller's connection from a wait we could not predict, the
+door protects capacity now, and a ceiling behind the door would only kill work
+in flight — the failure this section exists to prevent.
+
+**The server named nothing.** We may not invent an interval; that rule holds
+here as everywhere. But we do not have to, because we have a schedule of our
+own: the call goes back to the tail of our own queue and is tried again when our
+rate next allows. That is not a guess about their server, it is our own pacing,
+and it turns an unanswerable question into an ordinary wait.
+
+The bound on both is the caller. A pipeline retrying into a refusal that never
+clears — a spend cap, say — keeps retrying until whoever called gives up, or
+until the service stops. We do not cut it, because deciding it is hopeless would
+be a guess of exactly the kind this design refuses.
 
 The refusal travels the path already built for throttling
 (`srv/lib/throttle-surfacing.ts`): the message as content on
@@ -433,10 +444,11 @@ Three properties, because they are what this shape gets wrong:
   admitted pipeline through more calls than the window allows: all complete,
   none is turned away. This is the guarantee, so it is the test that matters
   most.
-- **And it survives a provider 429 mid-flight.** An admitted pipeline that meets
-  a `429` naming an interval waits it out and finishes, however long. Only a
-  `429` naming nothing ends it, and the test asserts that too, so the exception
-  stays deliberate rather than becoming a discovery.
+- **And no `429` ends it.** An admitted pipeline meeting a `429` with an
+  interval waits it out and finishes. One without an interval goes back to the
+  tail of our own queue and finishes on a later attempt. Both are asserted,
+  because "a 429 delays, it does not interrupt" is the property the guarantee
+  is built on.
 
 Plus: a refusal at a full queue carries the right number, and shutdown behaves
 as a full queue.
@@ -451,8 +463,13 @@ behind the door would only kill work in flight, which is the failure the door
 exists to prevent. Admitted pipelines therefore use `WaitAsTold` with no attempt
 cap.
 
-Whether the strategy survives anywhere depends on whether anything still calls a
-model outside an admitted pipeline. Startup tool vectorization is the candidate:
+The behaviour that replaces it — wait as told, otherwise re-queue — is the
+gatekeeper's, not a strategy's, because only the gatekeeper knows our pacing. So
+what the provider gets for admitted work is a strategy that never gives up, and
+the re-queueing happens above it.
+
+Whether `WaitIfShortEnough` survives anywhere depends on whether anything still
+calls a model outside an admitted pipeline. Startup tool vectorization is the candidate:
 it embeds hundreds of documents before any request exists, so there is no door
 in front of it and no caller to protect. Deciding that is part of the
 implementation plan, not this design.
