@@ -642,13 +642,36 @@ RAG it still has every tool, it simply chooses among them worse. The first
 closes the destination; the second is logged and carried, because stopping for
 it would cost more than it saves.
 
-**New arrivals are refused; admitted pipelines are not killed.** This is the
-door's guarantee under a second cause, and the reasoning is unchanged. A
-pipeline cut mid-chain leaves an ABAP object created-but-inactive and locked by
-a session nobody will unlock, so our own refusal would be manufacturing work
-for a human in SM12. The refusal travels the path already built: `503` with
-`Retry-After` where the channel has one, the same formatters as everywhere
-else, never a `500` — this is temporary and we know it.
+**New arrivals are refused; admitted pipelines are not killed *by us*.** The
+qualifier matters, and an earlier draft of this section left it out. The door's
+guarantee is about congestion: no `429`, and now no closing of a destination,
+ends a pipeline that was let in. It was never a promise to survive the ABAP
+system going away. A pipeline whose next tool call needs a server that is gone
+fails on that call, the way any tool failure fails — what we undertake is not
+to kill it *in addition*, because a pipeline cut mid-chain leaves an object
+created-but-inactive and locked by a session nobody will unlock, and our own
+refusal would be manufacturing work for a human in SM12.
+
+**The ambiguous case has one answer, and it is not a retry.** A write that was
+sent and whose answer never came is the hard one: the ADT call is asynchronous
+in substance, so we cannot tell an applied change from a lost one, and the
+system may well have applied it. Retrying is the worst available option — a
+second attempt at the same change, against the rule this repository already
+wrote down. Assuming success is worse still. So it is reported as what it is:
+the executor's response carries the `UNVERIFIED_WRITE:` notice the reviewer
+already emits when a claim is not backed by a tool result
+(`srv/lib/notice-finalizer.ts`), and the ADT session is released on the way out
+as it is on every exit path. The consumer — a human on the WebUI, or the
+planning agent on the MCP surface — reads back and decides. That mechanism
+exists; this section only names it as the answer here.
+
+**The refusal carries a number, and it is ours.** `503`, never a `500`, and
+`Retry-After` set to the interval of our own unreachable-destination probe —
+five minutes today (`srv/agent-manager.ts`). It is not an estimate of when SAP
+returns, which we cannot know any more than we know how long the pipelines
+behind a full door will run. It is a statement that we will not even have
+looked before then, so coming back sooner is certainly wasted. That makes it
+the same kind of number as the queue's own pacing: ours, observable, and true.
 
 **Degrading silently is not on the table.** `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK`
 already defaults to off, and an uninitialised destination already answers a
@@ -656,12 +679,18 @@ retryable `503` (`srv/agent-manager.ts`). What is missing is only that the same
 posture applies to MCP lost *during* operation, not just at startup. This
 section is that extension, not a new policy.
 
-The implementation plan owns two pieces of it: teaching the gated path to treat
-a closed destination the way it treats a full door, and — upstream, separately
-— removing the blind reconnect-and-retry from `MCPClientWrapper` so the
-classifier is actually consulted. The second is llm-agent's to fix and is not a
-prerequisite here: until it lands, a reconnect can re-run a tool, and that is a
-known hazard rather than a designed behaviour.
+**Removing the blind retry upstream is a prerequisite, not a follow-up.** An
+earlier draft called it separable and that was wrong: everything above rests on
+a failed tool call being reported once, and `MCPClientWrapper` currently
+reconnects and calls the same tool again on any transport error
+(`client.js` in `@mcp-abap-adt/llm-agent-mcp`). With that in place the
+`UNVERIFIED_WRITE:` answer is a fiction — the second call has already happened
+by the time anyone reports anything, and a write may have been applied twice.
+A design cannot state an invariant its own installed dependency contradicts.
+
+So the order is: llm-agent stops deciding for us — the wrapper surfaces the
+failure and `IMcpFailureClassifier` says which kind it is — and only then does
+the work here begin. The plan's first item is that upstream change.
 
 ## Not in scope
 
@@ -790,9 +819,15 @@ These properties, because they are what this shape gets wrong:
 - **Shutdown cancels admitted work** rather than waiting for it, and the
   lifetime cap ends a pipeline that would otherwise retry for ever.
 - **A closed destination refuses arrivals and spares the admitted.** With MCP
-  unreachable for one destination, a new request for it is refused with a
-  `503`, a request for another destination is served, and a pipeline already
-  inside it runs to its end rather than being cut with a lock still held.
+  unreachable for one destination, a new request for it is refused with a `503`
+  carrying our probe interval, a request for another destination is served, and
+  a pipeline already inside it is not cut by us — it fails only if it actually
+  calls the missing server.
+- **An unanswered write is reported, never repeated.** A tool call that was
+  sent and whose answer never arrived produces one `UNVERIFIED_WRITE:` notice
+  and no second call, with the ADT session released. Asserted by counting calls
+  at the transport, because a single retry hidden anywhere below turns this
+  from a report into a duplicated change.
 - **RAG down is carried, not fatal.** The same destination still answers with
   every tool available and a line in the log, because choosing tools worse is
   not the same as having none.
