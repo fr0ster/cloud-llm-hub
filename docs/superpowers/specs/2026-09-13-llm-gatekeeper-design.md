@@ -197,9 +197,14 @@ completes because something is retrying into a wall. Cancellation is a
 mechanism, not a wish — see Cancellation below.
 
 **And no clock is needed over a session either, because none is ever idle.**
-`execute_step` closes its ADT session in the same `finally` that releases the
-slot, and before releasing it (`srv/agent-mcp.ts`): request, work, teardown,
-slot. One session per request, nothing surviving a step.
+Every channel that reaches SAP already ties the ADT session to one request.
+`execute_step` closes it in the same `finally` that releases the slot, and
+before releasing it (`srv/agent-mcp.ts`): request, work, teardown, slot. The
+two chat channels establish a connection per request and call `safeStop` on
+every exit path, including a genuine early client disconnect — `res.on('close')`
+guarded by `!res.writableEnded`, so an in-flight tool call is not cut by a
+`close` that merely means the body was consumed
+(`srv/openai-handler.ts`, `srv/anthropic-handler.ts`).
 
 An idle bound was considered and dropped. It would be a clock over a *silent*
 session rather than over running work, which is a different and defensible
@@ -322,9 +327,12 @@ Express route.** The CAP service exposes `AgentService.Chat` at `/agent`
 the others and would be counted by none of them. Listing entrances by the
 routes one remembers is how a door gets bypassed, so it is named here: either
 it goes through admission with the rest, or it is deleted from the public API.
-Deciding which belongs to the plan, and the question worth asking there is
-whether anything still calls it — it takes no destination and no per-request
-credentials, so it cannot reach a SAP system the way the other three can.
+Deciding which belongs to the plan, and the evidence points one way. It takes
+no destination and no per-request credentials, so it cannot reach a SAP system
+the way the other three can. It also establishes no request connection and
+calls no `safeStop`, while every other channel does — so it is the one entrance
+with neither a door nor a session lifecycle. An endpoint that no path in this
+design fits is more likely dead surface than a gap in the design.
 
 A pipeline is counted as live from the moment it is admitted until it finishes
 or fails. It is not released while it waits on a quota — waiting is exactly when
