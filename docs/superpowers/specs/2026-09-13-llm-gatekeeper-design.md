@@ -229,10 +229,11 @@ Every channel that reaches SAP already ties the ADT session to one request.
 `execute_step` closes it in the same `finally` that releases the slot, and
 before releasing it (`srv/agent-mcp.ts`): request, work, teardown, slot. The
 two chat channels establish a connection per request and call `safeStop` on
-every exit path, including a genuine early client disconnect — `res.on('close')`
-guarded by `!res.writableEnded`, so an in-flight tool call is not cut by a
-`close` that merely means the body was consumed
-(`srv/openai-handler.ts`, `srv/anthropic-handler.ts`).
+every exit path (`srv/openai-handler.ts`, `srv/anthropic-handler.ts`). One of
+those paths changes under this design: today a genuine early client disconnect
+runs `safeStop` at once, and it will instead only note that the caller is gone
+— disconnect, finish the work, empty the register, `safeStop`, free the slot.
+See Cancellation for why.
 
 An idle bound was considered and dropped. It would be a clock over a *silent*
 session rather than over running work, which is a different and defensible
@@ -614,7 +615,7 @@ write is still on that connection tears the session out from under the call —
 which is how an object ends up created-but-inactive with a lock nobody holds.
 Holding the slot does not help: the slot was never what the write was using.
 
-The order on an abort or a disconnect is therefore:
+The order on an abort is therefore:
 
 1. **Stop admitting new calls** on this pipeline. The signal fires; the tool
    loop starts nothing further.
@@ -623,13 +624,28 @@ The order on an abort or a disconnect is therefore:
 3. **Then `safeStop`**, with nothing left using the connection.
 4. **Then release the slot**, last, by the same `finally`.
 
-**And the disconnect listener must stop closing the connection itself.**
-`res.on('close')` today calls `safeStop` directly
-(`srv/openai-handler.ts`, `srv/anthropic-handler.ts`), which walks straight
-past the register — the guard on `!res.writableEnded` narrows *when* it fires,
-not *what* it cuts. It becomes an abort: it fires the controller and nothing
-else, and the sequence above does the rest. That is a change to code that is
-correct today only because nothing was tracking in-flight calls.
+**And a client disconnect ends nothing.** This needs saying plainly, because
+the obvious move is wrong. `res.on('close')` today calls `safeStop` directly
+(`srv/openai-handler.ts`, `srv/anthropic-handler.ts`), walking straight past
+any register — the guard on `!res.writableEnded` narrows *when* it fires, not
+*what* it cuts. The tempting fix is to make it fire the abort instead. It must
+not.
+
+A disconnected caller is not a reason to stop: the work is already inside SAP's
+hands, and cutting a write chain between `create` and `activate` leaves the
+object inactive and locked by a session nobody will unlock. That is not a
+hypothetical — it is the recorded root cause of the orphaned locks this service
+has already had to clean out of SM12 by hand, and the outstanding fix on that
+issue is precisely that a disconnect must **not** kill in-flight work. Nobody
+is waiting for the answer; SAP is still waiting for the rest of the chain.
+
+So the listener stops tearing anything down and becomes a note: the caller is
+gone, stop writing to a dead socket. The pipeline runs to its natural end, the
+register empties, `safeStop` runs, the slot is freed. The cost is a slot held
+for an answer nobody will read, and it is the right cost — the alternative is
+paid by a human in SM12.
+
+Shutdown remains the one thing that aborts.
 
 Nothing frees a slot early. A slot freed while the pipeline still held memory
 and a lock would let the door admit a replacement on top of it, which is the
@@ -876,6 +892,11 @@ stop it, and would leave the object locked. An LLM call now ends on the signal
 (llm-agent 25.0.0), so that half of the tail is short. The ABAP half is not,
 and sizing should assume it.
 
+**A caller who leaves still costs a slot.** The pipeline runs to the end for an
+answer nobody will read, holding its place the whole time. This is deliberate —
+see Cancellation — and it means capacity has to be sized for work that is
+started, not for work anyone is still waiting on.
+
 **A permanent refusal costs a slot until shutdown.** Nothing below us can tell
 a spend cap from a busy minute, and neither can we, so a pipeline meeting one
 holds its place and keeps retrying on our own pacing. This is the accepted
@@ -1002,11 +1023,12 @@ These properties, because they are what this shape gets wrong:
   refuses an arrival until the embedded promise settles. Written against the
   MCP path specifically, because the LLM path passed this while the MCP path
   had no register at all.
-- **The session outlives it too.** In the same run, `closeSession` is not
-  called until that promise has settled, and a client disconnect produces an
-  abort rather than an immediate `safeStop`. Asserted on ordering, because a
-  test that only counts the slot passes while the connection is pulled out
-  from under a live write.
+- **The session outlives it too, and a disconnect ends nothing.** In the same
+  run `closeSession` is not called until the registered promise has settled;
+  and a client that disconnects mid-write leaves the pipeline running to its
+  end, with teardown after it. Asserted on ordering, because a test that only
+  counts the slot passes while the connection is pulled out from under a live
+  write.
 - **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
   back, and it proceeds without waiting for the expiry its timer was set to.
 - **An unknown model is a bad request, not an overload.** With quotas
