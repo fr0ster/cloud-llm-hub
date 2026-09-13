@@ -479,37 +479,37 @@ the wire runs to its answer; the tool loop's check is at an iteration boundary.
 So cancellation means *no further work starts*, and the honest phrasing of the
 cap is that it bounds when unwinding begins, not when it ends.
 
-### The LLM request is one of those, and it is not the library's fault we thought otherwise
+### The slot waits for the transport, not for the report
 
-`makeLlm` does not hand back a provider. Every branch of it returns
-`new LlmAdapter(new LlmProviderBridge(provider), …)`, so the object we gate is
-an adapter, and the adapter builds the inner call's options from four fields —
-temperature, maxTokens, topP, stop. The signal is not among them. It races the
-promise instead: on abort the adapter reports at once and the HTTP request goes
-on to its answer with nobody left holding it. The bridge below is transparent
-and would have passed the signal down; the adapter never gives it one. On the
-streaming path the check is per chunk, which is the same story with a shorter
-gap.
+As of llm-agent 25.0.0 the signal does reach the wire. `makeLlm` returns
+`LlmAdapter(LlmProviderBridge(provider))` on every branch, and that adapter
+used to build the inner call's options from four fields with `signal` not among
+them — it raced the promise instead, so an abort answered the caller while the
+HTTP request ran on with nobody holding it. The same defect sat on
+`McpClientAdapter`, and there it also missed the embedded transport, which is
+the one this service uses. Both now pass the signal down, and the SAP AI Core
+provider's own sixty- and hundred-and-twenty-second socket timeouts are gone
+with it, since the caller's deadline had arrived to replace them.
 
-It is a defect and it is fixable upstream: forwarding a signal the interface
-already carries is plumbing, not policy, and would not put a deadline of the
-library's own into a layer that cannot see our callers. But this design must
-not be built on that fix, for a reason that has nothing to do with who owns
-which layer.
+That shortens the tail. It does not change the rule, and the rule is the part
+this design depends on.
 
 **The door's correctness cannot rest on how well anything below it cancels.**
-Even with the signal delivered, a request already on the wire may still be
-running when we report — that is exactly how the ADT calls behave, and we have
-written it into this section twice already. So the slot has to wait for the
-work to settle in either case. Make that wait conditional on a library version
-and the memory bound becomes a thing that is true of some deployments.
+A request already on the wire may still be running when we report — that is
+how the ADT calls behave regardless of any fix, and an ADT call is
+asynchronous in substance: the answer coming back does not mean the action
+completed, and the call being cut does not mean it stopped. SAP goes on
+creating the object and holding the enqueue. Cancellation there discards our
+knowledge of the work, not the work. So the slot has to wait for the work to
+settle in either case, and making that wait conditional on a library version
+would leave the memory bound true of some deployments only.
 
 **And what the door needs is not cancellation anyway.** It protects a count of
 live pipelines against memory, so it needs to know a slot is free before
-selling it again. An abandoned HTTP request is not an abandoned pipeline: a
-socket and a response buffer, no ADT lock, no session, no retry, and its permit
-spent before it left. That is a cost, not a leak — and a cost we can account
-for without anyone's cooperation, because **we are the ones who started it.**
+selling it again. An abandoned request is not an abandoned pipeline: a socket
+and a response buffer, no ADT lock, no session, no retry, and its permit spent
+before it left. That is a cost, not a leak — and a cost we can account for
+without anyone's cooperation, because **we are the ones who started it.**
 
 So the rule is accounting rather than cancellation: **the slot is released when
 the last transport promise this pipeline started has settled**, not when the
@@ -518,18 +518,12 @@ already holding every one of those promises; on abort it stops waiting and
 starts no further attempt, and it hands what is still pending to the slot,
 which waits for it before freeing.
 
-The tail is then the provider's own transport timeout, and that is worth
-checking per deployment rather than assuming. The SAP AI Core provider sets one
-explicitly — sixty seconds on a call, a hundred and twenty on a stream. The
-direct Anthropic, OpenAI and DeepSeek providers set none, so on those the tail
-is whatever the remote end and the operating system decide. A deployment on one
-of them should configure a client timeout; without one, the slot's release has
-no bound we can name, and this design would rather say so than pretend.
-
-Forwarding the signal upstream would shorten that tail to nothing, and it stays
-worth doing whenever llm-agent is next open. It is an improvement to this
-design, not a prerequisite of it: nothing here changes if it lands, except the
-length of the tail.
+What 25.0.0 buys is how long that wait lasts. With the signal delivered, an
+aborted LLM request ends rather than running to the provider's own answer, so
+the tail on a model call is now short instead of bounded by a socket timeout —
+and on the direct Anthropic, OpenAI and DeepSeek providers, which never set one,
+not bounded at all. On the ABAP side nothing changes: the call finishes when it
+finishes.
 
 **Teardown order, and who frees the slot.** The abort unwinds the pipeline; the
 existing safe-stop runs on the way out and releases the ADT session, exactly as
@@ -703,11 +697,12 @@ drains while the new one admits. For those minutes we run two windows. Recorded
 as a known mode rather than discovered in logs later.
 
 **The lifetime cap is not a hard bound on the slot.** It bounds when unwinding
-starts. A pipeline inside one long ADT call, or one abandoned LLM call, frees
-its slot when that call answers, because nothing here tears a request off the
-wire. The tail is the transport's timeout: named on the SAP AI Core path,
-unnamed on the direct-provider paths unless the deployment sets one. So sizing
-should assume a tail past the cap rather than treat it as a deadline.
+starts. A pipeline inside one long ADT call frees its slot when that call
+answers: an ADT request is asynchronous in substance, so cutting it would
+discard our knowledge of the work rather than stop it, and would leave the
+object locked. An LLM call now ends on the signal (llm-agent 25.0.0), so that
+half of the tail is short. Sizing should still assume a tail past the cap
+rather than treat it as a deadline, because the ABAP half is unchanged.
 
 **A permanent refusal costs a slot until the lifetime expires.** Nothing below
 us can tell a spend cap from a busy minute, and neither can we. So a pipeline
