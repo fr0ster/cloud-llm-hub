@@ -1,4 +1,4 @@
-import { getSystemContext } from '@mcp-abap-adt/core/utils';
+import { getSystemContext } from '@mcp-abap-adt/lib/utils';
 import { setRequestResponsible } from '../../srv/lib/responsible';
 
 describe('setRequestResponsible', () => {

@@ -284,20 +284,65 @@ function checkRoutes(file, lines, routes) {
 }
 
 /**
- * A `@mcp-abap-adt/<pkg>` named in the docs must be installed.
+ * Places where a package that is NOT installed may still be named, and HOW MANY
+ * TIMES.
  *
- * `@mcp-abap-adt/llm-proxy` — the family's former name — survived in nine
- * imports and install commands long after the package was split into
- * llm-agent-libs / llm-agent-mcp / openai-llm, so every one of those snippets
- * failed at `npm install`.
+ * Two earlier versions of this exemption were each too generous, in the same
+ * way. The first pardoned the package NAME everywhere, so six documents went on
+ * claiming this runtime executes ABAP tools from core while the code had moved
+ * to lib. The second pardoned a whole FILE, which would let a seventh such
+ * sentence be added to a pardoned file and never noticed.
+ *
+ * So the count is pinned. Each of these files has a reason to name something
+ * absent exactly once — a contrast, or a lesson recording what was true when it
+ * was written. Adding another mention changes the count and fails, which is not
+ * a claim that the new mention is wrong: it is a requirement that someone look
+ * at it and say so.
  */
+const NAMED_THOUGH_ABSENT = new Map([
+  ['CLAUDE.md', { core: 1 }],
+  ['docs/usage/GETTING_STARTED.md', { core: 1 }],
+  ['docs/architecture/EXTENSION_GUIDE.md', { core: 1 }],
+  [
+    'docs/superpowers/plans/2026-08-31-abap-cloud-session-lifecycle.md',
+    { core: 1 },
+  ],
+  // Lessons record what was true when they were written. Rewriting them to
+  // today's package names would destroy the evidence they exist to keep.
+  [
+    'docs/lessons/2026-06-11-update-lock-stateless-put-basis-version.md',
+    { core: 1 },
+  ],
+  ['docs/lessons/2026-06-29-where-used-ns-prefix-cld.md', { core: 1 }],
+]);
+
 function checkScopedPackages(file, lines, installed) {
+  // `file` arrives absolute; the map is keyed the way `fail()` reports, so the
+  // entries stay readable and match what a reviewer sees in the output.
+  const budget = {
+    ...(NAMED_THOUGH_ABSENT.get(path.relative(ROOT, file)) ?? {}),
+  };
   lines.forEach((line, i) => {
     for (const m of line.matchAll(/@mcp-abap-adt\/([a-z0-9-]+)/g)) {
-      if (!installed.has(m[1]))
-        fail(file, i + 1, `package @mcp-abap-adt/${m[1]} is not installed`);
+      const pkg = m[1];
+      if (installed.has(pkg)) continue;
+      if (budget[pkg] > 0) {
+        budget[pkg] -= 1;
+        continue;
+      }
+      fail(file, i + 1, `package @mcp-abap-adt/${pkg} is not installed`);
     }
   });
+  // A mention that disappeared matters too: the allowance is then describing
+  // something no longer there, and the next stale sentence would inherit it.
+  for (const [pkg, left] of Object.entries(budget)) {
+    if (left > 0)
+      fail(
+        file,
+        1,
+        `allowance for @mcp-abap-adt/${pkg} is ${left} too high — update NAMED_THOUGH_ABSENT`,
+      );
+  }
 }
 
 /** "512M", "2048MB", "2G" → megabytes. */
@@ -390,9 +435,26 @@ const expectedArtefact = mtarMatch ? `${mtarMatch[1]}/${mtarMatch[2]}` : null;
 const routes = serverRoutes();
 const envNames = knownEnvNames();
 
-const installedScoped = new Set(
-  fs.readdirSync(path.join(ROOT, 'node_modules/@mcp-abap-adt')),
-);
+// Every `@mcp-abap-adt/*` this product SHIPS, hoisted or not. A package a
+// direct dependency pulls in lives under that dependency's own node_modules
+// when versions conflict — it is still distributed, and the docs may still
+// name it. Reading only the top level called such a package missing and asked
+// the docs to stop mentioning what we actually ship.
+const installedScoped = (() => {
+  const found = new Set();
+  const walk = (dir) => {
+    const scoped = path.join(dir, '@mcp-abap-adt');
+    if (fs.existsSync(scoped)) {
+      for (const p of fs.readdirSync(scoped)) {
+        found.add(p);
+        const nested = path.join(scoped, p, 'node_modules');
+        if (fs.existsSync(nested)) walk(nested);
+      }
+    }
+  };
+  walk(path.join(ROOT, 'node_modules'));
+  return found;
+})();
 
 const moduleMemory = new Map(
   (mta.modules || [])

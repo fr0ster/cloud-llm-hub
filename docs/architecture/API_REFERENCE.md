@@ -577,11 +577,45 @@ All endpoints return errors in the following format:
 
 ## Rate Limiting
 
-Currently, no rate limiting is enforced. Consider implementing:
+**Inbound** — no limit is enforced on callers of this service. Consider
+implementing per-user, per-IP and per-connection limits before opening it to a
+wide audience.
 
-- **Per-user limits:** 1000 requests/minute
-- **Per-IP limits:** 100 requests/minute
-- **Connection limits:** 10 concurrent connections per user
+**Outbound (the LLM provider)** — handled since v6.35, by the provider itself
+(`@mcp-abap-adt/llm-agent` 23.0.0). A `429` from SAP AI Core, OpenAI or
+Anthropic is answered where the HTTP response is still intact: backoff with
+jitter, `Retry-After` honoured when the server sends one, and one shared pause
+per quota so concurrent callers do not each rediscover the same closed limit.
+
+The wait budget is **20 seconds** here, not the library's sixty. A budget that
+expires when the caller does never gets to deliver its answer: our chat clients
+give up around a minute, so the policy must give up well before that and say
+when to come back. Override with `LLM_AGENT_THROTTLE_MAX_WAIT_MS`; the value in
+force is logged at startup, since it shows itself only under load.
+
+This service therefore does **not** retry a rate limit of its own. Another
+request into a quota the server has just said is closed only earns another
+penalty and lengthens the window. When the provider's policy is spent, the
+caller is told, and told when to come back — on **every** channel, in the shape
+that channel speaks:
+
+| Channel | What arrives |
+|---|---|
+| `/v1/chat/completions` | the message as the response content, streaming or not |
+| `/v1/messages` non-streaming | HTTP `429` with Anthropic's `rate_limit_error` envelope |
+| `/v1/messages` streaming | an SSE `error` event carrying the same envelope |
+| `execute_step` (MCP) | the message as the step's `ERROR on destination …` text |
+
+```
+The AI service is rate-limited right now. Please try again in about 42 seconds.
+```
+
+The status is `429` rather than `500` where a status is sent at all: `500` tells
+a client the fault is ours and the request is not worth repeating, and for a
+quota that reopens in seconds both halves of that are wrong.
+
+The number is the server's own `Retry-After`, carried on the error rather than
+guessed at.
 
 ---
 
@@ -639,7 +673,7 @@ Cloud LLM Hub implements the Model Context Protocol (MCP) specification. All MCP
 }
 ```
 
-For the full list of available tools, see the ABAP ADT MCP server documentation for `@mcp-abap-adt/core`.
+For the full list of available tools, see the ABAP ADT MCP server documentation for `@mcp-abap-adt/lib`.
 
 ---
 

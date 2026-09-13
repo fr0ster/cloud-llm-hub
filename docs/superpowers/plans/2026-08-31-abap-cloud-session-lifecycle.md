@@ -51,8 +51,14 @@ chain, and it is returned when the work finishes.
 ```
 installed here:  @mcp-abap-adt/connection  1.10.2
 published:       @mcp-abap-adt/connection  8.0.1
-                 @mcp-abap-adt/core        8.13.0  (still depends on connection ^1.10.0)
+                 @mcp-abap-adt/lib        10.0.1  (still depends on connection ^1.10.2)
 ```
+
+Since 2026-09-11 the blocker has moved but not lifted. `@mcp-abap-adt/core` split:
+the standalone server kept that name and is AGPL-3.0-only, while the handlers and
+the embeddable server became `@mcp-abap-adt/lib`, which this product consumes. The
+pin travelled with them — `lib@10.0.1` depends on `connection ^1.10.2`, so option B
+still waits on an upstream move, now `lib`'s rather than `core`'s.
 
 **The v5 design this plan was written against is gone.** In 5.0.0 a session was
 opened and closed by a `SessionStrategy` the connection selected and drove, talking
@@ -125,7 +131,8 @@ They remain independent decisions. Pooling is an optimisation; this is a correct
 
 - Is ABAP Cloud actually in scope for **writes**, or only for reads? If reads only, this drops to
   documentation and the plan can be closed.
-- ~~Does a newer `core` accept `connection` 5.x?~~ **Checked 2026-08-31: no.** `@mcp-abap-adt/core`
-  latest is 8.13.0 — the version we already run — and it still depends on `@mcp-abap-adt/connection`
-  `^1.10.0`. So option B is blocked upstream until `core` moves, which makes A the only route that
-  does not require waiting on another package. Worth re-checking whenever `core` publishes.
+- ~~Does a newer `core` accept `connection` 5.x?~~ **Checked 2026-08-31: no**, and re-checked
+  2026-09-11 after the package split: `@mcp-abap-adt/lib@10.0.1`, which replaced `core` here,
+  depends on `@mcp-abap-adt/connection ^1.10.2` while the published connection is 8.0.1. So
+  option B is still blocked upstream, and A remains the only route that waits on nobody. Worth
+  re-checking whenever `lib` publishes.

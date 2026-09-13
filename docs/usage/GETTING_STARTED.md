@@ -372,7 +372,7 @@ Cloud LLM Hub provides access to all MCP tools from the underlying ABAP ADT serv
 - **Include Management:** `GetIncludesList`
 - **Batch Operations:** `DetectObjectTypeListArray`, `DetectObjectTypeListJson`
 
-**Full list:** See the ABAP ADT MCP server documentation for `@mcp-abap-adt/core`.
+**Full list:** See the ABAP ADT tool documentation for `@mcp-abap-adt/lib`, the library package this service embeds. (`@mcp-abap-adt/core` is the standalone server and is not used here.)
 
 ## 📚 Next Steps
 

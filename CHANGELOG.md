@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Licence is Apache-2.0** (was MIT, which was a mistake rather than a
+  decision). Nothing is revoked: the repository is private on both remotes and
+  was never published to npm, so no MIT grant left the access list.
+
+- **The ADT tools come from `@mcp-abap-adt/lib` ^10.0.1**, not
+  `@mcp-abap-adt/core`. mcp-abap-adt 10 split into a library under Apache-2.0
+  and a standalone server under AGPL-3.0-only, so that embedding the tools does
+  not put an AGPL server this service never runs into its dependency tree.
+
+  | Before | After |
+  |---|---|
+  | `@mcp-abap-adt/core/handlers` | `@mcp-abap-adt/lib/handlers` |
+  | `@mcp-abap-adt/core/utils` | `@mcp-abap-adt/lib/utils` |
+  | `@mcp-abap-adt/core/server` | `@mcp-abap-adt/lib/embeddable` |
+
+  Same exported names, same signatures, same code. `NOTICE` records what is
+  underneath: twelve LGPL-3.0-only packages linked at runtime, whose terms do
+  not reach this repository's own code.
+
+  10.0.1 rather than 10.0.0 because 10.0.0 shipped `typesVersions` out of step
+  with `exports`, and this project is on the classic `moduleResolution: "node"`,
+  which reads the former. On 10.0.0 the types of `EmbeddableMcpServer` were
+  unreachable without a `paths` override; on 10.0.1 the override is gone.
+
+- **The llm-agent family moves 20.9.5 → 22.1.0.** Three of the packages this
+  product ships — `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag` — declared
+  NO `license` field at 20.9.5, in the tarball and in the registry alike. A
+  package without one is more restrictive than any copyleft, not less. At
+  22.1.0 every package in the family is LGPL-3.0-only. Two majors, and not one
+  line of this repository's code had to change.
+
+- **`@mcp-abap-adt/adt-clients` is no longer a declared dependency.** It was
+  imported in zero files. `lib` keeps its own copy, which the tree already
+  carried nested.
+
+- **`NOTICE` describes the tree rather than the intention**, and now includes
+  JSZip, vendored into the browser assets and previously absent from it.
+
+- **`docs:check` learned two facts it lacked**: a package can be absent on
+  purpose, and a package can be shipped without being hoisted to the top level.
+
 ## [6.34.0] - 2026-09-10
 
 The honesty reviewer is split along the line between what can be proven and what needs judgement.

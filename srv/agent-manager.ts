@@ -18,9 +18,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { HandlerContext } from '@mcp-abap-adt/core/handlers';
-import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
-import { setSystemContext } from '@mcp-abap-adt/core/utils';
+import type { HandlerContext } from '@mcp-abap-adt/lib/handlers';
+import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import { setSystemContext } from '@mcp-abap-adt/lib/utils';
 import {
   type CallOptions,
   CircuitBreaker,
@@ -1018,6 +1018,7 @@ async function createToolsRagStore(
       baseURL: config.llm.baseUrl,
       model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
       resourceGroup: config.llm.resourceGroup,
+      whenThrottled: config.llm.whenThrottled,
     },
     0.1,
   );
@@ -1219,6 +1220,7 @@ async function vectorizeToolDocs(
         baseURL: config.llm.baseUrl,
         model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
         resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
       },
       0.1,
     );
@@ -2040,6 +2042,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
       },
       config.llm.temperature,
     );
@@ -2055,6 +2058,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
         model: classifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
       },
       0.1,
     );
@@ -2405,6 +2409,7 @@ export async function getSmartAgent(
         temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
       },
       config.llm.temperature,
     );

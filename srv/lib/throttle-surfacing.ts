@@ -1,0 +1,118 @@
+/**
+ * Reporting an exhausted throttle policy to the caller.
+ *
+ * Shared by every channel rather than kept in one handler: the promise is that
+ * a caller is told when to come back, and a promise kept on three surfaces out
+ * of four is not kept. The provider does the waiting (llm-agent 23.0.0); this
+ * only reads what it concluded, and shapes it for each wire format.
+ *
+ * The per-channel formatters live here rather than in the handlers so a test
+ * can exercise the code the handler actually runs. A test that rebuilds the
+ * envelope beside the handler passes while the handler sends nothing at all.
+ */
+
+import { findThrottled } from '@mcp-abap-adt/llm-agent';
+
+/**
+ * Was this a rate limit, and for how long?
+ *
+ * The provider answers 429 itself since llm-agent 23.0.0: it backs off, honours
+ * `Retry-After`, and holds one shared pause per quota so concurrent callers do
+ * not each rediscover the same closed limit. By the time an error reaches this
+ * layer that policy is spent, and the error says so — `findThrottled` reads
+ * the fact off the error or its cause chain.
+ *
+ * Retrying here would undo the point of the shared pause: another request into
+ * a quota the server has just said is closed, earning another penalty.
+ */
+export function throttleOf(
+  error: unknown,
+): { retryAfterSeconds?: number; reason?: string } | undefined {
+  const marked = findThrottled(error);
+  if (marked) {
+    return {
+      retryAfterSeconds: marked.retryAfterSeconds,
+      reason: marked.reason,
+    };
+  }
+  // Fallback for an error that lost the marker on the way up, e.g. one rebuilt
+  // by a layer that keeps only the message. A structured status first, then the
+  // status named in the text on a WORD BOUNDARY — never a bare includes('429'),
+  // which also fires on an id, a byte count or a token total.
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth++) {
+    const http = current as {
+      response?: { status?: number };
+      status?: number;
+      statusCode?: number;
+    };
+    if (
+      http?.response?.status === 429 ||
+      http?.status === 429 ||
+      http?.statusCode === 429
+    ) {
+      return {};
+    }
+    const text = current instanceof Error ? current.message : String(current);
+    if (
+      /(^|[^\d])429([^\d]|$)|too many requests|rate[\s_-]?limit/i.test(text)
+    ) {
+      return {};
+    }
+    if (!(current instanceof Error)) break;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/** What the caller is told once the provider's own policy is spent. */
+export function throttleMessage(limit: { retryAfterSeconds?: number }): string {
+  const seconds = limit.retryAfterSeconds;
+  if (seconds === undefined || !Number.isFinite(seconds)) {
+    return 'The AI service is rate-limited right now. Please try again shortly.';
+  }
+  return `The AI service is rate-limited right now. Please try again in about ${Math.ceil(
+    seconds,
+  )} seconds.`;
+}
+
+/**
+ * The Anthropic error envelope, throttled or not.
+ *
+ * `rate_limit_error` is Anthropic's own type for this, so a client that already
+ * handles their API needs no special case from us. Used on both the streaming
+ * and the non-streaming path — they differ in how it is delivered, not in what
+ * it says.
+ */
+export function anthropicErrorPayload(error: unknown): {
+  type: 'error';
+  error: { type: string; message: string };
+} {
+  const limit = throttleOf(error);
+  const fallback = error instanceof Error ? error.message : String(error);
+  return {
+    type: 'error',
+    error: {
+      type: limit ? 'rate_limit_error' : 'api_error',
+      message: limit ? throttleMessage(limit) : fallback,
+    },
+  };
+}
+
+/** The HTTP status for a failed request: 429 when the quota is what failed. */
+export function statusForError(error: unknown): number {
+  return throttleOf(error) ? 429 : 500;
+}
+
+/**
+ * One line of failure text for a plain-text channel, such as the MCP
+ * `execute_step` tool, whose caller is a planner rather than a chat client.
+ *
+ * A planner deciding whether to re-issue a step needs the same fact a chat user
+ * does, and gets it in the only shape that surface has: prose.
+ */
+export function failureText(error: unknown): string {
+  const limit = throttleOf(error);
+  if (limit) return throttleMessage(limit);
+  return error instanceof Error ? error.message : String(error);
+}

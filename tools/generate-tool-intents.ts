@@ -13,7 +13,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { HandlerExporter } from '@mcp-abap-adt/core/handlers';
+import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
 import { CLOUD_LOCAL_TOOLS } from '../srv/lib/cloud-local-tools';

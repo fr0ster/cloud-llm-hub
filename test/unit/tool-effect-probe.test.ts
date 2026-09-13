@@ -2,7 +2,7 @@ import {
   ReadOnlyHandlersGroup,
   SearchHandlersGroup,
   SystemHandlersGroup,
-} from '@mcp-abap-adt/core/handlers';
+} from '@mcp-abap-adt/lib/handlers';
 import { SYSTEM_TOOLS_THAT_WRITE } from '../../srv/lib/exposition';
 
 /**

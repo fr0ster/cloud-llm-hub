@@ -2,7 +2,7 @@
 
 SmartAgent configuration, integration, and testing.
 
-**v6.28+:** the SmartAgent (`@mcp-abap-adt/llm-agent-libs` `^20.6.0`; `@mcp-abap-adt/llm-agent` is the contract/types surface) now runs as a coordinator-less executor worker under an explicit DAG coordinator, with a result-based reviewer (`NoticeFinalizer`) appending an `UNVERIFIED_WRITE:` notice when a response's claims contradict the actual tool results. See `../architecture/ARCHITECTURE.md` §7 and §16.
+**v6.28+:** the SmartAgent (`@mcp-abap-adt/llm-agent-libs` `^23.0.0`; `@mcp-abap-adt/llm-agent` is the contract/types surface) now runs as a coordinator-less executor worker under an explicit DAG coordinator, with a result-based reviewer (`NoticeFinalizer`) appending an `UNVERIFIED_WRITE:` notice when a response's claims contradict the actual tool results. See `../architecture/ARCHITECTURE.md` §7 and §16.
 
 ## Documents
 

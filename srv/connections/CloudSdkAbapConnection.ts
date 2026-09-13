@@ -259,9 +259,37 @@ export class CloudSdkAbapConnection implements AbapConnection {
         sessionId: this.sessionId?.substring(0, 8),
       });
     } catch (err) {
-      logger.warn('ICF logoff (session release) failed', {
-        error: String(err),
-      });
+      // A hang-up here is the NORMAL outcome, not a failure.
+      //
+      // The logoff travels the same pinned socket the session used
+      // (`maxSockets: 1`, which is what keeps a stateful chain on one
+      // connection). Ending the session ends that connection, so the reply is
+      // frequently never written and the client sees `socket hang up`.
+      //
+      // Measured on DEV, 2026-09-12: this warning fired on 100% of polls while
+      // SM05 showed NO accumulated sessions — the release was working every
+      // time it claimed to have failed. Reported as a failure it sends whoever
+      // reads the log hunting a leak that is not there, which it already did.
+      //
+      // Anything else IS worth a warning: it means the request failed before
+      // the server could act on it.
+      //
+      // The compromise, stated plainly: a hang-up does not PROVE the server
+      // processed the logoff — the same three codes would appear if the
+      // connection died on the way out. It is demoted because the measurement
+      // above says which of the two actually happens here, and because the
+      // alternative warns on every release and hides the rare real one in the
+      // noise. SM05 remains the ground truth; if sessions ever do accumulate,
+      // this line is where to look first.
+      const text = String(err);
+      if (/socket hang up|ECONNRESET|EPIPE/i.test(text)) {
+        logger.debug('Session release closed the connection, as expected', {
+          sessionId: this.sessionId?.substring(0, 8),
+          detail: text,
+        });
+        return;
+      }
+      logger.warn('ICF logoff (session release) failed', { error: text });
     }
   }
 

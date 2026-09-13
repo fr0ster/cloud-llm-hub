@@ -29,6 +29,7 @@ import {
 } from './agent-manager';
 import { describeCaller } from './lib/exposition';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { anthropicErrorPayload, throttleOf } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { resolveSessionId } from './session-id';
 
@@ -238,8 +239,17 @@ export async function handleAnthropicMessages(
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log.error('Stream error', { error: message });
-        // If headers already sent, we can only close the connection
+        const limit = throttleOf(err);
+        log.error('Stream error', { error: message, throttled: limit?.reason });
+        // Headers are already sent, so the status code is spent — but the SSE
+        // channel is not. Closing in silence leaves the client with a truncated
+        // stream and nothing to act on, which for a throttled request is the
+        // one case where we know exactly what it should do next.
+        if (!res.writableEnded) {
+          res.write(
+            `event: error\ndata: ${JSON.stringify(anthropicErrorPayload(err))}\n\n`,
+          );
+        }
       }
 
       clearInterval(keepAlive);
@@ -256,12 +266,24 @@ export async function handleAnthropicMessages(
       const formatted = adapter.formatResult(result.value, context);
       res.status(200).json(formatted);
     } else {
-      log.error('Agent processing failed', { error: result.error.message });
-      const formatted = adapter.formatError(
-        result.error,
-        context as ApiRequestContext,
-      );
-      res.status(500).json(formatted);
+      const limit = throttleOf(result.error);
+      log.error('Agent processing failed', {
+        error: result.error.message,
+        throttled: limit?.reason,
+      });
+      // The adapter's generic envelope cannot say when to come back, and 500
+      // tells a client to treat a closed quota as our fault. Both matter to a
+      // caller deciding whether to retry, so the throttled case is shaped here
+      // and everything else keeps the adapter's formatting exactly as before.
+      if (limit) {
+        res.status(429).json(anthropicErrorPayload(result.error));
+      } else {
+        res
+          .status(500)
+          .json(
+            adapter.formatError(result.error, context as ApiRequestContext),
+          );
+      }
     }
   } finally {
     await safeStop(requestConnection);

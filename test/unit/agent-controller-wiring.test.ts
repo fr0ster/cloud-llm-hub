@@ -80,6 +80,7 @@ const config: AgentConfig = {
     maxTokens: 2000,
     apiKey: 'test-key',
     baseUrl: 'http://localhost',
+    whenThrottled: { maxTotalWaitMs: 20_000 },
   },
   mcp: { destination: 'TEST_DEST' },
   agent: {
