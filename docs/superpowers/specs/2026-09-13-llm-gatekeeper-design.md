@@ -10,8 +10,8 @@ Every model we call goes through it. If the window has room, the call goes. If
 not, it waits its turn, for as long as that takes. A caller is turned away only
 at the door, before any work starts, and that refusal carries no number,
 because how long the pipelines ahead of it will run is not something we
-measure. Once admitted, no rate limit ends the request; only our own lifetime
-cap or a shutdown can.
+measure. Once admitted, no rate limit ends the request; only a shutdown
+does.
 
 ## Three roles, and who knows what
 
@@ -152,14 +152,16 @@ elsewhere.
 
 **Let in.** From here no rate limit will turn the pipeline away. It may be
 slow: its calls queue behind everyone else's, in order of arrival, with no
-ceiling on the wait and none promised. A caller stays for as long as it stays,
-and if its own timeout fires first that is its decision, not our failure.
+ceiling on the wait and none promised. Throttling costs speed, never the
+request. A caller stays for as long as it stays, and if its own timeout fires
+first that is its decision, not our failure.
 
 **The guarantee: no `429` ends an admitted pipeline.** Not a promise that every
-admitted pipeline finishes — we keep two endings of our own, a lifetime cap and
-shutdown, and they are set out below. What the door buys is that congestion
-stops being a way to die: a refusal at the door declines a whole request
-cleanly, instead of killing one halfway with an ADT lock still held.
+admitted pipeline finishes — a dependency that disappears still fails the work
+that needs it, and a shutdown still stops everything. What the door buys is
+that congestion stops being a way to die: a refusal at the door declines a
+whole request cleanly, instead of killing one halfway with an ADT lock still
+held.
 
 The guarantee rests on one property of a `429`: **it delays, it does not
 interrupt.** A refusal with an interval is a statement about when, not about
@@ -180,36 +182,40 @@ own: the call goes back to the tail of our own queue and is tried again when our
 rate next allows. That is not a guess about their server, it is our own pacing,
 and it turns an unanswerable question into an ordinary wait.
 
-**Both need a bound that we own**, and "the caller will give up" is not one.
-`execute_step` has no reliable client-abort signal — the code says so where the
-close hook would go — and it holds its slot until the pipeline ends. So a
-pipeline retrying into a refusal that never clears, a spend cap say, would hold
-memory, an ADT session and a live slot for ever, turn away every new caller, and
-outlast a graceful shutdown. A guarantee of completion would have become a
-guarantee of hanging.
+**One bound, and it is not a clock over the work.** An earlier draft put a
+configured lifetime over each admitted pipeline and failed it when the time was
+up. That is a timeout on work in progress, which is the instrument this whole
+design refuses everywhere else: it fires *instead* of the decision being made
+below it, and here the decision is a strategy waiting out an interval a server
+named. A pipeline slowed by throttling is working, not stuck, and cutting it
+mid-chain leaves an ABAP object created-but-inactive and locked by a session
+nobody will unlock. So there is no lifetime cap.
 
-Two bounds, both ours and neither a guess about the server:
+**Shutdown cancels**, and it is the only thing of ours that ends admitted work.
+Stopping cancels rather than waiting: the alternative is a restage that never
+completes because something is retrying into a wall. Cancellation is a
+mechanism, not a wish — see Cancellation below.
 
-**A lifetime per admitted pipeline.** How long we are willing to hold our own
-resources for one request. It is the same kind of decision as memory, made by
-whoever deploys, and it is about us rather than about when the quota reopens.
-When it expires the pipeline fails, and that failure is ours and reported as
-such.
+**What bounds a held resource is idleness, not duration.** The two are
+different in kind and it is worth being exact about why. A duration cap cuts
+something that is running, so it overrules whoever was deciding. An idle bound
+fires only when nothing is running at all — there is no decision to pre-empt,
+and nothing in flight to tear. It releases what is already finished with.
 
-**Shutdown cancels.** Stopping cancels admitted work rather than waiting for it.
-The alternative is a restage that never completes because something is retrying
-into a wall.
-
-Both are cancellation, and cancellation is a mechanism, not a wish — see
-Cancellation below. Racing a timer against the pipeline's promise would report
-a failure while the pipeline carried on holding memory, a lock and a live slot,
-which is the leak the door exists to prevent.
+`execute_step` today closes its ADT session in the same `finally` that releases
+the slot, before releasing it (`srv/agent-mcp.ts`): request, work, teardown,
+slot. Nothing survives a step, which is the safe default and stays the default.
+The alternative a deployment may configure is a session kept across steps and
+closed after a stated idleness — worth having because an ADT write chain wants
+one connection, and worth naming as a trade, because a session that outlives a
+step can also carry a lock past it, and then the idle close is the only thing
+that releases it. Which of the two applies is configuration; both are ours, and
+neither is a clock over running work.
 
 So the guarantee reads exactly as it did above: **no `429` ends an admitted
-pipeline.** Our own lifetime cap can, and shutdown can. Both are visible,
-configured, and ours — and because they are the only two, the lifetime is not
-optional wherever the door is on. A door without one is a promise to hold a
-slot for ever; see the configuration contract.
+pipeline.** Only shutdown does, and a call to a dependency that is gone fails
+on its own account. There are two outcomes at the door and no third one of
+ours: turned away, or let in and carried.
 
 The refusal travels the path already built for throttling
 (`srv/lib/throttle-surfacing.ts`): the message as content on
@@ -413,10 +419,10 @@ and nothing else.
 
 Two consequences the plan must respect:
 
-- **Our own refusals must not look retryable.** A pipeline ended by the
-  lifetime cap is our decision, not a server's; it carries no throttling marker
-  and no retryable status, or `RetryLlm` would try three more times something we
-  had already given up on.
+- **Our own refusals must not look retryable.** A refusal from the door, or a
+  destination we have closed, is our decision and not a server's; it carries no
+  throttling marker and no retryable status, or `RetryLlm` would try three more
+  times something we had already declined.
 - **The other construction sites have no retry today.** The builder wraps only
   the main LLM, so the reviewer, helpers, classifier and embedder call their
   providers bare. Gating them removes nothing. Whether they deserve transport
@@ -471,16 +477,16 @@ of our window.
 
 ## Cancellation
 
-The lifetime cap and shutdown are the only two endings we own, so how they end
-a pipeline has to be written down. Otherwise "the pipeline fails" means a
-`Promise.race` that resolves early: the caller is told, the slot is freed, and
-the work goes on underneath with its ADT session still open. The memory bound
-the door was bought for would be gone, and nothing would look wrong.
+Shutdown is the one ending we own, so how it ends a pipeline has to be written
+down. Otherwise "the pipeline stops" means a `Promise.race` that resolves
+early: the caller is told, the slot is freed, and the work goes on underneath
+with its ADT session still open. The memory bound the door was bought for would
+be gone, and nothing would look wrong.
 
 **One controller per admitted pipeline.** The door creates it at admission, and
-it is part of what admission hands back. It is aborted by exactly two things:
-the lifetime timer, and shutdown aborting every live controller at once. No
-other code aborts it.
+it is part of what admission hands back. Exactly one thing aborts it: shutdown,
+aborting every live controller at once. No timer holds it, and no other code
+aborts it.
 
 **Its signal travels as `CallOptions.signal`**, which is the path the library
 already has. Along it the signal reaches:
@@ -574,7 +580,7 @@ has to be written down here, or the ownership is a claim rather than a fact.
 | `LLM_GATEKEEPER_QUOTAS` | JSON: a map of quota key to `{ limit, windowMs }`. `limit` is a positive integer of request starts, `windowMs` a positive integer, defaulting to 60000 | no rate limiting; calls pass straight through |
 | `LLM_GATEKEEPER_QUOTA_OF_MODEL` | JSON: a map of model name to quota key, for deployments where several models share one limit | each model is its own quota key |
 | `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` | positive integer: how many pipelines may be admitted at once, across all channels | no door on the chat channels; `execute_step` keeps its existing semaphore |
-| `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` | positive integer: how long we will hold our own resources for one admitted pipeline before failing it | only valid while the door is off; with a door, its absence is a startup failure |
+| `LLM_GATEKEEPER_SESSION_IDLE_MS` | positive integer: close a kept ADT session after this much idleness. Only meaningful with a kept session; it never touches a session doing work | no kept session — `execute_step` tears its session down at the end of every step, as it does today |
 
 Example, for a deployment whose tenant meters two models separately:
 
@@ -593,17 +599,6 @@ document from guessing it. So an unset variable disables the thing it configures
 and the service behaves exactly as it does today. An upgrade changes nothing
 until somebody configures it.
 
-One pair is not independent, and the exception is deliberate: **a door requires
-a lifetime.** The door's whole purpose is that admitted work is carried to the
-end, and the two endings we keep are the lifetime cap and shutdown. Set
-`LLM_GATEKEEPER_MAX_LIVE_PIPELINES` without
-`LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` and the service refuses to start, naming
-both. A default here would be the same guess this document refuses everywhere
-else — how long one request may hold a slot depends on the deployment's
-pipelines, not on us — and leaving it unset would mean a slot held until
-shutdown by a pipeline retrying into a spend cap, which is precisely the hang
-the cap exists to prevent.
-
 A **malformed** value is the opposite: it fails at startup, loudly, naming the
 variable. A limit that will not parse, a non-positive integer, a model mapped to
 a quota key that has no entry — each is somebody intending a limit and not
@@ -616,10 +611,8 @@ startup rather than falling back to a default that hides the mistake.
 - every `limit` and `windowMs` is a positive safe integer
 - every value in `LLM_GATEKEEPER_QUOTA_OF_MODEL` names a key that exists in
   `LLM_GATEKEEPER_QUOTAS`
-- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` and `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS`
-  are positive safe integers
-- `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` is present whenever
-  `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is
+- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` and `LLM_GATEKEEPER_SESSION_IDLE_MS` are
+  positive safe integers
 - a model with no mapping and no entry of its own is not an error: it is
   ungated, and that is logged once at startup so it is visible rather than
   silent
@@ -775,20 +768,22 @@ would have to change with it.
 drains while the new one admits. For those minutes we run two windows. Recorded
 as a known mode rather than discovered in logs later.
 
-**The lifetime cap is not a hard bound on the slot.** It bounds when unwinding
-starts. A pipeline inside one long ADT call frees its slot when that call
-answers: an ADT request is asynchronous in substance, so cutting it would
-discard our knowledge of the work rather than stop it, and would leave the
-object locked. An LLM call now ends on the signal (llm-agent 25.0.0), so that
-half of the tail is short. Sizing should still assume a tail past the cap
-rather than treat it as a deadline, because the ABAP half is unchanged.
+**Shutdown does not free a slot instantly.** A pipeline inside one long ADT
+call frees its slot when that call answers: an ADT request is asynchronous in
+substance, so cutting it would discard our knowledge of the work rather than
+stop it, and would leave the object locked. An LLM call now ends on the signal
+(llm-agent 25.0.0), so that half of the tail is short. The ABAP half is not,
+and sizing should assume it.
 
-**A permanent refusal costs a slot until the lifetime expires.** Nothing below
-us can tell a spend cap from a busy minute, and neither can we. So a pipeline
-meeting one holds its place, retrying on our own pacing, until the lifetime cap
-ends it. Sized generously that is a slot lost for a long time; sized meanly it
-cuts work that would have succeeded. There is no reading of the refusal that
-avoids the trade.
+**A permanent refusal costs a slot until shutdown.** Nothing below us can tell
+a spend cap from a busy minute, and neither can we, so a pipeline meeting one
+holds its place and keeps retrying on our own pacing. This is the accepted
+cost of having no clock over running work: with capacity of N, N such pipelines
+close the door until the service is restarted. A duration cap would trade it
+for the opposite failure — cutting work that would have succeeded, mid-chain,
+with a lock left behind — and that trade was refused deliberately. What makes
+the cost bearable is that it is visible: door refusals rising with shallow
+queues is exactly this, and the observability section reports it.
 
 **The guarantee costs throughput at the door.** Capacity has to be reserved for
 what admitted pipelines might yet ask for, not for what they are asking now. A
@@ -800,9 +795,8 @@ prevent.
 **Shutdown cancels admitted work.** Stopping means no capacity for new
 arrivals, which is the refusal the door already gives, and it also ends what is
 already inside rather than waiting for it. Draining instead would mean a
-restage held open by a pipeline retrying into a wall, which is the hang the
-lifetime cap exists to prevent. So an admitted pipeline has exactly two endings
-that are ours: the lifetime cap and shutdown.
+restage held open by a pipeline retrying into a wall. So an admitted pipeline
+has exactly one ending that is ours, and this is it.
 
 ## Shared code and forks
 
@@ -877,8 +871,12 @@ These properties, because they are what this shape gets wrong:
   transport records no start at all: with the gate held shut, a limit of five
   and twenty callers, the window still has its five starts to give once the
   gate opens.
-- **Shutdown cancels admitted work** rather than waiting for it, and the
-  lifetime cap ends a pipeline that would otherwise retry for ever.
+- **Shutdown cancels admitted work** rather than waiting for it, and nothing
+  else of ours ends an admitted pipeline — a throttled one is slowed, never
+  cut, however long it takes.
+- **An idle session closes; a busy one does not.** With a kept session
+  configured, idleness past the stated interval tears it down, and a session
+  with a call in flight is left alone however long the call runs.
 - **A closed destination refuses arrivals and spares the admitted.** With MCP
   unreachable for one destination, a new request for it is refused with a `503`
   carrying our probe interval, a request for another destination is served, and
