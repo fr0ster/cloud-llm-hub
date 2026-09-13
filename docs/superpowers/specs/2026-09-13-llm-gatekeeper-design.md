@@ -7,9 +7,11 @@
 
 One object per quota holds a FIFO queue and a sliding window of request starts.
 Every model we call goes through it. If the window has room, the call goes. If
-not, it waits its turn, for as long as that takes. Only when there is no room
-left to hold it is a caller turned away, and then it is told how long the wait
-would have been.
+not, it waits its turn, for as long as that takes. A caller is turned away only
+at the door, before any work starts, and that refusal carries no number,
+because how long the pipelines ahead of it will run is not something we
+measure. Once admitted, no rate limit ends the request; only our own lifetime
+cap or a shutdown can.
 
 ## Three roles, and who knows what
 
@@ -148,14 +150,15 @@ zero while the door is shut. So this refusal carries no `Retry-After` and no
 number in its text. Inventing one would be exactly the guess this design refuses
 elsewhere.
 
-**Let in.** From here the answer is coming. It may be slow: the pipeline's calls
-queue behind everyone else's, in order of arrival, with no ceiling on the wait
-and none promised. A caller stays for as long as it stays, and if its own
-timeout fires first that is its decision, not our failure.
+**Let in.** From here no rate limit will turn the pipeline away. It may be
+slow: its calls queue behind everyone else's, in order of arrival, with no
+ceiling on the wait and none promised. A caller stays for as long as it stays,
+and if its own timeout fires first that is its decision, not our failure.
 
-**The guarantee: a pipeline that was let in is never refused by us.** If a
-session was allowed to start work, that work completes, however slowly. This is
-what makes the door worth having — a refusal there declines a whole request
+**The guarantee: no `429` ends an admitted pipeline.** Not a promise that every
+admitted pipeline finishes — we keep two endings of our own, a lifetime cap and
+shutdown, and they are set out below. What the door buys is that congestion
+stops being a way to die: a refusal at the door declines a whole request
 cleanly, instead of killing one halfway with an ADT lock still held.
 
 The guarantee rests on one property of a `429`: **it delays, it does not
@@ -197,8 +200,11 @@ such.
 The alternative is a restage that never completes because something is retrying
 into a wall.
 
-So the guarantee reads exactly: **no `429` ends an admitted pipeline.** Our own
-lifetime cap can, and shutdown can. Both are visible, configured, and ours.
+So the guarantee reads exactly as it did above: **no `429` ends an admitted
+pipeline.** Our own lifetime cap can, and shutdown can. Both are visible,
+configured, and ours — and because they are the only two, the lifetime is not
+optional wherever the door is on. A door without one is a promise to hold a
+slot for ever; see the configuration contract.
 
 The refusal travels the path already built for throttling
 (`srv/lib/throttle-surfacing.ts`): the message as content on
@@ -357,6 +363,47 @@ the same loop. Both call the same gatekeeper.
 The `ILlmRateLimiter` seam is then not what we use. It admits one call and
 cannot see the attempts inside it, which is the whole problem.
 
+### A refusal that never reached the wire returns its permit
+
+The invariant has a second half, and it is the one easy to write down and then
+break. A permit stands for a request the server was actually asked for. Below
+us sits the library's own quota gate, and it can refuse **before** the
+transport:
+
+```ts
+const shut = gate.remaining();
+if (shut > 0) { /* strategy says no -> throw; fn() is never called */ }
+```
+
+With `ReportThrottling` under us that branch always throws, because that
+strategy never waits. So a pipeline whose sibling met a `429` a moment ago is
+turned back by a gate in our own process, having sent nothing. A permit taken
+before that call would record a start that never happened, and a herd arriving
+at a shut gate would spend the window's whole budget on requests nobody made —
+the accounting wrong in the safe direction, but wrong, and wrong exactly under
+the load this design exists for.
+
+So the permit is returned when nothing was sent, and the refusal is told apart
+from a real one by the count the library already keeps: the `attempts` field on
+a throttled error is the number of transport attempts behind it, and a gate
+refusal carries zero. Under our wiring the value is only ever 0 or 1, because
+`ReportThrottling` makes at most one transport call per invocation.
+
+```
+loop:
+  permit = await gatekeeper.acquire(quota)
+  try { result = await inner.chat(...) }
+  catch (e) if throttled(e):
+     if e.attempts === 0: permit.giveBack()   ← nothing left the process
+     wait as told, or re-queue when nothing was told; continue
+```
+
+We do not switch the library's gate off, and could not do so honestly: it is
+keyed on something it infers, which is not ours to reach into. Nor would we want
+to — it is the one thing that stops us spending a request on a quota a sibling
+call has just been told is closed. What it must not do is take that refusal out
+of our window.
+
 ## The configuration contract
 
 This repository owns the shape; whoever deploys owns the values. So the shape
@@ -369,7 +416,7 @@ has to be written down here, or the ownership is a claim rather than a fact.
 | `LLM_GATEKEEPER_QUOTAS` | JSON: a map of quota key to `{ limit, windowMs }`. `limit` is a positive integer of request starts, `windowMs` a positive integer, defaulting to 60000 | no rate limiting; calls pass straight through |
 | `LLM_GATEKEEPER_QUOTA_OF_MODEL` | JSON: a map of model name to quota key, for deployments where several models share one limit | each model is its own quota key |
 | `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` | positive integer: how many pipelines may be admitted at once, across all channels | no door on the chat channels; `execute_step` keeps its existing semaphore |
-| `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` | positive integer: how long we will hold our own resources for one admitted pipeline before failing it | no lifetime cap, so a pipeline retrying into a permanent refusal holds its slot until shutdown |
+| `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` | positive integer: how long we will hold our own resources for one admitted pipeline before failing it | only valid while the door is off; with a door, its absence is a startup failure |
 
 Example, for a deployment whose tenant meters two models separately:
 
@@ -388,6 +435,17 @@ document from guessing it. So an unset variable disables the thing it configures
 and the service behaves exactly as it does today. An upgrade changes nothing
 until somebody configures it.
 
+One pair is not independent, and the exception is deliberate: **a door requires
+a lifetime.** The door's whole purpose is that admitted work is carried to the
+end, and the two endings we keep are the lifetime cap and shutdown. Set
+`LLM_GATEKEEPER_MAX_LIVE_PIPELINES` without
+`LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` and the service refuses to start, naming
+both. A default here would be the same guess this document refuses everywhere
+else — how long one request may hold a slot depends on the deployment's
+pipelines, not on us — and leaving it unset would mean a slot held until
+shutdown by a pipeline retrying into a spend cap, which is precisely the hang
+the cap exists to prevent.
+
 A **malformed** value is the opposite: it fails at startup, loudly, naming the
 variable. A limit that will not parse, a non-positive integer, a model mapped to
 a quota key that has no entry — each is somebody intending a limit and not
@@ -402,6 +460,8 @@ startup rather than falling back to a default that hides the mistake.
   `LLM_GATEKEEPER_QUOTAS`
 - `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` and `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS`
   are positive safe integers
+- `LLM_GATEKEEPER_PIPELINE_LIFETIME_MS` is present whenever
+  `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is
 - a model with no mapping and no entry of its own is not an error: it is
   ungated, and that is logged once at startup so it is visible rather than
   silent
@@ -457,10 +517,12 @@ earlier than one sized for pipelines that make two, at the same memory. The
 alternative is refusing work in flight, which is what the guarantee exists to
 prevent.
 
-**Shutdown looks like a full door.** Stopping means no capacity for new
-arrivals, which is the refusal the door already gives. Admitted pipelines still
-finish, which is the same guarantee under a different cause. No separate
-mechanism.
+**Shutdown cancels admitted work.** Stopping means no capacity for new
+arrivals, which is the refusal the door already gives, and it also ends what is
+already inside rather than waiting for it. Draining instead would mean a
+restage held open by a pipeline retrying into a wall, which is the hang the
+lifetime cap exists to prevent. So an admitted pipeline has exactly two endings
+that are ours: the lifetime cap and shutdown.
 
 ## Shared code and forks
 
@@ -520,6 +582,10 @@ These properties, because they are what this shape gets wrong:
 - **Every attempt is accounted.** A call that meets two `429`s before succeeding
   records three starts in the window, not one. This is what fails if anything
   below the gated wrapper starts retrying again.
+- **And nothing else is.** A call turned back by the library's gate before the
+  transport records no start at all: with the gate held shut, a limit of five
+  and twenty callers, the window still has its five starts to give once the
+  gate opens.
 - **Shutdown cancels admitted work** rather than waiting for it, and the
   lifetime cap ends a pipeline that would otherwise retry for ever.
 
@@ -547,4 +613,6 @@ implementation plan, not this design.
 The library's own gate stays as it is. It is a local safety net keyed on
 something it inferred, and after this it should almost never fire: if it does,
 our configured number is wrong or another consumer is spending the tenant's
-minute. That is the signal to read it as.
+minute. That is the signal to read it as. Because it refuses before the
+transport, a refusal from it costs no permit — see "A refusal that never reached
+the wire returns its permit".
