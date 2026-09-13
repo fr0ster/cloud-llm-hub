@@ -7,8 +7,9 @@
 
 One object per quota holds a FIFO queue and a sliding window of request starts.
 Every model we call goes through it. If the window has room, the call goes. If
-not, it waits its turn. If the queue is full, the caller is told how long to
-wait and leaves. Nothing is torn.
+not, it waits its turn, for as long as that takes. Only when there is no room
+left to hold it is a caller turned away, and then it is told how long the wait
+would have been.
 
 ## The problem
 
@@ -102,12 +103,14 @@ more quota, or split it into separately limited groups — not a code change.
 
 ## What the caller sees
 
-Three outcomes, none of them a torn connection.
+Three outcomes. We cut none of them.
 
 **Admitted.** Room in the window. No delay, nothing observable.
 
 **Parked, then admitted.** No room in the window, room in the queue. The call
-waits its turn and proceeds. The caller sees a slower answer and nothing else.
+waits its turn and proceeds, however long that takes. No ceiling is imposed on
+the wait and none is promised: a caller stays for as long as it stays, and if
+its own timeout fires first that is its decision, not our failure.
 
 **Refused.** The queue is full: arrivals outpace the rate at which the quota
 lets us drain it, and there is nowhere to put this one. The caller is told how
@@ -125,27 +128,29 @@ our own refusal.
 
 The refusal says nothing about the caller. It is not "you sent too much"; it is
 "we have no room". Queue length is therefore the only knob, and it means how
-much backlog we are willing to hold.
+much backlog we can hold — see Sizing.
 
 ## Sizing
 
-The queue length is the promise: the longest possible wait is its length divided
-by the rate. So the two are one setting, and the operator sets the half they
-think in — an acceptable wait, in seconds. The length follows from it and the
-rate.
+The queue length is a statement about **resources**, not about anyone's
+patience. A caller does not tell us how long it will wait, and is not asked: it
+either stays connected for as long as the queue takes, or — when there is no
+room to hold it — is turned away. Its own timeout is its own business. Ours is
+not to cut it and not to refuse it while we still have room.
 
-At a limit of 78 requests per minute, a 30-second wait is a queue of 39; a
-45-second wait is a queue of 58.
+So the number is set from what we can hold. A place in the queue is nearly free;
+the **waiter** is not. A parked pipeline holds its whole context — messages,
+tool results, token buffers. This container was raised to 2 GB because
+concurrent heavy pipelines spike memory, and parked ones spike it the same way.
+The queue length is therefore roughly "how many live pipelines fit in the
+container", and it belongs in the deployment's `.mtaext` beside the memory it
+depends on.
 
-Two ceilings bound it, and the smaller wins:
-
-- what the caller will wait before giving up
-- what memory allows
-
-The second is easy to underestimate. A place in the queue is nearly free; the
-**waiter** is not. A parked pipeline holds its whole context — messages, tool
-results, token buffers. This container was raised to 2 GB because concurrent
-heavy pipelines spike memory, and parked ones spike it the same way.
+The wait that results is worth knowing even though it is not a promise: length
+divided by rate. At 78 requests per minute a queue of 39 means the last in line
+waits about 30 seconds. If that is longer than callers tolerate, the answer is
+more quota, not a shorter queue — a shorter queue converts waiting into
+refusals, which is worse for the same load.
 
 ## Entrances
 
