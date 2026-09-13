@@ -611,6 +611,64 @@ The values in force are logged at startup, for the same reason the throttle
 ceiling is: a limit only shows itself under load, and by then nobody remembers
 what was configured.
 
+## When a dependency is down, the consumer decides
+
+The door refuses because we are full. This is the other refusal: we are not
+full, we are not able. It belongs in this document because both end at the same
+place — a caller told no — and because getting the second one wrong undoes the
+guarantee the first one buys.
+
+**The decision is ours, and the library must not make it for us.** llm-agent
+already has the seam: `IMcpFailureClassifier` names two kinds, `unavailable`
+and `tool-error`, which is exactly the distinction that matters — a server that
+is gone versus a tool that ran and failed. What it does not yet have is a
+wrapper that asks. `MCPClientWrapper` catches any transport error and decides
+by itself to disconnect, reconnect and **call the tool again**. On an ABAP
+write that is a second attempt at the same change, against the rule this
+repository learned the hard way and wrote down: never blind-retry a stateful
+write, because the retries pile up locks.
+
+So the shape is the same as everywhere else in this design. The library
+establishes the fact — the server is unreachable — and we decide what follows.
+Nothing below us retries, reconnects on its own, or converts an outage into a
+quieter-looking degradation.
+
+**What we decide, stated plainly.**
+
+A failure is scoped to a **destination**, not to the service. MCP here is
+per-destination, built per request from the caller's headers, so one SAP system
+being unreachable is no reason to refuse someone working with another. The
+service as a whole stops only when something shared stops — the model provider,
+say.
+
+**RAG down is not MCP down.** Without MCP the executor has no tools at all and
+can do nothing but talk, which is the failure mode this whole service exists to
+prevent: an agent that answers confidently about ABAP it never read. Without
+RAG it still has every tool, it simply chooses among them worse. The first
+closes the destination; the second is logged and carried, because stopping for
+it would cost more than it saves.
+
+**New arrivals are refused; admitted pipelines are not killed.** This is the
+door's guarantee under a second cause, and the reasoning is unchanged. A
+pipeline cut mid-chain leaves an ABAP object created-but-inactive and locked by
+a session nobody will unlock, so our own refusal would be manufacturing work
+for a human in SM12. The refusal travels the path already built: `503` with
+`Retry-After` where the channel has one, the same formatters as everywhere
+else, never a `500` — this is temporary and we know it.
+
+**Degrading silently is not on the table.** `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK`
+already defaults to off, and an uninitialised destination already answers a
+retryable `503` (`srv/agent-manager.ts`). What is missing is only that the same
+posture applies to MCP lost *during* operation, not just at startup. This
+section is that extension, not a new policy.
+
+The implementation plan owns two pieces of it: teaching the gated path to treat
+a closed destination the way it treats a full door, and — upstream, separately
+— removing the blind reconnect-and-retry from `MCPClientWrapper` so the
+classifier is actually consulted. The second is llm-agent's to fix and is not a
+prerequisite here: until it lands, a reconnect can re-run a tool, and that is a
+known hazard rather than a designed behaviour.
+
 ## Not in scope
 
 **Token limits.** OpenAI and Anthropic bound tokens per minute as well as
@@ -736,6 +794,13 @@ These properties, because they are what this shape gets wrong:
   gate opens.
 - **Shutdown cancels admitted work** rather than waiting for it, and the
   lifetime cap ends a pipeline that would otherwise retry for ever.
+- **A closed destination refuses arrivals and spares the admitted.** With MCP
+  unreachable for one destination, a new request for it is refused with a
+  `503`, a request for another destination is served, and a pipeline already
+  inside it runs to its end rather than being cut with a lock still held.
+- **RAG down is carried, not fatal.** The same destination still answers with
+  every tool available and a line in the log, because choosing tools worse is
+  not the same as having none.
 - **Cancellation reaches the waits, and the slot outlives the report.** A
   pipeline parked in the gatekeeper's queue and one parked in a wait-as-told
   both leave when the signal fires, and in both the slot is still held at the
