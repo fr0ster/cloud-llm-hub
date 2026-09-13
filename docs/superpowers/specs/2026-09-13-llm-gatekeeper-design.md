@@ -50,8 +50,11 @@ inside the provider: it reads `Retry-After`, records that the quota is shut so
 no other call spends a request discovering it, and hands the failure up. That is
 **throttling** — reacting to a server that has already said no.
 
-What is missing is the **limit**: knowing the budget and not exceeding it. A
-library cannot hold that. It sees one call, not all our callers.
+What is missing is the **limit**: knowing the budget and not exceeding it. The
+library cannot hold that — not because it cannot see concurrent callers, since
+its gate is shared across every provider instance in the process, but because
+nobody tells it the budget. It learns the limit only by being refused, which is
+learning after the fact and one spent request at a time.
 
 ## Where this belongs, and why
 
@@ -134,28 +137,51 @@ more quota, or split it into separately limited groups — not a code change.
 Two outcomes at the door, and one guarantee behind it. We cut none of them.
 
 **Turned away at the door.** Too many pipelines are already live for the memory
-this deployment bought. The caller is told, with roughly how long the work in
-front would take. Nothing was started, so nothing is left half-done.
+this deployment bought. Nothing was started, so nothing is left half-done.
+
+**Without a time to come back at.** The door is full because pipelines are
+running, and how long a pipeline runs is not something we know: a chat turn and
+a twenty-iteration tool loop differ by orders of magnitude, and a pipeline may
+be waiting on ABAP or streaming its answer rather than on any quota. The queue
+depth divided by the rate describes a different resource entirely and can be
+zero while the door is shut. So this refusal carries no `Retry-After` and no
+number in its text. Inventing one would be exactly the guess this design refuses
+elsewhere.
 
 **Let in.** From here the answer is coming. It may be slow: the pipeline's calls
 queue behind everyone else's, in order of arrival, with no ceiling on the wait
 and none promised. A caller stays for as long as it stays, and if its own
 timeout fires first that is its decision, not our failure.
 
-**The guarantee: a pipeline that was let in is never refused.** If a session was
-allowed to start work, that work completes, however slowly. This is what makes
-the door worth having — a refusal there declines a whole request cleanly,
-instead of killing one halfway with an ADT lock still held.
+**The guarantee: a pipeline that was let in is never refused by us.** If a
+session was allowed to start work, that work completes, however slowly. This is
+what makes the door worth having — a refusal there declines a whole request
+cleanly, instead of killing one halfway with an ADT lock still held.
+
+The guarantee has to be made true, not merely stated. An admitted pipeline uses
+`WaitAsTold` with no attempt cap, not `WaitIfShortEnough`: a server that names
+an interval is waited out however long it is. The ceiling in
+`WaitIfShortEnough` existed to protect a caller's connection from a wait we
+could not predict, and the door now protects capacity instead, so the ceiling
+would only reintroduce the failure this section exists to prevent — a request
+killed in flight.
+
+**Its one exception, stated rather than hidden:** a `429` carrying no interval.
+There is nothing to wait for, and the case exists — Anthropic omits the header
+for a spend-cap refusal, which never clears by waiting. An admitted pipeline can
+therefore still end in a provider failure. It cannot end in one of ours.
 
 The refusal travels the path already built for throttling
 (`srv/lib/throttle-surfacing.ts`): the message as content on
-`/v1/chat/completions`, an `overloaded_error` envelope with `529` and
-`Retry-After` on `/v1/messages`, the step's error text for `execute_step`.
+`/v1/chat/completions`, an `overloaded_error` envelope with `529` on
+`/v1/messages`, the step's error text for `execute_step`.
 
-Only the number's origin differs. A `Retry-After` is the server's estimate. The
-gatekeeper's number is arithmetic: queue length divided by the rate. So the
-formatters need one input shape fed from two sources — the library's marker and
-our own refusal.
+It differs from a throttle refusal in one way: there is no number. The
+formatters already handle that — a throttled error whose server named no
+interval produces "try again shortly" and omits the header — so the door's
+refusal reuses that branch rather than needing a new one. What is needed is that
+the formatters accept our own refusal as a source, not only the library's
+marker.
 
 The refusal says nothing about the caller. It is not "you sent too much"; it is
 "we have no room". The knob is therefore how many pipelines may live at once —
@@ -203,11 +229,15 @@ quota changes with it, and the derivation is the thing to revisit.
 
 ### What the waiting looks like
 
-The wait that results is worth knowing even though it is not promised: queue
-length divided by rate. At 78 requests per minute a queue of 39 means the last
-in line waits about 30 seconds. If that is longer than callers tolerate, whoever
-deploys needs more quota, not fewer pipelines — fewer pipelines converts waiting
-into refusals at the same load.
+The wait **inside** is worth knowing even though it is not promised: queue
+length divided by rate. At 78 requests per minute a queue of 39 means a call at
+the back waits about 30 seconds. If that is longer than callers tolerate,
+whoever deploys needs more quota, not fewer pipelines — fewer pipelines converts
+waiting into refusals at the same load.
+
+This number describes the quota queue and says nothing about the door. A
+pipeline slot frees when a pipeline finishes, which depends on work we do not
+measure.
 
 A capacity of one is a valid setting, not a misconfiguration: one pipeline at a
 time, everyone else turned away at the door. It must behave, because it is the
@@ -261,6 +291,57 @@ The two wrappers are thin. On the LLM side ours implements `ILlmRateLimiter`,
 the interface `RateLimiterLlm` already calls — the decorator sits outermost, so
 even a retry passes through. On the embedder side it is an `IEmbedder` wrapper.
 Both call the same gatekeeper.
+
+## The configuration contract
+
+This repository owns the shape; whoever deploys owns the values. So the shape
+has to be written down here, or the ownership is a claim rather than a fact.
+
+### Variables
+
+| Variable | Meaning | Absent |
+|---|---|---|
+| `LLM_GATEKEEPER_QUOTAS` | JSON: a map of quota key to `{ limit, windowMs }`. `limit` is a positive integer of request starts, `windowMs` a positive integer, defaulting to 60000 | no rate limiting; calls pass straight through |
+| `LLM_GATEKEEPER_QUOTA_OF_MODEL` | JSON: a map of model name to quota key, for deployments where several models share one limit | each model is its own quota key |
+| `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` | positive integer: how many pipelines may be admitted at once, across all channels | no door on the chat channels; `execute_step` keeps its existing semaphore |
+
+Example, for a deployment whose tenant meters two models separately:
+
+```json
+{
+  "anthropic--claude-4.5-sonnet": { "limit": 60 },
+  "text-embedding-3-small":       { "limit": 200 }
+}
+```
+
+### Absent means off, malformed means refuse to start
+
+There is no default rate, because there is no honest one: the number is a
+property of someone's tenant, and this repository is forbidden elsewhere in this
+document from guessing it. So an unset variable disables the thing it configures
+and the service behaves exactly as it does today. An upgrade changes nothing
+until somebody configures it.
+
+A **malformed** value is the opposite: it fails at startup, loudly, naming the
+variable. A limit that will not parse, a non-positive integer, a model mapped to
+a quota key that has no entry — each is somebody intending a limit and not
+getting one, which is the failure mode this whole design exists to make visible.
+The precedent is `LLM_AGENT_THROTTLE_MAX_WAIT_MS`, which already fails at
+startup rather than falling back to a default that hides the mistake.
+
+### What is validated
+
+- every `limit` and `windowMs` is a positive safe integer
+- every value in `LLM_GATEKEEPER_QUOTA_OF_MODEL` names a key that exists in
+  `LLM_GATEKEEPER_QUOTAS`
+- `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is a positive safe integer
+- a model with no mapping and no entry of its own is not an error: it is
+  ungated, and that is logged once at startup so it is visible rather than
+  silent
+
+The values in force are logged at startup, for the same reason the throttle
+ceiling is: a limit only shows itself under load, and by then nobody remembers
+what was configured.
 
 ## Not in scope
 
@@ -349,17 +430,34 @@ Three properties, because they are what this shape gets wrong:
 - **A capacity of one admits one and turns away the rest.** The degenerate
   setting is a setting.
 - **An admitted pipeline is never refused.** Fill the capacity, then drive every
-  admitted pipeline through more calls than the window allows: all of them
-  complete, none is turned away. This is the guarantee, so it is the test that
-  matters most.
+  admitted pipeline through more calls than the window allows: all complete,
+  none is turned away. This is the guarantee, so it is the test that matters
+  most.
+- **And it survives a provider 429 mid-flight.** An admitted pipeline that meets
+  a `429` naming an interval waits it out and finishes, however long. Only a
+  `429` naming nothing ends it, and the test asserts that too, so the exception
+  stays deliberate rather than becoming a discovery.
 
 Plus: a refusal at a full queue carries the right number, and shutdown behaves
 as a full queue.
 
 ## Relationship to what already exists
 
-`WaitIfShortEnough` (`srv/lib/throttle-strategy.ts`) stays but stops being the
-main instrument. It decides after a refusal, knowing only what the server said.
-The gatekeeper decides before the call, knowing the wait exactly. What remains
-for the strategy is the case where our estimate and reality diverge, which is
-precisely when another consumer is spending the quota.
+`WaitIfShortEnough` (`srv/lib/throttle-strategy.ts`) is **replaced** for admitted
+pipelines, not merely demoted. Its ceiling protected a caller's connection from a
+wait we could not predict. With a door in front, that protection has moved: a
+request is either declined before it starts or carried to the end. A ceiling
+behind the door would only kill work in flight, which is the failure the door
+exists to prevent. Admitted pipelines therefore use `WaitAsTold` with no attempt
+cap.
+
+Whether the strategy survives anywhere depends on whether anything still calls a
+model outside an admitted pipeline. Startup tool vectorization is the candidate:
+it embeds hundreds of documents before any request exists, so there is no door
+in front of it and no caller to protect. Deciding that is part of the
+implementation plan, not this design.
+
+The library's own gate stays as it is. It is a local safety net keyed on
+something it inferred, and after this it should almost never fire: if it does,
+our configured number is wrong or another consumer is spending the tenant's
+minute. That is the signal to read it as.
