@@ -607,17 +607,37 @@ and on the direct Anthropic, OpenAI and DeepSeek providers, which never set one,
 not bounded at all. On the ABAP side nothing changes: the call finishes when it
 finishes.
 
-**Teardown order, and who frees the slot.** The abort unwinds the pipeline; the
-existing safe-stop runs on the way out and releases the ADT session, exactly as
-it already does on every exit path; the caller is answered with our own
-failure; and the slot is released last, by the same `finally` that ran the
-teardown and waited out any transport promise still in flight. The timer frees
-nothing — it only aborts. A slot freed by the timer would let the door admit a
-replacement while the old pipeline still held its memory and its lock, which is
-the double-booking this whole section exists to rule out.
+**Teardown order, and who frees the slot.** An earlier draft had safe-stop
+first, and that is the wrong end. `safeStop` calls `closeSession` and then
+`reset` (`srv/lib/request-connection.ts`), so running it while a registered
+write is still on that connection tears the session out from under the call —
+which is how an object ends up created-but-inactive with a lock nobody holds.
+Holding the slot does not help: the slot was never what the write was using.
 
-**Shutdown is the same path, aborted all at once**, plus one difference: it
-does not wait for the slots to come back before the process exits. What it
+The order on an abort or a disconnect is therefore:
+
+1. **Stop admitting new calls** on this pipeline. The signal fires; the tool
+   loop starts nothing further.
+2. **Wait for the register to empty** — every call already dispatched, model or
+   tool, settles on its own.
+3. **Then `safeStop`**, with nothing left using the connection.
+4. **Then release the slot**, last, by the same `finally`.
+
+**And the disconnect listener must stop closing the connection itself.**
+`res.on('close')` today calls `safeStop` directly
+(`srv/openai-handler.ts`, `srv/anthropic-handler.ts`), which walks straight
+past the register — the guard on `!res.writableEnded` narrows *when* it fires,
+not *what* it cuts. It becomes an abort: it fires the controller and nothing
+else, and the sequence above does the rest. That is a change to code that is
+correct today only because nothing was tracking in-flight calls.
+
+Nothing frees a slot early. A slot freed while the pipeline still held memory
+and a lock would let the door admit a replacement on top of it, which is the
+double-booking this whole section exists to rule out.
+
+**Shutdown is the same path, aborted all at once**, and the one place the
+ordering above is allowed to be best-effort: it does not wait for the register
+to empty or for the slots to come back before the process exits. What it
 guarantees is that the abort was delivered and the ADT sessions were asked to
 close, not that every socket closed first.
 
@@ -959,7 +979,9 @@ These properties, because they are what this shape gets wrong:
   the slot is released, so a freed slot never means a session still open.
 - **A closed destination refuses arrivals and spares the admitted.** With MCP
   unreachable for one destination, a new request for it is refused with a `503`
-  carrying our probe interval, a request for another destination is served, and
+  carrying the time left until that destination's `nextProbeAt` — not the whole
+  interval, which is the bug this replaced — a request for another destination
+  is served, and
   a pipeline already inside it is not cut by us — it fails only if it actually
   calls the missing server.
 - **An unanswered write is reported, never repeated.** A tool call that was
@@ -980,6 +1002,11 @@ These properties, because they are what this shape gets wrong:
   refuses an arrival until the embedded promise settles. Written against the
   MCP path specifically, because the LLM path passed this while the MCP path
   had no register at all.
+- **The session outlives it too.** In the same run, `closeSession` is not
+  called until that promise has settled, and a client disconnect produces an
+  abort rather than an immediate `safeStop`. Asserted on ordering, because a
+  test that only counts the slot passes while the connection is pulled out
+  from under a live write.
 - **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
   back, and it proceeds without waiting for the expiry its timer was set to.
 - **An unknown model is a bad request, not an overload.** With quotas
