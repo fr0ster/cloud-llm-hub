@@ -1,4 +1,10 @@
-import { throttleMessage, throttleOf } from '../../srv/lib/throttle-surfacing';
+import {
+  anthropicErrorPayload,
+  failureText,
+  statusForError,
+  throttleMessage,
+  throttleOf,
+} from '../../srv/lib/throttle-surfacing';
 
 /**
  * Since llm-agent 22.2.0 the provider answers 429 itself — backing off,
@@ -125,39 +131,42 @@ describe('the configured wait budget', () => {
   });
 });
 
-describe('the Anthropic stream reports an exhausted policy', () => {
-  // A promise kept on one of three channels is not kept: the OpenAI path
-  // reported it, this one closed the stream in silence.
-  const sseErrorFor = (err: unknown) => {
-    const limit = throttleOf(err);
-    return {
-      type: 'error',
-      error: {
-        type: limit ? 'rate_limit_error' : 'api_error',
-        message: limit
-          ? throttleMessage(limit)
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      },
-    };
-  };
-
-  it('names the Anthropic error type a client can act on', () => {
-    const throttled = Object.assign(new Error('SAP AI SDK streaming error'), {
+describe('the wire shapes every channel sends', () => {
+  // These are the functions the handlers call. The previous version of this
+  // test rebuilt the envelope beside the handler, which would have stayed green
+  // if the handler stopped sending it at all.
+  const throttled = (seconds: number) =>
+    Object.assign(new Error('SAP AI SDK streaming error'), {
       throttled: true,
       attempts: 5,
-      retryAfterSeconds: 30,
+      retryAfterSeconds: seconds,
       reason: 'budget',
     });
-    const payload = sseErrorFor(throttled);
+
+  it('names the Anthropic error type a client already handles', () => {
+    const payload = anthropicErrorPayload(throttled(30));
+    expect(payload.type).toBe('error');
     expect(payload.error.type).toBe('rate_limit_error');
     expect(payload.error.message).toContain('30 seconds');
   });
 
   it('leaves an ordinary failure as an api_error with its own message', () => {
-    const payload = sseErrorFor(new Error('Class ZCL_X not found'));
+    const payload = anthropicErrorPayload(new Error('Class ZCL_X not found'));
     expect(payload.error.type).toBe('api_error');
     expect(payload.error.message).toBe('Class ZCL_X not found');
+  });
+
+  it('answers 429 for a closed quota and 500 for our own failure', () => {
+    // 500 tells a client the fault is ours and the request is not worth
+    // repeating. For a quota that reopens in seconds, both halves are wrong.
+    expect(statusForError(throttled(12))).toBe(429);
+    expect(statusForError(new Error('Class ZCL_X not found'))).toBe(500);
+  });
+
+  it('gives the planner the same fact in the shape execute_step has', () => {
+    expect(failureText(throttled(42))).toContain('42 seconds');
+    expect(failureText(new Error('Class ZCL_X not found'))).toBe(
+      'Class ZCL_X not found',
+    );
   });
 });

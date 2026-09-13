@@ -38,6 +38,7 @@ import { computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
+import { failureText } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 
 /**
@@ -355,7 +356,7 @@ export async function createAgentMcpServerForRequest(
             destination: targetDestination,
           });
           return textResult(
-            `ERROR on destination "${targetDestination}": ${r.error.message}`,
+            `ERROR on destination "${targetDestination}": ${failureText(r.error)}`,
             true,
           );
         }

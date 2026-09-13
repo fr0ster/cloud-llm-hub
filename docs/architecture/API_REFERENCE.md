@@ -596,11 +596,23 @@ force is logged at startup, since it shows itself only under load.
 This service therefore does **not** retry a rate limit of its own. Another
 request into a quota the server has just said is closed only earns another
 penalty and lengthens the window. When the provider's policy is spent, the
-caller is told, and told when to come back:
+caller is told, and told when to come back — on **every** channel, in the shape
+that channel speaks:
+
+| Channel | What arrives |
+|---|---|
+| `/v1/chat/completions` | the message as the response content, streaming or not |
+| `/v1/messages` non-streaming | HTTP `429` with Anthropic's `rate_limit_error` envelope |
+| `/v1/messages` streaming | an SSE `error` event carrying the same envelope |
+| `execute_step` (MCP) | the message as the step's `ERROR on destination …` text |
 
 ```
 The AI service is rate-limited right now. Please try again in about 42 seconds.
 ```
+
+The status is `429` rather than `500` where a status is sent at all: `500` tells
+a client the fault is ours and the request is not worth repeating, and for a
+quota that reopens in seconds both halves of that are wrong.
 
 The number is the server's own `Retry-After`, carried on the error rather than
 guessed at.
