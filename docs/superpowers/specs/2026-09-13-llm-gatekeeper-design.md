@@ -11,6 +11,34 @@ not, it waits its turn, for as long as that takes. Only when there is no room
 left to hold it is a caller turned away, and then it is told how long the wait
 would have been.
 
+## Three roles, and who knows what
+
+BTP separates these, and the design depends on the separation. Each knows
+something the others do not, and each is powerless over what the others hold.
+
+**Whoever writes the service** — this repository, Apache 2.0. Owns the
+mechanism and the shape of the configuration. Knows nothing about any tenant's
+quota and must not encode a guess about one.
+
+**Whoever deploys it** — the subaccount holding the AI Core (or other) service
+instance: ACME, acme, each their own. Owns the numbers. Is the only party who
+knows what limits were ordered, whether resource groups have their own, and what
+else in that subaccount spends the same minute. Values live in their `.mtaext`,
+never here.
+
+**Whoever calls it** — and this one has two shapes:
+
+- a person in the WebUI, watching for an answer and able to read a sentence
+- a program: Claude Code, Cline, a script. It has its own timeout, gives up
+  silently, and may retry on its own
+
+Neither is asked about quotas, waits or capacity, and neither can be: the person
+has no idea, and the program has no way to be told before it calls. This is why
+the caller never configures anything here, and why a refusal has to be legible
+to both — a sentence for the person, a number in a field or header for the
+program. The per-channel formatters in `srv/lib/throttle-surfacing.ts` exist for
+exactly that split.
+
 ## The problem
 
 Many users share one LLM quota. We learn about the limit only by being refused,
@@ -143,13 +171,13 @@ the **waiter** is not. A parked pipeline holds its whole context — messages,
 tool results, token buffers. This container was raised to 2 GB because
 concurrent heavy pipelines spike memory, and parked ones spike it the same way.
 The queue length is therefore roughly "how many live pipelines fit in the
-container", and it belongs in the deployment's `.mtaext` beside the memory it
-depends on.
+container", and whoever deploys sets it in their `.mtaext`, beside the
+memory it depends on.
 
 The wait that results is worth knowing even though it is not a promise: length
 divided by rate. At 78 requests per minute a queue of 39 means the last in line
-waits about 30 seconds. If that is longer than callers tolerate, the answer is
-more quota, not a shorter queue — a shorter queue converts waiting into
+waits about 30 seconds. If that is longer than callers tolerate, whoever deploys
+needs more quota, not a shorter queue — a shorter queue converts waiting into
 refusals, which is worse for the same load.
 
 ## Entrances
@@ -198,10 +226,10 @@ See the next section.
 
 ## Known limits of this design
 
-**It does not guarantee the limit is respected.** We cannot see the tenant's
-other consumers — the other fork deployments, `abap-dump-monitor`, anything else
-in the subaccount. So the configured number is an estimate and should sit below
-the real limit. If it is too high we take more `429`s and work slows down; we do
+**It does not guarantee the limit is respected.** The service cannot see the
+subaccount's other consumers — the other fork deployments, `abap-dump-monitor`, anything else
+in the subaccount. So the configured number is an estimate, and whoever deploys should
+set it below the real limit. If it is too high we take more `429`s and work slows down; we do
 not tear. That degradation is the expected failure mode, not an incident, and
 the throttle handling below is what absorbs it.
 
@@ -222,8 +250,9 @@ arrivals, which is the refusal that already exists. No separate mechanism.
 This repository is Apache 2.0 and holds only what is common: the mechanism, the
 configuration shape, the wrappers, the refusal, the observability.
 
-Forks are private and hold adaptations to a specific system. Their quotas are
-different numbers in `.mtaext`, not a different design. acme's provider will
+Forks are private and hold adaptations to a specific system, made by whoever
+deploys it. Their quotas are different numbers in `.mtaext`, not a different
+design. acme's provider will
 not be SAP AI Core, which is why nothing in the gatekeeper may name one: it
 knows a key, a limit and a window, and where those come from is configuration.
 
