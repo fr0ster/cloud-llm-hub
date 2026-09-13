@@ -37,9 +37,17 @@ never here.
 Neither is asked about quotas, waits or capacity, and neither can be: the person
 has no idea, and the program has no way to be told before it calls. This is why
 the caller never configures anything here, and why a refusal has to be legible
-to both — a sentence for the person, a number in a field or header for the
+to both — a sentence for the person and, **whenever we honestly have one**, a
+number in a field or header for the
 program. The per-channel formatters in `srv/lib/throttle-surfacing.ts` exist for
 exactly that split.
+
+The qualifier is load-bearing. A throttled call carries the interval the server
+named, so that refusal has a number. A full door does not: how long the
+pipelines ahead will run is not something we measure, and inventing a figure
+for the header would be the guess this document refuses everywhere else. The
+rule is that we never withhold a number we have, not that we manufacture one
+we lack.
 
 ## The problem
 
@@ -92,8 +100,20 @@ the tenant limit unless separately configured. That gate stays a local safety
 net; this is the record of what the limit actually is.
 
 **It counts starts, not concurrency.** A rate measures how many requests begin
-per window. A permit is taken on entry and never returned — duration is not its
-business. This is why it is not a semaphore.
+per window. A permit is taken on entry and expires by ageing out of the window,
+never by the call ending — duration is not its business. This is why it is not
+a semaphore.
+
+There is one exception, and it is not a release: a call that never reached the
+wire gives its permit back, because it was never a start (see "A refusal that
+never reached the wire"). That is a correction of the record, not a return of
+capacity, and it has to be cheap. So a permit is not a bare timestamp in a
+deque: it is a node the holder keeps a reference to, and giving it back marks
+that node dead in place — `O(1)`, no search. Dead nodes are skipped when the
+window is trimmed from the head, and the count of live starts is maintained as
+they are marked rather than recomputed. The dispatcher reads that count, so a
+permit given back opens room for the next waiter immediately and correctly,
+while the window's own ordering by timestamp is never disturbed.
 
 **Sliding window.** A permit is free when fewer than `limit` starts fall inside
 the last `window`. The oldest start leaves the window and a place opens.
@@ -617,9 +637,17 @@ startup rather than falling back to a default that hides the mistake.
 - every value in `LLM_GATEKEEPER_QUOTA_OF_MODEL` names a key that exists in
   `LLM_GATEKEEPER_QUOTAS`
 - `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is a positive safe integer
-- a model with no mapping and no entry of its own is not an error: it is
-  ungated, and that is logged once at startup so it is visible rather than
-  silent
+- **a runtime model with no quota is refused once quotas are configured.** The
+  earlier rule — ungated, logged once at startup — cannot hold on this service.
+  `/v1/chat/completions` accepts any `body.model` and `getSmartAgent` hot-swaps
+  the shared main LLM to it for that request and the ones after
+  (`srv/openai-handler.ts`, `srv/agent-manager.ts`), so the name may first be
+  seen long after startup and a typo would silently un-gate every subsequent
+  main call. The check therefore happens **at the swap**, not at boot: with
+  `LLM_GATEKEEPER_QUOTAS` set, a model that names neither a quota entry nor a
+  mapping is rejected with the same refusal shape as any other, naming the
+  model and the variable. With no quotas configured at all nothing is gated and
+  nothing is rejected, exactly as today
 
 The values in force are logged at startup, for the same reason the throttle
 ceiling is: a limit only shows itself under load, and by then nobody remembers
@@ -726,18 +754,38 @@ retryable `503` (`srv/agent-manager.ts`). What is missing is only that the same
 posture applies to MCP lost *during* operation, not just at startup. This
 section is that extension, not a new policy.
 
-**Removing the blind retry upstream is a prerequisite, not a follow-up.** An
-earlier draft called it separable and that was wrong: everything above rests on
-a failed tool call being reported once, and `MCPClientWrapper` currently
-reconnects and calls the same tool again on any transport error
-(`client.js` in `@mcp-abap-adt/llm-agent-mcp`). With that in place the
-`UNVERIFIED_WRITE:` answer is a fiction — the second call has already happened
-by the time anyone reports anything, and a write may have been applied twice.
-A design cannot state an invariant its own installed dependency contradicts.
+**The work is on the embedded path, and two earlier drafts had it on the wrong
+one.** This service builds its MCP client with `transport: 'embedded'` and its
+own `callToolHandler` (`srv/agent-manager.ts`), and the embedded branch of
+`MCPClientWrapper` does not reconnect or retry at all: it catches the handler's
+exception and returns an ordinary tool result carrying an `error` string. The
+blind reconnect-and-retry sits only in the transport branch, which we never
+reach. So removing it upstream — twice declared a prerequisite here — changes
+nothing for this service. It is worth doing for other consumers and it is not
+our gate.
 
-So the order is: llm-agent stops deciding for us — the wrapper surfaces the
-failure and `IMcpFailureClassifier` says which kind it is — and only then does
-the work here begin. The plan's first item is that upstream change.
+What that leaves is a harder problem than the one the drafts described. On our
+path a SAP outage does not arrive as a thrown transport failure; it arrives as
+a tool result with a message in it, which is the same shape as a tool that ran
+and legitimately failed. `McpClientAdapter` already draws the line —
+a returned `error` stays tool-level feedback unless it matches a connection-loss
+signature, and only those escalate to `ok:false`, deliberately not timeouts or
+HTTP codes, since a tool's own "forbidden" is domain feedback and not an
+outage. That rule is the classification point on our path, and it is a string
+match.
+
+So the plan owns three things here, and none of them is upstream:
+
+- **What the handler raises.** `invokeEmbeddedTool` must distinguish a
+  connection that could not be established or was lost from a tool that ran and
+  failed, and raise them differently, so the distinction survives into the
+  adapter instead of depending on how a message happens to read.
+- **How it leaves the wrapper.** A returned `{ error }` collapses an outage
+  into feedback. Either the handler's outage error carries a marker the adapter
+  escalates on, or we stop routing outages through that return at all.
+- **How it reaches destination state.** `IMcpFailureClassifier` is the library's
+  seam for `unavailable` versus `tool-error` and this service does not wire one.
+  Nothing closes a destination today because nothing tells it to.
 
 ## Not in scope
 
