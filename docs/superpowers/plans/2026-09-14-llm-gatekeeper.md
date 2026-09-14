@@ -41,7 +41,8 @@ Each phase leaves the service working and tested; a later phase may be deferred 
 | File | Responsibility |
 |---|---|
 | `srv/lib/quota-gate.ts` | One quota: sliding window of starts, FIFO waiter queue, one dispatcher timer, permit nodes with `O(1)` give-back. Pure — no env, no logging, no clock but an injected `now`. |
-| `srv/lib/quota-registry.ts` | Reads and validates `LLM_GATEKEEPER_QUOTAS` / `LLM_GATEKEEPER_QUOTA_OF_MODEL`, resolves a model name to its gate, answers "is this model configured". |
+| `srv/lib/gatekeeper-config.ts` | Reads and validates all three `LLM_GATEKEEPER_*` variables, and holds no runtime state — so the configuration loader can depend on it while the registry and the door do too. |
+| `srv/lib/quota-registry.ts` | Holds one gate per quota key, resolves a model name to its gate and to the key it spends against. |
 | `srv/lib/gated-llm.ts` | `GatedLlm` (an `ILlm`) and `gateEmbedder` (an `IEmbedder`): one permit per attempt, wait as told, re-queue when no interval was named, give the permit back when nothing reached the wire. |
 | `srv/lib/admission.ts` | The door: live-pipeline counter shared by every channel, the admission handle, the in-flight call register, and the caller-less/collision bookkeeping. |
 | `srv/lib/gatekeeper-metrics.ts` | The four observability scopes, kept apart so a collision never reads as memory pressure. |
@@ -844,23 +845,23 @@ describe('quota registry — malformed means refuse to start', () => {
   });
 });
 
-describe('gatekeeper config — a door needs a quota', () => {
-  it('refuses a door with no window, naming both variables', () => {
-    // The door admits on a promise the window keeps. Alone it would refuse
-    // callers to protect a guarantee that the first 429 then breaks.
+describe('gatekeeper config — the two variables are independent', () => {
+  it('accepts a door with no quota, which is a memory cap and nothing more', () => {
+    // A legitimate deployment: it bounds memory and does not carry the
+    // no-429-ends-an-admitted-request guarantee, which needs a window to wait
+    // in. The spec says so; the configuration does not refuse it.
     process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
     delete process.env.LLM_GATEKEEPER_QUOTAS;
-    expect(() => load().quotasConfigured()).toThrow(
-      /LLM_GATEKEEPER_MAX_LIVE_PIPELINES[\s\S]*LLM_GATEKEEPER_QUOTAS/,
-    );
+    const mod = load();
+    expect(() => mod.quotasConfigured()).not.toThrow();
+    expect(mod.quotasConfigured()).toBe(false);
     delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
   });
 
-  it('accepts the two together', () => {
+  it('accepts a quota with no door', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1 } });
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
-    expect(() => load().quotasConfigured()).not.toThrow();
     delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+    expect(load().quotasConfigured()).toBe(true);
   });
 });
 
@@ -988,14 +989,11 @@ function build(): GatekeeperConfig {
         `Invalid ${DOOR_VAR}: expected a positive whole number of pipelines, got ${JSON.stringify(door)}`,
       );
     }
-    if (quotas.size === 0) {
-      // The door is the front half of a guarantee whose back half is the
-      // window. Alone it would refuse callers to protect a promise it cannot
-      // keep: an admitted request would meet its first 429 and end.
-      throw new Error(
-        `Invalid ${DOOR_VAR}: a door needs a quota. Set ${QUOTAS_VAR} as well, or unset the door.`,
-      );
-    }
+    // No dependency on the quotas, deliberately. A door alone is a memory cap
+    // with no window behind it — which is exactly what `execute_step`'s
+    // semaphore has always been — and it is a legitimate deployment. It does
+    // not carry the no-429-ends-an-admitted-request guarantee, and the spec
+    // says so rather than the configuration refusing to start.
     maxLivePipelines = n;
   }
 
@@ -1103,7 +1101,7 @@ export function clearQuotaRegistry(): void {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx jest test/unit/quota-registry.test.ts`
-Expected: PASS, 13 tests.
+Expected: PASS, 15 tests.
 
 - [ ] **Step 5: Log the configuration at startup**
 
@@ -1934,7 +1932,7 @@ git commit -m "feat(gatekeeper): every model passes the window, and the provider
 
 **Files:**
 - Create: `srv/lib/admission.ts`
-- Modify: `srv/lib/throttle-surfacing.ts` (the door refusal), `srv/agent-mcp.ts` (fold the semaphore in)
+- Modify: `srv/lib/throttle-surfacing.ts` (the door refusal), `srv/agent-mcp.ts` (the door when configured, the semaphore when not)
 - Test: `test/unit/admission.test.ts`
 
 **Interfaces:**
@@ -1963,14 +1961,8 @@ const load = () => {
   return mod;
 };
 
-beforeEach(() => {
-  // A door requires a quota, so every test that opens one sets one.
-  process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 100 } });
-});
-
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
   jest.resetModules();
 });
 
@@ -2012,6 +2004,17 @@ describe('the door — a configured capacity', () => {
     expect(() => load().configuredCapacity()).toThrow(
       /LLM_GATEKEEPER_MAX_LIVE_PIPELINES/,
     );
+  });
+});
+
+describe('the door — absent means today, not unbounded', () => {
+  it('reports no capacity, which is what execute_step falls back on', () => {
+    // The semaphore of two is not dead code to be cleaned up: with no door
+    // configured it is the cap, and deleting it would raise this channel from
+    // two concurrent pipelines to unbounded for everyone who configured
+    // nothing.
+    delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+    expect(load().configuredCapacity()).toBeUndefined();
   });
 });
 
@@ -2130,7 +2133,19 @@ Expected: PASS, 7 tests.
 
 - [ ] **Step 5: Fold the `execute_step` semaphore into the door**
 
-In `srv/agent-mcp.ts`, replace the local semaphore with the shared door. Delete `const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY)` and its import.
+In `srv/agent-mcp.ts`, the shared door takes over **when there is one**. The
+semaphore stays as the fallback, because deleting it outright would quietly
+raise this channel's concurrency from two to unbounded for every deployment
+that configures nothing — an OOM regression sold as a refactor, and the spec
+says the opposite: absent the variable, `execute_step` keeps its existing
+semaphore.
+
+```ts
+  // One counter for every channel when a door is configured; the old local cap
+  // of two when it is not. `absent means off` has to mean today's behaviour,
+  // and today's behaviour here is a semaphore.
+  const door = configuredCapacity();
+```
 
 **The admission does not go where the semaphore was.** The old `acquire` sits *before* the connection is built and before `getSmartAgent` resolves, so a step that arrives during a shared corpus build would hold a place for the whole wait. Move it **after** the agent handle is in hand — the same order the chat channels use in Task 7 — and put it immediately before the pipeline runs:
 
@@ -2138,26 +2153,44 @@ In `srv/agent-mcp.ts`, replace the local semaphore with the shared door. Delete 
       // Agent first, door second. A caller waiting for a destination to warm,
       // or for the shared corpus build, waits outside the door holding an MCP
       // request and no pipeline.
-      const handle = await getSmartAgent(undefined, destination);
+      const handle = await getSmartAgent(undefined, targetDestination);
 
-      // One counter for every channel. The old local semaphore of two capped
-      // this route alone, which is the same resource the chat channels spend.
-      let admission: AdmissionHandle;
-      try {
-        admission = await admit();
-      } catch (err) {
-        if (err instanceof DoorFullError) {
-          return textResult(doorFullText(), true);
+      // With a door: one counter for every channel, since the old local cap
+      // governed this route alone and it is the same memory the chat channels
+      // spend. Without one: the semaphore, exactly as today — it parks the
+      // excess rather than refusing it, which is the behaviour that must not
+      // change for a deployment that configured nothing.
+      let admission: AdmissionHandle | undefined;
+      let releaseSlot: (() => void) | undefined;
+      if (configuredCapacity() !== undefined) {
+        try {
+          admission = await admit();
+        } catch (err) {
+          if (err instanceof DoorFullError) {
+            return textResult(doorFullText(), true);
+          }
+          throw err;
         }
-        throw err;
+      } else {
+        releaseSlot = await execStepSemaphore.acquire();
       }
 ```
 
 Everything between the old acquire point and this line — connection construction, destination resolution, agent resolution — now happens before a place is taken. Keep the `finally` guarded so it only tears down what was actually created.
 
-and in the existing `finally`, replace `releaseSlot()` with `await admission.release()`, keeping it last — after `safeStop` and after `dropRequest`.
+and in the existing `finally`, release whichever was taken, last — after
+`safeStop` and after `dropRequest`:
 
-> `EXEC_STEP_MAX_CONCURRENCY` is removed. Where a deployment relied on it, `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is the replacement and covers every channel; note this in the release notes in Task 15.
+```ts
+        await admission?.release();
+        releaseSlot?.();
+```
+
+> `EXEC_STEP_MAX_CONCURRENCY` and the semaphore stay exactly as they are. They
+> are what "absent means off" means on this channel. Where a deployment wants
+> one cap across every channel instead, `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is
+> that, and setting it turns the semaphore off for this route — note the
+> relationship in the release notes in Task 15, not a removal.
 
 - [ ] **Step 6: Add the door refusal to the formatters**
 
@@ -2218,14 +2251,8 @@ const load = () => {
   return mod;
 };
 
-beforeEach(() => {
-  // A door requires a quota, so a suite that opens one configures one.
-  process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 100 } });
-});
-
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
   jest.resetModules();
 });
 
@@ -2894,13 +2921,8 @@ const load = () => {
   return mod;
 };
 
-beforeEach(() => {
-  process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 100 } });
-});
-
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
   jest.resetModules();
 });
 

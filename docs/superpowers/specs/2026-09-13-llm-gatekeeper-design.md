@@ -191,6 +191,16 @@ that congestion stops being a way to die: a refusal at the door declines a
 whole request cleanly, instead of killing one halfway with an ADT lock still
 held.
 
+**It needs both halves, and the two variables are worth reading together
+because of it.** The door is where a request is refused before it starts; the
+window is where a throttled call waits instead of failing. Configure the door
+alone and the memory bound still works exactly as intended, but nothing holds a
+`429` — there is no queue to wait in — so an admitted request can still be
+ended by one, precisely as it is today. That is a legitimate deployment: it is
+what `execute_step`'s semaphore has always been, a memory cap with no window
+behind it. It simply does not carry this guarantee, and nothing in the code
+pretends otherwise.
+
 The guarantee rests on one property of a `429`: **it delays, it does not
 interrupt.** A refusal with an interval is a statement about when, not about
 whether. So behind the door a `429` is never a reason to stop, and an admitted
