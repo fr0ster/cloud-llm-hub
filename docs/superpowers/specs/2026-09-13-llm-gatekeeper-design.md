@@ -340,18 +340,52 @@ So deletion, by **every** path, is three steps and not one:
    `/v1/rag/*` request against it is refused — the session is going away, and
    letting one more operation start under it is how state gets created after
    the cleanup that was supposed to remove it.
-2. **Cancel the leases in flight, then wait for them to settle.** Cancelled is
-   not finished: the wait is on actual settlement, exactly as the slot's
-   teardown already waits on its register rather than on the abort call, and
-   for the same reason — cutting a call discards our knowledge of the work, not
-   the work.
+2. **Wait for the leases in flight to settle, cancelling only the ones it is
+   safe to cancel.** Cancelled is not finished either way: the wait is on
+   actual settlement, exactly as the slot's teardown already waits on its
+   register rather than on the abort call, and for the same reason — cutting a
+   call discards our knowledge of the work, not the work.
 3. **Remove the session, once,** through the one primitive that frees the disk.
+
+**Which leases may be cancelled is decided by where the work's effects land,
+and an earlier draft said "cancel them all" — which would have made a logout
+abort an admitted ADT write.** A RAG operation writes only into the state this
+deletion is removing: cancelling it destroys nothing that was going to outlive
+the request, and a half-finished upload into a collection about to be deleted
+is not a worse outcome than a finished one. An admitted pipeline is the
+opposite. Its writes land in SAP, which is not ours to delete, and cutting one
+between `create` and `activate` leaves an object inactive and locked by a
+session nobody will unlock — the recorded cause of the orphaned locks this
+service has cleared out of SM12 by hand, and the reason this document already
+says a client disconnect ends nothing and only shutdown ends an admitted
+session. A logout is a disconnect with a better name. It does not get to do
+what a disconnect may not.
+
+So an admitted pipeline runs to its own end. The mark stops new operations from
+starting against the session; it does not reach inside a pipeline already
+running, whose further calls belong to the lease it is already holding. Its
+teardown releases the slot in the order already given, the last lease settles,
+and only then does step 3 run. The cost is real and is the right one: logout
+during a long multi-step write keeps that session's bytes for the rest of the
+write, which buys not leaving an ABAP object locked behind them.
 
 Which makes the mark, not the lease, the thing that makes deletion atomic, and
 it belongs on the automatic paths too. The LRU and the sweep pick only unleased
 sessions, so their wait in step 2 is empty by construction and costs them
 nothing — but without step 1 a lease taken between the pick and the delete
 reopens precisely the race the lease was introduced to close.
+
+**The mark is not a tombstone, and the cookie is not orphaned.** It lives from
+step 1 to step 3 and is then gone with the rest of the session — keeping it
+would mean a list of dead identifiers growing for the life of the process, to
+answer requests that a deleted session cannot serve anyway. After that the id
+is simply unknown, and unknown is a case this design already answers: a cookie
+naming a session that no longer exists — deleted, evicted, or swept — is a
+cookie holding nothing, so a fresh session is minted and set, exactly as for a
+caller who held nothing at all. The old id is never reachable again, because
+what comes back is a new one and not a revival of it. A caller is therefore
+never permanently refused by the cookie in their jar, and never silently
+reattached to state they asked us to destroy.
 
 **The caller is answered at step 1**, not at step 3. Logout returns
 immediately, the session is unreachable from that moment, and the bytes go when
@@ -759,6 +793,17 @@ These properties, because they are what this shape gets wrong.
   a query and a delete in flight. The assertion that matters is made *after*
   the in-flight operation finishes, because a cleanup that races it passes
   every check made before.
+- **Logout does not abort an admitted pipeline.** Log out in the middle of a
+  multi-step ADT write: the response is immediate, no new operation starts
+  against the session, the pipeline runs every remaining step and releases its
+  ADT locks by its own teardown, and the cleanup happens after it — not before.
+  The assertion is that the write completed and the object is neither inactive
+  nor locked, because the failure this forbids is indistinguishable from a
+  successful logout if you only look at the session store.
+- **A retired cookie gets a new session, not a refusal.** After a session is
+  deleted, evicted or swept, a request carrying its cookie is answered with a
+  freshly minted session and a new cookie, and none of the old session's turns
+  or collections are visible through it.
 - **A session closed to new leases refuses them.** A `/v1/rag/*` call against a
   session already marked for deletion does not start, rather than creating
   state under a session that is being removed.
