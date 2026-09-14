@@ -656,36 +656,47 @@ error can be raised into the pipeline at all. Not "guarded", replaced.
 This document says at the top that a program has its own timeout and may retry
 on its own, and carrying the first pipeline to the end makes that a real
 collision: two runs of the same prompt against the same system, the second
-starting while the first is midway through `create` / change / `activate`. That
-is the duplicate write the outage section forbids one tool call at a time,
-arriving one pipeline at a time instead.
+starting while the first is midway through `create` / change / `activate`.
 
-Three things bear on it, and only the third is ours to add.
+It matters how much of this the design creates and how much it inherits.
+`execute_step` has no response object in scope and no reliable abort signal —
+the code says so where the close hook would go — so a step already runs to
+completion when its client gives up, and nothing here changes that. The chat
+channels are where the change lands: today a disconnect tears the session down
+at once, which is the orphaned-lock bug; tomorrow the work finishes, which is
+correct and also widens the window in which a retry can overlap it.
 
-*SAP serialises the overlap it can see.* An ADT enqueue is held for the object
-being edited, so a second run reaching the same object gets "currently editing"
-rather than a silent second change. That is a visible failure, not corruption —
-and it is the same lock this design works hard not to orphan.
+*What SAP catches.* An ADT enqueue is held for the object being edited, so a
+second run reaching **that same object** gets "currently editing" rather than a
+silent second change. It is a real serialiser and a limited one: a replanned
+retry that picks a different name, or an operation that takes no enqueue, walks
+past it.
 
-*An idempotency key is not available.* Nothing that calls us sends one, and a
-key derived from the prompt cannot tell a retry from a caller legitimately
-asking for the same step twice, which is ordinary in a plan that repeats a
-create across packages.
+*What identity would catch, and does not.* An idempotency key is not available
+— nothing that calls us sends one, and a key derived from the prompt cannot
+tell a retry from a plan legitimately repeating a create. Nor is a session id a
+substitute on the channels that matter. `/v1/chat/completions` mints a fresh
+UUID when the client sends no `x-session-id`, `mcp-session-id` or cookie
+(`srv/openai-handler.ts`), and `execute_step` mints `agent-step-<uuid>` on
+every call by design (`srv/agent-mcp.ts`). Two retries from Cline, a script or
+an MCP planner therefore share no session at all.
 
-*So the rule we add is narrow and about caller-less work only.* While a
-pipeline whose caller has disconnected is still running for a given session and
-destination, a new request from that same session and destination is refused,
-saying so — the earlier one is still finishing. It is not deduplication and
-does not pretend to be: it closes the collision that our own "finish the work"
-promise creates, and touches nothing else. Requests from a caller that is still
-there run in parallel exactly as they do today, which matters because parallel
-`execute_step` is established as safe here.
+*So the guard is real but narrow, and the rest is a stated limit.* Where a
+caller does identify itself, a request arriving while a caller-less pipeline of
+the **same authenticated principal, same session and same destination** is
+still running is refused, saying the earlier one is finishing. The principal is
+in the key because the session id is client-supplied, and the codebase already
+scopes session state by `(userId, sessionId)` for exactly that reason — without
+it, one user could park a caller-less pipeline and block another who happened
+to send the same session id.
 
-The residue is honest and small: a retry arriving *after* the orphaned pipeline
-has finished is a new request against a system that may already carry the
-change, and it fails the way a repeat always does — "already exists", or a
-read-back that shows the work done. That is a consumer's judgement to make with
-a read, which is what the planner is for.
+Where a caller does not identify itself — the common case for programmatic
+clients — nothing can match the two requests, and a retry runs as a second
+pipeline. This is a **known limit, not a solved problem**: the collision is
+bounded by SAP's enqueue where the object is the same, by the door where
+capacity is short, and by nothing else. Closing it properly needs an
+idempotency key on the wire, which is a change to what clients send and belongs
+to a different piece of work.
 
 Nothing frees a slot early. A slot freed while the pipeline still held memory
 and a lock would let the door admit a replacement on top of it, which is the
@@ -1073,10 +1084,15 @@ These properties, because they are what this shape gets wrong:
   pipeline emit several more chunks and its closing envelope: all are dropped,
   none throws, and the run reaches its natural end. This is the test that
   fails if the sink is guarded rather than detached.
-- **A retry from the same caller is refused while the orphan runs.** Same
-  session, same destination, second request during the first's caller-less
-  tail: refused with the reason, and no second write chain starts. A request
-  from a caller that is still connected, in parallel, is unaffected.
+- **An identified retry is refused while the orphan runs; an anonymous one is
+  not.** Same principal, session and destination during the first's caller-less
+  tail: refused with the reason, no second write chain. A parallel request from
+  a caller still connected is unaffected. And the same test asserts the limit
+  honestly — two requests with no client-sent session both run, because nothing
+  ties them together, which is the known limit rather than a bug to be found
+  later.
+- **The guard keys on the principal.** Two different users sending the same
+  session id do not block each other.
 - **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
   back, and it proceeds without waiting for the expiry its timer was set to.
 - **An unknown model is a bad request, not an overload.** With quotas
