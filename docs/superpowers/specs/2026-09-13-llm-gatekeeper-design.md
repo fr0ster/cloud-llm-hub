@@ -684,7 +684,25 @@ an MCP planner therefore share no session at all.
 *So the guard is real but narrow, and the rest is a stated limit.* Where a
 caller does identify itself, a request arriving while a caller-less pipeline of
 the **same authenticated principal, same session and same destination** is
-still running is refused, saying the earlier one is finishing. The principal is
+still running is refused, saying the earlier one is finishing.
+
+**What that refusal looks like on the wire**, because reusing an existing
+formatter would be wrong in both directions. It is not overload: `529`, a
+retryable `503` or "try again shortly" invites an immediate retry into a guard
+that is still closed. It is not a bad request either: the same call becomes
+valid the moment the earlier pipeline ends. It is a conflict, and it is sent as
+one — **`409`**, with a stable machine-readable `code` of ours,
+`pipeline_in_flight`, and the nearest type each dialect already knows
+(`invalid_request_error`), so no client meets a type it has never seen. **No
+`Retry-After`**: when the orphan finishes is exactly as unknown as how long the
+pipelines behind a full door will run, and the rule against manufacturing a
+number holds here too.
+
+It never appears mid-stream. The guard runs at admission, before a single byte
+of response is written, so both chat channels answer it as an ordinary HTTP
+error and there is no half-open stream to reconcile. On `execute_step` it is
+the step's error text, carrying the same `code`, so a planner can branch on it
+rather than parse prose. The principal is
 in the key because the session id is client-supplied, and the codebase already
 scopes session state by `(userId, sessionId)` for exactly that reason — without
 it, one user could park a caller-less pipeline and block another who happened
@@ -985,7 +1003,7 @@ knows a key, a limit and a window, and where those come from is configuration.
 
 ## Observability
 
-Three scopes, because the three refusals in this design belong to different
+Four scopes, because the four refusals in this design belong to different
 things and adding them up would answer nothing.
 
 **Per quota** — starts inside the window, waiters in the queue, and how long
@@ -1001,6 +1019,13 @@ its first model call, so there is no quota to charge the refusal to.
 whether it currently is. This is availability, not rate, and mixing it into a
 quota's numbers would make an unreachable SAP system look like a full model
 quota.
+
+**Collisions, counted apart** — refusals from the guard above, and how many
+caller-less pipelines are running. Folding these into the door's count would
+read as memory pressure and send someone to buy memory that would change
+nothing: the door was not full, a predecessor was still finishing. Rising
+collisions with a shallow door mean callers are timing out and retrying, which
+is a statement about their patience and our latency, not about capacity.
 
 Together they answer the one question asked under load: are we hitting our own
 limit or someone else's. A deep queue with no `429`s means ours is set too low.
@@ -1093,6 +1118,10 @@ These properties, because they are what this shape gets wrong:
   later.
 - **The guard keys on the principal.** Two different users sending the same
   session id do not block each other.
+- **The collision refusal is a conflict, not an overload.** `409` carrying
+  `pipeline_in_flight` on every channel, no `Retry-After`, and never emitted
+  after a stream has begun. Asserted on the wire shape, because a refusal that
+  merely happens is one a client will hammer.
 - **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
   back, and it proceeds without waiting for the expiry its timer was set to.
 - **An unknown model is a bad request, not an overload.** With quotas
