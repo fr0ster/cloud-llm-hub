@@ -1197,6 +1197,27 @@ describe('gateLlm — nothing configured', () => {
     expect(inner.calls()).toBe(1);
   });
 
+  it('throws the embedder 429 back rather than returning an empty result', async () => {
+    // The embedder's attempt wrapper swallows the throw to report it, so
+    // returning the placeholder here would hand the caller `undefined` as a
+    // successful embedding and lose the refusal altogether.
+    const { gated } = load();
+    const err = Object.assign(new Error('429'), {
+      throttled: true,
+      attempts: 1,
+      retryAfterSeconds: 30,
+    });
+    const embedder = gated.gateEmbedder(
+      {
+        embed: async () => {
+          throw err;
+        },
+      } as never,
+      'm',
+    );
+    await expect(embedder.embed('x')).rejects.toBe(err);
+  });
+
   it('reports a 429 that named an interval, instead of waiting it out', async () => {
     // Waiting here would be unbounded: the ceiling that used to make it safe
     // went with WaitIfShortEnough, and there is no door in front to justify it.
@@ -1261,6 +1282,16 @@ async function runGated<T>(
   model: string,
   signal: AbortSignal | undefined,
   attempt: () => Promise<{ value: T; throttled?: unknown }>,
+  /**
+   * What giving up means for this caller, and it is not the same for both.
+   *
+   * An `ILlm` carries its failure inside the `Result`, so returning the value
+   * IS returning the error. An `IEmbedder` throws, and its attempt wrapper has
+   * already swallowed the throw to report it here — so returning the value
+   * would hand the caller `undefined` as a successful embedding and lose the
+   * `429` entirely.
+   */
+  giveUp: (value: T, error: unknown) => T,
 ): Promise<T> {
   let nextAttemptAt = 0;
   for (;;) {
@@ -1276,17 +1307,18 @@ async function runGated<T>(
 
     if (limit.attempts === 0) permit?.giveBack();
 
-    // With nothing configured there is no gate, no queue and no door — so
-    // there is no admitted pipeline whose completion anyone promised, and
-    // nothing to wait in. The failure goes back as it arrived and the caller
-    // decides, which is what "absent means off" has to mean here.
+    // With no quota there is no gate and no queue — nothing to wait in and
+    // nothing to pace against. The failure goes back as it arrived and the
+    // caller decides, which is what "absent means off" has to mean here. (A
+    // door without a quota cannot happen: the configuration refuses to start,
+    // because the door's guarantee rests on there being a window to wait in.)
     //
     // The alternative was worse in both directions. A no-interval 429 would
     // have looped with a zero delay, turning one refusal into a retry storm
     // against a provider that had just asked us to stop; and an interval would
     // have been waited out with no ceiling, where the ceiling removed with
     // `WaitIfShortEnough` was the only thing that had made waiting safe.
-    if (!quota) return value;
+    if (!quota) return giveUp(value, limit);
 
     // Exactly what the server named, however long — a ceiling here would kill
     // work the door has promised to carry — or, when it named nothing, our own
@@ -1318,6 +1350,8 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
           const value = await inner.chat(messages, tools, options);
           return { value, throttled: value.ok ? undefined : value.error };
         },
+        // The Result already carries the error.
+        (value) => value,
       );
     },
     async *streamChat(
@@ -1383,14 +1417,25 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
 export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder {
   const gated: IEmbedder = {
     embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-      return runGated<IEmbedResult>(model, options?.signal, async () => {
-        try {
-          return { value: await inner.embed(text, options) };
-        } catch (error) {
-          if (findThrottled(error)) return { value: undefined as never, throttled: error };
+      return runGated<IEmbedResult>(
+        model,
+        options?.signal,
+        async () => {
+          try {
+            return { value: await inner.embed(text, options) };
+          } catch (error) {
+            if (findThrottled(error)) {
+              return { value: undefined as never, throttled: error };
+            }
+            throw error;
+          }
+        },
+        // An embedder throws, so giving up throws the original back. Returning
+        // the placeholder would be an empty vector reported as a success.
+        (_value, error) => {
           throw error;
-        }
-      });
+        },
+      );
     },
   };
   const batch = (inner as IEmbedder & { embedBatch?: unknown }).embedBatch;
@@ -1399,20 +1444,27 @@ export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder {
       texts: string[],
       options?: CallOptions,
     ) =>
-      runGated<IEmbedResult[]>(model, options?.signal, async () => {
-        try {
-          return {
-            value: await (batch as (t: string[], o?: CallOptions) => Promise<IEmbedResult[]>).call(
-              inner,
-              texts,
-              options,
-            ),
-          };
-        } catch (error) {
-          if (findThrottled(error)) return { value: undefined as never, throttled: error };
+      runGated<IEmbedResult[]>(
+        model,
+        options?.signal,
+        async () => {
+          try {
+            return {
+              value: await (
+                batch as (t: string[], o?: CallOptions) => Promise<IEmbedResult[]>
+              ).call(inner, texts, options),
+            };
+          } catch (error) {
+            if (findThrottled(error)) {
+              return { value: undefined as never, throttled: error };
+            }
+            throw error;
+          }
+        },
+        (_value, error) => {
           throw error;
-        }
-      });
+        },
+      );
   }
   return gated;
 }
@@ -1421,7 +1473,7 @@ export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx jest test/unit/gated-llm.test.ts`
-Expected: PASS, 5 tests.
+Expected: PASS, 8 tests.
 
 - [ ] **Step 5: Assert the library's own gate costs no permit**
 
@@ -1781,7 +1833,7 @@ git commit -m "feat(gatekeeper): every model passes the window, and the provider
 - Test: `test/unit/admission.test.ts`
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks.
+- Consumes: `quotasConfigured` from Task 2.
 - Produces:
   - `export class DoorFullError extends Error { readonly code = 'door_full' }`
   - `export interface AdmissionHandle { release(): Promise<void>; readonly signal: AbortSignal }`
@@ -1804,8 +1856,14 @@ const load = () => {
   return mod;
 };
 
+beforeEach(() => {
+  // A door requires a quota, so every test that opens one sets one.
+  process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 100 } });
+});
+
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+  delete process.env.LLM_GATEKEEPER_QUOTAS;
   jest.resetModules();
 });
 
@@ -1841,6 +1899,17 @@ describe('the door — a configured capacity', () => {
     const handle = await mod.admit();
     await handle.release();
     await expect(mod.admit()).resolves.toBeDefined();
+  });
+
+  it('refuses a door configured without a quota, naming both', () => {
+    // The door promises that congestion does not end an admitted request. With
+    // no window to hold a throttled call in, the first 429 ends it — the
+    // promise broken in the one configuration nobody is watching.
+    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
+    delete process.env.LLM_GATEKEEPER_QUOTAS;
+    expect(() => load().configuredCapacity()).toThrow(
+      /LLM_GATEKEEPER_MAX_LIVE_PIPELINES[\s\S]*LLM_GATEKEEPER_QUOTAS/,
+    );
   });
 
   it('refuses a malformed capacity at startup, naming the variable', () => {
@@ -1922,7 +1991,17 @@ function readCapacity(): number | undefined {
 }
 
 export function configuredCapacity(): number | undefined {
-  if (capacity === null) capacity = readCapacity();
+  if (capacity === null) {
+    capacity = readCapacity();
+    if (capacity !== undefined && !quotasConfigured()) {
+      // The door is the front half of a guarantee whose back half is the
+      // window. Alone, it would refuse callers to protect a promise it cannot
+      // keep, and would break that promise silently.
+      throw new Error(
+        'Invalid LLM_GATEKEEPER_MAX_LIVE_PIPELINES: a door needs a quota. Set LLM_GATEKEEPER_QUOTAS as well, or unset the door — an admitted request would otherwise be ended by the first 429, which is the failure the door exists to prevent.',
+      );
+    }
+  }
   return capacity;
 }
 
