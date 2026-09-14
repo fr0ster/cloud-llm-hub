@@ -84,28 +84,36 @@ is a claim and not a mechanism — with two slots free, two concurrent requests
 carrying the same session id would both be admitted, both run, and both read
 and write the same history.
 
-**And the identity is ours, because the caller has no use for one.** This
-service sits between the consumer and MCP and ABAP; a consumer never needs to
-name a session, and today's ability to do so is pure exposure. `resolveSessionId`
-accepts `x-session-id` and `mcp-session-id` from the caller on equal terms with
-the `clh_session` cookie the service mints itself — so a value the caller
-chooses becomes the key deciding whose work waits for whose, and a guessed one
-is a way to interfere with somebody else.
+**And the identity the door keys on is ours, not the caller's.** The user comes
+from the authenticated token and never from a header, so no caller can pass for
+another whatever it sends; what a caller-chosen id can still do is collide, and
+a colliding id decides whose work waits for whose. Between a consumer and MCP
+and ABAP there is no reason for the consumer to name a chat session at all, so
+it stops: `resolveSessionId`'s `x-session-id` and `mcp-session-id` are not read
+for **this** purpose, and the service issues the identity it keys on, bound to
+the authenticated user.
 
-So the caller stops naming sessions. The service issues the identity, bound to
-the authenticated user, and the two headers stop being read at all. There is
-nothing to echo and nothing to forge: with no caller-supplied identity, one
-caller passing for another does not arise as a question.
+Our own chat UI is the only client sending that header for chat, and it invents
+the value in the browser — `"chat-" + Date.now() + "-" + Math.random()` in
+`app/chat/webapp/controller/Chat.controller.js`. It moves to the cookie the
+middleware already sets for it. An API client sending its full history never had
+a chat session and still does not; each of its requests is admitted on its own.
 
-Nobody outside loses anything, because nobody outside was using it. Our own
-chat UI is the only client that sends `x-session-id`, and it invents the value
-itself — `"chat-" + Date.now() + "-" + Math.random()` in
-`app/chat/webapp/controller/Chat.controller.js` — so it moves to the cookie the
-middleware already sets for it. An API client sending its full history is
-unaffected: it never had a session and still does not, and each of its requests
-is admitted on its own.
+**The header itself does not disappear, and an earlier draft of this section
+wrongly said it could.** `srv/rag-handler.ts` reads the same resolver to scope a
+RAG collection to a session, and `rag-handler.test.ts` and
+`cross-user-isolation.test.ts` cover it. That use is not an identity claim: a
+session-scoped collection already lives inside one user's space
+(`srv/collection-ids.ts` keys it by user **and** session for exactly that
+reason), so a colliding id there collides only with its own author, and naming
+one is how a caller addresses its own namespace. It stays as it is.
 
-The slot is keyed on that identity, and the store keys on
+The distinction is worth stating once, because the same header is doing two
+unrelated jobs: as a **namespace** inside a user's own data it is the caller's
+to choose, and as the **key that schedules work** between callers it is ours to
+issue.
+
+The slot is keyed on the issued identity, and the store keys on
 `${userId}\u0000${sessionId}` as it already does, so the two cannot drift apart.
 
 So live sessions and live pipelines are the same number by construction rather
@@ -121,6 +129,19 @@ caps on one resource would each be wrong about the other.
 slot is taken waits in a bounded FIFO queue rather than being turned away at
 once. Most contention is brief, and a caller that waits two seconds got served;
 a caller refused at two seconds retries and arrives again.
+
+**One queue, and everyone waiting is in it** — including a caller waiting for a
+session that is already working, even when slots are free. Two queues would
+leave the second unbounded, and unbounded is what it would be: one session id
+repeated is the easiest backlog to build by accident, a browser tab retrying or
+a script in a loop, and every waiter is an HTTP request held open. So the length
+bounds all waiting, whatever it is waiting for, and the eleventh caller is
+refused whether it wants a free slot or a busy session.
+
+Order is arrival order, with no exception for either kind. A caller waiting on a
+busy session is not served before one waiting on capacity, and both are served
+before anyone who arrived later: two rules would need a reason, and there is
+none.
 
 **The queue's depth is the pressure signal.** Not a second configured number:
 when the queue passes three quarters of its length the service is running out of
@@ -344,7 +365,7 @@ This repository owns the shape; whoever deploys owns the values.
 |---|---|---|
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | positive integer: how many sessions may be live at once, across every channel | no door on the chat channels; `execute_step` keeps its existing semaphore of two |
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | positive integer: how many callers may wait for a slot | the capacity, which absorbs a burst without storing a backlog |
-| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history. The least recently used **idle** one is evicted to make room; a session holding a slot is never evicted. Must be at least `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | unbounded, as today |
+| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history. The least recently used **idle** one is evicted to make room; a session holding a slot is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`, and may not be smaller than it | unbounded, as today |
 
 **Absent means off, malformed means refuse to start.** An unset variable
 disables what it configures and the service behaves exactly as today. A value
@@ -353,17 +374,21 @@ variable: somebody intending a limit and not getting one is the failure this
 design exists to make visible. The precedent is
 `LLM_AGENT_THROTTLE_MAX_WAIT_MS`, which already does this.
 
-**Retention may not be smaller than capacity**, and that is checked at startup
-too. The two numbers bound different resources and are otherwise independent,
+**Retention requires a capacity, and may not be smaller than it.** Both are
+checked at startup. A retention cap on its own is the same broken arithmetic
+seen from the other side: with chat concurrency unbounded, any number of
+sessions can be live at once, all of them ineligible for eviction, and the cap
+is exceeded by sessions the design forbids touching. So `retained` without
+`capacity` is refused, and so is `retained < capacity`. The two numbers bound different resources and are otherwise independent,
 but a retention cap below the capacity is a configuration with no correct
 behaviour: with five slots and room for two histories, three admitted sessions
 would each need a history while none is idle, and the implementation would have
 to either exceed the bound it was given or evict a session that is running —
-breaking the guarantee to honour a number. Requiring `retained >= capacity`
-makes the situation impossible rather than resolved: every live session has a
-retention place by construction, so eviction only ever has idle candidates to
-choose from. It also reads as what it is — you cannot retain fewer
-conversations than you can hold at once.
+breaking the guarantee to honour a number. Requiring a capacity, and `retained >= capacity`, makes the situation
+impossible rather than resolved: every live session has a retention place by
+construction, so eviction only ever has idle candidates to choose from. It also
+reads as what it is — you cannot retain fewer conversations than you can hold
+at once, and you cannot bound retention at all without bounding how many run.
 
 The values in force are logged at startup. A limit only shows itself under load,
 and by then nobody remembers what was configured.
@@ -452,6 +477,9 @@ These properties, because they are what this shape gets wrong.
 - **A capacity of one admits one.** The degenerate setting is a setting.
 - **The queue absorbs and then refuses.** With capacity five and a queue of
   five, callers six to ten wait and the eleventh is refused.
+- **A repeated session id cannot build a backlog.** With capacity to spare, ten
+  requests carrying one busy session's identity fill the same queue and the
+  eleventh is refused — not held in a second, unbounded line.
 - **Three quarters is reported before anyone is refused.** The high-water mark
   crosses first.
 - **A full door refuses without a number.** No `Retry-After`, no seconds in the
@@ -468,20 +496,23 @@ These properties, because they are what this shape gets wrong.
   five: the second waits for the first rather than taking a second slot.
   Written with capacity free, because a test that fills the door first would
   pass on the global queue alone and prove nothing about the key.
-- **A caller cannot name a session.** A request carrying `x-session-id` or
-  `mcp-session-id` is treated as having none: it gets a fresh session, and two
-  callers sending the same value do not wait for each other. Asserted at the
-  resolver, because this is the interference the change exists to remove and
-  the headers are easy to re-add by habit.
-- **The browser's session survives without the header.** The chat UI, sending
-  only the cookie, keeps its history across turns exactly as before.
+- **A caller cannot name the session the door keys on.** A chat request
+  carrying `x-session-id` is admitted as a fresh session, and two callers
+  sending the same value do not wait for each other.
+- **The RAG API still takes one.** A session-scoped collection addressed by
+  `x-session-id` resolves exactly as it does today, and two users sending the
+  same value still reach different collections. Asserted alongside the above,
+  because the two live one line apart and the obvious tidy-up breaks the second.
+- **The browser's chat session survives without the header.** The chat UI,
+  sending only the cookie, keeps its history across turns exactly as before.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
   slot: it is gone from the queue and no pipeline starts for it.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
   a new session evicts the least recently used idle one, and never one holding
   a slot.
-- **Retention below capacity is refused at startup.** Naming both variables,
-  because the alternative is a running service that must break one of them.
+- **Retention below capacity, or without one, is refused at startup.** Naming
+  both variables, because the alternative is a running service that must break
+  one of them.
 - **A cap filled entirely by live sessions evicts nothing.** With retention
   equal to capacity and every slot taken, no eviction happens and no admitted
   session loses its history — the case that has no correct answer if the two
