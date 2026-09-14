@@ -178,9 +178,10 @@ which is what they have always been.
 `execute_step` spend the same memory, so they share one count. Two independent
 caps on one resource would each be wrong about the other.
 
-**A queue in front, not a refusal at the edge.** A caller arriving when every
-slot is taken waits in a bounded FIFO queue rather than being turned away at
-once. Most contention is brief, and a caller that waits two seconds got served;
+**A queue in front, not a refusal at the edge.** A caller that cannot be
+admitted at once — no free slot, its session already working, or no retention
+place to remember it in — waits in a bounded FIFO queue rather than being turned
+away. Most contention is brief, and a caller that waits two seconds got served;
 a caller refused at two seconds retries and arrives again.
 
 **One queue, and everyone waiting is in it** — including a caller waiting for a
@@ -189,7 +190,7 @@ leave the second unbounded, and unbounded is what it would be: one session id
 repeated is the easiest backlog to build by accident, a browser tab retrying or
 a script in a loop, and every waiter is an HTTP request held open. So the length
 bounds all waiting, whatever it is waiting for, and the eleventh caller is
-refused whether it wants a free slot or a busy session.
+refused whether it wants a free slot, a busy session or a retention place.
 
 **Order is arrival order among those who can be served.** Strict arrival order
 with no exception sounds fairer and is worse: with a capacity of two, sessions A
@@ -239,8 +240,43 @@ nothing has begun.
 
 Two outcomes and no third.
 
-**Turned away at the door.** Every slot is taken and the queue is full. Nothing
-was started, so nothing is half-done.
+**Turned away at the door.** The queue is full and this caller cannot be
+admitted now. Nothing was started, so nothing is half-done.
+
+An earlier draft said "every slot is taken and the queue is full", which stopped
+being the condition the moment admission came to need a retention place as well:
+every slot can be free while leases without slots hold every place and the queue
+fills with waiters none of whom can be admitted. The condition is therefore
+stated in terms of admission, not of slots — anything weaker either lets a
+caller in past the queue bound because *a slot* was free, or turns one away
+while telling it something untrue.
+
+**The refusal says what is actually missing.** Three things can withhold
+admission, and the caller is told which, checked in the order admission itself
+checks them:
+
+| Reason | Withheld because | Sentence for the person |
+|---|---|---|
+| `session_busy` | this session is already running a pipeline | "This session is still working on an earlier request. Wait for it to finish before sending another." |
+| `capacity` | every slot is taken | "The service is at capacity right now. Please try again shortly." |
+| `retention` | a slot is free, but there is no place to keep another session | "The service has no room to hold another session right now. Please try again shortly." |
+
+The order is the order of the check, not a ranking of severity: a caller whose
+own session is busy is told so even when the service is also full, because that
+is the one of the three it can do something about. `retention` never mentions
+pipelines, and `capacity` never mentions memory — reporting the wrong one sends
+an operator to tune the wrong variable.
+
+Per channel, in the shape each already speaks, with the formatters beside the
+throttle ones in `srv/lib/throttle-surfacing.ts` for the reason those live there
+— so a test exercises what the handler sends:
+
+- `/v1/chat/completions`: `503`, `{ error: { message, type: 'server_error', code: 'gatekeeper_<reason>' } }`
+- `/v1/messages`: `529`, `{ type: 'error', error: { type: 'overloaded_error', message } }` — the dialect pairing
+  already argued for throttling; the reason travels in the sentence, since this
+  envelope has no field for it
+- `execute_step`: the sentence, as the tool's failure text, prefixed with the
+  reason code so a planner can branch on it without parsing prose
 
 **Without a time to come back at.** How long a session runs is not something we
 measure: a chat turn and a twenty-iteration tool loop differ by orders of
@@ -579,10 +615,14 @@ retained session with nothing evictable — the cap exceeded by a route that
 never saw it.
 
 So the reservation is taken wherever session-scoped state is first created, and
-a request that would exceed the cap with nothing idle to evict is refused. Not
-with the door's refusal, which is about pipelines: this one says there is no
-room to remember another session, in the same shape and with the same absence
-of a number, because how long the sessions ahead will be held is no more
+a request that would exceed the cap with nothing idle to evict is refused. It is
+refused at once rather than queued — it holds no place in the door's queue and
+must not take one from a pipeline — but it says the same thing the door says
+when retention is what is missing: the `retention` reason and its sentence, as
+a `503` in the `{ error: { message } }` envelope `/v1/rag/*` already sends
+through its `error()` helper, gaining `code: 'gatekeeper_retention'` beside the
+message so a program can tell it from any other failure there, with the same
+absence of a number, because how long the sessions ahead will be held is no more
 measurable than how long they will run.
 
 `retained >= capacity` then keeps its meaning for the path that matters most:
@@ -701,7 +741,10 @@ Four scopes, because they answer different questions and adding them up answers
 none.
 
 **The door** — live sessions, capacity, queue depth, the queue's high-water
-mark, refusals, and waiters that left before admission. A deep queue with few
+mark, refusals **by reason**, and waiters that left before admission. The split
+is not decoration: `capacity` refusals are an argument for more slots,
+`retention` refusals for a larger retention cap, and `session_busy` refusals for
+neither — they are a client retrying against itself. A deep queue with few
 refusals means the capacity is nearly right; refusals with a shallow queue mean
 arrivals come in bursts the queue cannot absorb; and waiters leaving in numbers
 means the queue is longer than callers will tolerate, which is the argument for
@@ -751,6 +794,15 @@ These properties, because they are what this shape gets wrong.
   crosses first.
 - **A full door refuses without a number.** No `Retry-After`, no seconds in the
   text.
+- **A full queue refuses even with every slot free.** Hold every retention place
+  with leases that have no slot, leave all slots free, and fill the queue with
+  waiters: the next caller is refused, not admitted past the bound, and the
+  refusal carries `retention` — not `capacity`, which would be untrue.
+- **Each reason reaches each channel in that channel's shape.** For all three
+  reasons: the OpenAI envelope's `code`, the Anthropic `overloaded_error` with
+  the reason's sentence under `529`, and the prefixed failure text from
+  `execute_step`. Asserted on what the handler sends, not on the formatter
+  alone.
 - **An admitted session is never refused.** Fill the capacity, then drive every
   admitted session through a long tool loop: all complete.
 - **And no `429` with an interval ends one.** A session meeting a throttled
