@@ -19,6 +19,7 @@
 - **Admission takes a slot and a retention place atomically, or neither.**
 - **A door refusal carries no `Retry-After` and no number in its text.** Reasons, in check order: `session_busy`, `capacity`, `retention`.
 - **Identity is the authenticated user plus the session this service issued.** `x-session-id` and `mcp-session-id` are never read to identify a session. Every composite key of the two is `JSON.stringify([userId, sessionId])` — never a join, which some pair of values always makes ambiguous.
+- **A session closed after the middleware accepted it never runs again under that id**, door or no door: the request is answered `410 session_closed` and takes no lease.
 - **Every deletion of a session's state is three steps:** close it to new leases → wait for the leases in flight to settle, cancelling only RAG operations → remove it once, through the primitive that frees the disk.
 - **Every removal of a collection frees its directory.**
 - **No new timeout above the connector.** The only bounds are an `AbortSignal` from whoever waits, and idleness where nothing runs.
@@ -34,7 +35,7 @@ Named here so a reviewer can reject one without hunting for it.
 1. **`sessionTopicMap` is deleted, not rekeyed.** The spec lists it among the stores to move to `(userId, sessionId)`. It is never written: `srv/agent-manager.ts` declares it and `clearSessionTopic` deletes from it, and nothing else touches it. Rekeying a map nothing fills would be ceremony; removing it leaves one store fewer for eviction to remember.
 2. **The throttle strategy follows the door.** `WaitAsTold` when `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set; `WaitIfShortEnough` otherwise. The spec replaces the ceiling "for admitted work" and leaves the rest to the plan; with no door nothing is admitted, and an unbounded wait would hold a connection the client cuts at a minute — which is exactly what "absent means today" forbids.
 3. **The detached sink and "a disconnect ends nothing" apply whether or not a door is configured.** They are the fix for the orphaned ADT locks, not a limit. "The chat channels are unchanged" is read as "no admission limit", which stays true.
-4. **A RAG request against a session already closed for deletion is answered `410`** with `{ error: { message, code: 'session_closed' } }`. The spec says it is refused and gives no shape.
+4. **A request against a session closed after the middleware accepted it is answered `410`.** RAG with `{ error: { message, code: 'session_closed' } }`; `/v1/chat/completions` with the same plus `type: 'invalid_request_error'`; `/v1/messages` with `invalid_request_error` in its own envelope. The spec says such a request is refused and gives no shape. Accepted is what makes it detectable: the middleware kept the cookie because the session was live, so a session that is now unknown and empty was deleted in between. This is a separate outcome from the door's three reasons, because a removed session says nothing about how full the service is.
 5. **Metrics are exposed on the existing `Health` function** (`srv/mcp-proxy.ts`), as one added `gatekeeper` field holding the snapshot as JSON — CDS types are closed, and a type per scope would change with every counter — and the values in force are logged at startup. No new route.
 6. **A retained session stops counting when nothing holds it and nothing is left in it** — no lease, no history in `sessionStore`, no session collection. Checked on the existing five-minute history sweep. The spec bounds how many are held and says nothing about when an idle one leaves the count by itself.
 7. **A cookie names a live session when retention knows it and it is not closing, or when any store still holds state for it.** Anything else is a cookie holding nothing, and a fresh session is minted. A caller that creates no state (a `GET /v1/models`) is minted a new cookie each time; that is cheap and is the price of keeping no registry of issued ids.
@@ -1517,12 +1518,13 @@ git commit -m "feat(gatekeeper): three variables, absent means off, malformed re
   - `export interface RetentionStores { hasState(userId: string, sessionId: string): boolean; deleteAll(userId: string, sessionId: string): void }`
   - `export type LeaseKind = 'pipeline' | 'rag'`
   - `export interface Lease { readonly kind: LeaseKind; readonly signal: AbortSignal; release(): void }`
-  - `export type LeaseRefusal = { refused: 'closing' | 'retention' }`
+  - `export type LeaseRefusal = { refused: 'closed' | 'retention' }`
   - `export function isRefusal(x: Lease | LeaseRefusal): x is LeaseRefusal`
   - `export class SessionRetention`:
     - `constructor(stores: RetentionStores, cap?: number, now?: () => number)`
-    - `canReserve(userId: string, sessionId: string): boolean`
-    - `lease(userId: string, sessionId: string, kind: LeaseKind): Lease | LeaseRefusal`
+    - `canReserve(userId: string, sessionId: string, opts?: { presented?: boolean }): boolean`
+    - `lease(userId: string, sessionId: string, kind: LeaseKind, opts?: { presented?: boolean }): Lease | LeaseRefusal`
+    - `isGone(userId: string, sessionId: string): boolean`
     - `close(userId: string, sessionId: string): Promise<void>`
     - `isKnown(userId: string, sessionId: string): boolean`
     - `isClosing(userId: string, sessionId: string): boolean`
@@ -1583,7 +1585,7 @@ describe('places', () => {
     const r = new SessionRetention(f.stores, 5);
     lease(r.lease('a', 'b c', 'pipeline'));
     expect(r.isKnown('a b', 'c')).toBe(false);
-    expect(r.lease('a b', 'c', 'pipeline')).not.toEqual({ refused: 'closing' });
+    expect(r.lease('a b', 'c', 'pipeline')).not.toEqual({ refused: 'closed' });
     expect(r.snapshot().retained).toBe(2);
   });
 
@@ -1691,9 +1693,31 @@ describe('closing, then deleting', () => {
     const r = new SessionRetention(f.stores, 2);
     const held = lease(r.lease('alice', 'A', 'pipeline'));
     void r.close('alice', 'A');
-    expect(r.lease('alice', 'A', 'rag')).toEqual({ refused: 'closing' });
+    expect(r.lease('alice', 'A', 'rag')).toEqual({ refused: 'closed' });
     expect(r.isClosing('alice', 'A')).toBe(true);
     held.release();
+  });
+
+  it('does not recreate a presented session removed since it was presented', async () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    await r.close('alice', 'A');
+    // The request passed the middleware before the logout, and arrives after
+    // the removal has run — when the mark is already gone.
+    expect(r.lease('alice', 'A', 'pipeline', { presented: true })).toEqual({ refused: 'closed' });
+    expect(r.canReserve('alice', 'A', { presented: true })).toBe(false);
+    expect(r.snapshot().retained).toBe(0);
+  });
+
+  it('treats a presented session held only in the stores as live', () => {
+    // Collections loaded from disk after a restart: retention never saw them.
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    expect(r.isGone('alice', 'A')).toBe(false);
+    lease(r.lease('alice', 'A', 'pipeline', { presented: true })).release();
   });
 
   it('cancels a RAG lease, and still waits for it to settle before deleting', async () => {
@@ -1856,7 +1880,7 @@ export interface Lease {
   release(): void;
 }
 
-export type LeaseRefusal = { refused: 'closing' | 'retention' };
+export type LeaseRefusal = { refused: 'closed' | 'retention' };
 
 export function isRefusal(x: Lease | LeaseRefusal): x is LeaseRefusal {
   return 'refused' in x;
@@ -1895,7 +1919,12 @@ export class SessionRetention {
   ) {}
 
   /** Whether a place could be had for this session now, without taking it. */
-  canReserve(userId: string, sessionId: string): boolean {
+  canReserve(
+    userId: string,
+    sessionId: string,
+    opts: { presented?: boolean } = {},
+  ): boolean {
+    if (opts.presented && this.isGone(userId, sessionId)) return false;
     const e = this.entries.get(keyOf(userId, sessionId));
     if (e) return !e.closing;
     if (this.cap === undefined || this.entries.size < this.cap) return true;
@@ -1906,13 +1935,20 @@ export class SessionRetention {
    * A place and a lease on it, together.
    *
    * Evicts the least recently used idle session when the cap is full. Refuses
-   * when the session is closing, or when every place is held by something
-   * working.
+   * when the session is closing, when a session the request presented has been
+   * removed since, or when every place is held by something working.
    */
-  lease(userId: string, sessionId: string, kind: LeaseKind): Lease | LeaseRefusal {
+  lease(
+    userId: string,
+    sessionId: string,
+    kind: LeaseKind,
+    opts: { presented?: boolean } = {},
+  ): Lease | LeaseRefusal {
     const key = keyOf(userId, sessionId);
     let e = this.entries.get(key);
-    if (e?.closing) return { refused: 'closing' };
+    if (e?.closing || (opts.presented && this.isGone(userId, sessionId))) {
+      return { refused: 'closed' };
+    }
     if (!e) {
       if (this.cap !== undefined && this.entries.size >= this.cap) {
         const victim = this.evictionCandidate();
@@ -1975,6 +2011,22 @@ export class SessionRetention {
 
   isClosing(userId: string, sessionId: string): boolean {
     return !!this.entries.get(keyOf(userId, sessionId))?.closing;
+  }
+
+  /**
+   * Whether a session a request presented has been closed or removed since.
+   *
+   * Presented means the middleware kept the caller's cookie because the session
+   * was live then. If retention no longer knows it and no store holds anything
+   * for it, it was deleted in between — and creating it again would bring back,
+   * under the same id, what the caller asked us to destroy. The mark alone does
+   * not cover this: it lives only until the removal has run. A session minted
+   * for this request is never asked; it holds nothing yet by definition.
+   */
+  isGone(userId: string, sessionId: string): boolean {
+    const e = this.entries.get(keyOf(userId, sessionId));
+    if (e) return !!e.closing;
+    return !this.stores.hasState(userId, sessionId);
   }
 
   /**
@@ -2074,7 +2126,7 @@ git commit -m "feat(gatekeeper): retention — places, leases, and closing a ses
   - in `srv/lib/gatekeeper.ts`:
     - `export function theRetention(): SessionRetention`
     - `export function sessionIsLive(userId: string, sessionId: string): boolean`
-    - `export function leaseSession(userId: string, sessionId: string, kind: LeaseKind): Lease | LeaseRefusal`
+    - `export function leaseSession(userId: string, sessionId: string, kind: LeaseKind, opts?: { presented?: boolean }): Lease | LeaseRefusal`
     - `export function deleteSession(userId: string, sessionId: string): Promise<void>`
     - `export function maySweepSession(userId: string, sessionId: string): boolean`
     - `export function forgetEmptySessions(): number`
@@ -2132,6 +2184,7 @@ export function makeReq(o: {
   method?: string;
   path?: string;
   sessionId?: string;
+  sessionMinted?: boolean;
 }): Request {
   return {
     body: o.body ?? {},
@@ -2141,6 +2194,7 @@ export function makeReq(o: {
     method: o.method ?? 'GET',
     path: o.path ?? '/',
     sessionId: o.sessionId,
+    sessionMinted: o.sessionMinted,
   } as unknown as Request;
 }
 
@@ -2535,6 +2589,31 @@ describe('a retired cookie', () => {
   });
 });
 
+describe('a request that outlived its session', () => {
+  it('cannot create a session collection under the id after logout removed it', async () => {
+    configure(2, 2);
+    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
+    // This request passed the middleware while A was live; the logout completes
+    // before it reaches the route, so the closing mark is already gone.
+    await gatekeeper.deleteSession('alice', 'A');
+    as('alice');
+    const res = makeRes();
+    await findRoute(routes, 'POST', '/rag/collections').handler(
+      makeReq({
+        method: 'POST',
+        body: { id: 'late', displayName: 'Late', scope: 'session' },
+        headers: { cookie: 'clh_session=A' },
+        sessionId: 'A',
+        sessionMinted: false,
+      }),
+      res.res,
+    );
+    expect(res._status).toBe(410);
+    expect(registry.getCollection(sessionCollectionId('late', 'alice', 'A'))).toBeNull();
+    expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
+  });
+});
+
 describe('logout and clear-chat in server.ts', () => {
   it('answer at the mark and do not wait for the removal', () => {
     const src = fs.readFileSync(path.join(__dirname, '../../srv/server.ts'), 'utf8');
@@ -2633,8 +2712,9 @@ export function leaseSession(
   userId: string,
   sessionId: string,
   kind: LeaseKind,
+  opts: { presented?: boolean } = {},
 ): Lease | LeaseRefusal {
-  return theRetention().lease(userId, sessionId, kind);
+  return theRetention().lease(userId, sessionId, kind, opts);
 }
 
 /** Close, wait for what is running, remove. The caller answers without awaiting it. */
@@ -2716,11 +2796,15 @@ import { isRefusal, type Lease, type LeaseRefusal } from './lib/session-retentio
 import { doorRefusalSentence, sessionClosedText } from './lib/throttle-surfacing';
 ```
 
+and add `type WithSession` to the existing `./session-id` import.
+
+**Which requests are presented.** `(req as Request & WithSession).sessionMinted === false` — the middleware kept the caller's cookie because the session was live. A session minted for this request, or a request no middleware saw, is not presented and is never checked for having gone.
+
 Inside `registerRagRoutes`, after `canAccess` is declared, add:
 
 ```ts
   function refuseLease(res: Response, refusal: LeaseRefusal): void {
-    if (refusal.refused === 'closing') {
+    if (refusal.refused === 'closed') {
       res.status(410).json({ error: { message: sessionClosedText(), code: 'session_closed' } });
       return;
     }
@@ -2748,7 +2832,9 @@ Inside `registerRagRoutes`, after `canAccess` is declared, add:
         await handler(req, res);
         return;
       }
-      const lease = leaseSession(meta.owner, meta.sessionId, 'rag');
+      // The collection exists, so its session was live; presented, so a session
+      // closing under this request is refused rather than written into.
+      const lease = leaseSession(meta.owner, meta.sessionId, 'rag', { presented: true });
       if (isRefusal(lease)) {
         refuseLease(res, lease);
         return;
@@ -2791,7 +2877,9 @@ and in the upload route, likewise: `registry.addDocumentsBulk(collectionId, docs
 In `POST /rag/collections`, declare `let lease: Lease | undefined;` immediately before the outer `try {`, take the lease in the session branch right after `physical = sessionCollectionId(logicalId, userId, sid);`:
 
 ```ts
-        const taken = leaseSession(userId, sid, 'rag');
+        const taken = leaseSession(userId, sid, 'rag', {
+          presented: (req as Request & WithSession).sessionMinted === false,
+        });
         if (isRefusal(taken)) {
           refuseLease(res, taken);
           return;
@@ -2813,7 +2901,11 @@ In `POST /rag/tool/:name`, replace the body after the unknown-tool check with:
     const sid = sessionIdOf(req);
     // rag_add may create a session collection, so a place is reserved for the
     // caller's session before it can.
-    const lease = sid ? leaseSession(getUserId(), sid, 'rag') : undefined;
+    const lease = sid
+      ? leaseSession(getUserId(), sid, 'rag', {
+          presented: (req as Request & WithSession).sessionMinted === false,
+        })
+      : undefined;
     if (lease && isRefusal(lease)) {
       refuseLease(res, lease);
       return;
@@ -2894,13 +2986,13 @@ git commit -m "feat(gatekeeper): sessions are leased while worked on, closed bef
 **Interfaces:**
 - Consumes: `Lease`, `LeaseRefusal`, `isRefusal` (Task 5); `DoorRefusalReason` (Task 6, type only).
 - Produces:
-  - `export interface DoorRetention { canReserve(userId: string, sessionId: string): boolean; lease(userId: string, sessionId: string, kind: 'pipeline'): Lease | LeaseRefusal }`
+  - `export interface DoorRetention { canReserve(userId: string, sessionId: string): boolean; lease(userId: string, sessionId: string, kind: 'pipeline'): Lease | LeaseRefusal; isGone(userId: string, sessionId: string): boolean }`
   - `export interface Admission { readonly userId: string; readonly sessionId: string; readonly signal: AbortSignal; readonly outstanding: number; track<T>(p: Promise<T>): Promise<T>; drain(): Promise<void>; release(): void }`
-  - `export type AdmitResult = { admitted: Admission } | { refused: DoorRefusalReason }`
+  - `export type AdmitResult = { admitted: Admission } | { refused: DoorRefusalReason } | { closed: true }`
   - `export interface DoorSnapshot { live: number; capacity: number; queued: number; queueLength: number; highWater: number; refusals: Record<DoorRefusalReason, number>; left: number }`
   - `export class Door`:
     - `constructor(opts: { capacity: number; queueLength: number; retention: DoorRetention; onPressure?: (depth: number, queueLength: number) => void })`
-    - `admit(userId: string, sessionId: string, signal?: AbortSignal): Promise<AdmitResult>` — rejects with the signal's reason if the caller leaves while queued
+    - `admit(userId: string, sessionId: string, signal?: AbortSignal, opts?: { presented?: boolean }): Promise<AdmitResult>` — rejects with the signal's reason if the caller leaves while queued; `{ closed: true }` when a presented session has gone, on arrival or while waiting
     - `poke(): void` — dispatch after a retention place was freed elsewhere
     - `abortAll(reason?: unknown): void`
     - `snapshot(): DoorSnapshot`
@@ -2923,8 +3015,10 @@ import { type Admission, type AdmitResult, Door } from '../../srv/lib/door';
 function fakeRetention() {
   const r = {
     open: true,
+    gone: false,
     leases: 0,
     canReserve: (_u: string, _s: string) => r.open,
+    isGone: (_u: string, _s: string) => r.gone,
     lease: (_u: string, _s: string, kind: 'pipeline') => {
       if (!r.open) return { refused: 'retention' as const };
       r.leases++;
@@ -3152,6 +3246,33 @@ describe('retention is part of admission', () => {
   });
 });
 
+describe('a session closed under a request', () => {
+  it('is answered closed on arrival, and takes nothing', async () => {
+    const { d, retention } = door(2);
+    retention.gone = true;
+    expect(await d.admit('u', 'A', undefined, { presented: true })).toEqual({ closed: true });
+    expect(retention.leases).toBe(0);
+    expect(d.snapshot()).toMatchObject({ live: 0, queued: 0 });
+  });
+
+  it('is answered closed if the session goes while it waits, never admitted', async () => {
+    const { d, retention } = door(1);
+    const a = admitted(await d.admit('u', 'A'));
+    const late = d.admit('u', 'B', undefined, { presented: true });
+    await tick();
+    retention.gone = true;
+    a.release();
+    expect(await late).toEqual({ closed: true });
+    expect(retention.leases).toBe(0);
+  });
+
+  it('never asks about a session minted for this request', async () => {
+    const { d, retention } = door(1);
+    retention.gone = true;
+    admitted(await d.admit('u', 'C'));
+  });
+});
+
 describe('a waiter that leaves', () => {
   it('takes no slot and starts nothing', async () => {
     const { d, retention } = door(1);
@@ -3230,6 +3351,8 @@ import type { DoorRefusalReason } from './throttle-surfacing';
 export interface DoorRetention {
   canReserve(userId: string, sessionId: string): boolean;
   lease(userId: string, sessionId: string, kind: 'pipeline'): Lease | LeaseRefusal;
+  /** A presented session closed or removed since the middleware accepted it. */
+  isGone(userId: string, sessionId: string): boolean;
 }
 
 export interface Admission {
@@ -3246,7 +3369,14 @@ export interface Admission {
   release(): void;
 }
 
-export type AdmitResult = { admitted: Admission } | { refused: DoorRefusalReason };
+/**
+ * `closed` is not a fourth refusal reason: a session removed under a request says
+ * nothing about how full the service is, and is not counted as a refusal.
+ */
+export type AdmitResult =
+  | { admitted: Admission }
+  | { refused: DoorRefusalReason }
+  | { closed: true };
 
 export interface DoorSnapshot {
   live: number;
@@ -3261,6 +3391,7 @@ export interface DoorSnapshot {
 interface Waiter {
   userId: string;
   sessionId: string;
+  presented: boolean;
   key: string;
   resolve: (r: AdmitResult) => void;
   reject: (e: unknown) => void;
@@ -3300,8 +3431,16 @@ export class Door {
     this.onPressure = opts.onPressure;
   }
 
-  admit(userId: string, sessionId: string, signal?: AbortSignal): Promise<AdmitResult> {
+  admit(
+    userId: string,
+    sessionId: string,
+    signal?: AbortSignal,
+    opts: { presented?: boolean } = {},
+  ): Promise<AdmitResult> {
     if (signal?.aborted) return Promise.reject(signal.reason);
+    if (opts.presented && this.retention.isGone(userId, sessionId)) {
+      return Promise.resolve({ closed: true });
+    }
     if (this.eligible(userId, sessionId)) {
       const admission = this.take(userId, sessionId);
       if (admission) return Promise.resolve({ admitted: admission });
@@ -3323,6 +3462,7 @@ export class Door {
       const waiter: Waiter = {
         userId,
         sessionId,
+        presented: !!opts.presented,
         key: keyOf(userId, sessionId),
         resolve,
         reject,
@@ -3436,6 +3576,13 @@ export class Door {
   private dispatch(): void {
     for (let i = 0; i < this.waiters.length; ) {
       const w = this.waiters[i];
+      if (w.presented && this.retention.isGone(w.userId, w.sessionId)) {
+        // Closed while it waited: answered, never admitted under a removed id.
+        this.waiters.splice(i, 1);
+        w.detach();
+        w.resolve({ closed: true });
+        continue;
+      }
       if (!this.eligible(w.userId, w.sessionId)) {
         i++;
         continue;
@@ -3478,6 +3625,8 @@ git commit -m "feat(gatekeeper): the door — one queue, the oldest eligible wai
   - `export function openAiDoorRefusal(reason: DoorRefusalReason): HttpRefusal` — `503`, `{ error: { message, type: 'server_error', code: 'gatekeeper_<reason>' } }`
   - `export function anthropicDoorRefusal(reason: DoorRefusalReason): HttpRefusal` — `529`, `{ type: 'error', error: { type: 'overloaded_error', message } }`
   - `export function executeStepDoorRefusal(reason: DoorRefusalReason): string` — `gatekeeper_<reason>: <sentence>`
+  - `export function openAiSessionClosed(): HttpRefusal` — `410`, `{ error: { message, type: 'invalid_request_error', code: 'session_closed' } }`
+  - `export function anthropicSessionClosed(): HttpRefusal` — `410`, `{ type: 'error', error: { type: 'invalid_request_error', message } }`
 
 **Why here and not in the handlers:** a test must exercise what the handler actually sends. Tasks 10 and 11 assert the handlers send these; this task pins the shapes.
 
@@ -3490,10 +3639,13 @@ Create `test/unit/door-refusal.test.ts`:
 ```ts
 import {
   anthropicDoorRefusal,
+  anthropicSessionClosed,
   type DoorRefusalReason,
   doorRefusalSentence,
   executeStepDoorRefusal,
   openAiDoorRefusal,
+  openAiSessionClosed,
+  sessionClosedText,
 } from '../../srv/lib/throttle-surfacing';
 
 const REASONS: DoorRefusalReason[] = ['session_busy', 'capacity', 'retention'];
@@ -3546,6 +3698,25 @@ describe('the sentences say what is missing, and only that', () => {
     expect(doorRefusalSentence('capacity')).not.toMatch(/memory|hold another session/i);
   });
 });
+
+describe('a session closed under the request', () => {
+  it('is 410 in both chat dialects, with the sentence RAG uses', () => {
+    expect(openAiSessionClosed()).toEqual({
+      status: 410,
+      body: {
+        error: {
+          message: sessionClosedText(),
+          type: 'invalid_request_error',
+          code: 'session_closed',
+        },
+      },
+    });
+    expect(anthropicSessionClosed()).toEqual({
+      status: 410,
+      body: { type: 'error', error: { type: 'invalid_request_error', message: sessionClosedText() } },
+    });
+  });
+});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -3596,6 +3767,28 @@ export function anthropicDoorRefusal(reason: DoorRefusalReason): HttpRefusal {
 /** `execute_step`: a failure line whose prefix a planner can branch on. */
 export function executeStepDoorRefusal(reason: DoorRefusalReason): string {
   return `gatekeeper_${reason}: ${doorRefusalSentence(reason)}`;
+}
+
+/** A chat request whose session was closed after the middleware accepted it. */
+export function openAiSessionClosed(): HttpRefusal {
+  return {
+    status: 410,
+    body: {
+      error: {
+        message: sessionClosedText(),
+        type: 'invalid_request_error',
+        code: 'session_closed',
+      },
+    },
+  };
+}
+
+/** The same, in the Anthropic envelope. */
+export function anthropicSessionClosed(): HttpRefusal {
+  return {
+    status: 410,
+    body: { type: 'error', error: { type: 'invalid_request_error', message: sessionClosedText() } },
+  };
 }
 ```
 
@@ -3992,8 +4185,8 @@ git commit -m "feat(gatekeeper): model and tool calls register themselves agains
   - in `srv/lib/gatekeeper.ts`:
     - `export function theDoor(): Door | undefined` — `undefined` when no capacity is configured
     - `export interface PipelineSession { readonly signal: AbortSignal | undefined; run<T>(fn: () => T): T; drain(): Promise<void>; release(): void }`
-    - `export type PipelineAdmission = { admitted: PipelineSession } | { refused: DoorRefusalReason }`
-    - `export function admitPipeline(userId: string, sessionId: string, signal?: AbortSignal): Promise<PipelineAdmission>`
+    - `export type PipelineAdmission = { admitted: PipelineSession } | { refused: DoorRefusalReason } | { closed: true }`
+    - `export function admitPipeline(userId: string, sessionId: string, signal?: AbortSignal, opts?: { presented?: boolean }): Promise<PipelineAdmission>`
 
 **Why a disconnect detaches the sink rather than guarding writes.** A client that leaves ends nothing — the pipeline runs on, because SAP is still waiting for the rest of the chain. What the pipeline must not do is fail on a dead socket. So after `detach`, every chunk and closing envelope is dropped before the socket, and a write that throws detaches the sink rather than raising into the pipeline.
 
@@ -4174,6 +4367,37 @@ describe('with a door', () => {
     await tick();
     expect(drained).toBe(true);
     s.release();
+  });
+});
+
+describe('a request that outlived its session', () => {
+  const { appendToSession } = require('../../srv/session-store') as typeof import('../../srv/session-store');
+
+  for (const [label, live] of [
+    ['with a door', 1],
+    ['without a door', undefined],
+  ] as const) {
+    it(`is answered closed ${label}, and leaves nothing leased`, async () => {
+      configure(live);
+      appendToSession('A', 'u', { role: 'user', content: 'earlier' });
+      // Accepted by the middleware while live; the logout completes first.
+      await gatekeeper.deleteSession('u', 'A');
+      expect(
+        await gatekeeper.admitPipeline('u', 'A', undefined, { presented: true }),
+      ).toEqual({ closed: true });
+      expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
+    });
+  }
+
+  it('a waiter whose session is closed while it queues is answered closed', async () => {
+    configure(1);
+    const hold = admitted(await gatekeeper.admitPipeline('v', 'X'));
+    appendToSession('A', 'u', { role: 'user', content: 'earlier' });
+    const late = gatekeeper.admitPipeline('u', 'A', undefined, { presented: true });
+    await tick();
+    await gatekeeper.deleteSession('u', 'A');
+    expect(await late).toEqual({ closed: true });
+    hold.release();
   });
 });
 
@@ -4360,7 +4584,8 @@ export interface PipelineSession {
 
 export type PipelineAdmission =
   | { admitted: PipelineSession }
-  | { refused: DoorRefusalReason };
+  | { refused: DoorRefusalReason }
+  | { closed: true };
 
 /**
  * Admit a pipeline for this user's session.
@@ -4373,11 +4598,12 @@ export async function admitPipeline(
   userId: string,
   sessionId: string,
   signal?: AbortSignal,
+  opts: { presented?: boolean } = {},
 ): Promise<PipelineAdmission> {
   const d = theDoor();
   if (d) {
-    const r = await d.admit(userId, sessionId, signal);
-    if ('refused' in r) return r;
+    const r = await d.admit(userId, sessionId, signal, opts);
+    if ('refused' in r || 'closed' in r) return r;
     const a = r.admitted;
     return {
       admitted: {
@@ -4388,9 +4614,11 @@ export async function admitPipeline(
       },
     };
   }
-  // Refused only when the session is already closing, which the middleware
-  // makes rare: run without a lease rather than refuse where no limit is set.
-  const lease = theRetention().lease(userId, sessionId, 'pipeline');
+  // With no door there is no retention cap, so a refusal here means one thing:
+  // the session was closed after the middleware accepted it. No limit is set;
+  // that does not mean running over a session the caller asked us to destroy.
+  const lease = theRetention().lease(userId, sessionId, 'pipeline', opts);
+  if (isRefusal(lease)) return { closed: true };
   const register = createCallRegister();
   let released = false;
   return {
@@ -4401,7 +4629,7 @@ export async function admitPipeline(
       release: () => {
         if (released) return;
         released = true;
-        if (!isRefusal(lease)) lease.release();
+        lease.release();
       },
     },
   };
@@ -4415,8 +4643,9 @@ export function leaseSession(
   userId: string,
   sessionId: string,
   kind: LeaseKind,
+  opts: { presented?: boolean } = {},
 ): Lease | LeaseRefusal {
-  const lease = theRetention().lease(userId, sessionId, kind);
+  const lease = theRetention().lease(userId, sessionId, kind, opts);
   if (isRefusal(lease)) return lease;
   return {
     kind: lease.kind,
@@ -4430,9 +4659,11 @@ export function leaseSession(
 }
 
 export function deleteSession(userId: string, sessionId: string): Promise<void> {
-  return theRetention()
-    .close(userId, sessionId)
-    .finally(() => theDoor()?.poke());
+  const removal = theRetention().close(userId, sessionId);
+  // From the mark, a waiter that presented this session is answered, not left
+  // to wait for a session that is going.
+  theDoor()?.poke();
+  return removal.finally(() => theDoor()?.poke());
 }
 
 export function forgetEmptySessions(): number {
@@ -4510,6 +4741,8 @@ export const harness = {
   },
   events: [] as string[],
   seenOptions: [] as Array<Record<string, unknown>>,
+  /** Hold agent resolution open, as a destination still warming would. */
+  agentGate: Promise.resolve() as Promise<void>,
   process: async (_messages: unknown, _opts: Record<string, unknown>): Promise<Chunk> => ({
     ok: true,
     value: { content: 'done', stopReason: 'stop' },
@@ -4521,6 +4754,7 @@ export const harness = {
   reset() {
     harness.events = [];
     harness.seenOptions = [];
+    harness.agentGate = Promise.resolve();
     harness.process = async () => ({ ok: true, value: { content: 'done', stopReason: 'stop' } });
     harness.stream = async function* () {
       yield { ok: true, value: { content: 'done' } };
@@ -4553,6 +4787,7 @@ export function agentManagerMock() {
     isAgentReady: () => true,
     getSmartAgent: async () => {
       harness.events.push('getSmartAgent');
+      await harness.agentGate;
       return handle;
     },
     getCurrentDestination: () => 'DEST',
@@ -4596,12 +4831,13 @@ export function requestConnectionMock() {
   };
 }
 
-export function fakeReq(body: unknown, sessionId = 's-1') {
+/** `minted: false` is a cookie the middleware kept because the session was live. */
+export function fakeReq(body: unknown, sessionId = 's-1', minted = true) {
   return {
     body,
     headers: { 'x-sap-destination': 'DEST', cookie: `clh_session=${sessionId}` },
     sessionId,
-    sessionMinted: false,
+    sessionMinted: minted,
     secure: false,
   };
 }
@@ -4833,6 +5069,38 @@ describe('/v1/chat/completions at the door', () => {
   });
 });
 
+describe('a request that outlived its session', () => {
+  for (const [label, live] of [
+    ['with a door', 2],
+    ['without a door', undefined],
+  ] as const) {
+    it(`does not start the pipeline under the old id — ${label}`, async () => {
+      configure(live);
+      const store = require('../../srv/session-store') as typeof import('../../srv/session-store');
+      store.appendToSession('s-race', 'alice', { role: 'user', content: 'earlier' });
+      const gate = deferred();
+      harness.agentGate = gate.promise;
+      const res = fakeRes();
+      // The middleware kept the cookie: the session was live when it arrived.
+      const done = handleChatCompletions(
+        fakeReq(body(), 's-race', false) as unknown as Request,
+        res as unknown as Response,
+      );
+      await tick();
+      // Agent resolution is still waiting when the logout completes.
+      await gatekeeper.deleteSession('alice', 's-race');
+      gate.resolve();
+      await done;
+
+      expect(harness.events).not.toContain('pipeline');
+      expect(res.statusCode).toBe(410);
+      expect(JSON.parse(res.body).error.code).toBe('session_closed');
+      expect(store.getSessionHistory('s-race', 'alice')).toEqual([]);
+      expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
+    });
+  }
+});
+
 describe('a shared corpus build holds no caller slot', () => {
   it('resolves the agent before admitting', () => {
     const src = readFileSync(join(__dirname, '../../srv/openai-handler.ts'), 'utf8');
@@ -4925,7 +5193,7 @@ import { detachedSink } from './lib/detached-sink';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 ```
 
-and add `openAiDoorRefusal` to the `./lib/throttle-surfacing` import.
+add `openAiDoorRefusal` and `openAiSessionClosed` to the `./lib/throttle-surfacing` import, and `type WithSession` to the `./session-id` import.
 
 Replace the `res.on('close', ...)` block and its comment (`:560-576`) with:
 
@@ -4952,12 +5220,23 @@ Immediately before the line `  try {` that is followed by `    const pipelineLog
   // warm waits outside the door, holding a request and no session.
   let pipeline: PipelineSession;
   try {
-    const admission = await admitPipeline(userId, sessionId, callerLeft.signal);
+    const admission = await admitPipeline(userId, sessionId, callerLeft.signal, {
+      presented: (req as Request & WithSession).sessionMinted === false,
+    });
     if ('refused' in admission) {
       restoreRagStores();
       await safeStop(requestConnection);
       const refusal = openAiDoorRefusal(admission.refused);
       out.json(refusal.status, refusal.body);
+      return;
+    }
+    if ('closed' in admission) {
+      // Logged out while this request waited for its agent. Running now would
+      // bring the session back under the id the caller asked us to destroy.
+      restoreRagStores();
+      await safeStop(requestConnection);
+      const closed = openAiSessionClosed();
+      out.json(closed.status, closed.body);
       return;
     }
     pipeline = admission.admitted;
@@ -5046,7 +5325,7 @@ Replace the `finally` at the end of `handleChatCompletions`:
 
 - [ ] **Step 5: `/v1/messages`**
 
-In `srv/anthropic-handler.ts`, add the same two imports and `anthropicDoorRefusal` to the `./lib/throttle-surfacing` import.
+In `srv/anthropic-handler.ts`, add the same two imports, `anthropicDoorRefusal` and `anthropicSessionClosed` to the `./lib/throttle-surfacing` import, and `type WithSession` to the `./session-id` import.
 
 Replace the `res.on('close', ...)` block and its comment (`:126-138`) with the same block as in Step 4, logging `{ sessionId }`.
 
@@ -5055,11 +5334,20 @@ Immediately before `  const agentOpts = {`, insert:
 ```ts
   let pipeline: PipelineSession;
   try {
-    const admission = await admitPipeline(userId, sessionId ?? traceId, callerLeft.signal);
+    const admission = await admitPipeline(userId, sessionId ?? traceId, callerLeft.signal, {
+      presented:
+        sessionId !== undefined && (req as Request & WithSession).sessionMinted === false,
+    });
     if ('refused' in admission) {
       await safeStop(requestConnection);
       const refusal = anthropicDoorRefusal(admission.refused);
       out.json(refusal.status, refusal.body);
+      return;
+    }
+    if ('closed' in admission) {
+      await safeStop(requestConnection);
+      const closed = anthropicSessionClosed();
+      out.json(closed.status, closed.body);
       return;
     }
     pipeline = admission.admitted;
@@ -5309,7 +5597,7 @@ import type { ExpositionLevel } from './lib/exposition';
 import { admitPipeline, type PipelineSession, theDoor } from './lib/gatekeeper';
 ```
 
-and add `executeStepDoorRefusal` to the `./lib/throttle-surfacing` import.
+and add `executeStepDoorRefusal` and `sessionClosedText` to the `./lib/throttle-surfacing` import.
 
 Replace the comment above `EXEC_STEP_MAX_CONCURRENCY` with:
 
@@ -5358,6 +5646,11 @@ export async function executeStep(
     const admission = await admitPipeline(userId, sessionId);
     if ('refused' in admission) {
       return textResult(executeStepDoorRefusal(admission.refused), true);
+    }
+    if ('closed' in admission) {
+      // Unreachable: a step mints its own session and never presents one. The
+      // union still has to be answered.
+      return textResult(sessionClosedText(), true);
     }
     pipeline = admission.admitted;
     const admitted = pipeline;
