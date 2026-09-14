@@ -717,21 +717,34 @@ git add srv/lib/quota-gate.ts test/unit/quota-gate.test.ts
 git commit -m "feat(gatekeeper): one quota, a sliding window of starts and a FIFO queue"
 ```
 
-### Task 2: The quota registry and its configuration
+### Task 2: The configuration, and the quota registry
 
 **Files:**
-- Create: `srv/lib/quota-registry.ts`
+- Create: `srv/lib/gatekeeper-config.ts`, `srv/lib/quota-registry.ts`
+- Modify: `srv/agent-config.ts` (log what is in force, which is also what validates it)
 - Test: `test/unit/quota-registry.test.ts`
+
+**Why the configuration is its own module.** Validation and runtime state are
+different things and must not import each other. With the door's check inside
+`admission.ts`, the configuration loader would depend on a module holding live
+counters, while `agent-manager` and both handlers already import both — a cycle
+that resolves differently depending on import order, with half-initialised
+exports as the failure. So one module reads the environment and validates it,
+and holds nothing; the registry and the door each consume it.
 
 **Interfaces:**
 - Consumes: `QuotaGate`, `QuotaLimits`, `Permit` from Task 1.
-- Produces:
+- Produces, from `gatekeeper-config`:
+  - `export interface GatekeeperConfig { quotas: Map<string, QuotaLimits>; keyOfModel: Map<string, string>; maxLivePipelines?: number }`
+  - `export function gatekeeperConfig(): GatekeeperConfig` — parsed once, fully validated, throws on anything malformed
+  - `export function describeGatekeeperConfig(): string` — the one-line startup log, and the call that makes validation happen at boot
+  - `export function clearGatekeeperConfig(): void`
+- Produces, from `quota-registry`:
   - `export class UnknownModelError extends Error { readonly model: string }`
   - `export function quotasConfigured(): boolean`
-  - `export function gateForModel(model: string): QuotaGate | undefined` — throws `UnknownModelError` when quotas are configured and the model names neither an entry nor a mapping
-  - `export function quotaForModel(model: string): { key: string; gate: QuotaGate } | undefined` — the same resolution, plus the key the model actually spends against
+  - `export function quotaForModel(model: string): { key: string; gate: QuotaGate } | undefined` — throws `UnknownModelError` when quotas are configured and the model names neither an entry nor a mapping
+  - `export function gateForModel(model: string): QuotaGate | undefined`
   - `export function liveGates(): Array<{ key: string; gate: QuotaGate }>` — for the metrics snapshot
-  - `export function describeQuotas(): string` — the one-line startup log
   - `export function clearQuotaRegistry(): void` — test seam, mirrors `clearAgentConfig`
 
 - [ ] **Step 1: Write the failing test**
@@ -801,7 +814,8 @@ describe('quota registry — a configured quota', () => {
   it('defaults the window to a minute, which is how providers meter', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1 } });
     const mod = load();
-    expect(mod.describeQuotas()).toContain('60000');
+    const { describeGatekeeperConfig } = require('../../srv/lib/gatekeeper-config') as typeof import('../../srv/lib/gatekeeper-config');
+    expect(describeGatekeeperConfig()).toContain('60000');
   });
 });
 
@@ -830,6 +844,26 @@ describe('quota registry — malformed means refuse to start', () => {
   });
 });
 
+describe('gatekeeper config — a door needs a quota', () => {
+  it('refuses a door with no window, naming both variables', () => {
+    // The door admits on a promise the window keeps. Alone it would refuse
+    // callers to protect a guarantee that the first 429 then breaks.
+    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
+    delete process.env.LLM_GATEKEEPER_QUOTAS;
+    expect(() => load().quotasConfigured()).toThrow(
+      /LLM_GATEKEEPER_MAX_LIVE_PIPELINES[\s\S]*LLM_GATEKEEPER_QUOTAS/,
+    );
+    delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+  });
+
+  it('accepts the two together', () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1 } });
+    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
+    expect(() => load().quotasConfigured()).not.toThrow();
+    delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+  });
+});
+
 describe('quota registry — an unknown model at runtime', () => {
   it('is rejected once quotas are configured, naming the model and the variable', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ known: { limit: 1 } });
@@ -854,43 +888,37 @@ Expected: FAIL — `Cannot find module '../../srv/lib/quota-registry'`.
 
 - [ ] **Step 3: Write the registry**
 
-Create `srv/lib/quota-registry.ts`:
+Create `srv/lib/gatekeeper-config.ts` — the environment, read once and checked,
+holding no runtime state of any kind:
 
 ```ts
-import { QuotaGate, type QuotaLimits } from './quota-gate';
+import type { QuotaLimits } from './quota-gate';
 
 /**
- * What the deployment says its quotas are — not what this code infers.
+ * Everything the gatekeeper is configured with, and nothing it remembers.
  *
- * A quota is configuration: the deployment that ordered the limits says what
- * they cover. With nothing configured the key is the model name, which is how
- * every provider we know of meters, and nothing here names a provider, a model
- * dimension or a resource group.
+ * Separate from the registry and the door because validation and live state
+ * must not depend on each other. With the door's check inside `admission.ts`,
+ * the configuration loader depended on a module holding live counters, while
+ * `agent-manager` and both handlers already imported both — a cycle that
+ * resolves differently depending on import order, with half-initialised
+ * exports as the failure mode. One module reads the environment and validates
+ * it; the registry and the door each consume it.
  */
 
 const QUOTAS_VAR = 'LLM_GATEKEEPER_QUOTAS';
 const MAP_VAR = 'LLM_GATEKEEPER_QUOTA_OF_MODEL';
+const DOOR_VAR = 'LLM_GATEKEEPER_MAX_LIVE_PIPELINES';
 const DEFAULT_WINDOW_MS = 60_000;
 
-/** A model nobody configured, seen while quotas are in force. */
-export class UnknownModelError extends Error {
-  constructor(readonly model: string) {
-    super(
-      `Model ${JSON.stringify(model)} has no quota. Add it to ${QUOTAS_VAR}, or map it to an existing key with ${MAP_VAR}.`,
-    );
-    this.name = 'UnknownModelError';
-  }
-}
-
-interface Registry {
-  limits: Map<string, QuotaLimits>;
+export interface GatekeeperConfig {
+  quotas: Map<string, QuotaLimits>;
   keyOfModel: Map<string, string>;
-  gates: Map<string, QuotaGate>;
+  maxLivePipelines?: number;
 }
 
-let registry: Registry | undefined;
+let cached: GatekeeperConfig | undefined;
 
-/** Parse one env var as a JSON object, or throw naming it. */
 function readJsonObject(name: string): Record<string, unknown> | undefined {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return undefined;
@@ -915,18 +943,18 @@ function positiveInt(value: unknown, name: string, field: string, key: string): 
   return value as number;
 }
 
-function build(): Registry {
-  const limits = new Map<string, QuotaLimits>();
-  const quotas = readJsonObject(QUOTAS_VAR);
-  if (quotas) {
-    for (const [key, entry] of Object.entries(quotas)) {
+function build(): GatekeeperConfig {
+  const quotas = new Map<string, QuotaLimits>();
+  const raw = readJsonObject(QUOTAS_VAR);
+  if (raw) {
+    for (const [key, entry] of Object.entries(raw)) {
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
         throw new Error(
           `Invalid ${QUOTAS_VAR}: ${JSON.stringify(key)} must be an object with a limit`,
         );
       }
       const e = entry as { limit?: unknown; windowMs?: unknown };
-      limits.set(key, {
+      quotas.set(key, {
         limit: positiveInt(e.limit, QUOTAS_VAR, 'limit', key),
         windowMs:
           e.windowMs === undefined
@@ -940,8 +968,8 @@ function build(): Registry {
   const mapping = readJsonObject(MAP_VAR);
   if (mapping) {
     for (const [model, key] of Object.entries(mapping)) {
-      if (typeof key !== 'string' || !limits.has(key)) {
-        // Somebody intending a limit and not getting one. That is the failure
+      if (typeof key !== 'string' || !quotas.has(key)) {
+        // Somebody intending a limit and not getting one, which is the failure
         // mode this whole design exists to make visible.
         throw new Error(
           `Invalid ${MAP_VAR}: ${JSON.stringify(model)} maps to ${JSON.stringify(key)}, which is not a key in ${QUOTAS_VAR}`,
@@ -951,77 +979,124 @@ function build(): Registry {
     }
   }
 
-  return { limits, keyOfModel, gates: new Map() };
+  let maxLivePipelines: number | undefined;
+  const door = process.env[DOOR_VAR];
+  if (door !== undefined && door.trim() !== '') {
+    const n = Number(door);
+    if (!Number.isSafeInteger(n) || n < 1) {
+      throw new Error(
+        `Invalid ${DOOR_VAR}: expected a positive whole number of pipelines, got ${JSON.stringify(door)}`,
+      );
+    }
+    if (quotas.size === 0) {
+      // The door is the front half of a guarantee whose back half is the
+      // window. Alone it would refuse callers to protect a promise it cannot
+      // keep: an admitted request would meet its first 429 and end.
+      throw new Error(
+        `Invalid ${DOOR_VAR}: a door needs a quota. Set ${QUOTAS_VAR} as well, or unset the door.`,
+      );
+    }
+    maxLivePipelines = n;
+  }
+
+  return { quotas, keyOfModel, maxLivePipelines };
 }
 
-function loaded(): Registry {
-  if (!registry) registry = build();
-  return registry;
+export function gatekeeperConfig(): GatekeeperConfig {
+  if (!cached) cached = build();
+  return cached;
 }
+
+/** One line for the startup log, and the call that makes validation happen. */
+export function describeGatekeeperConfig(): string {
+  const cfg = gatekeeperConfig();
+  const quotas =
+    cfg.quotas.size === 0
+      ? 'none configured (no rate limiting)'
+      : [...cfg.quotas].map(([k, l]) => `${k}=${l.limit}/${l.windowMs}ms`).join(', ');
+  const mapped = cfg.keyOfModel.size > 0 ? `, mapped models: ${cfg.keyOfModel.size}` : '';
+  const door =
+    cfg.maxLivePipelines === undefined
+      ? 'no door'
+      : `door: ${cfg.maxLivePipelines} live pipelines`;
+  return `LLM gatekeeper — quotas: ${quotas}${mapped}; ${door}`;
+}
+
+/** Test seam. */
+export function clearGatekeeperConfig(): void {
+  cached = undefined;
+}
+```
+
+and `srv/lib/quota-registry.ts`, which now holds gates and nothing else:
+
+```ts
+import { clearGatekeeperConfig, gatekeeperConfig } from './gatekeeper-config';
+import { QuotaGate } from './quota-gate';
+
+const QUOTAS_VAR = 'LLM_GATEKEEPER_QUOTAS';
+const MAP_VAR = 'LLM_GATEKEEPER_QUOTA_OF_MODEL';
+
+/** A model nobody configured, seen while quotas are in force. */
+export class UnknownModelError extends Error {
+  constructor(readonly model: string) {
+    super(
+      `Model ${JSON.stringify(model)} has no quota. Add it to ${QUOTAS_VAR}, or map it to an existing key with ${MAP_VAR}.`,
+    );
+    this.name = 'UnknownModelError';
+  }
+}
+
+const gates = new Map<string, QuotaGate>();
 
 /** Whether any quota is in force. False means the service behaves as before. */
 export function quotasConfigured(): boolean {
-  return loaded().limits.size > 0;
-}
-
-/**
- * The gate this model spends against, or undefined when nothing is configured.
- *
- * Throws `UnknownModelError` when quotas ARE configured and the model names
- * neither an entry nor a mapping: `/v1/chat/completions` accepts any
- * `body.model` and hot-swaps the shared LLM to it, so a typo would otherwise
- * un-gate every later main call, long after any startup check could see it.
- */
-export function gateForModel(model: string): QuotaGate | undefined {
-  const reg = loaded();
-  if (reg.limits.size === 0) return undefined;
-  const key = reg.keyOfModel.get(model) ?? model;
-  const limits = reg.limits.get(key);
-  if (!limits) throw new UnknownModelError(model);
-  let gate = reg.gates.get(key);
-  if (!gate) {
-    gate = new QuotaGate(limits);
-    reg.gates.set(key, gate);
-  }
-  return gate;
+  return gatekeeperConfig().quotas.size > 0;
 }
 
 /**
  * The gate AND the key it is filed under.
  *
  * Observability needs the key, not the model name: two models mapped onto one
- * quota spend the same places, and reporting them as separate scopes would
- * show two half-full windows where there is one full one.
+ * quota spend the same places, and reporting them as separate scopes would show
+ * two half-full windows where there is one full one.
+ *
+ * Throws `UnknownModelError` when quotas ARE configured and the model names
+ * neither an entry nor a mapping: `/v1/chat/completions` accepts any
+ * `body.model` and hot-swaps the shared LLM to it, so a typo would otherwise
+ * un-gate every later main call, long after any startup check could see it.
  */
 export function quotaForModel(
   model: string,
 ): { key: string; gate: QuotaGate } | undefined {
-  const gate = gateForModel(model);
-  if (!gate) return undefined;
-  const reg = loaded();
-  return { key: reg.keyOfModel.get(model) ?? model, gate };
+  const cfg = gatekeeperConfig();
+  if (cfg.quotas.size === 0) return undefined;
+  const key = cfg.keyOfModel.get(model) ?? model;
+  const limits = cfg.quotas.get(key);
+  if (!limits) throw new UnknownModelError(model);
+  let gate = gates.get(key);
+  if (!gate) {
+    gate = new QuotaGate(limits);
+    gates.set(key, gate);
+  }
+  return { key, gate };
+}
+
+/** The gate alone, for callers that do not need the key. */
+export function gateForModel(model: string): QuotaGate | undefined {
+  return quotaForModel(model)?.gate;
 }
 
 /** Every gate built so far, for the metrics snapshot. */
 export function liveGates(): Array<{ key: string; gate: QuotaGate }> {
-  return [...loaded().gates.entries()].map(([key, gate]) => ({ key, gate }));
-}
-
-/** One line for the startup log: a limit only shows itself under load. */
-export function describeQuotas(): string {
-  const reg = loaded();
-  if (reg.limits.size === 0) return 'LLM quotas: none configured (no rate limiting)';
-  const parts = [...reg.limits.entries()].map(
-    ([key, l]) => `${key}=${l.limit}/${l.windowMs}ms`,
-  );
-  const mapped = reg.keyOfModel.size > 0 ? `, mapped models: ${reg.keyOfModel.size}` : '';
-  return `LLM quotas: ${parts.join(', ')}${mapped}`;
+  return [...gates.entries()].map(([key, gate]) => ({ key, gate }));
 }
 
 /** Test seam. Drops the parsed configuration and every gate built from it. */
 export function clearQuotaRegistry(): void {
-  if (registry) for (const gate of registry.gates.values()) gate.stop();
-  registry = undefined;
+  for (const gate of gates.values()) gate.stop();
+  gates.clear();
+  clearGatekeeperConfig();
 }
 ```
 
@@ -1036,20 +1111,22 @@ In `srv/agent-config.ts`, inside `loadAgentConfig()` just before it returns, add
 
 ```ts
   // A limit only shows itself under load, and by then nobody remembers what was
-  // configured. Reading both here is also what makes a malformed value fail at
-  // startup rather than on the first request — `configuredCapacity` is lazy,
-  // and left to its first caller a bad number would let the service come up
-  // healthy and then refuse whoever arrived first.
-  cds.log('agent-config').info(describeQuotas());
-  cds.log('agent-config').info(describeDoor());
+  // configured. One line covers quotas and the door together, and reading it
+  // here is what makes a malformed value — or a door configured without a
+  // quota — fail at startup rather than on the first request.
+  cds.log('agent-config').info(describeGatekeeperConfig());
 ```
 
 and at the top of the file:
 
 ```ts
-import { describeDoor } from './lib/admission';
-import { describeQuotas } from './lib/quota-registry';
+import { describeGatekeeperConfig } from './lib/gatekeeper-config';
 ```
+
+> Only `gatekeeper-config` is imported here, never `admission`. The
+> configuration loader must not depend on a module holding live counters:
+> `agent-manager` and both handlers already import both, and the cycle would
+> resolve differently depending on import order.
 
 - [ ] **Step 6: Run the whole suite and typecheck**
 
@@ -1059,8 +1136,8 @@ Expected: PASS, no type errors.
 - [ ] **Step 7: Lint and commit**
 
 ```bash
-npx biome check --write srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
-git add srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
+npx biome check --write srv/lib/gatekeeper-config.ts srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
+git add srv/lib/gatekeeper-config.ts srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
 git commit -m "feat(gatekeeper): quotas come from configuration, and a malformed one refuses to start"
 ```
 
@@ -1861,14 +1938,13 @@ git commit -m "feat(gatekeeper): every model passes the window, and the provider
 - Test: `test/unit/admission.test.ts`
 
 **Interfaces:**
-- Consumes: `quotasConfigured` from Task 2.
+- Consumes: `gatekeeperConfig` from Task 2.
 - Produces:
   - `export class DoorFullError extends Error { readonly code = 'door_full' }`
   - `export interface AdmissionHandle { release(): Promise<void>; readonly signal: AbortSignal }`
   - `export function admit(): Promise<AdmissionHandle>` — throws `DoorFullError` when the door is configured and full
   - `export function livePipelines(): number`
-  - `export function configuredCapacity(): number | undefined`
-  - `export function describeDoor(): string` — the startup log line, and the call that makes the validation happen at boot
+  - `export function configuredCapacity(): number | undefined` — reads the validated value from `gatekeeper-config`
   - `export function clearAdmission(): void` — test seam
 
 **The rule:** a pipeline is live from the moment it is admitted until it finishes or fails. It is not released while it waits on a quota — waiting is exactly when it still holds its context. The door is entered **after** the agent is resolved, so a caller waiting for a destination or a shared corpus build waits outside it, holding an HTTP request and no pipeline.
@@ -1880,6 +1956,8 @@ Create `test/unit/admission.test.ts`:
 ```ts
 const load = () => {
   jest.resetModules();
+  const config = require('../../srv/lib/gatekeeper-config') as typeof import('../../srv/lib/gatekeeper-config');
+  config.clearGatekeeperConfig();
   const mod = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
   mod.clearAdmission();
   return mod;
@@ -1929,18 +2007,7 @@ describe('the door — a configured capacity', () => {
     await expect(mod.admit()).resolves.toBeDefined();
   });
 
-  it('refuses a door configured without a quota, naming both', () => {
-    // The door promises that congestion does not end an admitted request. With
-    // no window to hold a throttled call in, the first 429 ends it — the
-    // promise broken in the one configuration nobody is watching.
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
-    delete process.env.LLM_GATEKEEPER_QUOTAS;
-    expect(() => load().configuredCapacity()).toThrow(
-      /LLM_GATEKEEPER_MAX_LIVE_PIPELINES[\s\S]*LLM_GATEKEEPER_QUOTAS/,
-    );
-  });
-
-  it('refuses a malformed capacity at startup, naming the variable', () => {
+  it('refuses a malformed capacity, from the config module that owns it', () => {
     process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = 'plenty';
     expect(() => load().configuredCapacity()).toThrow(
       /LLM_GATEKEEPER_MAX_LIVE_PIPELINES/,
@@ -1984,9 +2051,7 @@ Create `srv/lib/admission.ts`:
  * holding an HTTP request and no pipeline.
  */
 
-import { quotasConfigured } from './quota-registry';
-
-const CAPACITY_VAR = 'LLM_GATEKEEPER_MAX_LIVE_PIPELINES';
+import { gatekeeperConfig } from './gatekeeper-config';
 
 /** The door is full. Carries no interval: we do not measure pipeline length. */
 export class DoorFullError extends Error {
@@ -2004,35 +2069,18 @@ export interface AdmissionHandle {
   release(): Promise<void>;
 }
 
-let capacity: number | undefined | null = null;
 let live = 0;
 const handles = new Set<AbortController>();
 
-function readCapacity(): number | undefined {
-  const raw = process.env[CAPACITY_VAR];
-  if (raw === undefined || raw.trim() === '') return undefined;
-  const n = Number(raw);
-  if (!Number.isSafeInteger(n) || n < 1) {
-    throw new Error(
-      `Invalid ${CAPACITY_VAR}: expected a positive whole number of pipelines, got ${JSON.stringify(raw)}`,
-    );
-  }
-  return n;
-}
-
+/**
+ * How many pipelines may be live at once, or nothing.
+ *
+ * Read from `gatekeeper-config`, which has already validated it — including
+ * the rule that a door without a quota is refused, since this module holds
+ * counters and has no business doing validation the startup path depends on.
+ */
 export function configuredCapacity(): number | undefined {
-  if (capacity === null) {
-    capacity = readCapacity();
-    if (capacity !== undefined && !quotasConfigured()) {
-      // The door is the front half of a guarantee whose back half is the
-      // window. Alone, it would refuse callers to protect a promise it cannot
-      // keep, and would break that promise silently.
-      throw new Error(
-        'Invalid LLM_GATEKEEPER_MAX_LIVE_PIPELINES: a door needs a quota. Set LLM_GATEKEEPER_QUOTAS as well, or unset the door — an admitted request would otherwise be ended by the first 429, which is the failure the door exists to prevent.',
-      );
-    }
-  }
-  return capacity;
+  return gatekeeperConfig().maxLivePipelines;
 }
 
 export function livePipelines(): number {
@@ -2068,23 +2116,8 @@ export function abortAllForShutdown(reason = 'shutdown'): void {
   for (const controller of handles) controller.abort(new Error(reason));
 }
 
-/**
- * One line for the startup log, and the call that validates the door.
- *
- * `configuredCapacity` is lazy because `admit` is on the hot path; reading it
- * once here is what turns "malformed means refuse to start" from a claim into
- * the behaviour.
- */
-export function describeDoor(): string {
-  const max = configuredCapacity();
-  return max === undefined
-    ? 'Live-pipeline door: none configured'
-    : `Live-pipeline door: ${max} at once, across every channel`;
-}
-
 /** Test seam. */
 export function clearAdmission(): void {
-  capacity = null;
   live = 0;
   handles.clear();
 }
@@ -2178,13 +2211,21 @@ Create `test/unit/admission-register.test.ts`:
 ```ts
 const load = () => {
   jest.resetModules();
+  const config = require('../../srv/lib/gatekeeper-config') as typeof import('../../srv/lib/gatekeeper-config');
+  config.clearGatekeeperConfig();
   const mod = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
   mod.clearAdmission();
   return mod;
 };
 
+beforeEach(() => {
+  // A door requires a quota, so a suite that opens one configures one.
+  process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 100 } });
+});
+
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+  delete process.env.LLM_GATEKEEPER_QUOTAS;
   jest.resetModules();
 });
 
