@@ -36,6 +36,7 @@ import {
   sessionIsLive,
   shutdownGatekeeper,
 } from './lib/gatekeeper';
+import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { needsSapConnection } from './lib/mcp-request';
 import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -617,6 +618,7 @@ cds.on('bootstrap', (app: Application) => {
 // server from listening on port 8080, causing CF health check timeout (60s).
 // The 503 readiness guard in openai-handler.ts protects against requests before ready.
 cds.on('served', () => {
+  installThrottleObserver();
   const log = cds.log('agent-manager/init');
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',

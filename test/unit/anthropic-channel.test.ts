@@ -31,6 +31,10 @@ import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import {
+  clearGatekeeperMetrics,
+  gatekeeperSnapshot,
+} from '../../srv/lib/gatekeeper-metrics';
 import { McpUnavailableError } from '../../srv/lib/mcp-outage';
 import {
   anthropicDoorRefusal,
@@ -51,6 +55,7 @@ function configure(live?: number, queue?: number) {
   else process.env.LLM_GATEKEEPER_QUEUE_LENGTH = String(queue);
   clearGatekeeperConfig();
   gatekeeper.resetGatekeeperForTest();
+  clearGatekeeperMetrics();
 }
 
 const body = (stream = false) => ({
@@ -139,7 +144,9 @@ describe('/v1/messages at the door', () => {
 
 describe('a closed destination', () => {
   it('refuses before the agent is resolved, with a true Retry-After', async () => {
-    configure();
+    // A configured door so the refusal-count assertion below is meaningful
+    // (not just the vacuous `{ configured: false }` of no door at all).
+    configure(2);
     harness.closedDestination = 'DEST';
     harness.retryAfterSeconds = 42;
 
@@ -159,6 +166,15 @@ describe('a closed destination', () => {
     expect(harness.events).not.toContain('getSmartAgent');
     expect(harness.events).not.toContain('pipeline');
     expect(harness.events).toContain('safeStop');
+    // Counted in its own scope, not the door's: an unreachable SAP system is
+    // not the same question as a full container.
+    const snap = gatekeeperSnapshot();
+    expect(snap.destinations).toContainEqual(
+      expect.objectContaining({ name: 'DEST', refusals: 1 }),
+    );
+    expect(snap.door).toMatchObject({
+      refusals: { session_busy: 0, capacity: 0, retention: 0 },
+    });
   });
 
   it('omits Retry-After when no probe is scheduled', async () => {

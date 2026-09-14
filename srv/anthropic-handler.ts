@@ -33,6 +33,7 @@ import {
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import {
@@ -147,6 +148,7 @@ export async function handleAnthropicMessages(
   // `getSmartAgent` on an unreachable destination throws its own
   // `destination_unreachable` 503 below, with no `Retry-After`.
   if (isDestinationClosed(destination)) {
+    recordDestinationRefusal(destination);
     await safeStop(requestConnection);
     const seconds = retryAfterForDestination(destination);
     res.writeHead(503, {

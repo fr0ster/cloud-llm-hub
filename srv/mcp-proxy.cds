@@ -27,6 +27,8 @@ type ProxyResult {
 type HealthStatus {
   status     : String;
   timestamp  : DateTime;
+  /** JSON: the four gatekeeper scopes — door, retention, destinations, throttling. */
+  gatekeeper : LargeString;
 }
 
 type DestinationProbeResult {

@@ -52,6 +52,10 @@ import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import {
+  clearGatekeeperMetrics,
+  gatekeeperSnapshot,
+} from '../../srv/lib/gatekeeper-metrics';
+import {
   destinationClosedText,
   executeStepDoorRefusal,
 } from '../../srv/lib/throttle-surfacing';
@@ -64,6 +68,7 @@ function configure(live?: number, queue?: number) {
   else process.env.LLM_GATEKEEPER_QUEUE_LENGTH = String(queue);
   clearGatekeeperConfig();
   gatekeeper.resetGatekeeperForTest();
+  clearGatekeeperMetrics();
 }
 
 const req = { headers: { 'x-sap-destination': 'DEST' } } as unknown as Request;
@@ -156,7 +161,9 @@ describe('absent means today', () => {
 
 describe('a closed destination', () => {
   it('refuses before the agent is resolved, with the interval in the text', async () => {
-    configure();
+    // A configured door so the refusal-count assertion below is meaningful
+    // (not just the vacuous `{ configured: false }` of no door at all).
+    configure(2);
     harness.closedDestination = 'DEST';
     harness.retryAfterSeconds = 42;
 
@@ -170,6 +177,15 @@ describe('a closed destination', () => {
     expect(harness.events).not.toContain('resolveDestinationSapConfig');
     expect(harness.events).not.toContain('getSmartAgent');
     expect(harness.events).not.toContain('pipeline');
+    // Counted in its own scope, not the door's: an unreachable SAP system is
+    // not the same question as a full container.
+    const snap = gatekeeperSnapshot();
+    expect(snap.destinations).toContainEqual(
+      expect.objectContaining({ name: 'DEST', refusals: 1 }),
+    );
+    expect(snap.door).toMatchObject({
+      refusals: { session_busy: 0, capacity: 0, retention: 0 },
+    });
   });
 
   it('omits the interval sentence when no probe is scheduled', async () => {

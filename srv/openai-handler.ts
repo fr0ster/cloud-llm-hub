@@ -39,6 +39,7 @@ import { getAvailableModels } from './lib/ai-core-models';
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { turnOwner } from './lib/session-history-rag';
@@ -498,6 +499,7 @@ export async function handleChatCompletions(
   // RAG stores are not yet swapped in at this point in the handler, so there is
   // nothing for `restoreRagStores()` to undo here.
   if (isDestinationClosed(destAfter)) {
+    recordDestinationRefusal(destAfter);
     await safeStop(requestConnection);
     const seconds = retryAfterForDestination(destAfter);
     res.writeHead(503, {

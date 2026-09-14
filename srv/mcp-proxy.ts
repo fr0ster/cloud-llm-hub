@@ -1,6 +1,7 @@
 import cds, { type Request, type Service } from '@sap/cds';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import { gatekeeperSnapshot } from './lib/gatekeeper-metrics';
 import { maskLoginForLog } from './lib/log-mask';
 
 interface ProxyInvocation {
@@ -44,6 +45,7 @@ export default async function registerMcpProxyHandlers(
     return {
       status: 'UP',
       timestamp: now,
+      gatekeeper: JSON.stringify(gatekeeperSnapshot()),
     };
   });
 

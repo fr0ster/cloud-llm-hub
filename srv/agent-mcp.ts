@@ -42,6 +42,7 @@ import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession, theDoor } from './lib/gatekeeper';
+import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
@@ -170,6 +171,7 @@ export async function executeStep(
     // a connection is even built for it. No `res`/connection exist yet here;
     // the `finally` below already handles an undefined `connection`.
     if (isDestinationClosed(targetDestination)) {
+      recordDestinationRefusal(targetDestination);
       const seconds = retryAfterForDestination(targetDestination);
       const when =
         seconds !== undefined ? ` Try again in about ${seconds} seconds.` : '';
