@@ -2430,8 +2430,29 @@ where `deferredDone` is a two-line local helper returning `{ promise, resolve }`
 
 In `srv/agent-manager.ts`, inside `invokeEmbeddedTool`, register the dispatched call:
 
+**First extract the dispatch.** `invokeEmbeddedTool` currently holds its
+authorization check and its dispatch logic inline, and two tasks need to wrap
+the dispatch alone. Split it once, here, and keep the name:
+
 ```ts
-    const dispatched = runEmbeddedTool(name, args, signal);
+  /**
+   * The tool call itself, with the authorization check left behind in the
+   * caller. Extracted so the register (here) and the outage classifier
+   * (Task 9) can each wrap the dispatch without wrapping the check.
+   */
+  async function dispatchEmbeddedTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    // ... the body that follows the authorization check today, unchanged ...
+  }
+```
+
+`invokeEmbeddedTool` keeps the authorization check and then:
+
+```ts
+    const dispatched = dispatchEmbeddedTool(name, args, signal);
     // One hook, two readers: the register learns the call is in flight, and
     // RecordingMcpClient's record was opened for the same reason one line up.
     return currentAdmission()?.track(dispatched) ?? dispatched;
@@ -2825,7 +2846,7 @@ git commit -m "refactor: drop AgentService.Chat, the entrance with no door and n
 - Test: `test/unit/mcp-outage.test.ts`
 
 **Interfaces:**
-- Consumes: `classifyProbe`, `ProbeStatus` from the existing `srv/lib/probe-classifier.ts`.
+- Consumes: `ProbeStatus` from `srv/lib/probe-classifier.ts`, whose verdict `CloudSdkAbapConnection` has already written into the message, and `isMcpUnavailable` from `@mcp-abap-adt/llm-agent`.
 - Produces:
   - `export const OUTAGE_STATUSES: ReadonlySet<ProbeStatus>`
   - `export function asOutage(error: unknown, destination: string): McpUnavailableError | undefined` — the connector's failure, classified, or nothing
@@ -2834,14 +2855,15 @@ git commit -m "refactor: drop AgentService.Chat, the entrance with no door and n
   - `export function describeCause(error: unknown): string`
   - `export const outageClassifier: IMcpFailureClassifier`
 
-**The connector already catches it, and already classifies it.** When the SAP
-system goes away it is the connection layer that sees the failure — a tunnel
-timeout, no Cloud Connector registration, a DNS or network error — and
-`srv/lib/probe-classifier.ts` has been reading those for some time, for
-`ProbeDestination` and for the `destination_unreachable` answer both chat
-handlers already give. Re-deriving unreachability here from a fresh list of
-substrings would be a second, worse copy of a classifier that already knows
-SAP's vocabulary, and the two would drift.
+**The connector already catches it, classifies it, and writes the verdict
+down.** When the SAP system goes away it is the connection layer that sees the
+failure, and `CloudSdkAbapConnection` puts it through `classifyProbe` and
+appends `[tunnel_timeout]`, `[dns_or_network]` and the rest to the error's own
+message. That tag is the fact, and this task reads it. Re-deriving
+unreachability here — from a fresh list of substrings, or by calling
+`classifyProbe` a second time without the response object or the proxy type
+that the first call had — would be a worse copy of a verdict that already
+exists, and the two would disagree under exactly the conditions that matter.
 
 So this task adds no detection. It adds **preservation** — carrying a fact the
 connector already established across a boundary that drops it.
@@ -2902,6 +2924,7 @@ Create `test/unit/mcp-outage.test.ts`:
 
 ```ts
 import {
+  asOutage,
   isUnavailable,
   McpUnavailableError,
   outageClassifier,
@@ -2931,8 +2954,10 @@ describe('telling an outage from a tool that ran and failed', () => {
 });
 
 describe('asOutage — the connector decides, through the classifier we already have', () => {
-  it('marks a failure that never reached SAP', () => {
-    const err = new Error('ECONNRESET');
+  it('marks a failure the connector tagged as never having reached SAP', () => {
+    // The tag is what the connector wrote; this reads it rather than guessing
+    // again from the prose around it.
+    const err = new Error('connect ECONNRESET 10.0.0.1:44300 [tunnel_timeout]');
     const outage = asOutage(err, 'S4HANA_DEV');
     expect(outage).toBeDefined();
     expect(outage?.destination).toBe('S4HANA_DEV');
@@ -2944,18 +2969,22 @@ describe('asOutage — the connector decides, through the classifier we already 
   it('leaves an authentication failure alone, because SAP answered', () => {
     // The system is up and said no. Closing it would take a working
     // destination out of service for everyone over one caller's credentials.
-    const err = Object.assign(new Error('401 Unauthorized'), { status: 401 });
-    expect(asOutage(err, 'S4HANA_DEV')).toBeUndefined();
+    expect(asOutage(new Error('401 Unauthorized [backend_auth_failed]'), 'D')).toBeUndefined();
   });
 
   it('leaves a backend error alone, because SAP ran something', () => {
-    const err = Object.assign(new Error('500 Internal Server Error'), { status: 500 });
-    expect(asOutage(err, 'S4HANA_DEV')).toBeUndefined();
+    expect(asOutage(new Error('500 [backend_error]'), 'D')).toBeUndefined();
+  });
+
+  it('says nothing when the connector tagged nothing', () => {
+    // No tag means the connector did not classify this as a connectivity
+    // problem at all — a tool-level failure, most often.
+    expect(asOutage(new Error('object ZCL_X not found'), 'D')).toBeUndefined();
   });
 
   it('classifies for the library seam, which is async and takes an McpError', async () => {
     const { McpError } = require('@mcp-abap-adt/llm-agent') as typeof import('@mcp-abap-adt/llm-agent');
-    const down = new McpError('no response from S4HANA_DEV', 'MCP_NOT_CONNECTED');
+    const down = new McpError('no response from S4HANA_DEV', 'MCP_NO_RESPONSE');
     const feedback = new McpError('object ZCL_X not found', 'MCP_ERROR');
     await expect(outageClassifier.classify(down)).resolves.toBe('unavailable');
     await expect(outageClassifier.classify(feedback)).resolves.toBe('tool-error');
@@ -2973,12 +3002,13 @@ Expected: FAIL — module not found.
 Create `srv/lib/mcp-outage.ts`:
 
 ```ts
+import { isMcpUnavailable } from '@mcp-abap-adt/llm-agent';
 import type {
   IMcpFailureClassifier,
   McpError,
   McpFailureKind,
 } from '@mcp-abap-adt/llm-agent';
-import { classifyProbe, type ProbeStatus } from './probe-classifier';
+import type { ProbeStatus } from './probe-classifier';
 
 /**
  * The connection is gone, as distinct from a tool that ran and failed.
@@ -3030,8 +3060,16 @@ export const OUTAGE_STATUSES: ReadonlySet<ProbeStatus> = new Set([
 ]);
 
 /**
- * Read a connector failure through the existing classifier, and mark it only if
- * it means the system is gone.
+ * Read the verdict the connector already reached, and mark it only if it means
+ * the system is gone.
+ *
+ * `CloudSdkAbapConnection` classifies its own failures and appends `[status]`
+ * to the message (`srv/connections/CloudSdkAbapConnection.ts`). Reading that
+ * tag is the point: calling `classifyProbe` again from here would re-classify
+ * with fields this side does not have — the real HTTP status lives at
+ * `error.response.status`, not `error.status`, and the proxy type is not on the
+ * error at all — so the second verdict would sometimes disagree with the first,
+ * and the one with less information would win.
  *
  * The message keeps the original verbatim, which is where a real ECONNRESET or
  * "socket hang up" survives the string-only crossing described above.
@@ -3041,14 +3079,9 @@ export function asOutage(
   destination: string,
 ): McpUnavailableError | undefined {
   const message = describeCause(error);
-  const httpCode =
-    typeof (error as { status?: unknown })?.status === 'number'
-      ? ((error as { status: number }).status)
-      : 0;
-  const proxyType =
-    (error as { proxyType?: string })?.proxyType ?? 'OnPremise';
-  const { status } = classifyProbe(httpCode, message, proxyType);
-  if (!OUTAGE_STATUSES.has(status)) return undefined;
+  const tagged = /\[([a-z_]+)\]/.exec(message);
+  const status = tagged?.[1] as ProbeStatus | undefined;
+  if (!status || !OUTAGE_STATUSES.has(status)) return undefined;
   return new McpUnavailableError(destination, message, status, { cause: error });
 }
 
@@ -3079,7 +3112,13 @@ export function isUnavailable(error: unknown): boolean {
  */
 export const outageClassifier: IMcpFailureClassifier = {
   async classify(error: McpError): Promise<McpFailureKind> {
-    return isUnavailable(error) || error.code === 'MCP_NOT_CONNECTED'
+    // `isMcpUnavailable` is the library's own list — MCP_NOT_CONNECTED,
+    // MCP_TIMEOUT, MCP_TRANSPORT, MCP_NO_RESPONSE and the 4xx/5xx transport
+    // codes. Hand-checking one of them was a bug waiting to happen and did
+    // happen: `toMcpError` tests "no response" BEFORE the ECONNRESET family, so
+    // our own marker maps to MCP_NO_RESPONSE, and a classifier that accepted
+    // only MCP_NOT_CONNECTED turned every outage we raised back into feedback.
+    return isUnavailable(error) || isMcpUnavailable(error)
       ? 'unavailable'
       : 'tool-error';
   },
@@ -3104,16 +3143,23 @@ In `srv/agent-manager.ts`, inside `invokeEmbeddedTool`, put the connector's own
 failure through the classifier and rethrow only what it calls an outage:
 
 ```ts
+    // `dispatchEmbeddedTool` is the helper Task 6b extracted; this wraps the
+    // same call, so the two orders compose: register, then classify what came
+    // back out.
     try {
-      return await dispatchTool(name, args, signal);
+      return await dispatchEmbeddedTool(name, args, signal);
     } catch (err) {
       // The connector has already seen what happened; classifyProbe already
       // knows how to read it. All this does is re-raise the verdict in a form
       // that survives the wrapper's string-only return.
-      const outage = asOutage(err, destination);
+      const outage = asOutage(err, currentDestination());
       throw outage ?? err;
     }
 ```
+
+`currentDestination()` is the destination this request is bound to, read from
+the same async-local store the connection comes from — the handler's own
+variable is not in scope here.
 
 > Do not widen `OUTAGE_STATUSES`. A tool that reached SAP and was refused is
 > feedback, and closing a destination on it would take a working system out of
@@ -3350,6 +3396,8 @@ export function clearDestinationStatesForTest(): void {
 In `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`, before admission:
 
 ```ts
+  // `destAfter` in the OpenAI handler, `destination` in the Anthropic one,
+  // `targetDestination` in execute_step — use the name each file has.
   if (isDestinationClosed(destAfter)) {
     const seconds = retryAfterForDestination(destAfter);
     res.writeHead(503, {
@@ -3383,40 +3431,70 @@ receive a failure in three different shapes, and a plan that waves at them
 leaves the production path unwired while the unit tests, which call
 `closeDestination` themselves, stay green.
 
-**`srv/agent-mcp.ts`** — the `catch` around the step execution, before the
-failure text is composed and before the `finally` tears down:
+**A failure does not always arrive as a throw, and that is where an earlier
+draft of this step went wrong.** The pipeline returns a `Result`, so the
+ordinary case is `ok === false` reaching the same code that formats the answer
+— never the `catch`. Wiring only the `catch` and the stream chunk would leave
+the two most common paths silently open. And each channel names its destination
+differently, so the snippets below use the variable each file actually has.
+
+**`srv/agent-mcp.ts`** — the destination is `targetDestination`, normalised at
+`srv/agent-mcp.ts:274`. Two places:
 
 ```ts
+      // 1. the Result the executor returns
+      if (!r.ok) {
+        if (isUnavailable(r.error)) {
+          closeDestination(targetDestination, describeCause(r.error));
+        }
+        return textResult(failureText(r.error), true);
+      }
+
+      // 2. and a throw, for the paths that do not come back as a Result
       } catch (err) {
-        // The one place this channel learns a step failed. `destination` is
-        // already in scope here, resolved above from the argument or the
-        // header.
-        if (isUnavailable(err)) closeDestination(destination, describeCause(err));
+        if (isUnavailable(err)) closeDestination(targetDestination, describeCause(err));
         return textResult(failureText(err), true);
       }
 ```
 
-**`srv/openai-handler.ts` and `srv/anthropic-handler.ts`** — two places each,
-because a failure arrives either as a thrown error or as an error chunk:
+**`srv/openai-handler.ts`** — the destination is `destAfter`. Three places:
+the non-streaming `Result`, the streaming error chunk, and the `catch`.
 
 ```ts
-  // 1. the handler's own catch, around the pipeline call
-  } catch (err) {
-    if (isUnavailable(err)) closeDestination(destAfter, describeCause(err));
-    ...
+      // 1. non-streaming
+      if (!result.ok) {
+        if (isUnavailable(result.error)) {
+          closeDestination(destAfter, describeCause(result.error));
+        }
+        ...
+      }
 
-  // 2. the streaming loop, where a chunk carries the failure instead
-  if (!chunk.ok) {
-    if (isUnavailable(chunk.error)) {
-      closeDestination(destAfter, describeCause(chunk.error));
-    }
-    ...
+      // 2. streaming
+      if (!chunk.ok) {
+        if (isUnavailable(chunk.error)) {
+          closeDestination(destAfter, describeCause(chunk.error));
+        }
+        ...
+      }
+
+      // 3. thrown
+      } catch (err) {
+        if (isUnavailable(err)) closeDestination(destAfter, describeCause(err));
+        ...
 ```
 
-`destAfter` is the destination the connection was established for, already
-resolved in both handlers. `describeCause` comes from `./lib/mcp-outage`,
-added in Step 3 of this task — add it to each channel's imports alongside
-`isUnavailable`.
+**`srv/anthropic-handler.ts`** — the same three places, but the variable is
+`destination` (`srv/anthropic-handler.ts:113`); there is no `destAfter` in this
+file at all.
+
+```ts
+        if (isUnavailable(result.error)) {
+          closeDestination(destination, describeCause(result.error));
+        }
+```
+
+`describeCause` comes from `./lib/mcp-outage`, added in Step 3 of Task 9 — add
+it to each channel's imports alongside `isUnavailable` and `closeDestination`.
 
 - [ ] **Step 7: Assert the production paths are wired**
 
@@ -3433,27 +3511,36 @@ import { join } from 'node:path';
  */
 const read = (f: string) => readFileSync(join(__dirname, '../../srv', f), 'utf8');
 
-describe('every channel closes a destination it finds unreachable', () => {
-  it('closes from the step catch in agent-mcp', () => {
-    // The guard and the call in one expression, so the two cannot drift into
-    // unrelated branches and still satisfy a "both appear somewhere" check.
-    expect(read('agent-mcp.ts')).toMatch(
-      /if \(isUnavailable\(err\)\)\s*closeDestination\(\s*destination/,
-    );
-  });
+/** The destination variable each channel actually has in scope. */
+const DEST_VAR: Record<string, string> = {
+  'agent-mcp.ts': 'targetDestination',
+  'openai-handler.ts': 'destAfter',
+  'anthropic-handler.ts': 'destination',
+};
 
-  for (const file of ['openai-handler.ts', 'anthropic-handler.ts']) {
-    it(`${file} closes on a thrown failure`, () => {
+describe('every channel closes a destination it finds unreachable', () => {
+  for (const [file, dest] of Object.entries(DEST_VAR)) {
+    it(`${file} closes on a returned failure`, () => {
+      // The common path: the pipeline returns a Result, and ok === false never
+      // reaches a catch. Wiring only the catch leaves this open.
       expect(read(file)).toMatch(
-        /if \(isUnavailable\(err\)\)\s*\{?\s*closeDestination\(\s*destAfter/,
+        new RegExp(`isUnavailable\\((?:r|result)\\.error\\)[\\s\\S]{0,160}closeDestination\\(\\s*${dest}`),
       );
     });
 
-    it(`${file} closes on an error chunk too`, () => {
-      // A thrown error and an error chunk are different paths; wiring one and
-      // not the other leaves a whole transport silently open.
+    it(`${file} closes on a thrown failure`, () => {
       expect(read(file)).toMatch(
-        /isUnavailable\(chunk\.error\)[\s\S]{0,120}closeDestination\(\s*destAfter/,
+        new RegExp(`isUnavailable\\(err\\)[\\s\\S]{0,160}closeDestination\\(\\s*${dest}`),
+      );
+    });
+  }
+
+  for (const file of ['openai-handler.ts', 'anthropic-handler.ts']) {
+    it(`${file} closes on an error chunk too`, () => {
+      // Three shapes, three wirings. Covering two of them leaves a whole
+      // transport silently open.
+      expect(read(file)).toMatch(
+        new RegExp(`isUnavailable\\(chunk\\.error\\)[\\s\\S]{0,160}closeDestination\\(\\s*${DEST_VAR[file]}`),
       );
     });
   }
@@ -3478,14 +3565,22 @@ describe('an unreachable system survives the embedded transport', () => {
     const wrapper = new MCPClientWrapper({
       transport: 'embedded',
       callToolHandler: async () => {
-        throw new McpUnavailableError('S4HANA_DEV', 'ECONNRESET');
+        throw new McpUnavailableError(
+          'S4HANA_DEV',
+          'connect ECONNRESET [tunnel_timeout]',
+          'tunnel_timeout',
+        );
       },
     });
     const adapter = new McpClientAdapter(wrapper);
     const result = await adapter.callTool('ReadClass', {});
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe('MCP_NOT_CONNECTED');
+      // MCP_NO_RESPONSE, not MCP_NOT_CONNECTED: `toMcpError` tests "no
+      // response" before the ECONNRESET family, and our marker opens with it.
+      // Both are in the library's unavailable set, which is why the classifier
+      // asks that set rather than naming a code.
+      expect(result.error.code).toBe('MCP_NO_RESPONSE');
     }
   });
 
