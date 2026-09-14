@@ -92,7 +92,7 @@ the one that can be enforced today.
 The service also issues the session half rather than reading it from a header:
 between a consumer and MCP and ABAP there is no reason for a consumer to name a
 chat session, so `resolveSessionId`'s `x-session-id` and `mcp-session-id` stop
-being read for **this** purpose.
+being read at all.
 
 **But issuing is not the same as proving, and it would be dishonest to claim
 otherwise.** `clh_session` is a plain cookie — `HttpOnly; SameSite=Lax`, no
@@ -115,43 +115,37 @@ the value in the browser — `"chat-" + Date.now() + "-" + Math.random()` in
 middleware already sets for it. An API client sending its full history never had
 a chat session and still does not; each of its requests is admitted on its own.
 
-**The header itself does not disappear, and an earlier draft of this section
-wrongly said it could.** `srv/rag-handler.ts` reads the same resolver to scope a
-RAG collection to a session, and `rag-handler.test.ts` and
-`cross-user-isolation.test.ts` cover it. That use is not an identity claim: a
-session-scoped collection already lives inside one user's space
-(`srv/collection-ids.ts` keys it by user **and** session for exactly that
-reason), so a colliding id there collides only with its own author, and naming
-one is how a caller addresses its own namespace. It stays as it is.
+**And the header goes, including for RAG.** A previous draft kept
+`x-session-id` alive there and invented a second identifier beside the issued
+one, so that a session-scoped collection could still be addressed by a name the
+caller chose. That was this service handing back a job it is here to do, and
+then having to ask on every request whether the caller got the name right.
 
-The distinction is worth stating once, because the same header is doing two
-unrelated jobs: as a **namespace** inside a user's own data it is the caller's
-to choose, and as the **key that schedules work** between callers it is ours to
-issue.
+There is no need for it. A session-scoped collection is scoped to *the
+session*, and under this design every request has one, issued by us. The caller
+says `scope: 'session'` and we already know which; naming it adds nothing except
+a value to validate and a way to collide. `srv/collection-ids.ts` keeps keying
+by user and session as it does today — the id in that key is simply always
+ours now.
 
-**Which means two identifiers where the code has one, and that is the part the
-plan has to build.** Today a request carries a single session id: the handler
-puts it into the request scope with `runWithSessionId`, and
-`rag-tool-dispatcher` reads it back through `getRequestSessionId` — so with one
-value there is no way for the door to key on ours while a RAG tool sees the
-caller's. One of the two contracts would silently lose.
+Nothing outside loses a capability. The chat UI is the only client creating
+session-scoped collections, and it has the cookie; it stops sending the header
+it invents in the browser. `srv/rag-handler.ts` and `srv/server.ts` carry error
+messages naming the header, and the tests in `rag-handler.test.ts` and
+`cross-user-isolation.test.ts` address collections through it — all of which
+move to the issued session, which is a change to how those tests arrange
+themselves and not to what they assert.
 
-So the request carries both, named for what they do:
+The one case that genuinely changes is a stateless API client asking for
+session scope across two requests: it gets a different session each time and
+cannot reach what it made. That is the honest answer rather than a regression.
+Session scope means *until this session ends*, and a caller that keeps no
+session is asking for something it has no way to hold. User scope is what it
+wants, and it is already there.
 
-| | issued by | used for |
-|---|---|---|
-| **conversation id** | the service | the door's key, the history store, and `sessionStore`'s half of `${userId}\u0000<id>` |
-| **RAG namespace id** | the caller, via `x-session-id` | scoping a session-scoped collection, and nothing else |
-
-The request scope (`srv/request-session.ts`) grows the second alongside the
-first, and `rag-tool-dispatcher` reads the namespace one rather than the
-conversation one. Where the caller supplied nothing, the namespace id is
-absent — which is what a session-scoped collection request without a session
-already means today, and it already answers `400`.
-
-The slot is keyed on the conversation id together with the authenticated user,
-and the store keys on `${userId}\u0000<conversation id>` as it already does, so
-the two cannot drift apart.
+The slot is keyed on that session together with the authenticated user, and
+`sessionStore` keys on `${userId}\u0000${sessionId}` as it already does, so the
+two cannot drift apart.
 
 So live sessions and live pipelines are the same number by construction rather
 than by assertion. `execute_step` needs no special case: each of its calls
@@ -555,23 +549,22 @@ These properties, because they are what this shape gets wrong.
   five: the second waits for the first rather than taking a second slot.
   Written with capacity free, because a test that fills the door first would
   pass on the global queue alone and prove nothing about the key.
-- **A chat request cannot name its session through a header.** One carrying
-  `x-session-id` is admitted as a fresh session.
+- **A request cannot name its session.** One carrying `x-session-id` or
+  `mcp-session-id` is admitted as a fresh session, and the header reaches
+  nothing — not the door, not the history, not a collection's scope.
 - **Two users cannot collide, whatever they send.** The same session id from
   two authenticated users — in headers, in cookies, anywhere — gives two
   independent sessions and neither waits for the other. This is the guarantee
   that is enforced; the issued identifier is convenience on top of it.
 - **A caller colliding with itself is serialised, not broken.** The same id
   twice from one user runs one after the other and both complete.
-- **The RAG API still takes one.** A session-scoped collection addressed by
-  `x-session-id` resolves exactly as it does today, and two users sending the
-  same value still reach different collections. Asserted alongside the above,
-  because the two live one line apart and the obvious tidy-up breaks the second.
-- **Both identifiers reach where they belong, in one request.** A chat request
-  carrying `x-session-id: rag-A` is admitted and stores its history under the
-  conversation id we issued, while a RAG tool the agent calls during that same
-  request sees `rag-A`. One value cannot satisfy both, so this is the test that
-  fails if the plan threads only one.
+- **A session-scoped collection follows the issued session.** Created in one
+  request and read in the next from the same browser session, it resolves;
+  created under one user and addressed by another, it does not. The header is
+  not involved in either.
+- **Two users cannot reach each other's session collections**, which is what
+  `cross-user-isolation.test.ts` already asserts and must keep asserting once
+  the session is ours rather than theirs.
 - **The browser's chat session survives without the header.** The chat UI,
   sending only the cookie, keeps its history across turns exactly as before.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
