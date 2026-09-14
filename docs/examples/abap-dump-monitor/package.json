@@ -85,5 +85,9 @@
       "/node_modules/",
       "<rootDir>/gen/"
     ]
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "unrs-resolver@1.12.2": true
   }
 }

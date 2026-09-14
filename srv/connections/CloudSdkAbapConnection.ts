@@ -135,8 +135,23 @@ export class CloudSdkAbapConnection implements AbapConnection {
     // so it is never grounds for a logoff.
     const serverSession = this.hasServerIssuedSession();
     if (!this.wentStateful && !this.generatedSapSessionId && !serverSession) {
+      // Nothing to give back that we can NAME. Logged rather than silent: a
+      // session the server opened for us whose cookie never reached the jar
+      // lands here, and it is indistinguishable from a genuinely session-less
+      // connection except by this line plus what SM05 shows.
+      logger.info('Session release: nothing to release', {
+        sessionId: this.sessionId?.substring(0, 8),
+        cookies: [...this.cookieJar.keys()].join(', ') || 'none',
+      });
       return;
     }
+    logger.info('Session release', {
+      sessionId: this.sessionId?.substring(0, 8),
+      wentStateful: this.wentStateful,
+      mintedSessionId: !!this.generatedSapSessionId,
+      serverSession,
+      cookies: [...this.cookieJar.keys()].join(', ') || 'none',
+    });
     const wasStateful = this.wentStateful;
     this.wentStateful = false;
     this.sessionType = 'stateless';
@@ -242,7 +257,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
     cookie: string | null,
   ): Promise<void> {
     try {
-      await executeHttpRequest(
+      const response = await executeHttpRequest(
         { destinationName: this.destinationName },
         {
           method: 'GET',
@@ -255,8 +270,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
           },
         },
       );
-      logger.debug('Told the server the session is finished', {
+      // The STATUS is the only thing that distinguishes a logoff SAP acted on
+      // from one that never landed — `/sap/public/bc/icf/logoff` inactive in
+      // SICF answers 404, and a 200 on an HTML logon page means the cookie was
+      // not honoured. Without this line the two look identical in the log.
+      logger.info('Told the server the session is finished', {
         sessionId: this.sessionId?.substring(0, 8),
+        status: response?.status,
       });
     } catch (err) {
       logger.warn('ICF logoff (session release) failed', {

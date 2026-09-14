@@ -29,8 +29,12 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 }));
 
 const mockConnect = jest.fn();
+const mockCloseSession = jest.fn(async () => undefined);
+const mockReset = jest.fn();
 const mockCreateConnection = jest.fn((_opts: Record<string, unknown>) => ({
   connect: mockConnect,
+  closeSession: mockCloseSession,
+  reset: mockReset,
 }));
 jest.mock('../../srv/connections/connectionFactory', () => ({
   createConnection: (opts: Record<string, unknown>) =>
@@ -74,6 +78,8 @@ function makeRes(): FakeRes {
 beforeEach(() => {
   mockResolve.mockReset();
   mockConnect.mockReset().mockResolvedValue(undefined);
+  mockCloseSession.mockClear();
+  mockReset.mockClear();
   mockCreateConnection.mockClear();
   mockSetRequestConnection.mockReset();
 });
@@ -204,5 +210,24 @@ describe('establishRequestConnection', () => {
     // connect() was attempted and rejected → no usable connection returned.
     expect(mockConnect).toHaveBeenCalledTimes(1);
     expect(result.connection).toBeUndefined();
+  });
+
+  test('connect() failure releases the session the attempt opened', async () => {
+    mockResolve.mockResolvedValue({
+      destinationName: 'S4HANA_E19',
+      sapConfig: { url: 'http://onprem', authType: 'basic' },
+      proxyType: 'OnPremise',
+      authenticationType: 'BasicAuthentication',
+    });
+    mockConnect.mockRejectedValue(new Error('401 Unauthorized'));
+    await establishRequestConnection(
+      makeReq({ 'x-sap-login': 'BAD', 'x-sap-password': 'wrong' }),
+      makeRes() as unknown as Response,
+      'S4HANA_E19',
+    );
+    // The connection never reaches the caller, so this is the only chance to
+    // hand back whatever the CSRF fetch (which retries) already logged on.
+    expect(mockCloseSession).toHaveBeenCalledTimes(1);
+    expect(mockReset).toHaveBeenCalledTimes(1);
   });
 });

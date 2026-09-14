@@ -88,6 +88,11 @@ export async function establishRequestConnection(
   // success and the failure logs (and the auth config + dump principal) key off
   // this single effective-auth flag rather than the raw x-sap-login header.
   const usedBasicOverride = !!(sapLogin && sapPassword);
+  // Declared out here so the catch can give back a session that connect()
+  // already opened before it failed — the CSRF fetch retries, so a failed
+  // connect can be several logons, and after the 401 below nobody else holds
+  // this connection.
+  let conn: ReturnType<typeof createConnection> | undefined;
 
   try {
     const resolved = await resolveDestinationSapConfig(
@@ -125,7 +130,7 @@ export async function establishRequestConnection(
       sapConfig.client = sapClient;
     }
 
-    const conn = createConnection({
+    conn = createConnection({
       sapConfig,
       destinationName: resolved.destinationName,
     });
@@ -164,6 +169,9 @@ export async function establishRequestConnection(
 
     return { connection, handled: false, dumpScope };
   } catch (connErr) {
+    // Release before reporting: this connection is about to be dropped, and a
+    // session it opened would otherwise sit in SM05 until it times out.
+    await safeStop(conn as unknown as IAbapConnection | undefined);
     const err = connErr instanceof Error ? connErr : new Error(String(connErr));
     const errWithCode = err as CredentialError;
     const status = errWithCode.statusCode ?? 401;

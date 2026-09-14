@@ -31,7 +31,7 @@ import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
-import { createMCPServerForRequest } from './mcp-manager';
+import { createMCPServerForRequest, requiresSapSession } from './mcp-manager';
 import {
   clearSession,
   handleChatCompletions,
@@ -130,8 +130,13 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
       });
     }
 
-    // Create NEW MCP server for this request (per-request architecture)
-    const result = await createMCPServerForRequest(req);
+    // Create NEW MCP server for this request (per-request architecture).
+    // Only a tools/call may reach ABAP; initialize / notifications / tools/list
+    // / ping are answered locally and must not log on — an MCP client pings on a
+    // ~10 s cadence, and a logon per ping is a session per ping (SM05).
+    const result = await createMCPServerForRequest(req, {
+      needsSapSession: requiresSapSession(body),
+    });
     cleanup = result.cleanup;
 
     log.debug('MCP server created for request', {

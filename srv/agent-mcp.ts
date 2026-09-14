@@ -165,7 +165,15 @@ async function buildConnectionForDestination(
     sapConfig,
     destinationName: resolved.destinationName,
   });
-  await conn.connect();
+  try {
+    await conn.connect();
+  } catch (err) {
+    // The caller's `finally` can only safeStop a connection this function
+    // RETURNED — throwing here would strand whatever the CSRF fetch (which
+    // retries, so possibly several logons) already opened. Give it back first.
+    await safeStop(conn as unknown as IAbapConnection);
+    throw err;
+  }
   return {
     connection: conn as unknown as IAbapConnection,
     resolved,

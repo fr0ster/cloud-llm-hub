@@ -11,6 +11,7 @@ import {
   HEADER_SAP_DESTINATION,
   HEADER_SAP_LOGIN,
   HEADER_SAP_PASSWORD,
+  type IAbapConnection,
 } from '@mcp-abap-adt/interfaces';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
@@ -28,6 +29,7 @@ import { logErrorSafely } from './lib/errorUtils';
 import { resolveExposition } from './lib/exposition';
 import { maskLoginForLog } from './lib/log-mask';
 import { loggerAdapter } from './lib/logger';
+import { safeStop } from './lib/request-connection';
 
 interface SapContext {
   sapConfig: SapConfig;
@@ -223,6 +225,41 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
 /**
  * Result of creating MCP server for a single request
  */
+/**
+ * Does this JSON-RPC call need a live SAP session?
+ *
+ * Only `tools/call` reaches ABAP. `initialize`, `notifications/*`, `tools/list`,
+ * `ping` and the resource/prompt listings are protocol chatter answered entirely
+ * from local state — and a connected MCP client sends them on a ~10 s cadence.
+ * Opening a connection for those means an authenticated
+ * `GET /sap/bc/adt/discovery` (see `CloudSdkAbapConnection.connect`), which is a
+ * logon, which is one SM05 session that nothing then uses.
+ *
+ * Unparsable or non-JSON-RPC bodies answer `false`: nothing that reaches ABAP
+ * can get here without a `tools/call` method, so guessing costs a session while
+ * being wrong costs nothing — `makeAdtRequest` fetches its own CSRF token when a
+ * write actually needs one.
+ */
+export function requiresSapSession(body: unknown): boolean {
+  return (
+    !!body &&
+    typeof body === 'object' &&
+    (body as { method?: unknown }).method === 'tools/call'
+  );
+}
+
+export interface McpServerOptions {
+  /**
+   * Whether to `connect()` the connection before handing the server back.
+   *
+   * `false` skips the logon entirely — the connection object is still built and
+   * injected, so a later ABAP call on it still works, it just pays for its own
+   * session when it happens. Defaults to `true` so an existing caller that says
+   * nothing keeps the eager credential validation.
+   */
+  needsSapSession?: boolean;
+}
+
 export interface McpServerResult {
   /** EmbeddableMcpServer instance */
   server: EmbeddableMcpServer;
@@ -263,8 +300,10 @@ export interface McpServerResult {
  */
 export async function createMCPServerForRequest(
   req: Request,
+  options: McpServerOptions = {},
 ): Promise<McpServerResult> {
   const log = cds.log('mcp-manager');
+  const needsSapSession = options.needsSapSession ?? true;
 
   try {
     const sapContext = await extractSapContext(req);
@@ -296,17 +335,29 @@ export async function createMCPServerForRequest(
       sapConfig,
       destinationName: destination?.destinationName,
     });
-    try {
-      await connection.connect();
-    } catch (connectErr) {
-      const error = new Error(
-        `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
-          connectErr instanceof Error ? connectErr.message : String(connectErr)
-        }`,
-      ) as Error & { statusCode?: number; code?: string };
-      error.statusCode = 401;
-      error.code = 'SAP_CREDENTIALS_FAILED';
-      throw error;
+    // Protocol chatter (initialize / notifications / tools/list / ping) never
+    // reaches ABAP, so it must not log on: connect() is a logon and a logon is a
+    // session. See requiresSapSession.
+    if (needsSapSession) {
+      try {
+        await connection.connect();
+      } catch (connectErr) {
+        // A failed connect is not a free failure: connect() fetches CSRF with
+        // retries, so the attempt may already have logged on one or more times.
+        // Give those sessions back before the error leaves — after this throw
+        // nobody holds the connection any more, and `cleanup` does not exist yet.
+        await safeStop(connection as unknown as IAbapConnection);
+        const error = new Error(
+          `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
+            connectErr instanceof Error
+              ? connectErr.message
+              : String(connectErr)
+          }`,
+        ) as Error & { statusCode?: number; code?: string };
+        error.statusCode = 401;
+        error.code = 'SAP_CREDENTIALS_FAILED';
+        throw error;
+      }
     }
 
     log.debug('Connection created', {
