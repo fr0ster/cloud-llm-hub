@@ -84,14 +84,30 @@ is a claim and not a mechanism — with two slots free, two concurrent requests
 carrying the same session id would both be admitted, both run, and both read
 and write the same history.
 
-**And the identity the door keys on is ours, not the caller's.** The user comes
-from the authenticated token and never from a header, so no caller can pass for
-another whatever it sends; what a caller-chosen id can still do is collide, and
-a colliding id decides whose work waits for whose. Between a consumer and MCP
-and ABAP there is no reason for the consumer to name a chat session at all, so
-it stops: `resolveSessionId`'s `x-session-id` and `mcp-session-id` are not read
-for **this** purpose, and the service issues the identity it keys on, bound to
-the authenticated user.
+**The identity the door keys on is the authenticated user with the session.**
+The user comes from the token and never from anything the caller writes, so no
+caller can pass for another whatever it sends. That is the guarantee, and it is
+the one that can be enforced today.
+
+The service also issues the session half rather than reading it from a header:
+between a consumer and MCP and ABAP there is no reason for a consumer to name a
+chat session, so `resolveSessionId`'s `x-session-id` and `mcp-session-id` stop
+being read for **this** purpose.
+
+**But issuing is not the same as proving, and it would be dishonest to claim
+otherwise.** `clh_session` is a plain cookie — `HttpOnly; SameSite=Lax`, no
+signature, no registry of what was issued (`srv/session-id.ts`) — so a caller
+can send any value in it as easily as in a header. Dropping the headers removes
+the obvious way to aim at somebody; it does not make the identifier
+unforgeable.
+
+What makes that harmless is the other half of the key. With the user taken from
+the token, a chosen session id can only collide with its own author's other
+requests, which serialises that caller against itself and nobody else. Making
+the identifier itself unforgeable would need a signed cookie or a server-side
+record of what was issued — real work, with key management or eviction of its
+own, and worth doing only if something later depends on the id being
+unguessable. Nothing here does.
 
 Our own chat UI is the only client sending that header for chat, and it invents
 the value in the browser — `"chat-" + Date.now() + "-" + Math.random()` in
@@ -138,10 +154,19 @@ a script in a loop, and every waiter is an HTTP request held open. So the length
 bounds all waiting, whatever it is waiting for, and the eleventh caller is
 refused whether it wants a free slot or a busy session.
 
-Order is arrival order, with no exception for either kind. A caller waiting on a
-busy session is not served before one waiting on capacity, and both are served
-before anyone who arrived later: two rules would need a reason, and there is
-none.
+**Order is arrival order among those who can be served.** Strict arrival order
+with no exception sounds fairer and is worse: with a capacity of two, sessions A
+and C running, a second request for A first in the queue and a fresh B behind
+it, C finishing frees a slot that A's waiter cannot take — A is still busy — and
+that B is forbidden to take, because B arrived later. A slot sits empty while
+someone is waiting for it, and if A hangs, B waits for ever.
+
+So the dispatcher takes the **oldest eligible** waiter: one whose session is
+free, or which needs no particular session. A waiter blocked on a busy session
+is passed over for as long as that session is busy and keeps its place
+otherwise, so it is never starved by later arrivals that are also eligible. Two
+rules would need a reason; this is one rule — first come, first served, among
+those it is possible to serve.
 
 **The queue's depth is the pressure signal.** Not a second configured number:
 when the queue passes three quarters of its length the service is running out of
@@ -430,6 +455,12 @@ sessions may be held; it does not shorten how long each is held. A deployment
 whose memory is spent on idle history can also lower the TTL, which is a
 separate knob and a separate decision.
 
+**The session identifier is not unforgeable.** The cookie carrying it is
+unsigned and there is no record of what was issued, so a caller can present a
+value we never gave it. Harmless as long as the key's other half is the
+authenticated user, and it is — but anything built later that treats the
+session id as a secret would be building on sand.
+
 **A platform outage looks like many system outages.** When the connectivity
 service fails, every on-premise destination closes on its own account. Correct
 per destination and useless as a diagnosis; the shared cause is invisible.
@@ -480,6 +511,13 @@ These properties, because they are what this shape gets wrong.
 - **A repeated session id cannot build a backlog.** With capacity to spare, ten
   requests carrying one busy session's identity fill the same queue and the
   eleventh is refused — not held in a second, unbounded line.
+- **A blocked waiter does not hold the queue.** Capacity two, sessions A and C
+  running, a second request for A queued first and a fresh B second: when C
+  ends, B is admitted rather than the slot sitting empty behind A. And with A
+  never finishing, B is still served — the case that turns strict arrival order
+  into a deadlock with capacity to spare.
+- **And it is not starved either.** Once A finishes, its waiter goes before
+  anyone who arrived after it.
 - **Three quarters is reported before anyone is refused.** The high-water mark
   crosses first.
 - **A full door refuses without a number.** No `Retry-After`, no seconds in the
@@ -496,9 +534,14 @@ These properties, because they are what this shape gets wrong.
   five: the second waits for the first rather than taking a second slot.
   Written with capacity free, because a test that fills the door first would
   pass on the global queue alone and prove nothing about the key.
-- **A caller cannot name the session the door keys on.** A chat request
-  carrying `x-session-id` is admitted as a fresh session, and two callers
-  sending the same value do not wait for each other.
+- **A chat request cannot name its session through a header.** One carrying
+  `x-session-id` is admitted as a fresh session.
+- **Two users cannot collide, whatever they send.** The same session id from
+  two authenticated users — in headers, in cookies, anywhere — gives two
+  independent sessions and neither waits for the other. This is the guarantee
+  that is enforced; the issued identifier is convenience on top of it.
+- **A caller colliding with itself is serialised, not broken.** The same id
+  twice from one user runs one after the other and both complete.
 - **The RAG API still takes one.** A session-scoped collection addressed by
   `x-session-id` resolves exactly as it does today, and two users sending the
   same value still reach different collections. Asserted alongside the above,
