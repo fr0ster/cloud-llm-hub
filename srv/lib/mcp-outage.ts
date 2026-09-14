@@ -18,22 +18,25 @@ export class McpUnavailableError extends Error {
   readonly code = 'mcp_unavailable';
   constructor(
     readonly destination: string,
-    reason: string,
+    readonly reason: string,
     readonly status: ProbeStatus,
     options?: { cause?: unknown },
   ) {
-    // The wording is not cosmetic. On the embedded transport the wrapper
-    // catches this and returns only `error.message` as a string — the class,
-    // the code and the cause are all dropped — and `McpClientAdapter` escalates
-    // a returned error only when `toMcpError` recognises it as
-    // MCP_NOT_CONNECTED or MCP_NO_RESPONSE. Anything else stays ordinary tool
-    // feedback and the classifier is never consulted at all.
-    //
-    // So the message carries two things: the underlying cause verbatim, which
-    // is where a real ECONNRESET, EHOSTUNREACH or "socket hang up" survives,
-    // and the phrase "no response from", which is both true of a system we
-    // could not reach and one of the signatures that mapper knows.
-    super(`no response from SAP system ${destination}: ${reason}`, options);
+    // The wording IS the mechanism, and it must stay a FIXED shape with no raw
+    // text in it. On the embedded transport the wrapper's catch keeps only
+    // `error.message` (a string — the class, the code and the cause are all
+    // dropped) and hands it to `toMcpError`, which checks '-32001' / 'etimedout'
+    // / 'timed out' BEFORE it checks 'no response'. A raw reason like "connect
+    // ETIMEDOUT ..." would make that earlier check win and map to MCP_TIMEOUT —
+    // a code the adapter's returned-error gate does NOT escalate (only
+    // MCP_NOT_CONNECTED / MCP_NO_RESPONSE do) — so the failure would quietly
+    // stay tool feedback. None of our `ProbeStatus` values contain any of
+    // `toMcpError`'s earlier-checked substrings, so this form always maps to
+    // MCP_NO_RESPONSE. The destination name is kept OUT of the message for the
+    // same reason: it is caller-supplied and could itself contain one of those
+    // substrings. The raw reason and the destination both survive — on `reason`
+    // and `destination`, and on `cause` — just not in `message`.
+    super(`no response from SAP system (outage: ${status})`, options);
     this.name = 'McpUnavailableError';
   }
 }
@@ -56,6 +59,37 @@ export const OUTAGE_STATUSES: ReadonlySet<ProbeStatus> = new Set([
 ]);
 
 /**
+ * Every status `classifyProbe` can produce — not only the outage ones —
+ * needed only to recognise a bracketed token AS a status tag, distinct from
+ * some other bracketed thing (a trace id, a correlation id) sharing the
+ * `[lowercase_word]` shape earlier in the same message.
+ */
+const ALL_PROBE_STATUSES: ReadonlySet<string> = new Set([
+  'ok',
+  'tunnel_timeout',
+  'no_scc_registration',
+  'wrong_location_id',
+  'backend_auth_failed',
+  'backend_reachable_path_error',
+  'backend_error',
+  'dns_or_network',
+  'unknown',
+]);
+
+/**
+ * The connector can append other `[bracketed]` text before its own tag (a
+ * trace id, say), so take the LAST bracketed token that is an actual
+ * `ProbeStatus` name, not simply the first bracket found.
+ */
+function lastKnownProbeStatus(message: string): ProbeStatus | undefined {
+  const tags = Array.from(message.matchAll(/\[([a-z_]+)\]/g), (m) => m[1]);
+  for (let i = tags.length - 1; i >= 0; i--) {
+    if (ALL_PROBE_STATUSES.has(tags[i])) return tags[i] as ProbeStatus;
+  }
+  return undefined;
+}
+
+/**
  * Read the verdict the connector already reached, and mark it only if it means
  * the system is gone.
  *
@@ -67,16 +101,15 @@ export const OUTAGE_STATUSES: ReadonlySet<ProbeStatus> = new Set([
  * error at all — so the second verdict would sometimes disagree with the first,
  * and the one with less information would win.
  *
- * The message keeps the original verbatim, which is where a real ECONNRESET or
- * "socket hang up" survives the string-only crossing described above.
+ * The raw message becomes `reason` (and `cause`) on the resulting error, not
+ * `message` — see the constructor comment for why `message` must stay fixed.
  */
 export function asOutage(
   error: unknown,
   destination: string,
 ): McpUnavailableError | undefined {
   const message = describeCause(error);
-  const tagged = /\[([a-z_]+)\]/.exec(message);
-  const status = tagged?.[1] as ProbeStatus | undefined;
+  const status = lastKnownProbeStatus(message);
   if (!status || !OUTAGE_STATUSES.has(status)) return undefined;
   return new McpUnavailableError(destination, message, status, {
     cause: error,
@@ -153,6 +186,52 @@ export const outageClassifier: IMcpFailureClassifier = {
     return isOutageError(error) ? 'unavailable' : 'tool-error';
   },
 };
+
+/** Join an MCP tool result's `content` down to plain text, whatever shape it
+ *  comes in — a bare string, or the standard `[{ type: 'text', text }, ...]`
+ *  array `@mcp-abap-adt/lib`'s `return_error` produces. Anything else yields
+ *  `''`, which `outageFromToolResult` treats as "no tag to find". */
+function extractResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) =>
+        c &&
+        typeof c === 'object' &&
+        typeof (c as { text?: unknown }).text === 'string'
+          ? (c as { text: string }).text
+          : '',
+      )
+      .join(' ');
+  }
+  return '';
+}
+
+/**
+ * Most ABAP handlers never throw. `@mcp-abap-adt/lib`'s `return_error` (274 of
+ * 326 handlers route through it) catches the connector's error and RETURNS
+ * `{ isError: true, content: [{ type: 'text', text }] }` — a successful
+ * dispatch as far as `invokeEmbeddedTool` is concerned, so `asOutage` on a
+ * thrown error never runs and the connector's `[status]` tag, still present in
+ * `text`, is never read.
+ *
+ * This reads the same tag out of a RETURNED result instead of a thrown one.
+ * Only an `isError` result is even considered — a successful result has
+ * nothing to classify — and only one whose text carries a recognised tag
+ * becomes an outage; an `isError` result without one (a 403, a lock, a
+ * "currently editing") is left as the tool feedback it is.
+ */
+export function outageFromToolResult(
+  result: unknown,
+  destination: string,
+): McpUnavailableError | undefined {
+  if (typeof result !== 'object' || result === null) return undefined;
+  const isError = (result as { isError?: unknown }).isError;
+  if (isError !== true) return undefined;
+  const text = extractResultText((result as { content?: unknown }).content);
+  if (!text) return undefined;
+  return asOutage(new Error(text), destination);
+}
 
 /**
  * A short reason for a log line or a closed-destination record.

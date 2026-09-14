@@ -43,6 +43,7 @@ function makeChainableBuilder() {
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
   builder.withDagCoordinator = chainable(withDagCoordinator);
+  builder.withMcpFailureClassifier = chainable(jest.fn());
   builder.build = buildMock;
   return builder;
 }

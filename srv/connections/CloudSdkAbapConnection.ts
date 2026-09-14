@@ -1071,9 +1071,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
         const looksTunnelRelated =
           httpCode >= 500 ||
           /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage) ||
-          // The plain shapes of a host that is not there. classifyProbe already
-          // reads these as dns_or_network; it was simply never asked.
-          /ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|EPIPE|socket hang up/i.test(
+          // The plain CONNECT-PHASE shapes of a host that is not there.
+          // classifyProbe already reads these as dns_or_network; it was simply
+          // never asked. Deliberately NOT ECONNRESET / EPIPE / "socket hang
+          // up" — on the one long-lived keep-alive socket (maxSockets:1) those
+          // can mean SAP ran the write and reset afterwards, not that nothing
+          // reached it; asking about them here would tag (and later close) a
+          // destination that may simply have executed the request.
+          /ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN/i.test(
             rawMessage,
           );
         if (looksTunnelRelated && error instanceof Error) {

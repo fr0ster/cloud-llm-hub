@@ -65,7 +65,11 @@ import { type AgentConfig, getAgentConfig } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
-import { asOutage, outageClassifier } from './lib/mcp-outage';
+import {
+  asOutage,
+  outageClassifier,
+  outageFromToolResult,
+} from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
@@ -1991,6 +1995,14 @@ async function buildEmbeddedMcpAdapter(
       // everything waiting on it has stopped.
       const result = await trackCall(Promise.resolve(toolCall));
 
+      // Most ABAP handlers never throw: `@mcp-abap-adt/lib`'s `return_error`
+      // catches the connector's tagged failure and RETURNS
+      // `{ isError: true, content: [...] }` — a successful dispatch as far as
+      // the `try` above is concerned, so the `catch` below and its `asOutage`
+      // never run. Read the same tag out of the RETURNED result here instead.
+      const outage = outageFromToolResult(result, destinationName);
+      if (outage) throw outage;
+
       const resultStr = JSON.stringify(result).slice(0, 1000);
       log.info('MCP tool call', {
         destination: destinationName,
@@ -2199,7 +2211,17 @@ async function configureDestinationAgentBuilder(
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)
-    .withClientAdapter(new ClineClientAdapter());
+    .withClientAdapter(new ClineClientAdapter())
+    // Consumer-owned seam: tells the tool loop an MCP failure means the
+    // destination is unavailable (fail loud) rather than a tool-level error to
+    // feed back to the LLM, using the same verdict the connector already
+    // wrote. Installed HERE, not only on the DAG-coordinator's own builder in
+    // `buildAgentForDestination`: that builder's tool-loop stage is gated off
+    // while a coordinator is active, so it never calls tools and never
+    // consults this classifier. The executor worker's builder — built from
+    // this same shared helper — is the one whose tool loop actually runs
+    // tools and needs it.
+    .withMcpFailureClassifier(outageClassifier);
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
@@ -2260,11 +2282,12 @@ export async function buildAgentForDestination(
     // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
   });
 
-  // Consumer-owned seam: tells the pipeline an MCP failure means the
-  // destination is unavailable (fail loud) rather than a tool-level error to
-  // feed back to the LLM, using the same verdict the connector already wrote.
-  builder.withMcpFailureClassifier(outageClassifier);
-
+  // NOTE: this builder's OWN tool-loop stage is gated off while the DAG
+  // coordinator is active (see `configureDestinationAgentBuilder` below), so
+  // it never consults an `mcpFailureClassifier` itself. The classifier that
+  // actually matters — the one the executor worker's tool loop calls — is
+  // wired inside `configureDestinationAgentBuilder`, which both this build and
+  // `buildExecutorWorker` share.
   const handle = await builder.build();
 
   // Expose recMcp on the handle so channel handlers can call

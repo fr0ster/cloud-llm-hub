@@ -16,6 +16,7 @@ const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
 const withSkillManager = jest.fn();
 const withMcpClients = jest.fn();
+const withMcpFailureClassifier = jest.fn();
 const buildMock = jest.fn();
 
 function makeChainableBuilder() {
@@ -42,7 +43,7 @@ function makeChainableBuilder() {
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
   builder.withDagCoordinator = chainable(withDagCoordinator);
-  builder.withMcpFailureClassifier = chainable(jest.fn());
+  builder.withMcpFailureClassifier = chainable(withMcpFailureClassifier);
   builder.build = buildMock;
   return builder;
 }
@@ -70,6 +71,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 // full destination-initialization path.
 import * as agentManager from '../../srv/agent-manager';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
+import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
@@ -202,6 +204,32 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     await agentManager.buildExecutorWorker({} as never, {} as never, config);
 
     expect(withSkillManager).toHaveBeenCalledTimes(1);
+  });
+
+  it("wires outageClassifier into the executor worker's builder (withMcpFailureClassifier)", async () => {
+    // The DAG coordinator's own builder never runs a tool loop (that stage is
+    // gated off while a coordinator is active), so installing the classifier
+    // ONLY there would be dead wiring. It must reach the builder the executor
+    // worker actually uses — shared via `configureDestinationAgentBuilder`,
+    // called first (call order 0) for the worker build, then again (call
+    // order 1) for the controller build.
+    await agentManager.buildAgentForDestination(
+      {} as never,
+      {} as never,
+      config,
+    );
+
+    expect(withMcpFailureClassifier).toHaveBeenCalled();
+    expect(withMcpFailureClassifier.mock.calls[0][0]).toBe(outageClassifier);
+  });
+
+  it('buildExecutorWorker alone still wires the failure classifier', async () => {
+    buildMock.mockReset();
+    buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });
+
+    await agentManager.buildExecutorWorker({} as never, {} as never, config);
+
+    expect(withMcpFailureClassifier).toHaveBeenCalledWith(outageClassifier);
   });
 
   it('buildLlmOnlyAgent never wires a coordinator', async () => {
