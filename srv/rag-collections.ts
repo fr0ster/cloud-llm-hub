@@ -564,11 +564,27 @@ export class CollectionRegistry {
     };
   }
 
+  /**
+   * Remove one collection completely: its registry entry, every user's enabled
+   * flag for it, and its directory on disk.
+   *
+   * The one primitive every ending goes through. Only `deleteCollection` used to
+   * free the directory; logout, clear-chat and the TTL sweep dropped the entry
+   * and left the documents on disk with nothing pointing at them. Persists
+   * nothing, so a caller removing several writes the metadata once.
+   */
+  private removeCollection(id: string): boolean {
+    if (!this.collections.delete(id)) return false;
+    for (const m of this.enabledByUser.values()) m.delete(id);
+    this.deleteCollectionDir(id);
+    return true;
+  }
+
   deleteCollection(id: string): boolean {
-    const deleted = this.collections.delete(id);
+    const deleted = this.removeCollection(id);
     if (deleted) {
       this.persistMeta();
-      this.deleteCollectionDir(id);
+      this.persistEnabled();
       this.log.info('Collection deleted', { id });
     }
     return deleted;
@@ -604,14 +620,12 @@ export class CollectionRegistry {
   sweepExpiredSessions(): void {
     const now = Date.now();
     let changed = false;
-    for (const [id, stored] of this.collections) {
+    for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         (stored.meta.expiresAt ?? 0) <= now
       ) {
-        this.collections.delete(id);
-        for (const m of this.enabledByUser.values()) m.delete(id);
-        changed = true;
+        changed = this.removeCollection(id) || changed;
       }
     }
     if (changed) {
@@ -622,21 +636,33 @@ export class CollectionRegistry {
 
   deleteSessionCollections(userId: string, sessionId: string): void {
     let changed = false;
-    for (const [id, stored] of this.collections) {
+    for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         stored.meta.owner === userId &&
         stored.meta.sessionId === sessionId
       ) {
-        this.collections.delete(id);
-        for (const m of this.enabledByUser.values()) m.delete(id);
-        changed = true;
+        changed = this.removeCollection(id) || changed;
       }
     }
     if (changed) {
       this.persistMeta();
       this.persistEnabled();
     }
+  }
+
+  /** Whether this user's session still owns any session-scoped collection. */
+  hasSessionCollections(userId: string, sessionId: string): boolean {
+    for (const stored of this.collections.values()) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private persistEnabled(): void {
