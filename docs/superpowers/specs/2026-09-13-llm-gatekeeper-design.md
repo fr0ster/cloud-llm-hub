@@ -129,8 +129,29 @@ unrelated jobs: as a **namespace** inside a user's own data it is the caller's
 to choose, and as the **key that schedules work** between callers it is ours to
 issue.
 
-The slot is keyed on the issued identity, and the store keys on
-`${userId}\u0000${sessionId}` as it already does, so the two cannot drift apart.
+**Which means two identifiers where the code has one, and that is the part the
+plan has to build.** Today a request carries a single session id: the handler
+puts it into the request scope with `runWithSessionId`, and
+`rag-tool-dispatcher` reads it back through `getRequestSessionId` — so with one
+value there is no way for the door to key on ours while a RAG tool sees the
+caller's. One of the two contracts would silently lose.
+
+So the request carries both, named for what they do:
+
+| | issued by | used for |
+|---|---|---|
+| **conversation id** | the service | the door's key, the history store, and `sessionStore`'s half of `${userId}\u0000<id>` |
+| **RAG namespace id** | the caller, via `x-session-id` | scoping a session-scoped collection, and nothing else |
+
+The request scope (`srv/request-session.ts`) grows the second alongside the
+first, and `rag-tool-dispatcher` reads the namespace one rather than the
+conversation one. Where the caller supplied nothing, the namespace id is
+absent — which is what a session-scoped collection request without a session
+already means today, and it already answers `400`.
+
+The slot is keyed on the conversation id together with the authenticated user,
+and the store keys on `${userId}\u0000<conversation id>` as it already does, so
+the two cannot drift apart.
 
 So live sessions and live pipelines are the same number by construction rather
 than by assertion. `execute_step` needs no special case: each of its calls
@@ -174,8 +195,8 @@ room, and that is the point to notice rather than the moment the last slot
 happens to fill. A queue that deep means arrivals are outrunning completions,
 and the arithmetic only gets worse from there.
 
-**Strictly first come, first served.** No priorities and no lanes. The session
-that has waited longest goes next.
+**No priorities and no lanes.** The only ordering is the one above: the oldest
+waiter that can be served goes next.
 
 **A waiter that leaves is removed.** The caller's own timeout may fire while it
 is queued, and a waiter nobody is behind must not later be handed a slot and
@@ -546,6 +567,11 @@ These properties, because they are what this shape gets wrong.
   `x-session-id` resolves exactly as it does today, and two users sending the
   same value still reach different collections. Asserted alongside the above,
   because the two live one line apart and the obvious tidy-up breaks the second.
+- **Both identifiers reach where they belong, in one request.** A chat request
+  carrying `x-session-id: rag-A` is admitted and stores its history under the
+  conversation id we issued, while a RAG tool the agent calls during that same
+  request sees `rag-A`. One value cannot satisfy both, so this is the test that
+  fails if the plan threads only one.
 - **The browser's chat session survives without the header.** The chat UI,
   sending only the cookie, keeps its history across turns exactly as before.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
