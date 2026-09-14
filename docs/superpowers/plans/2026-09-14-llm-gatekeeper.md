@@ -755,7 +755,6 @@ afterEach(() => {
 describe('quota registry — absent means off', () => {
   it('gates nothing and rejects nothing when no quotas are configured', () => {
     const mod = load();
-    current = mod;
     expect(mod.quotasConfigured()).toBe(false);
     expect(mod.gateForModel('anything-at-all')).toBeUndefined();
   });
@@ -1037,13 +1036,18 @@ In `srv/agent-config.ts`, inside `loadAgentConfig()` just before it returns, add
 
 ```ts
   // A limit only shows itself under load, and by then nobody remembers what was
-  // configured. Reading it here also makes a malformed value fail at startup.
+  // configured. Reading both here is also what makes a malformed value fail at
+  // startup rather than on the first request — `configuredCapacity` is lazy,
+  // and left to its first caller a bad number would let the service come up
+  // healthy and then refuse whoever arrived first.
   cds.log('agent-config').info(describeQuotas());
+  cds.log('agent-config').info(describeDoor());
 ```
 
 and at the top of the file:
 
 ```ts
+import { describeDoor } from './lib/admission';
 import { describeQuotas } from './lib/quota-registry';
 ```
 
@@ -1197,6 +1201,27 @@ describe('gateLlm — nothing configured', () => {
     expect(inner.calls()).toBe(1);
   });
 
+  it('throws back the outer error, not the marker buried in its cause', async () => {
+    // Every layer rewraps, so the marker is usually on a cause. Throwing that
+    // would lose the provider's own message and stack.
+    const { gated } = load();
+    const inner = Object.assign(new Error('429'), {
+      throttled: true,
+      attempts: 1,
+      retryAfterSeconds: 30,
+    });
+    const outer = Object.assign(new Error('SAP AI SDK API error'), { cause: inner });
+    const embedder = gated.gateEmbedder(
+      {
+        embed: async () => {
+          throw outer;
+        },
+      } as never,
+      'm',
+    );
+    await expect(embedder.embed('x')).rejects.toBe(outer);
+  });
+
   it('throws the embedder 429 back rather than returning an empty result', async () => {
     // The embedder's attempt wrapper swallows the throw to report it, so
     // returning the placeholder here would hand the caller `undefined` as a
@@ -1318,7 +1343,10 @@ async function runGated<T>(
     // against a provider that had just asked us to stop; and an interval would
     // have been waited out with no ceiling, where the ceiling removed with
     // `WaitIfShortEnough` was the only thing that had made waiting safe.
-    if (!quota) return giveUp(value, limit);
+    // `throttled` and not `limit`: the second is whatever `findThrottled` dug
+    // out of the cause chain, and throwing that would hand the caller an inner
+    // error stripped of the provider's own message, stack and context.
+    if (!quota) return giveUp(value, throttled);
 
     // Exactly what the server named, however long — a ceiling here would kill
     // work the door has promised to carry — or, when it named nothing, our own
@@ -1473,7 +1501,7 @@ export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx jest test/unit/gated-llm.test.ts`
-Expected: PASS, 8 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Assert the library's own gate costs no permit**
 
@@ -1840,6 +1868,7 @@ git commit -m "feat(gatekeeper): every model passes the window, and the provider
   - `export function admit(): Promise<AdmissionHandle>` — throws `DoorFullError` when the door is configured and full
   - `export function livePipelines(): number`
   - `export function configuredCapacity(): number | undefined`
+  - `export function describeDoor(): string` — the startup log line, and the call that makes the validation happen at boot
   - `export function clearAdmission(): void` — test seam
 
 **The rule:** a pipeline is live from the moment it is admitted until it finishes or fails. It is not released while it waits on a quota — waiting is exactly when it still holds its context. The door is entered **after** the agent is resolved, so a caller waiting for a destination or a shared corpus build waits outside it, holding an HTTP request and no pipeline.
@@ -1870,7 +1899,6 @@ afterEach(() => {
 describe('the door — absent means off', () => {
   it('admits without limit when no capacity is configured', async () => {
     const mod = load();
-    current = mod;
     for (let i = 0; i < 50; i++) await mod.admit();
     expect(mod.livePipelines()).toBe(50);
   });
@@ -1956,6 +1984,8 @@ Create `srv/lib/admission.ts`:
  * holding an HTTP request and no pipeline.
  */
 
+import { quotasConfigured } from './quota-registry';
+
 const CAPACITY_VAR = 'LLM_GATEKEEPER_MAX_LIVE_PIPELINES';
 
 /** The door is full. Carries no interval: we do not measure pipeline length. */
@@ -2038,6 +2068,20 @@ export function abortAllForShutdown(reason = 'shutdown'): void {
   for (const controller of handles) controller.abort(new Error(reason));
 }
 
+/**
+ * One line for the startup log, and the call that validates the door.
+ *
+ * `configuredCapacity` is lazy because `admit` is on the hot path; reading it
+ * once here is what turns "malformed means refuse to start" from a claim into
+ * the behaviour.
+ */
+export function describeDoor(): string {
+  const max = configuredCapacity();
+  return max === undefined
+    ? 'Live-pipeline door: none configured'
+    : `Live-pipeline door: ${max} at once, across every channel`;
+}
+
 /** Test seam. */
 export function clearAdmission(): void {
   capacity = null;
@@ -2049,7 +2093,7 @@ export function clearAdmission(): void {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx jest test/unit/admission.test.ts`
-Expected: PASS, 6 tests.
+Expected: PASS, 7 tests.
 
 - [ ] **Step 5: Fold the `execute_step` semaphore into the door**
 
@@ -2175,7 +2219,6 @@ describe('the register — the slot waits for the transport, not for the report'
 
   it('counts a rejected call as settled', async () => {
     const mod = load();
-    current = mod;
     const handle = await mod.admit();
     const call = deferred<string>();
     const tracked = handle.track(call.promise);
@@ -2188,7 +2231,6 @@ describe('the register — the slot waits for the transport, not for the report'
 
   it('is aborted by shutdown and by nothing else', async () => {
     const mod = load();
-    current = mod;
     const handle = await mod.admit();
     expect(handle.signal.aborted).toBe(false);
     mod.abortAllForShutdown();
@@ -2510,6 +2552,8 @@ In `srv/lib/gated-llm.ts`, wrap the attempt inside `runGated`:
     // Registered before it is awaited. The slot outlives the calls this
     // pipeline started, and an aborted caller must not free it on top of one.
     const { value, throttled } = await (current ? current.track(attempted) : attempted);
+    // `throttled` is the error as the caller produced it; `limit` below is the
+    // marker found anywhere in its cause chain.
 ```
 
 and the same around `inner.streamChat`'s opening attempt, tracking a promise that settles when the stream ends:
@@ -2809,8 +2853,13 @@ const load = () => {
   return mod;
 };
 
+beforeEach(() => {
+  process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 100 } });
+});
+
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+  delete process.env.LLM_GATEKEEPER_QUOTAS;
   jest.resetModules();
 });
 
@@ -3939,7 +3988,6 @@ and a behavioural one, appended to `test/unit/destination-closed.test.ts`:
 describe('the classifier closes the destination it names', () => {
   it('turns an unavailability error into a closed destination', () => {
     const mod = load();
-    current = mod;
     const { McpUnavailableError, isUnavailable } =
       require('../../srv/lib/mcp-outage') as typeof import('../../srv/lib/mcp-outage');
     const err = new McpUnavailableError('S4HANA_DEV', 'tunnel down', 'tunnel_timeout');
@@ -4187,7 +4235,6 @@ const key = (over: Partial<{ principal: string; session: string; destination: st
 describe('the collision guard', () => {
   it('refuses an identified retry while the orphan is still running', async () => {
     const mod = load();
-    current = mod;
     const first = await mod.admit(key());
     mod.markCallerGone(first);
     await expect(mod.admit(key())).rejects.toBeInstanceOf(mod.PipelineInFlightError);
@@ -4203,7 +4250,6 @@ describe('the collision guard', () => {
 
   it('keys on the principal, so one user cannot block another', async () => {
     const mod = load();
-    current = mod;
     const first = await mod.admit(key({ principal: 'alice' }));
     mod.markCallerGone(first);
     await expect(mod.admit(key({ principal: 'bob' }))).resolves.toBeDefined();
@@ -4211,7 +4257,6 @@ describe('the collision guard', () => {
 
   it('does not reach across destinations', async () => {
     const mod = load();
-    current = mod;
     const first = await mod.admit(key());
     mod.markCallerGone(first);
     await expect(mod.admit(key({ destination: 'S4HANA_QAS' }))).resolves.toBeDefined();
@@ -4219,7 +4264,6 @@ describe('the collision guard', () => {
 
   it('lets both run when nothing identifies the caller, which is the known limit', async () => {
     const mod = load();
-    current = mod;
     const first = await mod.admit();
     mod.markCallerGone(first);
     await expect(mod.admit()).resolves.toBeDefined();
@@ -4227,7 +4271,6 @@ describe('the collision guard', () => {
 
   it('stops refusing once the orphan finishes', async () => {
     const mod = load();
-    current = mod;
     const first = await mod.admit(key());
     mod.markCallerGone(first);
     await first.release();
@@ -4410,7 +4453,6 @@ describe('gatekeeper metrics', () => {
 
   it('keeps an unreachable system out of the quota numbers', () => {
     const mod = load();
-    current = mod;
     mod.recordDestinationRefusal('S4HANA_DEV');
     const snap = mod.gatekeeperSnapshot();
     expect(snap.destinations['S4HANA_DEV'].refusals).toBe(1);
