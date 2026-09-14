@@ -672,8 +672,10 @@ These properties, because they are what this shape gets wrong.
   entry. Asserted store by store and on the filesystem, because a count that
   falls while the documents stay is the failure this bound exists to prevent,
   and it is invisible to every test that stops at the registry.
-- **The same holds on logout and clear-chat.** Those paths call the same
-  eviction and leave no directories behind either, which they do today.
+- **And on the other two paths, which leak today.** Logout, clear-chat and the
+  twenty-four-hour TTL sweep leave no directory behind either. Written as the
+  new expected behaviour, not as a regression check: all three currently drop
+  the registry entry and keep the files.
 - **Retention below capacity, or without one, is refused at startup.** Naming
   both variables, because the alternative is a running service that must break
   one of them.
