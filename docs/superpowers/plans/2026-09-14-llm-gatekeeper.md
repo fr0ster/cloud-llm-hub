@@ -18,7 +18,7 @@
 - **Teardown order:** stop starting new calls → wait for the register to empty → `safeStop` → release the slot, last.
 - **Admission takes a slot and a retention place atomically, or neither.**
 - **A door refusal carries no `Retry-After` and no number in its text.** Reasons, in check order: `session_busy`, `capacity`, `retention`.
-- **Identity is the authenticated user plus the session this service issued.** `x-session-id` and `mcp-session-id` are never read to identify a session.
+- **Identity is the authenticated user plus the session this service issued.** `x-session-id` and `mcp-session-id` are never read to identify a session. Every composite key of the two is `JSON.stringify([userId, sessionId])` — never a join, which some pair of values always makes ambiguous.
 - **Every deletion of a session's state is three steps:** close it to new leases → wait for the leases in flight to settle, cancelling only RAG operations → remove it once, through the primitive that frees the disk.
 - **Every removal of a collection frees its directory.**
 - **No new timeout above the connector.** The only bounds are an `AbortSignal` from whoever waits, and idleness where nothing runs.
@@ -1001,6 +1001,15 @@ afterEach(() => {
 });
 
 describe('one session, every store', () => {
+  it('does not collide when the parts could be read two ways', () => {
+    // ("a", "b c") and ("a b", "c") must stay two keys, whatever separator a
+    // join would use.
+    setSessionDestination('a', 'b c', 'S4HANA_DEV');
+    setSessionDestination('a b', 'c', 'S4HANA_QAS');
+    expect(getCurrentDestination('a', 'b c')).toBe('S4HANA_DEV');
+    expect(getCurrentDestination('a b', 'c')).toBe('S4HANA_QAS');
+  });
+
   it('does not share a destination between two users with the same session id', () => {
     seed('alice', 'S4HANA_DEV');
     seed('bob', 'S4HANA_QAS');
@@ -1060,7 +1069,9 @@ In `srv/agent-manager.ts`, replace everything from `/** Last-used destination pe
 const lastDestinationBySession = new Map<string, string>();
 
 function destinationKey(userId: string, sessionId: string): string {
-  return `${userId} ${sessionId}`;
+  // A tuple, not a join: no separator keeps ("a", "b c") and ("a b", "c") apart
+  // whatever a caller puts in a cookie.
+  return JSON.stringify([userId, sessionId]);
 }
 
 /** Last-used destination for a user's session, or the configured default. */
@@ -1567,6 +1578,15 @@ function clock() {
 }
 
 describe('places', () => {
+  it('keeps two users apart when their parts could be read two ways', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 5);
+    lease(r.lease('a', 'b c', 'pipeline'));
+    expect(r.isKnown('a b', 'c')).toBe(false);
+    expect(r.lease('a b', 'c', 'pipeline')).not.toEqual({ refused: 'closing' });
+    expect(r.snapshot().retained).toBe(2);
+  });
+
   it('counts a session once however many leases it holds', () => {
     const f = fakeStores();
     const r = new SessionRetention(f.stores, 3);
@@ -1859,7 +1879,9 @@ interface Entry {
 }
 
 function keyOf(userId: string, sessionId: string): string {
-  return `${userId} ${sessionId}`;
+  // A tuple, not a join: no separator keeps ("a", "b c") and ("a b", "c") apart
+  // whatever a caller puts in a cookie.
+  return JSON.stringify([userId, sessionId]);
 }
 
 export class SessionRetention {
@@ -3030,6 +3052,19 @@ describe('one session, one pipeline', () => {
     expect(d.snapshot().live).toBe(1);
   });
 
+  it('does not mistake one user for another when the parts could be read two ways', async () => {
+    // With a join, ("a b", "c") would be the same key as ("a", "b c"): it would
+    // wait on a session that is not its own, and its release would free the
+    // other user's admission.
+    const { d } = door(5);
+    const first = admitted(await d.admit('a', 'b c'));
+    const second = admitted(await d.admit('a b', 'c'));
+    expect(d.snapshot().live).toBe(2);
+    second.release();
+    expect(d.snapshot().live).toBe(1);
+    first.release();
+  });
+
   it('two users cannot collide, whatever id they send', async () => {
     const { d } = door(5);
     admitted(await d.admit('alice', 'A'));
@@ -3233,7 +3268,9 @@ interface Waiter {
 }
 
 function keyOf(userId: string, sessionId: string): string {
-  return `${userId} ${sessionId}`;
+  // A tuple, not a join: no separator keeps ("a", "b c") and ("a b", "c") apart
+  // whatever a caller puts in a cookie.
+  return JSON.stringify([userId, sessionId]);
 }
 
 export class Door {

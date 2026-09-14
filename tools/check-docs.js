@@ -49,6 +49,23 @@ function documentedFiles() {
 
 const readLines = (f) => fs.readFileSync(f, 'utf8').split('\n');
 
+/**
+ * No NUL bytes. One turns a Markdown file into binary for git, rg and file(1),
+ * renders as nothing, and survives every other check here — which is how one
+ * reached a plan: a script wrote the character where the text `\u0000` was meant.
+ */
+function checkNoNul(file) {
+  const buf = fs.readFileSync(file);
+  const at = buf.indexOf(0);
+  if (at === -1) return;
+  const line = buf.subarray(0, at).toString('utf8').split('\n').length;
+  fail(
+    file,
+    line,
+    'NUL byte — write an escape such as \\u0000 as text, not the character',
+  );
+}
+
 // ---------------------------------------------------------------- checks
 
 /** Relative Markdown links must resolve. */
@@ -464,6 +481,7 @@ const moduleMemory = new Map(
 
 for (const file of documentedFiles()) {
   const lines = readLines(file);
+  checkNoNul(file);
   if (file.endsWith('.md')) checkLinks(file, lines);
   checkCopySources(file, lines);
   checkNpmScripts(file, lines, scriptsFor(file));
