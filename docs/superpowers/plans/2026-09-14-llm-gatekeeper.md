@@ -755,6 +755,7 @@ afterEach(() => {
 describe('quota registry — absent means off', () => {
   it('gates nothing and rejects nothing when no quotas are configured', () => {
     const mod = load();
+    current = mod;
     expect(mod.quotasConfigured()).toBe(false);
     expect(mod.gateForModel('anything-at-all')).toBeUndefined();
   });
@@ -1790,6 +1791,7 @@ afterEach(() => {
 describe('the door — absent means off', () => {
   it('admits without limit when no capacity is configured', async () => {
     const mod = load();
+    current = mod;
     for (let i = 0; i < 50; i++) await mod.admit();
     expect(mod.livePipelines()).toBe(50);
   });
@@ -2073,6 +2075,7 @@ describe('the register — the slot waits for the transport, not for the report'
 
   it('counts a rejected call as settled', async () => {
     const mod = load();
+    current = mod;
     const handle = await mod.admit();
     const call = deferred<string>();
     const tracked = handle.track(call.promise);
@@ -2085,6 +2088,7 @@ describe('the register — the slot waits for the transport, not for the report'
 
   it('is aborted by shutdown and by nothing else', async () => {
     const mod = load();
+    current = mod;
     const handle = await mod.admit();
     expect(handle.signal.aborted).toBe(false);
     mod.abortAllForShutdown();
@@ -2828,7 +2832,9 @@ git commit -m "refactor: drop AgentService.Chat, the entrance with no door and n
   - `export function describeCause(error: unknown): string`
   - `export const outageClassifier: IMcpFailureClassifier`
 
-**Where the work actually is:** this service builds its MCP client with `transport: 'embedded'` and its own `callToolHandler`, and the embedded branch of `MCPClientWrapper` neither reconnects nor retries — it catches the handler's exception and returns an ordinary tool result carrying an `error` string. So an outage arrives shaped like tool feedback. `McpClientAdapter` draws the line with a string match on connection-loss signatures; that match is the classification point, and it is why the handler must raise the two cases distinguishably rather than hope a message reads the right way.
+**Where the work actually is:** this service builds its MCP client with `transport: 'embedded'` and its own `callToolHandler`, and the embedded branch of `MCPClientWrapper` neither reconnects nor retries — it catches the handler's exception and returns an ordinary tool result carrying an `error` **string**. The class, the `code` and the `cause` do not survive that. `McpClientAdapter` then escalates a returned error only when `toMcpError` recognises the string as `MCP_NOT_CONNECTED` or `MCP_NO_RESPONSE`; everything else is ordinary tool feedback and the classifier is never consulted.
+
+That is the constraint the whole section has to be built around, and it means two things. The error our handler raises must **read** as unreachability to that mapper, because the string is all that crosses. And `isUnavailable` still earns its place on our own side of the boundary, where the typed error does survive — the handler's own paths, and the channel error paths that call `closeDestination`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2861,9 +2867,12 @@ describe('telling an outage from a tool that ran and failed', () => {
     expect(isUnavailable(new Error('The operation timed out'))).toBe(false);
   });
 
-  it('classifies for the library seam', () => {
-    expect(outageClassifier.classify(new McpUnavailableError('D', 'x'))).toBe('unavailable');
-    expect(outageClassifier.classify(new Error('object not found'))).toBe('tool-error');
+  it('classifies for the library seam, which is async and takes an McpError', async () => {
+    const { McpError } = require('@mcp-abap-adt/llm-agent') as typeof import('@mcp-abap-adt/llm-agent');
+    const down = new McpError('no response from S4HANA_DEV', 'MCP_NOT_CONNECTED');
+    const feedback = new McpError('object ZCL_X not found', 'MCP_ERROR');
+    await expect(outageClassifier.classify(down)).resolves.toBe('unavailable');
+    await expect(outageClassifier.classify(feedback)).resolves.toBe('tool-error');
   });
 });
 ```
@@ -2878,7 +2887,11 @@ Expected: FAIL — module not found.
 Create `srv/lib/mcp-outage.ts`:
 
 ```ts
-import type { IMcpFailureClassifier, McpFailureKind } from '@mcp-abap-adt/llm-agent';
+import type {
+  IMcpFailureClassifier,
+  McpError,
+  McpFailureKind,
+} from '@mcp-abap-adt/llm-agent';
 
 /**
  * The connection is gone, as distinct from a tool that ran and failed.
@@ -2895,7 +2908,18 @@ export class McpUnavailableError extends Error {
     reason: string,
     options?: { cause?: unknown },
   ) {
-    super(`SAP system ${destination} is not reachable: ${reason}`, options);
+    // The wording is not cosmetic. On the embedded transport the wrapper
+    // catches this and returns only `error.message` as a string — the class,
+    // the code and the cause are all dropped — and `McpClientAdapter` escalates
+    // a returned error only when `toMcpError` recognises it as
+    // MCP_NOT_CONNECTED or MCP_NO_RESPONSE. Anything else stays ordinary tool
+    // feedback and the classifier is never consulted at all.
+    //
+    // So the message carries two things: the underlying cause verbatim, which
+    // is where a real ECONNRESET, EHOSTUNREACH or "socket hang up" survives,
+    // and the phrase "no response from", which is both true of a system we
+    // could not reach and one of the signatures that mapper knows.
+    super(`no response from SAP system ${destination}: ${reason}`, options);
     this.name = 'McpUnavailableError';
   }
 }
@@ -2916,9 +2940,20 @@ export function isUnavailable(error: unknown): boolean {
 }
 
 /** The library's seam for the fact. The decision stays ours. */
+/**
+ * The library's seam for the fact. The decision stays ours.
+ *
+ * `classify` is **async** and takes an `McpError` — the shape the adapter has
+ * already mapped the failure into — not a bare `Error`. It also offers
+ * `probeHealth`, which this implementation does not use: an outage we have
+ * already identified needs no second opinion, and probing here would put a
+ * network call on a failure path.
+ */
 export const outageClassifier: IMcpFailureClassifier = {
-  classify(error: unknown): McpFailureKind {
-    return isUnavailable(error) ? 'unavailable' : 'tool-error';
+  async classify(error: McpError): Promise<McpFailureKind> {
+    return isUnavailable(error) || error.code === 'MCP_NOT_CONNECTED'
+      ? 'unavailable'
+      : 'tool-error';
   },
 };
 
@@ -2953,7 +2988,32 @@ and where a transport-level failure is caught around the ADT call, rethrow as `n
 
 > Do not broaden this. A tool that reaches SAP and is refused is feedback. The point of the type is that the classification stops being a guess about prose.
 
-- [ ] **Step 5: Run, lint, commit**
+- [ ] **Step 5: Wire it to the builder**
+
+A strategy nothing installs is dead code, and the pipeline would go on using
+`DefaultMcpFailureClassifier`. In `srv/agent-manager.ts`, on the builder that
+constructs each destination's agent (`buildAgentForDestination`), add it beside
+the other consumer-owned seams:
+
+```ts
+    .withMcpFailureClassifier(outageClassifier)
+```
+
+and assert it, in `test/unit/mcp-outage.test.ts`:
+
+```ts
+describe('the classifier is installed, not merely written', () => {
+  it('is handed to the builder', () => {
+    const source = readFileSync(
+      join(__dirname, '../../srv/agent-manager.ts'),
+      'utf8',
+    );
+    expect(source).toMatch(/withMcpFailureClassifier\(\s*outageClassifier\s*\)/);
+  });
+});
+```
+
+- [ ] **Step 6: Run, lint, commit**
 
 ```bash
 npx jest test/unit/mcp-outage.test.ts && npm run test:unit && npm run test:check
@@ -2989,9 +3049,20 @@ const load = () => {
   return require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
 };
 
+let current: ReturnType<typeof load> | undefined;
+
+afterEach(() => {
+  // closeDestination arms a five-minute probe timer. Left running, Jest either
+  // reports an open handle or waits on it after the suite has finished.
+  current?.clearDestinationStatesForTest();
+  current = undefined;
+  jest.resetModules();
+});
+
 describe('a closed destination', () => {
   it('reports the remainder to the next probe, not the whole interval', () => {
     const mod = load();
+    current = mod;
     const now = 1_000_000;
     mod.closeDestination('S4HANA_DEV', 'tunnel down');
     mod.setNextProbeAtForTest('S4HANA_DEV', now + 12_000);
@@ -3002,6 +3073,7 @@ describe('a closed destination', () => {
 
   it('rounds up, because waking early walks back into the same refusal', () => {
     const mod = load();
+    current = mod;
     const now = 1_000_000;
     mod.closeDestination('D', 'x');
     mod.setNextProbeAtForTest('D', now + 12_400);
@@ -3010,6 +3082,7 @@ describe('a closed destination', () => {
 
   it('gives no number when no probe is scheduled', () => {
     const mod = load();
+    current = mod;
     mod.closeDestination('D', 'x');
     mod.setNextProbeAtForTest('D', undefined);
     expect(mod.retryAfterForDestination('D', 1_000_000)).toBeUndefined();
@@ -3017,6 +3090,7 @@ describe('a closed destination', () => {
 
   it('leaves other destinations alone', () => {
     const mod = load();
+    current = mod;
     mod.closeDestination('S4HANA_DEV', 'tunnel down');
     expect(mod.isDestinationClosed('S4HANA_DEV')).toBe(true);
     expect(mod.isDestinationClosed('S4HANA_QAS')).toBe(false);
@@ -3121,6 +3195,20 @@ export function retryAfterForDestination(name: string, now = Date.now()): number
 export function setNextProbeAtForTest(name: string, at: number | undefined): void {
   const state = destinationStates.get(name);
   if (state) state.nextProbeAt = at;
+}
+
+/**
+ * Test seam: forget every destination and stop the probe timer.
+ *
+ * The timer matters as much as the state. `closeDestination` arms a five-minute
+ * `setTimeout`, so a test that closes a destination and returns leaves Jest
+ * holding an open handle — reported as a leak, or waited on after the suite
+ * has finished.
+ */
+export function clearDestinationStatesForTest(): void {
+  if (unreachableRetryTimer) clearTimeout(unreachableRetryTimer);
+  unreachableRetryTimer = null;
+  destinationStates.clear();
 }
 ```
 
@@ -3241,12 +3329,57 @@ describe('every channel closes a destination it finds unreachable', () => {
 });
 ```
 
+and an end-to-end one, which is the only kind that catches the marker being
+lost inside the embedded wrapper. Append to
+`test/unit/destination-close-wiring.test.ts`:
+
+```ts
+import { McpClientAdapter, MCPClientWrapper } from '@mcp-abap-adt/llm-agent-mcp';
+import { McpUnavailableError } from '../../srv/lib/mcp-outage';
+
+describe('an unreachable system survives the embedded transport', () => {
+  it('reaches the adapter as a failure, not as tool feedback', async () => {
+    // The whole path: our handler throws, the embedded wrapper catches it and
+    // keeps only the message string, and the adapter decides from that string
+    // alone whether this was an outage or a tool that ran and failed. A wording
+    // the mapper does not recognise ends here as ok:true, and the classifier is
+    // never consulted — which no unit test of closeDestination would show.
+    const wrapper = new MCPClientWrapper({
+      transport: 'embedded',
+      callToolHandler: async () => {
+        throw new McpUnavailableError('S4HANA_DEV', 'ECONNRESET');
+      },
+    });
+    const adapter = new McpClientAdapter(wrapper);
+    const result = await adapter.callTool('ReadClass', {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('MCP_NOT_CONNECTED');
+    }
+  });
+
+  it('leaves a tool that ran and failed as feedback', async () => {
+    const wrapper = new MCPClientWrapper({
+      transport: 'embedded',
+      callToolHandler: async () => {
+        throw new Error('User DEVELOPER is currently editing ZCL_X');
+      },
+    });
+    const adapter = new McpClientAdapter(wrapper);
+    const result = await adapter.callTool('CreateClass', {});
+    // Escalating this would close a destination that is working perfectly.
+    expect(result.ok).toBe(true);
+  });
+});
+```
+
 and a behavioural one, appended to `test/unit/destination-closed.test.ts`:
 
 ```ts
 describe('the classifier closes the destination it names', () => {
   it('turns an unavailability error into a closed destination', () => {
     const mod = load();
+    current = mod;
     const { McpUnavailableError, isUnavailable } =
       require('../../srv/lib/mcp-outage') as typeof import('../../srv/lib/mcp-outage');
     const err = new McpUnavailableError('S4HANA_DEV', 'tunnel down');
@@ -3494,6 +3627,7 @@ const key = (over: Partial<{ principal: string; session: string; destination: st
 describe('the collision guard', () => {
   it('refuses an identified retry while the orphan is still running', async () => {
     const mod = load();
+    current = mod;
     const first = await mod.admit(key());
     mod.markCallerGone(first);
     await expect(mod.admit(key())).rejects.toBeInstanceOf(mod.PipelineInFlightError);
@@ -3509,6 +3643,7 @@ describe('the collision guard', () => {
 
   it('keys on the principal, so one user cannot block another', async () => {
     const mod = load();
+    current = mod;
     const first = await mod.admit(key({ principal: 'alice' }));
     mod.markCallerGone(first);
     await expect(mod.admit(key({ principal: 'bob' }))).resolves.toBeDefined();
@@ -3516,6 +3651,7 @@ describe('the collision guard', () => {
 
   it('does not reach across destinations', async () => {
     const mod = load();
+    current = mod;
     const first = await mod.admit(key());
     mod.markCallerGone(first);
     await expect(mod.admit(key({ destination: 'S4HANA_QAS' }))).resolves.toBeDefined();
@@ -3523,6 +3659,7 @@ describe('the collision guard', () => {
 
   it('lets both run when nothing identifies the caller, which is the known limit', async () => {
     const mod = load();
+    current = mod;
     const first = await mod.admit();
     mod.markCallerGone(first);
     await expect(mod.admit()).resolves.toBeDefined();
@@ -3530,6 +3667,7 @@ describe('the collision guard', () => {
 
   it('stops refusing once the orphan finishes', async () => {
     const mod = load();
+    current = mod;
     const first = await mod.admit(key());
     mod.markCallerGone(first);
     await first.release();
@@ -3712,10 +3850,16 @@ describe('gatekeeper metrics', () => {
 
   it('keeps an unreachable system out of the quota numbers', () => {
     const mod = load();
+    current = mod;
     mod.recordDestinationRefusal('S4HANA_DEV');
     const snap = mod.gatekeeperSnapshot();
     expect(snap.destinations['S4HANA_DEV'].refusals).toBe(1);
     expect(snap.quotas).toEqual({});
+  });
+
+  afterEach(() => {
+    const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+    manager.clearDestinationStatesForTest();
   });
 
   it('reports a closed system as closed before anyone has been refused', () => {
@@ -4103,7 +4247,7 @@ git commit -m "feat(gatekeeper): a probe reports and a corpus build waits, and b
 ### Task 15: Documentation, and the release
 
 **Files:**
-- Modify: `docs/architecture/ARCHITECTURE.md`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `deploy/*.mtaext` samples, `package.json` + `mta.yaml` (version)
+- Modify: `docs/architecture/ARCHITECTURE.md`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `docs/deployment/templates/*.mtaext.template`, `docs/examples/*/.mtaext`, `package.json` + `mta.yaml` (version)
 - Delete: `docs/superpowers/specs/2026-09-13-llm-gatekeeper-design.md`, `docs/superpowers/plans/2026-09-14-llm-gatekeeper.md`
 
 **Why the deletions:** plans and specs live in the tree only while active. Once implemented, history holds them.
@@ -4126,7 +4270,30 @@ In `CHANGELOG.md` under a new version, list the breaking changes: `AgentService.
 
 - [ ] **Step 3: Add the sample configuration**
 
-In each `deploy/*.mtaext` sample, add the two variables commented out with a realistic value and a line saying where the number comes from: the tenant's rate limit in AI Launchpad, set below it because we are not the only consumer.
+There is no `deploy/` directory. The samples that exist are
+`docs/deployment/templates/*.mtaext.template` (`llm-only`, `mcp-anthropic`,
+`mcp-only`, and any sibling) and `docs/examples/*/.mtaext`.
+
+Add all **three** variables to each template, commented out, with a line saying
+where each number comes from:
+
+```yaml
+    # LLM_GATEKEEPER_QUOTAS: '{"anthropic--claude-4.5-sonnet":{"limit":60}}'
+    #   The tenant's per-minute rate limit for that model, from AI Launchpad.
+    #   Set it BELOW the real limit: this deployment is not the tenant's only
+    #   consumer, and the window cannot see the others.
+    # LLM_GATEKEEPER_QUOTA_OF_MODEL: '{"model-a":"shared","model-b":"shared"}'
+    #   Only where several models are metered together. Omitted, each model is
+    #   its own quota.
+    # LLM_GATEKEEPER_MAX_LIVE_PIPELINES: '4'
+    #   How many pipelines may be admitted at once, across every channel. This
+    #   is a memory decision: it replaces the old execute_step cap of two, and
+    #   the right number depends on the memory bought for the service.
+```
+
+The `docs/examples/*/.mtaext` files are working deployments rather than
+templates; add the same block there only where the example actually runs a
+gated model, and leave the others alone.
 
 - [ ] **Step 4: Update the project instructions**
 
