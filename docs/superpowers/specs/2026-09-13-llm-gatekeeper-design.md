@@ -1145,6 +1145,9 @@ These properties, because they are what this shape gets wrong:
 - **An unknown model is a bad request, not an overload.** With quotas
   configured, a `body.model` naming no quota answers `400`
   `invalid_request_error` — never `529`, never a retryable `503`.
+- **A shared corpus build holds no caller's slot.** A request that arrives
+  mid-build and awaits it does not have those embedding calls counted against
+  its own register, and its slot frees on its own work alone.
 - **A health check never waits.** With the quota shut, `healthCheck` reports
   throttled at once rather than sitting out the interval, and it still spends a
   permit, because it is still a request the window must see.
@@ -1186,10 +1189,31 @@ for each attempt. What the provider gets for admitted work is therefore
 Leaving them as a "candidate" was a gap: two are already here, and they are not
 alike.
 
-**Startup tool vectorization** embeds hundreds of documents before any request
-exists. Nobody is waiting for it and it spends real quota, so it is gated —
-a permit per attempt like everything else — and waits as told. It has no door
-slot, because it is not a pipeline and holds no session.
+**Building the shared tool corpus** is the first, and the earlier draft
+described a path this service mostly does not take. The happy path loads
+`srv/tool-embeddings.json`, a build-time bundle, with **zero** embedding calls;
+runtime embedding happens only for entries that are missing or changed, or when
+the bundle is absent or its fingerprint does not match the configured embedder
+(`srv/agent-manager.ts`). So "hundreds of documents, every start" is the
+fallback, not the rule — but it is a real fallback, it spends real quota when
+it runs, and a deployment on an `openai` target meets it by design.
+
+Nor is it reliably unattended. The build is kicked off in the background at
+startup as a global single-flight, and a request arriving before it finishes
+**awaits that same promise** on the request path. So the same work is sometimes
+unwatched and sometimes has a caller behind it.
+
+Which settles both questions. It is **gated** — a permit per attempt, because
+the calls it makes are calls the window must see — and it **waits as told**,
+because the work is shared and restarting it later costs more than waiting.
+
+And one thing it must not do: **the corpus build is never registered against
+an admission handle**, not even when a request is the one awaiting it. The
+register exists so a pipeline's slot outlives the calls that pipeline started;
+this work belongs to the process and outlives every pipeline. Attributing it to
+whichever request happened to arrive first would hold that caller's slot for a
+job serving everyone, and — worse — make a global lifecycle the property of one
+pipeline that may be gone before it ends.
 
 **Health checks** are the opposite. `AgentService.Health` and the model probe
 behind the OpenAI surface call `agent.healthCheck()` (`srv/agent-service.ts`,
