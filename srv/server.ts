@@ -34,6 +34,7 @@ import {
   forgetEmptySessions,
   maySweepSession,
   sessionIsLive,
+  shutdownGatekeeper,
 } from './lib/gatekeeper';
 import { needsSapConnection } from './lib/mcp-request';
 import { sessionMiddleware } from './lib/session-middleware';
@@ -651,3 +652,6 @@ cds.on('served', () => {
       );
     });
 });
+
+// Only shutdown ends an admitted session.
+cds.on('shutdown', () => shutdownGatekeeper());

@@ -187,6 +187,16 @@ export function forgetEmptySessions(): number {
   return n;
 }
 
+/**
+ * End every admitted session and every waiter. The only thing that does.
+ *
+ * Best-effort by necessity: it aborts and returns without waiting for the
+ * register, because the process is exiting.
+ */
+export function shutdownGatekeeper(): void {
+  theDoor()?.abortAll(new Error('shutdown'));
+}
+
 /** Test seam. */
 export function resetGatekeeperForTest(): void {
   door?.abortAll(new Error('test reset'));
