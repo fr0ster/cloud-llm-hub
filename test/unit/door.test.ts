@@ -325,3 +325,68 @@ describe('shutdown', () => {
     await expect(b.p).rejects.toThrow('shutdown');
   });
 });
+
+describe('a retention that pokes the door from inside a lease', () => {
+  it('admits every queued caller and releases nothing', async () => {
+    const retention = fakeRetention();
+    const d = new Door({
+      capacity: 3,
+      queueLength: 5,
+      retention,
+    });
+
+    // Wrap retention.lease to poke the door synchronously
+    const inner = retention.lease;
+    retention.lease = (u: string, s: string, k: 'pipeline') => {
+      const l = inner(u, s, k);
+      d.poke();
+      return l;
+    };
+
+    // Admit one at once (exercises admit's guard)
+    const a = admitted(await d.admit('u', 'A'));
+
+    // Queue four more
+    const b = pending(d, 'u', 'B');
+    const c = pending(d, 'u', 'C');
+    const e = pending(d, 'u', 'E');
+    const f = pending(d, 'u', 'F');
+    await tick();
+
+    // A, B, C should be live (eligible), E, F queued (full capacity)
+    expect(d.snapshot()).toMatchObject({
+      live: 3,
+      queued: 2,
+    });
+
+    // Release and let dispatch run
+    a.release();
+    await tick();
+
+    // B, C still admitted; E should be admitted; F should still wait
+    const b_adm = admitted(b.state.result!);
+    const c_adm = admitted(c.state.result!);
+    const e_adm = admitted(e.state.result!);
+    expect(f.state.result).toBeUndefined(); // The fourth waits
+
+    // Invariants the bug broke
+    expect(retention.leases).toBe(d.snapshot().live);
+    expect(d.snapshot().live).toBeLessThanOrEqual(3);
+    // Each admission is for a different session
+    const sessions = [b_adm, c_adm, e_adm].map((x) => x.sessionId);
+    expect(new Set(sessions).size).toBe(3);
+
+    // Release all, drain
+    b_adm.release();
+    c_adm.release();
+    e_adm.release();
+    await tick();
+    const f_adm = admitted(f.state.result!);
+    f_adm.release();
+    await tick();
+
+    // Everything released
+    expect(retention.leases).toBe(0);
+    expect(d.snapshot()).toMatchObject({ live: 0, queued: 0 });
+  });
+});

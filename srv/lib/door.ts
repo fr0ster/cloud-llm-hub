@@ -85,6 +85,10 @@ export class Door {
   private readonly queueLength: number;
   private readonly retention: DoorRetention;
   private readonly onPressure?: (depth: number, queueLength: number) => void;
+  /** True while the queue is being walked or an arrival is being taken. */
+  private dispatching = false;
+  /** A poke arrived mid-pass: walk the queue again once the pass ends. */
+  private redispatch = false;
 
   constructor(opts: {
     capacity: number;
@@ -109,7 +113,7 @@ export class Door {
       return Promise.resolve({ closed: true });
     }
     if (this.eligible(userId, sessionId)) {
-      const admission = this.take(userId, sessionId);
+      const admission = this.exclusive(() => this.take(userId, sessionId));
       if (admission) return Promise.resolve({ admitted: admission });
     }
     if (this.waiters.length >= this.queueLength) {
@@ -144,6 +148,25 @@ export class Door {
 
   poke(): void {
     this.dispatch();
+  }
+
+  /**
+   * Run `fn` with the queue closed to re-entry. A poke that arrives while it
+   * runs — a retention callback firing inside `lease` — is deferred to one more
+   * pass afterwards, instead of walking the queue a second time at once.
+   */
+  private exclusive<T>(fn: () => T): T {
+    if (this.dispatching) return fn();
+    this.dispatching = true;
+    try {
+      return fn();
+    } finally {
+      this.dispatching = false;
+      if (this.redispatch) {
+        this.redispatch = false;
+        this.dispatch();
+      }
+    }
   }
 
   abortAll(reason: unknown = new Error('shutdown')): void {
@@ -242,6 +265,14 @@ export class Door {
 
   /** Admit the oldest eligible waiter, repeatedly, until none is eligible. */
   private dispatch(): void {
+    if (this.dispatching) {
+      this.redispatch = true;
+      return;
+    }
+    this.exclusive(() => this.dispatchOnce());
+  }
+
+  private dispatchOnce(): void {
     for (let i = 0; i < this.waiters.length; ) {
       const w = this.waiters[i];
       if (w.presented && this.retention.isGone(w.userId, w.sessionId)) {
