@@ -25,6 +25,10 @@
 import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import {
+  describeGatekeeperConfig,
+  gatekeeperConfig,
+} from './lib/gatekeeper-config';
+import {
   DEFAULT_MAX_THROTTLE_WAIT_MS,
   WaitIfShortEnough,
 } from './lib/throttle-strategy';
@@ -121,6 +125,10 @@ export interface AgentConfig {
 export function loadAgentConfig(): AgentConfig {
   const log = cds.log('agent-config');
 
+  // Validated here because this runs at startup. A malformed limit must stop
+  // the service before it takes traffic, not on the first request that meets it.
+  const gatekeeper = gatekeeperConfig();
+
   // LLM Configuration
   const provider = (process.env.LLM_AGENT_PROVIDER ||
     'sap-ai-sdk') as LlmProvider;
@@ -212,6 +220,7 @@ export function loadAgentConfig(): AgentConfig {
     maxIterations: config.agent.maxIterations,
     ragType: config.agent.ragType,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
+    gatekeeper: describeGatekeeperConfig(gatekeeper),
   });
 
   return config;
