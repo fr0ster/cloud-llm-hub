@@ -39,39 +39,20 @@ import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
   anthropicSessionClosed,
+  anthropicUnverifiedWrite,
   destinationClosedText,
+  type RecMcpHandle,
   retryAfterHeader,
   statusForError,
+  throttleMessage,
   throttleOf,
-  unverifiedWriteText,
+  unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { sessionIdOf, type WithSession } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
-
-/**
- * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
- * part of the library's `SmartAgentHandle` type — optional, since an
- * LLM-only handle (no destination) has no per-destination recMcp.
- */
-interface HandleWithRecMcp {
-  recMcp?: {
-    dropRequest(traceId?: string): void;
-    unanswered?(traceId: string): Array<{ call: { name: string } }>;
-  };
-}
-
-/** Writes dispatched under `traceId` that never got an answer, or `[]` when
- *  there is nothing to report (no handle, no recMcp, or no traceId yet). */
-function pendingWrites(
-  handle: unknown,
-  traceId: string | undefined,
-): Array<{ call: { name: string } }> {
-  if (!traceId) return [];
-  return (handle as HandleWithRecMcp)?.recMcp?.unanswered?.(traceId) ?? [];
-}
 
 /**
  * POST /v1/messages
@@ -314,15 +295,58 @@ export async function handleAnthropicMessages(
       res.on('close', () => clearInterval(keepAlive));
 
       try {
+        // `AnthropicApiAdapter.transformStream` turns an error chunk
+        // (`!chunk.ok`) into an ordinary `message_delta`/`message_stop` pair
+        // and returns — it never throws — so the `catch` below never sees a
+        // failure that arrived as a STREAM CHUNK (only an exception thrown by
+        // the pipeline itself). This wrapper is the only way to learn a chunk
+        // failed: it notes the first such error and passes every chunk
+        // through unchanged, so the adapter's own (already-correct) output is
+        // untouched either way.
+        let streamError: unknown;
         await runAgent(async () => {
-          const sseStream = adapter.transformStream(
-            handle.agent.streamProcess(messages, agentOpts),
-            context,
-          );
+          const source = handle.agent.streamProcess(messages, agentOpts);
+          const observed = (async function* () {
+            for await (const chunk of source) {
+              if (!chunk.ok && streamError === undefined) {
+                streamError = chunk.error;
+              }
+              yield chunk;
+            }
+          })();
+          const sseStream = adapter.transformStream(observed, context);
           for await (const event of sseStream) {
             out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
           }
         });
+
+        // Only append anything when a write is left unanswered — otherwise
+        // today's streamed output (the adapter's own message_delta/
+        // message_stop close) stays exactly as it is.
+        if (streamError !== undefined) {
+          const unverified = unverifiedWriteFor(handle, traceId, streamError);
+          if (unverified) {
+            if (isOutageError(streamError)) {
+              closeDestination(destination, describeCause(streamError));
+            }
+            const limit = throttleOf(streamError);
+            log.error('Stream error chunk', {
+              error: describeCause(streamError),
+              throttled: limit?.reason,
+            });
+            const text = limit
+              ? `${unverified} ${throttleMessage(limit)}`
+              : unverified;
+            out.write(
+              `event: error\ndata: ${JSON.stringify(
+                anthropicUnverifiedWrite(
+                  text,
+                  limit ? 'overloaded_error' : 'api_error',
+                ),
+              )}\n\n`,
+            );
+          }
+        }
       } catch (err) {
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
@@ -333,20 +357,13 @@ export async function handleAnthropicMessages(
         // channel is not. Closing in silence leaves the client with a truncated
         // stream and nothing to act on, which for a throttled request is the
         // one case where we know exactly what it should do next.
-        const pending = pendingWrites(handle, traceId);
-        const payload =
-          pending.length > 0
-            ? {
-                type: 'error' as const,
-                error: {
-                  type: 'api_error',
-                  message: unverifiedWriteText(
-                    pending.map((r) => r.call),
-                    describeCause(err),
-                  ),
-                },
-              }
-            : anthropicErrorPayload(err);
+        const unverified = unverifiedWriteFor(handle, traceId, err);
+        const payload = unverified
+          ? anthropicUnverifiedWrite(
+              limit ? `${unverified} ${throttleMessage(limit)}` : unverified,
+              limit ? 'overloaded_error' : 'api_error',
+            )
+          : anthropicErrorPayload(err);
         out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 
@@ -371,18 +388,23 @@ export async function handleAnthropicMessages(
         error: result.error.message,
         throttled: limit?.reason,
       });
-      const pending = pendingWrites(handle, traceId);
-      if (pending.length > 0) {
-        out.json(500, {
-          type: 'error',
-          error: {
-            type: 'api_error',
-            message: unverifiedWriteText(
-              pending.map((r) => r.call),
-              describeCause(result.error),
-            ),
-          },
-        });
+      const unverified = unverifiedWriteFor(handle, traceId, result.error);
+      if (unverified && limit) {
+        // Both apply: the write notice leads, the throttle sentence follows
+        // it — but the STATUS and Retry-After stay the throttle path's own.
+        // Dropping them to a flat 500 would silently take away the "come back
+        // in N seconds" fact a throttled caller still needs.
+        const retryAfter = retryAfterHeader(result.error);
+        if (retryAfter) out.setHeader('Retry-After', retryAfter);
+        out.json(
+          statusForError(result.error),
+          anthropicUnverifiedWrite(
+            `${unverified} ${throttleMessage(limit)}`,
+            'overloaded_error',
+          ),
+        );
+      } else if (unverified) {
+        out.json(500, anthropicUnverifiedWrite(unverified));
       } else if (limit) {
         const retryAfter = retryAfterHeader(result.error);
         if (retryAfter) out.setHeader('Retry-After', retryAfter);
@@ -402,7 +424,7 @@ export async function handleAnthropicMessages(
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
     // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
     pipeline.release();
   }
 }

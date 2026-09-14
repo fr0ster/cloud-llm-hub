@@ -51,8 +51,11 @@ import {
   destinationClosedText,
   executeStepDoorRefusal,
   failureText,
+  type RecMcpHandle,
   sessionClosedText,
-  unverifiedWriteText,
+  throttleMessage,
+  throttleOf,
+  unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 
@@ -100,28 +103,6 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts. Use it to track and budget what the executor spends across your plan.",
 ].join('\n');
-
-/**
- * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
- * part of the library's `SmartAgentHandle` type — optional, since an
- * LLM-only handle (no destination) has no per-destination recMcp.
- */
-interface HandleWithRecMcp {
-  recMcp?: {
-    dropRequest(traceId?: string): void;
-    unanswered?(traceId: string): Array<{ call: { name: string } }>;
-  };
-}
-
-/** Writes dispatched under `traceId` that never got an answer, or `[]` when
- *  there is nothing to report (no handle, no recMcp, or no traceId yet). */
-function pendingWrites(
-  handle: unknown,
-  traceId: string | undefined,
-): Array<{ call: { name: string } }> {
-  if (!traceId) return [];
-  return (handle as HandleWithRecMcp)?.recMcp?.unanswered?.(traceId) ?? [];
-}
 
 export interface AgentMcpResult {
   transport: StreamableHTTPServerTransport;
@@ -290,14 +271,13 @@ export async function executeStep(
         ok: false,
         destination: targetDestination,
       });
-      const pending = pendingWrites(handle, traceId);
-      const message =
-        pending.length > 0
-          ? unverifiedWriteText(
-              pending.map((p) => p.call),
-              describeCause(r.error),
-            )
-          : failureText(r.error);
+      const limit = throttleOf(r.error);
+      const unverified = unverifiedWriteFor(handle, traceId, r.error);
+      const message = unverified
+        ? limit
+          ? `${unverified} ${throttleMessage(limit)}`
+          : unverified
+        : failureText(r.error);
       return textResult(
         `ERROR on destination "${targetDestination}": ${message}`,
         true,
@@ -331,16 +311,9 @@ export async function executeStep(
     if (targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
     }
-    const pending = pendingWrites(handle, traceId);
+    const unverified = unverifiedWriteFor(handle, traceId, err);
     const message =
-      pending.length > 0
-        ? unverifiedWriteText(
-            pending.map((p) => p.call),
-            describeCause(err),
-          )
-        : err instanceof Error
-          ? err.message
-          : String(err);
+      unverified ?? (err instanceof Error ? err.message : String(err));
     log.warn('execute_step failed', { destination, error: message });
     return textResult(`ERROR: ${message}`, true);
   } finally {
@@ -353,7 +326,7 @@ export async function executeStep(
     if (pipeline) {
       // Free the per-trace telemetry bucket — nobody else calls dropRequest,
       // so omitting this leaks memory per call (Verified fact 10).
-      (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
     }
     pipeline?.release();
     releaseSemaphore?.();

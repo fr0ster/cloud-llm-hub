@@ -46,9 +46,10 @@ import {
   destinationClosedText,
   openAiDoorRefusal,
   openAiSessionClosed,
+  type RecMcpHandle,
   throttleMessage,
   throttleOf,
-  unverifiedWriteText,
+  unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
@@ -73,28 +74,6 @@ function mapStopReason(r: string): string {
 
 function jsonError(message: string, type: string): string {
   return JSON.stringify({ error: { message, type } });
-}
-
-/**
- * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
- * part of the library's `SmartAgentHandle` type — optional, since an
- * LLM-only handle (no destination) has no per-destination recMcp.
- */
-interface HandleWithRecMcp {
-  recMcp?: {
-    dropRequest(traceId?: string): void;
-    unanswered?(traceId: string): Array<{ call: { name: string } }>;
-  };
-}
-
-/** Writes dispatched under `traceId` that never got an answer, or `[]` when
- *  there is nothing to report (no handle, no recMcp, or no traceId yet). */
-function pendingWrites(
-  handle: unknown,
-  traceId: string | undefined,
-): Array<{ call: { name: string } }> {
-  if (!traceId) return [];
-  return (handle as HandleWithRecMcp)?.recMcp?.unanswered?.(traceId) ?? [];
 }
 
 /**
@@ -931,16 +910,18 @@ export async function handleChatCompletions(
                         causes,
                       });
                       const limit = throttleOf(err);
-                      const pending = pendingWrites(handle, traceId);
-                      const userMessage =
-                        pending.length > 0
-                          ? unverifiedWriteText(
-                              pending.map((r) => r.call),
-                              describeCause(err),
-                            )
-                          : limit
-                            ? throttleMessage(limit)
-                            : err.message;
+                      const unverified = unverifiedWriteFor(
+                        handle,
+                        traceId,
+                        err,
+                      );
+                      const userMessage = unverified
+                        ? limit
+                          ? `${unverified} ${throttleMessage(limit)}`
+                          : unverified
+                        : limit
+                          ? throttleMessage(limit)
+                          : err.message;
                       out.write(
                         `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                       );
@@ -1065,16 +1046,18 @@ export async function handleChatCompletions(
                     stack: err instanceof Error ? err.stack : undefined,
                   });
                   const streamLimit = throttleOf(err);
-                  const streamPending = pendingWrites(handle, traceId);
-                  const userMessage =
-                    streamPending.length > 0
-                      ? unverifiedWriteText(
-                          streamPending.map((r) => r.call),
-                          describeCause(err),
-                        )
-                      : streamLimit
-                        ? throttleMessage(streamLimit)
-                        : errMsg;
+                  const streamUnverified = unverifiedWriteFor(
+                    handle,
+                    traceId,
+                    err,
+                  );
+                  const userMessage = streamUnverified
+                    ? streamLimit
+                      ? `${streamUnverified} ${throttleMessage(streamLimit)}`
+                      : streamUnverified
+                    : streamLimit
+                      ? throttleMessage(streamLimit)
+                      : errMsg;
                   out.write(
                     `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                   );
@@ -1203,14 +1186,15 @@ export async function handleChatCompletions(
     }
 
     const resultLimit = result.ok ? undefined : throttleOf(result.error);
-    const resultPending = result.ok ? [] : pendingWrites(handle, traceId);
+    const resultUnverified = result.ok
+      ? undefined
+      : unverifiedWriteFor(handle, traceId, result.error);
     const finalContent = result.ok
       ? result.value.content || '(no response)'
-      : resultPending.length > 0
-        ? unverifiedWriteText(
-            resultPending.map((r) => r.call),
-            describeCause(result.error),
-          )
+      : resultUnverified
+        ? resultLimit
+          ? `${resultUnverified} ${throttleMessage(resultLimit)}`
+          : resultUnverified
         : resultLimit
           ? throttleMessage(resultLimit)
           : `Error: ${result.error.message}`;
@@ -1279,7 +1263,7 @@ export async function handleChatCompletions(
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
     // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
     pipeline.release();
   }
 }

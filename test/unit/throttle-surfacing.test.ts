@@ -5,6 +5,7 @@ import {
   statusForError,
   throttleMessage,
   throttleOf,
+  unverifiedWriteText,
 } from '../../srv/lib/throttle-surfacing';
 
 /**
@@ -231,6 +232,29 @@ describe('the wire shapes every channel sends', () => {
     expect(failureText(throttled(42))).toContain('42 seconds');
     expect(failureText(new Error('Class ZCL_X not found'))).toBe(
       'Class ZCL_X not found',
+    );
+  });
+});
+
+describe('unverifiedWriteText', () => {
+  it('uses singular "was sent" for one name', () => {
+    const text = unverifiedWriteText(
+      [{ name: 'CreateClass' }],
+      'socket hang up',
+    );
+    expect(text).toContain(
+      'UNVERIFIED_WRITE: CreateClass was sent and no answer came back (socket hang up)',
+    );
+    expect(text).toContain('It was NOT retried.');
+  });
+
+  it('uses plural "were sent" for several names', () => {
+    const text = unverifiedWriteText(
+      [{ name: 'CreateClass' }, { name: 'ActivateClass' }],
+      'timeout',
+    );
+    expect(text).toContain(
+      'UNVERIFIED_WRITE: CreateClass, ActivateClass were sent and no answer came back (timeout)',
     );
   });
 });

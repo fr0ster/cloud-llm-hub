@@ -12,6 +12,7 @@
  */
 
 import { findThrottled } from '@mcp-abap-adt/llm-agent';
+import { describeCause } from './mcp-outage';
 
 /**
  * Was this a rate limit, and for how long?
@@ -254,5 +255,54 @@ export function unverifiedWriteText(
   cause: string,
 ): string {
   const names = calls.map((c) => c.name).join(', ');
-  return `UNVERIFIED_WRITE: ${names} was sent and no answer came back (${cause}). It may or may not have been applied, so read the object back before deciding. It was NOT retried.`;
+  const verb = calls.length === 1 ? 'was sent' : 'were sent';
+  return `UNVERIFIED_WRITE: ${names} ${verb} and no answer came back (${cause}). It may or may not have been applied, so read the object back before deciding. It was NOT retried.`;
+}
+
+/**
+ * The shape a channel's `SmartAgentHandle` carries at runtime
+ * (`agent-manager.ts` attaches `recMcp`) but that is not part of the
+ * library's own type. Shared here so the three channels cast to ONE type
+ * instead of each declaring an identical local interface.
+ */
+export interface RecMcpHandle {
+  recMcp?: {
+    dropRequest(traceId?: string): void;
+    unanswered?(traceId: string): Array<{ call: { name: string } }>;
+  };
+}
+
+/**
+ * The unverified-write text for the failure at `traceId`, or `undefined` when
+ * there is nothing pending (no handle, no recMcp, no traceId yet, or simply no
+ * unanswered write) — so a call site can do
+ * `unverifiedWriteFor(handle, traceId, err) ?? <its existing failure text>`
+ * and leave every other failure text exactly as it was.
+ */
+export function unverifiedWriteFor(
+  handle: unknown,
+  traceId: string | undefined,
+  err: unknown,
+): string | undefined {
+  if (!traceId) return undefined;
+  const pending = (handle as RecMcpHandle)?.recMcp?.unanswered?.(traceId) ?? [];
+  if (pending.length === 0) return undefined;
+  return unverifiedWriteText(
+    pending.map((r) => r.call),
+    describeCause(err),
+  );
+}
+
+/**
+ * The Anthropic error envelope carrying an unverified-write message, built
+ * once here instead of inline at each Anthropic failure site. `type` defaults
+ * to `api_error`; pass `'overloaded_error'` when the same failure is also
+ * throttled, so the envelope still pairs with the throttled status (see
+ * `statusForError`).
+ */
+export function anthropicUnverifiedWrite(
+  text: string,
+  type: string = 'api_error',
+): { type: 'error'; error: { type: string; message: string } } {
+  return { type: 'error', error: { type, message: text } };
 }

@@ -360,3 +360,67 @@ describe('an unanswered write, non-streaming', () => {
     expect(text).toBe('Error: socket hang up');
   });
 });
+
+describe('an unanswered write, streaming error chunk', () => {
+  it('is named in the SSE error chunk and marked not retried', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: false, error: new Error('socket hang up') };
+    };
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('was NOT retried');
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+  });
+
+  it('leaves the ordinary error chunk text untouched when nothing is unanswered', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: false, error: new Error('socket hang up') };
+    };
+    harness.unanswered = [];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('socket hang up');
+    expect(res.body).not.toContain('UNVERIFIED_WRITE');
+  });
+});
+
+describe('an unanswered write, streaming exception', () => {
+  it('is named in the SSE error chunk and marked not retried', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      throw new Error('socket hang up');
+    };
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('was NOT retried');
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+  });
+
+  it('leaves the ordinary exception text untouched when nothing is unanswered', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      throw new Error('socket hang up');
+    };
+    harness.unanswered = [];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('socket hang up');
+    expect(res.body).not.toContain('UNVERIFIED_WRITE');
+  });
+});

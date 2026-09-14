@@ -206,3 +206,96 @@ describe('an unanswered write, non-streaming', () => {
     expect(text).toBe('socket hang up');
   });
 });
+
+describe('an unanswered write, streaming (swallowed error chunk)', () => {
+  // AnthropicApiAdapter.transformStream turns an error chunk into an ordinary
+  // message_delta/message_stop and returns — it never throws — so this path
+  // does NOT go through the handler's `catch`.
+  it('is named in a trailing SSE error event and marked not retried', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: false, error: new Error('socket hang up') };
+    };
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('event: error');
+    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('was NOT retried');
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+  });
+
+  it('leaves the streamed output unchanged when nothing is unanswered', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: false, error: new Error('socket hang up') };
+    };
+    harness.unanswered = [];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).not.toContain('event: error');
+    expect(res.body).not.toContain('UNVERIFIED_WRITE');
+  });
+});
+
+describe('an unanswered write, streaming exception', () => {
+  it('is named in the SSE error event and marked not retried', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      throw new Error('socket hang up');
+    };
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('event: error');
+    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('was NOT retried');
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+  });
+
+  it('leaves the ordinary exception payload untouched when nothing is unanswered', async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      throw new Error('socket hang up');
+    };
+    harness.unanswered = [];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(res.body).toContain('socket hang up');
+    expect(res.body).not.toContain('UNVERIFIED_WRITE');
+  });
+});
+
+describe('an unanswered write together with a throttle', () => {
+  it('leads with the write notice, keeps the throttled status and Retry-After', async () => {
+    configure();
+    const throttled = Object.assign(new Error('SAP AI SDK API error: 429'), {
+      throttled: true,
+      attempts: 5,
+      retryAfterSeconds: 42,
+      reason: 'budget',
+    });
+    harness.process = async () => ({ ok: false, error: throttled });
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const { res, done } = call(body());
+    await done;
+
+    expect(res.statusCode).toBe(529);
+    expect(res.headers['Retry-After']).toBe('42');
+    const payload = JSON.parse(res.body);
+    expect(payload.error.type).toBe('overloaded_error');
+    expect(payload.error.message).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(payload.error.message).toContain('42 seconds');
+  });
+});
