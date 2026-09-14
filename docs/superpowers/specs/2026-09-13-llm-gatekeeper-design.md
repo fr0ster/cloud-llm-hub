@@ -296,8 +296,34 @@ So the second term gets its own bound, and a different kind of one. Capacity is
 a **refusal**; retention is an **eviction**. When the retained count is full the
 least recently used idle session is dropped to make room — losing an idle
 conversation is a cost a caller can recover from by asking again, and refusing
-a new caller because someone stopped typing half an hour ago is not. Nothing is
-ever evicted while it holds a slot.
+a new caller because someone stopped typing half an hour ago is not.
+
+**Idle means nothing is working on the session, and the slot does not say
+that.** An earlier draft made the slot the whole test — nothing is evicted
+while it holds one — and that reads correctly only as long as every operation
+on a session's state runs inside a pipeline. `POST /v1/rag/collections` and the
+rest of `/v1/rag/*` are deliberately the exception: they take no slot, because
+they start no pipeline. So a session in the middle of a bulk upload, a query or
+a delete looks idle to an LRU that asks only about slots, and being in the
+middle of an upload is the moment it is least idle. Worse, the upload makes its
+own eviction *likelier*: it takes minutes, other sessions are touched while it
+runs, and the session being written to sinks to the bottom of the recency
+order. The eviction would then delete the registry entry, the backend and the
+directory out from under an operation still writing to them.
+
+So the thing eviction must not touch is not a slot but a **retention lease**,
+taken for the duration of any operation on session-scoped state and released
+when it settles. A pipeline slot implies one, which is how the admitted path
+keeps exactly the protection it had; a RAG request takes one directly, for as
+long as it runs. Both automatic deletion paths — the LRU and the
+twenty-four-hour TTL sweep — consider only sessions with no lease. The sweep
+skips a leased session rather than waiting for it: the next sweep collects it,
+and a collection outliving its TTL by one interval costs nothing, while
+deleting a session mid-write costs the write.
+
+Explicit deletion is not gated by the lease. Logout and clear-chat are the
+caller asking for their own state to go, and a logout that blocked until an
+upload finished would be a worse answer than the race it avoids.
 
 **Evicting a session means evicting all of it**, and a bound that dropped only
 the `sessionStore` entry would be theatre: the documents in that session's
@@ -454,7 +480,7 @@ This repository owns the shape; whoever deploys owns the values.
 |---|---|---|
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | positive integer: how many sessions may be live at once, across every channel | no door on the chat channels; `execute_step` keeps its existing semaphore of two |
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | positive integer: how many callers may wait for a slot | the capacity, which absorbs a burst without storing a backlog |
-| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history. The least recently used **idle** one is evicted to make room; a session holding a slot is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`, and may not be smaller than it | unbounded, as today |
+| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history. The least recently used **idle** one is evicted to make room; a session is idle only when nothing holds a lease on it — no pipeline slot, and no RAG operation in flight. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`, and may not be smaller than it | unbounded, as today |
 
 **Absent means off, malformed means refuse to start.** An unset variable
 disables what it configures and the service behaves exactly as today. A value
@@ -498,6 +524,18 @@ impossible rather than resolved: every live session has a retention place by
 construction, so eviction only ever has idle candidates to choose from. It also
 reads as what it is — you cannot retain fewer conversations than you can hold
 at once, and you cannot bound retention at all without bounding how many run.
+
+**`retained >= capacity` is the floor, and with RAG traffic it is not the
+right number.** The constraint makes a retention place certain for sessions
+that hold *slots*. Leases widen the set that cannot be evicted past that: a
+session being uploaded to holds a retention place and refuses eviction while
+holding no slot, so a cap set to exactly the capacity can be filled by fewer
+live sessions than there are slots, and an admitted caller can be refused for
+want of a place to remember them. This is the honest consequence of protecting
+the upload, and it is not resolved by arithmetic — it is why the cap is a
+separate variable merely required not to be smaller, rather than being derived
+from the capacity. A deployment serving `/v1/rag/*` sets it above the capacity
+by the number of concurrent uploads it expects.
 
 The values in force are logged at startup. A limit only shows itself under load,
 and by then nobody remembers what was configured.
@@ -666,6 +704,18 @@ These properties, because they are what this shape gets wrong.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
   a new session evicts the least recently used idle one, and never one holding
   a slot.
+- **A session being worked on is not evicted, slot or no slot.** Hold a RAG
+  upload open on the least recently used session, fill the cap, and make a
+  concurrent reservation: the reservation is refused or waits, the upload
+  finishes, and the collection, its backend and its directory are all still
+  there. Run the same shape for a query and for a delete. This is the test the
+  slot-only rule passed while being wrong, because a RAG session holds no slot
+  and a long upload is exactly what sinks it to the bottom of the recency
+  order.
+- **The TTL sweep skips a leased session and takes it on the next pass.**
+  Expire a session while an operation on it is in flight: the sweep leaves it,
+  the operation completes against live state, and the following sweep deletes
+  it — directory included.
 - **An evicted session is gone from every store, and off the disk.** After
   eviction its turns, its bookkeeping entries and its session collections are
   absent — and each collection's directory is gone, not merely its registry
