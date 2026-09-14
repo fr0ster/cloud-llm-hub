@@ -75,7 +75,16 @@ Each phase leaves the service working and tested; a later phase may be deferred 
 - Produces:
   - `export interface Permit { giveBack(): void }`
   - `export interface QuotaLimits { limit: number; windowMs: number }`
-  - `export class QuotaGate { constructor(limits: QuotaLimits, now?: () => number); acquire(signal?: AbortSignal): Promise<Permit>; get liveStarts(): number; get waiting(): number; stop(): void }`
+  - ```ts
+    export class QuotaGate {
+      constructor(limits: QuotaLimits, now?: () => number);
+      acquire(signal?: AbortSignal, opts?: { notBefore?: number }): Promise<Permit>;
+      msUntilNextOpening(): number;
+      get liveStarts(): number;
+      get waiting(): number;
+      stop(reason?: unknown): void;
+    }
+    ```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -225,6 +234,12 @@ export class QuotaGate {
    * own, because how long anyone may be held is not ours to decide.
    */
   acquire(signal?: AbortSignal, opts?: { notBefore?: number }): Promise<Permit> {
+    // Nothing is admitted after the gate stops. Without this a caller arriving
+    // during shutdown either takes a place nobody will account for, or parks in
+    // a queue whose timer is gone and waits for ever.
+    if (this.stopped) {
+      return Promise.reject(new Error('Gate stopped'));
+    }
     if (signal?.aborted) {
       return Promise.reject(signal.reason ?? new Error('Aborted'));
     }
@@ -277,8 +292,19 @@ export class QuotaGate {
     this.trim();
     const now = this.now();
     const spacing = Math.ceil(this.limits.windowMs / this.limits.limit);
-    const newest =
-      this.starts.length > this.head ? this.starts[this.starts.length - 1] : undefined;
+    // The newest LIVE start. A permit given back is not a start at all, and
+    // `trim` only drops dead nodes from the head — so a returned permit sitting
+    // at the tail would otherwise push the next retry out by a whole spacing
+    // for a request that never reached the wire. The scan is over the tail and
+    // stops at the first live node; dead ones are rare, being only the
+    // library's pre-wire refusals.
+    let newest: StartNode | undefined;
+    for (let i = this.starts.length - 1; i >= this.head; i--) {
+      if (!this.starts[i].dead) {
+        newest = this.starts[i];
+        break;
+      }
+    }
     const untilSpaced = newest === undefined ? 0 : Math.max(0, newest.at + spacing - now);
 
     const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
@@ -578,6 +604,31 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
     jest.useRealTimers();
   });
 
+  it('paces from the newest live start, not from a returned permit', async () => {
+    // A permit given back was never a start. Reading it as the newest would
+    // push the next retry out by a whole spacing for a request that never
+    // reached the wire — and `trim` cannot help, because it only drops dead
+    // nodes from the head, and this one is at the tail.
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
+    await gate.acquire(); // a real start, stays live
+    clock.advance(6_000);
+    const returned = await gate.acquire();
+    returned.giveBack();
+    // Six seconds have passed since the only live start, so a retry may go now.
+    expect(gate.msUntilNextOpening()).toBe(0);
+    gate.stop();
+  });
+
+  it('admits nobody once it has stopped', async () => {
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
+    gate.stop();
+    // Places were free, which is exactly how this would have gone unnoticed:
+    // a permit handed out after shutdown that nothing will ever account for.
+    await expect(gate.acquire()).rejects.toThrow(/stopped/i);
+  });
+
   it('turns away everyone still parked when it stops', async () => {
     // stop() runs on shutdown and from clearQuotaRegistry. A waiter left
     // holding an unsettled promise would hang its pipeline for the life of the
@@ -631,7 +682,7 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: PASS, 14 tests.
+Expected: PASS, 16 tests.
 
 > **On the hot path being constant-time.** The queue is a serialisation point,
 > so `shift`, `find`, `indexOf` and `splice` are all wrong here — each is linear
@@ -1002,7 +1053,9 @@ git commit -m "feat(gatekeeper): quotas come from configuration, and a malformed
 - Test: `test/unit/gated-llm.test.ts`
 
 **Interfaces:**
-- Consumes: `gateForModel`, `QuotaGate`, `Permit` from Tasks 1–2.
+- Consumes: `quotaForModel`, `QuotaGate`, `Permit` from Tasks 1–2, and `recordAdmittedWait` from `srv/lib/gatekeeper-metrics.ts`.
+
+> Create `srv/lib/gatekeeper-metrics.ts` here with `recordAdmittedWait` and `clearGatekeeperMetrics` only — the rest of its surface arrives in Task 13. A task may not call into a module a later one creates, and this is the only place that knows both the quota key and the wait.
 - Produces:
   - `export function gateLlm(inner: ILlm, model: string): ILlm`
   - `export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder`
@@ -1145,7 +1198,8 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { Permit } from './quota-gate';
-import { gateForModel } from './quota-registry';
+import { recordAdmittedWait } from './gatekeeper-metrics';
+import { quotaForModel } from './quota-registry';
 
 /**
  * One permit per HTTP attempt, taken as close to the wire as we can get.
@@ -1198,9 +1252,17 @@ async function runGated<T>(
 ): Promise<T> {
   let nextAttemptAt = 0;
   for (;;) {
-    const gate = gateForModel(model);
+    const quota = quotaForModel(model);
     let permit: Permit | undefined;
-    if (gate) permit = await gate.acquire(signal, { notBefore: nextAttemptAt });
+    if (quota) {
+      const askedAt = Date.now();
+      permit = await quota.gate.acquire(signal, { notBefore: nextAttemptAt });
+      // Measured here because here is the only place that knows both halves:
+      // the key the call spends against, and how long it actually waited for
+      // its place. Filed under the key, never the model name, so two models
+      // sharing a quota report as one.
+      recordAdmittedWait(quota.key, Date.now() - askedAt);
+    }
 
     const { value, throttled } = await attempt();
     const limit = throttled ? findThrottled(throttled) : undefined;
@@ -1216,7 +1278,7 @@ async function runGated<T>(
     const delayMs =
       seconds !== undefined && Number.isFinite(seconds)
         ? seconds * 1000
-        : (gate?.msUntilNextOpening() ?? 0);
+        : (quota?.gate.msUntilNextOpening() ?? 0);
 
     // The retry waits INSIDE the queue, not beside it. Sleeping out here and
     // re-acquiring afterwards would drop this call to the back behind every
@@ -1224,7 +1286,7 @@ async function runGated<T>(
     // same place. With no gate configured there is no queue to wait in, so the
     // sleep is all there is.
     nextAttemptAt = Date.now() + delayMs;
-    if (!gate) await wait(delayMs, signal);
+    if (!quota) await wait(delayMs, signal);
   }
 }
 
@@ -1255,10 +1317,15 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
       // not ours to replay.
       let nextAttemptAt = 0;
       for (;;) {
-        const gate = gateForModel(model);
-        const permit = gate
-          ? await gate.acquire(options?.signal, { notBefore: nextAttemptAt })
-          : undefined;
+        const quota = quotaForModel(model);
+        let permit: Permit | undefined;
+        if (quota) {
+          const askedAt = Date.now();
+          permit = await quota.gate.acquire(options?.signal, {
+            notBefore: nextAttemptAt,
+          });
+          recordAdmittedWait(quota.key, Date.now() - askedAt);
+        }
         let yielded = 0;
         let reopen: { waitMs: number } | undefined;
 
@@ -1279,7 +1346,7 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
             waitMs:
               seconds !== undefined && Number.isFinite(seconds)
                 ? seconds * 1000
-                : (gate?.msUntilNextOpening() ?? 0),
+                : (quota?.gate.msUntilNextOpening() ?? 0),
           };
           break;
         }
@@ -1288,7 +1355,7 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
         // As in `runGated`: the wait happens inside the queue so the place is
         // kept, unless there is no gate at all to keep it in.
         nextAttemptAt = Date.now() + reopen.waitMs;
-        if (!gate) await wait(reopen.waitMs, options?.signal);
+        if (!quota) await wait(reopen.waitMs, options?.signal);
       }
     },
   };
@@ -2884,7 +2951,7 @@ git commit -m "feat(outage): a lost connection is raised as one, not left to rea
 
 **Files:**
 - Modify: `srv/agent-manager.ts` (destination state gains `nextProbeAt`; the probe scheduler records it), `srv/lib/throttle-surfacing.ts` (the refusal)
-- Test: `test/unit/destination-closed.test.ts`
+- Test: `test/unit/destination-closed.test.ts`, `test/unit/destination-close-wiring.test.ts`
 
 **Interfaces:**
 - Consumes: `isUnavailable` from Task 9.
@@ -3073,19 +3140,103 @@ export function destinationClosedText(destination: string): string {
 }
 ```
 
-- [ ] **Step 6: Close it when the classifier says so**
+- [ ] **Step 6: Close it from the three error paths, by name**
 
-Where a step or chat turn ends in failure, consult the classifier once:
+"Where a turn ends in failure" is not an instruction — the three channels
+receive a failure in three different shapes, and a plan that waves at them
+leaves the production path unwired while the unit tests, which call
+`closeDestination` themselves, stay green.
+
+**`srv/agent-mcp.ts`** — the `catch` around the step execution, before the
+failure text is composed and before the `finally` tears down:
 
 ```ts
-  if (isUnavailable(err)) closeDestination(destination, describeCause(err));
+      } catch (err) {
+        // The one place this channel learns a step failed. `destination` is
+        // already in scope here, resolved above from the argument or the
+        // header.
+        if (isUnavailable(err)) closeDestination(destination, describeCause(err));
+        return textResult(failureText(err), true);
+      }
 ```
 
-- [ ] **Step 7: Run, lint, commit**
+**`srv/openai-handler.ts` and `srv/anthropic-handler.ts`** — two places each,
+because a failure arrives either as a thrown error or as an error chunk:
+
+```ts
+  // 1. the handler's own catch, around the pipeline call
+  } catch (err) {
+    if (isUnavailable(err)) closeDestination(destAfter, describeCause(err));
+    ...
+
+  // 2. the streaming loop, where a chunk carries the failure instead
+  if (!chunk.ok) {
+    if (isUnavailable(chunk.error)) {
+      closeDestination(destAfter, describeCause(chunk.error));
+    }
+    ...
+```
+
+`destAfter` is the destination the connection was established for, already
+resolved in both handlers. `describeCause` is the existing helper; where a
+channel does not import it, use the error's message.
+
+- [ ] **Step 7: Assert the production paths are wired**
+
+Create `test/unit/destination-close-wiring.test.ts`:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+/**
+ * Structural, deliberately. The unit tests for `closeDestination` call it
+ * themselves, so they pass whether or not anything in production ever does —
+ * which is the failure this file exists to catch.
+ */
+const read = (f: string) => readFileSync(join(__dirname, '../../srv', f), 'utf8');
+
+describe('every channel closes a destination it finds unreachable', () => {
+  for (const file of ['agent-mcp.ts', 'openai-handler.ts', 'anthropic-handler.ts']) {
+    it(`${file} consults the classifier and closes on it`, () => {
+      const src = read(file);
+      expect(src).toMatch(/isUnavailable\(/);
+      expect(src).toMatch(/closeDestination\(/);
+    });
+  }
+
+  it('covers both shapes a chat failure arrives in', () => {
+    for (const file of ['openai-handler.ts', 'anthropic-handler.ts']) {
+      // A thrown error and an error chunk are different paths; wiring one and
+      // not the other leaves a whole transport silently open.
+      expect(read(file).match(/isUnavailable\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    }
+  });
+});
+```
+
+and a behavioural one, appended to `test/unit/destination-closed.test.ts`:
+
+```ts
+describe('the classifier closes the destination it names', () => {
+  it('turns an unavailability error into a closed destination', () => {
+    const mod = load();
+    const { McpUnavailableError, isUnavailable } =
+      require('../../srv/lib/mcp-outage') as typeof import('../../srv/lib/mcp-outage');
+    const err = new McpUnavailableError('S4HANA_DEV', 'tunnel down');
+    expect(isUnavailable(err)).toBe(true);
+    mod.closeDestination('S4HANA_DEV', err.message);
+    expect(mod.isDestinationClosed('S4HANA_DEV')).toBe(true);
+    expect(mod.isDestinationClosed('S4HANA_QAS')).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 8: Run, lint, commit**
 
 ```bash
-npx jest test/unit/destination-closed.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/agent-manager.ts srv/lib/throttle-surfacing.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts test/unit/destination-closed.test.ts
+npx jest test/unit/destination-closed.test.ts test/unit/destination-close-wiring.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/agent-manager.ts srv/lib/throttle-surfacing.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts test/unit/destination-closed.test.ts test/unit/destination-close-wiring.test.ts
 git add -A
 git commit -m "feat(outage): a closed destination refuses arrivals, with the time until we next look"
 ```
@@ -3554,6 +3705,28 @@ describe('gatekeeper metrics', () => {
     delete process.env.LLM_GATEKEEPER_QUOTAS;
   });
 
+  it('records a real queued wait, not only a hand-made one', async () => {
+    // Through the wrapper, not the recorder: a unit test that calls
+    // recordAdmittedWait directly passes while nothing in production ever does.
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1, windowMs: 50 } });
+    const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
+    registry.clearQuotaRegistry();
+    const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
+    const mod = load();
+    const llm = gated.gateLlm(
+      {
+        model: 'm',
+        chat: async () => ({ ok: true as const, value: { content: 'ok', finishReason: 'stop' as const } }),
+        streamChat: async function* () {},
+      } as never,
+      'm',
+    );
+    await llm.chat([]);
+    await llm.chat([]); // the second one queues behind the first
+    expect(mod.gatekeeperSnapshot().quotas.m.lastWaitMs).toBeGreaterThan(0);
+    delete process.env.LLM_GATEKEEPER_QUOTAS;
+  });
+
   it('aggregates models that share a quota into one scope', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
     process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({
@@ -3700,7 +3873,7 @@ export function callerlessCount(): number {
 
 - [ ] **Step 4: Emit at each refusal**
 
-Call `recordDoorRefusal()` at each of the three places a `DoorFullError` is answered — `execute_step` and both chat channels — `recordCollisionRefusal()` where `PipelineInFlightError` is answered, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
+`recordAdmittedWait` is already called from `gateLlm` in Task 3, which is the only place that knows both the quota key and the wait. What remains here: call `recordDoorRefusal()` at each of the three places a `DoorFullError` is answered — `execute_step` and both chat channels — `recordCollisionRefusal()` where `PipelineInFlightError` is answered, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
 
 > These calls are added **here**, not in the tasks that created those refusals. Each task has to end green on its own, and a task cannot call into a module a later one creates.
 
@@ -3841,8 +4014,8 @@ In `srv/lib/gated-llm.ts`, add to the object `gateLlm` returns:
   if (inner.healthCheck) {
     const innerHealth = inner.healthCheck.bind(inner);
     gated.healthCheck = async (options?: CallOptions) => {
-      const gate = gateForModel(model);
-      const permit = gate ? await gate.acquire(options?.signal) : undefined;
+      const quota = quotaForModel(model);
+      const permit = quota ? await quota.gate.acquire(options?.signal) : undefined;
       const result = await innerHealth(options);
       if (!result.ok && findThrottled(result.error)?.attempts === 0) {
         permit?.giveBack();
