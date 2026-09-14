@@ -310,10 +310,21 @@ operation already half exists: `srv/server.ts` and `srv/openai-handler.ts` both
 call `deleteSessionCollections` on logout and on clear-chat, so what is missing
 is one place that does all of it rather than each caller remembering the list.
 
-**And `lastDestinationBySession` is cleared by nobody today**
-(`srv/agent-manager.ts` deletes `sessionTopicMap` and not its neighbour), which
-is a small unbounded map and exactly the kind of thing a single eviction path
-stops accumulating.
+**And two of those stores are not keyed the way this design assumes.**
+`sessionTopicMap` and `lastDestinationBySession` (`srv/agent-manager.ts`) are
+keyed by the session id **alone**, and their accessors take nothing else. Two
+users whose sessions carry the same id already share those entries today — so
+one user's destination can be read for another's request, and evicting one
+would delete the other's bookkeeping. That contradicts the guarantee two
+sections above, which is that two users cannot collide whatever they send.
+
+So both maps move to `(userId, sessionId)`, accessors included, and that is a
+prerequisite of the eviction path rather than a tidy-up beside it: a central
+eviction over a key the store does not use would delete the wrong entries
+precisely when two users collide, which is the case it exists to handle.
+`lastDestinationBySession` is also cleared by nobody today — the neighbouring
+`sessionTopicMap` is deleted and it is not — which one eviction path fixes on
+the way past.
 
 ### Why the queue's length is derived
 
@@ -451,6 +462,26 @@ that will not parse, or is not a positive integer, fails at startup naming the
 variable: somebody intending a limit and not getting one is the failure this
 design exists to make visible. The precedent is
 `LLM_AGENT_THROTTLE_MAX_WAIT_MS`, which already does this.
+
+**Retention is reserved by whatever creates a session, not only by the door.**
+`POST /v1/rag/collections` mints a session and stores documents under it without
+going through admission, because it starts no pipeline and has no business
+taking a slot. But it does take **retention**, and an earlier draft bounded
+retention only along the admitted path: with a capacity of two, a retention cap
+of two, and both sessions running, a third such request would create a third
+retained session with nothing evictable — the cap exceeded by a route that
+never saw it.
+
+So the reservation is taken wherever session-scoped state is first created, and
+a request that would exceed the cap with nothing idle to evict is refused. Not
+with the door's refusal, which is about pipelines: this one says there is no
+room to remember another session, in the same shape and with the same absence
+of a number, because how long the sessions ahead will be held is no more
+measurable than how long they will run.
+
+`retained >= capacity` then keeps its meaning for the path that matters most:
+an **admitted** session always has a retention place, so admission never fails
+for want of memory to remember it.
 
 **Retention requires a capacity, and may not be smaller than it.** Both are
 checked at startup. A retention cap on its own is the same broken arithmetic
@@ -638,6 +669,15 @@ These properties, because they are what this shape gets wrong.
 - **Retention below capacity, or without one, is refused at startup.** Naming
   both variables, because the alternative is a running service that must break
   one of them.
+- **A RAG route cannot exceed the retention cap.** With capacity and retention
+  both at two and both sessions running, a `POST /v1/rag/collections` that would
+  create a third session is refused rather than making one — the route bypasses
+  the door legitimately and must not bypass the count.
+- **Eviction deletes one user's state and not another's.** Two users whose
+  sessions share an id: evicting the first leaves the second's turns,
+  collections and bookkeeping intact. Written because two of those stores are
+  keyed by the session alone today, and a central eviction over a composite key
+  would otherwise delete the wrong rows in exactly this case.
 - **A cap filled entirely by live sessions evicts nothing.** With retention
   equal to capacity and every slot taken, no eviction happens and no admitted
   session loses its history — the case that has no correct answer if the two
