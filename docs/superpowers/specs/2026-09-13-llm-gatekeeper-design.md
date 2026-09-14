@@ -548,8 +548,9 @@ may be best-effort: it does not wait for the register before the process exits.
 
 ## When a dependency is down
 
-The door refuses because we are full. This is the other refusal: we are not
-full, we are not able.
+The door refuses because something it rations is spoken for — a slot, a
+session, a retention place. This is the other refusal: nothing is spoken for,
+we are not able.
 
 **The connector already catches it and writes the verdict down.**
 `CloudSdkAbapConnection` puts its failures through `classifyProbe` and appends
@@ -595,7 +596,7 @@ This repository owns the shape; whoever deploys owns the values.
 | Variable | Meaning | Absent |
 |---|---|---|
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | positive integer: how many sessions may be live at once, across every channel | no door on the chat channels; `execute_step` keeps its existing semaphore of two |
-| `LLM_GATEKEEPER_QUEUE_LENGTH` | positive integer: how many callers may wait for a slot | the capacity, which absorbs a burst without storing a backlog |
+| `LLM_GATEKEEPER_QUEUE_LENGTH` | positive integer: how many callers may wait to be admitted — for a slot, their session, or a retention place | the capacity, which absorbs a burst without storing a backlog |
 | `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history. The least recently used **idle** one is evicted to make room; a session is idle only when nothing holds a lease on it — no pipeline slot, and no RAG operation in flight. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`, and may not be smaller than it | unbounded, as today |
 
 **Absent means off, malformed means refuse to start.** An unset variable
