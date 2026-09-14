@@ -170,3 +170,68 @@ export function doorRefusalSentence(reason: DoorRefusalReason): string {
 export function sessionClosedText(): string {
   return 'This session is being deleted. Send the request again to start a new one.';
 }
+
+/** A refusal a handler writes as-is: a status and a JSON body, and no headers. */
+export interface HttpRefusal {
+  status: number;
+  body: unknown;
+}
+
+/** `/v1/chat/completions`. */
+export function openAiDoorRefusal(reason: DoorRefusalReason): HttpRefusal {
+  return {
+    status: 503,
+    body: {
+      error: {
+        message: doorRefusalSentence(reason),
+        type: 'server_error',
+        code: `gatekeeper_${reason}`,
+      },
+    },
+  };
+}
+
+/**
+ * `/v1/messages`. `overloaded_error` under `529` is the dialect's own pairing,
+ * argued above for throttling. The envelope has no field for a reason, so the
+ * reason travels in the sentence.
+ */
+export function anthropicDoorRefusal(reason: DoorRefusalReason): HttpRefusal {
+  return {
+    status: 529,
+    body: {
+      type: 'error',
+      error: { type: 'overloaded_error', message: doorRefusalSentence(reason) },
+    },
+  };
+}
+
+/** `execute_step`: a failure line whose prefix a planner can branch on. */
+export function executeStepDoorRefusal(reason: DoorRefusalReason): string {
+  return `gatekeeper_${reason}: ${doorRefusalSentence(reason)}`;
+}
+
+/** A chat request whose session was closed after the middleware accepted it. */
+export function openAiSessionClosed(): HttpRefusal {
+  return {
+    status: 410,
+    body: {
+      error: {
+        message: sessionClosedText(),
+        type: 'invalid_request_error',
+        code: 'session_closed',
+      },
+    },
+  };
+}
+
+/** The same, in the Anthropic envelope. */
+export function anthropicSessionClosed(): HttpRefusal {
+  return {
+    status: 410,
+    body: {
+      type: 'error',
+      error: { type: 'invalid_request_error', message: sessionClosedText() },
+    },
+  };
+}
