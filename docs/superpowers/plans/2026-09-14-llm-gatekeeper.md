@@ -1185,6 +1185,29 @@ describe('gateLlm — nothing configured', () => {
     expect(result.ok).toBe(true);
     expect(inner.calls()).toBe(1);
   });
+
+  it('reports a 429 that named nothing, instead of retrying at once', async () => {
+    // With no window there is nothing to pace against, so a zero delay would
+    // turn one refusal into a storm against a provider that had just asked us
+    // to stop.
+    const { gated } = load();
+    const inner = scriptedLlm([throttled(undefined)]);
+    const result = await gated.gateLlm(inner, 'm').chat([]);
+    expect(result.ok).toBe(false);
+    expect(inner.calls()).toBe(1);
+  });
+
+  it('reports a 429 that named an interval, instead of waiting it out', async () => {
+    // Waiting here would be unbounded: the ceiling that used to make it safe
+    // went with WaitIfShortEnough, and there is no door in front to justify it.
+    const { gated } = load();
+    const inner = scriptedLlm([throttled(600)]);
+    const started = Date.now();
+    const result = await gated.gateLlm(inner, 'm').chat([]);
+    expect(result.ok).toBe(false);
+    expect(inner.calls()).toBe(1);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
 });
 ```
 
@@ -1228,30 +1251,6 @@ import { quotaForModel } from './quota-registry';
 export const REQUEUE_REASON = 'no-interval';
 
 /**
- * Sleep, honouring the caller's signal, which is the only bound here.
- *
- * On abort this REJECTS with the signal's reason, the same as
- * `QuotaGate.acquire`. Resolving instead would drop the caller back into the
- * loop, which would return the throttled value it was waiting out — a shutdown
- * arriving as a 429 for an LLM, and as a fabricated embedding for an embedder.
- */
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Aborted'));
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason ?? new Error('Aborted'));
-      },
-      { once: true },
-    );
-  });
-}
-
-/**
  * Run one gated operation: take a permit, attempt, and decide from the result.
  *
  * A throttled failure whose `attempts` is 0 never reached the wire — the
@@ -1277,23 +1276,32 @@ async function runGated<T>(
 
     if (limit.attempts === 0) permit?.giveBack();
 
-    // How long before this call may go again. Exactly what the server named,
-    // however long — a ceiling here would kill work the door has promised to
-    // carry — or, when it named nothing, our own configured rate. We may not
-    // invent an interval and do not have to.
+    // With nothing configured there is no gate, no queue and no door — so
+    // there is no admitted pipeline whose completion anyone promised, and
+    // nothing to wait in. The failure goes back as it arrived and the caller
+    // decides, which is what "absent means off" has to mean here.
+    //
+    // The alternative was worse in both directions. A no-interval 429 would
+    // have looped with a zero delay, turning one refusal into a retry storm
+    // against a provider that had just asked us to stop; and an interval would
+    // have been waited out with no ceiling, where the ceiling removed with
+    // `WaitIfShortEnough` was the only thing that had made waiting safe.
+    if (!quota) return value;
+
+    // Exactly what the server named, however long — a ceiling here would kill
+    // work the door has promised to carry — or, when it named nothing, our own
+    // configured rate. We may not invent an interval and do not have to.
     const seconds = limit.retryAfterSeconds;
     const delayMs =
       seconds !== undefined && Number.isFinite(seconds)
         ? seconds * 1000
-        : (quota?.gate.msUntilNextOpening() ?? 0);
+        : quota.gate.msUntilNextOpening();
 
     // The retry waits INSIDE the queue, not beside it. Sleeping out here and
     // re-acquiring afterwards would drop this call to the back behind every
     // newcomer, and would wake every throttled caller at once to race for the
-    // same place. With no gate configured there is no queue to wait in, so the
-    // sleep is all there is.
+    // same place.
     nextAttemptAt = Date.now() + delayMs;
-    if (!quota) await wait(delayMs, signal);
   }
 }
 
@@ -1346,12 +1354,17 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
             return;
           }
           if (limit.attempts === 0) permit?.giveBack();
+          if (!quota) {
+            // As above: with no gate there is nothing to wait in.
+            yield chunk;
+            return;
+          }
           const seconds = limit.retryAfterSeconds;
           reopen = {
             waitMs:
               seconds !== undefined && Number.isFinite(seconds)
                 ? seconds * 1000
-                : (quota?.gate.msUntilNextOpening() ?? 0),
+                : quota.gate.msUntilNextOpening(),
           };
           break;
         }
@@ -1360,7 +1373,6 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
         // As in `runGated`: the wait happens inside the queue so the place is
         // kept, unless there is no gate at all to keep it in.
         nextAttemptAt = Date.now() + reopen.waitMs;
-        if (!quota) await wait(reopen.waitMs, options?.signal);
       }
     },
   };
@@ -1628,7 +1640,7 @@ describe('gateLlm — one transport attempt per entry', () => {
 });
 ```
 
-- [ ] **Step 6: Retire the now-unused ceiling**
+- [ ] **Step 6: Retire the now-unused ceiling, and everything that referenced it**
 
 `WaitIfShortEnough` and `LLM_AGENT_THROTTLE_MAX_WAIT_MS` have no caller left:
 every LLM comes from `buildGatedLlm`, which hands the provider
@@ -1636,6 +1648,15 @@ every LLM comes from `buildGatedLlm`, which hands the provider
 field from `srv/agent-config.ts`, and the "configured wait ceiling" block from
 `test/unit/throttle-surfacing.test.ts`. Leaving a dead ceiling in the
 configuration would read as a setting that still does something.
+
+**Three test files reference it, not one.** `test/unit/executor-worker.test.ts`
+and `test/unit/agent-controller-wiring.test.ts` both import
+`WaitIfShortEnough` and set `whenThrottled: new WaitIfShortEnough(20_000)` in
+their `AgentConfig` fixtures. Deleting the module without them fails the suite
+on `Cannot find module`, and deleting the field leaves two fixtures describing
+a config shape that no longer exists. Drop the import and the line from each;
+the fixtures need no replacement, because the provider's strategy is no longer
+a consumer concern.
 
 - [ ] **Step 7: Run the test to verify it passes**
 
@@ -1744,7 +1765,7 @@ Expected: PASS, 14 and 6 tests, and the existing suite stays green.
 - [ ] **Step 11: Lint, typecheck, commit**
 
 ```bash
-npx biome check --write srv/agent-manager.ts srv/agent-config.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/lib/throttle-surfacing.ts test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts
+npx biome check --write srv/agent-manager.ts srv/agent-config.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/lib/throttle-surfacing.ts test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts test/unit/executor-worker.test.ts test/unit/agent-controller-wiring.test.ts test/unit/throttle-surfacing.test.ts
 npm run test:check
 git add -A
 git commit -m "feat(gatekeeper): every model passes the window, and the provider absorbs nothing"
@@ -4726,7 +4747,13 @@ State the guarantee in one line: a caller is either refused before anything star
 
 - [ ] **Step 2: Record the removed surface**
 
-In `CHANGELOG.md` under a new version, list the breaking changes: `AgentService.Chat` removed (`AgentService.Health` is unchanged and still there); `LLM_AGENT_THROTTLE_MAX_WAIT_MS` removed along with `WaitIfShortEnough`, since waiting as told is now the gated wrapper's business; and `EXEC_STEP_MAX_CONCURRENCY` replaced by `LLM_GATEKEEPER_MAX_LIVE_PIPELINES`, which covers every channel rather than one route. Name the migration for a deployment that relied on the old cap.
+In `CHANGELOG.md` under a new version, list the breaking changes. Name the
+behaviour change for a deployment that configures **nothing**, because it is
+the one that is easy to miss: a `429` used to be waited out up to twenty
+seconds by `WaitIfShortEnough`, and now comes back to the caller instead. The
+ceiling that made waiting safe is gone with it, and without a quota there is no
+queue to pace a retry against. Configure `LLM_GATEKEEPER_QUOTAS` and the
+waiting returns, governed by the window. Then: `AgentService.Chat` removed (`AgentService.Health` is unchanged and still there); `LLM_AGENT_THROTTLE_MAX_WAIT_MS` removed along with `WaitIfShortEnough`, since waiting as told is now the gated wrapper's business; and `EXEC_STEP_MAX_CONCURRENCY` replaced by `LLM_GATEKEEPER_MAX_LIVE_PIPELINES`, which covers every channel rather than one route. Name the migration for a deployment that relied on the old cap.
 
 - [ ] **Step 3: Add the sample configuration**
 
