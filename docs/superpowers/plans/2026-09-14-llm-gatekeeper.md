@@ -159,18 +159,31 @@ export interface QuotaLimits {
 
 interface StartNode {
   at: number;
+  /** Given back: never was a start. */
   dead: boolean;
+  /** Aged out of the window: already uncounted, so a late give-back is a no-op. */
+  expired: boolean;
 }
 
 interface Waiter {
   resolve: (permit: Permit) => void;
   reject: (reason: unknown) => void;
-  onAbort?: () => void;
+  cancelled: boolean;
 }
 
 export class QuotaGate {
-  private readonly starts: StartNode[] = [];
-  private readonly waiters: Waiter[] = [];
+  /**
+   * The window, oldest first, consumed from `head` rather than shifted.
+   *
+   * `Array.shift()` is linear and this is the hot path of a serialisation
+   * point, so the head advances by index and the array is compacted only when
+   * the dead prefix has grown past half of it — amortised O(1) per start.
+   */
+  private starts: StartNode[] = [];
+  private head = 0;
+  /** Waiters, also consumed by index; a cancelled one is skipped, not spliced. */
+  private waiters: Waiter[] = [];
+  private waitHead = 0;
   private live = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
@@ -188,7 +201,11 @@ export class QuotaGate {
 
   /** Callers parked waiting for a place. */
   get waiting(): number {
-    return this.waiters.length;
+    let n = 0;
+    for (let i = this.waitHead; i < this.waiters.length; i++) {
+      if (!this.waiters[i].cancelled) n++;
+    }
+    return n;
   }
 
   /**
@@ -202,22 +219,46 @@ export class QuotaGate {
       return Promise.reject(signal.reason ?? new Error('Aborted'));
     }
     this.trim();
-    if (this.waiters.length === 0 && this.live < this.limits.limit) {
+    if (this.waiting === 0 && this.live < this.limits.limit) {
       return Promise.resolve(this.record());
     }
     return new Promise<Permit>((resolve, reject) => {
-      const waiter: Waiter = { resolve, reject };
+      const waiter: Waiter = { resolve, reject, cancelled: false };
       if (signal) {
-        waiter.onAbort = () => {
-          const i = this.waiters.indexOf(waiter);
-          if (i >= 0) this.waiters.splice(i, 1);
-          reject(signal.reason ?? new Error('Aborted'));
-        };
-        signal.addEventListener('abort', waiter.onAbort, { once: true });
+        signal.addEventListener(
+          'abort',
+          () => {
+            // Marked, not removed: splicing is linear and would also disturb
+            // the order every other waiter is relying on.
+            if (waiter.cancelled) return;
+            waiter.cancelled = true;
+            reject(signal.reason ?? new Error('Aborted'));
+            this.schedule();
+          },
+          { once: true },
+        );
       }
       this.waiters.push(waiter);
       this.schedule();
     });
+  }
+
+  /**
+   * When our own rate next allows a start, in milliseconds.
+   *
+   * This is what a throttled call with no named interval paces against. It is
+   * not a guess about the server: either the oldest start in our window is
+   * about to age out, or the window is empty and the honest spacing is the
+   * operator's own rate — the window divided by the limit. Without it, "go
+   * back to the tail of our queue" is a busy loop whenever the queue is short.
+   */
+  msUntilNextOpening(): number {
+    this.trim();
+    const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
+    if (oldest === undefined) {
+      return Math.ceil(this.limits.windowMs / this.limits.limit);
+    }
+    return Math.max(0, oldest.at + this.limits.windowMs - this.now());
   }
 
   /** Drop the timer. For tests and for shutdown; the gate is unusable after. */
@@ -229,31 +270,36 @@ export class QuotaGate {
 
   /** Append a start and hand back the node that undoes it. */
   private record(): Permit {
-    const node: StartNode = { at: this.now(), dead: false };
+    const node: StartNode = { at: this.now(), dead: false, expired: false };
     this.starts.push(node);
     this.live++;
-    let given = false;
     return {
       giveBack: () => {
-        if (given || node.dead) return;
-        given = true;
+        // Already undone, or already aged out of the window and uncounted.
+        // Without the second check a late give-back would decrement `live`
+        // twice and let the dispatcher admit past the limit for ever after.
+        if (node.dead || node.expired) return;
         node.dead = true;
         this.live--;
-        // A place opened NOW, not at the expiry the timer was set for. Without
-        // this the next waiter sleeps through room it could already have had.
+        // A place opened NOW, not at the expiry the timer was set for.
         this.dispatch();
       },
     };
   }
 
-  /** Drop everything older than the window, and any dead node on the way. */
+  /** Age out everything older than the window. O(1) amortised. */
   private trim(): void {
     const cutoff = this.now() - this.limits.windowMs;
-    while (this.starts.length > 0) {
-      const head = this.starts[0];
-      if (!head.dead && head.at > cutoff) break;
-      this.starts.shift();
-      if (!head.dead) this.live--;
+    while (this.head < this.starts.length) {
+      const node = this.starts[this.head];
+      if (!node.dead && node.at > cutoff) break;
+      if (!node.dead) this.live--;
+      node.expired = true;
+      this.head++;
+    }
+    if (this.head > 32 && this.head * 2 > this.starts.length) {
+      this.starts = this.starts.slice(this.head);
+      this.head = 0;
     }
   }
 
@@ -261,16 +307,15 @@ export class QuotaGate {
   private dispatch(): void {
     if (this.stopped) return;
     this.trim();
-    while (this.waiters.length > 0 && this.live < this.limits.limit) {
-      const waiter = this.waiters.shift();
-      if (!waiter) break;
-      if (waiter.onAbort) {
-        // The waiter is leaving with a permit, so its abort listener has
-        // nothing left to cancel. Left attached it would reject a settled
-        // promise and, worse, splice an unrelated waiter out of the queue.
-        waiter.onAbort = undefined;
-      }
+    while (this.waitHead < this.waiters.length && this.live < this.limits.limit) {
+      const waiter = this.waiters[this.waitHead++];
+      if (waiter.cancelled) continue;
+      waiter.cancelled = true; // settled; its abort listener has nothing left to do
       waiter.resolve(this.record());
+    }
+    if (this.waitHead > 32 && this.waitHead * 2 > this.waiters.length) {
+      this.waiters = this.waiters.slice(this.waitHead);
+      this.waitHead = 0;
     }
     this.schedule();
   }
@@ -282,18 +327,14 @@ export class QuotaGate {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    if (this.waiters.length === 0) return;
-    const oldest = this.starts.find((n) => !n.dead);
-    if (!oldest) {
-      // Waiters with an empty window: nothing will expire to wake them, so the
-      // place is already free. Dispatch on the next tick rather than never.
-      this.timer = setTimeout(() => {
-        this.timer = undefined;
-        this.dispatch();
-      }, 0);
-      return;
-    }
-    const waitMs = Math.max(0, oldest.at + this.limits.windowMs - this.now());
+    if (this.waiting === 0) return;
+    // After trim the head IS the oldest live start, so there is nothing to
+    // search for.
+    const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
+    const waitMs =
+      oldest === undefined
+        ? 0
+        : Math.max(0, oldest.at + this.limits.windowMs - this.now());
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.dispatch();
@@ -397,6 +438,27 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
     jest.useRealTimers();
   });
 
+  it('ignores a permit given back after it has aged out of the window', async () => {
+    jest.useFakeTimers();
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 2, windowMs: 1_000 }, clock.now);
+    const permit = await gate.acquire();
+    await gate.acquire();
+    clock.advance(1_500);
+    expect(gate.liveStarts).toBe(0);
+
+    // The start is already uncounted. Decrementing again would push the count
+    // below the real number of starts and let the dispatcher admit past the
+    // limit from then on.
+    permit.giveBack();
+    expect(gate.liveStarts).toBe(0);
+    await gate.acquire();
+    await gate.acquire();
+    expect(gate.liveStarts).toBe(2);
+    gate.stop();
+    jest.useRealTimers();
+  });
+
   it('leaves the queue intact when a waiting caller aborts', async () => {
     const clock = fakeClock();
     const gate = new QuotaGate({ limit: 1, windowMs: 60_000 }, clock.now);
@@ -416,7 +478,15 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: PASS, 8 tests.
+Expected: PASS, 9 tests.
+
+> **On the hot path being constant-time.** The queue is a serialisation point,
+> so `shift`, `find`, `indexOf` and `splice` are all wrong here — each is linear
+> in the array it touches. Both arrays are therefore consumed by a head index
+> and compacted only when the dead prefix passes half their length, which is
+> amortised `O(1)` per start; a cancelled waiter is marked and skipped rather
+> than spliced out; and after `trim` the head *is* the oldest live start, so the
+> timer needs no search to find it.
 
 - [ ] **Step 7: Lint and typecheck**
 
@@ -947,10 +1017,13 @@ async function runGated<T>(
       // Wait exactly what the server named, however long. A ceiling here would
       // kill work the door has already promised to carry.
       await wait(seconds * 1000, signal);
+    } else {
+      // Named nothing: we may not invent an interval, and we do not have to —
+      // we pace at our own configured rate instead. Looping straight back to
+      // `acquire` would spin hot whenever the window has room, which is most
+      // of the time and exactly when the server is least happy to hear from us.
+      await wait(gate?.msUntilNextOpening() ?? 0, signal);
     }
-    // Named nothing: we may not invent an interval, and we do not have to —
-    // the next turn of this loop re-joins the tail of our own queue, which is
-    // our pacing rather than a guess about theirs.
     if (signal?.aborted) return value;
   }
 }
@@ -975,19 +1048,45 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
       tools?: LlmTool[],
       options?: CallOptions,
     ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
-      // A stream is gated on its opening attempt only: once chunks are
-      // flowing it is one request, and re-taking a permit mid-stream would
-      // count a start that never happened.
-      const gate = gateForModel(model);
-      const permit = gate ? await gate.acquire(options?.signal) : undefined;
-      let yielded = 0;
-      for await (const chunk of inner.streamChat(messages, tools, options)) {
-        if (!chunk.ok && yielded === 0) {
-          const limit = findThrottled(chunk.error);
-          if (limit?.attempts === 0) permit?.giveBack();
+      // The opening attempt carries the same guarantee as chat(): a 429 before
+      // any chunk has flowed delays the stream, it does not end it. Once chunks
+      // ARE flowing the request is under way — a permit re-taken mid-stream
+      // would count a start that never happened, and a mid-stream failure is
+      // not ours to replay.
+      for (;;) {
+        const gate = gateForModel(model);
+        const permit = gate ? await gate.acquire(options?.signal) : undefined;
+        let yielded = 0;
+        let reopen: { waitMs: number } | undefined;
+
+        for await (const chunk of inner.streamChat(messages, tools, options)) {
+          if (chunk.ok) {
+            yielded++;
+            yield chunk;
+            continue;
+          }
+          const limit = yielded === 0 ? findThrottled(chunk.error) : undefined;
+          if (!limit || options?.signal?.aborted) {
+            yield chunk;
+            return;
+          }
+          if (limit.attempts === 0) permit?.giveBack();
+          const seconds = limit.retryAfterSeconds;
+          reopen = {
+            waitMs:
+              seconds !== undefined && Number.isFinite(seconds)
+                ? seconds * 1000
+                : (gate?.msUntilNextOpening() ?? 0),
+          };
+          break;
         }
-        yielded++;
-        yield chunk;
+
+        if (!reopen) return;
+        // Named an interval: wait exactly that. Named nothing: fall through and
+        // re-join the tail of our own queue, which is our pacing rather than a
+        // guess about theirs.
+        await wait(reopen.waitMs, options?.signal);
+        if (options?.signal?.aborted) return;
       }
     },
   };
@@ -1045,15 +1144,26 @@ Append to `test/unit/gated-llm.test.ts`:
 ```ts
 describe('gateLlm — a refusal that never reached the wire', () => {
   it('leaves the window its full allowance after a herd meets a shut gate', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 5 } });
+    // Sized so nobody parks: the property under test is what a pre-wire
+    // refusal costs, and a limit that makes callers queue would turn this into
+    // a test of the window's timing instead — one that waits out real minutes.
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 40 } });
     const { registry, gated } = load();
-    // Twenty callers, every one turned back by the library's gate before the
-    // transport. No request left the process, so the window owes nothing.
-    const calls = Array.from({ length: 20 }, () =>
-      gated.gateLlm(scriptedLlm([throttled(0.001, 0)]), 'm').chat([]),
+    const gate = registry.gateForModel('m');
+
+    // Twenty callers, every one turned back by the library's own gate BEFORE
+    // the transport: `attempts: 0` means no request left this process. Each
+    // then succeeds on its second pass.
+    await Promise.all(
+      Array.from({ length: 20 }, () =>
+        gated.gateLlm(scriptedLlm([throttled(0.001, 0)]), 'm').chat([]),
+      ),
     );
-    await Promise.all(calls);
-    expect(registry.gateForModel('m')?.liveStarts).toBeLessThanOrEqual(20);
+
+    // Exactly twenty: the pre-wire refusals cost nothing, so the window counts
+    // the calls that actually reached a provider and not forty. An equality,
+    // because `<= 20` would pass with every phantom start counted.
+    expect(gate?.liveStarts).toBe(20);
   });
 });
 ```
@@ -1396,9 +1506,16 @@ Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Fold the `execute_step` semaphore into the door**
 
-In `srv/agent-mcp.ts`, replace the local semaphore with the shared door. Delete `const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY)` and its import, and replace the acquire at line 253 with:
+In `srv/agent-mcp.ts`, replace the local semaphore with the shared door. Delete `const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY)` and its import.
+
+**The admission does not go where the semaphore was.** The old `acquire` sits *before* the connection is built and before `getSmartAgent` resolves, so a step that arrives during a shared corpus build would hold a place for the whole wait. Move it **after** the agent handle is in hand — the same order the chat channels use in Task 7 — and put it immediately before the pipeline runs:
 
 ```ts
+      // Agent first, door second. A caller waiting for a destination to warm,
+      // or for the shared corpus build, waits outside the door holding an MCP
+      // request and no pipeline.
+      const handle = await getSmartAgent(undefined, destination);
+
       // One counter for every channel. The old local semaphore of two capped
       // this route alone, which is the same resource the chat channels spend.
       let admission: AdmissionHandle;
@@ -1406,11 +1523,14 @@ In `srv/agent-mcp.ts`, replace the local semaphore with the shared door. Delete 
         admission = await admit();
       } catch (err) {
         if (err instanceof DoorFullError) {
+          recordDoorRefusal();
           return textResult(doorFullText(), true);
         }
         throw err;
       }
 ```
+
+Everything between the old acquire point and this line — connection construction, destination resolution, agent resolution — now happens before a place is taken. Keep the `finally` guarded so it only tears down what was actually created.
 
 and in the existing `finally`, replace `releaseSlot()` with `await admission.release()`, keeping it last — after `safeStop` and after `dropRequest`.
 
@@ -1653,6 +1773,233 @@ npx jest test/unit/admission-register.test.ts && npm run test:unit && npm run te
 npx biome check --write srv/lib/admission.ts srv/agent-manager.ts srv/agent-mcp.ts test/unit/admission-register.test.ts
 git add srv/lib/admission.ts srv/agent-manager.ts srv/agent-mcp.ts test/unit/admission-register.test.ts
 git commit -m "feat(gatekeeper): the slot waits for the calls, and safe-stop goes last"
+```
+
+---
+
+### Task 6b: Wire the register to the calls it exists for
+
+**Files:**
+- Modify: `srv/lib/admission.ts` (request-scoped handle), `srv/lib/gated-llm.ts` (register the model call), `srv/agent-manager.ts` (register the tool call, and run each pipeline inside the scope)
+- Test: `test/unit/register-wiring.test.ts`
+
+**Interfaces:**
+- Consumes: `AdmissionHandle.track` from Task 6.
+- Produces:
+  - `export function runWithAdmission<T>(handle: AdmissionHandle, fn: () => Promise<T>): Promise<T>`
+  - `export function currentAdmission(): AdmissionHandle | undefined`
+
+**Why this is its own task:** Task 6 gives the handle a register and a drain, and nothing puts anything in it. A register nobody writes to always drains instantly, so `safeStop` would close the session on top of a live ADT write and the slot would free early — the exact defect the register exists to prevent, dressed as a passing test. Threading the `AbortSignal` into `invokeEmbeddedTool` does not do it either: a signal says *stop starting*, the register says *this has not finished*.
+
+**Why an async-local scope rather than a parameter:** the two places that dispatch — the gated LLM wrapper and the embedded tool handler — sit far below the handler that was admitted, with the library's pipeline in between. There is no parameter to thread. This codebase already carries per-request state that way (`connectionALS` in `agent-manager`), and this follows it.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/register-wiring.test.ts`:
+
+```ts
+import type { ILlm, LlmError, LlmResponse, Result } from '@mcp-abap-adt/llm-agent';
+
+const load = () => {
+  jest.resetModules();
+  const admission = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
+  admission.clearAdmission();
+  const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
+  registry.clearQuotaRegistry();
+  const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
+  return { admission, gated };
+};
+
+afterEach(() => {
+  delete process.env.LLM_GATEKEEPER_QUOTAS;
+  jest.resetModules();
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** An ILlm whose single call the test settles by hand. */
+function hangingLlm(gate: { promise: Promise<Result<LlmResponse, LlmError>> }): ILlm {
+  return {
+    model: 'm',
+    chat: () => gate.promise,
+    async *streamChat() {
+      yield { ok: true as const, value: { content: '', finishReason: 'stop' as const } };
+    },
+  };
+}
+
+describe('the register is written to by the calls it exists for', () => {
+  it('holds the slot while a model call started inside the scope is pending', async () => {
+    const { admission, gated } = load();
+    const handle = await admission.admit();
+    const call = deferred<Result<LlmResponse, LlmError>>();
+
+    const running = admission.runWithAdmission(handle, async () => {
+      const llm = gated.gateLlm(hangingLlm(call), 'm');
+      return llm.chat([]);
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    // Registered at dispatch, not at completion. Without this the drain below
+    // finds an empty register and safeStop runs on top of a live call.
+    expect(handle.outstanding).toBe(1);
+
+    let drained = false;
+    void handle.drain().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    call.resolve({ ok: true, value: { content: 'ok', finishReason: 'stop' } });
+    await running;
+    await handle.drain();
+    expect(handle.outstanding).toBe(0);
+  });
+
+  it('registers a tool call dispatched inside the scope', async () => {
+    const { admission } = load();
+    const handle = await admission.admit();
+    const call = deferred<string>();
+
+    await admission.runWithAdmission(handle, async () => {
+      // Stand-in for the embedded tool dispatch: whatever starts inside the
+      // scope registers itself, LLM or MCP alike.
+      const current = admission.currentAdmission();
+      expect(current).toBe(handle);
+      void current?.track(call.promise);
+    });
+
+    expect(handle.outstanding).toBe(1);
+    call.resolve('done');
+    await handle.drain();
+    expect(handle.outstanding).toBe(0);
+  });
+
+  it('registers nothing when there is no admission in scope', async () => {
+    // The shared corpus build runs outside any request, and must stay outside:
+    // attributing it to whoever arrived first would make a global lifecycle the
+    // property of a caller that may be gone before it ends.
+    const { admission, gated } = load();
+    expect(admission.currentAdmission()).toBeUndefined();
+    const call = deferred<Result<LlmResponse, LlmError>>();
+    const llm = gated.gateLlm(hangingLlm(call), 'm');
+    const pending = llm.chat([]);
+    call.resolve({ ok: true, value: { content: 'ok', finishReason: 'stop' } });
+    await expect(pending).resolves.toBeDefined();
+  });
+
+  it('keeps two pipelines’ registers apart', async () => {
+    const { admission } = load();
+    const a = await admission.admit();
+    const b = await admission.admit();
+    const callA = deferred<string>();
+
+    await admission.runWithAdmission(a, async () => {
+      admission.currentAdmission()?.track(callA.promise);
+    });
+
+    expect(a.outstanding).toBe(1);
+    expect(b.outstanding).toBe(0);
+    callA.resolve('x');
+    await a.drain();
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/register-wiring.test.ts`
+Expected: FAIL, `admission.runWithAdmission is not a function`.
+
+- [ ] **Step 3: Add the request-scoped handle**
+
+In `srv/lib/admission.ts`:
+
+```ts
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/**
+ * The admission handle for the pipeline running in this async context.
+ *
+ * The two places that dispatch a call — the gated LLM wrapper and the embedded
+ * tool handler — sit far below the handler that was admitted, with the
+ * library's pipeline in between, so there is no parameter to thread. This
+ * codebase already carries per-request state this way.
+ */
+const admissionALS = new AsyncLocalStorage<AdmissionHandle>();
+
+/** Run a pipeline so that everything it dispatches registers against `handle`. */
+export function runWithAdmission<T>(
+  handle: AdmissionHandle,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return admissionALS.run(handle, fn);
+}
+
+/**
+ * The handle in scope, or nothing.
+ *
+ * Nothing is the correct answer for process-owned work: the shared corpus
+ * build runs outside any request and must not become the property of whichever
+ * caller happened to await it.
+ */
+export function currentAdmission(): AdmissionHandle | undefined {
+  return admissionALS.getStore();
+}
+```
+
+- [ ] **Step 4: Register the model call at dispatch**
+
+In `srv/lib/gated-llm.ts`, wrap the attempt inside `runGated`:
+
+```ts
+    const current = currentAdmission();
+    const attempted = attempt();
+    // Registered before it is awaited. The slot outlives the calls this
+    // pipeline started, and an aborted caller must not free it on top of one.
+    const { value, throttled } = await (current ? current.track(attempted) : attempted);
+```
+
+and the same around `inner.streamChat`'s opening attempt, tracking a promise that settles when the stream ends:
+
+```ts
+      const streamDone = deferredDone();
+      currentAdmission()?.track(streamDone.promise);
+      try {
+        // ... the existing for-await loop ...
+      } finally {
+        streamDone.resolve();
+      }
+```
+
+where `deferredDone` is a two-line local helper returning `{ promise, resolve }`.
+
+- [ ] **Step 5: Register the tool call at dispatch**
+
+In `srv/agent-manager.ts`, inside `invokeEmbeddedTool`, register the dispatched call:
+
+```ts
+    const dispatched = runEmbeddedTool(name, args, signal);
+    // One hook, two readers: the register learns the call is in flight, and
+    // RecordingMcpClient's record was opened for the same reason one line up.
+    return currentAdmission()?.track(dispatched) ?? dispatched;
+```
+
+- [ ] **Step 6: Run each pipeline inside the scope**
+
+In `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`, wrap the pipeline invocation — everything between admission and the `finally` — in `runWithAdmission(admission, async () => { ... })`. Nothing else moves; the `finally` stays where it is, outside the scope, so `drain`, `safeStop` and `release` run in that order after the scope has ended.
+
+- [ ] **Step 7: Run, lint, commit**
+
+```bash
+npx jest test/unit/register-wiring.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/admission.ts srv/lib/gated-llm.ts srv/agent-manager.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts test/unit/register-wiring.test.ts
+git add -A
+git commit -m "feat(gatekeeper): the register is written to by the model and tool calls themselves"
 ```
 
 ---
@@ -3028,7 +3375,7 @@ Build and deploy to one staging target, watch the health payload's `gatekeeper` 
 
 ## Self-review notes
 
-**Spec coverage.** Every section of the spec maps to a task: the gatekeeper and its hot path to Task 1; configuration to Task 2; the acquire invariant, the permit given back and `RetryLlm` staying above to Task 3; entrances to Task 4; the door to Task 5; cancellation, the register and teardown order to Task 6; the detached sink and the disconnect that ends nothing to Task 7; the fourth entrance to Task 8; the outage classification to Task 9; the closed destination and `Retry-After` to Task 10; the unanswered write to Task 11; the collision guard and its wire shape to Task 12; observability to Task 13; non-pipeline calls to Task 14; documentation to Task 15.
+**Spec coverage.** Every section of the spec maps to a task: the register's wiring to Task 6b, without which the register is an API nobody writes to and every drain finds it empty; the gatekeeper and its hot path to Task 1; configuration to Task 2; the acquire invariant, the permit given back and `RetryLlm` staying above to Task 3; entrances to Task 4; the door to Task 5; cancellation, the register and teardown order to Task 6; the detached sink and the disconnect that ends nothing to Task 7; the fourth entrance to Task 8; the outage classification to Task 9; the closed destination and `Retry-After` to Task 10; the unanswered write to Task 11; the collision guard and its wire shape to Task 12; observability to Task 13; non-pipeline calls to Task 14; documentation to Task 15.
 
 **Deliberately not built.** The spec's "Not in scope" section stays out. The upstream removal of `MCPClientWrapper`'s blind reconnect is not here and is not a prerequisite: this service uses the embedded transport, whose branch neither reconnects nor retries. It remains worth doing for other consumers of llm-agent.
 
