@@ -36,9 +36,18 @@ jest.mock('../../srv/agent-config', () => ({
     agent: { ragType: 'in-memory', mode: 'x', maxIterations: 5 },
   }),
 }));
+// Also test-controllable, not a fixed `() => []`: the corpus-build-failure
+// regression test below needs this to THROW — `listToolDefsFromExporter()`
+// calls it synchronously inside `ensureSharedToolsVectorized`, whose
+// rejection escapes `initDestination`'s own try/catch entirely (it is
+// awaited before that try begins), which is exactly the shape that froze
+// the probe loop before this fix.
+const mockCloudLocalToolsState: { impl: () => unknown[] } = {
+  impl: () => [],
+};
 jest.mock('../../srv/lib/cloud-local-tools', () => ({
   ...jest.requireActual('../../srv/lib/cloud-local-tools'),
-  mergeCloudLocalTools: () => [],
+  mergeCloudLocalTools: () => mockCloudLocalToolsState.impl(),
 }));
 
 const load = () => {
@@ -55,6 +64,10 @@ afterEach(() => {
   current = undefined;
   jest.resetModules();
   jest.useRealTimers();
+  // A test that swaps these in to control a `runProbe` run must not leak
+  // that behaviour into the next test in the file.
+  mockResolverState.impl = async () => ({});
+  mockCloudLocalToolsState.impl = () => [];
 });
 
 describe('a closed destination', () => {
@@ -158,6 +171,86 @@ describe('one probe chain, not two', () => {
     // Exactly one timer pending after the run ends — not the orphaned one
     // plus a second from a close that arrived mid-run.
     expect(mod.isProbeTimerArmedForTest()).toBe(true);
+  });
+
+  it('clears the stamp on every destination awaiting re-probe, not just the one the loop has reached', async () => {
+    jest.useFakeTimers();
+    const mod = load();
+    current = mod;
+
+    // D1's re-probe stays pending until released, so the loop is still on
+    // D1 (destinations are visited in the `Map`'s insertion order) when we
+    // check D2 below — D2 is waiting its turn, not yet reached.
+    let releaseFirst: (() => void) | undefined;
+    mockResolverState.impl = () =>
+      new Promise((_resolve, reject) => {
+        releaseFirst = () => reject(new Error('unreachable: forced'));
+      });
+
+    mod.closeDestination('D1', 'first');
+    mod.closeDestination('D2', 'second');
+    // Both stamped before the timer fires (the earlier "same deadline" test
+    // above covers this half already).
+    expect(mod.retryAfterForDestination('D1')).toBeDefined();
+    expect(mod.retryAfterForDestination('D2')).toBeDefined();
+
+    // Fire the timer: the run starts, clears the stamp on every destination
+    // it is ABOUT to re-probe up front, then blocks on D1's resolver.
+    await jest.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(releaseFirst).toBeDefined();
+
+    // D2's stale stamp must already be gone, even though the loop has not
+    // reached D2 yet — a stamp from the timer that just fired is already in
+    // the past, whichever destination it belongs to.
+    expect(mod.retryAfterForDestination('D2')).toBeUndefined();
+
+    // Let the run finish and clean up.
+    releaseFirst?.();
+    await jest.advanceTimersByTimeAsync(0);
+  });
+
+  it('resets and re-arms after a failed run, instead of freezing the probe loop forever', async () => {
+    jest.useFakeTimers();
+    const mod = load();
+    current = mod;
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    // Simulate the shared tool corpus build failing (e.g. the embedder is
+    // down): this throw happens INSIDE `ensureSharedToolsVectorized`, which
+    // `initDestination` awaits before its own try/catch begins, so it
+    // escapes uncaught all the way up through `ensureDestinationInit` into
+    // `runProbe` — exactly the shape that, before this fix, left
+    // `probeRunning` stuck `true` and turned into an unhandled rejection
+    // (`setTimeout(runProbe, ...)` drops the returned promise).
+    mockCloudLocalToolsState.impl = () => {
+      throw new Error('corpus build down');
+    };
+
+    mod.closeDestination('D1', 'first');
+    expect(mod.isProbeTimerArmedForTest()).toBe(true);
+
+    // Fire the timer: the run throws, catches its own failure, resets
+    // `probeRunning`, and — since D1 is still `unreachable` — re-arms, all
+    // within this one drained await.
+    await jest.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+    // The failed run still reset itself and re-armed its own timer.
+    expect(mod.isProbeTimerArmedForTest()).toBe(true);
+
+    // And it left no stuck flag behind: a destination closed afterward gets
+    // a real stamp, not silence for the rest of the process's life.
+    mod.closeDestination('D2', 'second');
+    expect(mod.retryAfterForDestination('D2')).toBeDefined();
+
+    // Give the unhandled-rejection detector (which Node defers by a turn)
+    // a chance to fire before checking it did not.
+    await Promise.resolve();
+    await Promise.resolve();
+    process.off('unhandledRejection', onUnhandledRejection);
+    expect(unhandled).toEqual([]);
   });
 });
 

@@ -1868,43 +1868,60 @@ async function runProbe(): Promise<void> {
   nextProbeDeadline = undefined;
   const log = cds.log('agent-manager');
 
-  const unreachable = [...destinationStates.entries()].filter(
-    ([, s]) => s.status === 'unreachable',
-  );
-  // Clear the stamp on everything about to be re-probed: a stamp left over
-  // from the timer that just fired is already in the past, and reading it
-  // mid-run would report `Retry-After: 1` instead of "no number yet".
-  for (const [, state] of unreachable) state.nextProbeAt = undefined;
+  // A throw anywhere in here (notably `ensureDestinationInit` →
+  // `initDestination`'s unguarded `await ensureSharedToolsVectorized()`,
+  // which rejects whenever the shared corpus build fails) must not leave
+  // `probeRunning` stuck true forever — every later `closeDestination` would
+  // see it and arm nothing, for the rest of the process's life. It also must
+  // not reject this function's own promise: `setTimeout(runProbe, ...)`
+  // below drops it, so an uncaught rejection here becomes an unhandled one.
+  try {
+    const unreachable = [...destinationStates.entries()].filter(
+      ([, s]) => s.status === 'unreachable',
+    );
+    // Clear the stamp on everything about to be re-probed: a stamp left over
+    // from the timer that just fired is already in the past, and reading it
+    // mid-run would report `Retry-After: 1` instead of "no number yet".
+    for (const [, state] of unreachable) state.nextProbeAt = undefined;
 
-  if (unreachable.length === 0) {
-    // All destinations reachable — nothing left to probe; the loop stops
-    // until something closes again. Also covers any stray stamp left on a
-    // destination that isn't `unreachable` any more.
-    for (const [, state] of destinationStates) state.nextProbeAt = undefined;
-    probeRunning = false;
-    return;
-  }
-
-  log.info('Retrying unreachable destinations', {
-    destinations: unreachable.map(([name]) => name),
-  });
-
-  for (const [name] of unreachable) {
-    await ensureDestinationInit(name);
-    const state = destinationStates.get(name);
-    if (state?.status === 'ready') {
-      log.info('Previously unreachable destination is now ready', {
-        destination: name,
-        toolCount: state.toolCount,
+    if (unreachable.length > 0) {
+      log.info('Retrying unreachable destinations', {
+        destinations: unreachable.map(([name]) => name),
       });
+
+      for (const [name] of unreachable) {
+        await ensureDestinationInit(name);
+        const state = destinationStates.get(name);
+        if (state?.status === 'ready') {
+          log.info('Previously unreachable destination is now ready', {
+            destination: name,
+            toolCount: state.toolCount,
+          });
+        }
+      }
     }
+  } catch (err) {
+    log.warn('Probe run failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    probeRunning = false;
   }
 
+  // Re-arm (or clear) only after `probeRunning` is back down — a failed run
+  // still re-arms when destinations remain unreachable, and a close that
+  // raced the failure sees the flag down rather than assuming this call
+  // will arm a timer on its behalf.
   const stillUnreachable = [...destinationStates.values()].filter(
     (s) => s.status === 'unreachable',
   );
-  probeRunning = false;
-  if (stillUnreachable.length === 0) return;
+  if (stillUnreachable.length === 0) {
+    // Nothing left to probe — the loop stops until something closes again.
+    // Also covers any stray stamp left on a destination that isn't
+    // `unreachable` any more.
+    for (const [, state] of destinationStates) state.nextProbeAt = undefined;
+    return;
+  }
   armProbe();
 }
 

@@ -19,12 +19,20 @@ jest.mock('../../srv/lib/request-connection', () =>
   require('./helpers/channel-harness').requestConnectionMock(),
 );
 jest.mock('../../srv/connections/destinationResolver', () => ({
-  resolveDestinationSapConfig: async () => ({
-    proxyType: 'Internet',
-    authenticationType: 'OAuth2JWTBearer',
-    sapConfig: { authType: 'jwt' },
-    destinationName: 'DEST',
-  }),
+  // Records itself into `harness.events`: it's the first thing
+  // `buildConnectionForDestination` calls, so its absence is how a test
+  // proves a closed destination is refused before a connection is built.
+  resolveDestinationSapConfig: async () => {
+    require('./helpers/channel-harness').harness.events.push(
+      'resolveDestinationSapConfig',
+    );
+    return {
+      proxyType: 'Internet',
+      authenticationType: 'OAuth2JWTBearer',
+      sapConfig: { authType: 'jwt' },
+      destinationName: 'DEST',
+    };
+  },
 }));
 jest.mock('../../srv/connections/connectionFactory', () => ({
   createConnection: () => ({ connect: async () => {} }),
@@ -74,7 +82,11 @@ describe('execute_step at the door', () => {
     const result = await step();
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe(executeStepDoorRefusal('capacity'));
-    expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
+    expect(harness.events).toEqual([
+      'resolveDestinationSapConfig',
+      'getSmartAgent',
+      'safeStop',
+    ]);
     if ('admitted' in hold) hold.admitted.release();
   });
 
@@ -155,6 +167,7 @@ describe('a closed destination', () => {
       `${destinationClosedText('DEST')} Try again in about 42 seconds.`,
     );
     // Refused before a connection is built or the agent is resolved.
+    expect(harness.events).not.toContain('resolveDestinationSapConfig');
     expect(harness.events).not.toContain('getSmartAgent');
     expect(harness.events).not.toContain('pipeline');
   });
