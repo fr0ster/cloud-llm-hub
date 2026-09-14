@@ -700,9 +700,22 @@ number holds here too.
 
 It never appears mid-stream. The guard runs at admission, before a single byte
 of response is written, so both chat channels answer it as an ordinary HTTP
-error and there is no half-open stream to reconcile. On `execute_step` it is
-the step's error text, carrying the same `code`, so a planner can branch on it
-rather than parse prose. The principal is
+error and there is no half-open stream to reconcile.
+
+**And it exists on those two channels only.** `execute_step` is excluded, by
+its own invariants two paragraphs above: it sees no disconnect, so no pipeline
+of its is ever marked caller-less, and it mints a fresh `agent-step-<uuid>` per
+call, so no two of its requests share a session. The guard has nothing to match
+on there and would never fire. Saying otherwise would put an unreachable branch
+in the plan and an unreachable assertion in the tests.
+
+Should that channel ever be included, two things have to come first: the MCP
+transport has to carry a stable caller identity and some notion of the caller
+having gone, and the step's result has to be able to carry a machine-readable
+code at all. It cannot today — `textResult` returns text content and `isError`
+(`srv/agent-mcp.ts`), so a code would sit inside prose for a planner to find by
+matching, which is the opposite of branching on it. That needs
+`structuredContent` or `_meta`, and it is separate work. The principal is
 in the key because the session id is client-supplied, and the codebase already
 scopes session state by `(userId, sessionId)` for exactly that reason — without
 it, one user could park a caller-less pipeline and block another who happened
@@ -1003,8 +1016,9 @@ knows a key, a limit and a window, and where those come from is configuration.
 
 ## Observability
 
-Four scopes, because the four refusals in this design belong to different
-things and adding them up would answer nothing.
+Four scopes, because what they measure belongs to different things and adding
+them up would answer nothing. Only three of them count refusals; the first
+counts the work itself, since the quota queue refuses nobody.
 
 **Per quota** — starts inside the window, waiters in the queue, and how long
 the caller just admitted had waited. No refusals here: the quota queue does not
@@ -1119,9 +1133,13 @@ These properties, because they are what this shape gets wrong:
 - **The guard keys on the principal.** Two different users sending the same
   session id do not block each other.
 - **The collision refusal is a conflict, not an overload.** `409` carrying
-  `pipeline_in_flight` on every channel, no `Retry-After`, and never emitted
-  after a stream has begun. Asserted on the wire shape, because a refusal that
-  merely happens is one a client will hammer.
+  `pipeline_in_flight` on both chat channels, no `Retry-After`, and never
+  emitted after a stream has begun. Asserted on the wire shape, because a
+  refusal that merely happens is one a client will hammer.
+- **`execute_step` never produces it.** Drive the same collision through that
+  channel and both calls run: it cannot see a disconnect and shares no session
+  between calls. Asserted so the exclusion stays deliberate rather than
+  becoming a gap someone closes by accident.
 - **A returned permit wakes a sleeping waiter.** Park a waiter, give a permit
   back, and it proceeds without waiting for the expiry its timer was set to.
 - **An unknown model is a bad request, not an overload.** With quotas
