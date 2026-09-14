@@ -3,7 +3,6 @@ import type {
   McpError,
   McpFailureKind,
 } from '@mcp-abap-adt/llm-agent';
-import { isMcpUnavailable } from '@mcp-abap-adt/llm-agent';
 import type { ProbeStatus } from './probe-classifier';
 
 /**
@@ -131,28 +130,16 @@ export function isUnavailable(error: unknown): boolean {
   return false;
 }
 
-/**
- * The mapped codes that close a destination.
- *
- * The library's `MCP_UNAVAILABLE_CODES` is close but not the same list, and the
- * difference is deliberate rather than an oversight in either place. That set
- * answers "did this fail at the transport level", and includes `MCP_HTTP_403`
- * and `MCP_HTTP_404` — which for us mean the server **answered**: a 403 is an
- * authorisation verdict and a 404 is a path. Closing a destination on either
- * would take a working system out of service for every caller because one
- * request was wrong.
- *
- * So the library establishes the fact and this narrows it, which is the same
- * division of labour as everywhere else in this design.
- */
-export const OUTAGE_MCP_CODES: ReadonlySet<string> = new Set([
-  'MCP_NOT_CONNECTED',
-  'MCP_NO_RESPONSE',
-  'MCP_TIMEOUT',
-  'MCP_TRANSPORT',
-  'MCP_HTTP_502',
-  'MCP_HTTP_503',
-]);
+/** The exact marker `McpUnavailableError`'s (fixed-shape) message contains —
+ *  see its constructor comment. Matched literally, not re-derived from a
+ *  library error CODE: a mapped `McpError` code alone is not proof of an
+ *  outage (see `isOutageError`). */
+const OUTAGE_MARKER = /\(outage: ([a-z_]+)\)/;
+
+function hasOutageMarker(message: string): boolean {
+  const status = OUTAGE_MARKER.exec(message)?.[1];
+  return !!status && OUTAGE_STATUSES.has(status as ProbeStatus);
+}
 
 /**
  * Whether a failure that has already crossed the wrapper means the system is
@@ -161,15 +148,24 @@ export const OUTAGE_MCP_CODES: ReadonlySet<string> = new Set([
  * This is the **downstream** predicate, and it exists because `isUnavailable`
  * cannot work here. Our typed marker does not survive the embedded transport —
  * the wrapper keeps only `error.message` — so by the time a handler reads
- * `result.error` there is an `McpError` with a mapped code and nothing else.
- * A handler asking `isUnavailable` would find no marker and close nothing,
- * which is precisely how this path failed silently.
+ * `result.error` there is an `McpError` and nothing else.
+ *
+ * The library's mapped CODE alone does not decide this. `toMcpError` maps a
+ * bare `ECONNRESET` / `socket hang up` — a MID-EXCHANGE reset that may mean
+ * SAP ran the write (see the `probe-classifier` / connector comments on why
+ * those are deliberately NOT tagged as outages) — to `MCP_NOT_CONNECTED`, the
+ * same code a genuine outage produces. Trusting the code there would
+ * re-introduce exactly the false positive Finding 4 removed, just reached
+ * through the library's mapping instead of the connector's own classifier.
+ * So the connector's tag is the single source of truth on this path too: an
+ * `McpError` counts as an outage only when its message still carries the
+ * fixed `(outage: <status>)` marker `McpUnavailableError` writes — which
+ * `toMcpError` preserves verbatim for a STRING input (the embedded wrapper's
+ * crossing) since it takes the whole string as `top` with no rewriting.
  */
 export function isOutageError(error: unknown): boolean {
   if (isUnavailable(error)) return true;
-  return (
-    isMcpUnavailable(error) && OUTAGE_MCP_CODES.has((error as McpError).code)
-  );
+  return hasOutageMarker(describeCause(error));
 }
 
 /**

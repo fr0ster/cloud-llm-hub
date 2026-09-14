@@ -206,23 +206,17 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(withSkillManager).toHaveBeenCalledTimes(1);
   });
 
-  it("wires outageClassifier into the executor worker's builder (withMcpFailureClassifier)", async () => {
-    // The DAG coordinator's own builder never runs a tool loop (that stage is
-    // gated off while a coordinator is active), so installing the classifier
-    // ONLY there would be dead wiring. It must reach the builder the executor
-    // worker actually uses — shared via `configureDestinationAgentBuilder`,
-    // called first (call order 0) for the worker build, then again (call
-    // order 1) for the controller build.
-    await agentManager.buildAgentForDestination(
-      {} as never,
-      {} as never,
-      config,
-    );
-
-    expect(withMcpFailureClassifier).toHaveBeenCalled();
-    expect(withMcpFailureClassifier.mock.calls[0][0]).toBe(outageClassifier);
-  });
-
+  // NOTE: a "wires outageClassifier into the executor worker's builder via
+  // buildAgentForDestination" test used to live here, asserting on
+  // `withMcpFailureClassifier.mock.calls[0][0]`. Removed: it passes even
+  // against the WRONG wiring (the classifier installed only on the
+  // DAG-coordinator's own controller builder, never reaching the worker's
+  // tool loop) whenever that is the ONLY call `configureDestinationAgentBuilder`
+  // makes in the mock's build order — `calls[0]` is still the (sole) call,
+  // with the right argument, so the assertion is satisfied by an
+  // indistinguishable wrong implementation. The test below — calling
+  // `buildExecutorWorker` DIRECTLY, with no controller build in the picture
+  // at all — is the one that actually proves the worker's builder gets it.
   it('buildExecutorWorker alone still wires the failure classifier', async () => {
     buildMock.mockReset();
     buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });

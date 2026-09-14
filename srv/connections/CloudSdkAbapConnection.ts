@@ -14,6 +14,54 @@ import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import { logger } from '../lib/logger';
 
 /**
+ * Mirror the `[status]` outage tag onto a response body the same way it is
+ * already appended to `error.message` — because `@mcp-abap-adt/lib`'s
+ * `return_error` (the function ~274 of 326 ABAP tool handlers route their
+ * errors through) renders `response.data` INSTEAD OF `message` whenever the
+ * message doesn't itself contain ENOTFOUND/ECONNREFUSED/ETIMEDOUT and
+ * `response.data` is set — verbatim for a string body, `JSON.stringify`'d for
+ * an object body, both truncated to `response.data`'s first 2000 characters.
+ * A tag written only to `error.message` is invisible on that path, and with
+ * it the whole point of tagging — `outageFromToolResult` reading it back out
+ * of the returned tool result — silently fails for exactly the statuses that
+ * matter most (`tunnel_timeout`, `no_scc_registration`, `wrong_location_id`),
+ * since those are reached via the httpCode>=500 / tunnel-regex branch, not
+ * the ENOTFOUND/ECONNREFUSED/ETIMEDOUT one.
+ *
+ * Exported (pure, no mutation) so a test can call this exact logic instead of
+ * reproducing it by hand and risking silent drift between the two.
+ *
+ * - String body: PREPEND the tag. `return_error` truncates to the first 2000
+ *   characters, so appending at the end would not survive a long body.
+ * - Object body: `return_error` reads no specific field for an object — it
+ *   `JSON.stringify`s the whole thing — so there is no existing field to
+ *   extend. Add a dedicated top-level key instead, placed FIRST (`{ tag,
+ *   ...body }`) for the same truncation reason.
+ * - Anything else (`undefined`, a number, an array, ...) is left alone: those
+ *   are not shapes `return_error`'s AxiosError branch renders as text an
+ *   operator (or `outageFromToolResult`) would read a tag out of.
+ */
+export function withOutageTagInResponseData(
+  data: unknown,
+  tag: string,
+): unknown {
+  if (typeof data === 'string') {
+    return data.includes(tag) ? data : `${tag} ${data}`;
+  }
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const body = data as Record<string, unknown> & { _sapOutageTag?: unknown };
+    if (
+      typeof body._sapOutageTag === 'string' &&
+      body._sapOutageTag.includes(tag)
+    ) {
+      return body;
+    }
+    return { _sapOutageTag: tag, ...body };
+  }
+  return data;
+}
+
+/**
  * AbapConnection implementation using SAP Cloud SDK executeHttpRequest
  * This leverages SAP Cloud SDK's automatic destination handling, authentication,
  * and proxy management instead of manual axios requests.
@@ -1078,7 +1126,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           // can mean SAP ran the write and reset afterwards, not that nothing
           // reached it; asking about them here would tag (and later close) a
           // destination that may simply have executed the request.
-          /ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN/i.test(
+          /ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|getaddrinfo/i.test(
             rawMessage,
           );
         if (looksTunnelRelated && error instanceof Error) {
@@ -1098,6 +1146,15 @@ export class CloudSdkAbapConnection implements AbapConnection {
             const tag = `[${status}]`;
             if (!error.message.includes(tag)) {
               error.message = `${error.message} ${tag}${hint ? ` ${hint}` : ''}`;
+            }
+            // Mirror the tag onto response.data too — see
+            // `withOutageTagInResponseData` for why `error.message` alone is
+            // not enough.
+            if (errObj.response && 'data' in errObj.response) {
+              errObj.response.data = withOutageTagInResponseData(
+                errObj.response.data,
+                tag,
+              );
             }
           }
         }
