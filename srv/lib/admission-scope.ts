@@ -22,6 +22,19 @@ export function trackCall<T>(p: Promise<T>): Promise<T> {
   return currentAdmission()?.track(p) ?? p;
 }
 
+/**
+ * Run `fn` outside any admission scope, even when called from inside one.
+ *
+ * For process-owned work that a request may happen to start — the shared tool
+ * corpus build, a destination's first initialisation. Started inside a scope,
+ * AsyncLocalStorage would hand that request's register to the whole
+ * single-flight chain, and the caller's slot would wait on a build it does not
+ * own.
+ */
+export function runOutsideAdmission<T>(fn: () => T): T {
+  return als.exit(fn);
+}
+
 /** A register that can say when everything it holds has settled. */
 export interface DrainableRegister extends CallRegister {
   readonly outstanding: number;

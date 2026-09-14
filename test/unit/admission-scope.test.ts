@@ -4,6 +4,7 @@ import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import {
   createCallRegister,
   currentAdmission,
+  runOutsideAdmission,
   runWithAdmission,
   trackCall,
 } from '../../srv/lib/admission-scope';
@@ -64,6 +65,39 @@ describe('trackCall', () => {
     expect(a.set.size).toBe(1);
     expect(b.set.size).toBe(0);
     call.resolve();
+  });
+});
+
+describe('runOutsideAdmission', () => {
+  it('registers nothing for work started inside a scope', async () => {
+    const reg = register();
+    const call = deferred<void>();
+    await runWithAdmission(reg, async () => {
+      runOutsideAdmission(() => {
+        void trackCall(call.promise);
+      });
+    });
+    expect(reg.set.size).toBe(0);
+    call.resolve();
+  });
+
+  it('keeps the whole chain outside, even after the scope that started it ends', async () => {
+    const reg = register();
+    const gate = deferred<void>();
+    const pending = deferred<void>();
+    let build!: Promise<void>;
+    await runWithAdmission(reg, async () => {
+      build = runOutsideAdmission(async () => {
+        await gate.promise;
+        void trackCall(pending.promise);
+      });
+    });
+    // The scope has already exited here — this is the single-flight case: a
+    // later caller (inside or outside any scope) just awaits `build`.
+    gate.resolve();
+    await build;
+    expect(reg.set.size).toBe(0);
+    pending.resolve();
   });
 });
 
@@ -152,5 +186,10 @@ describe('the calls that dispatch are the ones that register', () => {
     expect(src).toMatch(
       /await\s+trackCall\(\s*Promise\.resolve\(\s*toolCall\s*\)\s*\)/,
     );
+  });
+
+  it('starts the shared single-flight builds outside any admission scope', () => {
+    const started = src.match(/runOutsideAdmission\(/g)?.length ?? 0;
+    expect(started).toBeGreaterThanOrEqual(2);
   });
 });

@@ -62,7 +62,7 @@ import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
-import { trackCall } from './lib/admission-scope';
+import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
 import { NoticeFinalizer } from './lib/notice-finalizer';
@@ -1529,7 +1529,9 @@ function ensureSharedToolsVectorized(): Promise<ExpositionFilteringRag> {
   if (sharedToolsRag) return Promise.resolve(sharedToolsRag);
   if (sharedToolsInit) return sharedToolsInit;
   const log = cds.log('agent-manager');
-  sharedToolsInit = (async () => {
+  // Process-owned: whichever request happens to trigger the build must not be
+  // charged for it — the corpus is shared, and its slot must not wait on it.
+  sharedToolsInit = runOutsideAdmission(async () => {
     const config = getAgentConfig();
     const store = await createToolsRagStore(config.llm.resourceGroup);
     const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
@@ -1605,7 +1607,7 @@ function ensureSharedToolsVectorized(): Promise<ExpositionFilteringRag> {
       bundle: 'absent-or-mismatch',
     });
     return store;
-  })();
+  });
   sharedToolsInit.catch(() => {
     // Allow a retry on the next call after a failed build.
     sharedToolsInit = null;
@@ -1715,7 +1717,9 @@ async function initDestination(
 function ensureDestinationInit(name: string): Promise<DestinationState> {
   const existing = destinationInits.get(name);
   if (existing) return existing;
-  const p = initDestination(name).finally(() => {
+  // Process-owned: the caller that happens to trigger a destination's first
+  // init must not be charged for it — the init is shared via single-flight.
+  const p = runOutsideAdmission(() => initDestination(name)).finally(() => {
     destinationInits.delete(name);
   });
   destinationInits.set(name, p);
