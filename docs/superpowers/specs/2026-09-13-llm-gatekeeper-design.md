@@ -84,31 +84,29 @@ is a claim and not a mechanism — with two slots free, two concurrent requests
 carrying the same session id would both be admitted, both run, and both read
 and write the same history.
 
-**And the identity is ours to issue, not the caller's to assert.** Today an
-`x-session-id` or `mcp-session-id` sent by the client is honoured as a session
-on equal terms with the `clh_session` cookie the service mints for its own
-WebUI (`resolveSessionId` reads, and deliberately never mints). That is the
-vector: a value the caller chooses becomes the key that decides whose work
-waits for whose, so a colliding id serialises someone else's requests and a
-guessed one is a way to interfere.
+**And the identity is ours, because the caller has no use for one.** This
+service sits between the consumer and MCP and ABAP; a consumer never needs to
+name a session, and today's ability to do so is pure exposure. `resolveSessionId`
+accepts `x-session-id` and `mcp-session-id` from the caller on equal terms with
+the `clh_session` cookie the service mints itself — so a value the caller
+chooses becomes the key deciding whose work waits for whose, and a guessed one
+is a way to interfere with somebody else.
 
-So **cloud-llm-hub issues the session identity**. The service mints it, binds
-it to the authenticated user at that moment, and hands it back for the caller
-to echo. An identifier presented by a caller is honoured only if this service
-issued it *to that user*; anything else starts a new session rather than
-joining one. The slot is keyed on that identity, and the store keys on
-`${userId}\u0000${sessionId}` as it already does, so the two cannot drift
-apart.
+So the caller stops naming sessions. The service issues the identity, bound to
+the authenticated user, and the two headers stop being read at all. There is
+nothing to echo and nothing to forge: with no caller-supplied identity, one
+caller passing for another does not arise as a question.
 
-A caller that echoes nothing is not penalised: it gets a fresh session per
-request, which is exactly what a stateless client sending its full history
-already gets today, and each such request is admitted on its own. What changes
-is only that an id we did not issue no longer buys continuity — or a key.
+Nobody outside loses anything, because nobody outside was using it. Our own
+chat UI is the only client that sends `x-session-id`, and it invents the value
+itself — `"chat-" + Date.now() + "-" + Math.random()` in
+`app/chat/webapp/controller/Chat.controller.js` — so it moves to the cookie the
+middleware already sets for it. An API client sending its full history is
+unaffected: it never had a session and still does not, and each of its requests
+is admitted on its own.
 
-> This is a change to the session contract, not only to admission: a client
-> that sends its own `x-session-id` today to keep server-side history will
-> stop being given it until it echoes ours. The plan owns the migration, and it
-> is the one part of this design visible to an existing caller.
+The slot is keyed on that identity, and the store keys on
+`${userId}\u0000${sessionId}` as it already does, so the two cannot drift apart.
 
 So live sessions and live pipelines are the same number by construction rather
 than by assertion. `execute_step` needs no special case: each of its calls
@@ -470,13 +468,13 @@ These properties, because they are what this shape gets wrong.
   five: the second waits for the first rather than taking a second slot.
   Written with capacity free, because a test that fills the door first would
   pass on the global queue alone and prove nothing about the key.
-- **An identifier we did not issue buys nothing.** A request carrying an
-  invented `x-session-id` starts a fresh session rather than joining one, and
-  two callers inventing the same one do not wait for each other. This is the
-  interference the issued identity exists to remove.
-- **An identifier issued to one user is not another's.** Presented by a
-  different authenticated user it is refused as a session and a fresh one is
-  started — the key and the history store agree on whose it is.
+- **A caller cannot name a session.** A request carrying `x-session-id` or
+  `mcp-session-id` is treated as having none: it gets a fresh session, and two
+  callers sending the same value do not wait for each other. Asserted at the
+  resolver, because this is the interference the change exists to remove and
+  the headers are easy to re-add by habit.
+- **The browser's session survives without the header.** The chat UI, sending
+  only the cookie, keeps its history across turns exactly as before.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
   slot: it is gone from the queue and no pipeline starts for it.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
