@@ -76,11 +76,18 @@ harmless.
 
 ## The gatekeeper
 
-**One session is one pipeline.** A session does not run two pipelines at once; a
-second request on a session that is already working waits for the first. That is
-not a restriction invented here — each `execute_step` call already mints its own
-session — and naming it makes the counter unambiguous: live sessions and live
-pipelines are the same number.
+**One session is one pipeline, and the slot is the session.** Admission is
+keyed by the session, not counted anonymously: a request for a session that
+already holds a slot waits for *that* slot rather than taking a second one, and
+only a session with no slot competes for a free one. Without that key the rule
+is a claim and not a mechanism — with two slots free, two concurrent requests
+carrying the same session id would both be admitted, both run, and both read
+and write the same history.
+
+So live sessions and live pipelines are the same number by construction rather
+than by assertion. `execute_step` needs no special case: each of its calls
+already mints its own session id, so its parallel steps are parallel sessions,
+which is what they have always been.
 
 **One counter, every channel.** `/v1/chat/completions`, `/v1/messages` and
 `execute_step` spend the same memory, so they share one count. Two independent
@@ -99,6 +106,15 @@ and the arithmetic only gets worse from there.
 
 **Strictly first come, first served.** No priorities and no lanes. The session
 that has waited longest goes next.
+
+**A waiter that leaves is removed.** The caller's own timeout may fire while it
+is queued, and a waiter nobody is behind must not later be handed a slot and
+start a pipeline for nobody: that spends the capacity the queue exists to
+ration and contradicts the refusal's own promise that nothing was started. So a
+queued caller carries its request's abort, and leaving the queue costs nothing —
+no slot was taken, no session was created, no teardown is owed. This is the one
+place where a disconnect *does* end something, and it can be, precisely because
+nothing has begun.
 
 ## What the caller sees
 
@@ -124,10 +140,21 @@ that is the work failing rather than a refusal. What the door buys is that
 congestion stops being a way to die: a refusal at the door declines a whole
 request cleanly instead of killing one halfway with an ADT lock still held.
 
-That guarantee is also why throttling is not our business. A `429` delays, it
-does not interrupt: the provider reports the interval, the strategy waits it
-out, the pipeline finishes late. Nothing in the gatekeeper needs to know a rate
-for that to be true.
+That guarantee rests on one property of a `429`: **it delays, it does not
+interrupt.** A refusal with an interval is a statement about when, not about
+whether. So an admitted session waits out exactly what the server named,
+however long — `WaitAsTold`, with no ceiling, because the ceiling in
+`WaitIfShortEnough` protected a caller's connection from an unpredictable wait
+and the door now protects capacity instead. A ceiling behind the door would
+only kill work in flight, which is the failure the door exists to prevent.
+
+**And the one case it cannot cover, named rather than glossed.** A `429` that
+names no interval leaves nothing to wait out. The old design paced such a call
+against its own window; with no window there is no schedule of ours to pace
+against, so the call fails and takes its session with it. That is the price of
+dropping the rate limit, it is small — the header is documented and its absence
+usually means a spend cap, which waiting would not have fixed either — and it
+is the only hole in the guarantee.
 
 ## Sizing
 
@@ -149,9 +176,21 @@ beside the memory it depends on. 2 GB against 4 GB is the decision that actually
 buys capacity.
 
 **The estimate to make, and to re-make.** Peak memory is live sessions times a
-pipeline's peak, plus retained sessions times their history. The second term is
-what surprised us into writing this, and the door bounds it for the first time:
-a session that cannot be created cannot accumulate.
+pipeline's peak, **plus** retained sessions times their history. Two terms, two
+lifetimes, and one bound does not cover both.
+
+The door bounds the first. It does not bound the second, and an earlier draft
+of this section claimed it did: a slot is released when the work ends, while
+the history stays in `sessionStore` for thirty minutes after the last turn. A
+service with four slots can therefore hold four hundred retained sessions, and
+that is the accumulation this rewrite was written to stop.
+
+So the second term gets its own bound, and a different kind of one. Capacity is
+a **refusal**; retention is an **eviction**. When the store is full the least
+recently used idle session is dropped to make room — losing an idle
+conversation's history is a cost a caller can recover from by asking again, and
+refusing a new caller because someone stopped typing half an hour ago is not.
+Nothing is ever evicted while it holds a slot.
 
 ### Why the queue's length is derived
 
@@ -281,6 +320,7 @@ This repository owns the shape; whoever deploys owns the values.
 |---|---|---|
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | positive integer: how many sessions may be live at once, across every channel | no door on the chat channels; `execute_step` keeps its existing semaphore of two |
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | positive integer: how many callers may wait for a slot | the capacity, which absorbs a burst without storing a backlog |
+| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history at rest. The least recently used idle one is evicted to make room; a session holding a slot is never evicted | unbounded, as today |
 
 **Absent means off, malformed means refuse to start.** An unset variable
 disables what it configures and the service behaves exactly as today. A value
@@ -317,10 +357,17 @@ capacity N, N such sessions close the door until a restart. That is the accepted
 cost of having no clock over running work, and it is visible: door refusals
 rising with a shallow queue is exactly this shape.
 
-**Retained sessions are bounded, not freed.** The door stops new sessions from
-being created; it does not shorten the thirty-minute TTL of the ones that exist.
-A deployment whose memory is spent on idle history should lower that TTL, which
-is a separate knob and a separate decision.
+**Eviction loses a conversation's history, silently.** A caller whose session
+was evicted while they were reading asks their next question without the
+context of the previous ones, and nothing tells them so. That is the trade
+against refusing a new caller to preserve an idle one's memory, and it is the
+right way round — but it is a real cost and it will look like the agent
+forgetting.
+
+**The thirty-minute TTL is untouched.** `MAX_RETAINED_SESSIONS` bounds how many
+sessions may be held; it does not shorten how long each is held. A deployment
+whose memory is spent on idle history can also lower the TTL, which is a
+separate knob and a separate decision.
 
 **A platform outage looks like many system outages.** When the connectivity
 service fails, every on-premise destination closes on its own account. Correct
@@ -333,13 +380,20 @@ mis-measuring capacity is not.
 
 ## Observability
 
-Three scopes, because they answer different questions and adding them up answers
+Four scopes, because they answer different questions and adding them up answers
 none.
 
 **The door** — live sessions, capacity, queue depth, the queue's high-water
-mark, and refusals. A deep queue with few refusals means the capacity is nearly
-right; refusals with a shallow queue mean arrivals come in bursts the queue
-cannot absorb.
+mark, refusals, and waiters that left before admission. A deep queue with few
+refusals means the capacity is nearly right; refusals with a shallow queue mean
+arrivals come in bursts the queue cannot absorb; and waiters leaving in numbers
+means the queue is longer than callers will tolerate, which is the argument for
+shortening it rather than growing it.
+
+**Retention** — sessions held, the cap, and evictions. Separate from the door
+because they are separate resources with separate lifetimes: evictions climbing
+while the door is quiet means memory is going to state at rest, and no amount
+of capacity tuning will address it.
 
 **Per destination** — whether it is closed, and refusals caused by that.
 Availability, not capacity. Mixing it into the door's numbers would make an
@@ -368,10 +422,21 @@ These properties, because they are what this shape gets wrong.
   text.
 - **An admitted session is never refused.** Fill the capacity, then drive every
   admitted session through a long tool loop: all complete.
-- **And no `429` ends one.** A session meeting a throttled model call waits it
-  out and finishes.
-- **One session, one pipeline.** A second request on a working session queues
-  behind the first rather than running beside it.
+- **And no `429` with an interval ends one.** A session meeting a throttled
+  model call waits out exactly what the server named, past twenty seconds,
+  which is where the old ceiling would have cut it — and finishes.
+- **A `429` naming nothing fails the session.** Asserted so the one hole in the
+  guarantee stays a decision rather than becoming a surprise.
+- **One session, one pipeline, with slots to spare.** Two concurrent requests
+  carrying the same session id against a capacity of five: the second waits for
+  the first rather than taking a second slot. Written with capacity free,
+  because a test that fills the door first would pass on the global queue alone
+  and prove nothing about the key.
+- **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
+  slot: it is gone from the queue and no pipeline starts for it.
+- **Retention is bounded and eviction prefers the idle.** With the cap reached,
+  a new session evicts the least recently used idle one, and never one holding
+  a slot.
 - **Every entrance is counted.** Drive each channel to capacity in turn.
 - **Absent means today.** With no capacity configured, `execute_step` still caps
   at two and the chat channels are unchanged.
@@ -399,11 +464,18 @@ fallback: with no capacity configured it is what "absent means off" means on
 that channel. Configuring the door turns it off for that route, because two caps
 on one resource would each be wrong about the other.
 
-`WaitIfShortEnough` (`srv/lib/throttle-strategy.ts`) survives, unchanged. Its
-ceiling protects a caller's connection from a wait we cannot predict, and with
-no rate window of our own it is the only such protection there is. Throttling
-stays exactly where it was: at the provider, governed by the strategy this
-service already configures.
+`WaitIfShortEnough` (`srv/lib/throttle-strategy.ts`) is **replaced for admitted
+work** by `WaitAsTold`. Its twenty-second ceiling protected a caller's
+connection from a wait we could not predict; with a door in front, a request is
+either declined before it starts or carried to the end, and a ceiling behind
+the door would only kill work in flight. Keeping it would have made the
+guarantee false for any interval over twenty seconds, which is most of the ones
+SAP AI Core actually names.
+
+Whether it survives outside an admitted session depends on whether anything
+calls a model there. Startup corpus vectorization is the candidate: it embeds
+before any request exists, so there is no door in front of it and no caller to
+protect. That is the implementation plan's decision, not this document's.
 
 The blind reconnect-and-retry in `MCPClientWrapper` is not on our path — this
 service uses the embedded transport, whose branch neither reconnects nor
