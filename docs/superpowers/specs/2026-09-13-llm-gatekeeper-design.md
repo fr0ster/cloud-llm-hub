@@ -321,9 +321,43 @@ skips a leased session rather than waiting for it: the next sweep collects it,
 and a collection outliving its TTL by one interval costs nothing, while
 deleting a session mid-write costs the write.
 
-Explicit deletion is not gated by the lease. Logout and clear-chat are the
-caller asking for their own state to go, and a logout that blocked until an
-upload finished would be a worse answer than the race it avoids.
+**Explicit deletion is not gated by the lease either, and an earlier draft
+stopped there — which was a false choice between blocking the logout and
+racing it.** Logout and clear-chat are the caller asking for their own state to
+go, and a logout that hung until a bulk upload finished would be a worse answer
+than the race. But the answer to the caller and the removal of the bytes are
+two different events, and only the first has to be immediate. Deleting the
+directory does not stop the operation that was writing into it: an upload
+resumes after the response and recreates the files, rewrites the metadata, or
+re-registers the collection in a backend that no longer has an entry for it —
+the leak this rewrite exists to close, coming back through a door we opened
+ourselves. A query or a delete fares differently and no better, working against
+registry state that has gone.
+
+So deletion, by **every** path, is three steps and not one:
+
+1. **Close the session to new leases, atomically.** From that instant a
+   `/v1/rag/*` request against it is refused — the session is going away, and
+   letting one more operation start under it is how state gets created after
+   the cleanup that was supposed to remove it.
+2. **Cancel the leases in flight, then wait for them to settle.** Cancelled is
+   not finished: the wait is on actual settlement, exactly as the slot's
+   teardown already waits on its register rather than on the abort call, and
+   for the same reason — cutting a call discards our knowledge of the work, not
+   the work.
+3. **Remove the session, once,** through the one primitive that frees the disk.
+
+Which makes the mark, not the lease, the thing that makes deletion atomic, and
+it belongs on the automatic paths too. The LRU and the sweep pick only unleased
+sessions, so their wait in step 2 is empty by construction and costs them
+nothing — but without step 1 a lease taken between the pick and the delete
+reopens precisely the race the lease was introduced to close.
+
+**The caller is answered at step 1**, not at step 3. Logout returns
+immediately, the session is unreachable from that moment, and the bytes go when
+the last operation against them has stopped. And a lease that never settles
+holds the cleanup the way a pipeline that never finishes holds its slot: until
+shutdown, and visible in the metrics below rather than silently.
 
 **Evicting a session means evicting all of it**, and a bound that dropped only
 the `sessionStore` entry would be theatre: the documents in that session's
@@ -622,10 +656,14 @@ arrivals come in bursts the queue cannot absorb; and waiters leaving in numbers
 means the queue is longer than callers will tolerate, which is the argument for
 shortening it rather than growing it.
 
-**Retention** — sessions held, the cap, and evictions. Separate from the door
-because they are separate resources with separate lifetimes: evictions climbing
-while the door is quiet means memory is going to state at rest, and no amount
-of capacity tuning will address it.
+**Retention** — sessions held, the cap, evictions, and **sessions closed to new
+leases whose cleanup has not run yet**. Separate from the door because they are
+separate resources with separate lifetimes: evictions climbing while the door
+is quiet means memory is going to state at rest, and no amount of capacity
+tuning will address it. The last of the four is the one that should normally
+read zero for longer than an upload takes; a number that stays up is a lease
+that never settled, holding bytes that everything else believes are already
+gone.
 
 **Per destination** — whether it is closed, and refusals caused by that.
 Availability, not capacity. Mixing it into the door's numbers would make an
@@ -712,6 +750,18 @@ These properties, because they are what this shape gets wrong.
   slot-only rule passed while being wrong, because a RAG session holds no slot
   and a long upload is exactly what sinks it to the bottom of the recency
   order.
+- **Logout during an upload leaves nothing behind, after the upload ends.**
+  Hold a bulk upload open, log out, and let the upload run to completion: the
+  response to the logout does not wait, a `/v1/rag/*` request arriving after it
+  is refused, and once the upload has settled the registry entry, the backend
+  and the directory are all gone — and stay gone, with no file recreated by the
+  operation that was still writing. Run the same shape for clear-chat, and for
+  a query and a delete in flight. The assertion that matters is made *after*
+  the in-flight operation finishes, because a cleanup that races it passes
+  every check made before.
+- **A session closed to new leases refuses them.** A `/v1/rag/*` call against a
+  session already marked for deletion does not start, rather than creating
+  state under a session that is being removed.
 - **The TTL sweep skips a leased session and takes it on the next pass.**
   Expire a session while an operation on it is in flight: the sweep leaves it,
   the operation completes against live state, and the following sweep deletes
