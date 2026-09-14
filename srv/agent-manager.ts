@@ -62,6 +62,7 @@ import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
+import { trackCall } from './lib/admission-scope';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
 import { NoticeFinalizer } from './lib/notice-finalizer';
@@ -69,6 +70,7 @@ import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
 import { buildToolExpositionMap } from './lib/tool-exposition-map';
+import { trackedLlm } from './lib/tracked-llm';
 import { getRequestHistory, getRequestSessionId } from './request-session';
 
 // ---------------------------------------------------------------------------
@@ -1021,16 +1023,18 @@ async function createToolsRagStore(
   }
 
   const config = getAgentConfig();
-  const helperLlm = await makeLlm(
-    {
-      provider: config.llm.provider,
-      apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
-      baseURL: config.llm.baseUrl,
-      model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
-      resourceGroup: config.llm.resourceGroup,
-      whenThrottled: config.llm.whenThrottled,
-    },
-    0.1,
+  const helperLlm = trackedLlm(
+    await makeLlm(
+      {
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        baseURL: config.llm.baseUrl,
+        model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+        resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
+      },
+      0.1,
+    ),
   );
 
   // Enrichment is handled in vectorizeToolDocs() — either from cache or via
@@ -1223,16 +1227,18 @@ async function vectorizeToolDocs(
   // Enrich uncached tools via LLM (only runs for tools missing from cache)
   if (uncachedTools.length > 0 && cache) {
     const config = getAgentConfig();
-    const helperLlm = await makeLlm(
-      {
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
-        baseURL: config.llm.baseUrl,
-        model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
-      },
-      0.1,
+    const helperLlm = trackedLlm(
+      await makeLlm(
+        {
+          provider: config.llm.provider,
+          apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+          baseURL: config.llm.baseUrl,
+          model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+          resourceGroup: config.llm.resourceGroup,
+          whenThrottled: config.llm.whenThrottled,
+        },
+        0.1,
+      ),
     );
     const enricher = new IntentEnricher(helperLlm);
     log.info('Enriching uncached tools via LLM', {
@@ -1974,7 +1980,11 @@ async function buildEmbeddedMcpAdapter(
       // availability is covered by the ProbeDestination reachability check —
       // a redundant Promise.race here only fought those legitimate limits
       // (e.g. cutting heavy where-used scans that the ABAP layer allows).
-      const result = await toolCall;
+      //
+      // Registered before it is awaited. An ADT call is asynchronous in
+      // substance: the slot, and the ADT session, must outlive it even when
+      // everything waiting on it has stopped.
+      const result = await trackCall(Promise.resolve(toolCall));
 
       const resultStr = JSON.stringify(result).slice(0, 1000);
       log.info('MCP tool call', {
@@ -2055,7 +2065,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
         whenThrottled: config.llm.whenThrottled,
       },
       config.llm.temperature,
-    );
+    ).then(trackedLlm);
   }
   if (!sharedClassifierLlm) {
     const classifierModel =
@@ -2071,7 +2081,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
         whenThrottled: config.llm.whenThrottled,
       },
       0.1,
-    );
+    ).then(trackedLlm);
   }
   return {
     mainLlm: sharedMainLlm,
@@ -2422,7 +2432,7 @@ export async function getSmartAgent(
         whenThrottled: config.llm.whenThrottled,
       },
       config.llm.temperature,
-    );
+    ).then(trackedLlm);
     const newLlm = await newLlmPromise;
 
     for (const handle of agentHandles.values()) {

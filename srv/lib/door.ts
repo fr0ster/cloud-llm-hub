@@ -5,6 +5,7 @@
  * here waits for a duration — only for a slot, a session or a place.
  */
 
+import { createCallRegister } from './admission-scope';
 import { isRefusal, type Lease, type LeaseRefusal } from './session-retention';
 import type { DoorRefusalReason } from './throttle-surfacing';
 
@@ -218,38 +219,17 @@ export class Door {
     if (isRefusal(lease)) return undefined;
     const key = keyOf(userId, sessionId);
     const controller = new AbortController();
-    const register = new Set<Promise<unknown>>();
-    let drainers: Array<() => void> = [];
+    const register = createCallRegister();
     let released = false;
-    const settleOne = (p: Promise<unknown>) => {
-      register.delete(p);
-      if (register.size === 0) {
-        const waiting = drainers;
-        drainers = [];
-        for (const d of waiting) d();
-      }
-    };
     const admission = {
       userId,
       sessionId,
       signal: controller.signal,
       get outstanding() {
-        return register.size;
+        return register.outstanding;
       },
-      track: <T>(p: Promise<T>): Promise<T> => {
-        register.add(p);
-        p.then(
-          () => settleOne(p),
-          () => settleOne(p),
-        );
-        return p;
-      },
-      drain: () =>
-        register.size === 0
-          ? Promise.resolve()
-          : new Promise<void>((r) => {
-              drainers.push(r);
-            }),
+      track: <T>(p: Promise<T>): Promise<T> => register.track(p),
+      drain: () => register.drain(),
       release: () => {
         if (released) return;
         released = true;
