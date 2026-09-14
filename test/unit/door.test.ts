@@ -345,6 +345,9 @@ describe('a retention that pokes the door from inside a lease', () => {
 
     // Admit one at once (exercises admit's guard)
     const a = admitted(await d.admit('u', 'A'));
+    expect(retention.leases).toBe(d.snapshot().live);
+    expect(d.snapshot().live).toBe(1);
+    expect(d.snapshot().queued).toBe(0);
 
     // Queue four more
     const b = pending(d, 'u', 'B');
@@ -358,6 +361,11 @@ describe('a retention that pokes the door from inside a lease', () => {
       live: 3,
       queued: 2,
     });
+    expect(retention.leases).toBe(d.snapshot().live);
+    const answeredBeforeRelease = [b, c, e].filter(
+      (x) => x.state.result,
+    ).length;
+    expect(answeredBeforeRelease + d.snapshot().queued).toBe(4);
 
     // Release and let dispatch run
     a.release();
@@ -375,6 +383,8 @@ describe('a retention that pokes the door from inside a lease', () => {
     // Each admission is for a different session
     const sessions = [b_adm, c_adm, e_adm].map((x) => x.sessionId);
     expect(new Set(sessions).size).toBe(3);
+    expect(retention.leases).toBe(3);
+    expect(d.snapshot().queued).toBe(1); // F still waiting
 
     // Release all, drain
     b_adm.release();
@@ -388,5 +398,78 @@ describe('a retention that pokes the door from inside a lease', () => {
     // Everything released
     expect(retention.leases).toBe(0);
     expect(d.snapshot()).toMatchObject({ live: 0, queued: 0 });
+  });
+
+  it('an arrival cannot be admitted twice when its lease pokes the queue', async () => {
+    const retention = fakeRetention();
+    const d = new Door({
+      capacity: 2,
+      queueLength: 5,
+      retention,
+    });
+
+    // Wrap retention.lease to poke the door synchronously
+    const inner = retention.lease;
+    retention.lease = (u: string, s: string, k: 'pipeline') => {
+      const l = inner(u, s, k);
+      d.poke();
+      return l;
+    };
+
+    // Close retention, queue B
+    retention.open = false;
+    const queued = pending(d, 'u', 'B');
+    await tick();
+
+    expect(queued.state.result).toBeUndefined(); // Not answered
+    expect(d.snapshot().queued).toBe(1);
+    expect(retention.leases).toBe(0); // Queued, no lease yet
+
+    // Reopen retention without poking
+    retention.open = true;
+
+    // A second arrival for the same session B
+    const arrival = pending(d, 'u', 'B');
+    await tick();
+
+    // Exactly one of them is answered, the other waits
+    const queuedAnswered = queued.state.result !== undefined;
+    const arrivalAnswered = arrival.state.result !== undefined;
+    expect(
+      Number(queuedAnswered) + Number(arrivalAnswered) + d.snapshot().queued,
+    ).toBe(2);
+    expect(queuedAnswered || arrivalAnswered).toBe(true);
+    expect(queuedAnswered && arrivalAnswered).toBe(false); // Not both answered
+
+    // Invariants: only one admission, one lease
+    expect(d.snapshot().live).toBe(1);
+    expect(retention.leases).toBe(1);
+
+    // Get the admitted one
+    const adm = queuedAnswered
+      ? admitted(queued.state.result!)
+      : admitted(arrival.state.result!);
+
+    // Release that one admission
+    adm.release();
+    await tick();
+
+    // The other is now admitted
+    expect(
+      queuedAnswered ? arrival.state.result : queued.state.result,
+    ).toBeDefined();
+    const otherAdm = queuedAnswered
+      ? admitted(arrival.state.result!)
+      : admitted(queued.state.result!);
+    expect(d.snapshot()).toMatchObject({ live: 1, queued: 0 });
+    expect(retention.leases).toBe(1);
+
+    // Release it
+    otherAdm.release();
+    await tick();
+
+    // Everything released
+    expect(d.snapshot()).toMatchObject({ live: 0, queued: 0 });
+    expect(retention.leases).toBe(0);
   });
 });
