@@ -96,28 +96,73 @@ describe('unanswered() against the real McpClientAdapter', () => {
   // `callTool` catches the thrown transport error and RETURNS `{ok:false,
   // error}` with a mapped McpError code — it never rejects. A record must be
   // read as unanswered from THAT shape, or it is unanswered nowhere real.
-  it('names a write whose transport call threw (socket hang up)', async () => {
+  //
+  // Ruling 33: MCP_TRANSPORT / MCP_HTTP_502 / MCP_HTTP_503 joined the set —
+  // each can mean the request reached SAP and the ANSWER was lost, so a write
+  // may have been applied. Each message below is verified (via a real
+  // `McpClientAdapter`) to map to exactly the code it is keyed under —
+  // `error-mapping.js`'s classification is message-shape-sensitive, so the
+  // wording here is deliberate, not incidental.
+  const TRANSPORT_FAILURE_MESSAGES: Record<string, string> = {
+    MCP_NOT_CONNECTED: 'socket hang up',
+    MCP_NO_RESPONSE: 'no response from server',
+    MCP_TIMEOUT: 'request timed out',
+    MCP_TRANSPORT: 'streamable http error: connection reset',
+    MCP_HTTP_502: 'Bad Gateway',
+    MCP_HTTP_503: 'Service Unavailable',
+  };
+
+  it.each(Object.entries(TRANSPORT_FAILURE_MESSAGES))(
+    'names a write whose transport call failed as %s',
+    async (code, message) => {
+      const adapter = realAdapterAround(async () => {
+        throw new Error(message);
+      });
+      const rec = new RecordingMcpClient(adapter);
+      const traceId = `ta-${code}`;
+      await rec.callTool('CreateClass', { name: 'ZCL_X' }, {
+        trace: { traceId },
+      } as never);
+      expect(rec.unanswered(traceId).map((r) => r.call.name)).toEqual([
+        'CreateClass',
+      ]);
+    },
+  );
+
+  // MCP_HTTP_403/404 stay OUT of the transport-failure set and answered: the
+  // endpoint refused the request (403) or the route did not exist (404)
+  // BEFORE any write ran — a definite non-application, not an unknown one.
+  it('does not report a forbidden endpoint (MCP_HTTP_403) as unanswered', async () => {
     const adapter = realAdapterAround(async () => {
-      throw new Error('socket hang up');
+      throw new Error('Forbidden');
     });
     const rec = new RecordingMcpClient(adapter);
-    await rec.callTool('CreateClass', { name: 'ZCL_X' }, {
-      trace: { traceId: 'ta1' },
+    await rec.callTool('CreateClass', {}, {
+      trace: { traceId: 'ta-403' },
     } as never);
-    expect(rec.unanswered('ta1').map((r) => r.call.name)).toEqual([
-      'CreateClass',
-    ]);
+    expect(rec.unanswered('ta-403')).toHaveLength(0);
   });
 
-  it('does not report a pre-send refusal (tool not found) as unanswered', async () => {
+  it('does not report a missing endpoint (MCP_HTTP_404) as unanswered', async () => {
+    const adapter = realAdapterAround(async () => {
+      throw new Error('streamable http error: 404 not found');
+    });
+    const rec = new RecordingMcpClient(adapter);
+    await rec.callTool('CreateClass', {}, {
+      trace: { traceId: 'ta-404' },
+    } as never);
+    expect(rec.unanswered('ta-404')).toHaveLength(0);
+  });
+
+  it('does not report a pre-send refusal (tool not found, MCP_ERROR) as unanswered', async () => {
     const adapter = realAdapterAround(async () => {
       throw new Error('Tool not found: Bogus');
     });
     const rec = new RecordingMcpClient(adapter);
     await rec.callTool('CreateClass', {}, {
-      trace: { traceId: 'ta2' },
+      trace: { traceId: 'ta-mcp-error' },
     } as never);
-    expect(rec.unanswered('ta2')).toHaveLength(0);
+    expect(rec.unanswered('ta-mcp-error')).toHaveLength(0);
   });
 
   it('does not report an unanswered read', async () => {
@@ -126,9 +171,9 @@ describe('unanswered() against the real McpClientAdapter', () => {
     });
     const rec = new RecordingMcpClient(adapter);
     await rec.callTool('ReadClass', {}, {
-      trace: { traceId: 'ta3' },
+      trace: { traceId: 'ta-read' },
     } as never);
-    expect(rec.unanswered('ta3')).toHaveLength(0);
+    expect(rec.unanswered('ta-read')).toHaveLength(0);
   });
 });
 

@@ -13,22 +13,29 @@ import { isWriteTool } from './write-guardrail';
 /**
  * `McpClientAdapter.callTool` (`@mcp-abap-adt/llm-agent-mcp`) never rejects: it
  * catches every thrown transport error and RETURNS `{ ok:false, error }` with a
- * code from its own `toMcpError` classifier (error-mapping.js). These three are
- * the ones that mean the call was lost in transit — the connection was gone, no
- * response ever arrived, or it timed out — as opposed to an answered `ok:false`
- * (tool-not-found, invalid-arguments, or any other pre-send refusal, which all
- * map to the default `MCP_ERROR` and are NOT in this set).
+ * code from its own `toMcpError` classifier (error-mapping.js), matching the
+ * library's own `MCP_UNAVAILABLE_CODES`
+ * (`@mcp-abap-adt/llm-agent`'s `interfaces/types.js`). These six mean the call
+ * was lost in transit — the connection was gone, no response ever arrived, it
+ * timed out, or the request reached SAP and the ANSWER was lost on the way
+ * back (a transport-level 502/503/other transport error) — as opposed to an
+ * answered `ok:false` (tool-not-found, invalid-arguments, or any other
+ * pre-send refusal, which all map to the default `MCP_ERROR` and are NOT in
+ * this set).
  *
- * `toMcpError` can also produce `MCP_HTTP_403` / `MCP_HTTP_404` / `MCP_HTTP_502`
- * / `MCP_HTTP_503` / `MCP_TRANSPORT`. Deliberately excluded: a transport-level
- * 403/404 means the request was rejected or the route did not exist — a
- * definite non-application, not an unknown one — so counting it as "maybe
- * applied" would be its own false alarm.
+ * `MCP_HTTP_403` / `MCP_HTTP_404` are deliberately excluded even though the
+ * library's own `MCP_UNAVAILABLE_CODES` includes them: a transport-level
+ * 403/404 means the endpoint REFUSED the request or the route did not exist
+ * BEFORE any write ran — a definite non-application, not an unknown one — so
+ * counting it as "maybe applied" would be its own false alarm.
  */
 const TRANSPORT_FAILURE_CODES = new Set([
   'MCP_NOT_CONNECTED',
   'MCP_NO_RESPONSE',
   'MCP_TIMEOUT',
+  'MCP_TRANSPORT',
+  'MCP_HTTP_502',
+  'MCP_HTTP_503',
 ]);
 
 /** True when a returned `ok:false` means the call was lost in transit rather
