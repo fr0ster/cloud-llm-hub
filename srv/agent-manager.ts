@@ -1817,15 +1817,36 @@ async function initBackgroundDestinations(): Promise<void> {
 /** Periodically retry unreachable destinations (every 5 min) */
 const UNREACHABLE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 let unreachableRetryTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * True for the whole span of one retry tick — from the moment its timer
+ * fires to the moment it either re-arms or gives up. `scheduleUnreachableRetry`
+ * treats this exactly like a pending timer: a second chain must not start
+ * just because the first one is momentarily between "timer fired" and
+ * "timer re-armed".
+ */
+let probeRunning = false;
+/**
+ * The deadline the currently-pending timer commits to, or `undefined` when
+ * no timer is pending. Lets `closeDestination` stamp a destination that
+ * closes while a timer is already counting down with the REAL remaining
+ * wait, instead of leaving it unstamped until that timer happens to fire.
+ */
+let nextProbeDeadline: number | undefined;
 
 /**
  * Stamp every unreachable destination with the deadline this timer commits
  * to, then arm it. Stamping and arming happen together, from the same `now`,
  * so a `Retry-After` built from `nextProbeAt` is never later than the wait
  * this timer actually keeps.
+ *
+ * Clears any timer already pending first: two chains racing to arm would
+ * otherwise leave the earlier one orphaned-but-still-firing while
+ * `unreachableRetryTimer` only remembers the later one.
  */
 function armProbe(): void {
+  if (unreachableRetryTimer) clearTimeout(unreachableRetryTimer);
   const at = Date.now() + UNREACHABLE_RETRY_INTERVAL_MS;
+  nextProbeDeadline = at;
   for (const [, state] of destinationStates) {
     if (state.status === 'unreachable') state.nextProbeAt = at;
   }
@@ -1840,16 +1861,27 @@ function armProbe(): void {
  * be later than the tick it claims to describe.
  */
 async function runProbe(): Promise<void> {
+  probeRunning = true;
   unreachableRetryTimer = null;
+  // No timer is pending for the length of this run — `closeDestination`
+  // must not treat this deadline as real until `armProbe` sets a fresh one.
+  nextProbeDeadline = undefined;
   const log = cds.log('agent-manager');
 
   const unreachable = [...destinationStates.entries()].filter(
     ([, s]) => s.status === 'unreachable',
   );
+  // Clear the stamp on everything about to be re-probed: a stamp left over
+  // from the timer that just fired is already in the past, and reading it
+  // mid-run would report `Retry-After: 1` instead of "no number yet".
+  for (const [, state] of unreachable) state.nextProbeAt = undefined;
+
   if (unreachable.length === 0) {
     // All destinations reachable — nothing left to probe; the loop stops
-    // until something closes again.
+    // until something closes again. Also covers any stray stamp left on a
+    // destination that isn't `unreachable` any more.
     for (const [, state] of destinationStates) state.nextProbeAt = undefined;
+    probeRunning = false;
     return;
   }
 
@@ -1871,12 +1903,13 @@ async function runProbe(): Promise<void> {
   const stillUnreachable = [...destinationStates.values()].filter(
     (s) => s.status === 'unreachable',
   );
+  probeRunning = false;
   if (stillUnreachable.length === 0) return;
   armProbe();
 }
 
 function scheduleUnreachableRetry(): void {
-  if (unreachableRetryTimer) return;
+  if (unreachableRetryTimer || probeRunning) return;
   armProbe();
 }
 
@@ -1915,6 +1948,18 @@ export function closeDestination(name: string, reason: string): void {
   cds
     .log('agent-manager')
     .warn('destination closed', { destination: name, reason });
+
+  // `scheduleUnreachableRetry` below is a no-op while a timer is already
+  // pending, so without this a destination closed mid-countdown would report
+  // no `Retry-After` for up to the rest of that interval. While a probe run
+  // is actually in flight (no timer pending — `runProbe` cleared it), leave
+  // this destination unstamped: the run stamps or clears it itself, from the
+  // same `now` as every other destination it just finished checking.
+  if (unreachableRetryTimer && nextProbeDeadline !== undefined) {
+    const state = destinationStates.get(name);
+    if (state) state.nextProbeAt = nextProbeDeadline;
+  }
+
   scheduleUnreachableRetry();
 }
 
@@ -1950,6 +1995,17 @@ export function setNextProbeAtForTest(
 }
 
 /**
+ * Test seam: whether OUR probe timer is currently armed.
+ *
+ * Not `jest.getTimerCount()`: under fake timers that counts every timer in
+ * the whole module graph (CDS, HTTP clients, other libraries this module
+ * pulls in transitively), not just this one.
+ */
+export function isProbeTimerArmedForTest(): boolean {
+  return unreachableRetryTimer !== null;
+}
+
+/**
  * Test seam: forget every destination and stop the probe timer.
  *
  * The timer matters as much as the state. `closeDestination` arms a five-minute
@@ -1960,6 +2016,8 @@ export function setNextProbeAtForTest(
 export function clearDestinationStatesForTest(): void {
   if (unreachableRetryTimer) clearTimeout(unreachableRetryTimer);
   unreachableRetryTimer = null;
+  probeRunning = false;
+  nextProbeDeadline = undefined;
   destinationStates.clear();
 }
 

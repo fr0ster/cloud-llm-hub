@@ -148,6 +148,28 @@ export async function handleAnthropicMessages(
     callerLeft.abort(new Error('caller disconnected'));
   });
 
+  // A closed destination refuses before its agent is even resolved:
+  // `getSmartAgent` on an unreachable destination throws its own
+  // `destination_unreachable` 503 below, with no `Retry-After`.
+  if (isDestinationClosed(destination)) {
+    await safeStop(requestConnection);
+    const seconds = retryAfterForDestination(destination);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destination),
+        },
+      }),
+    );
+    return;
+  }
+
   // Get the SmartAgent handle for the SAME destination the connection was
   // established for (resolved above from x-sap-destination / session). Passing
   // it explicitly ensures the agent's MCP tools match the connection — without
@@ -181,26 +203,6 @@ export async function handleAnthropicMessages(
   const caller = describeCaller(cds.context?.user);
   log.info('MCP caller', caller);
   const callerExposition = caller.exposition;
-
-  // A closed destination refuses before the caller takes a slot or a place.
-  if (isDestinationClosed(destination)) {
-    await safeStop(requestConnection);
-    const seconds = retryAfterForDestination(destination);
-    res.writeHead(503, {
-      'Content-Type': 'application/json',
-      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
-    });
-    res.end(
-      JSON.stringify({
-        type: 'error',
-        error: {
-          type: 'overloaded_error',
-          message: destinationClosedText(destination),
-        },
-      }),
-    );
-    return;
-  }
 
   let pipeline: PipelineSession;
   try {

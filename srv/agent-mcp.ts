@@ -170,6 +170,20 @@ export async function executeStep(
         true,
       );
     }
+
+    // A closed destination refuses before the caller takes a place — before
+    // a connection is even built for it. No `res`/connection exist yet here;
+    // the `finally` below already handles an undefined `connection`.
+    if (isDestinationClosed(targetDestination)) {
+      const seconds = retryAfterForDestination(targetDestination);
+      const when =
+        seconds !== undefined ? ` Try again in about ${seconds} seconds.` : '';
+      return textResult(
+        `${destinationClosedText(targetDestination)}${when}`,
+        true,
+      );
+    }
+
     const built = await buildConnectionForDestination(req, targetDestination);
     connection = built.connection;
     const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
@@ -202,17 +216,6 @@ export async function executeStep(
     // call, threaded below as `trace.traceId`, dropped in the `finally`.
     const sessionId = `agent-step-${randomUUID()}`;
     traceId = sessionId;
-
-    // A closed destination refuses before the caller takes a place.
-    if (isDestinationClosed(targetDestination)) {
-      const seconds = retryAfterForDestination(targetDestination);
-      const when =
-        seconds !== undefined ? ` Try again in about ${seconds} seconds.` : '';
-      return textResult(
-        `${destinationClosedText(targetDestination)}${when}`,
-        true,
-      );
-    }
 
     // Admitted after the agent is resolved, like every channel.
     const admission = await admitPipeline(userId, sessionId);

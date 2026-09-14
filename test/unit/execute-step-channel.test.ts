@@ -43,7 +43,10 @@ import { executeStep } from '../../srv/agent-mcp';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
-import { executeStepDoorRefusal } from '../../srv/lib/throttle-surfacing';
+import {
+  destinationClosedText,
+  executeStepDoorRefusal,
+} from '../../srv/lib/throttle-surfacing';
 import { deferred, harness, tick } from './helpers/channel-harness';
 
 function configure(live?: number, queue?: number) {
@@ -136,5 +139,33 @@ describe('absent means today', () => {
     expect(body.indexOf('getSmartAgent(')).toBeLessThan(
       body.indexOf('admitPipeline('),
     );
+  });
+});
+
+describe('a closed destination', () => {
+  it('refuses before the agent is resolved, with the interval in the text', async () => {
+    configure();
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = 42;
+
+    const result = await step();
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `${destinationClosedText('DEST')} Try again in about 42 seconds.`,
+    );
+    // Refused before a connection is built or the agent is resolved.
+    expect(harness.events).not.toContain('getSmartAgent');
+    expect(harness.events).not.toContain('pipeline');
+  });
+
+  it('omits the interval sentence when no probe is scheduled', async () => {
+    configure();
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = undefined;
+
+    const result = await step();
+
+    expect(result.content[0].text).toBe(destinationClosedText('DEST'));
   });
 });

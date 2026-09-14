@@ -499,6 +499,29 @@ export async function handleChatCompletions(
     callerLeft.abort(new Error('caller disconnected'));
   });
 
+  // A closed destination refuses before its agent is even resolved: `getSmartAgent`
+  // on an unreachable destination throws its own `destination_unreachable` 503
+  // below, with no `Retry-After` and no idea a probe is already scheduled. The
+  // RAG stores are not yet swapped in at this point in the handler, so there is
+  // nothing for `restoreRagStores()` to undo here.
+  if (isDestinationClosed(destAfter)) {
+    await safeStop(requestConnection);
+    const seconds = retryAfterForDestination(destAfter);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destAfter),
+        },
+      }),
+    );
+    return;
+  }
+
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     // Use destAfter (header OR session/default) — the same destination the
@@ -723,26 +746,6 @@ export async function handleChatCompletions(
         });
       }
     }
-  }
-
-  // A closed destination refuses before the caller takes a slot or a place.
-  if (isDestinationClosed(destAfter)) {
-    restoreRagStores();
-    await safeStop(requestConnection);
-    const seconds = retryAfterForDestination(destAfter);
-    res.writeHead(503, {
-      'Content-Type': 'application/json',
-      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
-    });
-    res.end(
-      JSON.stringify({
-        error: {
-          type: 'overloaded_error',
-          message: destinationClosedText(destAfter),
-        },
-      }),
-    );
-    return;
   }
 
   // Admitted after the agent is resolved: a caller waiting for a destination to

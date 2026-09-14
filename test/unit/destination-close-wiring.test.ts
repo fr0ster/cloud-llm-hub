@@ -83,6 +83,16 @@ import {
 import { isOutageError, McpUnavailableError } from '../../srv/lib/mcp-outage';
 
 describe('an unreachable system survives the embedded transport', () => {
+  // In an `afterEach`, not inlined after the assertions it follows: an
+  // assertion failure inside the `it` would otherwise skip straight past the
+  // cleanup and leave the five-minute probe timer `closeDestination` arms
+  // running past the end of this test.
+  afterEach(() => {
+    const manager =
+      require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+    manager.clearDestinationStatesForTest();
+  });
+
   it('reaches the adapter as a failure, not as tool feedback', async () => {
     // The whole path: our handler throws, the embedded wrapper catches it and
     // keeps only the message string, and the adapter decides from that string
@@ -112,7 +122,6 @@ describe('an unreachable system survives the embedded transport', () => {
         require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
       manager.closeDestination('S4HANA_DEV', result.error.message);
       expect(manager.isDestinationClosed('S4HANA_DEV')).toBe(true);
-      manager.clearDestinationStatesForTest();
     }
     if (!result.ok) {
       // MCP_NO_RESPONSE, not MCP_NOT_CONNECTED: `toMcpError` tests "no

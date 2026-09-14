@@ -30,7 +30,10 @@ import type { Request, Response } from 'express';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
-import { openAiDoorRefusal } from '../../srv/lib/throttle-surfacing';
+import {
+  destinationClosedText,
+  openAiDoorRefusal,
+} from '../../srv/lib/throttle-surfacing';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import {
   deferred,
@@ -236,6 +239,43 @@ describe('/v1/chat/completions at the door', () => {
     expect(harness.events.indexOf('tool settled')).toBeLessThan(
       harness.events.indexOf('safeStop'),
     );
+  });
+});
+
+describe('a closed destination', () => {
+  it('refuses before the agent is resolved, with a true Retry-After', async () => {
+    configure();
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = 42;
+
+    const { res, done } = call(body());
+    await done;
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('42');
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        type: 'overloaded_error',
+        message: destinationClosedText('DEST'),
+      },
+    });
+    // The whole point: refused before getSmartAgent is ever called, so no
+    // pipeline runs and no slot is taken — only the connection is stopped.
+    expect(harness.events).not.toContain('getSmartAgent');
+    expect(harness.events).not.toContain('pipeline');
+    expect(harness.events).toContain('safeStop');
+  });
+
+  it('omits Retry-After when no probe is scheduled', async () => {
+    configure();
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = undefined;
+
+    const { res, done } = call(body());
+    await done;
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBeUndefined();
   });
 });
 

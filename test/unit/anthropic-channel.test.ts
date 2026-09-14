@@ -31,7 +31,10 @@ import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
-import { anthropicDoorRefusal } from '../../srv/lib/throttle-surfacing';
+import {
+  anthropicDoorRefusal,
+  destinationClosedText,
+} from '../../srv/lib/throttle-surfacing';
 import {
   deferred,
   fakeReq,
@@ -130,5 +133,42 @@ describe('/v1/messages at the door', () => {
     expect(src.indexOf('getSmartAgent(')).toBeLessThan(
       src.indexOf('admitPipeline('),
     );
+  });
+});
+
+describe('a closed destination', () => {
+  it('refuses before the agent is resolved, with a true Retry-After', async () => {
+    configure();
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = 42;
+
+    const { res, done } = call(body());
+    await done;
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('42');
+    expect(JSON.parse(res.body)).toEqual({
+      type: 'error',
+      error: {
+        type: 'overloaded_error',
+        message: destinationClosedText('DEST'),
+      },
+    });
+    // Refused before getSmartAgent is ever called — no pipeline, no slot.
+    expect(harness.events).not.toContain('getSmartAgent');
+    expect(harness.events).not.toContain('pipeline');
+    expect(harness.events).toContain('safeStop');
+  });
+
+  it('omits Retry-After when no probe is scheduled', async () => {
+    configure();
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = undefined;
+
+    const { res, done } = call(body());
+    await done;
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBeUndefined();
   });
 });

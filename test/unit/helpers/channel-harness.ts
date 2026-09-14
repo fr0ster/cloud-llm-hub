@@ -24,6 +24,10 @@ export const harness = {
   seenOptions: [] as Array<Record<string, unknown>>,
   /** Hold agent resolution open, as a destination still warming would. */
   agentGate: Promise.resolve() as Promise<void>,
+  /** Set to a destination name to make `isDestinationClosed` say yes to it. */
+  closedDestination: undefined as string | undefined,
+  /** What `retryAfterForDestination` reports while a destination is closed. */
+  retryAfterSeconds: undefined as number | undefined,
   process: async (
     _messages: unknown,
     _opts: Record<string, unknown>,
@@ -42,6 +46,8 @@ export const harness = {
     harness.events = [];
     harness.seenOptions = [];
     harness.agentGate = Promise.resolve();
+    harness.closedDestination = undefined;
+    harness.retryAfterSeconds = undefined;
     harness.process = async () => ({
       ok: true,
       value: { content: 'done', stopReason: 'stop' },
@@ -95,9 +101,11 @@ export function agentManagerMock() {
       constructor(readonly inner: unknown) {}
     },
     // Mocked ahead of Tasks 15 and 18, which add these to the handlers' imports;
-    // without them every channel test would break at Task 15.
-    isDestinationClosed: () => false,
-    retryAfterForDestination: () => undefined,
+    // without them every channel test would break at Task 15. Driven off
+    // `harness.closedDestination`/`harness.retryAfterSeconds` so a test can
+    // simulate a closed destination per-call instead of a fixed stub.
+    isDestinationClosed: (name: string) => harness.closedDestination === name,
+    retryAfterForDestination: () => harness.retryAfterSeconds,
     closeDestination: () => {},
     knownDestinations: () => [],
   };
