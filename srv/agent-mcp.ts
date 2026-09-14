@@ -33,25 +33,27 @@ import { z } from 'zod';
 import { getSmartAgent, runWithRequestConnection } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
+import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
+import { admitPipeline, type PipelineSession, theDoor } from './lib/gatekeeper';
 import { computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
-import { failureText } from './lib/throttle-surfacing';
+import {
+  executeStepDoorRefusal,
+  failureText,
+  sessionClosedText,
+} from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 
 /**
- * Global cap on concurrent `execute_step` executions. The tool contract lets a
- * planner dispatch independent steps in parallel; each step is a full SmartAgent
- * pipeline whose peak memory adds up, so an unbounded fan-out could OOM the
- * container (observed: 5 parallel domain-creates on a 1 GB container). This
- * throttles to at most `EXEC_STEP_MAX_CONCURRENCY` running at once — parallel
- * dispatch still works, the excess just waits its turn in FIFO order. Bounding
- * concurrency bounds peak memory regardless of how many calls arrive.
+ * The cap on concurrent `execute_step` runs when no door is configured.
  *
- * Module-level singleton: the MCP server is rebuilt per request, so the cap must
- * live here (shared across all requests), not inside the per-request builder.
+ * The ancestor of the gatekeeper's door: parallel steps each spike memory, and
+ * an unbounded fan-out OOMed a 1 GB container. With `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`
+ * set, this route counts against the shared door instead and the semaphore is
+ * not taken — two caps on one resource would each be wrong about the other.
  */
 const EXEC_STEP_MAX_CONCURRENCY = 2;
 const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY);
@@ -110,6 +112,190 @@ function textResult(text: string, isError = false) {
     content: [{ type: 'text' as const, text }],
     ...(isError ? { isError: true } : {}),
   };
+}
+
+export interface StepCaller {
+  userId: string;
+  exposition: ExpositionLevel[] | undefined;
+}
+
+/** One `execute_step` call. The tool callback delegates here so a test can drive it. */
+export async function executeStep(
+  req: Request,
+  caller: StepCaller,
+  { destination, task }: { destination?: string; task: string },
+) {
+  const log = cds.log('agent-mcp');
+  const { userId, exposition } = caller;
+  // With a door, this route counts against it; without one, today's semaphore.
+  const releaseSemaphore = theDoor()
+    ? undefined
+    : await execStepSemaphore.acquire();
+  let connection: IAbapConnection | undefined;
+  // Handle + traceId are assigned inside the try below but read from the
+  // `finally` (dropRequest), so they must be declared in the outer scope.
+  let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
+  let traceId: string | undefined;
+  let pipeline: PipelineSession | undefined;
+  // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
+  // the request stream's `close` event fires once the BODY is consumed —
+  // right after this JSON-RPC call starts — NOT reliably on client abort.
+  // Wiring safeStop(connection) to it could tear down the ABAP session
+  // (closeSession) while a tool call is still in flight, which is exactly
+  // the orphaned-state failure we're trying to avoid. `res` (the real
+  // socket/response) is not threaded into this per-tool-call scope — it
+  // lives in server.ts's route handler — so there is no safe abort signal
+  // available here. Teardown is left entirely to the `finally` below,
+  // which always runs safeStop(connection) once the step completes.
+  try {
+    // Destination from the arg, else the connection's default header.
+    const headerDestination = (
+      req.headers['x-sap-destination'] as string | undefined
+    )?.trim();
+    const targetDestination = destination?.trim() || headerDestination;
+    if (!targetDestination) {
+      return textResult(
+        'ERROR: No destination. Pass a `destination` argument, or configure a default `X-SAP-Destination` header on this MCP server. See list_destinations.',
+        true,
+      );
+    }
+    const built = await buildConnectionForDestination(req, targetDestination);
+    connection = built.connection;
+    const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
+      built;
+
+    // Stable, non-reversible principal + system scope for the principal-scoped
+    // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
+    // paths via computeDumpScope so the tool has a principal wherever it can
+    // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
+    // raw login never enters a key/log; jwtSub is null on this path.
+    const dumpScope = computeDumpScope({
+      cdsUserId: userId,
+      usedBasicOverride,
+      sapLogin,
+      destinationAuthType: sapConfig.authType,
+      resolvedUsername: resolved.username,
+      destinationName: resolved.destinationName,
+      rawClient: sapClient,
+      resolvedClient: resolved.sapConfig.client,
+      jwtSub: null,
+    });
+
+    // Per-request responsible person for ADT writes (create/update/delete).
+    setRequestResponsible(req.headers);
+    handle = await getSmartAgent(undefined, targetDestination);
+    const agentHandle = handle;
+
+    // Ephemeral session per call → the executor loads/saves no history.
+    // Doubles as the per-trace telemetry id (Verified fact 10): unique per
+    // call, threaded below as `trace.traceId`, dropped in the `finally`.
+    const sessionId = `agent-step-${randomUUID()}`;
+    traceId = sessionId;
+
+    // Admitted after the agent is resolved, like every channel.
+    const admission = await admitPipeline(userId, sessionId);
+    if ('refused' in admission) {
+      return textResult(executeStepDoorRefusal(admission.refused), true);
+    }
+    if ('closed' in admission) {
+      // Unreachable: a step mints its own session and never presents one. The
+      // union still has to be answered.
+      return textResult(sessionClosedText(), true);
+    }
+    pipeline = admission.admitted;
+    const admitted = pipeline;
+
+    const opts = {
+      stream: false,
+      externalTools: [],
+      sessionId,
+      ragFilter: {
+        namespace: `${userId}:${targetDestination}`,
+        exposition,
+      },
+      trace: { traceId: sessionId },
+      // Surface skill selection on the planner path (chat has its own
+      // sessionLogger; execute_step had none, so skill matching was invisible).
+      sessionLogger: {
+        logStep(name: string, data: unknown) {
+          if (
+            name === 'skills_selected' ||
+            name === 'skill_select_rag_fallback'
+          ) {
+            log.info(name, { destination: targetDestination, data });
+          }
+        },
+      },
+      // The admission's signal, which only shutdown aborts.
+      signal: admitted.signal,
+    };
+
+    const conn = connection;
+    const r = await admitted.run(() =>
+      runWithSessionId(sessionId, () =>
+        runWithRequestConnection(
+          conn,
+          () =>
+            agentHandle.agent.process([{ role: 'user', content: task }], opts),
+          dumpScope,
+          exposition,
+        ),
+      ),
+    );
+
+    if (!r.ok) {
+      log.info('execute_step done', {
+        ok: false,
+        destination: targetDestination,
+      });
+      return textResult(
+        `ERROR on destination "${targetDestination}": ${failureText(r.error)}`,
+        true,
+      );
+    }
+
+    // Transparent pass-through: return the executor's output VERBATIM — no
+    // PROBLEM banner, no usage footer, no reshaping. This MCP is a thin proxy
+    // to the agent; whatever the agent produced is exactly what the caller
+    // gets. Diagnostics stay server-side in the log below.
+    //
+    // The executor-honesty guard now lives in the DAG coordinator's
+    // `NoticeFinalizer` (see `srv/lib/notice-finalizer.ts`), which runs for
+    // EVERY channel (execute_step, /v1/chat, /v1/messages) and already
+    // embeds an `UNVERIFIED_WRITE:`-style notice into `r.value.content`
+    // when the executor's claim outruns the tools it actually ran. The old
+    // execute_step-only wrapper (`assembleReviewedResponse`) is retired —
+    // re-reviewing here would be redundant with (and could double-flag)
+    // what the coordinator already decided.
+    const rawContent = r.value.content ?? '';
+    log.info('execute_step done', {
+      ok: true,
+      destination: targetDestination,
+      iterations: r.value.iterations,
+      toolCallCount: r.value.toolCallCount,
+      totalTokens: r.value.usage?.totalTokens,
+      stopReason: r.value.stopReason,
+    });
+    return textResult(rawContent, false);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn('execute_step failed', { destination, error: message });
+    return textResult(`ERROR: ${message}`, true);
+  } finally {
+    // Wait for the calls this step started, then end the ADT session, then
+    // release — the slot last, and the semaphore with it. Refused/closed
+    // admission never ran the pipeline, so there is no per-trace bucket to
+    // free — dropRequest only makes sense once the pipeline actually ran.
+    await pipeline?.drain();
+    await safeStop(connection);
+    if (pipeline) {
+      // Free the per-trace telemetry bucket — nobody else calls dropRequest,
+      // so omitting this leaks memory per call (Verified fact 10).
+      (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    }
+    pipeline?.release();
+    releaseSemaphore?.();
+  }
 }
 
 /**
@@ -241,167 +427,8 @@ export async function createAgentMcpServerForRequest(
           ),
       },
     },
-    async ({ destination, task }: { destination?: string; task: string }) => {
-      // Throttle concurrent executor runs to bound peak memory (see
-      // execStepSemaphore). Parallel dispatch is honoured; the excess waits.
-      if (execStepSemaphore.active >= EXEC_STEP_MAX_CONCURRENCY) {
-        log.info('execute_step queued — concurrency cap reached', {
-          active: execStepSemaphore.active,
-          pending: execStepSemaphore.pending,
-        });
-      }
-      const releaseSlot = await execStepSemaphore.acquire();
-      let connection: IAbapConnection | undefined;
-      // Handle + traceId are assigned inside the try below but read from the
-      // `finally` (dropRequest), so they must be declared in the outer scope.
-      let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
-      let traceId: string | undefined;
-      // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
-      // the request stream's `close` event fires once the BODY is consumed —
-      // right after this JSON-RPC call starts — NOT reliably on client abort.
-      // Wiring safeStop(connection) to it could tear down the ABAP session
-      // (closeSession) while a tool call is still in flight, which is exactly
-      // the orphaned-state failure we're trying to avoid. `res` (the real
-      // socket/response) is not threaded into this per-tool-call scope — it
-      // lives in server.ts's route handler — so there is no safe abort signal
-      // available here. Teardown is left entirely to the `finally` below,
-      // which always runs safeStop(connection) once the step completes.
-      try {
-        // Destination from the arg, else the connection's default header.
-        const headerDestination = (
-          req.headers['x-sap-destination'] as string | undefined
-        )?.trim();
-        const targetDestination = destination?.trim() || headerDestination;
-        if (!targetDestination) {
-          return textResult(
-            'ERROR: No destination. Pass a `destination` argument, or configure a default `X-SAP-Destination` header on this MCP server. See list_destinations.',
-            true,
-          );
-        }
-        const built = await buildConnectionForDestination(
-          req,
-          targetDestination,
-        );
-        connection = built.connection;
-        const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
-          built;
-
-        // Stable, non-reversible principal + system scope for the principal-scoped
-        // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
-        // paths via computeDumpScope so the tool has a principal wherever it can
-        // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
-        // raw login never enters a key/log; jwtSub is null on this path.
-        const dumpScope = computeDumpScope({
-          cdsUserId: userId,
-          usedBasicOverride,
-          sapLogin,
-          destinationAuthType: sapConfig.authType,
-          resolvedUsername: resolved.username,
-          destinationName: resolved.destinationName,
-          rawClient: sapClient,
-          resolvedClient: resolved.sapConfig.client,
-          jwtSub: null,
-        });
-
-        // Per-request responsible person for ADT writes (create/update/delete).
-        setRequestResponsible(req.headers);
-        handle = await getSmartAgent(undefined, targetDestination);
-        const agentHandle = handle;
-
-        // Ephemeral session per call → the executor loads/saves no history.
-        // Doubles as the per-trace telemetry id (Verified fact 10): unique per
-        // call, threaded below as `trace.traceId`, dropped in the `finally`.
-        const sessionId = `agent-step-${randomUUID()}`;
-        traceId = sessionId;
-        const opts = {
-          stream: false,
-          externalTools: [],
-          sessionId,
-          ragFilter: {
-            namespace: `${userId}:${targetDestination}`,
-            exposition,
-          },
-          trace: { traceId: sessionId },
-          // Surface skill selection on the planner path (chat has its own
-          // sessionLogger; execute_step had none, so skill matching was invisible).
-          sessionLogger: {
-            logStep(name: string, data: unknown) {
-              if (
-                name === 'skills_selected' ||
-                name === 'skill_select_rag_fallback'
-              ) {
-                log.info(name, { destination: targetDestination, data });
-              }
-            },
-          },
-        };
-
-        const conn = connection;
-        const r = await runWithSessionId(sessionId, () =>
-          runWithRequestConnection(
-            conn,
-            () =>
-              agentHandle.agent.process(
-                [{ role: 'user', content: task }],
-                opts,
-              ),
-            dumpScope,
-            exposition,
-          ),
-        );
-
-        if (!r.ok) {
-          log.info('execute_step done', {
-            ok: false,
-            destination: targetDestination,
-          });
-          return textResult(
-            `ERROR on destination "${targetDestination}": ${failureText(r.error)}`,
-            true,
-          );
-        }
-
-        // Transparent pass-through: return the executor's output VERBATIM — no
-        // PROBLEM banner, no usage footer, no reshaping. This MCP is a thin proxy
-        // to the agent; whatever the agent produced is exactly what the caller
-        // gets. Diagnostics stay server-side in the log below.
-        //
-        // The executor-honesty guard now lives in the DAG coordinator's
-        // `NoticeFinalizer` (see `srv/lib/notice-finalizer.ts`), which runs for
-        // EVERY channel (execute_step, /v1/chat, /v1/messages) and already
-        // embeds an `UNVERIFIED_WRITE:`-style notice into `r.value.content`
-        // when the executor's claim outruns the tools it actually ran. The old
-        // execute_step-only wrapper (`assembleReviewedResponse`) is retired —
-        // re-reviewing here would be redundant with (and could double-flag)
-        // what the coordinator already decided.
-        const rawContent = r.value.content ?? '';
-        log.info('execute_step done', {
-          ok: true,
-          destination: targetDestination,
-          iterations: r.value.iterations,
-          toolCallCount: r.value.toolCallCount,
-          totalTokens: r.value.usage?.totalTokens,
-          stopReason: r.value.stopReason,
-        });
-        return textResult(rawContent, false);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log.warn('execute_step failed', { destination, error: message });
-        return textResult(`ERROR: ${message}`, true);
-      } finally {
-        // End the server-side ADT stateful session first (releases any edit-lock
-        // a mutating tool left open — the "currently editing" / inactive-object
-        // symptom), THEN clear local state. This is the ONLY teardown path now
-        // (see the NOTE above — no premature close-based hook).
-        await safeStop(connection);
-        // Free the per-trace telemetry bucket — nobody else calls dropRequest,
-        // so omitting this leaks memory per call (Verified fact 10).
-        (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
-        // Release the concurrency slot last, after the session is torn down, so
-        // the next queued step starts only once this one's memory is freed.
-        releaseSlot();
-      }
-    },
+    async (args: { destination?: string; task: string }) =>
+      executeStep(req, { userId, exposition }, args),
   );
 
   const transport = new StreamableHTTPServerTransport({
