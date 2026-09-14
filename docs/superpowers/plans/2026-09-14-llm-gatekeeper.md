@@ -518,6 +518,8 @@ git commit -m "feat(gatekeeper): one quota, a sliding window of starts and a FIF
   - `export class UnknownModelError extends Error { readonly model: string }`
   - `export function quotasConfigured(): boolean`
   - `export function gateForModel(model: string): QuotaGate | undefined` — throws `UnknownModelError` when quotas are configured and the model names neither an entry nor a mapping
+  - `export function quotaForModel(model: string): { key: string; gate: QuotaGate } | undefined` — the same resolution, plus the key the model actually spends against
+  - `export function liveGates(): Array<{ key: string; gate: QuotaGate }>` — for the metrics snapshot
   - `export function describeQuotas(): string` — the one-line startup log
   - `export function clearQuotaRegistry(): void` — test seam, mirrors `clearAgentConfig`
 
@@ -570,6 +572,19 @@ describe('quota registry — a configured quota', () => {
     });
     const mod = load();
     expect(mod.gateForModel('model-a')).toBe(mod.gateForModel('model-b'));
+  });
+
+  it('reports mapped models under the key they share, not their own names', () => {
+    // Filed by model name, one full window would appear as two half-full ones.
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
+    process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({
+      'model-a': 'shared',
+      'model-b': 'shared',
+    });
+    const mod = load();
+    expect(mod.quotaForModel('model-a')?.key).toBe('shared');
+    expect(mod.quotaForModel('model-b')?.key).toBe('shared');
+    expect(mod.liveGates().map((g) => g.key)).toEqual(['shared']);
   });
 
   it('defaults the window to a minute, which is how providers meter', () => {
@@ -758,6 +773,27 @@ export function gateForModel(model: string): QuotaGate | undefined {
     reg.gates.set(key, gate);
   }
   return gate;
+}
+
+/**
+ * The gate AND the key it is filed under.
+ *
+ * Observability needs the key, not the model name: two models mapped onto one
+ * quota spend the same places, and reporting them as separate scopes would
+ * show two half-full windows where there is one full one.
+ */
+export function quotaForModel(
+  model: string,
+): { key: string; gate: QuotaGate } | undefined {
+  const gate = gateForModel(model);
+  if (!gate) return undefined;
+  const reg = loaded();
+  return { key: reg.keyOfModel.get(model) ?? model, gate };
+}
+
+/** Every gate built so far, for the metrics snapshot. */
+export function liveGates(): Array<{ key: string; gate: QuotaGate }> {
+  return [...loaded().gates.entries()].map(([key, gate]) => ({ key, gate }));
 }
 
 /** One line for the startup log: a limit only shows itself under load. */
@@ -2173,6 +2209,17 @@ In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, after the agent handl
   // Admission comes AFTER the agent is resolved: a caller waiting for a
   // destination to warm, or for the shared corpus build, waits outside the
   // door holding an HTTP request and no pipeline.
+  //
+  // Which means the wait can be long — up to LLM_AGENT_DESTINATION_INIT_WAIT_MS
+  // — and a caller can leave during it. The listener is therefore installed
+  // BEFORE that wait, above this block, and checked here: a listener installed
+  // after admission would already have missed the event, and we would take a
+  // place and run a whole pipeline for a client that had gone.
+  if (callerGone) {
+    await safeStop(requestConnection);
+    return;
+  }
+
   let admission: AdmissionHandle;
   try {
     admission = await admit();
@@ -2187,20 +2234,30 @@ In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, after the agent handl
   }
 ```
 
-Replace the existing disconnect listener with:
+Replace the existing disconnect listener, and move it **above** the agent
+resolution so it cannot miss a client that leaves during the wait:
 
 ```ts
+  // Installed before anything slow. The old listener sat after the agent was
+  // in hand, so a client that gave up during a destination warm-up or a corpus
+  // build was never noticed.
   const sink = detachableSink(res);
+  let callerGone = false;
+  let admitted: AdmissionHandle | undefined;
   res.on('close', () => {
-    if (!res.writableEnded) {
-      // A note, not a teardown. The caller is gone; SAP is still waiting for
-      // the rest of the chain. safeStop runs after the register empties, in the
-      // finally below — never here.
-      sink.detach();
-      markCallerGone(admission);
-    }
+    if (res.writableEnded) return;
+    // A note, not a teardown. The caller is gone; SAP is still waiting for the
+    // rest of the chain. safeStop runs after the register empties, in the
+    // finally below — never here.
+    callerGone = true;
+    sink.detach();
+    if (admitted) markCallerGone(admitted);
   });
 ```
+
+After `admit()` succeeds, set `admitted = admission` and, if `callerGone` is
+already true, call `markCallerGone(admission)` at once — the event may have
+arrived between the check and the admission.
 
 and in the handler's own `finally`:
 
@@ -2249,6 +2306,24 @@ describe('every entrance is counted', () => {
     await a.release();
     await expect(mod.admit()).resolves.toBeDefined();
     void b;
+  });
+
+  it('does not start a pipeline for a caller that left during the agent wait', async () => {
+    // The window between "request arrives" and "agent resolved" can be the
+    // whole of LLM_AGENT_DESTINATION_INIT_WAIT_MS. A listener installed after
+    // it would have missed the event, and the door would hand out a place for
+    // a client that was already gone.
+    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
+    const mod = load();
+    let callerGone = false;
+    const res = { writableEnded: false, on: (_e: string, fn: () => void) => fn() };
+    // Stand-in for the handler's own ordering: listener first, slow wait, then
+    // the check that decides whether to admit at all.
+    res.on('close', () => { callerGone = true; });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(callerGone).toBe(true);
+    if (!callerGone) await mod.admit();
+    expect(mod.livePipelines()).toBe(0);
   });
 
   it('does not consume the last place while a caller waits for the agent', async () => {
@@ -2577,9 +2652,14 @@ export function closeDestination(name: string, reason: string): void {
     existing.status = 'unreachable';
     existing.error = reason;
   } else {
+    // The same shape the background discovery pass builds for a pending
+    // destination (`srv/agent-manager.ts`, where `status: 'pending'` entries
+    // are created). `toolsRag` is not optional on `DestinationState` and is
+    // read without a guard in several places, so a half-built entry would
+    // surface later as a different bug.
     destinationStates.set(name, {
       mcpAdapter: null,
-      toolsRag: emptyToolsRag(),
+      toolsRag: new ExpositionFilteringRag(new InMemoryRag(), new InMemoryRag()),
       toolCount: 0,
       status: 'unreachable',
       error: reason,
@@ -2610,7 +2690,7 @@ export function setNextProbeAtForTest(name: string, at: number | undefined): voi
 }
 ```
 
-`emptyToolsRag()` is the empty store this module already builds for a destination that has not vectorised; reuse that helper rather than adding one. If none exists under that name, use whatever the pending-state construction path already uses and keep the shape identical — `DestinationState` is read in several places and a half-built entry would surface as a different bug.
+`ExpositionFilteringRag` and `InMemoryRag` are already imported in this module for the pending-state path; no new import and no new helper.
 
 - [ ] **Step 5: Refuse arrivals, spare the admitted**
 
@@ -3100,11 +3180,32 @@ describe('gatekeeper metrics', () => {
   });
 
   it('reports no refusals for a quota, because the queue refuses nobody', () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
+    const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
+    registry.clearQuotaRegistry();
+    registry.gateForModel('shared');
     const mod = load();
-    mod.recordAdmittedWait('model-a', 1_500);
-    const quota = mod.gatekeeperSnapshot().quotas['model-a'];
+    mod.recordAdmittedWait('shared', 1_500);
+    const quota = mod.gatekeeperSnapshot().quotas.shared;
     expect(quota.lastWaitMs).toBe(1_500);
     expect(quota).not.toHaveProperty('refusals');
+    delete process.env.LLM_GATEKEEPER_QUOTAS;
+  });
+
+  it('aggregates models that share a quota into one scope', () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
+    process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({
+      'model-a': 'shared',
+      'model-b': 'shared',
+    });
+    const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
+    registry.clearQuotaRegistry();
+    registry.gateForModel('model-a');
+    registry.gateForModel('model-b');
+    const mod = load();
+    expect(Object.keys(mod.gatekeeperSnapshot().quotas)).toEqual(['shared']);
+    delete process.env.LLM_GATEKEEPER_QUOTAS;
+    delete process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL;
   });
 });
 ```
@@ -3171,9 +3272,14 @@ export function recordDestinationRefusal(destination: string): void {
 export function gatekeeperSnapshot(): GatekeeperSnapshot {
   const { livePipelines, configuredCapacity, callerlessCount } =
     require('./admission') as typeof import('./admission');
+  const { liveGates } = require('./quota-registry') as typeof import('./quota-registry');
   const quotas: Record<string, QuotaNumbers> = {};
-  for (const [key, lastWaitMs] of quotaWaits) {
-    quotas[key] = { starts: 0, waiting: 0, lastWaitMs };
+  for (const { key, gate } of liveGates()) {
+    quotas[key] = {
+      starts: gate.liveStarts,
+      waiting: gate.waiting,
+      lastWaitMs: quotaWaits.get(key) ?? 0,
+    };
   }
   const destinations: Record<string, { closed: boolean; refusals: number }> = {};
   for (const [name, refusals] of destinationRefusals) {
@@ -3200,7 +3306,9 @@ export function clearGatekeeperMetrics(): void {
 }
 ```
 
-Fill `starts` and `waiting` from the live gates, and `closed` from `isDestinationClosed`, when wiring the snapshot in `mcp-proxy`; the module keeps no copy of state it can read.
+`starts` and `waiting` are read live from the gates rather than copied, and `closed` comes from `isDestinationClosed` when the snapshot is wired in `mcp-proxy`. The module keeps no copy of state it can read.
+
+`recordAdmittedWait` is called with the **quota key** from `quotaForModel(model).key`, never the model name, so two models sharing one quota aggregate into one scope.
 
 Add `callerlessCount()` to `srv/lib/admission.ts`:
 
@@ -3240,7 +3348,7 @@ git commit -m "feat(gatekeeper): four scopes, so a collision never reads as memo
 
 **Interfaces:**
 - Consumes: `gateLlm` (Task 3), `AdmissionHandle.track` (Task 6).
-- Produces: `export function gateLlmReporting(inner: ILlm, model: string): ILlm` in `gated-llm` — takes its permit, never waits.
+- Produces: `healthCheck` on the `ILlm` that `gateLlm` returns — takes its permit, reports at once, never waits. There is no second wrapper.
 
 **The rule underneath:** every model call takes a permit, and only work with somebody waiting on it gets a door slot.
 
@@ -3298,7 +3406,7 @@ describe('a health check', () => {
     // healthCheck, not chat: the probe path calls agent.healthCheck(), and a
     // test against chat() would pass while the method that matters bypassed
     // the gate entirely.
-    const result = await gated.gateLlmReporting(throttledLlm(), 'm').healthCheck?.();
+    const result = await gated.gateLlm(throttledLlm(), 'm').healthCheck?.();
     expect(result?.ok).toBe(false);
     // Thirty seconds were named. A probe that waits them out is a hung
     // request, not a liveness check.
@@ -3308,15 +3416,24 @@ describe('a health check', () => {
   it('still spends a permit, because it is still a request', async () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
     const { registry, gated } = load();
-    await gated.gateLlmReporting(throttledLlm(), 'm').healthCheck?.();
+    await gated.gateLlm(throttledLlm(), 'm').healthCheck?.();
     expect(registry.gateForModel('m')?.liveStarts).toBe(1);
   });
 
-  it('gates chat on the same terms, for a probe that uses it', async () => {
+  it('leaves chat waiting as told, which is the guarantee the door rests on', async () => {
+    // The same wrapper, the opposite behaviour, deliberately: an admitted
+    // pipeline is slowed by a 429 and never ended by one. A wrapper that
+    // reported here would undo that for every ordinary call.
+    jest.useFakeTimers();
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { registry, gated } = load();
-    await gated.gateLlmReporting(throttledLlm(), 'm').chat([]);
-    expect(registry.gateForModel('m')?.liveStarts).toBe(1);
+    const { gated } = load();
+    let settled = false;
+    void gated.gateLlm(throttledLlm(), 'm').chat([]).then(() => { settled = true; });
+    await Promise.resolve();
+    jest.advanceTimersByTime(1_000);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    jest.useRealTimers();
   });
 });
 ```
@@ -3324,70 +3441,46 @@ describe('a health check', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx jest test/unit/non-pipeline-calls.test.ts`
-Expected: FAIL, `gateLlmReporting is not a function`.
+Expected: FAIL, `healthCheck` waits out the interval instead of reporting.
 
-- [ ] **Step 3: Add the reporting wrapper**
+- [ ] **Step 3: Make `healthCheck` the reporting method on the ordinary wrapper**
 
-In `srv/lib/gated-llm.ts`:
+There is no second wrapper and no second construction site. After Task 8 the
+only `agent.healthCheck()` caller is gone, so a `gateLlmReporting` would have
+nowhere to be used — and swapping it in for the shared LLM would take
+wait-as-told away from ordinary pipeline calls, which is the guarantee the door
+rests on. The difference is per **method**, not per wrapper: `chat` and
+`streamChat` wait as told, and `healthCheck` reports.
+
+In `srv/lib/gated-llm.ts`, add to the object `gateLlm` returns:
 
 ```ts
-/**
- * Gated, but never waiting.
- *
- * For a call nobody may be made to wait for: a liveness probe that sits out a
- * Retry-After stops being a liveness probe. It still takes a permit, because
- * it is still a request the window must see, and a throttled answer is a true
- * and useful one.
- */
-export function gateLlmReporting(inner: ILlm, model: string): ILlm {
-  /** Take a permit, run once, and give it back if nothing reached the wire. */
-  const once = async <T>(
-    signal: AbortSignal | undefined,
-    run: () => Promise<T>,
-    throttledOf: (value: T) => unknown,
-  ): Promise<T> => {
-    const gate = gateForModel(model);
-    const permit = gate ? await gate.acquire(signal) : undefined;
-    const value = await run();
-    if (findThrottled(throttledOf(value))?.attempts === 0) permit?.giveBack();
-    return value;
-  };
-
-  const gated: ILlm = {
-    get model() {
-      return inner.model;
-    },
-    chat(messages: Message[], tools?: LlmTool[], options?: CallOptions) {
-      return once(
-        options?.signal,
-        () => inner.chat(messages, tools, options),
-        (r) => (r.ok ? undefined : r.error),
-      );
-    },
-    streamChat(messages: Message[], tools?: LlmTool[], options?: CallOptions) {
-      return inner.streamChat(messages, tools, options);
-    },
-  };
-
-  // The probe calls `healthCheck`, not `chat`. Binding the inner one straight
-  // through would have left the one method this wrapper exists for outside the
-  // window entirely — gated in name and ungated in fact.
+  // A probe that waits out a Retry-After is not a probe: it is a hung request
+  // with no lifetime over it. So this one takes its permit — it is still a
+  // request the window must see — and answers with what the server said,
+  // immediately. `chat` and `streamChat` above are unchanged: they wait.
   if (inner.healthCheck) {
     const innerHealth = inner.healthCheck.bind(inner);
-    gated.healthCheck = (options?: CallOptions) =>
-      once(
-        options?.signal,
-        () => innerHealth(options),
-        (r) => (r.ok ? undefined : r.error),
-      );
+    gated.healthCheck = async (options?: CallOptions) => {
+      const gate = gateForModel(model);
+      const permit = gate ? await gate.acquire(options?.signal) : undefined;
+      const result = await innerHealth(options);
+      if (!result.ok && findThrottled(result.error)?.attempts === 0) {
+        permit?.giveBack();
+      }
+      return result;
+    };
   }
-  return gated;
-}
 ```
 
-- [ ] **Step 4: Use it on the health path**
+- [ ] **Step 4: Confirm there is no ungated health path left**
 
-Wherever the health probe obtains an LLM, build it with `gateLlmReporting` instead of `gateLlm`, so the probe reports rather than waits.
+Run: `grep -rn "healthCheck" srv/ | grep -v node_modules`
+
+After Task 8 the expected hits are the decorators that forward it
+(`srv/lib/recording-mcp-client.ts`, `srv/rag-collections.ts`) and the wrapper
+added in Step 3. If a new probe site appears later it inherits the behaviour by
+construction, because every LLM in this service comes from `buildGatedLlm`.
 
 - [ ] **Step 5: Keep the corpus build out of every register**
 
