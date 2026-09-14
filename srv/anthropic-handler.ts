@@ -36,7 +36,7 @@ import {
   throttleOf,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
-import { resolveSessionId } from './session-id';
+import { sessionIdOf } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
@@ -109,7 +109,7 @@ export async function handleAnthropicMessages(
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
-  const sessionId = resolveSessionId(req);
+  const sessionId = sessionIdOf(req);
   const destination = requestedDestination || getCurrentDestination(sessionId);
 
   let requestConnection:

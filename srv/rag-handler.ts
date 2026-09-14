@@ -24,7 +24,7 @@ import {
   getRagToolNames,
 } from './rag-tool-dispatcher';
 import { runWithSessionId } from './request-session';
-import { resolveSessionId } from './session-id';
+import { carriesSessionHeader, sessionIdOf } from './session-id';
 
 const log = cds.log('rag-handler');
 
@@ -119,9 +119,7 @@ export function registerRagRoutes(
     // would match every anonymous-owned legacy collection (cross-user leak).
     const effectiveUserId =
       userId && userId !== 'anonymous' ? userId : undefined;
-    const sid =
-      (req as Request & { sessionId?: string }).sessionId ??
-      resolveSessionId(req);
+    const sid = sessionIdOf(req);
 
     let collections = registry.listCollections(effectiveUserId);
     // Filter session-scoped collections to the current session only — prevents
@@ -205,14 +203,23 @@ export function registerRagRoutes(
       let createMeta: Parameters<typeof registry.createCollection>[0];
 
       if (scope === 'session') {
-        const sid =
-          (req as Request & { sessionId?: string }).sessionId ??
-          resolveSessionId(req);
+        // Refused, not ignored. Ignoring it would create the collection under
+        // the issued session, which this caller evidently is not tracking, and
+        // it would find nothing where it looks next.
+        if (carriesSessionHeader(req)) {
+          error(
+            res,
+            400,
+            'x-session-id is no longer read. A session collection belongs to the session this service issued: keep the clh_session cookie from a previous response and send it back.',
+          );
+          return;
+        }
+        const sid = sessionIdOf(req);
         if (!sid) {
           error(
             res,
             400,
-            'session scope requires an active session (x-session-id header or clh_session cookie)',
+            'session scope requires the clh_session cookie issued by this service',
           );
           return;
         }
@@ -312,8 +319,7 @@ export function registerRagRoutes(
       registry,
       req.params.id,
       getUserId(),
-      (req as Request & { sessionId?: string }).sessionId ??
-        resolveSessionId(req),
+      sessionIdOf(req),
       isContentWrite,
     );
 
@@ -708,9 +714,7 @@ export function registerRagRoutes(
       error(res, 404, `Unknown RAG tool: ${name}`);
       return;
     }
-    const sid =
-      (req as Request & { sessionId?: string }).sessionId ??
-      resolveSessionId(req);
+    const sid = sessionIdOf(req);
     const result = await runWithSessionId(sid, () =>
       dispatchRagTool(registry, name, req.body ?? {}),
     );

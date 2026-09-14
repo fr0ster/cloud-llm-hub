@@ -1407,8 +1407,8 @@
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally.
-                // Session is tracked via the clh_session HttpOnly cookie (set by server),
-                // so no X-Session-Id header is needed from the browser.
+                // Session is tracked via the clh_session HttpOnly cookie (set by server);
+                // the browser names no session of its own.
                 const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders() };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 

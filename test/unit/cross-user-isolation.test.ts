@@ -233,7 +233,7 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
     asAnonymous();
   });
 
-  test("User B with same raw x-session-id as User A cannot see A's session collection in GET /rag/collections", async () => {
+  test("User B with same raw session id as User A cannot see A's session collection in GET /rag/collections", async () => {
     const rawSessionId = 's1';
 
     // Alice creates a session collection
@@ -258,7 +258,7 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
     mockCdsContext.user = { id: 'bob@example.com', is: () => false };
     const res = await doGet(
       routes,
-      { 'x-session-id': rawSessionId },
+      { cookie: `clh_session=${rawSessionId}` },
       rawSessionId,
     );
 
@@ -268,7 +268,7 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
     expect(body.collections.map((c) => c.id)).not.toContain(alicePhysId);
   });
 
-  test("User B with same raw x-session-id gets 404 on :id routes against A's physical id", async () => {
+  test("User B with same raw session id gets 404 on :id routes against A's physical id", async () => {
     const rawSessionId = 's1';
 
     // Alice's session collection
@@ -295,7 +295,7 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
       method: 'GET',
       params: { id: alicePhysId },
       path: '/',
-      headers: { 'x-session-id': rawSessionId },
+      headers: { cookie: `clh_session=${rawSessionId}` },
       sessionId: rawSessionId,
     });
     const res = await runWithMiddleware(
@@ -413,7 +413,7 @@ describe('B. Cross-session-within-one-user RAG isolation', () => {
     // Request from session-2: should NOT see session-1's collection
     const res = await doGet(
       routes,
-      { 'x-session-id': 'session-2' },
+      { cookie: 'clh_session=session-2' },
       'session-2',
     );
     const body = res._body as { collections: Array<{ id: string }> };
@@ -444,7 +444,7 @@ describe('B. Cross-session-within-one-user RAG isolation', () => {
       method: 'GET',
       params: { id: sess1PhysId },
       path: '/',
-      headers: { 'x-session-id': 'session-2' },
+      headers: { cookie: 'clh_session=session-2' },
       sessionId: 'session-2',
     });
     const res = await runWithMiddleware(
@@ -485,7 +485,7 @@ describe('B. Cross-session-within-one-user RAG isolation', () => {
     // Visible in session s1
     const res1 = await doGet(
       routes,
-      { 'x-session-id': 'session-1' },
+      { cookie: 'clh_session=session-1' },
       'session-1',
     );
     const body1 = res1._body as { collections: Array<{ id: string }> };
@@ -494,7 +494,7 @@ describe('B. Cross-session-within-one-user RAG isolation', () => {
     // Visible in session s2
     const res2 = await doGet(
       routes,
-      { 'x-session-id': 'session-2' },
+      { cookie: 'clh_session=session-2' },
       'session-2',
     );
     const body2 = res2._body as { collections: Array<{ id: string }> };

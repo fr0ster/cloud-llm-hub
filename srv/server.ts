@@ -13,7 +13,6 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before any submodule imports
 import './env-setup';
 
-import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
@@ -32,6 +31,7 @@ import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { needsSapConnection } from './lib/mcp-request';
+import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   clearSession,
@@ -40,7 +40,7 @@ import {
   handleUsage,
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
-import { buildSetCookie, resolveSessionId } from './session-id';
+import { resolveSessionId } from './session-id';
 
 /**
  * Type guard for MCP request body
@@ -475,23 +475,12 @@ cds.on('bootstrap', (app: Application) => {
   // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
-  // Session middleware: resolves (or mints) the session ID for every /v1/* request.
-  // Priority: x-session-id header > mcp-session-id header > clh_session cookie > new id.
-  // When a new id is minted, an HttpOnly session cookie is issued so the browser
-  // session survives page reloads without JS generating a new random id each time.
-  // Header still wins, so API/MCP clients (Cline, curl) are unaffected.
-  app.use('/v1', (req: Request, res: Response, next: NextFunction) => {
-    let sid = resolveSessionId(req);
-    if (!sid) {
-      sid = `s-${randomUUID()}`;
-      const secure = !!(
-        req.secure || req.headers['x-forwarded-proto'] === 'https'
-      );
-      res.setHeader('Set-Cookie', buildSetCookie(sid, secure));
-    }
-    (req as Request & { sessionId?: string }).sessionId = sid;
-    next();
-  });
+  // Every /v1 request runs under a session this service issued. The cookie is
+  // the only thing read; a header naming a session is not.
+  app.use(
+    '/v1',
+    sessionMiddleware({ userIdOf: () => cds.context?.user?.id ?? 'anonymous' }),
+  );
 
   // CORS preflight for /v1/* routes
   app.options('/v1/*', (_req: Request, res: Response) => {

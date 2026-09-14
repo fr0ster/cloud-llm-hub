@@ -39,7 +39,7 @@ import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { turnOwner } from './lib/session-history-rag';
 import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
-import { resolveSessionId } from './session-id';
+import { honouredSessionId, sessionIdOf } from './session-id';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
 function getUserId(): string {
@@ -397,17 +397,11 @@ export async function handleChatCompletions(
   }
 
   const traceId = randomUUID();
-  // Prefer the session id already stashed by the session middleware; otherwise resolve from
-  // headers/cookie directly (handles cases where the middleware ran before us).
-  // An EXPLICIT session is one the client actually sent — `x-session-id`/`mcp-session-id`
-  // header or the `clh_session` cookie. `resolveSessionId` returns only that (it never mints).
-  const explicitSessionId = resolveSessionId(req);
-  // Session id used for history + RAG keying: the middleware-stashed id (explicit, or the
-  // freshly-minted cookie id), falling back defensively if the middleware didn't run.
-  const sessionId =
-    (req as Request & { sessionId?: string }).sessionId ??
-    explicitSessionId ??
-    randomUUID();
+  // A session the caller presented and we kept. A freshly minted one is not
+  // explicit: a stateless API client sending its full history must never be
+  // truncated to its last message.
+  const explicitSessionId = honouredSessionId(req);
+  const sessionId = sessionIdOf(req) ?? randomUUID();
   const t0 = Date.now();
 
   // Two modes of history management:
