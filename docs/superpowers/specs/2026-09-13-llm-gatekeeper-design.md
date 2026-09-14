@@ -205,6 +205,18 @@ otherwise, so it is never starved by later arrivals that are also eligible. Two
 rules would need a reason; this is one rule — first come, first served, among
 those it is possible to serve.
 
+**Eligible means both resources, not just the slot.** A pipeline needs a slot
+to run in and a retention place to be remembered in, and taking them in
+sequence would put a refusal *after* the admission that promised there would
+not be one. So the waiter is admitted when it holds both, atomically, and is
+not admitted at all until then — a free slot with no retention place available
+leaves it waiting exactly as a busy session does, passed over and keeping its
+place. What makes a place available is a free one or an idle session to evict
+for it; the only thing that can withhold one is a session leased without a
+slot, and those settle on their own. This costs the door nothing it did not
+already have: waiting for a resource someone else is using is what the queue
+is.
+
 **The queue's depth is the pressure signal.** Not a second configured number:
 when the queue passes three quarters of its length the service is running out of
 room, and that is the point to notice rather than the moment the last slot
@@ -595,15 +607,20 @@ at once, and you cannot bound retention at all without bounding how many run.
 
 **`retained >= capacity` is the floor, and with RAG traffic it is not the
 right number.** The constraint makes a retention place certain for sessions
-that hold *slots*. Leases widen the set that cannot be evicted past that: a
-session being uploaded to holds a retention place and refuses eviction while
-holding no slot, so a cap set to exactly the capacity can be filled by fewer
-live sessions than there are slots, and an admitted caller can be refused for
-want of a place to remember them. This is the honest consequence of protecting
-the upload, and it is not resolved by arithmetic — it is why the cap is a
-separate variable merely required not to be smaller, rather than being derived
-from the capacity. A deployment serving `/v1/rag/*` sets it above the capacity
-by the number of concurrent uploads it expects.
+that hold *slots*, and leases widen the set that cannot be evicted past that: a
+session being uploaded to holds a place and refuses eviction while holding no
+slot, so a cap set to exactly the capacity can be spoken for by fewer live
+sessions than there are slots. Because admission takes both resources or
+neither, this costs a wait and not a broken promise — the waiter stays in the
+queue until the upload settles, which is the same treatment as a busy session
+and no worse than it. An earlier draft had it refusing an already-admitted
+caller instead, which was the guarantee above contradicted rather than a
+consequence accepted.
+
+A wait is still a cost, and the deployment can buy it away: the cap is a
+separate variable required only not to be *smaller* than the capacity, so a
+deployment serving `/v1/rag/*` sets it above the capacity by the number of
+concurrent uploads it expects, and the door stops noticing them.
 
 The values in force are logged at startup. A limit only shows itself under load,
 and by then nobody remembers what was configured.
@@ -793,6 +810,12 @@ These properties, because they are what this shape gets wrong.
   a query and a delete in flight. The assertion that matters is made *after*
   the in-flight operation finishes, because a cleanup that races it passes
   every check made before.
+- **A free slot with no retention place admits nobody.** Occupy every retention
+  place with leased sessions holding no slot, leave the slots free, and send a
+  request: it waits in the queue, no pipeline starts and no controller or
+  session state is built for it, and it is admitted the moment a lease settles.
+  Written because taking the slot first and the place second would pass every
+  test that only counts slots, and fail the one guarantee the door sells.
 - **Logout does not abort an admitted pipeline.** Log out in the middle of a
   multi-step ADT write: the response is immediate, no new operation starts
   against the session, the pipeline runs every remaining step and releases its
