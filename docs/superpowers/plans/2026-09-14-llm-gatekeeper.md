@@ -55,7 +55,7 @@ Each phase leaves the service working and tested; a later phase may be deferred 
 | `srv/openai-handler.ts` | Admission after the agent is resolved; detached output sink; disconnect notes instead of tearing down; collision refusal. |
 | `srv/anthropic-handler.ts` | The same three changes. |
 | `srv/agent-mcp.ts` | The local semaphore is replaced by the shared door; teardown order unchanged but now waits on the register. |
-| `srv/agent-service.ts`, `srv/agent-service.cds` | `Chat` and `Health` removed — dead surface with neither a door nor a session lifecycle. |
+| `srv/agent-service.ts`, `srv/agent-service.cds` | `Chat` removed — dead surface with neither a door nor a session lifecycle. `Health` stays: it starts no pipeline and is the one caller of the probe policy. |
 | `srv/lib/throttle-surfacing.ts` | Formatters for the door refusal (no number), the collision refusal (`409`/`pipeline_in_flight`) and the unknown-model refusal (`400`). |
 | `srv/lib/recording-mcp-client.ts` | Open the record at dispatch so "sent, unanswered" is a state, not an absence. |
 | `docs/architecture/ARCHITECTURE.md`, `README.md`, `.mtaext` samples | Document the variables and the guarantee. |
@@ -166,12 +166,22 @@ export interface QuotaLimits {
   windowMs: number;
 }
 
+/**
+ * One start, in a doubly-linked list.
+ *
+ * A list rather than an array because a permit given back has to leave from
+ * the MIDDLE in constant time. Marking it dead in place and skipping it later
+ * puts a scan back on the hot path — and that scan is longest during a herd of
+ * pre-wire refusals, which is precisely when this code is under load. Unlinking
+ * is `O(1)` from anywhere, the head is the oldest and the tail is the newest,
+ * so nothing is ever searched for.
+ */
 interface StartNode {
   at: number;
-  /** Given back: never was a start. */
-  dead: boolean;
-  /** Aged out of the window: already uncounted, so a late give-back is a no-op. */
-  expired: boolean;
+  prev: StartNode | undefined;
+  next: StartNode | undefined;
+  /** Off the list already, by give-back or by ageing out. */
+  gone: boolean;
 }
 
 interface Waiter {
@@ -188,15 +198,10 @@ interface Waiter {
 }
 
 export class QuotaGate {
-  /**
-   * The window, oldest first, consumed from `head` rather than shifted.
-   *
-   * `Array.shift()` is linear and this is the hot path of a serialisation
-   * point, so the head advances by index and the array is compacted only when
-   * the dead prefix has grown past half of it — amortised O(1) per start.
-   */
-  private starts: StartNode[] = [];
-  private head = 0;
+  /** Oldest start. */
+  private oldest: StartNode | undefined;
+  /** Newest start. Read directly for pacing; never searched for. */
+  private newest: StartNode | undefined;
   /** Waiters, also consumed by index; a cancelled one is skipped, not spliced. */
   private waiters: Waiter[] = [];
   private waitHead = 0;
@@ -292,26 +297,15 @@ export class QuotaGate {
     this.trim();
     const now = this.now();
     const spacing = Math.ceil(this.limits.windowMs / this.limits.limit);
-    // The newest LIVE start. A permit given back is not a start at all, and
-    // `trim` only drops dead nodes from the head — so a returned permit sitting
-    // at the tail would otherwise push the next retry out by a whole spacing
-    // for a request that never reached the wire. The scan is over the tail and
-    // stops at the first live node; dead ones are rare, being only the
-    // library's pre-wire refusals.
-    let newest: StartNode | undefined;
-    for (let i = this.starts.length - 1; i >= this.head; i--) {
-      if (!this.starts[i].dead) {
-        newest = this.starts[i];
-        break;
-      }
-    }
-    const untilSpaced = newest === undefined ? 0 : Math.max(0, newest.at + spacing - now);
-
-    const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
+    // Both ends are pointers. A permit given back has already left the list, so
+    // `newest` can never be one — which is the whole reason this is a list and
+    // not an array with dead entries to step past.
+    const untilSpaced =
+      this.newest === undefined ? 0 : Math.max(0, this.newest.at + spacing - now);
     const untilPlace =
-      this.live < this.limits.limit || oldest === undefined
+      this.live < this.limits.limit || this.oldest === undefined
         ? 0
-        : Math.max(0, oldest.at + this.limits.windowMs - now);
+        : Math.max(0, this.oldest.at + this.limits.windowMs - now);
 
     return Math.max(untilSpaced, untilPlace);
   }
@@ -341,16 +335,23 @@ export class QuotaGate {
 
   /** Append a start and hand back the node that undoes it. */
   private record(): Permit {
-    const node: StartNode = { at: this.now(), dead: false, expired: false };
-    this.starts.push(node);
+    const node: StartNode = {
+      at: this.now(),
+      prev: this.newest,
+      next: undefined,
+      gone: false,
+    };
+    if (this.newest) this.newest.next = node;
+    this.newest = node;
+    if (!this.oldest) this.oldest = node;
     this.live++;
     return {
       giveBack: () => {
-        // Already undone, or already aged out of the window and uncounted.
-        // Without the second check a late give-back would decrement `live`
-        // twice and let the dispatcher admit past the limit for ever after.
-        if (node.dead || node.expired) return;
-        node.dead = true;
+        // Already off the list, by an earlier give-back or by ageing out.
+        // Without this a late give-back would decrement `live` twice and let
+        // the dispatcher admit past the limit from then on.
+        if (node.gone) return;
+        this.unlink(node);
         this.live--;
         // A place opened NOW, not at the expiry the timer was set for.
         this.dispatch();
@@ -358,19 +359,23 @@ export class QuotaGate {
     };
   }
 
+  /** Remove one node from anywhere in the list. O(1). */
+  private unlink(node: StartNode): void {
+    node.gone = true;
+    if (node.prev) node.prev.next = node.next;
+    else this.oldest = node.next;
+    if (node.next) node.next.prev = node.prev;
+    else this.newest = node.prev;
+    node.prev = undefined;
+    node.next = undefined;
+  }
+
   /** Age out everything older than the window. O(1) amortised. */
   private trim(): void {
     const cutoff = this.now() - this.limits.windowMs;
-    while (this.head < this.starts.length) {
-      const node = this.starts[this.head];
-      if (!node.dead && node.at > cutoff) break;
-      if (!node.dead) this.live--;
-      node.expired = true;
-      this.head++;
-    }
-    if (this.head > 32 && this.head * 2 > this.starts.length) {
-      this.starts = this.starts.slice(this.head);
-      this.head = 0;
+    while (this.oldest && this.oldest.at <= cutoff) {
+      this.unlink(this.oldest);
+      this.live--;
     }
   }
 
@@ -378,12 +383,9 @@ export class QuotaGate {
   private dispatch(): void {
     if (this.stopped) return;
     this.trim();
-    while (this.waitHead < this.waiters.length && this.live < this.limits.limit) {
-      const waiter = this.waiters[this.waitHead];
-      if (waiter.cancelled) {
-        this.waitHead++;
-        continue;
-      }
+    for (;;) {
+      const waiter = this.firstLiveWaiter();
+      if (!waiter || this.live >= this.limits.limit) break;
       // Strictly first come, first served, including a retry waiting out an
       // interval: the head holds the line rather than being stepped over. The
       // timer below wakes for it.
@@ -400,6 +402,23 @@ export class QuotaGate {
     this.schedule();
   }
 
+  /**
+   * The first waiter still in play, dropping the cancelled ones on the way.
+   *
+   * Advancing the head past them here means nothing else has to skip them, so
+   * each cancelled waiter is stepped over exactly once across the gate's life.
+   */
+  private firstLiveWaiter(): Waiter | undefined {
+    while (this.waitHead < this.waiters.length && this.waiters[this.waitHead].cancelled) {
+      this.waitHead++;
+    }
+    if (this.waitHead > 32 && this.waitHead * 2 > this.waiters.length) {
+      this.waiters = this.waiters.slice(this.waitHead);
+      this.waitHead = 0;
+    }
+    return this.waiters[this.waitHead];
+  }
+
   /** One timer per quota, set to the moment the next place opens. */
   private schedule(): void {
     if (this.stopped) return;
@@ -408,25 +427,16 @@ export class QuotaGate {
       this.timer = undefined;
     }
     if (this.waiting === 0) return;
-    // After trim the head IS the oldest live start, so there is nothing to
-    // search for.
-    const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
     // Only a FULL window makes anyone wait for an expiry. With room to spare
     // the place is already there, and timing the wake to the oldest start
     // would park a delayed waiter for the rest of the window over nothing.
     const untilPlace =
-      this.live < this.limits.limit || oldest === undefined
+      this.live < this.limits.limit || this.oldest === undefined
         ? 0
-        : Math.max(0, oldest.at + this.limits.windowMs - this.now());
+        : Math.max(0, this.oldest.at + this.limits.windowMs - this.now());
     // And the head waiter may not be eligible yet, in which case waking on the
     // place alone would spin.
-    let head: Waiter | undefined;
-    for (let i = this.waitHead; i < this.waiters.length; i++) {
-      if (!this.waiters[i].cancelled) {
-        head = this.waiters[i];
-        break;
-      }
-    }
+    const head = this.firstLiveWaiter();
     const untilEligible = head ? Math.max(0, head.notBefore - this.now()) : 0;
     const waitMs = Math.max(untilPlace, untilEligible);
     this.timer = setTimeout(() => {
@@ -686,11 +696,14 @@ Expected: PASS, 16 tests.
 
 > **On the hot path being constant-time.** The queue is a serialisation point,
 > so `shift`, `find`, `indexOf` and `splice` are all wrong here — each is linear
-> in the array it touches. Both arrays are therefore consumed by a head index
-> and compacted only when the dead prefix passes half their length, which is
-> amortised `O(1)` per start; a cancelled waiter is marked and skipped rather
-> than spliced out; and after `trim` the head *is* the oldest live start, so the
-> timer needs no search to find it.
+> in what it touches. The window is a doubly-linked list because a permit given
+> back has to leave from the middle: marking it dead in an array and skipping it
+> later puts a scan back on the hot path, and that scan is longest during a herd
+> of pre-wire refusals, which is exactly when this code is under load. Both ends
+> are pointers, so the oldest start and the newest are read rather than searched
+> for. The waiter queue stays an array consumed by a head index, with cancelled
+> entries stepped over once each and the array compacted when the dead prefix
+> passes half its length.
 
 - [ ] **Step 7: Lint and typecheck**
 
@@ -1053,9 +1066,9 @@ git commit -m "feat(gatekeeper): quotas come from configuration, and a malformed
 - Test: `test/unit/gated-llm.test.ts`
 
 **Interfaces:**
-- Consumes: `quotaForModel`, `QuotaGate`, `Permit` from Tasks 1–2, and `recordAdmittedWait` from `srv/lib/gatekeeper-metrics.ts`.
+- Consumes: `quotaForModel`, `QuotaGate`, `Permit` from Tasks 1–2.
 
-> Create `srv/lib/gatekeeper-metrics.ts` here with `recordAdmittedWait` and `clearGatekeeperMetrics` only — the rest of its surface arrives in Task 13. A task may not call into a module a later one creates, and this is the only place that knows both the quota key and the wait.
+> No metrics here. This wrapper is where the wait is measurable, and Task 13 adds the two lines that measure it — a task may not import a module a later one creates, and a half-built module smuggled in early is the same rule broken quietly.
 - Produces:
   - `export function gateLlm(inner: ILlm, model: string): ILlm`
   - `export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder`
@@ -1198,7 +1211,6 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { Permit } from './quota-gate';
-import { recordAdmittedWait } from './gatekeeper-metrics';
 import { quotaForModel } from './quota-registry';
 
 /**
@@ -1255,13 +1267,7 @@ async function runGated<T>(
     const quota = quotaForModel(model);
     let permit: Permit | undefined;
     if (quota) {
-      const askedAt = Date.now();
       permit = await quota.gate.acquire(signal, { notBefore: nextAttemptAt });
-      // Measured here because here is the only place that knows both halves:
-      // the key the call spends against, and how long it actually waited for
-      // its place. Filed under the key, never the model name, so two models
-      // sharing a quota report as one.
-      recordAdmittedWait(quota.key, Date.now() - askedAt);
     }
 
     const { value, throttled } = await attempt();
@@ -1320,11 +1326,9 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
         const quota = quotaForModel(model);
         let permit: Permit | undefined;
         if (quota) {
-          const askedAt = Date.now();
           permit = await quota.gate.acquire(options?.signal, {
             notBefore: nextAttemptAt,
           });
-          recordAdmittedWait(quota.key, Date.now() - askedAt);
         }
         let yielded = 0;
         let reopen: { waitMs: number } | undefined;
@@ -2821,6 +2825,7 @@ git commit -m "refactor: drop AgentService.Chat, the entrance with no door and n
 - Produces:
   - `export class McpUnavailableError extends Error { readonly code = 'mcp_unavailable'; readonly destination: string }`
   - `export function isUnavailable(error: unknown): boolean`
+  - `export function describeCause(error: unknown): string`
   - `export const outageClassifier: IMcpFailureClassifier`
 
 **Where the work actually is:** this service builds its MCP client with `transport: 'embedded'` and its own `callToolHandler`, and the embedded branch of `MCPClientWrapper` neither reconnects nor retries — it catches the handler's exception and returns an ordinary tool result carrying an `error` string. So an outage arrives shaped like tool feedback. `McpClientAdapter` draws the line with a string match on connection-loss signatures; that match is the classification point, and it is why the handler must raise the two cases distinguishably rather than hope a message reads the right way.
@@ -2916,6 +2921,18 @@ export const outageClassifier: IMcpFailureClassifier = {
     return isUnavailable(error) ? 'unavailable' : 'tool-error';
   },
 };
+
+/**
+ * A short reason for a log line or a closed-destination record.
+ *
+ * Defined here because the three channels need the same one and none of them
+ * has it: an earlier draft of this plan called `describeCause` an existing
+ * helper, and there is no such symbol anywhere in `srv/`.
+ */
+export function describeCause(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
 ```
 
 - [ ] **Step 4: Raise it from the handler**
@@ -3178,8 +3195,9 @@ because a failure arrives either as a thrown error or as an error chunk:
 ```
 
 `destAfter` is the destination the connection was established for, already
-resolved in both handlers. `describeCause` is the existing helper; where a
-channel does not import it, use the error's message.
+resolved in both handlers. `describeCause` comes from `./lib/mcp-outage`,
+added in Step 3 of this task — add it to each channel's imports alongside
+`isUnavailable`.
 
 - [ ] **Step 7: Assert the production paths are wired**
 
@@ -3197,21 +3215,29 @@ import { join } from 'node:path';
 const read = (f: string) => readFileSync(join(__dirname, '../../srv', f), 'utf8');
 
 describe('every channel closes a destination it finds unreachable', () => {
-  for (const file of ['agent-mcp.ts', 'openai-handler.ts', 'anthropic-handler.ts']) {
-    it(`${file} consults the classifier and closes on it`, () => {
-      const src = read(file);
-      expect(src).toMatch(/isUnavailable\(/);
-      expect(src).toMatch(/closeDestination\(/);
-    });
-  }
+  it('closes from the step catch in agent-mcp', () => {
+    // The guard and the call in one expression, so the two cannot drift into
+    // unrelated branches and still satisfy a "both appear somewhere" check.
+    expect(read('agent-mcp.ts')).toMatch(
+      /if \(isUnavailable\(err\)\)\s*closeDestination\(\s*destination/,
+    );
+  });
 
-  it('covers both shapes a chat failure arrives in', () => {
-    for (const file of ['openai-handler.ts', 'anthropic-handler.ts']) {
+  for (const file of ['openai-handler.ts', 'anthropic-handler.ts']) {
+    it(`${file} closes on a thrown failure`, () => {
+      expect(read(file)).toMatch(
+        /if \(isUnavailable\(err\)\)\s*\{?\s*closeDestination\(\s*destAfter/,
+      );
+    });
+
+    it(`${file} closes on an error chunk too`, () => {
       // A thrown error and an error chunk are different paths; wiring one and
       // not the other leaves a whole transport silently open.
-      expect(read(file).match(/isUnavailable\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
-    }
-  });
+      expect(read(file)).toMatch(
+        /isUnavailable\(chunk\.error\)[\s\S]{0,120}closeDestination\(\s*destAfter/,
+      );
+    });
+  }
 });
 ```
 
@@ -3652,11 +3678,23 @@ git commit -m "feat(gatekeeper): an identified retry meets a 409 while its prede
 Create `test/unit/gatekeeper-metrics.test.ts`:
 
 ```ts
+/**
+ * One reset, one load, every module from the same registry.
+ *
+ * `jest.resetModules()` gives the next `require` a fresh module instance, so a
+ * test that loads agent-manager or the registry BEFORE calling this would then
+ * have the snapshot lazily require a second, empty copy — and pass or fail for
+ * reasons unrelated to the code.
+ */
 const load = () => {
   jest.resetModules();
-  const mod = require('../../srv/lib/gatekeeper-metrics') as typeof import('../../srv/lib/gatekeeper-metrics');
-  mod.clearGatekeeperMetrics();
-  return mod;
+  const metrics = require('../../srv/lib/gatekeeper-metrics') as typeof import('../../srv/lib/gatekeeper-metrics');
+  const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+  const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
+  const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
+  metrics.clearGatekeeperMetrics();
+  registry.clearQuotaRegistry();
+  return { ...metrics, manager, registry, gated };
 };
 
 describe('gatekeeper metrics', () => {
@@ -3684,9 +3722,8 @@ describe('gatekeeper metrics', () => {
     // Built only from refusals, a system closed a minute ago with no arrival
     // since would be missing from the payload entirely — and that is precisely
     // the moment an operator goes looking at it.
-    const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
-    manager.closeDestination('S4HANA_DEV', 'tunnel down');
     const mod = load();
+    mod.manager.closeDestination('S4HANA_DEV', 'tunnel down');
     const entry = mod.gatekeeperSnapshot().destinations['S4HANA_DEV'];
     expect(entry.closed).toBe(true);
     expect(entry.refusals).toBe(0);
@@ -3694,10 +3731,8 @@ describe('gatekeeper metrics', () => {
 
   it('reports no refusals for a quota, because the queue refuses nobody', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
-    const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-    registry.clearQuotaRegistry();
-    registry.gateForModel('shared');
     const mod = load();
+    mod.registry.gateForModel('shared');
     mod.recordAdmittedWait('shared', 1_500);
     const quota = mod.gatekeeperSnapshot().quotas.shared;
     expect(quota.lastWaitMs).toBe(1_500);
@@ -3709,11 +3744,8 @@ describe('gatekeeper metrics', () => {
     // Through the wrapper, not the recorder: a unit test that calls
     // recordAdmittedWait directly passes while nothing in production ever does.
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1, windowMs: 50 } });
-    const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-    registry.clearQuotaRegistry();
-    const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
     const mod = load();
-    const llm = gated.gateLlm(
+    const llm = mod.gated.gateLlm(
       {
         model: 'm',
         chat: async () => ({ ok: true as const, value: { content: 'ok', finishReason: 'stop' as const } }),
@@ -3733,11 +3765,9 @@ describe('gatekeeper metrics', () => {
       'model-a': 'shared',
       'model-b': 'shared',
     });
-    const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-    registry.clearQuotaRegistry();
-    registry.gateForModel('model-a');
-    registry.gateForModel('model-b');
     const mod = load();
+    mod.registry.gateForModel('model-a');
+    mod.registry.gateForModel('model-b');
     expect(Object.keys(mod.gatekeeperSnapshot().quotas)).toEqual(['shared']);
     delete process.env.LLM_GATEKEEPER_QUOTAS;
     delete process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL;
@@ -3873,7 +3903,17 @@ export function callerlessCount(): number {
 
 - [ ] **Step 4: Emit at each refusal**
 
-`recordAdmittedWait` is already called from `gateLlm` in Task 3, which is the only place that knows both the quota key and the wait. What remains here: call `recordDoorRefusal()` at each of the three places a `DoorFullError` is answered — `execute_step` and both chat channels — `recordCollisionRefusal()` where `PipelineInFlightError` is answered, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
+**Measure the wait in `srv/lib/gated-llm.ts`**, the only place that knows both halves — the key the call spends against and how long it waited for its place. In `runGated` and in the streaming path, around each `acquire`:
+
+```ts
+      const askedAt = Date.now();
+      permit = await quota.gate.acquire(signal, { notBefore: nextAttemptAt });
+      // Filed under the key, never the model name, so two models sharing a
+      // quota report as one scope rather than two half-full ones.
+      recordAdmittedWait(quota.key, Date.now() - askedAt);
+```
+
+Then call `recordDoorRefusal()` at each of the three places a `DoorFullError` is answered — `execute_step` and both chat channels — `recordCollisionRefusal()` where `PipelineInFlightError` is answered, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
 
 > These calls are added **here**, not in the tasks that created those refusals. Each task has to end green on its own, and a task cannot call into a module a later one creates.
 
@@ -4082,7 +4122,7 @@ State the guarantee in one line: a caller is either refused before anything star
 
 - [ ] **Step 2: Record the removed surface**
 
-In `CHANGELOG.md` under a new version, list the breaking changes: `AgentService.Chat` and `AgentService.Health` removed; `EXEC_STEP_MAX_CONCURRENCY` replaced by `LLM_GATEKEEPER_MAX_LIVE_PIPELINES`, which covers every channel rather than one route. Name the migration for a deployment that relied on the old cap.
+In `CHANGELOG.md` under a new version, list the breaking changes: `AgentService.Chat` removed (`AgentService.Health` is unchanged and still there); `LLM_AGENT_THROTTLE_MAX_WAIT_MS` removed along with `WaitIfShortEnough`, since waiting as told is now the gated wrapper's business; and `EXEC_STEP_MAX_CONCURRENCY` replaced by `LLM_GATEKEEPER_MAX_LIVE_PIPELINES`, which covers every channel rather than one route. Name the migration for a deployment that relied on the old cap.
 
 - [ ] **Step 3: Add the sample configuration**
 
