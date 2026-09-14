@@ -141,8 +141,14 @@ export function fakeReq(body: unknown, sessionId = 's-1', minted = true) {
   };
 }
 
-export function fakeRes() {
+/**
+ * `throwOnWriteAfter`: once this many writes have gone through successfully,
+ * the next `write` throws — simulating a dead socket (EPIPE) rather than a
+ * clean disconnect. `detachedSink` must swallow it, not the handler.
+ */
+export function fakeRes(opts: { throwOnWriteAfter?: number } = {}) {
   const closeListeners: Array<() => void> = [];
+  let writeCount = 0;
   const r = {
     statusCode: 200,
     headers: {} as Record<string, string>,
@@ -169,6 +175,13 @@ export function fakeRes() {
       return r;
     },
     write(c: string) {
+      writeCount++;
+      if (
+        opts.throwOnWriteAfter !== undefined &&
+        writeCount > opts.throwOnWriteAfter
+      ) {
+        throw new Error('EPIPE');
+      }
       r.body += c;
       return true;
     },

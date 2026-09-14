@@ -84,20 +84,34 @@ describe('/v1/messages at the door', () => {
 
   it('a disconnect ends nothing, and teardown waits for the call in flight', async () => {
     configure(1);
+    const between = deferred();
     const tool = deferred();
     harness.stream = async function* () {
       yield { ok: true, value: { content: 'working' } };
       void trackCall(
         tool.promise.then(() => harness.events.push('tool settled')),
       );
+      // Hold here so the disconnect below lands mid-response, not after `out.end()`.
+      await between.promise;
+      yield { ok: true, value: { content: 'after-disconnect' } };
       yield { ok: true, value: { finishReason: 'stop' } };
     };
     const res = fakeRes();
     const { done } = call(body(true), res);
     await tick();
+    // Proves the disconnect below is mid-response, not after the handler finished.
+    expect(res.writableEnded).toBe(false);
+
     res.disconnect();
     await tick();
     expect(harness.events).not.toContain('safeStop');
+    expect((harness.seenOptions[0].signal as AbortSignal).aborted).toBe(false);
+
+    // The detached sink drops anything written after the disconnect.
+    between.resolve();
+    await tick();
+    expect(res.body).not.toContain('after-disconnect');
+
     tool.resolve();
     await done;
     expect(harness.events.slice(-3)).toEqual([

@@ -209,8 +209,9 @@ export async function handleAnthropicMessages(
 
   const agentOpts = {
     stream,
-    signal: pipeline.signal,
     ...options,
+    // After the spread: nothing in `options` may override the admission's signal.
+    signal: pipeline.signal,
     ragFilter: {
       ...(options as { ragFilter?: Record<string, unknown> })?.ragFilter,
       exposition: callerExposition,

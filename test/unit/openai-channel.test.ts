@@ -86,13 +86,35 @@ describe('/v1/chat/completions at the door', () => {
 
   it('hands the pipeline the admission signal, not the caller', async () => {
     configure(2);
-    const { done } = call(body());
+    const gate = deferred();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      await gate.promise;
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+    const res = fakeRes();
+    const { done } = call(body(true), res);
+    await tick();
+
+    // A caller disconnect aborts `callerLeft`, not the admission — so the
+    // pipeline keeps running and its signal stays untouched.
+    res.disconnect();
+    await tick();
+    const signal = harness.seenOptions[0].signal as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+
+    // Only shutdown aborts the admission's signal.
+    gatekeeper.theDoor()?.abortAll(new Error('shutdown'));
+    expect(signal.aborted).toBe(true);
+
+    gate.resolve();
     await done;
-    expect(harness.seenOptions[0].signal).toBeInstanceOf(AbortSignal);
   });
 
   it('a disconnect ends nothing, a dead socket cannot fail the run, and teardown is in order', async () => {
     configure(1);
+    const between = deferred();
     const tool = deferred();
     harness.stream = async function* () {
       yield { ok: true, value: { content: 'working' } };
@@ -100,27 +122,57 @@ describe('/v1/chat/completions at the door', () => {
       void trackCall(
         tool.promise.then(() => harness.events.push('tool settled')),
       );
-      yield { ok: true, value: { content: 'more' } };
+      // Hold here so the disconnect below lands mid-response, not after `out.end()`.
+      await between.promise;
+      yield { ok: true, value: { content: 'after-disconnect' } };
       yield { ok: true, value: { finishReason: 'stop' } };
     };
 
     const res = fakeRes();
     const { done } = call(body(true), res);
     await tick();
+    // Proves the disconnect below is mid-response, not after the handler finished.
+    expect(res.writableEnded).toBe(false);
+
     res.disconnect();
     await tick();
     expect(harness.events).not.toContain('safeStop');
+    expect((harness.seenOptions[0].signal as AbortSignal).aborted).toBe(false);
+
+    // The detached sink drops anything written after the disconnect.
+    between.resolve();
+    await tick();
+    expect(res.body).not.toContain('after-disconnect');
 
     tool.resolve();
     await expect(done).resolves.toBeUndefined();
-    expect(harness.events).toEqual([
-      'getSmartAgent',
-      'pipeline',
+    expect(harness.events.slice(-3)).toEqual([
       'tool settled',
       'safeStop',
       'dropRequest',
     ]);
     expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
+  });
+
+  it('a dead socket cannot fail the run, and the stream still runs to its end', async () => {
+    configure(1);
+    const res = fakeRes({ throwOnWriteAfter: 1 });
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'first' } };
+      yield { ok: true, value: { content: 'second' } };
+      yield { ok: true, value: { content: 'third' } };
+      yield { ok: true, value: { finishReason: 'stop' } };
+      harness.events.push('stream finished');
+    };
+    const { done } = call(body(true), res);
+    await expect(done).resolves.toBeUndefined();
+    expect(harness.events).toEqual([
+      'getSmartAgent',
+      'pipeline',
+      'stream finished',
+      'safeStop',
+      'dropRequest',
+    ]);
   });
 
   it('the slot outlives an aborted tool call', async () => {
