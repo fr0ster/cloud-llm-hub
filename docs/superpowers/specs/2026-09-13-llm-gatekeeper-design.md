@@ -824,6 +824,17 @@ The section below says where.
 
 **What we decide, stated plainly.**
 
+**Two things are called "the SAP system" and only one of them is a
+destination.** The ABAP system is reached through the connector and exposed
+through MCP, and a destination is exactly the unit to close when it goes away.
+BTP is the platform underneath — AI Core, XSUAA, the destination service, the
+connectivity service — and a failure there belongs to no destination: AI Core
+going down affects every one of them equally and none is at fault, and the
+destination service going down is answered before admission, where it already
+is. Closing destinations on a platform failure would mark healthy systems
+broken and hide the one cause behind N symptoms. Recognising that cause as one
+thing is out of scope here and named in Known limits.
+
 A failure is scoped to a **destination**, not to the service. MCP here is
 per-destination, built per request from the caller's headers, so one SAP system
 being unreachable is no reason to refuse someone working with another. The
@@ -957,6 +968,14 @@ in the subaccount. So the configured number is an estimate, and whoever deploys 
 set it below the real limit. If it is too high we take more `429`s and work slows down; we do
 not tear. That degradation is the expected failure mode, not an incident, and
 the throttle handling below is what absorbs it.
+
+**A platform outage looks like N system outages.** When the connectivity
+service or BTP itself fails, every on-premise destination goes unreachable
+within seconds and each closes on its own account. That is correct per
+destination and useless as a diagnosis: the shared cause is invisible, and an
+operator reads a wall of separate failures. The observability scopes are where
+it would show — every destination closing at once — but nothing here draws the
+conclusion.
 
 **Scaling breaks the counter.** The state is in process memory. Today
 `instances: 1`. A second instance means two independent windows against one

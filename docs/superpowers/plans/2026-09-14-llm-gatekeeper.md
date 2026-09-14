@@ -2825,16 +2825,76 @@ git commit -m "refactor: drop AgentService.Chat, the entrance with no door and n
 - Test: `test/unit/mcp-outage.test.ts`
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks.
+- Consumes: `classifyProbe`, `ProbeStatus` from the existing `srv/lib/probe-classifier.ts`.
 - Produces:
-  - `export class McpUnavailableError extends Error { readonly code = 'mcp_unavailable'; readonly destination: string }`
+  - `export const OUTAGE_STATUSES: ReadonlySet<ProbeStatus>`
+  - `export function asOutage(error: unknown, destination: string): McpUnavailableError | undefined` — the connector's failure, classified, or nothing
+  - `export class McpUnavailableError extends Error { readonly code = 'mcp_unavailable'; readonly destination: string; readonly status: ProbeStatus }`
   - `export function isUnavailable(error: unknown): boolean`
   - `export function describeCause(error: unknown): string`
   - `export const outageClassifier: IMcpFailureClassifier`
 
-**Where the work actually is:** this service builds its MCP client with `transport: 'embedded'` and its own `callToolHandler`, and the embedded branch of `MCPClientWrapper` neither reconnects nor retries — it catches the handler's exception and returns an ordinary tool result carrying an `error` **string**. The class, the `code` and the `cause` do not survive that. `McpClientAdapter` then escalates a returned error only when `toMcpError` recognises the string as `MCP_NOT_CONNECTED` or `MCP_NO_RESPONSE`; everything else is ordinary tool feedback and the classifier is never consulted.
+**The connector already catches it, and already classifies it.** When the SAP
+system goes away it is the connection layer that sees the failure — a tunnel
+timeout, no Cloud Connector registration, a DNS or network error — and
+`srv/lib/probe-classifier.ts` has been reading those for some time, for
+`ProbeDestination` and for the `destination_unreachable` answer both chat
+handlers already give. Re-deriving unreachability here from a fresh list of
+substrings would be a second, worse copy of a classifier that already knows
+SAP's vocabulary, and the two would drift.
 
-That is the constraint the whole section has to be built around, and it means two things. The error our handler raises must **read** as unreachability to that mapper, because the string is all that crosses. And `isUnavailable` still earns its place on our own side of the boundary, where the typed error does survive — the handler's own paths, and the channel error paths that call `closeDestination`.
+So this task adds no detection. It adds **preservation** — carrying a fact the
+connector already established across a boundary that drops it.
+
+**The boundary.** This service builds its MCP client with
+`transport: 'embedded'` and its own `callToolHandler`, and the embedded branch
+of `MCPClientWrapper` neither reconnects nor retries: it catches the handler's
+exception and returns an ordinary tool result carrying an `error` **string**.
+The class, the `code` and the `cause` do not survive. `McpClientAdapter` then
+escalates a returned error only when `toMcpError` recognises that string as
+`MCP_NOT_CONNECTED` or `MCP_NO_RESPONSE`; everything else stays tool feedback
+and no classifier is consulted at all.
+
+**Which statuses mean the system is gone**, and which do not — the distinction
+is the whole point, because escalating the wrong one closes a destination that
+is working:
+
+| `ProbeStatus` | Outage? |
+|---|---|
+| `tunnel_timeout`, `no_scc_registration`, `wrong_location_id`, `dns_or_network` | **yes** — nothing reached SAP |
+| `backend_auth_failed` | no — the system answered, and said no |
+| `backend_reachable_path_error` | no — the name says it |
+| `backend_error` | no — SAP ran something and failed |
+| `ok`, `unknown` | no |
+
+**And "SAP system" means two different things here.** The one above is the
+**ABAP** system, reached through the connector and exposed through MCP, and a
+destination is exactly the unit that can be closed when it goes away. The other
+is **BTP itself** — the platform this service runs on, and the source of AI
+Core, XSUAA, the destination service and the connectivity service.
+
+A BTP-side failure is not a destination problem and must not be reported as
+one:
+
+- **AI Core down.** The model calls fail. That error never passes through
+  `classifyProbe` at all — it comes up the provider path, through the gated
+  wrapper, and is not a `429`, so it surfaces as the failure it is. Nothing is
+  closed, because there is no destination to close: every destination is
+  equally affected and none is at fault.
+- **The destination service down.** Resolution fails before admission, so
+  callers are refused without taking a place. That is the existing
+  `destination_unreachable` answer and it already works; what would be wrong is
+  marking every destination closed on the way past.
+- **The connectivity service down.** Every on-premise destination goes
+  unreachable at once and each closes on its own account. Correct, and noisy:
+  the shared cause is invisible in the per-destination view, which is a real
+  gap and a named one.
+
+None of that is built here. This task closes an ABAP system that has gone away,
+which is the failure the gatekeeper's own guarantee has to survive. Recognising
+a platform-wide outage as one thing rather than N is separate work, and the
+observability scopes in Task 13 are where it would show first — every
+destination closing within the same few seconds.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2849,11 +2909,13 @@ import {
 
 describe('telling an outage from a tool that ran and failed', () => {
   it('recognises our own unavailability marker', () => {
-    expect(isUnavailable(new McpUnavailableError('S4HANA_DEV', 'tunnel down'))).toBe(true);
+    expect(
+      isUnavailable(new McpUnavailableError('S4HANA_DEV', 'tunnel down', 'tunnel_timeout')),
+    ).toBe(true);
   });
 
   it('survives being rewrapped, because every layer rewraps', () => {
-    const inner = new McpUnavailableError('S4HANA_DEV', 'tunnel down');
+    const inner = new McpUnavailableError('S4HANA_DEV', 'tunnel down', 'tunnel_timeout');
     const outer = new Error('Tool execution failed');
     (outer as Error & { cause?: unknown }).cause = inner;
     expect(isUnavailable(outer)).toBe(true);
@@ -2865,6 +2927,30 @@ describe('telling an outage from a tool that ran and failed', () => {
     expect(isUnavailable(new Error('User DEVELOPER is currently editing ZCL_X'))).toBe(false);
     expect(isUnavailable(new Error('403 Forbidden'))).toBe(false);
     expect(isUnavailable(new Error('The operation timed out'))).toBe(false);
+  });
+});
+
+describe('asOutage — the connector decides, through the classifier we already have', () => {
+  it('marks a failure that never reached SAP', () => {
+    const err = new Error('ECONNRESET');
+    const outage = asOutage(err, 'S4HANA_DEV');
+    expect(outage).toBeDefined();
+    expect(outage?.destination).toBe('S4HANA_DEV');
+    // The original survives verbatim, which is what carries the signature
+    // across the wrapper's string-only return.
+    expect(outage?.message).toContain('ECONNRESET');
+  });
+
+  it('leaves an authentication failure alone, because SAP answered', () => {
+    // The system is up and said no. Closing it would take a working
+    // destination out of service for everyone over one caller's credentials.
+    const err = Object.assign(new Error('401 Unauthorized'), { status: 401 });
+    expect(asOutage(err, 'S4HANA_DEV')).toBeUndefined();
+  });
+
+  it('leaves a backend error alone, because SAP ran something', () => {
+    const err = Object.assign(new Error('500 Internal Server Error'), { status: 500 });
+    expect(asOutage(err, 'S4HANA_DEV')).toBeUndefined();
   });
 
   it('classifies for the library seam, which is async and takes an McpError', async () => {
@@ -2892,6 +2978,7 @@ import type {
   McpError,
   McpFailureKind,
 } from '@mcp-abap-adt/llm-agent';
+import { classifyProbe, type ProbeStatus } from './probe-classifier';
 
 /**
  * The connection is gone, as distinct from a tool that ran and failed.
@@ -2906,6 +2993,7 @@ export class McpUnavailableError extends Error {
   constructor(
     readonly destination: string,
     reason: string,
+    readonly status: ProbeStatus,
     options?: { cause?: unknown },
   ) {
     // The wording is not cosmetic. On the embedded transport the wrapper
@@ -2922,6 +3010,46 @@ export class McpUnavailableError extends Error {
     super(`no response from SAP system ${destination}: ${reason}`, options);
     this.name = 'McpUnavailableError';
   }
+}
+
+/**
+ * The statuses that mean nothing reached SAP.
+ *
+ * Not a new judgement: `classifyProbe` already draws these lines for
+ * `ProbeDestination` and for the `destination_unreachable` answer the chat
+ * handlers give. All this does is say which of its verdicts close a
+ * destination. An auth failure does not — the system answered, and said no —
+ * and neither does a path error or a backend error, both of which mean SAP ran
+ * something.
+ */
+export const OUTAGE_STATUSES: ReadonlySet<ProbeStatus> = new Set([
+  'tunnel_timeout',
+  'no_scc_registration',
+  'wrong_location_id',
+  'dns_or_network',
+]);
+
+/**
+ * Read a connector failure through the existing classifier, and mark it only if
+ * it means the system is gone.
+ *
+ * The message keeps the original verbatim, which is where a real ECONNRESET or
+ * "socket hang up" survives the string-only crossing described above.
+ */
+export function asOutage(
+  error: unknown,
+  destination: string,
+): McpUnavailableError | undefined {
+  const message = describeCause(error);
+  const httpCode =
+    typeof (error as { status?: unknown })?.status === 'number'
+      ? ((error as { status: number }).status)
+      : 0;
+  const proxyType =
+    (error as { proxyType?: string })?.proxyType ?? 'OnPremise';
+  const { status } = classifyProbe(httpCode, message, proxyType);
+  if (!OUTAGE_STATUSES.has(status)) return undefined;
+  return new McpUnavailableError(destination, message, status, { cause: error });
 }
 
 const MAX_CAUSE_DEPTH = 5;
@@ -2972,21 +3100,24 @@ export function describeCause(error: unknown): string {
 
 - [ ] **Step 4: Raise it from the handler**
 
-In `srv/agent-manager.ts`, wrap the connection acquisition inside `invokeEmbeddedTool` so a connection that cannot be established or has been lost raises the marker, while a tool that runs and fails does not:
+In `srv/agent-manager.ts`, inside `invokeEmbeddedTool`, put the connector's own
+failure through the classifier and rethrow only what it calls an outage:
 
 ```ts
-    const ambient = connectionALS.getStore();
-    if (!ambient?.connection) {
-      throw new McpUnavailableError(
-        currentDestinationName() ?? 'unknown',
-        'no request connection in scope',
-      );
+    try {
+      return await dispatchTool(name, args, signal);
+    } catch (err) {
+      // The connector has already seen what happened; classifyProbe already
+      // knows how to read it. All this does is re-raise the verdict in a form
+      // that survives the wrapper's string-only return.
+      const outage = asOutage(err, destination);
+      throw outage ?? err;
     }
 ```
 
-and where a transport-level failure is caught around the ADT call, rethrow as `new McpUnavailableError(destination, message, { cause: err })` **only** for connection-loss signatures, leaving every other failure to return as it does today.
-
-> Do not broaden this. A tool that reaches SAP and is refused is feedback. The point of the type is that the classification stops being a guess about prose.
+> Do not widen `OUTAGE_STATUSES`. A tool that reached SAP and was refused is
+> feedback, and closing a destination on it would take a working system out of
+> service for every caller.
 
 - [ ] **Step 5: Wire it to the builder**
 
