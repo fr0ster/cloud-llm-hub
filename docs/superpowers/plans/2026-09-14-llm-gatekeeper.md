@@ -3233,6 +3233,7 @@ describe('classifyProbe — the plain shapes of a host that is gone', () => {
     'ECONNRESET',
     'EHOSTUNREACH',
     'ENETUNREACH',
+    'EPIPE',
     'socket hang up',
   ]) {
     it(`reads ${signature} as a network failure`, () => {
@@ -3252,7 +3253,9 @@ describe('classifyProbe — the plain shapes of a host that is gone', () => {
 ```
 
 Then the connector, in the place that has the response object and knows the
-proxy type:
+proxy type. **The two lists must hold the same signatures** — a code the
+classifier recognises but the connector never asks about is a code that closes
+nothing, which is the whole of the failure this step exists to end:
 
 ```ts
         const looksTunnelRelated =
@@ -3260,7 +3263,7 @@ proxy type:
           /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage) ||
           // The plain shapes of a host that is not there. classifyProbe already
           // reads these as dns_or_network; it was simply never asked.
-          /ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|socket hang up/i.test(
+          /ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|EPIPE|socket hang up/i.test(
             rawMessage,
           );
 ```
