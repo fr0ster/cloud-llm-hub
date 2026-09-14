@@ -84,6 +84,14 @@ is a claim and not a mechanism — with two slots free, two concurrent requests
 carrying the same session id would both be admitted, both run, and both read
 and write the same history.
 
+**And the key is the authenticated user with the session, never the session
+alone.** `x-session-id` is supplied by the client, so a key without the user
+lets one caller serialise another's work by sending an id that collides — and
+lets a guess at an id become a way to interfere. `sessionStore` already keys on
+`${userId}\u0000${sessionId}` for the neighbouring reason, that two users must
+never read each other's history; the same pair keys the slot, so the two cannot
+drift apart.
+
 So live sessions and live pipelines are the same number by construction rather
 than by assertion. `execute_step` needs no special case: each of its calls
 already mints its own session id, so its parallel steps are parallel sessions,
@@ -320,7 +328,7 @@ This repository owns the shape; whoever deploys owns the values.
 |---|---|---|
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | positive integer: how many sessions may be live at once, across every channel | no door on the chat channels; `execute_step` keeps its existing semaphore of two |
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | positive integer: how many callers may wait for a slot | the capacity, which absorbs a burst without storing a backlog |
-| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history at rest. The least recently used idle one is evicted to make room; a session holding a slot is never evicted | unbounded, as today |
+| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | positive integer: how many sessions may hold history. The least recently used **idle** one is evicted to make room; a session holding a slot is never evicted. Must be at least `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | unbounded, as today |
 
 **Absent means off, malformed means refuse to start.** An unset variable
 disables what it configures and the service behaves exactly as today. A value
@@ -328,6 +336,18 @@ that will not parse, or is not a positive integer, fails at startup naming the
 variable: somebody intending a limit and not getting one is the failure this
 design exists to make visible. The precedent is
 `LLM_AGENT_THROTTLE_MAX_WAIT_MS`, which already does this.
+
+**Retention may not be smaller than capacity**, and that is checked at startup
+too. The two numbers bound different resources and are otherwise independent,
+but a retention cap below the capacity is a configuration with no correct
+behaviour: with five slots and room for two histories, three admitted sessions
+would each need a history while none is idle, and the implementation would have
+to either exceed the bound it was given or evict a session that is running —
+breaking the guarantee to honour a number. Requiring `retained >= capacity`
+makes the situation impossible rather than resolved: every live session has a
+retention place by construction, so eviction only ever has idle candidates to
+choose from. It also reads as what it is — you cannot retain fewer
+conversations than you can hold at once.
 
 The values in force are logged at startup. A limit only shows itself under load,
 and by then nobody remembers what was configured.
@@ -428,15 +448,25 @@ These properties, because they are what this shape gets wrong.
 - **A `429` naming nothing fails the session.** Asserted so the one hole in the
   guarantee stays a decision rather than becoming a surprise.
 - **One session, one pipeline, with slots to spare.** Two concurrent requests
-  carrying the same session id against a capacity of five: the second waits for
-  the first rather than taking a second slot. Written with capacity free,
-  because a test that fills the door first would pass on the global queue alone
-  and prove nothing about the key.
+  carrying the same session id **and the same user** against a capacity of
+  five: the second waits for the first rather than taking a second slot.
+  Written with capacity free, because a test that fills the door first would
+  pass on the global queue alone and prove nothing about the key.
+- **Two users sending the same session id do not collide.** Same id, different
+  authenticated user, capacity of five: both run at once. The id is
+  client-supplied, so a key without the user is a way for one caller to
+  serialise another's work by guessing.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
   slot: it is gone from the queue and no pipeline starts for it.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
   a new session evicts the least recently used idle one, and never one holding
   a slot.
+- **Retention below capacity is refused at startup.** Naming both variables,
+  because the alternative is a running service that must break one of them.
+- **A cap filled entirely by live sessions evicts nothing.** With retention
+  equal to capacity and every slot taken, no eviction happens and no admitted
+  session loses its history — the case that has no correct answer if the two
+  numbers are allowed to disagree.
 - **Every entrance is counted.** Drive each channel to capacity in turn.
 - **Absent means today.** With no capacity configured, `execute_step` still caps
   at two and the chat channels are unchanged.
