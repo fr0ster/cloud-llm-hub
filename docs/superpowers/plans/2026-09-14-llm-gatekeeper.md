@@ -184,6 +184,7 @@ export class QuotaGate {
   /** Waiters, also consumed by index; a cancelled one is skipped, not spliced. */
   private waiters: Waiter[] = [];
   private waitHead = 0;
+  private liveWaiters = 0;
   private live = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
@@ -199,13 +200,15 @@ export class QuotaGate {
     return this.live;
   }
 
-  /** Callers parked waiting for a place. */
+  /**
+   * Callers parked waiting for a place.
+   *
+   * A counter, not a scan: this is read on every `acquire` and every
+   * `schedule`, so walking the queue's tail each time would put a linear step
+   * back on the hot path the head indices exist to keep constant.
+   */
   get waiting(): number {
-    let n = 0;
-    for (let i = this.waitHead; i < this.waiters.length; i++) {
-      if (!this.waiters[i].cancelled) n++;
-    }
-    return n;
+    return this.liveWaiters;
   }
 
   /**
@@ -232,6 +235,7 @@ export class QuotaGate {
             // the order every other waiter is relying on.
             if (waiter.cancelled) return;
             waiter.cancelled = true;
+            this.liveWaiters--;
             reject(signal.reason ?? new Error('Aborted'));
             this.schedule();
           },
@@ -239,6 +243,7 @@ export class QuotaGate {
         );
       }
       this.waiters.push(waiter);
+      this.liveWaiters++;
       this.schedule();
     });
   }
@@ -311,6 +316,7 @@ export class QuotaGate {
       const waiter = this.waiters[this.waitHead++];
       if (waiter.cancelled) continue;
       waiter.cancelled = true; // settled; its abort listener has nothing left to do
+      this.liveWaiters--;
       waiter.resolve(this.record());
     }
     if (this.waitHead > 32 && this.waitHead * 2 > this.waiters.length) {
@@ -971,16 +977,24 @@ import { gateForModel } from './quota-registry';
 
 export const REQUEUE_REASON = 'no-interval';
 
-/** Sleep, honouring the caller's signal, which is the only bound here. */
+/**
+ * Sleep, honouring the caller's signal, which is the only bound here.
+ *
+ * On abort this REJECTS with the signal's reason, the same as
+ * `QuotaGate.acquire`. Resolving instead would drop the caller back into the
+ * loop, which would return the throttled value it was waiting out — a shutdown
+ * arriving as a 429 for an LLM, and as a fabricated embedding for an embedder.
+ */
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Aborted'));
   if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener(
       'abort',
       () => {
         clearTimeout(timer);
-        resolve();
+        reject(signal.reason ?? new Error('Aborted'));
       },
       { once: true },
     );
@@ -1010,8 +1024,8 @@ async function runGated<T>(
 
     if (limit.attempts === 0) permit?.giveBack();
 
-    if (signal?.aborted) return value;
-
+    // An abort from here on leaves by throwing: `wait` rejects with the
+    // signal's reason and so does the next `acquire`.
     const seconds = limit.retryAfterSeconds;
     if (seconds !== undefined && Number.isFinite(seconds)) {
       // Wait exactly what the server named, however long. A ceiling here would
@@ -1024,7 +1038,6 @@ async function runGated<T>(
       // of the time and exactly when the server is least happy to hear from us.
       await wait(gate?.msUntilNextOpening() ?? 0, signal);
     }
-    if (signal?.aborted) return value;
   }
 }
 
@@ -1085,8 +1098,9 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
         // Named an interval: wait exactly that. Named nothing: fall through and
         // re-join the tail of our own queue, which is our pacing rather than a
         // guess about theirs.
+        // Rejects on abort, which leaves this generator by throwing — the
+        // caller sees a cancellation, not the 429 it was waiting out.
         await wait(reopen.waitMs, options?.signal);
-        if (options?.signal?.aborted) return;
       }
     },
   };
@@ -1523,7 +1537,6 @@ In `srv/agent-mcp.ts`, replace the local semaphore with the shared door. Delete 
         admission = await admit();
       } catch (err) {
         if (err instanceof DoorFullError) {
-          recordDoorRefusal();
           return textResult(doorFullText(), true);
         }
         throw err;
@@ -2548,12 +2561,30 @@ Call `armProbe()` where the interval is created and again at the end of each tic
 - [ ] **Step 4: Add the three exports**
 
 ```ts
-/** Mark a destination unreachable because MCP could not be reached. */
+/**
+ * Mark a destination unreachable because MCP could not be reached.
+ *
+ * Creates the entry when there is none: a destination that fails on its very
+ * first call has no state yet, and returning early there would silently keep
+ * the door open on the system we just found to be gone.
+ *
+ * The field is `error` — the one `DestinationState` already has — not a second
+ * one beside it.
+ */
 export function closeDestination(name: string, reason: string): void {
-  const state = destinationStates.get(name);
-  if (!state) return;
-  state.status = 'unreachable';
-  state.lastError = reason;
+  const existing = destinationStates.get(name);
+  if (existing) {
+    existing.status = 'unreachable';
+    existing.error = reason;
+  } else {
+    destinationStates.set(name, {
+      mcpAdapter: null,
+      toolsRag: emptyToolsRag(),
+      toolCount: 0,
+      status: 'unreachable',
+      error: reason,
+    });
+  }
   cds.log('agent-manager').warn('destination closed', { destination: name, reason });
   scheduleUnreachableRetry();
 }
@@ -2579,7 +2610,7 @@ export function setNextProbeAtForTest(name: string, at: number | undefined): voi
 }
 ```
 
-`closeDestination` must create the state entry if it is missing, so a destination that fails on its first call is still recorded.
+`emptyToolsRag()` is the empty store this module already builds for a destination that has not vectorised; reuse that helper rather than adding one. If none exists under that name, use whatever the pending-state construction path already uses and keep the shape identical — `DestinationState` is read in several places and a half-built entry would surface as a different bug.
 
 - [ ] **Step 5: Refuse arrivals, spare the admitted**
 
@@ -2679,6 +2710,22 @@ describe('an unanswered write', () => {
     expect(rec.unanswered('t2')).toHaveLength(0);
   });
 
+  it('says nothing about an unanswered read', async () => {
+    // A lost answer to a read is a lost answer. Calling it a possibly-applied
+    // write would teach a planner to re-check objects nothing touched.
+    const client = {
+      callTool: async () => {
+        throw new Error('socket hang up');
+      },
+      listTools: async () => ({ ok: true as const, value: [] }),
+    };
+    const rec = new RecordingMcpClient(client as never);
+    await rec
+      .callTool('ReadClass', { name: 'ZCL_X' }, { trace: { traceId: 't4' } } as never)
+      .catch(() => undefined);
+    expect(rec.unanswered('t4')).toHaveLength(0);
+  });
+
   it('is reported once, naming the write, and never called again', async () => {
     let calls = 0;
     const client = {
@@ -2705,7 +2752,9 @@ Expected: FAIL, `rec.unanswered is not a function`.
 
 - [ ] **Step 3: Open the record at dispatch**
 
-In `srv/lib/recording-mcp-client.ts`, replace the body of `callTool`:
+In `srv/lib/recording-mcp-client.ts`, import the existing classifier —
+`import { isWriteTool } from './write-guardrail';` — and replace the body of
+`callTool`:
 
 ```ts
   async callTool(
@@ -2735,10 +2784,19 @@ In `srv/lib/recording-mcp-client.ts`, replace the body of `callTool`:
     return res;
   }
 
-  /** Calls dispatched under this trace that never received an answer. */
+  /**
+   * Writes dispatched under this trace that never received an answer.
+   *
+   * Writes only. An unanswered `ReadClass` is a lost answer and nothing more;
+   * reporting it as possibly-applied would teach a planner to distrust reads
+   * and to re-check objects nothing touched. `isWriteTool` is the same
+   * classifier the write guardrail already uses, so the two cannot drift.
+   */
   unanswered(traceId: string): ToolCallRecord[] {
     return (this.deltas.get(traceId) ?? []).filter(
-      (r) => (r as ToolCallRecord & { answered?: boolean }).answered !== true,
+      (r) =>
+        (r as ToolCallRecord & { answered?: boolean }).answered !== true &&
+        isWriteTool(r.call.name),
     );
   }
 ```
@@ -3155,7 +3213,9 @@ export function callerlessCount(): number {
 
 - [ ] **Step 4: Emit at each refusal**
 
-Call `recordDoorRefusal()` where `DoorFullError` is thrown, `recordCollisionRefusal()` where `PipelineInFlightError` is thrown, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
+Call `recordDoorRefusal()` at each of the three places a `DoorFullError` is answered — `execute_step` and both chat channels — `recordCollisionRefusal()` where `PipelineInFlightError` is answered, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
+
+> These calls are added **here**, not in the tasks that created those refusals. Each task has to end green on its own, and a task cannot call into a module a later one creates.
 
 - [ ] **Step 5: Expose on the health payload**
 
@@ -3221,6 +3281,9 @@ function throttledLlm(): ILlm {
     async chat(): Promise<Result<LlmResponse, LlmError>> {
       return { ok: false, error: e };
     },
+    async healthCheck(): Promise<Result<boolean, LlmError>> {
+      return { ok: false, error: e };
+    },
     async *streamChat() {
       yield { ok: false as const, error: e };
     },
@@ -3232,14 +3295,24 @@ describe('a health check', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
     const { gated } = load();
     const started = Date.now();
-    const result = await gated.gateLlmReporting(throttledLlm(), 'm').chat([]);
-    expect(result.ok).toBe(false);
+    // healthCheck, not chat: the probe path calls agent.healthCheck(), and a
+    // test against chat() would pass while the method that matters bypassed
+    // the gate entirely.
+    const result = await gated.gateLlmReporting(throttledLlm(), 'm').healthCheck?.();
+    expect(result?.ok).toBe(false);
     // Thirty seconds were named. A probe that waits them out is a hung
     // request, not a liveness check.
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it('still spends a permit, because it is still a request', async () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
+    const { registry, gated } = load();
+    await gated.gateLlmReporting(throttledLlm(), 'm').healthCheck?.();
+    expect(registry.gateForModel('m')?.liveStarts).toBe(1);
+  });
+
+  it('gates chat on the same terms, for a probe that uses it', async () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
     const { registry, gated } = load();
     await gated.gateLlmReporting(throttledLlm(), 'm').chat([]);
@@ -3267,22 +3340,47 @@ In `srv/lib/gated-llm.ts`:
  * and useful one.
  */
 export function gateLlmReporting(inner: ILlm, model: string): ILlm {
+  /** Take a permit, run once, and give it back if nothing reached the wire. */
+  const once = async <T>(
+    signal: AbortSignal | undefined,
+    run: () => Promise<T>,
+    throttledOf: (value: T) => unknown,
+  ): Promise<T> => {
+    const gate = gateForModel(model);
+    const permit = gate ? await gate.acquire(signal) : undefined;
+    const value = await run();
+    if (findThrottled(throttledOf(value))?.attempts === 0) permit?.giveBack();
+    return value;
+  };
+
   const gated: ILlm = {
     get model() {
       return inner.model;
     },
-    async chat(messages: Message[], tools?: LlmTool[], options?: CallOptions) {
-      const gate = gateForModel(model);
-      const permit = gate ? await gate.acquire(options?.signal) : undefined;
-      const result = await inner.chat(messages, tools, options);
-      if (!result.ok && findThrottled(result.error)?.attempts === 0) permit?.giveBack();
-      return result;
+    chat(messages: Message[], tools?: LlmTool[], options?: CallOptions) {
+      return once(
+        options?.signal,
+        () => inner.chat(messages, tools, options),
+        (r) => (r.ok ? undefined : r.error),
+      );
     },
     streamChat(messages: Message[], tools?: LlmTool[], options?: CallOptions) {
       return inner.streamChat(messages, tools, options);
     },
   };
-  if (inner.healthCheck) gated.healthCheck = inner.healthCheck.bind(inner);
+
+  // The probe calls `healthCheck`, not `chat`. Binding the inner one straight
+  // through would have left the one method this wrapper exists for outside the
+  // window entirely — gated in name and ungated in fact.
+  if (inner.healthCheck) {
+    const innerHealth = inner.healthCheck.bind(inner);
+    gated.healthCheck = (options?: CallOptions) =>
+      once(
+        options?.signal,
+        () => innerHealth(options),
+        (r) => (r.ok ? undefined : r.error),
+      );
+  }
   return gated;
 }
 ```
