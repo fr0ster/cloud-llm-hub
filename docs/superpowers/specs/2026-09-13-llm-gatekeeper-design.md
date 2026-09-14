@@ -62,9 +62,19 @@ Memory is the binding resource, and two things spend it.
 painfully — one heavy agent step was killing a gigabyte, which is why the
 container is at 2 GB.
 
-**State at rest.** A session holds its history between turns, and keeps holding
-it for thirty minutes after the last one (`SESSION_TTL_MS` in
-`srv/openai-handler.ts`). Nothing bounds how many sessions exist.
+**State at rest.** A session holds more than one thing, in more than one place,
+for more than one length of time:
+
+| store | what it holds | how long |
+|---|---|---|
+| `sessionStore` (`srv/openai-handler.ts`) | the verbatim turns | 30 minutes idle |
+| `CollectionRegistry` session collections (`srv/rag-collections.ts`) | **documents** a caller ingested | 24 hours (`RAG_SESSION_TTL_MS`) |
+| `sessionTopicMap`, `lastDestinationBySession` (`srv/agent-manager.ts`) | small per-session bookkeeping | until cleared, and one of them never is |
+
+The second line is the one that matters most and is the easiest to overlook: a
+session collection holds ingested documents rather than twenty messages, and
+holds them for a day rather than half an hour. Nothing bounds how many sessions
+exist, in any of these.
 
 Only the first was ever capped, and only on one channel: `execute_step` holds a
 semaphore of two (`EXEC_STEP_MAX_CONCURRENCY`), for exactly this reason, after
@@ -283,11 +293,27 @@ service with four slots can therefore hold four hundred retained sessions, and
 that is the accumulation this rewrite was written to stop.
 
 So the second term gets its own bound, and a different kind of one. Capacity is
-a **refusal**; retention is an **eviction**. When the store is full the least
-recently used idle session is dropped to make room — losing an idle
-conversation's history is a cost a caller can recover from by asking again, and
-refusing a new caller because someone stopped typing half an hour ago is not.
-Nothing is ever evicted while it holds a slot.
+a **refusal**; retention is an **eviction**. When the retained count is full the
+least recently used idle session is dropped to make room — losing an idle
+conversation is a cost a caller can recover from by asking again, and refusing
+a new caller because someone stopped typing half an hour ago is not. Nothing is
+ever evicted while it holds a slot.
+
+**Evicting a session means evicting all of it**, and a bound that dropped only
+the `sessionStore` entry would be theatre: the documents in that session's
+collections would stay for their twenty-four hours, which is where most of the
+memory actually is, and the count would fall while the usage did not. So
+eviction is one operation over every store keyed by `(userId, sessionId)` —
+the turns, the session collections via the existing
+`deleteSessionCollections`, and the per-session bookkeeping maps. That
+operation already half exists: `srv/server.ts` and `srv/openai-handler.ts` both
+call `deleteSessionCollections` on logout and on clear-chat, so what is missing
+is one place that does all of it rather than each caller remembering the list.
+
+**And `lastDestinationBySession` is cleared by nobody today**
+(`srv/agent-manager.ts` deletes `sessionTopicMap` and not its neighbour), which
+is a small unbounded map and exactly the kind of thing a single eviction path
+stops accumulating.
 
 ### Why the queue's length is derived
 
@@ -477,10 +503,17 @@ against refusing a new caller to preserve an idle one's memory, and it is the
 right way round — but it is a real cost and it will look like the agent
 forgetting.
 
-**The thirty-minute TTL is untouched.** `MAX_RETAINED_SESSIONS` bounds how many
-sessions may be held; it does not shorten how long each is held. A deployment
-whose memory is spent on idle history can also lower the TTL, which is a
-separate knob and a separate decision.
+**The TTLs are untouched.** `MAX_RETAINED_SESSIONS` bounds how many sessions may
+be held; it does not shorten how long each is held — thirty minutes for the
+turns, twenty-four hours for the collections. A deployment whose memory is spent
+on idle state can lower either, and they are separate knobs and separate
+decisions.
+
+**A single session can still be large.** The bound counts sessions, not bytes,
+and one session that ingests a great many documents is one session. Counting
+bytes would mean measuring them, which nothing here does; the count is the
+honest approximation and its failure mode is a small number of very heavy
+sessions.
 
 **The session identifier is not unforgeable.** The cookie carrying it is
 unsigned and there is no record of what was issued, so a caller can present a
@@ -597,6 +630,11 @@ These properties, because they are what this shape gets wrong.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
   a new session evicts the least recently used idle one, and never one holding
   a slot.
+- **An evicted session is gone from every store.** After eviction its turns,
+  its session collections and its bookkeeping entries are all absent — asserted
+  store by store, because a count that falls while the documents stay is the
+  failure this bound exists to prevent, and it is invisible to any test that
+  only counts sessions.
 - **Retention below capacity, or without one, is refused at startup.** Naming
   both variables, because the alternative is a running service that must break
   one of them.
