@@ -235,3 +235,8 @@ export function anthropicSessionClosed(): HttpRefusal {
     },
   };
 }
+
+/** A destination we have closed. Temporary, and a 5xx because it is ours. */
+export function destinationClosedText(destination: string): string {
+  return `SAP system ${destination} is not reachable right now. Other systems are unaffected.`;
+}

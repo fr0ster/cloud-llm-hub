@@ -30,17 +30,25 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { getSmartAgent, runWithRequestConnection } from './agent-manager';
+import {
+  closeDestination,
+  getSmartAgent,
+  isDestinationClosed,
+  retryAfterForDestination,
+  runWithRequestConnection,
+} from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession, theDoor } from './lib/gatekeeper';
+import { describeCause, isOutageError } from './lib/mcp-outage';
 import { computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import { setRequestResponsible } from './lib/responsible';
 import { Semaphore } from './lib/semaphore';
 import {
+  destinationClosedText,
   executeStepDoorRefusal,
   failureText,
   sessionClosedText,
@@ -137,6 +145,9 @@ export async function executeStep(
   let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
   let traceId: string | undefined;
   let pipeline: PipelineSession | undefined;
+  // Read from the `catch` below to close a destination an outage error
+  // names, so it must be declared in the outer scope like the others.
+  let targetDestination: string | undefined;
   // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
   // the request stream's `close` event fires once the BODY is consumed —
   // right after this JSON-RPC call starts — NOT reliably on client abort.
@@ -152,7 +163,7 @@ export async function executeStep(
     const headerDestination = (
       req.headers['x-sap-destination'] as string | undefined
     )?.trim();
-    const targetDestination = destination?.trim() || headerDestination;
+    targetDestination = destination?.trim() || headerDestination;
     if (!targetDestination) {
       return textResult(
         'ERROR: No destination. Pass a `destination` argument, or configure a default `X-SAP-Destination` header on this MCP server. See list_destinations.',
@@ -191,6 +202,17 @@ export async function executeStep(
     // call, threaded below as `trace.traceId`, dropped in the `finally`.
     const sessionId = `agent-step-${randomUUID()}`;
     traceId = sessionId;
+
+    // A closed destination refuses before the caller takes a place.
+    if (isDestinationClosed(targetDestination)) {
+      const seconds = retryAfterForDestination(targetDestination);
+      const when =
+        seconds !== undefined ? ` Try again in about ${seconds} seconds.` : '';
+      return textResult(
+        `${destinationClosedText(targetDestination)}${when}`,
+        true,
+      );
+    }
 
     // Admitted after the agent is resolved, like every channel.
     const admission = await admitPipeline(userId, sessionId);
@@ -244,6 +266,9 @@ export async function executeStep(
     );
 
     if (!r.ok) {
+      if (isOutageError(r.error)) {
+        closeDestination(targetDestination, describeCause(r.error));
+      }
       log.info('execute_step done', {
         ok: false,
         destination: targetDestination,
@@ -278,6 +303,9 @@ export async function executeStep(
     });
     return textResult(rawContent, false);
   } catch (err) {
+    if (targetDestination && isOutageError(err)) {
+      closeDestination(targetDestination, describeCause(err));
+    }
     const message = err instanceof Error ? err.message : String(err);
     log.warn('execute_step failed', { destination, error: message });
     return textResult(`ERROR: ${message}`, true);

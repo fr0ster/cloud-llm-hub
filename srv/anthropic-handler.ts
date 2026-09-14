@@ -22,19 +22,24 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { isAiCoreConfigured } from './agent-config';
 import {
+  closeDestination,
   getCurrentDestination,
   getSmartAgent,
   isAgentReady,
+  isDestinationClosed,
+  retryAfterForDestination,
   runWithRequestConnection,
 } from './agent-manager';
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
   anthropicSessionClosed,
+  destinationClosedText,
   retryAfterHeader,
   statusForError,
   throttleOf,
@@ -177,6 +182,26 @@ export async function handleAnthropicMessages(
   log.info('MCP caller', caller);
   const callerExposition = caller.exposition;
 
+  // A closed destination refuses before the caller takes a slot or a place.
+  if (isDestinationClosed(destination)) {
+    await safeStop(requestConnection);
+    const seconds = retryAfterForDestination(destination);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destination),
+        },
+      }),
+    );
+    return;
+  }
+
   let pipeline: PipelineSession;
   try {
     const admission = await admitPipeline(
@@ -283,6 +308,8 @@ export async function handleAnthropicMessages(
           }
         });
       } catch (err) {
+        if (isOutageError(err))
+          closeDestination(destination, describeCause(err));
         const message = err instanceof Error ? err.message : String(err);
         const limit = throttleOf(err);
         log.error('Stream error', { error: message, throttled: limit?.reason });
@@ -308,6 +335,9 @@ export async function handleAnthropicMessages(
     if (result.ok) {
       out.json(200, adapter.formatResult(result.value, context));
     } else {
+      if (isOutageError(result.error)) {
+        closeDestination(destination, describeCause(result.error));
+      }
       const limit = throttleOf(result.error);
       log.error('Agent processing failed', {
         error: result.error.message,

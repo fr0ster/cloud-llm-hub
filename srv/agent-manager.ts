@@ -735,6 +735,12 @@ export interface DestinationState {
    * login/password on connect. Cloud destinations (JWT) are false.
    */
   requiresCredentials?: boolean;
+  /**
+   * When the background retry loop will next look at this destination, as an
+   * epoch millisecond timestamp. Set only while `status === 'unreachable'`
+   * and a retry is armed; `undefined` when nothing is scheduled.
+   */
+  nextProbeAt?: number;
 }
 
 /**
@@ -1810,40 +1816,151 @@ async function initBackgroundDestinations(): Promise<void> {
 
 /** Periodically retry unreachable destinations (every 5 min) */
 const UNREACHABLE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
-let unreachableRetryTimer: ReturnType<typeof setInterval> | null = null;
+let unreachableRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Stamp every unreachable destination with the deadline this timer commits
+ * to, then arm it. Stamping and arming happen together, from the same `now`,
+ * so a `Retry-After` built from `nextProbeAt` is never later than the wait
+ * this timer actually keeps.
+ */
+function armProbe(): void {
+  const at = Date.now() + UNREACHABLE_RETRY_INTERVAL_MS;
+  for (const [, state] of destinationStates) {
+    if (state.status === 'unreachable') state.nextProbeAt = at;
+  }
+  unreachableRetryTimer = setTimeout(runProbe, UNREACHABLE_RETRY_INTERVAL_MS);
+}
+
+/**
+ * One retry tick. A `setTimeout` re-armed only after the probe work
+ * finishes — not a `setInterval` — so the next deadline is measured from
+ * when this tick actually ended, not from when the previous one started.
+ * With an interval, a stamp written at the end of a slow probe would already
+ * be later than the tick it claims to describe.
+ */
+async function runProbe(): Promise<void> {
+  unreachableRetryTimer = null;
+  const log = cds.log('agent-manager');
+
+  const unreachable = [...destinationStates.entries()].filter(
+    ([, s]) => s.status === 'unreachable',
+  );
+  if (unreachable.length === 0) {
+    // All destinations reachable — nothing left to probe; the loop stops
+    // until something closes again.
+    for (const [, state] of destinationStates) state.nextProbeAt = undefined;
+    return;
+  }
+
+  log.info('Retrying unreachable destinations', {
+    destinations: unreachable.map(([name]) => name),
+  });
+
+  for (const [name] of unreachable) {
+    await ensureDestinationInit(name);
+    const state = destinationStates.get(name);
+    if (state?.status === 'ready') {
+      log.info('Previously unreachable destination is now ready', {
+        destination: name,
+        toolCount: state.toolCount,
+      });
+    }
+  }
+
+  const stillUnreachable = [...destinationStates.values()].filter(
+    (s) => s.status === 'unreachable',
+  );
+  if (stillUnreachable.length === 0) return;
+  armProbe();
+}
 
 function scheduleUnreachableRetry(): void {
   if (unreachableRetryTimer) return;
-  const log = cds.log('agent-manager');
+  armProbe();
+}
 
-  unreachableRetryTimer = setInterval(async () => {
-    const unreachable = [...destinationStates.entries()].filter(
-      ([, s]) => s.status === 'unreachable',
-    );
-    if (unreachable.length === 0) {
-      // All destinations reachable — stop retrying
-      if (unreachableRetryTimer) {
-        clearInterval(unreachableRetryTimer);
-        unreachableRetryTimer = null;
-      }
-      return;
-    }
-
-    log.info('Retrying unreachable destinations', {
-      destinations: unreachable.map(([name]) => name),
+/**
+ * Mark a destination unreachable because MCP could not be reached.
+ *
+ * Creates the entry when there is none: a destination that fails on its very
+ * first call has no state yet, and returning early there would silently keep
+ * the door open on the system we just found to be gone.
+ *
+ * The field is `error` — the one `DestinationState` already has — not a second
+ * one beside it.
+ */
+export function closeDestination(name: string, reason: string): void {
+  const existing = destinationStates.get(name);
+  if (existing) {
+    existing.status = 'unreachable';
+    existing.error = reason;
+  } else {
+    // The same shape the background discovery pass builds for a pending
+    // destination (above, where `status: 'pending'` entries are created).
+    // `toolsRag` is not optional on `DestinationState` and is read without a
+    // guard in several places, so a half-built entry would surface later as
+    // a different bug.
+    destinationStates.set(name, {
+      mcpAdapter: null,
+      toolsRag: new ExpositionFilteringRag(
+        new InMemoryRag(),
+        new InMemoryRag(),
+      ),
+      toolCount: 0,
+      status: 'unreachable',
+      error: reason,
     });
+  }
+  cds
+    .log('agent-manager')
+    .warn('destination closed', { destination: name, reason });
+  scheduleUnreachableRetry();
+}
 
-    for (const [name] of unreachable) {
-      await ensureDestinationInit(name);
-      const state = destinationStates.get(name);
-      if (state?.status === 'ready') {
-        log.info('Previously unreachable destination is now ready', {
-          destination: name,
-          toolCount: state.toolCount,
-        });
-      }
-    }
-  }, UNREACHABLE_RETRY_INTERVAL_MS);
+export function isDestinationClosed(name: string): boolean {
+  return destinationStates.get(name)?.status === 'unreachable';
+}
+
+/** Every destination this process knows about, closed or not. */
+export function knownDestinations(): string[] {
+  return [...destinationStates.keys()];
+}
+
+/**
+ * Seconds until we next LOOK at this destination — not an estimate of when SAP
+ * returns, which we cannot know. Coming back sooner is certainly wasted.
+ */
+export function retryAfterForDestination(
+  name: string,
+  now = Date.now(),
+): number | undefined {
+  const at = destinationStates.get(name)?.nextProbeAt;
+  if (at === undefined) return undefined;
+  return Math.max(1, Math.ceil((at - now) / 1000));
+}
+
+/** Test seam: set the scheduled probe without running the real timer. */
+export function setNextProbeAtForTest(
+  name: string,
+  at: number | undefined,
+): void {
+  const state = destinationStates.get(name);
+  if (state) state.nextProbeAt = at;
+}
+
+/**
+ * Test seam: forget every destination and stop the probe timer.
+ *
+ * The timer matters as much as the state. `closeDestination` arms a five-minute
+ * `setTimeout`, so a test that closes a destination and returns leaves Jest
+ * holding an open handle — reported as a leak, or waited on after the suite
+ * has finished.
+ */
+export function clearDestinationStatesForTest(): void {
+  if (unreachableRetryTimer) clearTimeout(unreachableRetryTimer);
+  unreachableRetryTimer = null;
+  destinationStates.clear();
 }
 
 /**

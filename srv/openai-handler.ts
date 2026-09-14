@@ -19,6 +19,7 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
+  closeDestination,
   ExpositionFilteringRag,
   getCollectionRegistry,
   getCurrentClassifierModel,
@@ -28,6 +29,8 @@ import {
   getSharedHistoryRag,
   getSmartAgent,
   isAgentReady,
+  isDestinationClosed,
+  retryAfterForDestination,
   runWithRequestConnection,
   setSessionDestination,
 } from './agent-manager';
@@ -36,9 +39,11 @@ import { getAvailableModels } from './lib/ai-core-models';
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { turnOwner } from './lib/session-history-rag';
 import {
+  destinationClosedText,
   openAiDoorRefusal,
   openAiSessionClosed,
   throttleMessage,
@@ -720,6 +725,26 @@ export async function handleChatCompletions(
     }
   }
 
+  // A closed destination refuses before the caller takes a slot or a place.
+  if (isDestinationClosed(destAfter)) {
+    restoreRagStores();
+    await safeStop(requestConnection);
+    const seconds = retryAfterForDestination(destAfter);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destAfter),
+        },
+      }),
+    );
+    return;
+  }
+
   // Admitted after the agent is resolved: a caller waiting for a destination to
   // warm waits outside the door, holding a request and no session.
   let pipeline: PipelineSession;
@@ -868,6 +893,9 @@ export async function handleChatCompletions(
                     chunkCount++;
                     if (!chunk.ok) {
                       const err = chunk.error;
+                      if (isOutageError(chunk.error)) {
+                        closeDestination(destAfter, describeCause(chunk.error));
+                      }
 
                       const causes: string[] = [];
                       let current: unknown = err;
@@ -1002,17 +1030,17 @@ export async function handleChatCompletions(
                       finishReasonSent = true;
                     }
                   }
-                } catch (streamErr) {
+                } catch (err) {
+                  if (isOutageError(err)) {
+                    closeDestination(destAfter, describeCause(err));
+                  }
                   const errMsg =
-                    streamErr instanceof Error
-                      ? streamErr.message
-                      : String(streamErr);
+                    err instanceof Error ? err.message : String(err);
                   log.error('Stream exception', {
                     error: errMsg,
-                    stack:
-                      streamErr instanceof Error ? streamErr.stack : undefined,
+                    stack: err instanceof Error ? err.stack : undefined,
                   });
-                  const streamLimit = throttleOf(streamErr);
+                  const streamLimit = throttleOf(err);
                   const userMessage = streamLimit
                     ? throttleMessage(streamLimit)
                     : errMsg;
@@ -1138,6 +1166,10 @@ export async function handleChatCompletions(
       ok: result.ok,
       durationMs: Date.now() - t0,
     });
+
+    if (!result.ok && isOutageError(result.error)) {
+      closeDestination(destAfter, describeCause(result.error));
+    }
 
     const resultLimit = result.ok ? undefined : throttleOf(result.error);
     const finalContent = result.ok
