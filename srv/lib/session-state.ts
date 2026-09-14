@@ -1,0 +1,36 @@
+import {
+  forgetSessionDestination,
+  getCollectionRegistry,
+} from '../agent-manager';
+import { clearSession, hasSessionHistory } from '../session-store';
+
+/**
+ * Every store keyed by one session, in one place.
+ *
+ * Logout, clear-chat and eviction each used to remember their own list, and
+ * each remembered a different one: the history and the collections were
+ * cleared, the destination never was, and a map nothing wrote was cleared on
+ * every path. A bound that dropped only the history would be theatre — the
+ * documents are where most of the memory is.
+ *
+ * Synchronous on purpose. Retention calls it inside the same turn of the event
+ * loop in which it decided the session could go (Task 5), so nothing can take a
+ * lease between the decision and the deletion.
+ */
+export function deleteSessionState(userId: string, sessionId: string): void {
+  clearSession(sessionId, userId);
+  forgetSessionDestination(userId, sessionId);
+  getCollectionRegistry().deleteSessionCollections(userId, sessionId);
+}
+
+/**
+ * Whether this session still holds memory worth bounding: turns, or session
+ * collections. The destination name is deliberately not counted — a few bytes
+ * that would keep a session retained after everything else had gone.
+ */
+export function hasSessionState(userId: string, sessionId: string): boolean {
+  return (
+    hasSessionHistory(sessionId, userId) ||
+    getCollectionRegistry().hasSessionCollections(userId, sessionId)
+  );
+}

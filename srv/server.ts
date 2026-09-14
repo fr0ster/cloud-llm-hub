@@ -19,7 +19,6 @@ import express from 'express';
 
 import { ensureAiCoreCredentials } from './agent-config';
 import {
-  clearSessionTopic,
   getCollectionRegistry,
   getDestinationMappings,
   initSmartAgents,
@@ -32,15 +31,15 @@ import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import { needsSapConnection } from './lib/mcp-request';
 import { sessionMiddleware } from './lib/session-middleware';
+import { deleteSessionState } from './lib/session-state';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
-  clearSession,
   handleChatCompletions,
   handleModels,
   handleUsage,
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
-import { resolveSessionId } from './session-id';
+import { sessionIdOf } from './session-id';
 
 /**
  * Type guard for MCP request body
@@ -567,28 +566,23 @@ cds.on('bootstrap', (app: Application) => {
 
   // DELETE /v1/session — clear server-side conversation history
   app.delete('/v1/session', ((req: Request, res: Response) => {
-    // Prefer the stashed sessionId from the session middleware; fall back to direct resolution.
-    const sessionId =
-      (req as Request & { sessionId?: string }).sessionId ??
-      resolveSessionId(req);
-    if (sessionId) {
-      const userId = cds.context?.user?.id ?? 'anonymous';
-      clearSession(sessionId, userId);
-      clearSessionTopic(sessionId);
-      getCollectionRegistry().deleteSessionCollections(userId, sessionId);
-      res.writeHead(204);
-      res.end();
-    } else {
+    const sessionId = sessionIdOf(req);
+    if (!sessionId) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
-          error: {
-            message:
-              'no session id (x-session-id header or clh_session cookie required)',
-          },
+          error: { message: 'no session (the clh_session cookie is required)' },
         }),
       );
+      return;
     }
+    const userId = cds.context?.user?.id ?? 'anonymous';
+    // Every store, through one primitive. Task 6 puts the close-then-delete
+    // sequence in front of this, so a pipeline or upload still running is not
+    // cut from under.
+    deleteSessionState(userId, sessionId);
+    res.writeHead(204);
+    res.end();
   }) as never);
 
   log.info('Custom Express endpoints registered', {

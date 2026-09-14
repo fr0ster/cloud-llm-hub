@@ -110,7 +110,9 @@ export async function handleAnthropicMessages(
     | string
     | undefined;
   const sessionId = sessionIdOf(req);
-  const destination = requestedDestination || getCurrentDestination(sessionId);
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  const destination =
+    requestedDestination || getCurrentDestination(userId, sessionId);
 
   let requestConnection:
     | import('@mcp-abap-adt/interfaces').IAbapConnection

@@ -827,40 +827,50 @@ export function getDestinationMappings(): Record<string, string> {
   return Object.fromEntries(systemDestinationMap);
 }
 
-/** Last-used destination per session (for detecting switches in openai-handler) */
+/**
+ * Last-used destination per (user, session), for detecting switches.
+ *
+ * Keyed by the user as well as the session: keyed by the session alone, two
+ * users whose sessions carried the same id shared an entry, so one user's
+ * destination could be read for another's request.
+ */
 const lastDestinationBySession = new Map<string, string>();
 
-/**
- * Per-session conversation topic — the classified ragText from the previous request.
- * Used by CustomToolSelectHandler to enrich short follow-up messages with topic context,
- * so RAG tool selection stays relevant without extra LLM token cost.
- * Example: "create hello world class" persists → next message "ZCL_DEMO_HELLO_AI1"
- * gets enriched → CreateClass found by RAG.
- */
-const sessionTopicMap = new Map<string, string>();
+function destinationKey(userId: string, sessionId: string): string {
+  // A tuple, not a join: no separator keeps ("a", "b c") and ("a b", "c") apart
+  // whatever a caller puts in a cookie.
+  return JSON.stringify([userId, sessionId]);
+}
 
-/** Get last-used destination for a session, or config default */
-export function getCurrentDestination(sessionId?: string): string {
-  if (sessionId) {
+/** Last-used destination for a user's session, or the configured default. */
+export function getCurrentDestination(
+  userId?: string,
+  sessionId?: string,
+): string {
+  if (userId && sessionId) {
     return (
-      lastDestinationBySession.get(sessionId) ||
+      lastDestinationBySession.get(destinationKey(userId, sessionId)) ||
       getAgentConfig().mcp.destination
     );
   }
   return getAgentConfig().mcp.destination;
 }
 
-/** Clear session topic (call on destination switch alongside clearSession) */
-export function clearSessionTopic(sessionId: string): void {
-  sessionTopicMap.delete(sessionId);
-}
-
-/** Track which destination was used for a session */
+/** Track which destination a user's session is using. */
 export function setSessionDestination(
+  userId: string,
   sessionId: string,
   destination: string,
 ): void {
-  lastDestinationBySession.set(sessionId, destination);
+  lastDestinationBySession.set(destinationKey(userId, sessionId), destination);
+}
+
+/** Forget a user's session destination. Nothing cleared it before. */
+export function forgetSessionDestination(
+  userId: string,
+  sessionId: string,
+): void {
+  lastDestinationBySession.delete(destinationKey(userId, sessionId));
 }
 
 /** Get all destination states for API/UI consumption */
