@@ -817,9 +817,97 @@ export function clearQuotaRegistry(): void {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx jest test/unit/quota-registry.test.ts`
-Expected: PASS, 12 tests.
+Expected: PASS, 14 tests.
 
-- [ ] **Step 5: Log the configuration at startup**
+- [ ] **Step 5: Refuse an unknown model at the swap, before anything moves**
+
+The registry throwing is not enough on its own: `gateForModel` is reached only
+once `GatedLlm.chat` is already running, and by then `getSmartAgent` has
+replaced `currentModel` and the shared LLM for this request **and every one
+after it**. A typo would be accepted, become the active model, pass admission,
+and only then fail inside the pipeline, with the swap left in place.
+
+So the check happens at the swap. In `srv/agent-manager.ts`, at the top of the
+block that reacts to `requestedModel !== activeModel`, before `makeLlm` and
+before any shared state is touched:
+
+```ts
+  if (requestedModel && requestedModel !== activeModel) {
+    // Throws UnknownModelError when quotas are in force and this name has
+    // neither an entry nor a mapping. Before the swap, deliberately: a name we
+    // will not meter must not become the model every later call uses.
+    quotaForModel(requestedModel);
+```
+
+In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, turn it into a bad
+request, never an overload, because it will not become valid by waiting:
+
+```ts
+  } catch (err) {
+    if (err instanceof UnknownModelError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(unknownModelPayload(err, dialect)));
+      return;
+    }
+    throw err;
+  }
+```
+
+and in `srv/lib/throttle-surfacing.ts`:
+
+```ts
+/**
+ * A model nobody configured. A bad request, not an overload: 529 or a
+ * retryable 503 would invite a retry loop that cannot succeed, because the
+ * name will never become valid on its own.
+ */
+export function unknownModelPayload(
+  err: { model: string; message: string },
+  dialect: 'openai' | 'anthropic',
+): unknown {
+  const error = {
+    type: 'invalid_request_error',
+    code: 'model_not_configured',
+    param: 'model',
+    message: err.message,
+  };
+  return dialect === 'anthropic' ? { type: 'error', error } : { error };
+}
+```
+
+- [ ] **Step 6: Assert the swap does not happen**
+
+Append to `test/unit/quota-registry.test.ts`:
+
+```ts
+describe('an unknown model does not become the active one', () => {
+  it('is refused before the swap, so later calls keep the model that works', () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ known: { limit: 1 } });
+    const mod = load();
+    // The check that runs at the swap. Reached only inside chat(),
+    // `currentModel` would already have moved for every later request.
+    expect(() => mod.quotaForModel('knwon')).toThrow(mod.UnknownModelError);
+    expect(mod.quotaForModel('known')?.key).toBe('known');
+  });
+});
+```
+
+and in `test/unit/gated-construction.test.ts` (written in Task 4, so add this
+there once that file exists):
+
+```ts
+describe('agent-manager — the model check comes before the swap', () => {
+  it('resolves the quota before makeLlm and before the shared state moves', () => {
+    const swap = source.indexOf('requestedModel !== activeModel');
+    const check = source.indexOf('quotaForModel(requestedModel)');
+    const build = source.indexOf('makeLlm(', swap);
+    expect(check).toBeGreaterThan(swap);
+    expect(check).toBeLessThan(build);
+  });
+});
+```
+
+- [ ] **Step 7: Log the configuration at startup**
 
 In `srv/agent-config.ts`, inside `loadAgentConfig()` just before it returns, add:
 
@@ -835,12 +923,12 @@ and at the top of the file:
 import { describeQuotas } from './lib/quota-registry';
 ```
 
-- [ ] **Step 6: Run the whole suite and typecheck**
+- [ ] **Step 8: Run the whole suite and typecheck**
 
 Run: `npm run test:unit && npm run test:check`
 Expected: PASS, no type errors.
 
-- [ ] **Step 7: Lint and commit**
+- [ ] **Step 9: Lint and commit**
 
 ```bash
 npx biome check --write srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
@@ -1305,8 +1393,34 @@ async function buildGatedLlm(
 ): Promise<ILlm> {
   const model = cfg.model;
   if (!model) throw new Error('buildGatedLlm requires an explicit model');
-  return gateLlm(await makeLlm(cfg, temperature), model);
+
+  // Refuse the swap before anything is built or replaced — see Step 5.
+  quotaForModel(model);
+
+  return gateLlm(
+    await makeLlm(
+      {
+        ...cfg,
+        // The provider reports; it does not absorb. Anything it waited out or
+        // retried inside one of our attempts would be a request the window
+        // never saw, which is the whole invariant. WaitIfShortEnough was the
+        // right answer before there was a door in front, and survives nowhere
+        // now: waiting as told is the gated wrapper's job, one permit at a
+        // time.
+        whenThrottled: new ReportThrottling(),
+      },
+      temperature,
+    ),
+    model,
+  );
 }
+```
+
+and the imports this needs:
+
+```ts
+import { ReportThrottling } from '@mcp-abap-adt/llm-agent';
+import { quotaForModel } from './lib/quota-registry';
 ```
 
 Replace each of the five `await makeLlm(...)` / `makeLlm(...)` call sites with `await buildGatedLlm(...)`, passing the same arguments.
@@ -1336,22 +1450,66 @@ function buildGatedEmbedder(config: AgentConfig, embeddingModel: string): IEmbed
 }
 ```
 
+The embedders take no throttling strategy — they surface what the server said
+and this wrapper decides — so there is nothing to override there.
+
 and call `buildGatedEmbedder(config, embeddingModel)` where `rawEmbedder` was used, keeping the existing `CircuitBreakerEmbedder` wrapping around the result.
 
 > Keep the existing `SapAiCoreEmbedder` constructor arguments exactly as they are in the file — the snippet above shows the shape, not a licence to change which options are passed.
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 5: Assert the provider absorbs nothing**
+
+Append to `test/unit/gated-construction.test.ts`:
+
+```ts
+describe('agent-manager — the provider reports, it does not absorb', () => {
+  it('hands every provider ReportThrottling', () => {
+    // WaitIfShortEnough inside the provider would wait out a 429 within one of
+    // our attempts: the retry happens, the window never sees it, and the count
+    // is wrong under exactly the load this exists for.
+    expect(source).toMatch(/whenThrottled:\s*new ReportThrottling\(\)/);
+    expect(source).not.toMatch(/whenThrottled:\s*config\.llm\.whenThrottled/);
+  });
+});
+```
+
+and a behavioural one in `test/unit/gated-llm.test.ts`:
+
+```ts
+describe('gateLlm — one transport attempt per entry', () => {
+  it('calls the provider exactly once for each permit it takes', async () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
+    const { registry, gated } = load();
+    const inner = scriptedLlm([throttled(0.001), throttled(0.001)]);
+    await gated.gateLlm(inner, 'm').chat([]);
+    // Three calls, three permits, one each. A provider that retried inside
+    // would show fewer permits than calls.
+    expect(inner.calls()).toBe(registry.gateForModel('m')?.liveStarts);
+  });
+});
+```
+
+- [ ] **Step 6: Retire the now-unused ceiling**
+
+`WaitIfShortEnough` and `LLM_AGENT_THROTTLE_MAX_WAIT_MS` have no caller left:
+every LLM comes from `buildGatedLlm`, which hands the provider
+`ReportThrottling`. Delete `srv/lib/throttle-strategy.ts`, the `whenThrottled`
+field from `srv/agent-config.ts`, and the "configured wait ceiling" block from
+`test/unit/throttle-surfacing.test.ts`. Leaving a dead ceiling in the
+configuration would read as a setting that still does something.
+
+- [ ] **Step 7: Run the test to verify it passes**
 
 Run: `npx jest test/unit/gated-construction.test.ts && npm run test:unit`
 Expected: PASS; the existing suite stays green.
 
-- [ ] **Step 6: Lint, typecheck, commit**
+- [ ] **Step 8: Lint, typecheck, commit**
 
 ```bash
-npx biome check --write srv/agent-manager.ts test/unit/gated-construction.test.ts
+npx biome check --write srv/agent-manager.ts srv/agent-config.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts
 npm run test:check
-git add srv/agent-manager.ts test/unit/gated-construction.test.ts
-git commit -m "feat(gatekeeper): every model and embedder this service builds passes the window"
+git add -A
+git commit -m "feat(gatekeeper): every model passes the window, and the provider absorbs nothing"
 ```
 
 ---
@@ -3179,6 +3337,16 @@ describe('gatekeeper metrics', () => {
     expect(snap.quotas).toEqual({});
   });
 
+  it('reports a closed system as closed', () => {
+    // Hard-coded false would show every system healthy while it refused
+    // callers, which is the one thing this scope is for.
+    const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+    manager.closeDestination('S4HANA_DEV', 'tunnel down');
+    const mod = load();
+    mod.recordDestinationRefusal('S4HANA_DEV');
+    expect(mod.gatekeeperSnapshot().destinations['S4HANA_DEV'].closed).toBe(true);
+  });
+
   it('reports no refusals for a quota, because the queue refuses nobody', () => {
     process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
     const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
@@ -3272,7 +3440,10 @@ export function recordDestinationRefusal(destination: string): void {
 export function gatekeeperSnapshot(): GatekeeperSnapshot {
   const { livePipelines, configuredCapacity, callerlessCount } =
     require('./admission') as typeof import('./admission');
+  // Lazy requires: agent-manager imports this module, so a top-level import
+  // would close the cycle.
   const { liveGates } = require('./quota-registry') as typeof import('./quota-registry');
+  const { isDestinationClosed } = require('../agent-manager') as typeof import('../agent-manager');
   const quotas: Record<string, QuotaNumbers> = {};
   for (const { key, gate } of liveGates()) {
     quotas[key] = {
@@ -3283,7 +3454,10 @@ export function gatekeeperSnapshot(): GatekeeperSnapshot {
   }
   const destinations: Record<string, { closed: boolean; refusals: number }> = {};
   for (const [name, refusals] of destinationRefusals) {
-    destinations[name] = { closed: false, refusals };
+    // Read, not assumed. A hard-coded `false` would report every system as
+    // healthy while it was refusing callers, which is the one thing this scope
+    // exists to show.
+    destinations[name] = { closed: isDestinationClosed(name), refusals };
   }
   const capacity = configuredCapacity();
   return {
@@ -3306,7 +3480,7 @@ export function clearGatekeeperMetrics(): void {
 }
 ```
 
-`starts` and `waiting` are read live from the gates rather than copied, and `closed` comes from `isDestinationClosed` when the snapshot is wired in `mcp-proxy`. The module keeps no copy of state it can read.
+`starts`, `waiting` and `closed` are all read live inside the snapshot rather than copied. The module keeps no copy of state it can read.
 
 `recordAdmittedWait` is called with the **quota key** from `quotaForModel(model).key`, never the model name, so two models sharing one quota aggregate into one scope.
 
