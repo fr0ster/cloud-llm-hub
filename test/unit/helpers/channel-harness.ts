@@ -1,0 +1,200 @@
+/**
+ * Drive a chat channel in-process: a fake request and response, and the agent,
+ * connection and config seams mocked. Each test file wires the mocks with
+ *
+ *   jest.mock('../../srv/agent-manager', () => require('./helpers/channel-harness').agentManagerMock());
+ *   jest.mock('../../srv/agent-config', () => require('./helpers/channel-harness').agentConfigMock());
+ *   jest.mock('../../srv/lib/request-connection', () => require('./helpers/channel-harness').requestConnectionMock());
+ *   jest.mock('../../srv/lib/ai-core-models', () => ({ getAvailableModels: async () => [] }));
+ *
+ * and a `@sap/cds` mock whose `context.user` is `harness.user`.
+ */
+
+type Chunk =
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; error: Error };
+
+export const harness = {
+  user: { id: 'alice', is: () => true, roles: ['MCP_Full'] } as {
+    id: string;
+    is: (r: string) => boolean;
+    roles: string[];
+  },
+  events: [] as string[],
+  seenOptions: [] as Array<Record<string, unknown>>,
+  /** Hold agent resolution open, as a destination still warming would. */
+  agentGate: Promise.resolve() as Promise<void>,
+  process: async (
+    _messages: unknown,
+    _opts: Record<string, unknown>,
+  ): Promise<Chunk> => ({
+    ok: true,
+    value: { content: 'done', stopReason: 'stop' },
+  }),
+  stream: async function* (
+    _messages: unknown,
+    _opts: Record<string, unknown>,
+  ): AsyncIterable<Chunk> {
+    yield { ok: true, value: { content: 'done' } };
+    yield { ok: true, value: { finishReason: 'stop' } };
+  },
+  reset() {
+    harness.events = [];
+    harness.seenOptions = [];
+    harness.agentGate = Promise.resolve();
+    harness.process = async () => ({
+      ok: true,
+      value: { content: 'done', stopReason: 'stop' },
+    });
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'done' } };
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+  },
+};
+
+const handle = {
+  agent: {
+    deps: { ragStores: {} },
+    process: (m: unknown, o: Record<string, unknown>) => {
+      harness.seenOptions.push(o);
+      harness.events.push('pipeline');
+      return harness.process(m, o);
+    },
+    streamProcess: (m: unknown, o: Record<string, unknown>) => {
+      harness.seenOptions.push(o);
+      harness.events.push('pipeline');
+      return harness.stream(m, o);
+    },
+  },
+  recMcp: { dropRequest: () => harness.events.push('dropRequest') },
+};
+
+export function agentManagerMock() {
+  const { CollectionRegistry } = jest.requireActual(
+    '../../../srv/rag-collections',
+  );
+  const registry = new CollectionRegistry();
+  return {
+    isAgentReady: () => true,
+    getSmartAgent: async () => {
+      harness.events.push('getSmartAgent');
+      await harness.agentGate;
+      return handle;
+    },
+    getCurrentDestination: () => 'DEST',
+    setSessionDestination: () => {},
+    forgetSessionDestination: () => {},
+    getCollectionRegistry: () => registry,
+    getCurrentModel: () => 'm',
+    getCurrentClassifierModel: () => 'm',
+    getDestinationStates: () => [],
+    getSharedHistoryRag: () => undefined,
+    runWithRequestConnection: (_c: unknown, fn: () => unknown) => fn(),
+    ExpositionFilteringRag: class {
+      constructor(readonly inner: unknown) {}
+    },
+    // Mocked ahead of Tasks 15 and 18, which add these to the handlers' imports;
+    // without them every channel test would break at Task 15.
+    isDestinationClosed: () => false,
+    retryAfterForDestination: () => undefined,
+    closeDestination: () => {},
+    knownDestinations: () => [],
+  };
+}
+
+export function agentConfigMock() {
+  return {
+    isAiCoreConfigured: () => true,
+    getAgentConfig: () => ({
+      llm: { model: 'm' },
+      mcp: { destination: 'DEST' },
+      agent: {},
+    }),
+  };
+}
+
+export function requestConnectionMock() {
+  return {
+    establishRequestConnection: async () => ({
+      handled: false,
+      connection: { id: 'conn' },
+      dumpScope: undefined,
+    }),
+    safeStop: async () => {
+      harness.events.push('safeStop');
+    },
+  };
+}
+
+/** `minted: false` is a cookie the middleware kept because the session was live. */
+export function fakeReq(body: unknown, sessionId = 's-1', minted = true) {
+  return {
+    body,
+    headers: {
+      'x-sap-destination': 'DEST',
+      cookie: `clh_session=${sessionId}`,
+    },
+    sessionId,
+    sessionMinted: minted,
+    secure: false,
+  };
+}
+
+export function fakeRes() {
+  const closeListeners: Array<() => void> = [];
+  const r = {
+    statusCode: 200,
+    headers: {} as Record<string, string>,
+    body: '' as string,
+    headersSent: false,
+    writableEnded: false,
+    writeHead(status: number, headers?: Record<string, string>) {
+      r.statusCode = status;
+      Object.assign(r.headers, headers ?? {});
+      r.headersSent = true;
+      return r;
+    },
+    setHeader(n: string, v: string) {
+      r.headers[n] = v;
+    },
+    status(s: number) {
+      r.statusCode = s;
+      return r;
+    },
+    json(b: unknown) {
+      r.body = JSON.stringify(b);
+      r.headersSent = true;
+      r.writableEnded = true;
+      return r;
+    },
+    write(c: string) {
+      r.body += c;
+      return true;
+    },
+    end(c?: string) {
+      if (c) r.body += c;
+      r.writableEnded = true;
+      return r;
+    },
+    on(event: string, fn: () => void) {
+      if (event === 'close') closeListeners.push(fn);
+      return r;
+    },
+    /** The client goes away before the response ends. */
+    disconnect() {
+      for (const fn of closeListeners) fn();
+    },
+  };
+  return r;
+}
+
+export function deferred<T = void>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+export const tick = () => new Promise((r) => setImmediate(r));

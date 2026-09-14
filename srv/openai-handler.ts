@@ -33,12 +33,19 @@ import {
 } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
+import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
+import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import { turnOwner } from './lib/session-history-rag';
-import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
+import {
+  openAiDoorRefusal,
+  openAiSessionClosed,
+  throttleMessage,
+  throttleOf,
+} from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
-import { honouredSessionId, sessionIdOf } from './session-id';
+import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
   appendToSession,
   clearSession,
@@ -473,18 +480,18 @@ export async function handleChatCompletions(
     requestDumpScope = established.dumpScope;
   }
 
-  // Client abort/disconnect mid-request must still release the ADT edit-lock
-  // (the SM12 orphaned-lock symptom). `req`'s `close` event fires once the
-  // request body is consumed — NOT reliably on client abort — so tearing down
-  // the connection there can cut an in-flight tool call. `res`'s `close`
-  // fires when the underlying connection is closed; guarding with
-  // `!res.writableEnded` narrows it to a genuine early client disconnect
-  // (the response hadn't finished yet). safeStop is idempotent, so this
-  // racing with the handler's own `finally` teardown below is safe either order.
+  // A client disconnect ends nothing. Tearing the connection down on `close` is
+  // the recorded cause of the orphaned ADT locks in SM12: nobody is waiting for
+  // the answer, and SAP is waiting for the rest of the chain. So the sink is
+  // detached — nothing written afterwards reaches the socket or fails the run —
+  // and a caller still queued is removed from the queue.
+  const out = detachedSink(res);
+  const callerLeft = new AbortController();
   res.on('close', () => {
-    if (!res.writableEnded) {
-      void safeStop(requestConnection);
-    }
+    if (res.writableEnded) return;
+    log.info('Caller disconnected; the session runs to its end', { sessionId });
+    out.detach();
+    callerLeft.abort(new Error('caller disconnected'));
   });
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
@@ -713,6 +720,42 @@ export async function handleChatCompletions(
     }
   }
 
+  // Admitted after the agent is resolved: a caller waiting for a destination to
+  // warm waits outside the door, holding a request and no session.
+  let pipeline: PipelineSession;
+  try {
+    const admission = await admitPipeline(
+      userId,
+      sessionId,
+      callerLeft.signal,
+      {
+        presented: (req as Request & WithSession).sessionMinted === false,
+      },
+    );
+    if ('refused' in admission) {
+      restoreRagStores();
+      await safeStop(requestConnection);
+      const refusal = openAiDoorRefusal(admission.refused);
+      out.json(refusal.status, refusal.body);
+      return;
+    }
+    if ('closed' in admission) {
+      // Logged out while this request waited for its agent. Running now would
+      // bring the session back under the id the caller asked us to destroy.
+      restoreRagStores();
+      await safeStop(requestConnection);
+      const closed = openAiSessionClosed();
+      out.json(closed.status, closed.body);
+      return;
+    }
+    pipeline = admission.admitted;
+  } catch {
+    // Left while queued. Nothing was started, so nothing is owed but the connection.
+    restoreRagStores();
+    await safeStop(requestConnection);
+    return;
+  }
+
   try {
     const pipelineLog = cds.log('smart-pipeline');
     const opts = {
@@ -721,6 +764,8 @@ export async function handleChatCompletions(
       // for ClineClientAdapter detection and external tool_call routing.
       externalTools,
       sessionId,
+      // The admission's signal, which only shutdown aborts. Not the caller's.
+      signal: pipeline.signal,
       // RAG filtering: namespace isolates user/destination data, exposition filters tools by role.
       // ExpositionFilteringRag strips namespace (tools have none) and post-filters by exposition.
       ragFilter: {
@@ -761,7 +806,7 @@ export async function handleChatCompletions(
 
     // --- Streaming ---
     if (body.stream) {
-      res.writeHead(200, {
+      out.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
@@ -779,7 +824,7 @@ export async function handleChatCompletions(
       // streaming too.
       const KEEPALIVE_MS = 10_000;
       const keepAlive = setInterval(() => {
-        if (!res.writableEnded) res.write(': keep-alive\n\n');
+        out.write(': keep-alive\n\n');
       }, KEEPALIVE_MS);
       if (typeof keepAlive.unref === 'function') keepAlive.unref();
       res.on('close', () => clearInterval(keepAlive));
@@ -805,187 +850,192 @@ export async function handleChatCompletions(
       // The wrapper must enclose the whole retry loop so the context stays alive across
       // all stream iterations, including rate-limit retries.
       // Retry loop: restart stream on rate-limit errors (only before first content chunk)
-      await runWithSessionId(
-        sessionId,
-        () =>
-          withRequestConnectionAuthorized(
-            requestConnection,
-            requestDumpScope,
-            async () => {
-              const stream = handle.agent.streamProcess(
-                normalizedMessages,
-                opts,
-              );
-
-              try {
-                for await (const chunk of stream) {
-                  chunkCount++;
-                  if (!chunk.ok) {
-                    const err = chunk.error;
-
-                    const causes: string[] = [];
-                    let current: unknown = err;
-                    while (current) {
-                      if (current instanceof Error) {
-                        causes.push(current.message);
-                        current = (current as { cause?: unknown }).cause;
-                      } else {
-                        causes.push(String(current));
-                        break;
-                      }
-                    }
-                    log.error('Stream error chunk', {
-                      chunkCount,
-                      error: err.message,
-                      causes,
-                    });
-                    const limit = throttleOf(err);
-                    const userMessage = limit
-                      ? throttleMessage(limit)
-                      : err.message;
-                    res.write(
-                      `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                    );
-                    break;
-                  }
-
-                  const v = chunk.value;
-
-                  // Forward heartbeats as SSE comments to keep the connection alive.
-                  // Without this, CF Router / Cloud Connector may close idle TCP
-                  // connections before the tool loop finishes, causing the browser's
-                  // reader.read() to hang forever (onDone never fires).
-                  if (v.heartbeat) {
-                    res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
-                    continue;
-                  }
-                  if (v.usage) {
-                    lastUsage = {
-                      prompt_tokens: v.usage.promptTokens,
-                      completion_tokens: v.usage.completionTokens,
-                      total_tokens: v.usage.totalTokens,
-                      ...(v.usage.models ? { models: v.usage.models } : {}),
-                    };
-                  }
-                  if (v.timing) {
-                    log.info('Pipeline stage timing', { timing: v.timing });
-                    continue;
-                  }
-
-                  const baseResponse = {
-                    id,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model: getCurrentModel(),
-                    usage: null,
-                  };
-
-                  // First chunk: role + initial content (matches SmartServer)
-                  if (firstChunk) {
-                    const initialContent = v.content || '';
-                    if (initialContent) accumulatedContent += initialContent;
-                    res.write(
-                      `data: ${JSON.stringify({
-                        ...baseResponse,
-                        choices: [
-                          {
-                            index: 0,
-                            delta: {
-                              role: 'assistant',
-                              content: initialContent,
-                            },
-                            finish_reason: null,
-                          },
-                        ],
-                      })}\n\n`,
-                    );
-                    firstChunk = false;
-                    if (!v.finishReason && !v.toolCalls) continue;
-                  }
-
-                  // Content and/or tool_calls delta (matches SmartServer)
-                  if (v.content || v.toolCalls) {
-                    const delta: Record<string, unknown> = {};
-                    if (v.content) {
-                      accumulatedContent += v.content;
-                      delta.content = v.content;
-                    }
-                    if (v.toolCalls) {
-                      delta.tool_calls = v.toolCalls.map((call, index) => {
-                        const tc = toToolCallDelta(call, index);
-                        return {
-                          index: tc.index,
-                          id: tc.id,
-                          type: 'function',
-                          function: {
-                            name: tc.name,
-                            arguments: tc.arguments || '',
-                          },
-                        };
-                      });
-                    }
-                    res.write(
-                      `data: ${JSON.stringify({
-                        ...baseResponse,
-                        choices: [
-                          {
-                            index: 0,
-                            delta,
-                            finish_reason: null,
-                          },
-                        ],
-                      })}\n\n`,
-                    );
-                  }
-
-                  if (v.finishReason) {
-                    res.write(
-                      `data: ${JSON.stringify({
-                        ...baseResponse,
-                        choices: [
-                          {
-                            index: 0,
-                            delta: {},
-                            finish_reason: mapStopReason(v.finishReason),
-                          },
-                        ],
-                      })}\n\n`,
-                    );
-                    finishReasonSent = true;
-                  }
-                }
-              } catch (streamErr) {
-                const errMsg =
-                  streamErr instanceof Error
-                    ? streamErr.message
-                    : String(streamErr);
-                log.error('Stream exception', {
-                  error: errMsg,
-                  stack:
-                    streamErr instanceof Error ? streamErr.stack : undefined,
-                });
-                const streamLimit = throttleOf(streamErr);
-                const userMessage = streamLimit
-                  ? throttleMessage(streamLimit)
-                  : errMsg;
-                res.write(
-                  `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+      await pipeline.run(() =>
+        runWithSessionId(
+          sessionId,
+          () =>
+            withRequestConnectionAuthorized(
+              requestConnection,
+              requestDumpScope,
+              async () => {
+                const stream = handle.agent.streamProcess(
+                  normalizedMessages,
+                  opts,
                 );
-              }
 
-              // Log per-model token breakdown if available (inside runWithSessionId so TS
-              // can track lastUsage mutations; this is pure logging with no ordering concern).
-              if (lastUsage?.models) {
-                log.info('Token usage by model', lastUsage.models);
-              }
-            },
-          ),
-        priorTurns,
-      ); // end runWithSessionId / runWithRequestConnection
+                try {
+                  for await (const chunk of stream) {
+                    chunkCount++;
+                    if (!chunk.ok) {
+                      const err = chunk.error;
+
+                      const causes: string[] = [];
+                      let current: unknown = err;
+                      while (current) {
+                        if (current instanceof Error) {
+                          causes.push(current.message);
+                          current = (current as { cause?: unknown }).cause;
+                        } else {
+                          causes.push(String(current));
+                          break;
+                        }
+                      }
+                      log.error('Stream error chunk', {
+                        chunkCount,
+                        error: err.message,
+                        causes,
+                      });
+                      const limit = throttleOf(err);
+                      const userMessage = limit
+                        ? throttleMessage(limit)
+                        : err.message;
+                      out.write(
+                        `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                      );
+                      break;
+                    }
+
+                    const v = chunk.value;
+
+                    // Forward heartbeats as SSE comments to keep the connection alive.
+                    // Without this, CF Router / Cloud Connector may close idle TCP
+                    // connections before the tool loop finishes, causing the browser's
+                    // reader.read() to hang forever (onDone never fires).
+                    if (v.heartbeat) {
+                      out.write(
+                        `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
+                      );
+                      continue;
+                    }
+                    if (v.usage) {
+                      lastUsage = {
+                        prompt_tokens: v.usage.promptTokens,
+                        completion_tokens: v.usage.completionTokens,
+                        total_tokens: v.usage.totalTokens,
+                        ...(v.usage.models ? { models: v.usage.models } : {}),
+                      };
+                    }
+                    if (v.timing) {
+                      log.info('Pipeline stage timing', { timing: v.timing });
+                      continue;
+                    }
+
+                    const baseResponse = {
+                      id,
+                      object: 'chat.completion.chunk',
+                      created,
+                      model: getCurrentModel(),
+                      usage: null,
+                    };
+
+                    // First chunk: role + initial content (matches SmartServer)
+                    if (firstChunk) {
+                      const initialContent = v.content || '';
+                      if (initialContent) accumulatedContent += initialContent;
+                      out.write(
+                        `data: ${JSON.stringify({
+                          ...baseResponse,
+                          choices: [
+                            {
+                              index: 0,
+                              delta: {
+                                role: 'assistant',
+                                content: initialContent,
+                              },
+                              finish_reason: null,
+                            },
+                          ],
+                        })}\n\n`,
+                      );
+                      firstChunk = false;
+                      if (!v.finishReason && !v.toolCalls) continue;
+                    }
+
+                    // Content and/or tool_calls delta (matches SmartServer)
+                    if (v.content || v.toolCalls) {
+                      const delta: Record<string, unknown> = {};
+                      if (v.content) {
+                        accumulatedContent += v.content;
+                        delta.content = v.content;
+                      }
+                      if (v.toolCalls) {
+                        delta.tool_calls = v.toolCalls.map((call, index) => {
+                          const tc = toToolCallDelta(call, index);
+                          return {
+                            index: tc.index,
+                            id: tc.id,
+                            type: 'function',
+                            function: {
+                              name: tc.name,
+                              arguments: tc.arguments || '',
+                            },
+                          };
+                        });
+                      }
+                      out.write(
+                        `data: ${JSON.stringify({
+                          ...baseResponse,
+                          choices: [
+                            {
+                              index: 0,
+                              delta,
+                              finish_reason: null,
+                            },
+                          ],
+                        })}\n\n`,
+                      );
+                    }
+
+                    if (v.finishReason) {
+                      out.write(
+                        `data: ${JSON.stringify({
+                          ...baseResponse,
+                          choices: [
+                            {
+                              index: 0,
+                              delta: {},
+                              finish_reason: mapStopReason(v.finishReason),
+                            },
+                          ],
+                        })}\n\n`,
+                      );
+                      finishReasonSent = true;
+                    }
+                  }
+                } catch (streamErr) {
+                  const errMsg =
+                    streamErr instanceof Error
+                      ? streamErr.message
+                      : String(streamErr);
+                  log.error('Stream exception', {
+                    error: errMsg,
+                    stack:
+                      streamErr instanceof Error ? streamErr.stack : undefined,
+                  });
+                  const streamLimit = throttleOf(streamErr);
+                  const userMessage = streamLimit
+                    ? throttleMessage(streamLimit)
+                    : errMsg;
+                  out.write(
+                    `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                  );
+                }
+
+                // Log per-model token breakdown if available (inside runWithSessionId so TS
+                // can track lastUsage mutations; this is pure logging with no ordering concern).
+                if (lastUsage?.models) {
+                  log.info('Token usage by model', lastUsage.models);
+                }
+              },
+            ),
+          priorTurns,
+        ),
+      );
+      // end runWithSessionId / runWithRequestConnection / pipeline.run
 
       // Ensure finish_reason is always sent — clients require it to detect stream end
       if (!finishReasonSent) {
-        res.write(
+        out.write(
           `data: ${JSON.stringify({
             id,
             object: 'chat.completion.chunk',
@@ -1007,7 +1057,7 @@ export async function handleChatCompletions(
       // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
       // clients that don't need it simply ignore the extra chunk.
       if (lastUsage) {
-        res.write(
+        out.write(
           `data: ${JSON.stringify({
             id,
             object: 'chat.completion.chunk',
@@ -1060,8 +1110,8 @@ export async function handleChatCompletions(
       }
 
       clearInterval(keepAlive);
-      res.write('data: [DONE]\n\n');
-      res.end();
+      out.write('data: [DONE]\n\n');
+      out.end();
       return;
     }
 
@@ -1069,17 +1119,19 @@ export async function handleChatCompletions(
     // Bind the active session id into AsyncLocalStorage so the RAG tool dispatcher
     // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
     // The wrapper encloses the whole retry block so the context stays alive across retries.
-    const result = await runWithSessionId(
-      sessionId,
-      () =>
-        withRequestConnectionAuthorized(
-          requestConnection,
-          requestDumpScope,
-          async () => {
-            return handle.agent.process(normalizedMessages, opts);
-          },
-        ),
-      priorTurns,
+    const result = await pipeline.run(() =>
+      runWithSessionId(
+        sessionId,
+        () =>
+          withRequestConnectionAuthorized(
+            requestConnection,
+            requestDumpScope,
+            async () => {
+              return handle.agent.process(normalizedMessages, opts);
+            },
+          ),
+        priorTurns,
+      ),
     );
 
     log.info('Chat completions done', {
@@ -1126,11 +1178,11 @@ export async function handleChatCompletions(
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.
     }
 
-    res.writeHead(200, {
+    out.writeHead(200, {
       'Content-Type': 'application/json',
       ...invalidToolsHeader,
     });
-    res.end(
+    out.end(
       JSON.stringify({
         id: `chatcmpl-${randomUUID()}`,
         object: 'chat.completion',
@@ -1152,10 +1204,14 @@ export async function handleChatCompletions(
     );
   } finally {
     restoreRagStores();
+    // The pipeline has returned, so it starts no more calls. Wait for the ones it
+    // started, then end the ADT session, then give the slot back — last.
+    await pipeline.drain();
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
     // omitting this leaks memory per request (Verified fact 10).
     (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    pipeline.release();
   }
 }
 
