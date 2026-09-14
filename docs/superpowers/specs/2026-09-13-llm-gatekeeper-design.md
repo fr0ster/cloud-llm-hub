@@ -128,20 +128,32 @@ a value to validate and a way to collide. `srv/collection-ids.ts` keeps keying
 by user and session as it does today — the id in that key is simply always
 ours now.
 
-Nothing outside loses a capability. The chat UI is the only client creating
-session-scoped collections, and it has the cookie; it stops sending the header
-it invents in the browser. `srv/rag-handler.ts` and `srv/server.ts` carry error
-messages naming the header, and the tests in `rag-handler.test.ts` and
-`cross-user-isolation.test.ts` address collections through it — all of which
-move to the issued session, which is a change to how those tests arrange
-themselves and not to what they assert.
+**This is a breaking change to `/v1/rag/*`, and the previous draft called it
+nothing of the sort two sentences before describing it.** Today that API takes
+`x-session-id`, answers `400` without a session, and lets a client create a
+session-scoped collection in one request and address it in the next. Tests
+cover exactly that (`rag-handler.test.ts`, `cross-user-isolation.test.ts`).
+Removing the header takes that away, and `scope: 'user'` is not a substitute:
+it has a different lifetime and is visible to that user's other sessions, which
+is the isolation a session collection exists to give.
 
-The one case that genuinely changes is a stateless API client asking for
-session scope across two requests: it gets a different session each time and
-cannot reach what it made. That is the honest answer rather than a regression.
-Session scope means *until this session ends*, and a caller that keeps no
-session is asking for something it has no way to hold. User scope is what it
-wants, and it is already there.
+**The migration is to keep the cookie, not to name a session.** The service
+issues `clh_session`; a client that wants a session across requests stores it
+and sends it back, which every HTTP client can do and `curl` does with `-c` and
+`-b`. That is not the caller naming a session — the value is ours, bound to
+that user when we minted it — it is the caller holding the one it was given.
+A client that holds nothing gets a fresh session per request, and session scope
+is then not the scope it wants.
+
+**And the change is made loudly.** A request that carries `x-session-id` while
+asking for `scope: 'session'` is answered `400` naming the cookie, for at least
+one release. Ignoring the header silently would be the worst of the options
+available: the caller would create collections under a session it cannot
+address, discover nothing, and find them missing later.
+
+The chat UI needs no migration — it has the cookie already, and stops sending
+the header it invents in the browser. The two test files move to the issued
+session, which changes how they arrange themselves and not what they assert.
 
 The slot is keyed on that session together with the authenticated user, and
 `sessionStore` keys on `${userId}\u0000${sessionId}` as it already does, so the
@@ -476,6 +488,12 @@ value we never gave it. Harmless as long as the key's other half is the
 authenticated user, and it is — but anything built later that treats the
 session id as a secret would be building on sand.
 
+**Session scope now needs a cookie held.** `/v1/rag/*` used to let any client
+name a session with a header; it now requires holding the one this service
+issued. Cheap for anything that stores cookies, and impossible for a client
+that deliberately keeps none — for which `scope: 'user'` is the answer, with
+the different isolation and lifetime that implies.
+
 **A platform outage looks like many system outages.** When the connectivity
 service fails, every on-premise destination closes on its own account. Correct
 per destination and useless as a diagnosis; the shared cause is invisible.
@@ -565,6 +583,13 @@ These properties, because they are what this shape gets wrong.
 - **Two users cannot reach each other's session collections**, which is what
   `cross-user-isolation.test.ts` already asserts and must keep asserting once
   the session is ours rather than theirs.
+- **A client that keeps the cookie keeps its session collection.** Create in
+  one request, address in the next, sending only `clh_session`: it resolves.
+  This is the migration path, so it is a test and not a sentence in a release
+  note.
+- **A client that sends the old header is told, not ignored.** `x-session-id`
+  with `scope: 'session'` answers `400` naming the cookie. Silence here would
+  let a caller build collections under a session it can never address.
 - **The browser's chat session survives without the header.** The chat UI,
   sending only the cookie, keeps its history across turns exactly as before.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
