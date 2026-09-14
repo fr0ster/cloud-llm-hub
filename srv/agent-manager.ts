@@ -65,6 +65,7 @@ import { type AgentConfig, getAgentConfig } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
+import { asOutage, outageClassifier } from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
@@ -2008,7 +2009,10 @@ async function buildEmbeddedMcpAdapter(
         args: JSON.stringify(args).slice(0, 500),
         error: err instanceof Error ? err.message : String(err),
       });
-      throw err;
+      // The connector has already decided what happened and written its verdict
+      // into the message; this re-raises it in a form that survives the
+      // embedded wrapper's string-only return.
+      throw asOutage(err, destinationName) ?? err;
     } finally {
       // Restore shared group.context after per-request override
       if (prevGroupContexts && handlerGroups) {
@@ -2255,6 +2259,11 @@ export async function buildAgentForDestination(
     // errorStrategy omitted -> AbortErrorStrategy default;
     // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
   });
+
+  // Consumer-owned seam: tells the pipeline an MCP failure means the
+  // destination is unavailable (fail loud) rather than a tool-level error to
+  // feed back to the LLM, using the same verdict the connector already wrote.
+  builder.withMcpFailureClassifier(outageClassifier);
 
   const handle = await builder.build();
 

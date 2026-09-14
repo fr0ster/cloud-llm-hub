@@ -1070,7 +1070,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
           typeof respData === 'string' ? respData : (errObj?.message ?? '');
         const looksTunnelRelated =
           httpCode >= 500 ||
-          /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage);
+          /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage) ||
+          // The plain shapes of a host that is not there. classifyProbe already
+          // reads these as dns_or_network; it was simply never asked.
+          /ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|EPIPE|socket hang up/i.test(
+            rawMessage,
+          );
         if (looksTunnelRelated && error instanceof Error) {
           let classifier: typeof import('../lib/probe-classifier');
           try {

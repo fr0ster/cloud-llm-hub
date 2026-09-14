@@ -115,10 +115,14 @@ export function classifyProbe(
       hint: 'Tunnel works; backend returned 5xx. Inspect ABAP system / on-premise service health.',
     };
   }
-  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo/i.test(msg)) {
+  if (
+    /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|socket hang up/i.test(
+      msg,
+    )
+  ) {
     return {
       status: 'dns_or_network',
-      hint: 'Backend host is unresolvable or refuses TCP — check destination URL and on-premise network.',
+      hint: 'Backend host is unresolvable, refused TCP, or dropped the connection — check destination URL and on-premise network.',
     };
   }
   return {
