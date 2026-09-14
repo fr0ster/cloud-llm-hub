@@ -2,37 +2,57 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Admit work against the SAP AI Core per-minute model quota so that a caller is either refused at the door before anything starts, or carried to the end however slowly — and never cut in the middle with an ABAP object left locked.
+**Goal:** Admit sessions against this service's own memory — a counted door with a bounded queue in front of it and a bounded retention of idle sessions behind it — so that a caller is refused cleanly before anything starts or carried to the end, and no session's state is deleted out from under work still using it.
 
-**Architecture:** One gate object per quota holds a sliding window of request *starts* and a FIFO queue of waiters, driven by a single dispatcher timer. Every LLM and embedder this service constructs is wrapped so that one permit is taken per HTTP attempt. In front of that, a door counts live pipelines across all channels and refuses when memory is spent. An admission handle owns a register of in-flight calls so a slot is freed only after the last of them settles and the ADT session has been torn down.
+**Architecture:** Three units with no knowledge of Express or CAP: the configuration (`gatekeeper-config`), the door (slots, one bounded queue, dispatch to the oldest eligible waiter, the register of calls in flight), and retention (places, leases, the mark that closes a session before it is deleted, LRU eviction). One process-wide module, `gatekeeper`, joins them to the real stores and is the only thing the three channels and the RAG routes call. Session identity becomes the authenticated user together with the session this service issued in `clh_session`; request headers stop naming sessions.
 
-**Tech Stack:** TypeScript (strict), SAP CAP (`@sap/cds` 9), Node 22, Jest + ts-jest for unit tests, Biome for lint/format. Library seams from `@mcp-abap-adt/llm-agent` 25.0.0 (`ILlm`, `IEmbedder`, `IThrottleStrategy`, `ReportThrottling`, `findThrottled`, `IMcpFailureClassifier`).
+**Tech Stack:** TypeScript (strict), SAP CAP (`@sap/cds` 9), Express, Node 22, Jest + ts-jest, Biome. `@mcp-abap-adt/llm-agent` 25.0.0 (`ILlm`, `WaitAsTold`, `CallOptions.signal`, `setThrottleObserver`, `IMcpFailureClassifier`), `@mcp-abap-adt/llm-agent-libs` 25.0.0 (`makeLlm`), `@mcp-abap-adt/llm-agent-mcp` 25.0.0.
 
-**Spec:** `docs/superpowers/specs/2026-09-13-llm-gatekeeper-design.md` (approved at `57225d71`)
+**Spec:** `docs/superpowers/specs/2026-09-13-llm-gatekeeper-design.md` (approved at `6ec86092`). This plan supersedes the rate-limit plan of the same name; nothing of the quota window, permits or `GatedLlm` survives.
 
 ## Global Constraints
 
-- **The library invents no durations and neither do we above the connector.** No timeout is added over running work. The only bounds are an `AbortSignal` from whoever is waiting, and idleness where nothing is running.
-- **Absent means off, malformed means refuse to start.** An unset variable disables what it configures and the service behaves exactly as today. A malformed value throws at startup naming the variable.
-- **One permit per HTTP attempt.** Nothing between the permit and the transport may retry. Providers get `ReportThrottling`.
-- **A permit is a start, not a lease.** It expires by ageing out of the window, never by the call ending. The one exception is a call that never reached the wire, which gives its permit back.
-- **Only shutdown ends an admitted pipeline.** Not a `429`, not a client disconnect, not a clock of ours.
-- **The slot is released last** — after the call register empties and after `safeStop`.
-- **Never blind-retry a stateful write.** An unanswered write is reported once, never repeated.
+- **Absent means off, malformed means refuse to start.** An unset variable disables what it configures and the service behaves as today. A value that will not parse, or is not a positive integer, throws at startup naming the variable. Precedent: `LLM_AGENT_THROTTLE_MAX_WAIT_MS`.
+- **Three variables, exactly these:** `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` (absent: no door on the chat channels; `execute_step` keeps its semaphore of two); `LLM_GATEKEEPER_QUEUE_LENGTH` (absent: the capacity); `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` (requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller than it; absent: unbounded).
+- **Only shutdown ends an admitted session.** Not a `429`, not a client disconnect, not a logout, not a clock of ours.
+- **Teardown order:** stop starting new calls → wait for the register to empty → `safeStop` → release the slot, last.
+- **Admission takes a slot and a retention place atomically, or neither.**
+- **A door refusal carries no `Retry-After` and no number in its text.** Reasons, in check order: `session_busy`, `capacity`, `retention`.
+- **Identity is the authenticated user plus the session this service issued.** `x-session-id` and `mcp-session-id` are never read to identify a session.
+- **Every deletion of a session's state is three steps:** close it to new leases → wait for the leases in flight to settle, cancelling only RAG operations → remove it once, through the primitive that frees the disk.
+- **Every removal of a collection frees its directory.**
+- **No new timeout above the connector.** The only bounds are an `AbortSignal` from whoever waits, and idleness where nothing runs.
+- **Never blind-retry a stateful write.**
+- `instances: 1` holds; every counter is per process.
 - All code, comments, commit messages and docs in **English**. Biome: single quotes, 2-space indent, 100-char width.
-- Every task ends green on `npm run test:unit`, `npm run test:check` and `npx biome check` for the files it touched.
+- Every task ends green on `npm run test:unit`, `npm run test:check`, and `npx biome check` for the files it touched.
+
+## Decisions this plan makes that the spec leaves open
+
+Named here so a reviewer can reject one without hunting for it.
+
+1. **`sessionTopicMap` is deleted, not rekeyed.** The spec lists it among the stores to move to `(userId, sessionId)`. It is never written: `srv/agent-manager.ts` declares it and `clearSessionTopic` deletes from it, and nothing else touches it. Rekeying a map nothing fills would be ceremony; removing it leaves one store fewer for eviction to remember.
+2. **The throttle strategy follows the door.** `WaitAsTold` when `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set; `WaitIfShortEnough` otherwise. The spec replaces the ceiling "for admitted work" and leaves the rest to the plan; with no door nothing is admitted, and an unbounded wait would hold a connection the client cuts at a minute — which is exactly what "absent means today" forbids.
+3. **The detached sink and "a disconnect ends nothing" apply whether or not a door is configured.** They are the fix for the orphaned ADT locks, not a limit. "The chat channels are unchanged" is read as "no admission limit", which stays true.
+4. **A RAG request against a session already closed for deletion is answered `410`** with `{ error: { message, code: 'session_closed' } }`. The spec says it is refused and gives no shape.
+5. **Metrics are exposed on the existing `Health` function** (`srv/mcp-proxy.ts`), as one added `gatekeeper` field holding the snapshot as JSON — CDS types are closed, and a type per scope would change with every counter — and the values in force are logged at startup. No new route.
+6. **A retained session stops counting when nothing holds it and nothing is left in it** — no lease, no history in `sessionStore`, no session collection. Checked on the existing five-minute history sweep. The spec bounds how many are held and says nothing about when an idle one leaves the count by itself.
+7. **A cookie names a live session when retention knows it and it is not closing, or when any store still holds state for it.** Anything else is a cookie holding nothing, and a fresh session is minted. A caller that creates no state (a `GET /v1/models`) is minted a new cookie each time; that is cheap and is the price of keeping no registry of issued ids.
+8. **A queue length without a capacity is refused at startup.** The spec says a queue length defaults to the capacity and says nothing of one set alone. With no door there is nothing to wait for, so the setting would do nothing while looking like a limit — the failure "malformed means refuse to start" exists to make visible.
 
 ---
 
 ## Phase map
 
-Each phase leaves the service working and tested; a later phase may be deferred without leaving the earlier ones half-built.
+Each phase leaves the service working and tested; a later one may be deferred without leaving an earlier one half-built.
 
 | Phase | Tasks | Deliverable |
 |---|---|---|
-| 1 — the gatekeeper | 1–8 | Quota gate, every model call gated, the door, the register, teardown order |
-| 2 — a dependency that is down | 9–11 | Destinations close on MCP outage, unanswered writes reported, honest `Retry-After` |
-| 3 — collision and visibility | 12–15 | Collision guard, observability, health policy, docs |
+| 1 — identity and the stores | 1–3 | Service-issued session only; every collection ending frees its directory; one primitive over every store keyed by `(userId, sessionId)` |
+| 2 — retention | 4–6 | Configuration; places, leases, mark-then-delete, LRU eviction; wired into RAG routes, logout, sweeps and the cookie |
+| 3 — the door | 7–13 | The door; per-channel refusals; the register; the sink and one admission call; both chat channels; `execute_step`; shutdown and the strategy |
+| 4 — a dependency that is down | 14–16 | Outage told from tool failure; closed destinations; unanswered writes reported |
+| 5 — surface and record | 17–19 | `AgentService.Chat` removed; four observability scopes; documentation |
 
 ## File structure
 
@@ -40,984 +60,1405 @@ Each phase leaves the service working and tested; a later phase may be deferred 
 
 | File | Responsibility |
 |---|---|
-| `srv/lib/quota-gate.ts` | One quota: sliding window of starts, FIFO waiter queue, one dispatcher timer, permit nodes with `O(1)` give-back. Pure — no env, no logging, no clock but an injected `now`. |
-| `srv/lib/gatekeeper-config.ts` | Reads and validates all three `LLM_GATEKEEPER_*` variables, and holds no runtime state — so the configuration loader can depend on it while the registry and the door do too. |
-| `srv/lib/quota-registry.ts` | Holds one gate per quota key, resolves a model name to its gate and to the key it spends against. |
-| `srv/lib/gated-llm.ts` | `GatedLlm` (an `ILlm`) and `gateEmbedder` (an `IEmbedder`): one permit per attempt, wait as told, re-queue when no interval was named, give the permit back when nothing reached the wire. |
-| `srv/lib/admission.ts` | The door: live-pipeline counter shared by every channel, the admission handle, the in-flight call register, and the caller-less/collision bookkeeping. |
-| `srv/lib/gatekeeper-metrics.ts` | The four observability scopes, kept apart so a collision never reads as memory pressure. |
+| `srv/lib/session-middleware.ts` | The `/v1` session middleware, lifted out of `server.ts` so it can be tested: reads only `clh_session`, mints and sets a cookie when the one presented names no live session. |
+| `srv/session-store.ts` | The server-side history store, moved out of `openai-handler` so the gatekeeper can reach it without an import cycle. |
+| `srv/lib/session-state.ts` | The one operation over every store keyed by `(userId, sessionId)`: `deleteSessionState`, `hasSessionState`. |
+| `srv/lib/gatekeeper-config.ts` | Reads and validates the three `LLM_GATEKEEPER_*` variables. Holds no runtime state. |
+| `srv/lib/session-retention.ts` | Places, leases, the closing mark, three-step deletion, LRU eviction, the sweep's skip test. Pure: stores are injected. |
+| `srv/lib/door.ts` | Slots, one bounded FIFO queue, oldest-eligible dispatch, atomic slot-plus-place, refusal reasons, the admission handle with its controller and call register. Pure: retention is injected. |
+| `srv/lib/admission-scope.ts` | `runWithAdmission` / `currentAdmission` over `AsyncLocalStorage`, so the tool dispatcher and the LLM wrapper can register a call without importing the door. |
+| `srv/lib/tracked-llm.ts` | An `ILlm` decorator that registers each model call against the admission in scope. |
+| `srv/lib/detached-sink.ts` | The output sink a disconnect detaches: after it, every write is dropped before the socket and none throws. |
+| `srv/lib/gatekeeper.ts` | The process singleton: builds door and retention from configuration and the real stores; the only surface the channels, RAG routes, server and health call. |
+| `srv/lib/gatekeeper-metrics.ts` | The four scopes, kept apart. |
+| `srv/lib/mcp-outage.ts` | Tells a lost connection from a tool that failed (Phase 4). |
+| `test/unit/helpers/channel-harness.ts` | Fake `req`/`res` and mocked agent seams for driving the three channels in-process. |
 
 **Modified files**
 
 | File | Change |
 |---|---|
-| `srv/agent-config.ts` | Parse, validate and log the three `LLM_GATEKEEPER_*` variables. |
-| `srv/agent-manager.ts` | One function constructs every LLM, one constructs the embedder; both gate. Model-quota check at the hot-swap. `invokeEmbeddedTool` takes and honours the signal, and distinguishes a lost connection from a failed tool. |
-| `srv/openai-handler.ts` | Admission after the agent is resolved; detached output sink; disconnect notes instead of tearing down; collision refusal. |
-| `srv/anthropic-handler.ts` | The same three changes. |
-| `srv/agent-mcp.ts` | The local semaphore is replaced by the shared door; teardown order unchanged but now waits on the register. |
-| `srv/agent-service.ts`, `srv/agent-service.cds` | `Chat` removed — dead surface with neither a door nor a session lifecycle. `Health` stays: it starts no pipeline and is the one caller of the probe policy. |
-| `srv/lib/throttle-surfacing.ts` | Formatters for the door refusal (no number), the collision refusal (`409`/`pipeline_in_flight`) and the unknown-model refusal (`400`). |
-| `srv/lib/recording-mcp-client.ts` | Open the record at dispatch so "sent, unanswered" is a state, not an absence. |
-| `docs/architecture/ARCHITECTURE.md`, `README.md`, `.mtaext` samples | Document the variables and the guarantee. |
+| `srv/session-id.ts` | Cookie only; `carriesSessionHeader`, `sessionIdOf`. |
+| `srv/server.ts` | Uses the middleware; `DELETE /v1/session` goes through the gatekeeper; sweeps wired; shutdown hook. |
+| `srv/rag-collections.ts` | `removeCollection` frees the directory for every ending; sweep takes a skip test; `hasSessionCollections`; bulk writes honour a signal. |
+| `srv/rag-handler.ts` | Old header refused on session scope; leases around session-scoped operations; retention and closed-session refusals. |
+| `srv/agent-manager.ts` | `lastDestinationBySession` keyed by user and session; `sessionTopicMap` removed; tool calls registered at dispatch; model calls tracked; Phase 4 wiring. |
+| `srv/openai-handler.ts`, `srv/anthropic-handler.ts` | Admission after the agent resolves; detached sink; teardown order; refusals; destination keyed by user. |
+| `srv/agent-mcp.ts` | The door replaces the semaphore when configured; refusal text; teardown order. |
+| `srv/agent-config.ts` | Strategy chosen by the door; gatekeeper values logged. |
+| `srv/lib/throttle-surfacing.ts` | Door refusal formatters per channel; closed-session and closed-destination text. |
+| `srv/mcp-proxy.ts`, `srv/mcp-proxy.cds` | `Health` carries the gatekeeper snapshot. |
+| `srv/agent-service.ts`, `srv/agent-service.cds` | `Chat` removed. |
+| `app/chat/webapp/controller/Chat.controller.js` | Stops inventing and sending a session id. |
+| `docs/architecture/*.md`, `docs/llm-agent/*.md`, `docs/deployment/TESTING_AFTER_DEPLOYMENT.md`, `README.md` | The new contract, the migration, the removed surface. |
+
+## Phase 1 — identity and the stores
+
+### Task 1: The session is the one we issued
+
+**Files:**
+- Modify: `srv/session-id.ts` (whole file)
+- Create: `srv/lib/session-middleware.ts`
+- Modify: `srv/server.ts:478-495` (the inline `/v1` session middleware)
+- Modify: `srv/rag-handler.ts` (session scope refuses the old header; the four `resolveSessionId` fallbacks at `:122-124`, `:208-210`, `:314-316`, `:711-713`)
+- Modify: `srv/openai-handler.ts:403-409`, `srv/anthropic-handler.ts:112`
+- Modify: `app/chat/webapp/util/StreamClient.js:19-30`, `app/chat/webapp/controller/Chat.controller.js:16-21,65,125-136`
+- Test: `test/unit/session-id.test.ts` (rewritten), `test/unit/session-middleware.test.ts` (new), `test/unit/session-identity-surface.test.ts` (new), `test/unit/rag-handler.test.ts`, `test/unit/cross-user-isolation.test.ts`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks.
+- Produces:
+  - `export function resolveSessionId(req: IncomingHeaders): string | undefined` — `clh_session` only
+  - `export function carriesSessionHeader(req: IncomingHeaders): boolean`
+  - `export type WithSession = IncomingHeaders & { sessionId?: string; sessionMinted?: boolean }`
+  - `export function sessionIdOf(req: WithSession): string | undefined` — what the middleware stashed, else the cookie
+  - `export function honouredSessionId(req: WithSession): string | undefined` — the presented session when the middleware kept it, `undefined` when it minted
+  - `export interface SessionMiddlewareDeps { isLive?: (userId: string, sessionId: string) => boolean; userIdOf?: () => string }`
+  - `export function sessionMiddleware(deps?: SessionMiddlewareDeps): (req: Request, res: Response, next: NextFunction) => void`
+
+**Why the header goes, including for RAG:** between a consumer and MCP and ABAP there is no reason for a consumer to name a chat session. A header that did was one more value to validate and one more way to collide; a session-scoped collection is scoped to the session, and every request now has one issued by us. The user half of the key comes from the token, so the unsigned cookie is harmless: a chosen value collides with its own author's requests and nobody else's.
+
+**Why loudly on RAG:** `x-session-id` with `scope: 'session'` is answered `400` naming the cookie. Silence would let a caller build collections under a session it can never address.
+
+- [ ] **Step 1: Write the failing tests**
+
+Replace `test/unit/session-id.test.ts` entirely:
+
+```ts
+import {
+  buildSetCookie,
+  carriesSessionHeader,
+  honouredSessionId,
+  resolveSessionId,
+  SESSION_COOKIE,
+  sessionIdOf,
+} from '../../srv/session-id';
+
+function req(headers: Record<string, string | undefined>) {
+  return { headers } as Parameters<typeof resolveSessionId>[0];
+}
+
+describe('resolveSessionId — the cookie we issued, and nothing a caller names', () => {
+  test('reads the clh_session cookie', () => {
+    const r = req({ cookie: `other=value; ${SESSION_COOKIE}=cookie-abc; another=x` });
+    expect(resolveSessionId(r)).toBe('cookie-abc');
+  });
+
+  test('does not read x-session-id', () => {
+    expect(resolveSessionId(req({ 'x-session-id': 'hdr' }))).toBeUndefined();
+  });
+
+  test('does not read mcp-session-id', () => {
+    expect(resolveSessionId(req({ 'mcp-session-id': 'mcp' }))).toBeUndefined();
+  });
+
+  test('a header naming another session changes nothing', () => {
+    // The case the header existed for, and the reason it goes: whatever a
+    // caller writes, the session is the one in the cookie we issued.
+    const r = req({ 'x-session-id': 'victim', cookie: `${SESSION_COOKIE}=mine` });
+    expect(resolveSessionId(r)).toBe('mine');
+  });
+
+  test('returns undefined when there is no cookie', () => {
+    expect(resolveSessionId(req({}))).toBeUndefined();
+  });
+
+  test('returns undefined when the clh_session value is empty', () => {
+    expect(resolveSessionId(req({ cookie: `${SESSION_COOKIE}=` }))).toBeUndefined();
+  });
+
+  test('parses the cookie when clh_session is the first entry', () => {
+    expect(resolveSessionId(req({ cookie: `${SESSION_COOKIE}=first; other=x` }))).toBe('first');
+  });
+
+  test('ignores a cookie named like a prefix of clh_session', () => {
+    expect(resolveSessionId(req({ cookie: 'clh_sessio=nope' }))).toBeUndefined();
+  });
+});
+
+describe('carriesSessionHeader', () => {
+  test('sees x-session-id', () => {
+    expect(carriesSessionHeader(req({ 'x-session-id': 'a' }))).toBe(true);
+  });
+
+  test('sees mcp-session-id', () => {
+    expect(carriesSessionHeader(req({ 'mcp-session-id': 'a' }))).toBe(true);
+  });
+
+  test('does not count a blank header', () => {
+    expect(carriesSessionHeader(req({ 'x-session-id': '   ' }))).toBe(false);
+  });
+
+  test('does not count the cookie', () => {
+    expect(carriesSessionHeader(req({ cookie: `${SESSION_COOKIE}=a` }))).toBe(false);
+  });
+});
+
+describe('sessionIdOf and honouredSessionId', () => {
+  test('prefer what the middleware stashed over the raw cookie', () => {
+    const r = { ...req({ cookie: `${SESSION_COOKIE}=old` }), sessionId: 's-new', sessionMinted: true };
+    expect(sessionIdOf(r)).toBe('s-new');
+    // Minted now: the caller presented nothing we kept, so there is no
+    // server-managed history to prepend.
+    expect(honouredSessionId(r)).toBeUndefined();
+  });
+
+  test('a kept cookie is honoured', () => {
+    const r = { ...req({ cookie: `${SESSION_COOKIE}=kept` }), sessionId: 'kept', sessionMinted: false };
+    expect(honouredSessionId(r)).toBe('kept');
+  });
+
+  test('fall back to the cookie when no middleware ran', () => {
+    expect(sessionIdOf(req({ cookie: `${SESSION_COOKIE}=raw` }))).toBe('raw');
+  });
+});
+
+describe('buildSetCookie', () => {
+  test('includes HttpOnly; SameSite=Lax; Path=/', () => {
+    const v = buildSetCookie('sid123', false);
+    expect(v).toContain('HttpOnly');
+    expect(v).toContain('SameSite=Lax');
+    expect(v).toContain('Path=/');
+    expect(v).toContain('sid123');
+  });
+
+  test('includes Secure when secure=true', () => {
+    expect(buildSetCookie('sid123', true)).toContain('Secure');
+  });
+
+  test('does NOT include Secure when secure=false', () => {
+    expect(buildSetCookie('sid123', false)).not.toContain('Secure');
+  });
+
+  test('cookie name is SESSION_COOKIE constant', () => {
+    expect(buildSetCookie('val', false).startsWith(`${SESSION_COOKIE}=val`)).toBe(true);
+  });
+});
+```
+
+Create `test/unit/session-middleware.test.ts`:
+
+```ts
+import type { NextFunction, Request, Response } from 'express';
+import { sessionMiddleware } from '../../srv/lib/session-middleware';
+import { SESSION_COOKIE } from '../../srv/session-id';
+
+type Stashed = Request & { sessionId?: string; sessionMinted?: boolean };
+
+function run(
+  headers: Record<string, string>,
+  deps?: Parameters<typeof sessionMiddleware>[0],
+) {
+  const req = { headers, secure: false } as unknown as Stashed;
+  const set: Record<string, string> = {};
+  const res = {
+    setHeader: (k: string, v: string) => {
+      set[k] = v;
+    },
+  } as unknown as Response;
+  let called = false;
+  const next: NextFunction = () => {
+    called = true;
+  };
+  sessionMiddleware(deps)(req, res, next);
+  return { req, set, called };
+}
+
+describe('the /v1 session middleware', () => {
+  it('honours the cookie it issued', () => {
+    const { req, set, called } = run({ cookie: `${SESSION_COOKIE}=s-abc` });
+    expect(called).toBe(true);
+    expect(req.sessionId).toBe('s-abc');
+    expect(req.sessionMinted).toBe(false);
+    expect(set['Set-Cookie']).toBeUndefined();
+  });
+
+  it('does not let a request name its session', () => {
+    const { req, set } = run({ 'x-session-id': 'victim' });
+    expect(req.sessionId).not.toBe('victim');
+    expect(req.sessionId).toMatch(/^s-/);
+    expect(req.sessionMinted).toBe(true);
+    expect(set['Set-Cookie']).toContain(`${SESSION_COOKIE}=${req.sessionId}`);
+  });
+
+  it('ignores mcp-session-id the same way', () => {
+    const { req } = run({ 'mcp-session-id': 'victim' });
+    expect(req.sessionId).not.toBe('victim');
+  });
+
+  it('marks the cookie Secure behind https', () => {
+    const { set } = run({ 'x-forwarded-proto': 'https' });
+    expect(set['Set-Cookie']).toContain('Secure');
+  });
+
+  it('mints a new session for a cookie that names no live one', () => {
+    const { req, set } = run(
+      { cookie: `${SESSION_COOKIE}=s-retired` },
+      { isLive: () => false, userIdOf: () => 'alice' },
+    );
+    expect(req.sessionId).not.toBe('s-retired');
+    expect(req.sessionMinted).toBe(true);
+    expect(set['Set-Cookie']).toContain(`${SESSION_COOKIE}=${req.sessionId}`);
+  });
+
+  it('asks about liveness with the user from the token', () => {
+    const seen: Array<[string, string]> = [];
+    run(
+      { cookie: `${SESSION_COOKIE}=s-1` },
+      {
+        isLive: (u, s) => {
+          seen.push([u, s]);
+          return true;
+        },
+        userIdOf: () => 'alice',
+      },
+    );
+    expect(seen).toEqual([['alice', 's-1']]);
+  });
+});
+```
+
+Create `test/unit/session-identity-surface.test.ts`:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const read = (f: string) => readFileSync(join(__dirname, '../..', f), 'utf8');
+
+describe('no client of ours names a session', () => {
+  // The browser's chat session survives on the cookie alone. A client still
+  // inventing an id and sending it would now be sending something nobody reads,
+  // and would look to its author as if it mattered.
+  for (const file of [
+    'app/chat/webapp/index.html',
+    'app/chat/webapp/util/StreamClient.js',
+    'app/chat/webapp/controller/Chat.controller.js',
+  ]) {
+    it(`${file} sends no x-session-id`, () => {
+      expect(read(file)).not.toMatch(/x-session-id/i);
+    });
+  }
+});
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `npx jest test/unit/session-id.test.ts test/unit/session-middleware.test.ts test/unit/session-identity-surface.test.ts`
+Expected: FAIL — `carriesSessionHeader` is not exported, `srv/lib/session-middleware` is not found, and `StreamClient.js` and `Chat.controller.js` still contain `x-session-id`.
+
+- [ ] **Step 3: Rewrite `srv/session-id.ts`**
+
+```ts
+/**
+ * Session identity.
+ *
+ * A session is the one this service issued in `clh_session`, together with the
+ * authenticated user. Nothing a caller writes in a header names one:
+ * `x-session-id` and `mcp-session-id` are not read. Between a consumer and MCP
+ * and ABAP there is no reason for a consumer to name a chat session, and a
+ * header that did was one more value to validate and one more way to collide.
+ *
+ * The cookie is unsigned and nothing records what was issued, so a caller can
+ * still send any value in it. That is harmless only because the user half of
+ * the key comes from the token: a chosen id collides with its own author's
+ * requests and nobody else's.
+ */
+
+/** Name of the HttpOnly session cookie issued by the session middleware. */
+export const SESSION_COOKIE = 'clh_session';
+
+/** Minimal shape of an Express request the helpers here need. */
+interface IncomingHeaders {
+  headers: {
+    [key: string]: string | string[] | undefined;
+    cookie?: string;
+  };
+}
+
+/** A request the session middleware has seen. */
+export type WithSession = IncomingHeaders & {
+  sessionId?: string;
+  sessionMinted?: boolean;
+};
+
+/** The `clh_session` cookie's value, or `undefined`. */
+export function resolveSessionId(req: IncomingHeaders): string | undefined {
+  const cookieStr = req.headers.cookie;
+  if (!cookieStr) return undefined;
+  for (const part of cookieStr.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) {
+      const val = part.slice(eq + 1).trim();
+      return val || undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether the request still carries a session header.
+ *
+ * Read only to refuse it loudly where silence would mislead — never to identify
+ * a session.
+ */
+export function carriesSessionHeader(req: IncomingHeaders): boolean {
+  const first = (v: string | string[] | undefined) =>
+    (Array.isArray(v) ? v[0] : v)?.trim();
+  return !!(
+    first(req.headers['x-session-id']) || first(req.headers['mcp-session-id'])
+  );
+}
+
+/** The session this request runs under: what the middleware stashed, else the cookie. */
+export function sessionIdOf(req: WithSession): string | undefined {
+  return req.sessionId ?? resolveSessionId(req);
+}
+
+/**
+ * The session the caller presented and we kept, or `undefined` when the
+ * middleware minted a new one.
+ *
+ * The difference decides whether history is server-managed: a caller that
+ * presented nothing we kept has no stored turns to prepend, and a stateless API
+ * client sending its full history must not be truncated to its last message.
+ */
+export function honouredSessionId(req: WithSession): string | undefined {
+  return req.sessionMinted ? undefined : sessionIdOf(req);
+}
+
+/**
+ * Build a `Set-Cookie` header value for the session cookie.
+ *
+ * @param secure When true, appends `; Secure` (behind HTTPS / the CF approuter).
+ *               When false, it is omitted so the cookie works on plain
+ *               `http://localhost` during local development.
+ */
+export function buildSetCookie(sessionId: string, secure: boolean): string {
+  const base = `${SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Lax; Path=/`;
+  return secure ? `${base}; Secure` : base;
+}
+```
+
+- [ ] **Step 4: Create the middleware and use it**
+
+Create `srv/lib/session-middleware.ts`:
+
+```ts
+import { randomUUID } from 'node:crypto';
+import type { NextFunction, Request, Response } from 'express';
+import { buildSetCookie, resolveSessionId, type WithSession } from '../session-id';
+
+export interface SessionMiddlewareDeps {
+  /**
+   * Whether a presented session still exists. Absent: every presented cookie is
+   * kept. Supplied once retention exists (Task 6), so a cookie naming a session
+   * that was deleted, evicted or swept is treated as holding nothing.
+   */
+  isLive?: (userId: string, sessionId: string) => boolean;
+  /** The authenticated user. The middleware runs after auth, so CAP's context has it. */
+  userIdOf?: () => string;
+}
+
+/**
+ * Give every `/v1` request a session this service issued.
+ *
+ * Keeps the presented `clh_session` when it names a live session, and otherwise
+ * mints one and sets the cookie — never a revival of the old id, so state a
+ * caller asked us to destroy cannot be reattached through the cookie in their
+ * jar.
+ */
+export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const r = req as Request & WithSession;
+    const presented = resolveSessionId(r);
+    const userId = deps.userIdOf?.() ?? 'anonymous';
+    if (presented !== undefined && (deps.isLive?.(userId, presented) ?? true)) {
+      r.sessionId = presented;
+      r.sessionMinted = false;
+      next();
+      return;
+    }
+    const sid = `s-${randomUUID()}`;
+    const secure = !!(req.secure || req.headers['x-forwarded-proto'] === 'https');
+    res.setHeader('Set-Cookie', buildSetCookie(sid, secure));
+    r.sessionId = sid;
+    r.sessionMinted = true;
+    next();
+  };
+}
+```
+
+In `srv/server.ts`, replace the whole inline block that starts with the comment `// Session middleware: resolves (or mints) the session ID for every /v1/* request.` and ends with its `});` by:
+
+```ts
+  // Every /v1 request runs under a session this service issued. The cookie is
+  // the only thing read; a header naming a session is not.
+  app.use(
+    '/v1',
+    sessionMiddleware({ userIdOf: () => cds.context?.user?.id ?? 'anonymous' }),
+  );
+```
+
+and add `import { sessionMiddleware } from './lib/session-middleware';`. Remove `buildSetCookie` from the `./session-id` import; `npx biome check srv/server.ts` names any import left unused.
+
+- [ ] **Step 5: The chat handlers read the issued session**
+
+In `srv/openai-handler.ts`, replace:
+
+```ts
+  const explicitSessionId = resolveSessionId(req);
+  // Session id used for history + RAG keying: the middleware-stashed id (explicit, or the
+  // freshly-minted cookie id), falling back defensively if the middleware didn't run.
+  const sessionId =
+    (req as Request & { sessionId?: string }).sessionId ??
+    explicitSessionId ??
+    randomUUID();
+```
+
+with:
+
+```ts
+  // A session the caller presented and we kept. A freshly minted one is not
+  // explicit: a stateless API client sending its full history must never be
+  // truncated to its last message.
+  const explicitSessionId = honouredSessionId(req);
+  const sessionId = sessionIdOf(req) ?? randomUUID();
+```
+
+and change the import to `import { honouredSessionId, sessionIdOf } from './session-id';`. Update the comment block above it: the explicit session is "the `clh_session` cookie the middleware kept", not a header.
+
+In `srv/anthropic-handler.ts:112`, replace `const sessionId = resolveSessionId(req);` with `const sessionId = sessionIdOf(req);` and the import with `import { sessionIdOf } from './session-id';`.
+
+- [ ] **Step 6: RAG refuses the old header on session scope, and reads the issued session**
+
+In `srv/rag-handler.ts`, change the import to `import { carriesSessionHeader, sessionIdOf } from './session-id';` and replace each of the four expressions
+
+```ts
+      (req as Request & { sessionId?: string }).sessionId ??
+      resolveSessionId(req)
+```
+
+(at `:122-124`, `:208-210`, `:314-316` and `:711-713`) with `sessionIdOf(req)`.
+
+In `POST /rag/collections`, replace the session branch's opening:
+
+```ts
+      if (scope === 'session') {
+        const sid =
+          (req as Request & { sessionId?: string }).sessionId ??
+          resolveSessionId(req);
+        if (!sid) {
+          error(
+            res,
+            400,
+            'session scope requires an active session (x-session-id header or clh_session cookie)',
+          );
+          return;
+        }
+```
+
+with:
+
+```ts
+      if (scope === 'session') {
+        // Refused, not ignored. Ignoring it would create the collection under
+        // the issued session, which this caller evidently is not tracking, and
+        // it would find nothing where it looks next.
+        if (carriesSessionHeader(req)) {
+          error(
+            res,
+            400,
+            'x-session-id is no longer read. A session collection belongs to the session this service issued: keep the clh_session cookie from a previous response and send it back.',
+          );
+          return;
+        }
+        const sid = sessionIdOf(req);
+        if (!sid) {
+          error(
+            res,
+            400,
+            'session scope requires the clh_session cookie issued by this service',
+          );
+          return;
+        }
+```
+
+In `test/unit/rag-handler.test.ts`:
+
+- line 4 of the header comment: `session-scope requires x-session-id` → `session-scope requires the issued clh_session cookie`
+- the test `'session-scope without x-session-id → 400'` is renamed `'session-scope without the issued cookie → 400'`; its body is unchanged
+- the test `'session-scope with x-session-id: physical id is <logical>__s_<key>'` is renamed `'session-scope with the issued cookie: physical id is <logical>__s_<key>'`, and its headers `{ 'x-session-id': 'sess-abc' }` become `{ cookie: 'clh_session=sess-abc' }`
+- `doGet({ 'x-session-id': 'session-1' })` becomes `doGet({ cookie: 'clh_session=session-1' })`, and `doGet({ 'x-session-id': 'some-session' })` becomes `doGet({ cookie: 'clh_session=some-session' })`
+
+and add, inside the `describe` that defines `doPost`:
+
+```ts
+    test('session-scope that still sends x-session-id → 400 naming the cookie', async () => {
+      asUser('alice@example.com');
+      const res = await doPost(
+        { id: 'result', displayName: 'Result', scope: 'session' },
+        { 'x-session-id': 'sess-abc', cookie: 'clh_session=sess-abc' },
+      );
+      expect(res._status).toBe(400);
+      expect(JSON.stringify(res._body)).toMatch(/clh_session/);
+    });
+
+    test('a client that keeps the cookie keeps its session collection', async () => {
+      // The migration path for every client that used to send the header, so it
+      // is a test and not a sentence in a release note.
+      asUser('alice@example.com');
+      const cookie = { cookie: 'clh_session=kept-1' };
+      const created = await doPost(
+        { id: 'notes', displayName: 'Notes', scope: 'session' },
+        cookie,
+      );
+      expect(created._status).toBe(201);
+      const req = makeReq({ method: 'GET', params: { id: 'notes' }, headers: cookie });
+      const res = await runWithMiddleware(routes, 'GET', '/rag/collections/:id', req);
+      expect(res._status).toBe(200);
+      expect((res._body as { id?: string }).id).toBe(
+        sessionCollectionId('notes', 'alice@example.com', 'kept-1'),
+      );
+    });
+```
+
+In `test/unit/cross-user-isolation.test.ts`, the session travels in the cookie, and the assertions do not change:
+
+- `{ 'x-session-id': rawSessionId }` (twice, around `:261` and `:298`) → `{ cookie: \`clh_session=${rawSessionId}\` }`
+- `{ 'x-session-id': 'session-2' }` (around `:416` and `:447`) → `{ cookie: 'clh_session=session-2' }`
+- `{ 'x-session-id': 'session-1' }` (around `:488`) → `{ cookie: 'clh_session=session-1' }`
+- `{ 'x-session-id': 'session-2' }` (around `:497`) → `{ cookie: 'clh_session=session-2' }`
+- the two test titles reading `same raw x-session-id` → `same raw session id`
+
+- [ ] **Step 7: The chat UI stops inventing a session**
+
+In `app/chat/webapp/util/StreamClient.js`, delete the `@param {string} [options.sessionId]` line and the block
+
+```js
+      if (options.sessionId) {
+        headers["x-session-id"] = options.sessionId;
+      }
+```
+
+In `app/chat/webapp/controller/Chat.controller.js`:
+
+- delete `_sessionId: null,`
+- replace the two lines in `onInit` that generate and log `this._sessionId` with `console.log("[Chat] Controller v3 initialized");`
+- delete `sessionId: this._sessionId,` from the `StreamClient.streamChat` options
+- in `onClearHistory`, replace the `if (this._sessionId) { fetch(... headers: { "x-session-id": ... }) }` block and the line generating a new id after it with:
+
+```js
+      // The clh_session cookie is sent automatically; the server issues a new
+      // session on the next request once this one is gone.
+      fetch(StreamClient._getBaseUrl() + "/v1/session", {
+        method: "DELETE",
+        credentials: "same-origin"
+      }).catch(function () { /* best effort */ });
+```
+
+- [ ] **Step 8: Run, lint, commit**
+
+```bash
+npx jest test/unit/session-id.test.ts test/unit/session-middleware.test.ts test/unit/session-identity-surface.test.ts test/unit/rag-handler.test.ts test/unit/cross-user-isolation.test.ts
+npm run test:unit && npm run test:check
+npx biome check --write srv/session-id.ts srv/lib/session-middleware.ts srv/server.ts srv/rag-handler.ts srv/openai-handler.ts srv/anthropic-handler.ts test/unit/session-id.test.ts test/unit/session-middleware.test.ts test/unit/session-identity-surface.test.ts test/unit/rag-handler.test.ts test/unit/cross-user-isolation.test.ts
+git add srv/session-id.ts srv/lib/session-middleware.ts srv/server.ts srv/rag-handler.ts srv/openai-handler.ts srv/anthropic-handler.ts app/chat/webapp/util/StreamClient.js app/chat/webapp/controller/Chat.controller.js test/unit/session-id.test.ts test/unit/session-middleware.test.ts test/unit/session-identity-surface.test.ts test/unit/rag-handler.test.ts test/unit/cross-user-isolation.test.ts
+git commit -m "feat(session)!: the session is the one we issued, and no header names it"
+```
 
 ---
 
-## Phase 1 — the gatekeeper
-
-### Task 1: The quota gate
+### Task 2: Every way a collection ends frees its directory
 
 **Files:**
-- Create: `srv/lib/quota-gate.ts`
-- Test: `test/unit/quota-gate.test.ts`
+- Modify: `srv/rag-collections.ts:566-575` (`deleteCollection`), `:604-638` (`sweepExpiredSessions`, `deleteSessionCollections`)
+- Test: `test/unit/rag-collections-disk.test.ts` (new); `test/unit/rag-collections-session.test.ts` stays green unchanged
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `export interface Permit { giveBack(): void }`
-  - `export interface QuotaLimits { limit: number; windowMs: number }`
-  - ```ts
-    export class QuotaGate {
-      constructor(limits: QuotaLimits, now?: () => number);
-      acquire(signal?: AbortSignal, opts?: { notBefore?: number }): Promise<Permit>;
-      msUntilNextOpening(): number;
-      get liveStarts(): number;
-      get waiting(): number;
-      stop(reason?: unknown): void;
-    }
-    ```
+  - `private removeCollection(id: string): boolean` — registry entry, every user's enabled flag, the directory; persists nothing
+  - `hasSessionCollections(userId: string, sessionId: string): boolean`
+  - `sweepExpiredSessions(): void` and `deleteSessionCollections(userId, sessionId): void` keep their signatures and now free storage
+
+**Why this is a bug today and not a gap in the design:** `deleteSessionCollections` (logout, clear-chat) and `sweepExpiredSessions` (the twenty-four-hour TTL) drop the registry entry and rewrite the metadata, and never call `deleteCollectionDir`, which only `deleteCollection` does. The sweep is the quiet one: it runs on a timer and leaks every session collection this service has ever made. A retention bound built on top of that would count something that had stopped meaning anything.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/unit/quota-gate.test.ts`:
+Create `test/unit/rag-collections-disk.test.ts`:
 
 ```ts
-import { QuotaGate } from '../../srv/lib/quota-gate';
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
+  }),
+  { virtual: true },
+);
 
-/** A clock the test moves by hand, so no test waits on real time. */
-function fakeClock(start = 1_000_000) {
-  let t = start;
-  return { now: () => t, advance: (ms: number) => { t += ms; } };
-}
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { CollectionRegistry } from '../../srv/rag-collections';
 
-describe('QuotaGate — the window', () => {
-  it('admits up to the limit immediately and counts them as starts', async () => {
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 3, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-    await gate.acquire();
-    await gate.acquire();
-    expect(gate.liveStarts).toBe(3);
-    gate.stop();
-  });
+let dir: string;
+let reg: CollectionRegistry;
 
-  it('parks the caller past the limit and admits it when the oldest start ages out', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-
-    let admitted = false;
-    const parked = gate.acquire().then(() => { admitted = true; });
-    await Promise.resolve();
-    expect(admitted).toBe(false);
-    expect(gate.waiting).toBe(1);
-
-    clock.advance(60_000);
-    jest.advanceTimersByTime(60_000);
-    await parked;
-    expect(admitted).toBe(true);
-    gate.stop();
-    jest.useRealTimers();
-  });
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-disk-'));
+  reg = new CollectionRegistry({ storagePath: dir });
 });
-```
 
-- [ ] **Step 2: Run the test to verify it fails**
+afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: FAIL — `Cannot find module '../../srv/lib/quota-gate'`.
-
-- [ ] **Step 3: Write the gate**
-
-Create `srv/lib/quota-gate.ts`:
-
-```ts
-/**
- * One quota: a sliding window of request STARTS and a FIFO queue of waiters.
- *
- * A permit is taken on entry and expires by ageing out of the window, never by
- * the call ending — this counts starts per minute, not concurrency, which is
- * why it is not a semaphore.
- *
- * The one exception is a call that never reached the wire: it gives its permit
- * back, because it was never a start. That is a correction of the record, so it
- * must be cheap and must not disturb the window's ordering — hence a permit is
- * a node the holder keeps, marked dead in place in O(1) and skipped when the
- * head is trimmed, with the live count maintained as it is marked.
- */
-
-export interface Permit {
-  /** Undo this start. Idempotent; only meaningful before the node ages out. */
-  giveBack(): void;
+/** A collection with one document written, so its directory exists. */
+async function withDocument(
+  id: string,
+  meta: { scope: 'session' | 'user'; owner: string; sessionId?: string; expiresAt?: number },
+): Promise<string> {
+  reg.createCollection({
+    id,
+    logicalId: id.split('__')[0],
+    displayName: id,
+    description: '',
+    ...meta,
+  });
+  await reg.addDocument(id, { id: 'd1', text: 'hello', metadata: {} });
+  const collectionDir = path.join(dir, id);
+  // Guard the premise: a test that never wrote a directory proves nothing
+  // about removing one.
+  expect(fs.existsSync(collectionDir)).toBe(true);
+  return collectionDir;
 }
 
-export interface QuotaLimits {
-  limit: number;
-  windowMs: number;
-}
+describe('every way a collection ends takes its directory with it', () => {
+  it('deleteCollection, as it always did', async () => {
+    const d = await withDocument('u__u_1', { scope: 'user', owner: 'alice' });
+    reg.deleteCollection('u__u_1');
+    expect(reg.getCollection('u__u_1')).toBeNull();
+    expect(fs.existsSync(d)).toBe(false);
+  });
 
-/**
- * One start, in a doubly-linked list.
- *
- * A list rather than an array because a permit given back has to leave from
- * the MIDDLE in constant time. Marking it dead in place and skipping it later
- * puts a scan back on the hot path — and that scan is longest during a herd of
- * pre-wire refusals, which is precisely when this code is under load. Unlinking
- * is `O(1)` from anywhere, the head is the oldest and the tail is the newest,
- * so nothing is ever searched for.
- */
-interface StartNode {
-  at: number;
-  prev: StartNode | undefined;
-  next: StartNode | undefined;
-  /** Off the list already, by give-back or by ageing out. */
-  gone: boolean;
-}
-
-interface Waiter {
-  resolve: (permit: Permit) => void;
-  reject: (reason: unknown) => void;
-  cancelled: boolean;
-  /**
-   * Not eligible before this moment. A retry joins the queue immediately and
-   * keeps its place; sleeping outside and re-acquiring afterwards would let
-   * newcomers overtake it, and would wake every throttled caller at once to
-   * race — which is the herd this queue exists to prevent.
-   */
-  notBefore: number;
-}
-
-export class QuotaGate {
-  /** Oldest start. */
-  private oldest: StartNode | undefined;
-  /** Newest start. Read directly for pacing; never searched for. */
-  private newest: StartNode | undefined;
-  /** Waiters, also consumed by index; a cancelled one is skipped, not spliced. */
-  private waiters: Waiter[] = [];
-  private waitHead = 0;
-  private liveWaiters = 0;
-  private live = 0;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private stopped = false;
-
-  constructor(
-    private readonly limits: QuotaLimits,
-    private readonly now: () => number = Date.now,
-  ) {}
-
-  /** Starts counted inside the current window. */
-  get liveStarts(): number {
-    this.trim();
-    return this.live;
-  }
-
-  /**
-   * Callers parked waiting for a place.
-   *
-   * A counter, not a scan: this is read on every `acquire` and every
-   * `schedule`, so walking the queue's tail each time would put a linear step
-   * back on the hot path the head indices exist to keep constant.
-   */
-  get waiting(): number {
-    return this.liveWaiters;
-  }
-
-  /**
-   * Take a permit, waiting in FIFO order if the window is full.
-   *
-   * The caller's signal is the only bound: this method sets no deadline of its
-   * own, because how long anyone may be held is not ours to decide.
-   */
-  acquire(signal?: AbortSignal, opts?: { notBefore?: number }): Promise<Permit> {
-    // Nothing is admitted after the gate stops. Without this a caller arriving
-    // during shutdown either takes a place nobody will account for, or parks in
-    // a queue whose timer is gone and waits for ever.
-    if (this.stopped) {
-      return Promise.reject(new Error('Gate stopped'));
-    }
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason ?? new Error('Aborted'));
-    }
-    const notBefore = opts?.notBefore ?? 0;
-    this.trim();
-    if (this.waiting === 0 && this.live < this.limits.limit && notBefore <= this.now()) {
-      return Promise.resolve(this.record());
-    }
-    return new Promise<Permit>((resolve, reject) => {
-      const waiter: Waiter = { resolve, reject, cancelled: false, notBefore };
-      if (signal) {
-        signal.addEventListener(
-          'abort',
-          () => {
-            // Marked, not removed: splicing is linear and would also disturb
-            // the order every other waiter is relying on.
-            if (waiter.cancelled) return;
-            waiter.cancelled = true;
-            this.liveWaiters--;
-            reject(signal.reason ?? new Error('Aborted'));
-            this.schedule();
-          },
-          { once: true },
-        );
-      }
-      this.waiters.push(waiter);
-      this.liveWaiters++;
-      this.schedule();
+  it('deleteSessionCollections — logout and clear-chat, which leaked', async () => {
+    const d = await withDocument('s__s_1', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'x',
+      expiresAt: Date.now() + 60_000,
     });
-  }
-
-  /**
-   * When our own rate next allows a start, in milliseconds.
-   *
-   * This is what a throttled call with no named interval paces against, and it
-   * is our configured rate rather than our window. Two things can hold a start
-   * back and the answer is the later of them:
-   *
-   * - **spacing.** At a limit of ten a minute, starts belong six seconds
-   *   apart, so a call goes six seconds after the most recent one. Returning
-   *   the oldest start's expiry instead would delay it by nearly the whole
-   *   minute while nine places sat empty.
-   * - **a full window.** When every place is taken, no spacing helps: the
-   *   oldest start has to age out first.
-   *
-   * Neither is a guess about the server. Both come from the operator's own
-   * numbers, which is what makes this ours to decide.
-   */
-  msUntilNextOpening(): number {
-    this.trim();
-    const now = this.now();
-    const spacing = Math.ceil(this.limits.windowMs / this.limits.limit);
-    // Both ends are pointers. A permit given back has already left the list, so
-    // `newest` can never be one — which is the whole reason this is a list and
-    // not an array with dead entries to step past.
-    const untilSpaced =
-      this.newest === undefined ? 0 : Math.max(0, this.newest.at + spacing - now);
-    const untilPlace =
-      this.live < this.limits.limit || this.oldest === undefined
-        ? 0
-        : Math.max(0, this.oldest.at + this.limits.windowMs - now);
-
-    return Math.max(untilSpaced, untilPlace);
-  }
-
-  /**
-   * Drop the timer and turn away everyone still parked. The gate is unusable
-   * after.
-   *
-   * Rejecting is the point: this runs on shutdown and from
-   * `clearQuotaRegistry`, and a waiter left holding an unsettled promise would
-   * hang its pipeline for the life of the process — the one thing a shutdown
-   * path must not do.
-   */
-  stop(reason: unknown = new Error('Gate stopped')): void {
-    this.stopped = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
-    for (let i = this.waitHead; i < this.waiters.length; i++) {
-      const waiter = this.waiters[i];
-      if (waiter.cancelled) continue;
-      waiter.cancelled = true;
-      this.liveWaiters--;
-      waiter.reject(reason);
-    }
-    this.waitHead = this.waiters.length;
-  }
-
-  /** Append a start and hand back the node that undoes it. */
-  private record(): Permit {
-    const node: StartNode = {
-      at: this.now(),
-      prev: this.newest,
-      next: undefined,
-      gone: false,
-    };
-    if (this.newest) this.newest.next = node;
-    this.newest = node;
-    if (!this.oldest) this.oldest = node;
-    this.live++;
-    return {
-      giveBack: () => {
-        // Already off the list, by an earlier give-back or by ageing out.
-        // Without this a late give-back would decrement `live` twice and let
-        // the dispatcher admit past the limit from then on.
-        if (node.gone) return;
-        this.unlink(node);
-        this.live--;
-        // A place opened NOW, not at the expiry the timer was set for.
-        this.dispatch();
-      },
-    };
-  }
-
-  /** Remove one node from anywhere in the list. O(1). */
-  private unlink(node: StartNode): void {
-    node.gone = true;
-    if (node.prev) node.prev.next = node.next;
-    else this.oldest = node.next;
-    if (node.next) node.next.prev = node.prev;
-    else this.newest = node.prev;
-    node.prev = undefined;
-    node.next = undefined;
-  }
-
-  /** Age out everything older than the window. O(1) amortised. */
-  private trim(): void {
-    const cutoff = this.now() - this.limits.windowMs;
-    while (this.oldest && this.oldest.at <= cutoff) {
-      this.unlink(this.oldest);
-      this.live--;
-    }
-  }
-
-  /** Hand out every free place, in order, then re-arm the timer. */
-  private dispatch(): void {
-    if (this.stopped) return;
-    this.trim();
-    for (;;) {
-      const waiter = this.firstLiveWaiter();
-      if (!waiter || this.live >= this.limits.limit) break;
-      // Strictly first come, first served, including a retry waiting out an
-      // interval: the head holds the line rather than being stepped over. The
-      // timer below wakes for it.
-      if (waiter.notBefore > this.now()) break;
-      this.waitHead++;
-      waiter.cancelled = true; // settled; its abort listener has nothing left to do
-      this.liveWaiters--;
-      waiter.resolve(this.record());
-    }
-    if (this.waitHead > 32 && this.waitHead * 2 > this.waiters.length) {
-      this.waiters = this.waiters.slice(this.waitHead);
-      this.waitHead = 0;
-    }
-    this.schedule();
-  }
-
-  /**
-   * The first waiter still in play, dropping the cancelled ones on the way.
-   *
-   * Advancing the head past them here means nothing else has to skip them, so
-   * each cancelled waiter is stepped over exactly once across the gate's life.
-   */
-  private firstLiveWaiter(): Waiter | undefined {
-    while (this.waitHead < this.waiters.length && this.waiters[this.waitHead].cancelled) {
-      this.waitHead++;
-    }
-    if (this.waitHead > 32 && this.waitHead * 2 > this.waiters.length) {
-      this.waiters = this.waiters.slice(this.waitHead);
-      this.waitHead = 0;
-    }
-    return this.waiters[this.waitHead];
-  }
-
-  /** One timer per quota, set to the moment the next place opens. */
-  private schedule(): void {
-    if (this.stopped) return;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-    if (this.waiting === 0) return;
-    // Only a FULL window makes anyone wait for an expiry. With room to spare
-    // the place is already there, and timing the wake to the oldest start
-    // would park a delayed waiter for the rest of the window over nothing.
-    const untilPlace =
-      this.live < this.limits.limit || this.oldest === undefined
-        ? 0
-        : Math.max(0, this.oldest.at + this.limits.windowMs - this.now());
-    // And the head waiter may not be eligible yet, in which case waking on the
-    // place alone would spin.
-    const head = this.firstLiveWaiter();
-    const untilEligible = head ? Math.max(0, head.notBefore - this.now()) : 0;
-    const waitMs = Math.max(untilPlace, untilEligible);
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      this.dispatch();
-    }, waitMs);
-  }
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: PASS, 2 tests.
-
-- [ ] **Step 5: Add the properties this shape gets wrong**
-
-Append to `test/unit/quota-gate.test.ts`:
-
-```ts
-describe('QuotaGate — the properties this shape gets wrong', () => {
-  it('never leaves waiters present with no dispatch scheduled', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 1_000 }, clock.now);
-    await gate.acquire();
-    const parked = gate.acquire();
-    // No manual nudge: if scheduling were missed, this would hang for ever.
-    clock.advance(1_000);
-    jest.advanceTimersByTime(1_000);
-    await expect(parked).resolves.toBeDefined();
-    gate.stop();
-    jest.useRealTimers();
+    reg.deleteSessionCollections('alice', 'x');
+    expect(reg.getCollection('s__s_1')).toBeNull();
+    expect(fs.existsSync(d)).toBe(false);
   });
 
-  it('serves waiters first in, first out', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 1_000 }, clock.now);
-    await gate.acquire();
-    const order: number[] = [];
-    const a = gate.acquire().then(() => order.push(1));
-    const b = gate.acquire().then(() => order.push(2));
-    const c = gate.acquire().then(() => order.push(3));
-    for (let i = 0; i < 3; i++) {
-      clock.advance(1_000);
-      jest.advanceTimersByTime(1_000);
-      await Promise.resolve();
-    }
-    await Promise.all([a, b, c]);
-    expect(order).toEqual([1, 2, 3]);
-    gate.stop();
-    jest.useRealTimers();
+  it('sweepExpiredSessions — the TTL, which leaked on a timer', async () => {
+    const d = await withDocument('s__s_2', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'y',
+      expiresAt: Date.now() - 1,
+    });
+    reg.sweepExpiredSessions();
+    expect(reg.getCollection('s__s_2')).toBeNull();
+    expect(fs.existsSync(d)).toBe(false);
   });
 
-  it('holds the limit with twenty callers against five places', async () => {
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 5, windowMs: 60_000 }, clock.now);
-    let admitted = 0;
-    for (let i = 0; i < 20; i++) {
-      void gate.acquire().then(() => { admitted++; });
-    }
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(admitted).toBe(5);
-    expect(gate.liveStarts).toBe(5);
-    gate.stop();
+  it('leaves what did not end on disk', async () => {
+    const live = await withDocument('s__s_3', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'z',
+      expiresAt: Date.now() + 60_000,
+    });
+    const user = await withDocument('u__u_2', { scope: 'user', owner: 'alice' });
+    reg.sweepExpiredSessions();
+    reg.deleteSessionCollections('bob', 'z');
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(user)).toBe(true);
   });
 
-  it('admits one and parks the rest at a limit of one', async () => {
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 60_000 }, clock.now);
-    let admitted = 0;
-    for (let i = 0; i < 4; i++) {
-      void gate.acquire().then(() => { admitted++; });
-    }
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(admitted).toBe(1);
-    expect(gate.waiting).toBe(3);
-    gate.stop();
+  it('forgets the enabled flag of what it removed', async () => {
+    await withDocument('s__s_4', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'w',
+      expiresAt: Date.now() + 60_000,
+    });
+    reg.setEnabled('alice', 's__s_4', true);
+    reg.deleteSessionCollections('alice', 'w');
+    expect(reg.getEnabled('alice', 's__s_4')).toBeUndefined();
   });
+});
 
-  it('wakes a sleeping waiter when a permit is given back', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 600_000 }, clock.now);
-    const permit = await gate.acquire();
-
-    let admitted = false;
-    const parked = gate.acquire().then(() => { admitted = true; });
-    await Promise.resolve();
-    expect(admitted).toBe(false);
-
-    // No clock movement at all: the room comes from the give-back, and the
-    // timer was set ten minutes out. This is the lost wake-up in its second
-    // costume.
-    permit.giveBack();
-    await parked;
-    expect(admitted).toBe(true);
-    expect(gate.liveStarts).toBe(1);
-    gate.stop();
-    jest.useRealTimers();
-  });
-
-  it('keeps a retrying caller in its place rather than behind a newcomer', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 1_000 }, clock.now);
-    await gate.acquire();
-
-    const order: string[] = [];
-    // A retry that may not go for 200ms, queued first.
-    const retry = gate
-      .acquire(undefined, { notBefore: clock.now() + 200 })
-      .then(() => order.push('retry'));
-    // A newcomer, eligible at once, queued second.
-    const fresh = gate.acquire().then(() => order.push('fresh'));
-
-    for (let i = 0; i < 3; i++) {
-      clock.advance(1_000);
-      jest.advanceTimersByTime(1_000);
-      await Promise.resolve();
-    }
-    await Promise.all([retry, fresh]);
-    // Strictly first come, first served: the head holds the line while it
-    // waits out its interval instead of being stepped over.
-    expect(order).toEqual(['retry', 'fresh']);
-    gate.stop();
-    jest.useRealTimers();
-  });
-
-  it('paces a retry at the configured rate, not at the whole window', async () => {
-    // Ten a minute is one every six seconds. Returning the oldest start's
-    // expiry would hold the retry for nearly a minute while nine places stood
-    // empty — and a limit of 1 in the test would have hidden it, because there
-    // the two answers coincide.
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-    expect(gate.msUntilNextOpening()).toBe(6_000);
-    clock.advance(6_000);
-    expect(gate.msUntilNextOpening()).toBe(0);
-    gate.stop();
-  });
-
-  it('waits for an expiry only when the window is actually full', async () => {
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 2, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-    clock.advance(30_000);
-    await gate.acquire();
-    // Full now, so the oldest start's expiry is the binding constraint.
-    expect(gate.msUntilNextOpening()).toBe(30_000);
-    gate.stop();
-  });
-
-  it('does not park a delayed waiter behind an expiry when places are free', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-
-    let admitted = false;
-    const parked = gate
-      .acquire(undefined, { notBefore: clock.now() + 200 })
-      .then(() => { admitted = true; });
-
-    clock.advance(200);
-    jest.advanceTimersByTime(200);
-    await parked;
-    // Nine places were free the whole time; only eligibility was pending.
-    expect(admitted).toBe(true);
-    gate.stop();
-    jest.useRealTimers();
-  });
-
-  it('paces from the newest live start, not from a returned permit', async () => {
-    // A permit given back was never a start. Reading it as the newest would
-    // push the next retry out by a whole spacing for a request that never
-    // reached the wire — and `trim` cannot help, because it only drops dead
-    // nodes from the head, and this one is at the tail.
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
-    await gate.acquire(); // a real start, stays live
-    clock.advance(6_000);
-    const returned = await gate.acquire();
-    returned.giveBack();
-    // Six seconds have passed since the only live start, so a retry may go now.
-    expect(gate.msUntilNextOpening()).toBe(0);
-    gate.stop();
-  });
-
-  it('admits nobody once it has stopped', async () => {
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
-    gate.stop();
-    // Places were free, which is exactly how this would have gone unnoticed:
-    // a permit handed out after shutdown that nothing will ever account for.
-    await expect(gate.acquire()).rejects.toThrow(/stopped/i);
-  });
-
-  it('turns away everyone still parked when it stops', async () => {
-    // stop() runs on shutdown and from clearQuotaRegistry. A waiter left
-    // holding an unsettled promise would hang its pipeline for the life of the
-    // process, which is the one thing a shutdown path must not do.
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-    const parked = gate.acquire();
-    gate.stop(new Error('shutting down'));
-    await expect(parked).rejects.toThrow('shutting down');
-    expect(gate.waiting).toBe(0);
-  });
-
-  it('ignores a permit given back after it has aged out of the window', async () => {
-    jest.useFakeTimers();
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 2, windowMs: 1_000 }, clock.now);
-    const permit = await gate.acquire();
-    await gate.acquire();
-    clock.advance(1_500);
-    expect(gate.liveStarts).toBe(0);
-
-    // The start is already uncounted. Decrementing again would push the count
-    // below the real number of starts and let the dispatcher admit past the
-    // limit from then on.
-    permit.giveBack();
-    expect(gate.liveStarts).toBe(0);
-    await gate.acquire();
-    await gate.acquire();
-    expect(gate.liveStarts).toBe(2);
-    gate.stop();
-    jest.useRealTimers();
-  });
-
-  it('leaves the queue intact when a waiting caller aborts', async () => {
-    const clock = fakeClock();
-    const gate = new QuotaGate({ limit: 1, windowMs: 60_000 }, clock.now);
-    await gate.acquire();
-    const controller = new AbortController();
-    const parked = gate.acquire(controller.signal);
-    const behind = gate.acquire();
-    controller.abort(new Error('caller left'));
-    await expect(parked).rejects.toThrow('caller left');
-    expect(gate.waiting).toBe(1);
-    void behind;
-    gate.stop();
+describe('hasSessionCollections', () => {
+  it('answers per user and session', async () => {
+    await withDocument('s__s_5', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'v',
+      expiresAt: Date.now() + 60_000,
+    });
+    expect(reg.hasSessionCollections('alice', 'v')).toBe(true);
+    expect(reg.hasSessionCollections('bob', 'v')).toBe(false);
+    expect(reg.hasSessionCollections('alice', 'other')).toBe(false);
   });
 });
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: PASS, 16 tests.
+Run: `npx jest test/unit/rag-collections-disk.test.ts`
+Expected: FAIL — the two leak tests find the directory still present, and `hasSessionCollections is not a function`.
 
-> **On the hot path being constant-time.** The queue is a serialisation point,
-> so `shift`, `find`, `indexOf` and `splice` are all wrong here — each is linear
-> in what it touches. The window is a doubly-linked list because a permit given
-> back has to leave from the middle: marking it dead in an array and skipping it
-> later puts a scan back on the hot path, and that scan is longest during a herd
-> of pre-wire refusals, which is exactly when this code is under load. Both ends
-> are pointers, so the oldest start and the newest are read rather than searched
-> for. The waiter queue stays an array consumed by a head index, with cancelled
-> entries stepped over once each and the array compacted when the dead prefix
-> passes half its length.
+- [ ] **Step 3: One primitive, used by all three**
 
-- [ ] **Step 7: Lint and typecheck**
+In `srv/rag-collections.ts`, add beside `deleteCollectionDir`:
 
-Run: `npx biome check --write srv/lib/quota-gate.ts test/unit/quota-gate.test.ts && npm run test:check`
-Expected: no errors.
+```ts
+  /**
+   * Remove one collection completely: its registry entry, every user's enabled
+   * flag for it, and its directory on disk.
+   *
+   * The one primitive every ending goes through. Only `deleteCollection` used to
+   * free the directory; logout, clear-chat and the TTL sweep dropped the entry
+   * and left the documents on disk with nothing pointing at them. Persists
+   * nothing, so a caller removing several writes the metadata once.
+   */
+  private removeCollection(id: string): boolean {
+    if (!this.collections.delete(id)) return false;
+    for (const m of this.enabledByUser.values()) m.delete(id);
+    this.deleteCollectionDir(id);
+    return true;
+  }
+```
 
-- [ ] **Step 8: Commit**
+Replace `deleteCollection`:
+
+```ts
+  deleteCollection(id: string): boolean {
+    const deleted = this.removeCollection(id);
+    if (deleted) {
+      this.persistMeta();
+      this.persistEnabled();
+      this.log.info('Collection deleted', { id });
+    }
+    return deleted;
+  }
+```
+
+Replace `sweepExpiredSessions` and `deleteSessionCollections`, and add `hasSessionCollections` after them:
+
+```ts
+  sweepExpiredSessions(): void {
+    const now = Date.now();
+    let changed = false;
+    for (const [id, stored] of [...this.collections]) {
+      if (
+        stored.meta.scope === 'session' &&
+        (stored.meta.expiresAt ?? 0) <= now
+      ) {
+        changed = this.removeCollection(id) || changed;
+      }
+    }
+    if (changed) {
+      this.persistMeta();
+      this.persistEnabled();
+    }
+  }
+
+  deleteSessionCollections(userId: string, sessionId: string): void {
+    let changed = false;
+    for (const [id, stored] of [...this.collections]) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        changed = this.removeCollection(id) || changed;
+      }
+    }
+    if (changed) {
+      this.persistMeta();
+      this.persistEnabled();
+    }
+  }
+
+  /** Whether this user's session still owns any session-scoped collection. */
+  hasSessionCollections(userId: string, sessionId: string): boolean {
+    for (const stored of this.collections.values()) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+```
+
+- [ ] **Step 4: Run, lint, commit**
 
 ```bash
-git add srv/lib/quota-gate.ts test/unit/quota-gate.test.ts
-git commit -m "feat(gatekeeper): one quota, a sliding window of starts and a FIFO queue"
+npx jest test/unit/rag-collections-disk.test.ts test/unit/rag-collections-session.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/rag-collections.ts test/unit/rag-collections-disk.test.ts
+git add srv/rag-collections.ts test/unit/rag-collections-disk.test.ts
+git commit -m "fix(rag): every way a collection ends frees its directory, not only one"
 ```
 
-### Task 2: The configuration, and the quota registry
+---
+
+### Task 3: One primitive over every store a session holds
 
 **Files:**
-- Create: `srv/lib/gatekeeper-config.ts`, `srv/lib/quota-registry.ts`
-- Modify: `srv/agent-config.ts` (log what is in force, which is also what validates it)
-- Test: `test/unit/quota-registry.test.ts`
-
-**Why the configuration is its own module.** Validation and runtime state are
-different things and must not import each other. With the door's check inside
-`admission.ts`, the configuration loader would depend on a module holding live
-counters, while `agent-manager` and both handlers already import both — a cycle
-that resolves differently depending on import order, with half-initialised
-exports as the failure. So one module reads the environment and validates it,
-and holds nothing; the registry and the door each consume it.
+- Create: `srv/lib/session-state.ts`
+- Modify: `srv/agent-manager.ts:830-864` (`lastDestinationBySession` keyed by user and session; `sessionTopicMap` and `clearSessionTopic` removed)
+- Create: `srv/session-store.ts` (the history store, moved out of `srv/openai-handler.ts`)
+- Modify: `srv/openai-handler.ts` (the store moves out and is re-exported; `:543`, `:653`, `:660-661`; imports)
+- Modify: `srv/anthropic-handler.ts:112-113`
+- Modify: `srv/server.ts:580-605` (`DELETE /v1/session`; imports)
+- Test: `test/unit/session-state.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `QuotaGate`, `QuotaLimits`, `Permit` from Task 1.
-- Produces, from `gatekeeper-config`:
-  - `export interface GatekeeperConfig { quotas: Map<string, QuotaLimits>; keyOfModel: Map<string, string>; maxLivePipelines?: number }`
-  - `export function gatekeeperConfig(): GatekeeperConfig` — parsed once, fully validated, throws on anything malformed
-  - `export function describeGatekeeperConfig(): string` — the one-line startup log, and the call that makes validation happen at boot
-  - `export function clearGatekeeperConfig(): void`
-- Produces, from `quota-registry`:
-  - `export class UnknownModelError extends Error { readonly model: string }`
-  - `export function quotasConfigured(): boolean`
-  - `export function quotaForModel(model: string): { key: string; gate: QuotaGate } | undefined` — throws `UnknownModelError` when quotas are configured and the model names neither an entry nor a mapping
-  - `export function gateForModel(model: string): QuotaGate | undefined`
-  - `export function liveGates(): Array<{ key: string; gate: QuotaGate }>` — for the metrics snapshot
-  - `export function clearQuotaRegistry(): void` — test seam, mirrors `clearAgentConfig`
+- Consumes: `sessionIdOf` (Task 1); `hasSessionCollections`, `deleteSessionCollections` (Task 2).
+- Produces:
+  - `export function getCurrentDestination(userId?: string, sessionId?: string): string`
+  - `export function setSessionDestination(userId: string, sessionId: string, destination: string): void`
+  - `export function forgetSessionDestination(userId: string, sessionId: string): void`
+  - in `srv/session-store.ts`: `getSessionHistory`, `appendToSession`, `clearSession` (moved with unchanged signatures, re-exported from `openai-handler`), and `export function hasSessionHistory(sessionId: string, userId: string): boolean`
+  - `export function deleteSessionState(userId: string, sessionId: string): void`
+  - `export function hasSessionState(userId: string, sessionId: string): boolean`
+
+**Why the key is a prerequisite and not a tidy-up:** `lastDestinationBySession` is keyed by the session id alone. Two users whose sessions carry the same id already share it, so one user's destination can be read for another's request, and a central deletion over `(userId, sessionId)` would delete the wrong entry precisely when two users collide. It is also cleared by nobody today.
+
+**Why `sessionTopicMap` is removed rather than rekeyed:** nothing writes it. It is declared, and `clearSessionTopic` deletes from it, and that is all.
+
+**Why the destination does not count as state:** `hasSessionState` answers "does this session still hold memory worth bounding". A destination name is a few bytes; counting it would keep a session retained for ever after its turns and documents have gone.
+
+**Why the history store moves out of the handler:** the gatekeeper (Task 6) imports `session-state`, and the chat handler (Task 11) imports the gatekeeper. With the store inside `openai-handler`, `session-state` would import the handler that imports it back. The store has nothing to do with HTTP; it moves to its own module and the handler re-exports it, so existing importers keep working.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/unit/quota-registry.test.ts`:
+Create `test/unit/session-state.test.ts`:
 
 ```ts
-const load = () => {
-  jest.resetModules();
-  const mod = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-  mod.clearQuotaRegistry();
-  return mod;
-};
+const mockCdsContext: { user?: { id: string; is?: (role: string) => boolean } } = {};
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: {
+      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      get context() {
+        return mockCdsContext;
+      },
+    },
+  }),
+  { virtual: true },
+);
+
+jest.mock('../../srv/request-session', () => ({
+  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
+  getRequestSessionId: () => undefined,
+  getRequestHistory: () => [],
+}));
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  getCollectionRegistry,
+  getCurrentDestination,
+  setSessionDestination,
+} from '../../srv/agent-manager';
+import { sessionCollectionId } from '../../srv/collection-ids';
+import { deleteSessionState, hasSessionState } from '../../srv/lib/session-state';
+import { appendToSession, getSessionHistory } from '../../srv/session-store';
+
+const SID = 'shared-id';
+
+function seed(user: string, destination: string) {
+  appendToSession(SID, user, { role: 'user', content: `hi from ${user}` });
+  setSessionDestination(user, SID, destination);
+  getCollectionRegistry().createCollection({
+    id: sessionCollectionId('notes', user, SID),
+    logicalId: 'notes',
+    displayName: 'notes',
+    description: '',
+    scope: 'session',
+    owner: user,
+    sessionId: SID,
+    expiresAt: Date.now() + 60_000,
+  });
+}
 
 afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
-  delete process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL;
-  jest.resetModules();
+  deleteSessionState('alice', SID);
+  deleteSessionState('bob', SID);
 });
 
-describe('quota registry — absent means off', () => {
-  it('gates nothing and rejects nothing when no quotas are configured', () => {
-    const mod = load();
-    expect(mod.quotasConfigured()).toBe(false);
-    expect(mod.gateForModel('anything-at-all')).toBeUndefined();
-  });
-});
-
-describe('quota registry — a configured quota', () => {
-  it('gives each model its own gate, keyed by name, and reuses it', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({
-      'anthropic--claude-4.5-sonnet': { limit: 60 },
-      'text-embedding-3-small': { limit: 200 },
-    });
-    const mod = load();
-    const a = mod.gateForModel('anthropic--claude-4.5-sonnet');
-    const b = mod.gateForModel('anthropic--claude-4.5-sonnet');
-    const c = mod.gateForModel('text-embedding-3-small');
-    expect(a).toBeDefined();
-    expect(a).toBe(b);
-    expect(a).not.toBe(c);
+describe('one session, every store', () => {
+  it('does not share a destination between two users with the same session id', () => {
+    seed('alice', 'S4HANA_DEV');
+    seed('bob', 'S4HANA_QAS');
+    expect(getCurrentDestination('alice', SID)).toBe('S4HANA_DEV');
+    expect(getCurrentDestination('bob', SID)).toBe('S4HANA_QAS');
   });
 
-  it('maps several models onto one quota when told to', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
-    process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({
-      'model-a': 'shared',
-      'model-b': 'shared',
-    });
-    const mod = load();
-    expect(mod.gateForModel('model-a')).toBe(mod.gateForModel('model-b'));
+  it("deletes one user's session and leaves the other's turns, collections and destination", () => {
+    seed('alice', 'S4HANA_DEV');
+    seed('bob', 'S4HANA_QAS');
+
+    deleteSessionState('alice', SID);
+
+    expect(getSessionHistory(SID, 'alice')).toEqual([]);
+    expect(getCollectionRegistry().getCollection(sessionCollectionId('notes', 'alice', SID))).toBeNull();
+    expect(getCurrentDestination('alice', SID)).not.toBe('S4HANA_DEV');
+
+    expect(getSessionHistory(SID, 'bob')).toHaveLength(1);
+    expect(getCollectionRegistry().getCollection(sessionCollectionId('notes', 'bob', SID))).not.toBeNull();
+    expect(getCurrentDestination('bob', SID)).toBe('S4HANA_QAS');
   });
 
-  it('reports mapped models under the key they share, not their own names', () => {
-    // Filed by model name, one full window would appear as two half-full ones.
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
-    process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({
-      'model-a': 'shared',
-      'model-b': 'shared',
-    });
-    const mod = load();
-    expect(mod.quotaForModel('model-a')?.key).toBe('shared');
-    expect(mod.quotaForModel('model-b')?.key).toBe('shared');
-    expect(mod.liveGates().map((g) => g.key)).toEqual(['shared']);
-  });
-
-  it('defaults the window to a minute, which is how providers meter', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1 } });
-    const mod = load();
-    const { describeGatekeeperConfig } = require('../../srv/lib/gatekeeper-config') as typeof import('../../srv/lib/gatekeeper-config');
-    expect(describeGatekeeperConfig()).toContain('60000');
+  it('reports what is still held', () => {
+    seed('alice', 'S4HANA_DEV');
+    expect(hasSessionState('alice', SID)).toBe(true);
+    deleteSessionState('alice', SID);
+    expect(hasSessionState('alice', SID)).toBe(false);
   });
 });
 
-describe('quota registry — malformed means refuse to start', () => {
-  const bad: Array<[string, string]> = [
-    ['not JSON at all', '{'],
-    ['a limit that is not a number', JSON.stringify({ m: { limit: 'many' } })],
-    ['a limit of zero', JSON.stringify({ m: { limit: 0 } })],
-    ['a negative limit', JSON.stringify({ m: { limit: -1 } })],
-    ['a fractional limit', JSON.stringify({ m: { limit: 1.5 } })],
-    ['a window of zero', JSON.stringify({ m: { limit: 1, windowMs: 0 } })],
-  ];
-  for (const [what, value] of bad) {
-    it(`refuses ${what}, naming the variable`, () => {
-      process.env.LLM_GATEKEEPER_QUOTAS = value;
-      expect(() => load().quotasConfigured()).toThrow(/LLM_GATEKEEPER_QUOTAS/);
-    });
+describe('no per-session map is keyed by the session alone', () => {
+  it('holds in agent-manager', () => {
+    const src = readFileSync(join(__dirname, '../../srv/agent-manager.ts'), 'utf8');
+    expect(src).not.toMatch(/sessionTopicMap/);
+    expect(src).not.toMatch(/lastDestinationBySession\.(get|set|delete)\(\s*sessionId\s*[,)]/);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/session-state.test.ts`
+Expected: FAIL — `srv/lib/session-state` is not found.
+
+- [ ] **Step 3: Key the destination by user and session, and remove the dead map**
+
+In `srv/agent-manager.ts`, replace everything from `/** Last-used destination per session (for detecting switches in openai-handler) */` through the end of `setSessionDestination` with:
+
+```ts
+/**
+ * Last-used destination per (user, session), for detecting switches.
+ *
+ * Keyed by the user as well as the session: keyed by the session alone, two
+ * users whose sessions carried the same id shared an entry, so one user's
+ * destination could be read for another's request.
+ */
+const lastDestinationBySession = new Map<string, string>();
+
+function destinationKey(userId: string, sessionId: string): string {
+  return `${userId} ${sessionId}`;
+}
+
+/** Last-used destination for a user's session, or the configured default. */
+export function getCurrentDestination(userId?: string, sessionId?: string): string {
+  if (userId && sessionId) {
+    return (
+      lastDestinationBySession.get(destinationKey(userId, sessionId)) ||
+      getAgentConfig().mcp.destination
+    );
   }
+  return getAgentConfig().mcp.destination;
+}
 
-  it('refuses a mapping to a quota key that does not exist', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ real: { limit: 1 } });
-    process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({ m: 'typo' });
-    expect(() => load().quotasConfigured()).toThrow(
-      /LLM_GATEKEEPER_QUOTA_OF_MODEL.*typo/s,
+/** Track which destination a user's session is using. */
+export function setSessionDestination(
+  userId: string,
+  sessionId: string,
+  destination: string,
+): void {
+  lastDestinationBySession.set(destinationKey(userId, sessionId), destination);
+}
+
+/** Forget a user's session destination. Nothing cleared it before. */
+export function forgetSessionDestination(userId: string, sessionId: string): void {
+  lastDestinationBySession.delete(destinationKey(userId, sessionId));
+}
+```
+
+This removes `sessionTopicMap` and `clearSessionTopic` with it.
+
+- [ ] **Step 4: Move the history store out of the handler, and report whether a session holds history**
+
+Create `srv/session-store.ts` and move into it, unchanged, everything in `srv/openai-handler.ts` from the `// Server-side session history` section banner through the end of `clearSession` — `SESSION_MAX_MESSAGES`, `SESSION_TTL_MS`, `SESSION_CLEANUP_INTERVAL_MS`, `SessionEntry`, `sessionStore`, `sessionStoreKey`, the cleanup `setInterval`, `getSessionHistory`, `appendToSession` and `clearSession` — **except** `recordTurnForRecall`, which stays in the handler. Give the new file the imports those need:
+
+```ts
+import type { Message } from '@mcp-abap-adt/llm-agent';
+import { getSharedHistoryRag } from './agent-manager';
+import { turnOwner } from './lib/session-history-rag';
+```
+
+In `srv/openai-handler.ts`, import what the handler still uses and re-export the three moved functions:
+
+```ts
+import { appendToSession, clearSession, getSessionHistory } from './session-store';
+
+// Re-exported: tests and other modules imported these from the handler.
+export { appendToSession, clearSession, getSessionHistory };
+```
+
+`turnOwner` and `getSharedHistoryRag` stay imported in the handler — `recordTurnForRecall` uses both. Remove whatever `npx biome check srv/openai-handler.ts` reports as unused.
+
+Then add to `srv/session-store.ts`, after `getSessionHistory`:
+
+```ts
+/**
+ * Whether this user's session still holds any turns.
+ *
+ * Unlike `getSessionHistory` this does not refresh `lastAccess`: asking whether
+ * a session is idle must not make it look busy.
+ */
+export function hasSessionHistory(sessionId: string, userId: string): boolean {
+  return sessionStore.has(sessionStoreKey(sessionId, userId));
+}
+```
+
+Update the callers in `srv/openai-handler.ts`:
+
+- `const destBefore = getCurrentDestination(sessionId);` → `const destBefore = getCurrentDestination(userId, sessionId);`
+- `setSessionDestination(sessionId, destAfter);` → `setSessionDestination(userId, sessionId, destAfter);`
+- delete the line `clearSessionTopic(sessionId);` in the destination-reconnect block
+- remove `clearSessionTopic` from the `./agent-manager` import
+
+`userId` is already declared earlier in `handleChatCompletions` (`const userId = getUserId();`), before `destBefore`.
+
+In `srv/anthropic-handler.ts`, replace:
+
+```ts
+  const sessionId = sessionIdOf(req);
+  const destination = requestedDestination || getCurrentDestination(sessionId);
+```
+
+with:
+
+```ts
+  const sessionId = sessionIdOf(req);
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  const destination =
+    requestedDestination || getCurrentDestination(userId, sessionId);
+```
+
+- [ ] **Step 5: Create the primitive**
+
+Create `srv/lib/session-state.ts`:
+
+```ts
+import { forgetSessionDestination, getCollectionRegistry } from '../agent-manager';
+import { clearSession, hasSessionHistory } from '../session-store';
+
+/**
+ * Every store keyed by one session, in one place.
+ *
+ * Logout, clear-chat and eviction each used to remember their own list, and
+ * each remembered a different one: the history and the collections were
+ * cleared, the destination never was, and a map nothing wrote was cleared on
+ * every path. A bound that dropped only the history would be theatre — the
+ * documents are where most of the memory is.
+ *
+ * Synchronous on purpose. Retention calls it inside the same turn of the event
+ * loop in which it decided the session could go (Task 5), so nothing can take a
+ * lease between the decision and the deletion.
+ */
+export function deleteSessionState(userId: string, sessionId: string): void {
+  clearSession(sessionId, userId);
+  forgetSessionDestination(userId, sessionId);
+  getCollectionRegistry().deleteSessionCollections(userId, sessionId);
+}
+
+/**
+ * Whether this session still holds memory worth bounding: turns, or session
+ * collections. The destination name is deliberately not counted — a few bytes
+ * that would keep a session retained after everything else had gone.
+ */
+export function hasSessionState(userId: string, sessionId: string): boolean {
+  return (
+    hasSessionHistory(sessionId, userId) ||
+    getCollectionRegistry().hasSessionCollections(userId, sessionId)
+  );
+}
+```
+
+`clearSession`'s own call to `getSharedHistoryRag()?.forgetOwner(...)` is fire-and-forget already and stays so.
+
+- [ ] **Step 6: Logout and clear-chat use it**
+
+In `srv/server.ts`, replace the body of `app.delete('/v1/session', ...)` with:
+
+```ts
+  app.delete('/v1/session', ((req: Request, res: Response) => {
+    const sessionId = sessionIdOf(req);
+    if (!sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: { message: 'no session (the clh_session cookie is required)' },
+        }),
+      );
+      return;
+    }
+    const userId = cds.context?.user?.id ?? 'anonymous';
+    // Every store, through one primitive. Task 6 puts the close-then-delete
+    // sequence in front of this, so a pipeline or upload still running is not
+    // cut from under.
+    deleteSessionState(userId, sessionId);
+    res.writeHead(204);
+    res.end();
+  }) as never);
+```
+
+Add `import { deleteSessionState } from './lib/session-state';`, change the `./session-id` import to include `sessionIdOf`, and remove `clearSession` and `clearSessionTopic` from their imports if nothing else in the file uses them.
+
+- [ ] **Step 7: Run, lint, commit**
+
+```bash
+npx jest test/unit/session-state.test.ts test/unit/cross-user-isolation.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/session-state.ts srv/session-store.ts srv/agent-manager.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/server.ts test/unit/session-state.test.ts
+git add srv/lib/session-state.ts srv/session-store.ts srv/agent-manager.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/server.ts test/unit/session-state.test.ts
+git commit -m "refactor(session): one primitive over every store a session holds, keyed by the user too"
+```
+
+---
+
+## Phase 2 — retention
+
+### Task 4: The configuration
+
+**Files:**
+- Create: `srv/lib/gatekeeper-config.ts`
+- Modify: `srv/agent-config.ts` (validate at load, log the values in force)
+- Test: `test/unit/gatekeeper-config.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `export interface GatekeeperConfig { maxLiveSessions?: number; queueLength?: number; maxRetainedSessions?: number }`
+  - `export function loadGatekeeperConfig(): GatekeeperConfig` — reads and validates, throws naming the variable
+  - `export function gatekeeperConfig(): GatekeeperConfig` — cached
+  - `export function describeGatekeeperConfig(cfg?: GatekeeperConfig): Record<string, number | string>`
+  - `export function clearGatekeeperConfig(): void` — test seam
+
+**Why its own module:** the door and retention both consume it, and `agent-config` validates it at startup. A module holding no runtime state can be depended on by all three without an import cycle through live counters.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/gatekeeper-config.test.ts`:
+
+```ts
+import {
+  clearGatekeeperConfig,
+  describeGatekeeperConfig,
+  loadGatekeeperConfig,
+} from '../../srv/lib/gatekeeper-config';
+
+const VARS = [
+  'LLM_GATEKEEPER_MAX_LIVE_SESSIONS',
+  'LLM_GATEKEEPER_QUEUE_LENGTH',
+  'LLM_GATEKEEPER_MAX_RETAINED_SESSIONS',
+] as const;
+
+afterEach(() => {
+  for (const v of VARS) delete process.env[v];
+  clearGatekeeperConfig();
+});
+
+describe('absent means off', () => {
+  it('configures nothing when nothing is set', () => {
+    expect(loadGatekeeperConfig()).toEqual({
+      maxLiveSessions: undefined,
+      queueLength: undefined,
+      maxRetainedSessions: undefined,
+    });
+  });
+
+  it('treats a blank value as unset', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '  ';
+    expect(loadGatekeeperConfig().maxLiveSessions).toBeUndefined();
+  });
+});
+
+describe('the queue is derived from the capacity', () => {
+  it('defaults to the capacity', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '4';
+    expect(loadGatekeeperConfig()).toMatchObject({ maxLiveSessions: 4, queueLength: 4 });
+  });
+
+  it('takes an explicit length', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '4';
+    process.env.LLM_GATEKEEPER_QUEUE_LENGTH = '2';
+    expect(loadGatekeeperConfig().queueLength).toBe(2);
+  });
+
+  it('refuses a queue with no door in front of it', () => {
+    process.env.LLM_GATEKEEPER_QUEUE_LENGTH = '2';
+    expect(() => loadGatekeeperConfig()).toThrow(
+      /LLM_GATEKEEPER_QUEUE_LENGTH[\s\S]*LLM_GATEKEEPER_MAX_LIVE_SESSIONS/,
     );
   });
 });
 
-describe('gatekeeper config — the two variables are independent', () => {
-  it('accepts a door with no quota, which is a memory cap and nothing more', () => {
-    // A legitimate deployment: it bounds memory and does not carry the
-    // no-429-ends-an-admitted-request guarantee, which needs a window to wait
-    // in. The spec says so; the configuration does not refuse it.
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '4';
-    delete process.env.LLM_GATEKEEPER_QUOTAS;
-    const mod = load();
-    expect(() => mod.quotasConfigured()).not.toThrow();
-    expect(mod.quotasConfigured()).toBe(false);
-    delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
+describe('malformed means refuse to start, naming the variable', () => {
+  for (const v of VARS) {
+    for (const bad of ['0', '-1', '2.5', 'four', '1e3x']) {
+      it(`${v}=${bad}`, () => {
+        process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '8';
+        process.env[v] = bad;
+        expect(() => loadGatekeeperConfig()).toThrow(new RegExp(v));
+      });
+    }
+  }
+});
+
+describe('retention requires a capacity and may not be smaller than it', () => {
+  it('refuses retention without a capacity', () => {
+    process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = '10';
+    expect(() => loadGatekeeperConfig()).toThrow(
+      /LLM_GATEKEEPER_MAX_RETAINED_SESSIONS[\s\S]*LLM_GATEKEEPER_MAX_LIVE_SESSIONS/,
+    );
   });
 
-  it('accepts a quota with no door', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1 } });
-    delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-    expect(load().quotasConfigured()).toBe(true);
+  it('refuses retention below capacity, naming both', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '5';
+    process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = '2';
+    expect(() => loadGatekeeperConfig()).toThrow(
+      /LLM_GATEKEEPER_MAX_RETAINED_SESSIONS[\s\S]*LLM_GATEKEEPER_MAX_LIVE_SESSIONS/,
+    );
+  });
+
+  it('accepts retention equal to capacity', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '5';
+    process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = '5';
+    expect(loadGatekeeperConfig().maxRetainedSessions).toBe(5);
   });
 });
 
-describe('quota registry — an unknown model at runtime', () => {
-  it('is rejected once quotas are configured, naming the model and the variable', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ known: { limit: 1 } });
-    const mod = load();
-    // A typo in body.model would otherwise un-gate every later main call,
-    // and no startup log could have caught it.
-    expect(() => mod.gateForModel('knwon')).toThrow(mod.UnknownModelError);
-    try {
-      mod.gateForModel('knwon');
-    } catch (e) {
-      expect((e as Error).message).toContain('knwon');
-      expect((e as Error).message).toContain('LLM_GATEKEEPER_QUOTAS');
-    }
+describe('describeGatekeeperConfig', () => {
+  it('says what is off rather than printing nothing', () => {
+    expect(describeGatekeeperConfig({})).toEqual({
+      door: 'off (execute_step keeps its semaphore of two)',
+      queueLength: 'none',
+      retainedSessions: 'unbounded',
+    });
+  });
+
+  it('prints the values in force', () => {
+    expect(
+      describeGatekeeperConfig({ maxLiveSessions: 4, queueLength: 4, maxRetainedSessions: 40 }),
+    ).toEqual({ door: 4, queueLength: 4, retainedSessions: 40 });
   });
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx jest test/unit/quota-registry.test.ts`
-Expected: FAIL — `Cannot find module '../../srv/lib/quota-registry'`.
+Run: `npx jest test/unit/gatekeeper-config.test.ts`
+Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write the registry**
+- [ ] **Step 3: Write the module**
 
-Create `srv/lib/gatekeeper-config.ts` — the environment, read once and checked,
-holding no runtime state of any kind:
+Create `srv/lib/gatekeeper-config.ts`:
 
 ```ts
-import type { QuotaLimits } from './quota-gate';
-
 /**
- * Everything the gatekeeper is configured with, and nothing it remembers.
+ * The gatekeeper's configuration: read from the environment, validated, and
+ * holding nothing that changes at runtime.
  *
- * Separate from the registry and the door because validation and live state
- * must not depend on each other. With the door's check inside `admission.ts`,
- * the configuration loader depended on a module holding live counters, while
- * `agent-manager` and both handlers already imported both — a cycle that
- * resolves differently depending on import order, with half-initialised
- * exports as the failure mode. One module reads the environment and validates
- * it; the registry and the door each consume it.
+ * Absent means off. Malformed means refuse to start, naming the variable:
+ * somebody intending a limit and not getting one is the failure this design
+ * exists to make visible. The precedent is `LLM_AGENT_THROTTLE_MAX_WAIT_MS`.
  */
 
-const QUOTAS_VAR = 'LLM_GATEKEEPER_QUOTAS';
-const MAP_VAR = 'LLM_GATEKEEPER_QUOTA_OF_MODEL';
-const DOOR_VAR = 'LLM_GATEKEEPER_MAX_LIVE_PIPELINES';
-const DEFAULT_WINDOW_MS = 60_000;
+const LIVE = 'LLM_GATEKEEPER_MAX_LIVE_SESSIONS';
+const QUEUE = 'LLM_GATEKEEPER_QUEUE_LENGTH';
+const RETAINED = 'LLM_GATEKEEPER_MAX_RETAINED_SESSIONS';
 
 export interface GatekeeperConfig {
-  quotas: Map<string, QuotaLimits>;
-  keyOfModel: Map<string, string>;
-  maxLivePipelines?: number;
+  /** Sessions that may be live at once, across every channel. Absent: no door. */
+  maxLiveSessions?: number;
+  /** Callers that may wait to be admitted. The capacity when a capacity is set. */
+  queueLength?: number;
+  /** Sessions that may hold state. Absent: unbounded. */
+  maxRetainedSessions?: number;
+}
+
+function readPositiveInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    throw new Error(
+      `Invalid ${name}: expected a positive whole number, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return n;
+}
+
+export function loadGatekeeperConfig(): GatekeeperConfig {
+  const maxLiveSessions = readPositiveInt(LIVE);
+  const queue = readPositiveInt(QUEUE);
+  const maxRetainedSessions = readPositiveInt(RETAINED);
+
+  if (queue !== undefined && maxLiveSessions === undefined) {
+    // A queue waits for a slot. With no door there is no slot and nothing to
+    // wait for, so the setting would do nothing while looking like a limit.
+    throw new Error(
+      `Invalid ${QUEUE}: a queue needs a door in front of it. Set ${LIVE} as well, or unset ${QUEUE}.`,
+    );
+  }
+
+  if (maxRetainedSessions !== undefined) {
+    if (maxLiveSessions === undefined) {
+      // With chat concurrency unbounded, any number of sessions can be live at
+      // once and none of them may be evicted, so the cap would be exceeded by
+      // sessions the design forbids touching.
+      throw new Error(
+        `Invalid ${RETAINED}: retention cannot be bounded without bounding how many sessions run. Set ${LIVE} as well, or unset ${RETAINED}.`,
+      );
+    }
+    if (maxRetainedSessions < maxLiveSessions) {
+      // Five slots and room for two histories has no correct behaviour: the
+      // third admitted session would need a place while none is idle.
+      throw new Error(
+        `Invalid ${RETAINED}: ${maxRetainedSessions} is smaller than ${LIVE}=${maxLiveSessions}. You cannot retain fewer sessions than you can run at once.`,
+      );
+    }
+  }
+
+  return {
+    maxLiveSessions,
+    queueLength: maxLiveSessions === undefined ? undefined : (queue ?? maxLiveSessions),
+    maxRetainedSessions,
+  };
 }
 
 let cached: GatekeeperConfig | undefined;
 
-function readJsonObject(name: string): Record<string, unknown> | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === '') return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`Invalid ${name}: expected JSON, got ${JSON.stringify(raw)}`);
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`Invalid ${name}: expected a JSON object of entries`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function positiveInt(value: unknown, name: string, field: string, key: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1) {
-    throw new Error(
-      `Invalid ${name}: ${JSON.stringify(key)}.${field} must be a positive whole number, got ${JSON.stringify(value)}`,
-    );
-  }
-  return value as number;
-}
-
-function build(): GatekeeperConfig {
-  const quotas = new Map<string, QuotaLimits>();
-  const raw = readJsonObject(QUOTAS_VAR);
-  if (raw) {
-    for (const [key, entry] of Object.entries(raw)) {
-      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-        throw new Error(
-          `Invalid ${QUOTAS_VAR}: ${JSON.stringify(key)} must be an object with a limit`,
-        );
-      }
-      const e = entry as { limit?: unknown; windowMs?: unknown };
-      quotas.set(key, {
-        limit: positiveInt(e.limit, QUOTAS_VAR, 'limit', key),
-        windowMs:
-          e.windowMs === undefined
-            ? DEFAULT_WINDOW_MS
-            : positiveInt(e.windowMs, QUOTAS_VAR, 'windowMs', key),
-      });
-    }
-  }
-
-  const keyOfModel = new Map<string, string>();
-  const mapping = readJsonObject(MAP_VAR);
-  if (mapping) {
-    for (const [model, key] of Object.entries(mapping)) {
-      if (typeof key !== 'string' || !quotas.has(key)) {
-        // Somebody intending a limit and not getting one, which is the failure
-        // mode this whole design exists to make visible.
-        throw new Error(
-          `Invalid ${MAP_VAR}: ${JSON.stringify(model)} maps to ${JSON.stringify(key)}, which is not a key in ${QUOTAS_VAR}`,
-        );
-      }
-      keyOfModel.set(model, key);
-    }
-  }
-
-  let maxLivePipelines: number | undefined;
-  const door = process.env[DOOR_VAR];
-  if (door !== undefined && door.trim() !== '') {
-    const n = Number(door);
-    if (!Number.isSafeInteger(n) || n < 1) {
-      throw new Error(
-        `Invalid ${DOOR_VAR}: expected a positive whole number of pipelines, got ${JSON.stringify(door)}`,
-      );
-    }
-    // No dependency on the quotas, deliberately. A door alone is a memory cap
-    // with no window behind it — which is exactly what `execute_step`'s
-    // semaphore has always been — and it is a legitimate deployment. It does
-    // not carry the no-429-ends-an-admitted-request guarantee, and the spec
-    // says so rather than the configuration refusing to start.
-    maxLivePipelines = n;
-  }
-
-  return { quotas, keyOfModel, maxLivePipelines };
-}
-
 export function gatekeeperConfig(): GatekeeperConfig {
-  if (!cached) cached = build();
+  if (!cached) cached = loadGatekeeperConfig();
   return cached;
 }
 
-/** One line for the startup log, and the call that makes validation happen. */
-export function describeGatekeeperConfig(): string {
-  const cfg = gatekeeperConfig();
-  const quotas =
-    cfg.quotas.size === 0
-      ? 'none configured (no rate limiting)'
-      : [...cfg.quotas].map(([k, l]) => `${k}=${l.limit}/${l.windowMs}ms`).join(', ');
-  const mapped = cfg.keyOfModel.size > 0 ? `, mapped models: ${cfg.keyOfModel.size}` : '';
-  const door =
-    cfg.maxLivePipelines === undefined
-      ? 'no door'
-      : `door: ${cfg.maxLivePipelines} live pipelines`;
-  return `LLM gatekeeper — quotas: ${quotas}${mapped}; ${door}`;
+/** For the startup log. A limit only shows itself under load, and by then nobody remembers what was set. */
+export function describeGatekeeperConfig(
+  cfg: GatekeeperConfig = gatekeeperConfig(),
+): Record<string, number | string> {
+  return {
+    door: cfg.maxLiveSessions ?? 'off (execute_step keeps its semaphore of two)',
+    queueLength: cfg.queueLength ?? 'none',
+    retainedSessions: cfg.maxRetainedSessions ?? 'unbounded',
+  };
 }
 
 /** Test seam. */
@@ -1026,2031 +1467,4116 @@ export function clearGatekeeperConfig(): void {
 }
 ```
 
-and `srv/lib/quota-registry.ts`, which now holds gates and nothing else:
+- [ ] **Step 4: Validate at load and log the values in force**
+
+In `srv/agent-config.ts`, add `import { describeGatekeeperConfig, gatekeeperConfig } from './lib/gatekeeper-config';`. In `loadAgentConfig`, as the first statement after `const log = cds.log('agent-config');`:
 
 ```ts
-import { clearGatekeeperConfig, gatekeeperConfig } from './gatekeeper-config';
-import { QuotaGate } from './quota-gate';
-
-const QUOTAS_VAR = 'LLM_GATEKEEPER_QUOTAS';
-const MAP_VAR = 'LLM_GATEKEEPER_QUOTA_OF_MODEL';
-
-/** A model nobody configured, seen while quotas are in force. */
-export class UnknownModelError extends Error {
-  constructor(readonly model: string) {
-    super(
-      `Model ${JSON.stringify(model)} has no quota. Add it to ${QUOTAS_VAR}, or map it to an existing key with ${MAP_VAR}.`,
-    );
-    this.name = 'UnknownModelError';
-  }
-}
-
-const gates = new Map<string, QuotaGate>();
-
-/** Whether any quota is in force. False means the service behaves as before. */
-export function quotasConfigured(): boolean {
-  return gatekeeperConfig().quotas.size > 0;
-}
-
-/**
- * The gate AND the key it is filed under.
- *
- * Observability needs the key, not the model name: two models mapped onto one
- * quota spend the same places, and reporting them as separate scopes would show
- * two half-full windows where there is one full one.
- *
- * Throws `UnknownModelError` when quotas ARE configured and the model names
- * neither an entry nor a mapping: `/v1/chat/completions` accepts any
- * `body.model` and hot-swaps the shared LLM to it, so a typo would otherwise
- * un-gate every later main call, long after any startup check could see it.
- */
-export function quotaForModel(
-  model: string,
-): { key: string; gate: QuotaGate } | undefined {
-  const cfg = gatekeeperConfig();
-  if (cfg.quotas.size === 0) return undefined;
-  const key = cfg.keyOfModel.get(model) ?? model;
-  const limits = cfg.quotas.get(key);
-  if (!limits) throw new UnknownModelError(model);
-  let gate = gates.get(key);
-  if (!gate) {
-    gate = new QuotaGate(limits);
-    gates.set(key, gate);
-  }
-  return { key, gate };
-}
-
-/** The gate alone, for callers that do not need the key. */
-export function gateForModel(model: string): QuotaGate | undefined {
-  return quotaForModel(model)?.gate;
-}
-
-/** Every gate built so far, for the metrics snapshot. */
-export function liveGates(): Array<{ key: string; gate: QuotaGate }> {
-  return [...gates.entries()].map(([key, gate]) => ({ key, gate }));
-}
-
-/** Test seam. Drops the parsed configuration and every gate built from it. */
-export function clearQuotaRegistry(): void {
-  for (const gate of gates.values()) gate.stop();
-  gates.clear();
-  clearGatekeeperConfig();
-}
+  // Validated here because this runs at startup. A malformed limit must stop
+  // the service before it takes traffic, not on the first request that meets it.
+  const gatekeeper = gatekeeperConfig();
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `npx jest test/unit/quota-registry.test.ts`
-Expected: PASS, 15 tests.
-
-- [ ] **Step 5: Log the configuration at startup**
-
-In `srv/agent-config.ts`, inside `loadAgentConfig()` just before it returns, add:
+and add to the `log.info('Agent configuration loaded', { ... })` object:
 
 ```ts
-  // A limit only shows itself under load, and by then nobody remembers what was
-  // configured. One line covers quotas and the door together, and reading it
-  // here is what makes a malformed value — or a door configured without a
-  // quota — fail at startup rather than on the first request.
-  cds.log('agent-config').info(describeGatekeeperConfig());
+    gatekeeper: describeGatekeeperConfig(gatekeeper),
 ```
-
-and at the top of the file:
-
-```ts
-import { describeGatekeeperConfig } from './lib/gatekeeper-config';
-```
-
-> Only `gatekeeper-config` is imported here, never `admission`. The
-> configuration loader must not depend on a module holding live counters:
-> `agent-manager` and both handlers already import both, and the cycle would
-> resolve differently depending on import order.
-
-- [ ] **Step 6: Run the whole suite and typecheck**
-
-Run: `npm run test:unit && npm run test:check`
-Expected: PASS, no type errors.
-
-- [ ] **Step 7: Lint and commit**
-
-```bash
-npx biome check --write srv/lib/gatekeeper-config.ts srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
-git add srv/lib/gatekeeper-config.ts srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
-git commit -m "feat(gatekeeper): quotas come from configuration, and a malformed one refuses to start"
-```
-
-### Task 3: `GatedLlm` — one permit per HTTP attempt
-
-**Files:**
-- Create: `srv/lib/gated-llm.ts`
-- Test: `test/unit/gated-llm.test.ts`
-
-**Interfaces:**
-- Consumes: `quotaForModel`, `QuotaGate`, `Permit` from Tasks 1–2.
-
-> No metrics here. This wrapper is where the wait is measurable, and Task 13 adds the two lines that measure it — a task may not import a module a later one creates, and a half-built module smuggled in early is the same rule broken quietly.
-- Produces:
-  - `export function gateLlm(inner: ILlm, model: string): ILlm`
-  - `export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder`
-  - `export const REQUEUE_REASON = 'no-interval'` — why a throttled call with no named interval goes back to the tail
-
-**Why the wrapper and not `ILlmRateLimiter`:** that seam admits one call and cannot see the attempts inside it. `RateLimiterLlm.chat` awaits `acquire()` once and hands off to a chain that retries, so every retry is a request the window never saw.
-
-**Where it sits:** the builder wraps `RetryLlm` *above* whatever main LLM it is handed, so each of its attempts re-enters this wrapper and takes its own permit. Nothing between the permit and the transport may retry — the provider's strategy is `ReportThrottling`.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/gated-llm.test.ts`:
-
-```ts
-import type { ILlm, LlmError, LlmResponse, Result } from '@mcp-abap-adt/llm-agent';
-
-const load = () => {
-  jest.resetModules();
-  const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-  registry.clearQuotaRegistry();
-  const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
-  return { registry, gated };
-};
-
-afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
-  jest.resetModules();
-});
-
-/** An ILlm that fails with a scripted error a fixed number of times. */
-function scriptedLlm(errors: LlmError[]) {
-  let calls = 0;
-  const llm: ILlm & { calls: () => number } = {
-    model: 'm',
-    calls: () => calls,
-    async chat(): Promise<Result<LlmResponse, LlmError>> {
-      const err = errors[calls];
-      calls++;
-      if (err) return { ok: false, error: err };
-      return { ok: true, value: { content: 'ok', finishReason: 'stop' } };
-    },
-    async *streamChat() {
-      yield { ok: true as const, value: { content: 'ok', finishReason: 'stop' as const } };
-    },
-  };
-  return llm;
-}
-
-function throttled(retryAfterSeconds?: number, attempts = 1): LlmError {
-  const e = new Error('429') as LlmError & {
-    throttled?: boolean;
-    attempts?: number;
-    retryAfterSeconds?: number;
-  };
-  e.throttled = true;
-  e.attempts = attempts;
-  if (retryAfterSeconds !== undefined) e.retryAfterSeconds = retryAfterSeconds;
-  return e;
-}
-
-describe('gateLlm — every attempt is accounted', () => {
-  it('records one start per HTTP attempt, not one per call', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { registry, gated } = load();
-    const inner = scriptedLlm([throttled(0.001), throttled(0.001)]);
-    const llm = gated.gateLlm(inner, 'm');
-
-    const result = await llm.chat([]);
-    expect(result.ok).toBe(true);
-    expect(inner.calls()).toBe(3);
-    // Three attempts, three starts. One start here would be the accounting
-    // going quietly wrong under exactly the load this exists for.
-    expect(registry.gateForModel('m')?.liveStarts).toBe(3);
-  });
-
-  it('gives the permit back when nothing reached the wire', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { registry, gated } = load();
-    // attempts === 0 is the library saying it refused before the transport:
-    // its own quota gate was shut, so no request left this process.
-    const inner = scriptedLlm([throttled(0.001, 0)]);
-    const llm = gated.gateLlm(inner, 'm');
-    await llm.chat([]);
-    expect(inner.calls()).toBe(2);
-    expect(registry.gateForModel('m')?.liveStarts).toBe(1);
-  });
-});
-
-describe('gateLlm — a 429 delays, it does not interrupt', () => {
-  it('waits out an interval the server named and finishes', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { gated } = load();
-    const inner = scriptedLlm([throttled(0.001)]);
-    const result = await gated.gateLlm(inner, 'm').chat([]);
-    expect(result.ok).toBe(true);
-  });
-
-  it('re-queues when the server named nothing, rather than guessing a wait', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { gated } = load();
-    const inner = scriptedLlm([throttled(undefined)]);
-    const result = await gated.gateLlm(inner, 'm').chat([]);
-    expect(result.ok).toBe(true);
-    expect(inner.calls()).toBe(2);
-  });
-});
-
-describe('gateLlm — nothing configured', () => {
-  it('passes straight through with no gate at all', async () => {
-    const { gated } = load();
-    const inner = scriptedLlm([]);
-    const result = await gated.gateLlm(inner, 'm').chat([]);
-    expect(result.ok).toBe(true);
-    expect(inner.calls()).toBe(1);
-  });
-
-  it('reports a 429 that named nothing, instead of retrying at once', async () => {
-    // With no window there is nothing to pace against, so a zero delay would
-    // turn one refusal into a storm against a provider that had just asked us
-    // to stop.
-    const { gated } = load();
-    const inner = scriptedLlm([throttled(undefined)]);
-    const result = await gated.gateLlm(inner, 'm').chat([]);
-    expect(result.ok).toBe(false);
-    expect(inner.calls()).toBe(1);
-  });
-
-  it('throws back the outer error, not the marker buried in its cause', async () => {
-    // Every layer rewraps, so the marker is usually on a cause. Throwing that
-    // would lose the provider's own message and stack.
-    const { gated } = load();
-    const inner = Object.assign(new Error('429'), {
-      throttled: true,
-      attempts: 1,
-      retryAfterSeconds: 30,
-    });
-    const outer = Object.assign(new Error('SAP AI SDK API error'), { cause: inner });
-    const embedder = gated.gateEmbedder(
-      {
-        embed: async () => {
-          throw outer;
-        },
-      } as never,
-      'm',
-    );
-    await expect(embedder.embed('x')).rejects.toBe(outer);
-  });
-
-  it('throws the embedder 429 back rather than returning an empty result', async () => {
-    // The embedder's attempt wrapper swallows the throw to report it, so
-    // returning the placeholder here would hand the caller `undefined` as a
-    // successful embedding and lose the refusal altogether.
-    const { gated } = load();
-    const err = Object.assign(new Error('429'), {
-      throttled: true,
-      attempts: 1,
-      retryAfterSeconds: 30,
-    });
-    const embedder = gated.gateEmbedder(
-      {
-        embed: async () => {
-          throw err;
-        },
-      } as never,
-      'm',
-    );
-    await expect(embedder.embed('x')).rejects.toBe(err);
-  });
-
-  it('reports a 429 that named an interval, instead of waiting it out', async () => {
-    // Waiting here would be unbounded: the ceiling that used to make it safe
-    // went with WaitIfShortEnough, and there is no door in front to justify it.
-    const { gated } = load();
-    const inner = scriptedLlm([throttled(600)]);
-    const started = Date.now();
-    const result = await gated.gateLlm(inner, 'm').chat([]);
-    expect(result.ok).toBe(false);
-    expect(inner.calls()).toBe(1);
-    expect(Date.now() - started).toBeLessThan(1_000);
-  });
-});
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `npx jest test/unit/gated-llm.test.ts`
-Expected: FAIL — `Cannot find module '../../srv/lib/gated-llm'`.
-
-- [ ] **Step 3: Write the wrapper**
-
-Create `srv/lib/gated-llm.ts`:
-
-```ts
-import {
-  findThrottled,
-  type CallOptions,
-  type IEmbedder,
-  type IEmbedResult,
-  type ILlm,
-  type LlmError,
-  type LlmResponse,
-  type LlmStreamChunk,
-  type LlmTool,
-  type Message,
-  type Result,
-} from '@mcp-abap-adt/llm-agent';
-import type { Permit } from './quota-gate';
-import { quotaForModel } from './quota-registry';
-
-/**
- * One permit per HTTP attempt, taken as close to the wire as we can get.
- *
- * `ILlmRateLimiter` is not the seam for this: it admits one CALL and cannot see
- * the attempts inside it, so a retry below it is a request the window never
- * saw. The retrying therefore stays above this wrapper — the builder's
- * `RetryLlm` re-enters here and takes its own permit — and nothing between the
- * permit and the transport may retry, which is why the provider's strategy is
- * `ReportThrottling`.
- */
-
-export const REQUEUE_REASON = 'no-interval';
-
-/**
- * Run one gated operation: take a permit, attempt, and decide from the result.
- *
- * A throttled failure whose `attempts` is 0 never reached the wire — the
- * library's own gate refused it, knowing the quota was shut. That is not a
- * start, so the permit goes back.
- */
-async function runGated<T>(
-  model: string,
-  signal: AbortSignal | undefined,
-  attempt: () => Promise<{ value: T; throttled?: unknown }>,
-  /**
-   * What giving up means for this caller, and it is not the same for both.
-   *
-   * An `ILlm` carries its failure inside the `Result`, so returning the value
-   * IS returning the error. An `IEmbedder` throws, and its attempt wrapper has
-   * already swallowed the throw to report it here — so returning the value
-   * would hand the caller `undefined` as a successful embedding and lose the
-   * `429` entirely.
-   */
-  giveUp: (value: T, error: unknown) => T,
-): Promise<T> {
-  let nextAttemptAt = 0;
-  for (;;) {
-    const quota = quotaForModel(model);
-    let permit: Permit | undefined;
-    if (quota) {
-      permit = await quota.gate.acquire(signal, { notBefore: nextAttemptAt });
-    }
-
-    const { value, throttled } = await attempt();
-    const limit = throttled ? findThrottled(throttled) : undefined;
-    if (!limit) return value;
-
-    if (limit.attempts === 0) permit?.giveBack();
-
-    // With no quota there is no gate and no queue — nothing to wait in and
-    // nothing to pace against. The failure goes back as it arrived and the
-    // caller decides, which is what "absent means off" has to mean here. (A
-    // door without a quota cannot happen: the configuration refuses to start,
-    // because the door's guarantee rests on there being a window to wait in.)
-    //
-    // The alternative was worse in both directions. A no-interval 429 would
-    // have looped with a zero delay, turning one refusal into a retry storm
-    // against a provider that had just asked us to stop; and an interval would
-    // have been waited out with no ceiling, where the ceiling removed with
-    // `WaitIfShortEnough` was the only thing that had made waiting safe.
-    // `throttled` and not `limit`: the second is whatever `findThrottled` dug
-    // out of the cause chain, and throwing that would hand the caller an inner
-    // error stripped of the provider's own message, stack and context.
-    if (!quota) return giveUp(value, throttled);
-
-    // Exactly what the server named, however long — a ceiling here would kill
-    // work the door has promised to carry — or, when it named nothing, our own
-    // configured rate. We may not invent an interval and do not have to.
-    const seconds = limit.retryAfterSeconds;
-    const delayMs =
-      seconds !== undefined && Number.isFinite(seconds)
-        ? seconds * 1000
-        : quota.gate.msUntilNextOpening();
-
-    // The retry waits INSIDE the queue, not beside it. Sleeping out here and
-    // re-acquiring afterwards would drop this call to the back behind every
-    // newcomer, and would wake every throttled caller at once to race for the
-    // same place.
-    nextAttemptAt = Date.now() + delayMs;
-  }
-}
-
-export function gateLlm(inner: ILlm, model: string): ILlm {
-  const gated: ILlm = {
-    get model() {
-      return inner.model;
-    },
-    chat(messages: Message[], tools?: LlmTool[], options?: CallOptions) {
-      return runGated<Result<LlmResponse, LlmError>>(
-        model,
-        options?.signal,
-        async () => {
-          const value = await inner.chat(messages, tools, options);
-          return { value, throttled: value.ok ? undefined : value.error };
-        },
-        // The Result already carries the error.
-        (value) => value,
-      );
-    },
-    async *streamChat(
-      messages: Message[],
-      tools?: LlmTool[],
-      options?: CallOptions,
-    ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
-      // The opening attempt carries the same guarantee as chat(): a 429 before
-      // any chunk has flowed delays the stream, it does not end it. Once chunks
-      // ARE flowing the request is under way — a permit re-taken mid-stream
-      // would count a start that never happened, and a mid-stream failure is
-      // not ours to replay.
-      let nextAttemptAt = 0;
-      for (;;) {
-        const quota = quotaForModel(model);
-        let permit: Permit | undefined;
-        if (quota) {
-          permit = await quota.gate.acquire(options?.signal, {
-            notBefore: nextAttemptAt,
-          });
-        }
-        let yielded = 0;
-        let reopen: { waitMs: number } | undefined;
-
-        for await (const chunk of inner.streamChat(messages, tools, options)) {
-          if (chunk.ok) {
-            yielded++;
-            yield chunk;
-            continue;
-          }
-          const limit = yielded === 0 ? findThrottled(chunk.error) : undefined;
-          if (!limit || options?.signal?.aborted) {
-            yield chunk;
-            return;
-          }
-          if (limit.attempts === 0) permit?.giveBack();
-          if (!quota) {
-            // As above: with no gate there is nothing to wait in.
-            yield chunk;
-            return;
-          }
-          const seconds = limit.retryAfterSeconds;
-          reopen = {
-            waitMs:
-              seconds !== undefined && Number.isFinite(seconds)
-                ? seconds * 1000
-                : quota.gate.msUntilNextOpening(),
-          };
-          break;
-        }
-
-        if (!reopen) return;
-        // As in `runGated`: the wait happens inside the queue so the place is
-        // kept, unless there is no gate at all to keep it in.
-        nextAttemptAt = Date.now() + reopen.waitMs;
-      }
-    },
-  };
-  if (inner.healthCheck) gated.healthCheck = inner.healthCheck.bind(inner);
-  return gated;
-}
-
-export function gateEmbedder(inner: IEmbedder, model: string): IEmbedder {
-  const gated: IEmbedder = {
-    embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-      return runGated<IEmbedResult>(
-        model,
-        options?.signal,
-        async () => {
-          try {
-            return { value: await inner.embed(text, options) };
-          } catch (error) {
-            if (findThrottled(error)) {
-              return { value: undefined as never, throttled: error };
-            }
-            throw error;
-          }
-        },
-        // An embedder throws, so giving up throws the original back. Returning
-        // the placeholder would be an empty vector reported as a success.
-        (_value, error) => {
-          throw error;
-        },
-      );
-    },
-  };
-  const batch = (inner as IEmbedder & { embedBatch?: unknown }).embedBatch;
-  if (typeof batch === 'function') {
-    (gated as IEmbedder & { embedBatch: unknown }).embedBatch = (
-      texts: string[],
-      options?: CallOptions,
-    ) =>
-      runGated<IEmbedResult[]>(
-        model,
-        options?.signal,
-        async () => {
-          try {
-            return {
-              value: await (
-                batch as (t: string[], o?: CallOptions) => Promise<IEmbedResult[]>
-              ).call(inner, texts, options),
-            };
-          } catch (error) {
-            if (findThrottled(error)) {
-              return { value: undefined as never, throttled: error };
-            }
-            throw error;
-          }
-        },
-        (_value, error) => {
-          throw error;
-        },
-      );
-  }
-  return gated;
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `npx jest test/unit/gated-llm.test.ts`
-Expected: PASS, 9 tests.
-
-- [ ] **Step 5: Assert the library's own gate costs no permit**
-
-Append to `test/unit/gated-llm.test.ts`:
-
-```ts
-describe('gateLlm — a refusal that never reached the wire', () => {
-  it('leaves the window its full allowance after a herd meets a shut gate', async () => {
-    // Sized so nobody parks: the property under test is what a pre-wire
-    // refusal costs, and a limit that makes callers queue would turn this into
-    // a test of the window's timing instead — one that waits out real minutes.
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 40 } });
-    const { registry, gated } = load();
-    const gate = registry.gateForModel('m');
-
-    // Twenty callers, every one turned back by the library's own gate BEFORE
-    // the transport: `attempts: 0` means no request left this process. Each
-    // then succeeds on its second pass.
-    await Promise.all(
-      Array.from({ length: 20 }, () =>
-        gated.gateLlm(scriptedLlm([throttled(0.001, 0)]), 'm').chat([]),
-      ),
-    );
-
-    // Exactly twenty: the pre-wire refusals cost nothing, so the window counts
-    // the calls that actually reached a provider and not forty. An equality,
-    // because `<= 20` would pass with every phantom start counted.
-    expect(gate?.liveStarts).toBe(20);
-  });
-});
-```
-
-- [ ] **Step 6: Run, lint, typecheck**
-
-Run: `npx jest test/unit/gated-llm.test.ts && npx biome check --write srv/lib/gated-llm.ts test/unit/gated-llm.test.ts && npm run test:check`
-Expected: PASS, no errors.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add srv/lib/gated-llm.ts test/unit/gated-llm.test.ts
-git commit -m "feat(gatekeeper): a permit per HTTP attempt, and none for a call that never left"
-```
-
-### Task 4: Every construction site goes through the gate
-
-**Files:**
-- Modify: `srv/agent-manager.ts` — the five `makeLlm` call sites (main, classifier, two helpers, critic), the embedder built at `srv/agent-manager.ts:974-987`, and the model hot-swap
-- Modify: `srv/agent-config.ts` (the retired ceiling), `srv/openai-handler.ts`, `srv/anthropic-handler.ts`, `srv/lib/throttle-surfacing.ts` (the unknown-model refusal)
-- Test: `test/unit/gated-construction.test.ts`, and additions to `test/unit/quota-registry.test.ts`
-
-> Task 2 leaves the registry able to refuse an unknown model; this task is where that refusal is wired to the swap and to the wire, because these are the files it already owns. Splitting it would leave production changes in a task that lints and commits neither.
-
-**Interfaces:**
-- Consumes: `gateLlm`, `gateEmbedder` from Task 3.
-- Produces: `buildGatedLlm(cfg, model)` and `buildGatedEmbedder(cfg, model)` inside `agent-manager` — the only functions in the module that call `makeLlm` or construct an embedder.
-
-**Why:** `SmartAgentBuilder.withRateLimiter()` wraps only the main LLM, which would gate roughly half our traffic while the documentation claimed otherwise. Making it unavoidable rather than remembered means one function returns an LLM and is the only caller of `makeLlm`, and one wrapper returns an embedder while the raw one never leaves the module.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/gated-construction.test.ts`:
-
-```ts
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-/**
- * A structural test, deliberately. The property is "no sixth construction site
- * can quietly bypass the gate", and that is a property of the module's shape —
- * a behavioural test would pass while a new raw call site sat beside it.
- */
-const source = readFileSync(join(__dirname, '../../srv/agent-manager.ts'), 'utf8');
-
-describe('agent-manager — one door for construction', () => {
-  it('calls makeLlm from exactly one place', () => {
-    const callSites = source.match(/\bmakeLlm\s*\(/g) ?? [];
-    expect(callSites).toHaveLength(1);
-  });
-
-  it('makes that place hand the result to the gate', () => {
-    expect(source).toMatch(/function buildGatedLlm[\s\S]{0,600}gateLlm\(/);
-  });
-
-  it('constructs an embedder from exactly one place, and gates it there', () => {
-    const raw = source.match(/new (SapAiCoreEmbedder|OpenAiEmbedder)\s*\(/g) ?? [];
-    expect(raw.length).toBeGreaterThan(0);
-    expect(source).toMatch(/function buildGatedEmbedder[\s\S]{0,1200}gateEmbedder\(/);
-    // Every raw construction lives inside that one builder.
-    const builderStart = source.indexOf('function buildGatedEmbedder');
-    for (const match of raw) {
-      expect(source.indexOf(match)).toBeGreaterThan(builderStart);
-    }
-  });
-});
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `npx jest test/unit/gated-construction.test.ts`
-Expected: FAIL — five `makeLlm` call sites, no `buildGatedLlm`.
-
-- [ ] **Step 3: Add the two builders**
-
-In `srv/agent-manager.ts`, near the existing `sharedMainLlm` declarations, add:
-
-```ts
-import { gateEmbedder, gateLlm } from './lib/gated-llm';
-
-/**
- * The only caller of `makeLlm` in this service.
- *
- * Every model call is metered, not just the main one: the builder's
- * `withRateLimiter` sees the main LLM alone, which would leave the reviewer,
- * the helpers, the classifier and every RAG query outside the window.
- */
-async function buildGatedLlm(
-  cfg: Parameters<typeof makeLlm>[0],
-  temperature: number,
-): Promise<ILlm> {
-  const model = cfg.model;
-  if (!model) throw new Error('buildGatedLlm requires an explicit model');
-
-  // Refuse the swap before anything is built or replaced — see Step 5.
-  quotaForModel(model);
-
-  return gateLlm(
-    await makeLlm(
-      {
-        ...cfg,
-        // The provider reports; it does not absorb. Anything it waited out or
-        // retried inside one of our attempts would be a request the window
-        // never saw, which is the whole invariant. WaitIfShortEnough was the
-        // right answer before there was a door in front, and survives nowhere
-        // now: waiting as told is the gated wrapper's job, one permit at a
-        // time.
-        whenThrottled: new ReportThrottling(),
-      },
-      temperature,
-    ),
-    model,
-  );
-}
-```
-
-and the imports this needs:
-
-```ts
-import { ReportThrottling } from '@mcp-abap-adt/llm-agent';
-import { quotaForModel } from './lib/quota-registry';
-```
-
-Replace each of the five `await makeLlm(...)` / `makeLlm(...)` call sites with `await buildGatedLlm(...)`, passing the same arguments.
-
-- [ ] **Step 4: Fold the embedder construction into one builder**
-
-Replace the `rawEmbedder` block at `srv/agent-manager.ts:974-987` with:
-
-```ts
-/**
- * The only place an embedder is constructed. The raw one never leaves here, so
- * a RAG query cannot reach a provider without passing the window.
- */
-function buildGatedEmbedder(config: AgentConfig, embeddingModel: string): IEmbedder {
-  const raw: SapAiCoreEmbedder | OpenAiEmbedder =
-    config.llm.provider === 'sap-ai-sdk'
-      ? new SapAiCoreEmbedder({
-          modelName: embeddingModel,
-          ...(config.llm.resourceGroup ? { resourceGroup: config.llm.resourceGroup } : {}),
-        })
-      : new OpenAiEmbedder({
-          apiKey: config.llm.apiKey || '',
-          baseURL: config.llm.baseUrl,
-          model: embeddingModel,
-        });
-  return gateEmbedder(raw, embeddingModel);
-}
-```
-
-The embedders take no throttling strategy — they surface what the server said
-and this wrapper decides — so there is nothing to override there.
-
-and call `buildGatedEmbedder(config, embeddingModel)` where `rawEmbedder` was used, keeping the existing `CircuitBreakerEmbedder` wrapping around the result.
-
-> Keep the existing `SapAiCoreEmbedder` constructor arguments exactly as they are in the file — the snippet above shows the shape, not a licence to change which options are passed.
-
-- [ ] **Step 5: Assert the provider absorbs nothing**
-
-Append to `test/unit/gated-construction.test.ts`:
-
-```ts
-describe('agent-manager — the provider reports, it does not absorb', () => {
-  it('hands every provider ReportThrottling', () => {
-    // WaitIfShortEnough inside the provider would wait out a 429 within one of
-    // our attempts: the retry happens, the window never sees it, and the count
-    // is wrong under exactly the load this exists for.
-    expect(source).toMatch(/whenThrottled:\s*new ReportThrottling\(\)/);
-    expect(source).not.toMatch(/whenThrottled:\s*config\.llm\.whenThrottled/);
-  });
-});
-```
-
-and a behavioural one in `test/unit/gated-llm.test.ts`:
-
-```ts
-describe('gateLlm — one transport attempt per entry', () => {
-  it('calls the provider exactly once for each permit it takes', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { registry, gated } = load();
-    const inner = scriptedLlm([throttled(0.001), throttled(0.001)]);
-    await gated.gateLlm(inner, 'm').chat([]);
-    // Three calls, three permits, one each. A provider that retried inside
-    // would show fewer permits than calls.
-    expect(inner.calls()).toBe(registry.gateForModel('m')?.liveStarts);
-  });
-});
-```
-
-- [ ] **Step 6: Retire the now-unused ceiling, and everything that referenced it**
-
-`WaitIfShortEnough` and `LLM_AGENT_THROTTLE_MAX_WAIT_MS` have no caller left:
-every LLM comes from `buildGatedLlm`, which hands the provider
-`ReportThrottling`. Delete `srv/lib/throttle-strategy.ts`, the `whenThrottled`
-field from `srv/agent-config.ts`, and the "configured wait ceiling" block from
-`test/unit/throttle-surfacing.test.ts`. Leaving a dead ceiling in the
-configuration would read as a setting that still does something.
-
-**Three test files reference it, not one.** `test/unit/executor-worker.test.ts`
-and `test/unit/agent-controller-wiring.test.ts` both import
-`WaitIfShortEnough` and set `whenThrottled: new WaitIfShortEnough(20_000)` in
-their `AgentConfig` fixtures. Deleting the module without them fails the suite
-on `Cannot find module`, and deleting the field leaves two fixtures describing
-a config shape that no longer exists. Drop the import and the line from each;
-the fixtures need no replacement, because the provider's strategy is no longer
-a consumer concern.
-
-- [ ] **Step 7: Run the test to verify it passes**
-
-Run: `npx jest test/unit/gated-construction.test.ts && npm run test:unit`
-Expected: PASS; the existing suite stays green.
-
-- [ ] **Step 8: Refuse an unknown model at the swap, before anything moves**
-
-The registry throwing is not enough on its own: `gateForModel` is reached only
-once `GatedLlm.chat` is already running, and by then `getSmartAgent` has
-replaced `currentModel` and the shared LLM for this request **and every one
-after it**. A typo would be accepted, become the active model, pass admission,
-and only then fail inside the pipeline, with the swap left in place.
-
-So the check happens at the swap. In `srv/agent-manager.ts`, at the top of the
-block that reacts to `requestedModel !== activeModel`, before `makeLlm` and
-before any shared state is touched:
-
-```ts
-  if (requestedModel && requestedModel !== activeModel) {
-    // Throws UnknownModelError when quotas are in force and this name has
-    // neither an entry nor a mapping. Before the swap, deliberately: a name we
-    // will not meter must not become the model every later call uses.
-    quotaForModel(requestedModel);
-```
-
-In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, turn it into a bad
-request, never an overload, because it will not become valid by waiting:
-
-```ts
-  } catch (err) {
-    if (err instanceof UnknownModelError) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(unknownModelPayload(err, dialect)));
-      return;
-    }
-    throw err;
-  }
-```
-
-and in `srv/lib/throttle-surfacing.ts`:
-
-```ts
-/**
- * A model nobody configured. A bad request, not an overload: 529 or a
- * retryable 503 would invite a retry loop that cannot succeed, because the
- * name will never become valid on its own.
- */
-export function unknownModelPayload(
-  err: { model: string; message: string },
-  dialect: 'openai' | 'anthropic',
-): unknown {
-  const error = {
-    type: 'invalid_request_error',
-    code: 'model_not_configured',
-    param: 'model',
-    message: err.message,
-  };
-  return dialect === 'anthropic' ? { type: 'error', error } : { error };
-}
-```
-
-- [ ] **Step 9: Assert the swap does not happen**
-
-Append to `test/unit/quota-registry.test.ts`:
-
-```ts
-describe('an unknown model does not become the active one', () => {
-  it('is refused before the swap, so later calls keep the model that works', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ known: { limit: 1 } });
-    const mod = load();
-    // The check that runs at the swap. Reached only inside chat(),
-    // `currentModel` would already have moved for every later request.
-    expect(() => mod.quotaForModel('knwon')).toThrow(mod.UnknownModelError);
-    expect(mod.quotaForModel('known')?.key).toBe('known');
-  });
-});
-```
-
-and in `test/unit/gated-construction.test.ts`, created at the start of this
-task:
-
-```ts
-describe('agent-manager — the model check comes before the swap', () => {
-  it('resolves the quota before anything is built or replaced', () => {
-    // Not `makeLlm(` — after this refactor its one call site lives inside
-    // buildGatedLlm, declared above the swap, so searching forward from the
-    // swap finds nothing and the assertion would compare against -1.
-    const swap = source.indexOf('requestedModel !== activeModel');
-    const check = source.indexOf('quotaForModel(requestedModel)', swap);
-    const build = source.indexOf('buildGatedLlm(', swap);
-    const assign = source.indexOf('sharedMainLlm =', swap);
-    expect(swap).toBeGreaterThan(-1);
-    expect(check).toBeGreaterThan(swap);
-    expect(build).toBeGreaterThan(check);
-    expect(assign).toBeGreaterThan(check);
-  });
-});
-```
-
-- [ ] **Step 10: Run both suites**
-
-Run: `npx jest test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts && npm run test:unit`
-Expected: PASS, 14 and 6 tests, and the existing suite stays green.
-
-- [ ] **Step 11: Lint, typecheck, commit**
-
-```bash
-npx biome check --write srv/agent-manager.ts srv/agent-config.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/lib/throttle-surfacing.ts test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts test/unit/executor-worker.test.ts test/unit/agent-controller-wiring.test.ts test/unit/throttle-surfacing.test.ts
-npm run test:check
-git add -A
-git commit -m "feat(gatekeeper): every model passes the window, and the provider absorbs nothing"
-```
-
----
-
-### Task 5: The door
-
-**Files:**
-- Create: `srv/lib/admission.ts`
-- Modify: `srv/lib/throttle-surfacing.ts` (the door refusal), `srv/agent-mcp.ts` (the door when configured, the semaphore when not)
-- Test: `test/unit/admission.test.ts`
-
-**Interfaces:**
-- Consumes: `gatekeeperConfig` from Task 2.
-- Produces:
-  - `export class DoorFullError extends Error { readonly code = 'door_full' }`
-  - `export interface AdmissionHandle { release(): Promise<void>; readonly signal: AbortSignal }`
-  - `export function admit(): Promise<AdmissionHandle>` — throws `DoorFullError` when the door is configured and full
-  - `export function livePipelines(): number`
-  - `export function configuredCapacity(): number | undefined` — reads the validated value from `gatekeeper-config`
-  - `export function clearAdmission(): void` — test seam
-
-**The rule:** a pipeline is live from the moment it is admitted until it finishes or fails. It is not released while it waits on a quota — waiting is exactly when it still holds its context. The door is entered **after** the agent is resolved, so a caller waiting for a destination or a shared corpus build waits outside it, holding an HTTP request and no pipeline.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/admission.test.ts`:
-
-```ts
-const load = () => {
-  jest.resetModules();
-  const config = require('../../srv/lib/gatekeeper-config') as typeof import('../../srv/lib/gatekeeper-config');
-  config.clearGatekeeperConfig();
-  const mod = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
-  mod.clearAdmission();
-  return mod;
-};
-
-afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-  jest.resetModules();
-});
-
-describe('the door — absent means off', () => {
-  it('admits without limit when no capacity is configured', async () => {
-    const mod = load();
-    for (let i = 0; i < 50; i++) await mod.admit();
-    expect(mod.livePipelines()).toBe(50);
-  });
-});
-
-describe('the door — a configured capacity', () => {
-  it('admits up to capacity and refuses the rest', async () => {
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '2';
-    const mod = load();
-    await mod.admit();
-    await mod.admit();
-    await expect(mod.admit()).rejects.toBeInstanceOf(mod.DoorFullError);
-  });
-
-  it('admits one and turns away the rest at a capacity of one', async () => {
-    // The degenerate setting is a setting.
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
-    const mod = load();
-    await mod.admit();
-    await expect(mod.admit()).rejects.toBeInstanceOf(mod.DoorFullError);
-  });
-
-  it('frees the place when a pipeline releases', async () => {
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
-    const mod = load();
-    const handle = await mod.admit();
-    await handle.release();
-    await expect(mod.admit()).resolves.toBeDefined();
-  });
-
-  it('refuses a malformed capacity, from the config module that owns it', () => {
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = 'plenty';
-    expect(() => load().configuredCapacity()).toThrow(
-      /LLM_GATEKEEPER_MAX_LIVE_PIPELINES/,
-    );
-  });
-});
-
-describe('the door — absent means today, not unbounded', () => {
-  it('reports no capacity, which is what execute_step falls back on', () => {
-    // The semaphore of two is not dead code to be cleaned up: with no door
-    // configured it is the cap, and deleting it would raise this channel from
-    // two concurrent pipelines to unbounded for everyone who configured
-    // nothing.
-    delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-    expect(load().configuredCapacity()).toBeUndefined();
-  });
-});
-
-describe('the door — what the refusal carries', () => {
-  it('names no interval, because we do not measure how long pipelines run', async () => {
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
-    const mod = load();
-    await mod.admit();
-    const error = await mod.admit().catch((e: Error) => e);
-    // A previous design took a number from the quota queue, which measures a
-    // different resource entirely.
-    expect(error.message).not.toMatch(/\d+\s*(second|ms|minute)/i);
-    expect((error as { retryAfterSeconds?: number }).retryAfterSeconds).toBeUndefined();
-  });
-});
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `npx jest test/unit/admission.test.ts`
-Expected: FAIL — `Cannot find module '../../srv/lib/admission'`.
-
-- [ ] **Step 3: Write the door**
-
-Create `srv/lib/admission.ts`:
-
-```ts
-/**
- * The door: how many pipelines may be live at once, across every channel.
- *
- * One counter, not one per route. `execute_step` already capped itself with a
- * semaphore of two for exactly this reason — memory — and two independent caps
- * on one resource would each be wrong about the other.
- *
- * Admission happens AFTER the agent is resolved, so a caller waiting for a
- * destination to warm or for the shared corpus build waits outside this door,
- * holding an HTTP request and no pipeline.
- */
-
-import { gatekeeperConfig } from './gatekeeper-config';
-
-/** The door is full. Carries no interval: we do not measure pipeline length. */
-export class DoorFullError extends Error {
-  readonly code = 'door_full';
-  constructor() {
-    super('No capacity for a new request right now. Nothing was started.');
-    this.name = 'DoorFullError';
-  }
-}
-
-export interface AdmissionHandle {
-  /** Aborted by shutdown, and by nothing else. */
-  readonly signal: AbortSignal;
-  /** Give the place back. Idempotent. */
-  release(): Promise<void>;
-}
-
-let live = 0;
-const handles = new Set<AbortController>();
-
-/**
- * How many pipelines may be live at once, or nothing.
- *
- * Read from `gatekeeper-config`, which has already validated it — including
- * the rule that a door without a quota is refused, since this module holds
- * counters and has no business doing validation the startup path depends on.
- */
-export function configuredCapacity(): number | undefined {
-  return gatekeeperConfig().maxLivePipelines;
-}
-
-export function livePipelines(): number {
-  return live;
-}
-
-/**
- * Take a place, or refuse. Never waits: a caller parked at the door would hold
- * the memory the door exists to bound, which is the thing it is counting.
- */
-export function admit(): Promise<AdmissionHandle> {
-  const max = configuredCapacity();
-  if (max !== undefined && live >= max) {
-    return Promise.reject(new DoorFullError());
-  }
-  live++;
-  const controller = new AbortController();
-  handles.add(controller);
-  let released = false;
-  return Promise.resolve({
-    signal: controller.signal,
-    release: async () => {
-      if (released) return;
-      released = true;
-      handles.delete(controller);
-      live--;
-    },
-  });
-}
-
-/** Abort every admitted pipeline. The only thing of ours that ends one. */
-export function abortAllForShutdown(reason = 'shutdown'): void {
-  for (const controller of handles) controller.abort(new Error(reason));
-}
-
-/** Test seam. */
-export function clearAdmission(): void {
-  live = 0;
-  handles.clear();
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `npx jest test/unit/admission.test.ts`
-Expected: PASS, 7 tests.
-
-- [ ] **Step 5: Fold the `execute_step` semaphore into the door**
-
-In `srv/agent-mcp.ts`, the shared door takes over **when there is one**. The
-semaphore stays as the fallback, because deleting it outright would quietly
-raise this channel's concurrency from two to unbounded for every deployment
-that configures nothing — an OOM regression sold as a refactor, and the spec
-says the opposite: absent the variable, `execute_step` keeps its existing
-semaphore.
-
-```ts
-  // One counter for every channel when a door is configured; the old local cap
-  // of two when it is not. `absent means off` has to mean today's behaviour,
-  // and today's behaviour here is a semaphore.
-  const door = configuredCapacity();
-```
-
-**The admission does not go where the semaphore was.** The old `acquire` sits *before* the connection is built and before `getSmartAgent` resolves, so a step that arrives during a shared corpus build would hold a place for the whole wait. Move it **after** the agent handle is in hand — the same order the chat channels use in Task 7 — and put it immediately before the pipeline runs:
-
-```ts
-      // Agent first, door second. A caller waiting for a destination to warm,
-      // or for the shared corpus build, waits outside the door holding an MCP
-      // request and no pipeline.
-      const handle = await getSmartAgent(undefined, targetDestination);
-
-      // With a door: one counter for every channel, since the old local cap
-      // governed this route alone and it is the same memory the chat channels
-      // spend. Without one: the semaphore, exactly as today — it parks the
-      // excess rather than refusing it, which is the behaviour that must not
-      // change for a deployment that configured nothing.
-      let admission: AdmissionHandle | undefined;
-      let releaseSlot: (() => void) | undefined;
-      if (configuredCapacity() !== undefined) {
-        try {
-          admission = await admit();
-        } catch (err) {
-          if (err instanceof DoorFullError) {
-            return textResult(doorFullText(), true);
-          }
-          throw err;
-        }
-      } else {
-        releaseSlot = await execStepSemaphore.acquire();
-      }
-```
-
-Everything between the old acquire point and this line — connection construction, destination resolution, agent resolution — now happens before a place is taken. Keep the `finally` guarded so it only tears down what was actually created.
-
-and in the existing `finally`, release whichever was taken, last — after
-`safeStop` and after `dropRequest`:
-
-```ts
-        await admission?.release();
-        releaseSlot?.();
-```
-
-> `EXEC_STEP_MAX_CONCURRENCY` and the semaphore stay exactly as they are. They
-> are what "absent means off" means on this channel. Where a deployment wants
-> one cap across every channel instead, `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` is
-> that, and setting it turns the semaphore off for this route — note the
-> relationship in the release notes in Task 15, not a removal.
-
-- [ ] **Step 6: Add the door refusal to the formatters**
-
-In `srv/lib/throttle-surfacing.ts` add:
-
-```ts
-/**
- * What a full door says. No number, and no `Retry-After` anywhere that uses
- * this: how long the pipelines ahead will run is not something we measure, and
- * the queue's own depth describes a different resource entirely.
- */
-export function doorFullText(): string {
-  return 'The service has no capacity for a new request right now. Nothing was started, so nothing is half-done. Please try again.';
-}
-```
-
-- [ ] **Step 7: Run the suite, lint, commit**
-
-```bash
-npx jest test/unit/admission.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/lib/admission.ts srv/lib/throttle-surfacing.ts srv/agent-mcp.ts test/unit/admission.test.ts
-git add srv/lib/admission.ts srv/lib/throttle-surfacing.ts srv/agent-mcp.ts test/unit/admission.test.ts
-git commit -m "feat(gatekeeper): one door for every channel, refusing without a number"
-```
-
-### Task 6: The call register, and the order teardown runs in
-
-**Files:**
-- Modify: `srv/lib/admission.ts` (the register), `srv/agent-manager.ts` (`invokeEmbeddedTool` takes the signal), `srv/agent-mcp.ts` (teardown order)
-- Test: `test/unit/admission-register.test.ts`
-
-**Interfaces:**
-- Consumes: `AdmissionHandle` from Task 5.
-- Produces on `AdmissionHandle`:
-  - `track<T>(call: Promise<T>): Promise<T>` — register at dispatch, deregister on settle
-  - `readonly outstanding: number`
-  - `drain(): Promise<void>` — wait for the register without giving the place back
-  - `release()` now awaits the register before resolving
-
-**The order, and why it is that order:** `safeStop` calls `closeSession` then `reset`, so running it while a registered write is still on that connection tears the session out from under the call — which is how an object ends up created-but-inactive with a lock nobody holds. Holding the slot does not help, because the slot was never what the write was using.
-
-1. Stop starting new calls (the signal fires; the tool loop starts nothing further).
-2. Wait for the register to empty.
-3. `safeStop`.
-4. Release the slot.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/admission-register.test.ts`:
-
-```ts
-const load = () => {
-  jest.resetModules();
-  const config = require('../../srv/lib/gatekeeper-config') as typeof import('../../srv/lib/gatekeeper-config');
-  config.clearGatekeeperConfig();
-  const mod = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
-  mod.clearAdmission();
-  return mod;
-};
-
-afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-  jest.resetModules();
-});
-
-/** A promise the test settles by hand. */
-function deferred<T>() {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((r) => { resolve = r; });
-  return { promise, resolve };
-}
-
-describe('the register — the slot waits for the transport, not for the report', () => {
-  it('holds the place until a tracked call settles', async () => {
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
-    const mod = load();
-    const handle = await mod.admit();
-    const call = deferred<string>();
-    void handle.track(call.promise);
-
-    // The caller has been answered; the write has not finished.
-    const releasing = handle.release();
-    let released = false;
-    void releasing.then(() => { released = true; });
-    await Promise.resolve();
-    expect(released).toBe(false);
-    await expect(mod.admit()).rejects.toBeInstanceOf(mod.DoorFullError);
-
-    call.resolve('done');
-    await releasing;
-    expect(mod.livePipelines()).toBe(0);
-    await expect(mod.admit()).resolves.toBeDefined();
-  });
-
-  it('counts a rejected call as settled', async () => {
-    const mod = load();
-    const handle = await mod.admit();
-    const call = deferred<string>();
-    const tracked = handle.track(call.promise);
-    void tracked.catch(() => undefined);
-    expect(handle.outstanding).toBe(1);
-    call.resolve('x');
-    await tracked;
-    expect(handle.outstanding).toBe(0);
-  });
-
-  it('is aborted by shutdown and by nothing else', async () => {
-    const mod = load();
-    const handle = await mod.admit();
-    expect(handle.signal.aborted).toBe(false);
-    mod.abortAllForShutdown();
-    expect(handle.signal.aborted).toBe(true);
-  });
-});
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `npx jest test/unit/admission-register.test.ts`
-Expected: FAIL — `handle.track is not a function`.
-
-- [ ] **Step 3: Add the register to the handle**
-
-In `srv/lib/admission.ts`, extend the interface and `admit()`:
-
-```ts
-export interface AdmissionHandle {
-  readonly signal: AbortSignal;
-  /** Calls dispatched and not yet settled. */
-  readonly outstanding: number;
-  /**
-   * Register one in-flight call — a model call or a tool call, both — before
-   * it leaves, and deregister it when it settles.
-   *
-   * The register lives here rather than in the gated LLM wrapper because that
-   * wrapper never sees a tool call: those go through `McpClientAdapter`, which
-   * races the caller's signal AROUND the call, so an abort answers the pipeline
-   * while an embedded ADT write keeps running underneath.
-   */
-  track<T>(call: Promise<T>): Promise<T>;
-  /** Waits for the register to empty, then gives the place back. Idempotent. */
-  release(): Promise<void>;
-}
-```
-
-and in the returned object:
-
-```ts
-  const inFlight = new Set<Promise<unknown>>();
-  let released = false;
-  const handle: AdmissionHandle = {
-    signal: controller.signal,
-    get outstanding() {
-      return inFlight.size;
-    },
-    track<T>(call: Promise<T>): Promise<T> {
-      const settled = call.finally(() => {
-        inFlight.delete(settled);
-      });
-      inFlight.add(settled);
-      // A rejection reaches the original caller; here it only means "settled".
-      settled.catch(() => undefined);
-      return call;
-    },
-    release: async () => {
-      if (released) return;
-      released = true;
-      // Every call already dispatched settles on its own. Nothing is cut: an
-      // ADT request is asynchronous in substance, so cutting it would discard
-      // our knowledge of the work rather than stop it.
-      while (inFlight.size > 0) {
-        await Promise.allSettled([...inFlight]);
-      }
-      handles.delete(controller);
-      live--;
-    },
-  };
-  return Promise.resolve(handle);
-```
-
-- [ ] **Step 4: Let the embedded handler take the signal**
-
-In `srv/agent-manager.ts`, change `invokeEmbeddedTool` and the handler wired at `srv/agent-manager.ts:2020`:
-
-```ts
-  async function invokeEmbeddedTool(
-    name: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-```
-
-```ts
-    callToolHandler: async (name, args, signal) =>
-      invokeEmbeddedTool(name, args, signal),
-```
-
-The signal is threaded to any ADT call the handler makes that accepts one. llm-agent 25.0.0 passes it; before that release the third argument was never sent, so a handler taking two arguments silently dropped it.
-
-- [ ] **Step 5: Put the teardown in order**
-
-In `srv/agent-mcp.ts`, the `finally` becomes:
-
-```ts
-      } finally {
-        // Order matters and this is the order. safeStop calls closeSession and
-        // then reset, so running it while a registered write is still on this
-        // connection tears the session out from under the call — which is how
-        // an object ends up created-but-inactive and locked.
-        //
-        // 1. nothing new starts (the signal has fired, or the step is done)
-        // 2. every dispatched call settles
-        // 3. the session is torn down
-        // 4. the place is given back, last
-        await admission.drain();
-        await safeStop(connection);
-        (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
-        await admission.release();
-      }
-```
-
-Add `drain()` to the handle, which waits for the register without giving the place back:
-
-```ts
-    drain: async () => {
-      while (inFlight.size > 0) {
-        await Promise.allSettled([...inFlight]);
-      }
-    },
-```
-
-and declare it on the interface as `drain(): Promise<void>`.
-
-- [ ] **Step 6: Run, lint, typecheck, commit**
-
-```bash
-npx jest test/unit/admission-register.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/lib/admission.ts srv/agent-manager.ts srv/agent-mcp.ts test/unit/admission-register.test.ts
-git add srv/lib/admission.ts srv/agent-manager.ts srv/agent-mcp.ts test/unit/admission-register.test.ts
-git commit -m "feat(gatekeeper): the slot waits for the calls, and safe-stop goes last"
-```
-
----
-
-### Task 6b: Wire the register to the calls it exists for
-
-**Files:**
-- Modify: `srv/lib/admission.ts` (request-scoped handle), `srv/lib/gated-llm.ts` (register the model call), `srv/agent-manager.ts` (register the tool call, and run each pipeline inside the scope)
-- Test: `test/unit/register-wiring.test.ts`
-
-**Interfaces:**
-- Consumes: `AdmissionHandle.track` from Task 6.
-- Produces:
-  - `export function runWithAdmission<T>(handle: AdmissionHandle, fn: () => Promise<T>): Promise<T>`
-  - `export function currentAdmission(): AdmissionHandle | undefined`
-
-**Why this is its own task:** Task 6 gives the handle a register and a drain, and nothing puts anything in it. A register nobody writes to always drains instantly, so `safeStop` would close the session on top of a live ADT write and the slot would free early — the exact defect the register exists to prevent, dressed as a passing test. Threading the `AbortSignal` into `invokeEmbeddedTool` does not do it either: a signal says *stop starting*, the register says *this has not finished*.
-
-**Why an async-local scope rather than a parameter:** the two places that dispatch — the gated LLM wrapper and the embedded tool handler — sit far below the handler that was admitted, with the library's pipeline in between. There is no parameter to thread. This codebase already carries per-request state that way (`connectionALS` in `agent-manager`), and this follows it.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/register-wiring.test.ts`:
-
-```ts
-import type { ILlm, LlmError, LlmResponse, Result } from '@mcp-abap-adt/llm-agent';
-
-const load = () => {
-  jest.resetModules();
-  const admission = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
-  admission.clearAdmission();
-  const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-  registry.clearQuotaRegistry();
-  const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
-  return { admission, gated };
-};
-
-afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
-  jest.resetModules();
-});
-
-function deferred<T>() {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((r) => { resolve = r; });
-  return { promise, resolve };
-}
-
-/** An ILlm whose single call the test settles by hand. */
-function hangingLlm(gate: { promise: Promise<Result<LlmResponse, LlmError>> }): ILlm {
-  return {
-    model: 'm',
-    chat: () => gate.promise,
-    async *streamChat() {
-      yield { ok: true as const, value: { content: '', finishReason: 'stop' as const } };
-    },
-  };
-}
-
-describe('the register is written to by the calls it exists for', () => {
-  it('holds the slot while a model call started inside the scope is pending', async () => {
-    const { admission, gated } = load();
-    const handle = await admission.admit();
-    const call = deferred<Result<LlmResponse, LlmError>>();
-
-    const running = admission.runWithAdmission(handle, async () => {
-      const llm = gated.gateLlm(hangingLlm(call), 'm');
-      return llm.chat([]);
-    });
-
-    await Promise.resolve();
-    await Promise.resolve();
-    // Registered at dispatch, not at completion. Without this the drain below
-    // finds an empty register and safeStop runs on top of a live call.
-    expect(handle.outstanding).toBe(1);
-
-    let drained = false;
-    void handle.drain().then(() => { drained = true; });
-    await Promise.resolve();
-    expect(drained).toBe(false);
-
-    call.resolve({ ok: true, value: { content: 'ok', finishReason: 'stop' } });
-    await running;
-    await handle.drain();
-    expect(handle.outstanding).toBe(0);
-  });
-
-  it('registers a tool call dispatched inside the scope', async () => {
-    const { admission } = load();
-    const handle = await admission.admit();
-    const call = deferred<string>();
-
-    await admission.runWithAdmission(handle, async () => {
-      // Stand-in for the embedded tool dispatch: whatever starts inside the
-      // scope registers itself, LLM or MCP alike.
-      const current = admission.currentAdmission();
-      expect(current).toBe(handle);
-      void current?.track(call.promise);
-    });
-
-    expect(handle.outstanding).toBe(1);
-    call.resolve('done');
-    await handle.drain();
-    expect(handle.outstanding).toBe(0);
-  });
-
-  it('registers nothing when there is no admission in scope', async () => {
-    // The shared corpus build runs outside any request, and must stay outside:
-    // attributing it to whoever arrived first would make a global lifecycle the
-    // property of a caller that may be gone before it ends.
-    const { admission, gated } = load();
-    expect(admission.currentAdmission()).toBeUndefined();
-    const call = deferred<Result<LlmResponse, LlmError>>();
-    const llm = gated.gateLlm(hangingLlm(call), 'm');
-    const pending = llm.chat([]);
-    call.resolve({ ok: true, value: { content: 'ok', finishReason: 'stop' } });
-    await expect(pending).resolves.toBeDefined();
-  });
-
-  it('keeps two pipelines’ registers apart', async () => {
-    const { admission } = load();
-    const a = await admission.admit();
-    const b = await admission.admit();
-    const callA = deferred<string>();
-
-    await admission.runWithAdmission(a, async () => {
-      admission.currentAdmission()?.track(callA.promise);
-    });
-
-    expect(a.outstanding).toBe(1);
-    expect(b.outstanding).toBe(0);
-    callA.resolve('x');
-    await a.drain();
-  });
-});
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `npx jest test/unit/register-wiring.test.ts`
-Expected: FAIL, `admission.runWithAdmission is not a function`.
-
-- [ ] **Step 3: Add the request-scoped handle**
-
-In `srv/lib/admission.ts`:
-
-```ts
-import { AsyncLocalStorage } from 'node:async_hooks';
-
-/**
- * The admission handle for the pipeline running in this async context.
- *
- * The two places that dispatch a call — the gated LLM wrapper and the embedded
- * tool handler — sit far below the handler that was admitted, with the
- * library's pipeline in between, so there is no parameter to thread. This
- * codebase already carries per-request state this way.
- */
-const admissionALS = new AsyncLocalStorage<AdmissionHandle>();
-
-/** Run a pipeline so that everything it dispatches registers against `handle`. */
-export function runWithAdmission<T>(
-  handle: AdmissionHandle,
-  fn: () => Promise<T>,
-): Promise<T> {
-  return admissionALS.run(handle, fn);
-}
-
-/**
- * The handle in scope, or nothing.
- *
- * Nothing is the correct answer for process-owned work: the shared corpus
- * build runs outside any request and must not become the property of whichever
- * caller happened to await it.
- */
-export function currentAdmission(): AdmissionHandle | undefined {
-  return admissionALS.getStore();
-}
-```
-
-- [ ] **Step 4: Register the model call at dispatch**
-
-In `srv/lib/gated-llm.ts`, wrap the attempt inside `runGated`:
-
-```ts
-    const current = currentAdmission();
-    const attempted = attempt();
-    // Registered before it is awaited. The slot outlives the calls this
-    // pipeline started, and an aborted caller must not free it on top of one.
-    const { value, throttled } = await (current ? current.track(attempted) : attempted);
-    // `throttled` is the error as the caller produced it; `limit` below is the
-    // marker found anywhere in its cause chain.
-```
-
-and the same around `inner.streamChat`'s opening attempt, tracking a promise that settles when the stream ends:
-
-```ts
-      const streamDone = deferredDone();
-      currentAdmission()?.track(streamDone.promise);
-      try {
-        // ... the existing for-await loop ...
-      } finally {
-        streamDone.resolve();
-      }
-```
-
-where `deferredDone` is a two-line local helper returning `{ promise, resolve }`.
-
-- [ ] **Step 5: Register the tool call at dispatch**
-
-In `srv/agent-manager.ts`, inside `invokeEmbeddedTool`, register the dispatched call:
-
-**First extract the dispatch.** `invokeEmbeddedTool` currently holds its
-authorization check and its dispatch logic inline, and two tasks need to wrap
-the dispatch alone. Split it once, here, and keep the name:
-
-```ts
-  /**
-   * The tool call itself, with the authorization check left behind in the
-   * caller. Extracted so the register (here) and the outage classifier
-   * (Task 9) can each wrap the dispatch without wrapping the check.
-   */
-  async function dispatchEmbeddedTool(
-    name: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-    // ... the body that follows the authorization check today, unchanged ...
-  }
-```
-
-`invokeEmbeddedTool` keeps the authorization check and then:
-
-```ts
-    const dispatched = dispatchEmbeddedTool(name, args, signal);
-    // One hook, two readers: the register learns the call is in flight, and
-    // RecordingMcpClient's record was opened for the same reason one line up.
-    return currentAdmission()?.track(dispatched) ?? dispatched;
-```
-
-- [ ] **Step 6: Run each pipeline inside the scope**
-
-In `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`, wrap the pipeline invocation — everything between admission and the `finally` — in `runWithAdmission(admission, async () => { ... })`. Nothing else moves; the `finally` stays where it is, outside the scope, so `drain`, `safeStop` and `release` run in that order after the scope has ended.
-
-- [ ] **Step 7: Run, lint, commit**
-
-```bash
-npx jest test/unit/register-wiring.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/lib/admission.ts srv/lib/gated-llm.ts srv/agent-manager.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts test/unit/register-wiring.test.ts
-git add -A
-git commit -m "feat(gatekeeper): the register is written to by the model and tool calls themselves"
-```
-
----
-
-### Task 7: The chat channels — admission, a detached sink, and a disconnect that ends nothing
-
-**Files:**
-- Modify: `srv/openai-handler.ts`, `srv/anthropic-handler.ts`
-- Create: `srv/lib/response-sink.ts`
-- Test: `test/unit/response-sink.test.ts`, `test/unit/chat-admission.test.ts`
-
-**Interfaces:**
-- Consumes: `admit`, `DoorFullError`, `AdmissionHandle` from Tasks 5–6; `doorFullText` from Task 5.
-- Produces: `export function detachableSink(res: ServerResponse): { write(chunk: string): void; end(): void; detach(): void; readonly attached: boolean }`
-
-**Three changes, in this order inside each handler:** resolve the agent (unchanged), then admit, then run with a sink that can be detached.
-
-- [ ] **Step 1: Write the failing test for the sink**
-
-Create `test/unit/response-sink.test.ts`:
-
-```ts
-import { detachableSink } from '../../srv/lib/response-sink';
-
-function fakeRes() {
-  const written: string[] = [];
-  let ended = false;
-  return {
-    written,
-    isEnded: () => ended,
-    res: {
-      write(chunk: string) {
-        if (ended) throw new Error('write after end');
-        written.push(chunk);
-        return true;
-      },
-      end() {
-        ended = true;
-      },
-    },
-  };
-}
-
-describe('detachableSink', () => {
-  it('writes through while attached', () => {
-    const f = fakeRes();
-    const sink = detachableSink(f.res as never);
-    sink.write('a');
-    expect(f.written).toEqual(['a']);
-  });
-
-  it('drops everything after detach, and never throws', () => {
-    // Not "guarded": replaced. A write that throws into the pipeline's catch
-    // would end the run, and the listener meant to honour the guarantee would
-    // be the thing that broke it.
-    const f = fakeRes();
-    const sink = detachableSink(f.res as never);
-    sink.detach();
-    expect(() => {
-      sink.write('b');
-      sink.write('c');
-      sink.end();
-    }).not.toThrow();
-    expect(f.written).toEqual([]);
-    expect(f.isEnded()).toBe(false);
-    expect(sink.attached).toBe(false);
-  });
-
-  it('swallows a transport error rather than raising it into the caller', () => {
-    const sink = detachableSink({
-      write() {
-        throw new Error('EPIPE');
-      },
-      end() {
-        throw new Error('EPIPE');
-      },
-    } as never);
-    expect(() => {
-      sink.write('x');
-      sink.end();
-    }).not.toThrow();
-  });
-});
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `npx jest test/unit/response-sink.test.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Write the sink**
-
-Create `srv/lib/response-sink.ts`:
-
-```ts
-import type { ServerResponse } from 'node:http';
-
-/**
- * The place a response is written, which can be taken away.
- *
- * When a client disconnects mid-stream the pipeline keeps running — a
- * disconnected caller is not a reason to stop, because the work is already in
- * SAP's hands and cutting a write chain between create and activate leaves the
- * object inactive and locked. But the handlers write unconditionally once
- * streaming has begun, and a write to a closed socket throws; caught by the
- * pipeline, that throw would end the run.
- *
- * So the sink is detached rather than guarded: after `detach()` every chunk and
- * every closing envelope is dropped before it reaches the socket, and no write
- * error can be raised into the pipeline at all.
- */
-export function detachableSink(res: ServerResponse): {
-  write(chunk: string): void;
-  end(): void;
-  detach(): void;
-  readonly attached: boolean;
-} {
-  let live = true;
-  return {
-    get attached() {
-      return live;
-    },
-    write(chunk: string) {
-      if (!live) return;
-      try {
-        res.write(chunk);
-      } catch {
-        // The socket went away between the check and the write. Nothing to do
-        // and nothing to raise: the caller is gone, the work is not.
-        live = false;
-      }
-    },
-    end() {
-      if (!live) return;
-      try {
-        res.end();
-      } catch {
-        live = false;
-      }
-    },
-    detach() {
-      live = false;
-    },
-  };
-}
-```
-
-- [ ] **Step 4: Run it to verify it passes**
-
-Run: `npx jest test/unit/response-sink.test.ts`
-Expected: PASS, 3 tests.
-
-- [ ] **Step 5: Wire both handlers**
-
-In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, after the agent handle is resolved and before the pipeline starts:
-
-```ts
-  // Admission comes AFTER the agent is resolved: a caller waiting for a
-  // destination to warm, or for the shared corpus build, waits outside the
-  // door holding an HTTP request and no pipeline.
-  //
-  // Which means the wait can be long — up to LLM_AGENT_DESTINATION_INIT_WAIT_MS
-  // — and a caller can leave during it. The listener is therefore installed
-  // BEFORE that wait, above this block, and checked here: a listener installed
-  // after admission would already have missed the event, and we would take a
-  // place and run a whole pipeline for a client that had gone.
-  if (callerGone) {
-    await safeStop(requestConnection);
-    return;
-  }
-
-  let admission: AdmissionHandle;
-  try {
-    admission = await admit();
-  } catch (err) {
-    if (err instanceof DoorFullError) {
-      await safeStop(requestConnection);
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { type: 'overloaded_error', message: doorFullText() } }));
-      return;
-    }
-    throw err;
-  }
-```
-
-Replace the existing disconnect listener, and move it **above** the agent
-resolution so it cannot miss a client that leaves during the wait:
-
-```ts
-  // Installed before anything slow. The old listener sat after the agent was
-  // in hand, so a client that gave up during a destination warm-up or a corpus
-  // build was never noticed.
-  const sink = detachableSink(res);
-  let callerGone = false;
-  let admitted: AdmissionHandle | undefined;
-  res.on('close', () => {
-    if (res.writableEnded) return;
-    // A note, not a teardown. The caller is gone; SAP is still waiting for the
-    // rest of the chain. safeStop runs after the register empties, in the
-    // finally below — never here.
-    callerGone = true;
-    sink.detach();
-    if (admitted) markCallerGone(admitted);
-  });
-```
-
-After `admit()` succeeds, set `admitted = admission` and, if `callerGone` is
-already true, call `markCallerGone(admission)` at once — the event may have
-arrived between the check and the admission.
-
-and in the handler's own `finally`:
-
-```ts
-  } finally {
-    await admission.drain();
-    await safeStop(requestConnection);
-    await admission.release();
-  }
-```
-
-Every `res.write(...)` and `res.end()` on the streaming path becomes `sink.write(...)` / `sink.end()`.
-
-> `markCallerGone` is added in Task 12; until then, declare it as a no-op export in `srv/lib/admission.ts` so this task stands alone:
-> ```ts
-> /** Marks the pipeline caller-less. The collision guard in Task 12 reads it. */
-> export function markCallerGone(_handle: AdmissionHandle): void {}
-> ```
-
-- [ ] **Step 6: Write the channel test**
-
-Create `test/unit/chat-admission.test.ts`:
-
-```ts
-const load = () => {
-  jest.resetModules();
-  const mod = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
-  mod.clearAdmission();
-  return mod;
-};
-
-afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES;
-  jest.resetModules();
-});
-
-describe('every entrance is counted', () => {
-  it('spends the same capacity whichever channel arrives', async () => {
-    // A door with one way around it is not a door. The counter is module
-    // state shared by every handler, so this asserts the shape they all use.
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '2';
-    const mod = load();
-    const a = await mod.admit();
-    const b = await mod.admit();
-    await expect(mod.admit()).rejects.toBeInstanceOf(mod.DoorFullError);
-    await a.release();
-    await expect(mod.admit()).resolves.toBeDefined();
-    void b;
-  });
-
-  it('does not start a pipeline for a caller that left during the agent wait', async () => {
-    // The window between "request arrives" and "agent resolved" can be the
-    // whole of LLM_AGENT_DESTINATION_INIT_WAIT_MS. A listener installed after
-    // it would have missed the event, and the door would hand out a place for
-    // a client that was already gone.
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
-    const mod = load();
-    let callerGone = false;
-    const res = { writableEnded: false, on: (_e: string, fn: () => void) => fn() };
-    // Stand-in for the handler's own ordering: listener first, slow wait, then
-    // the check that decides whether to admit at all.
-    res.on('close', () => { callerGone = true; });
-    await new Promise((r) => setTimeout(r, 5));
-    expect(callerGone).toBe(true);
-    if (!callerGone) await mod.admit();
-    expect(mod.livePipelines()).toBe(0);
-  });
-
-  it('does not consume the last place while a caller waits for the agent', async () => {
-    // Resolution happens before admission, so a request arriving mid-build is
-    // outside the door and the last place is still there for whoever is ready.
-    process.env.LLM_GATEKEEPER_MAX_LIVE_PIPELINES = '1';
-    const mod = load();
-    const waitingForAgent = new Promise((r) => setTimeout(r, 5));
-    const admittedMeanwhile = await mod.admit();
-    await waitingForAgent;
-    expect(mod.livePipelines()).toBe(1);
-    await admittedMeanwhile.release();
-  });
-});
-```
-
-- [ ] **Step 7: Run everything, lint, commit**
-
-```bash
-npm run test:unit && npm run test:check
-npx biome check --write srv/lib/response-sink.ts srv/lib/admission.ts srv/openai-handler.ts srv/anthropic-handler.ts test/unit/response-sink.test.ts test/unit/chat-admission.test.ts
-git add srv/lib/response-sink.ts srv/lib/admission.ts srv/openai-handler.ts srv/anthropic-handler.ts test/unit/response-sink.test.ts test/unit/chat-admission.test.ts
-git commit -m "feat(gatekeeper): chat channels take a place, and a disconnect ends nothing"
-```
-
----
-
-### Task 8: Remove the fourth entrance
-
-**Files:**
-- Modify: `srv/agent-service.cds` (drop `Chat`), `srv/agent-service.ts` (drop its handler)
-- Test: `test/unit/agent-service-surface.test.ts`
-
-**Why delete rather than gate:** `AgentService.Chat` takes no destination and no per-request credentials, so it cannot reach a SAP system the way the other three channels can. It establishes no request connection and calls no `safeStop`. It is the one entrance with neither a door nor a session lifecycle — an endpoint that no path in this design fits is dead surface, not a gap in the design.
-
-**`Health` stays, and is not an entrance at all.** It calls `agent.healthCheck()` and nothing else: no `process`, no connection, no session, no pipeline. It is exactly the "call with nobody waiting" the spec's policy is written for, so it needs no door — only a permit, which Task 14 gives it. Deleting it would have removed the only production caller of the behaviour that task implements, leaving a policy with nothing to apply to.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/agent-service-surface.test.ts`:
-
-```ts
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-const cds = readFileSync(join(__dirname, '../../srv/agent-service.cds'), 'utf8');
-const ts = readFileSync(join(__dirname, '../../srv/agent-service.ts'), 'utf8');
-
-describe('AgentService — the surface that is left', () => {
-  it('no longer exposes Chat', () => {
-    expect(cds).not.toMatch(/function\s+Chat\s*\(/);
-    expect(ts).not.toMatch(/srv\.on\(\s*'Chat'/);
-  });
-
-  it('starts no pipeline anywhere in this file', () => {
-    // The Chat handler called agent.process straight through, past every door.
-    expect(ts).not.toMatch(/agent\.process\(/);
-  });
-
-  it('keeps Health, which starts nothing and needs no door', () => {
-    // Not an entrance: it probes and returns. Deleting it would leave the
-    // health policy in Task 14 with nothing to apply to.
-    expect(cds).toMatch(/function\s+Health\s*\(/);
-    expect(ts).toMatch(/agent\.healthCheck\(/);
-  });
-});
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `npx jest test/unit/agent-service-surface.test.ts`
-Expected: FAIL — all three still present.
-
-- [ ] **Step 3: Remove the endpoints**
-
-Delete the `Chat` function declaration from `srv/agent-service.cds` and its `srv.on('Chat', ...)` handler from `srv/agent-service.ts`. Leave `Health` and everything else in both files untouched.
-
-- [ ] **Step 4: Check nothing else calls them**
-
-Run: `grep -rn "AgentService\|/agent'" srv/ app/ docs/ --include="*.ts" --include="*.html" --include="*.json" --include="*.md" | grep -v node_modules`
-
-Any hit in `app/` or `docs/` is a caller to update or a document to correct. The chat UI uses `/v1/chat/completions`, not this endpoint — confirm that before deleting, and if a caller does exist, stop and report it rather than breaking it.
 
 - [ ] **Step 5: Run, lint, commit**
 
 ```bash
-npx jest test/unit/agent-service-surface.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/agent-service.ts test/unit/agent-service-surface.test.ts
-git add srv/agent-service.cds srv/agent-service.ts test/unit/agent-service-surface.test.ts
-git commit -m "refactor: drop AgentService.Chat, the entrance with no door and no session"
+npx jest test/unit/gatekeeper-config.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/gatekeeper-config.ts srv/agent-config.ts test/unit/gatekeeper-config.test.ts
+git add srv/lib/gatekeeper-config.ts srv/agent-config.ts test/unit/gatekeeper-config.test.ts
+git commit -m "feat(gatekeeper): three variables, absent means off, malformed refuses to start"
 ```
 
-## Phase 2 — a dependency that is down
+---
 
-### Task 9: Tell an outage from a tool that failed
+### Task 5: Retention — places, leases, and closing before deleting
+
+**Files:**
+- Create: `srv/lib/session-retention.ts`
+- Test: `test/unit/session-retention.test.ts`
+
+**Interfaces:**
+- Consumes: nothing. Stores are injected, so this unit knows no module of the service.
+- Produces:
+  - `export interface RetentionStores { hasState(userId: string, sessionId: string): boolean; deleteAll(userId: string, sessionId: string): void }`
+  - `export type LeaseKind = 'pipeline' | 'rag'`
+  - `export interface Lease { readonly kind: LeaseKind; readonly signal: AbortSignal; release(): void }`
+  - `export type LeaseRefusal = { refused: 'closing' | 'retention' }`
+  - `export function isRefusal(x: Lease | LeaseRefusal): x is LeaseRefusal`
+  - `export class SessionRetention`:
+    - `constructor(stores: RetentionStores, cap?: number, now?: () => number)`
+    - `canReserve(userId: string, sessionId: string): boolean`
+    - `lease(userId: string, sessionId: string, kind: LeaseKind): Lease | LeaseRefusal`
+    - `close(userId: string, sessionId: string): Promise<void>`
+    - `isKnown(userId: string, sessionId: string): boolean`
+    - `isClosing(userId: string, sessionId: string): boolean`
+    - `maySweep(userId: string, sessionId: string): boolean`
+    - `forgetEmpty(): number`
+    - `snapshot(): RetentionSnapshot` where `RetentionSnapshot = { retained: number; cap: number | undefined; evictions: number; closing: number }`
+
+**What a lease is for.** Idle means nothing is working on the session, and a slot does not say that: `/v1/rag/*` takes no slot, so a session in the middle of an upload looks idle to an LRU that asks only about slots — and the upload makes its own eviction likelier, because other sessions are touched while it runs. So eviction and the sweep test for a lease, which every operation on session-scoped state takes. A pipeline takes one kind, a RAG request the other.
+
+**What the mark is for.** Deleting a directory does not stop the operation writing into it. So every deletion closes the session to new leases first, cancels only RAG leases (their writes land only in the state being removed), waits for every lease to settle — a pipeline runs to its own end, because its writes land in SAP — and removes the session once. The caller is answered at the mark; the bytes go when the last operation stops.
+
+**Why eviction is synchronous.** `lease` may have to evict to make room, and the door calls it inside the same turn of the event loop in which it decided the waiter was eligible. An evicted session has no lease by construction, so its wait is empty, and `deleteAll` is synchronous: nothing can take a lease between the choice and the deletion.
+
+**Why a released session with nothing in it leaves the count.** `execute_step` mints a session per call and keeps no history. Without this, every step would occupy a place until the next sweep.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/session-retention.test.ts`:
+
+```ts
+import {
+  isRefusal,
+  type Lease,
+  type LeaseRefusal,
+  SessionRetention,
+} from '../../srv/lib/session-retention';
+
+function fakeStores() {
+  const held = new Set<string>();
+  const log: string[] = [];
+  return {
+    held,
+    log,
+    put: (u: string, s: string) => held.add(`${u}/${s}`),
+    stores: {
+      hasState: (u: string, s: string) => held.has(`${u}/${s}`),
+      deleteAll: (u: string, s: string) => {
+        log.push(`delete ${u}/${s}`);
+        held.delete(`${u}/${s}`);
+      },
+    },
+  };
+}
+
+function lease(x: Lease | LeaseRefusal): Lease {
+  if (isRefusal(x)) throw new Error(`refused: ${x.refused}`);
+  return x;
+}
+
+function clock() {
+  let t = 0;
+  return { now: () => t, tick: (ms = 1) => (t += ms) };
+}
+
+describe('places', () => {
+  it('counts a session once however many leases it holds', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 3);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'pipeline'));
+    lease(r.lease('alice', 'A', 'rag'));
+    expect(r.snapshot().retained).toBe(1);
+  });
+
+  it('evicts the least recently used idle session to make room, all of it', () => {
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 2, c.now);
+    for (const s of ['A', 'B']) {
+      f.put('alice', s);
+      lease(r.lease('alice', s, 'rag')).release();
+      c.tick();
+    }
+    // A is older. C needs a place.
+    const l = lease(r.lease('alice', 'C', 'rag'));
+    expect(f.log).toEqual(['delete alice/A']);
+    expect(r.isKnown('alice', 'A')).toBe(false);
+    expect(r.snapshot()).toMatchObject({ retained: 2, evictions: 1 });
+    l.release();
+  });
+
+  it('never evicts a session holding a pipeline lease', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 1);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'pipeline'));
+    expect(r.canReserve('bob', 'B')).toBe(false);
+    expect(r.lease('bob', 'B', 'pipeline')).toEqual({ refused: 'retention' });
+    expect(f.log).toEqual([]);
+  });
+
+  it('never evicts a session in the middle of a RAG operation, slot or no slot', () => {
+    // The test the slot-only rule passed while being wrong: the upload holds no
+    // slot, and it is the least recently used.
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 2, c.now);
+    f.put('alice', 'A');
+    const upload = lease(r.lease('alice', 'A', 'rag'));
+    c.tick();
+    f.put('alice', 'B');
+    lease(r.lease('alice', 'B', 'rag')).release();
+    c.tick();
+    // B is the only idle candidate, so B goes and A survives.
+    lease(r.lease('alice', 'C', 'rag'));
+    expect(f.log).toEqual(['delete alice/B']);
+    expect(r.isKnown('alice', 'A')).toBe(true);
+    upload.release();
+  });
+
+  it('a cap filled entirely by live sessions evicts nothing', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    lease(r.lease('alice', 'A', 'pipeline'));
+    lease(r.lease('bob', 'B', 'pipeline'));
+    expect(r.lease('carol', 'C', 'pipeline')).toEqual({ refused: 'retention' });
+    expect(f.log).toEqual([]);
+  });
+
+  it('is unbounded without a cap', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores);
+    for (let i = 0; i < 50; i++) lease(r.lease('alice', `S${i}`, 'pipeline'));
+    expect(r.snapshot().retained).toBe(50);
+    expect(r.snapshot().cap).toBeUndefined();
+  });
+
+  it('lets a released session that holds nothing leave the count', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    lease(r.lease('agent', 'step-1', 'pipeline')).release();
+    expect(r.snapshot().retained).toBe(0);
+  });
+
+  it('keeps a released session that still holds state', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'pipeline')).release();
+    expect(r.isKnown('alice', 'A')).toBe(true);
+  });
+});
+
+describe('closing, then deleting', () => {
+  it('deletes at once when nothing holds the session', async () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    await r.close('alice', 'A');
+    expect(f.log).toEqual(['delete alice/A']);
+    expect(r.isKnown('alice', 'A')).toBe(false);
+  });
+
+  it('refuses new leases from the moment it is closed', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    const held = lease(r.lease('alice', 'A', 'pipeline'));
+    void r.close('alice', 'A');
+    expect(r.lease('alice', 'A', 'rag')).toEqual({ refused: 'closing' });
+    expect(r.isClosing('alice', 'A')).toBe(true);
+    held.release();
+  });
+
+  it('cancels a RAG lease, and still waits for it to settle before deleting', async () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    const upload = lease(r.lease('alice', 'A', 'rag'));
+    const closed = r.close('alice', 'A');
+    expect(upload.signal.aborted).toBe(true);
+    // Cancelled is not finished: the upload is still writing.
+    expect(f.log).toEqual([]);
+    f.log.push('upload wrote its last document');
+    upload.release();
+    await closed;
+    expect(f.log).toEqual(['upload wrote its last document', 'delete alice/A']);
+  });
+
+  it('does not cancel a pipeline, and deletes only after it ends', async () => {
+    // A logout is a disconnect with a better name. Cutting an admitted pipeline
+    // between create and activate leaves an ABAP object inactive and locked.
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    const pipeline = lease(r.lease('alice', 'A', 'pipeline'));
+    let settled = false;
+    const closed = r.close('alice', 'A').then(() => {
+      settled = true;
+    });
+    expect(pipeline.signal.aborted).toBe(false);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(f.log).toEqual([]);
+    pipeline.release();
+    await closed;
+    expect(f.log).toEqual(['delete alice/A']);
+  });
+
+  it('deletes once however many times it is closed', async () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    const held = lease(r.lease('alice', 'A', 'rag'));
+    const first = r.close('alice', 'A');
+    const second = r.close('alice', 'A');
+    held.release();
+    await Promise.all([first, second]);
+    expect(f.log).toEqual(['delete alice/A']);
+  });
+
+  it('removes state for a session retention never saw', async () => {
+    // After a restart, or with no lease ever taken: the stores may still hold
+    // it, and a logout must still take it away.
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    await r.close('alice', 'A');
+    expect(f.log).toEqual(['delete alice/A']);
+  });
+
+  it('is not a tombstone: the entry is gone once removal has run', async () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    lease(r.lease('alice', 'A', 'rag')).release();
+    await r.close('alice', 'A');
+    expect(r.isClosing('alice', 'A')).toBe(false);
+    expect(r.snapshot().closing).toBe(0);
+  });
+
+  it('counts a closed session whose cleanup is still waiting', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    const held = lease(r.lease('alice', 'A', 'pipeline'));
+    void r.close('alice', 'A');
+    // Its bytes are still there, so it still takes a place.
+    expect(r.snapshot()).toMatchObject({ retained: 1, closing: 1 });
+    held.release();
+  });
+
+  it('a lease releasing twice settles once', async () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    const a = lease(r.lease('alice', 'A', 'rag'));
+    const b = lease(r.lease('alice', 'A', 'rag'));
+    const closed = r.close('alice', 'A');
+    a.release();
+    a.release();
+    expect(f.log).toEqual([]);
+    b.release();
+    await closed;
+    expect(f.log).toEqual(['delete alice/A']);
+  });
+});
+
+describe('the sweep asks first', () => {
+  it('may not sweep a leased or closing session, and may once it settles', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 2);
+    const held = lease(r.lease('alice', 'A', 'rag'));
+    expect(r.maySweep('alice', 'A')).toBe(false);
+    held.release();
+    expect(r.maySweep('alice', 'A')).toBe(true);
+    expect(r.maySweep('nobody', 'N')).toBe(true);
+  });
+
+  it('forgets entries that hold nothing and have no lease', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 3);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    const held = lease(r.lease('bob', 'B', 'rag'));
+    // A's history expired on its own thirty-minute clock.
+    f.held.delete('alice/A');
+    expect(r.forgetEmpty()).toBe(1);
+    expect(r.isKnown('alice', 'A')).toBe(false);
+    expect(r.isKnown('bob', 'B')).toBe(true);
+    held.release();
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/session-retention.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Write the unit**
+
+Create `srv/lib/session-retention.ts`:
+
+```ts
+/**
+ * Retention: how many sessions may hold state, and the rules for letting one go.
+ *
+ * Pure. The stores are injected, there is no timer, and the clock is a
+ * parameter, so every rule here is tested without the service around it.
+ */
+
+export interface RetentionStores {
+  /** Whether anything is still held for this session. */
+  hasState(userId: string, sessionId: string): boolean;
+  /** Remove everything held for this session. Must be synchronous. */
+  deleteAll(userId: string, sessionId: string): void;
+}
+
+/**
+ * `pipeline` — an admitted session's run. Never cancelled: its writes land in
+ * SAP, which a deletion here does not remove.
+ *
+ * `rag` — a RAG operation. Cancelled by a deletion: its writes land only in the
+ * state being removed.
+ */
+export type LeaseKind = 'pipeline' | 'rag';
+
+export interface Lease {
+  readonly kind: LeaseKind;
+  /** Aborted when a deletion cancels this lease. Never aborted for a pipeline. */
+  readonly signal: AbortSignal;
+  /** Settle the lease. Idempotent. */
+  release(): void;
+}
+
+export type LeaseRefusal = { refused: 'closing' | 'retention' };
+
+export function isRefusal(x: Lease | LeaseRefusal): x is LeaseRefusal {
+  return 'refused' in x;
+}
+
+export interface RetentionSnapshot {
+  retained: number;
+  cap: number | undefined;
+  evictions: number;
+  /** Closed to new leases, cleanup not yet run. Normally zero for longer than an upload. */
+  closing: number;
+}
+
+interface Entry {
+  userId: string;
+  sessionId: string;
+  lastUsed: number;
+  leases: Set<Lease>;
+  closing?: { settled: Promise<void>; resolve: () => void };
+}
+
+function keyOf(userId: string, sessionId: string): string {
+  return `${userId} ${sessionId}`;
+}
+
+export class SessionRetention {
+  private readonly entries = new Map<string, Entry>();
+  private evictions = 0;
+
+  constructor(
+    private readonly stores: RetentionStores,
+    private readonly cap?: number,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Whether a place could be had for this session now, without taking it. */
+  canReserve(userId: string, sessionId: string): boolean {
+    const e = this.entries.get(keyOf(userId, sessionId));
+    if (e) return !e.closing;
+    if (this.cap === undefined || this.entries.size < this.cap) return true;
+    return this.evictionCandidate() !== undefined;
+  }
+
+  /**
+   * A place and a lease on it, together.
+   *
+   * Evicts the least recently used idle session when the cap is full. Refuses
+   * when the session is closing, or when every place is held by something
+   * working.
+   */
+  lease(userId: string, sessionId: string, kind: LeaseKind): Lease | LeaseRefusal {
+    const key = keyOf(userId, sessionId);
+    let e = this.entries.get(key);
+    if (e?.closing) return { refused: 'closing' };
+    if (!e) {
+      if (this.cap !== undefined && this.entries.size >= this.cap) {
+        const victim = this.evictionCandidate();
+        if (!victim) return { refused: 'retention' };
+        this.evict(victim);
+      }
+      e = { userId, sessionId, lastUsed: this.now(), leases: new Set() };
+      this.entries.set(key, e);
+    }
+    e.lastUsed = this.now();
+
+    const controller = new AbortController();
+    const entry = e;
+    let released = false;
+    const lease: Lease & { cancel(): void } = {
+      kind,
+      signal: controller.signal,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.settle(entry, lease);
+      },
+      cancel: () => {
+        if (kind === 'rag') controller.abort(new Error('session closed'));
+      },
+    };
+    e.leases.add(lease);
+    return lease;
+  }
+
+  /**
+   * Delete a session: close it to new leases now, cancel its RAG leases, wait
+   * for every lease to settle, then remove it once.
+   *
+   * Resolves when the removal has run. A caller answering a user does not wait
+   * for it — the user is answered at the mark.
+   */
+  close(userId: string, sessionId: string): Promise<void> {
+    const e = this.entries.get(keyOf(userId, sessionId));
+    if (!e) {
+      this.stores.deleteAll(userId, sessionId);
+      return Promise.resolve();
+    }
+    if (e.closing) return e.closing.settled;
+    let resolve!: () => void;
+    const settled = new Promise<void>((r) => {
+      resolve = r;
+    });
+    e.closing = { settled, resolve };
+    for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
+    if (e.leases.size === 0) this.finishClose(e);
+    return settled;
+  }
+
+  /** Known, and not closing. */
+  isKnown(userId: string, sessionId: string): boolean {
+    const e = this.entries.get(keyOf(userId, sessionId));
+    return !!e && !e.closing;
+  }
+
+  isClosing(userId: string, sessionId: string): boolean {
+    return !!this.entries.get(keyOf(userId, sessionId))?.closing;
+  }
+
+  /**
+   * Whether the TTL sweep may remove this session's expired collections.
+   *
+   * The sweep asks and removes in the same synchronous pass, so no lease can be
+   * taken between the answer and the removal — which is what the closing mark
+   * guarantees on every other path.
+   */
+  maySweep(userId: string, sessionId: string): boolean {
+    const e = this.entries.get(keyOf(userId, sessionId));
+    return !e || (e.leases.size === 0 && !e.closing);
+  }
+
+  /** Drop entries with no lease and nothing held. Returns how many went. */
+  forgetEmpty(): number {
+    let n = 0;
+    for (const [key, e] of [...this.entries]) {
+      if (e.leases.size === 0 && !e.closing && !this.stores.hasState(e.userId, e.sessionId)) {
+        this.entries.delete(key);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  snapshot(): RetentionSnapshot {
+    let closing = 0;
+    for (const e of this.entries.values()) if (e.closing) closing++;
+    return { retained: this.entries.size, cap: this.cap, evictions: this.evictions, closing };
+  }
+
+  private evictionCandidate(): Entry | undefined {
+    let oldest: Entry | undefined;
+    for (const e of this.entries.values()) {
+      if (e.leases.size > 0 || e.closing) continue;
+      if (!oldest || e.lastUsed < oldest.lastUsed) oldest = e;
+    }
+    return oldest;
+  }
+
+  /** An idle session has no lease, so closing it removes it in this same turn. */
+  private evict(e: Entry): void {
+    this.evictions++;
+    void this.close(e.userId, e.sessionId);
+  }
+
+  private settle(e: Entry, lease: Lease): void {
+    e.leases.delete(lease);
+    e.lastUsed = this.now();
+    if (e.leases.size > 0) return;
+    if (e.closing) {
+      this.finishClose(e);
+      return;
+    }
+    if (!this.stores.hasState(e.userId, e.sessionId)) {
+      this.entries.delete(keyOf(e.userId, e.sessionId));
+    }
+  }
+
+  private finishClose(e: Entry): void {
+    try {
+      this.stores.deleteAll(e.userId, e.sessionId);
+    } finally {
+      this.entries.delete(keyOf(e.userId, e.sessionId));
+      e.closing?.resolve();
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Run, lint, commit**
+
+```bash
+npx jest test/unit/session-retention.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/session-retention.ts test/unit/session-retention.test.ts
+git add srv/lib/session-retention.ts test/unit/session-retention.test.ts
+git commit -m "feat(gatekeeper): retention — places, leases, and closing a session before deleting it"
+```
+
+---
+
+### Task 6: Retention in the service
+
+**Files:**
+- Create: `srv/lib/gatekeeper.ts`
+- Create: `test/unit/helpers/rag-routes.ts`
+- Modify: `srv/lib/throttle-surfacing.ts` (the three refusal sentences)
+- Modify: `srv/rag-collections.ts` (`sweepExpiredSessions` asks first; `addDocumentsBulk` honours a signal)
+- Modify: `srv/rag-handler.ts` (leases around every session-scoped operation; the two refusals)
+- Modify: `srv/server.ts` (the middleware asks about liveness; `DELETE /v1/session` answers at the mark; the sweeps)
+- Test: `test/unit/retention-wiring.test.ts`
+
+**Interfaces:**
+- Consumes: `SessionRetention`, `Lease`, `LeaseRefusal`, `LeaseKind`, `isRefusal` (Task 5); `gatekeeperConfig` (Task 4); `deleteSessionState`, `hasSessionState` (Task 3); `sessionMiddleware`, `sessionIdOf` (Task 1).
+- Produces:
+  - in `srv/lib/gatekeeper.ts`:
+    - `export function theRetention(): SessionRetention`
+    - `export function sessionIsLive(userId: string, sessionId: string): boolean`
+    - `export function leaseSession(userId: string, sessionId: string, kind: LeaseKind): Lease | LeaseRefusal`
+    - `export function deleteSession(userId: string, sessionId: string): Promise<void>`
+    - `export function maySweepSession(userId: string, sessionId: string): boolean`
+    - `export function forgetEmptySessions(): number`
+    - `export function resetGatekeeperForTest(): void`
+  - in `srv/lib/throttle-surfacing.ts`:
+    - `export type DoorRefusalReason = 'session_busy' | 'capacity' | 'retention'`
+    - `export function doorRefusalSentence(reason: DoorRefusalReason): string`
+    - `export function sessionClosedText(): string`
+  - `sweepExpiredSessions(maySweep?: (userId: string, sessionId: string) => boolean): void`
+  - `addDocumentsBulk(..., options?: { sleep?; budgetMs?; signal?: AbortSignal })`
+
+**Which routes lease.** Everything that reads or writes a session collection asynchronously: document add, bulk add, update, delete, file upload, query, and collection delete — through the `/rag/collections/:id` routes, when the resolved collection is session-scoped. Creating a session collection leases the caller's session, which is where a place is reserved. `POST /rag/tool/:name` leases the caller's session, because `rag_add` may create a session collection. `GET /rag/collections` reads registry metadata synchronously and cannot race anything.
+
+**Which leases cancel.** Bulk add and file upload stop between documents when their lease is cancelled; the document already sent is not taken back, and the session's removal follows it. A single add, an update, a delete and a query are one backend call each and are waited for.
+
+- [ ] **Step 1: Extract the route-test helpers**
+
+Create `test/unit/helpers/rag-routes.ts` — the same mock router and request/response doubles `rag-handler.test.ts` defines inline, so a new test does not copy them a third time. The existing test files are left as they are.
+
+```ts
+import type { Request, Response, Router } from 'express';
+
+export interface RouteHandler {
+  method: string;
+  path: string;
+  handler: (req: Request, res: Response, next?: () => void) => void | Promise<void>;
+}
+
+export function makeMockRouter(): { router: Router; routes: RouteHandler[] } {
+  const routes: RouteHandler[] = [];
+  const add = (method: string) => (path: string, handler: RouteHandler['handler']) => {
+    routes.push({ method, path, handler });
+  };
+  const router = {
+    get: add('GET'),
+    post: add('POST'),
+    put: add('PUT'),
+    patch: add('PATCH'),
+    delete: add('DELETE'),
+    use: add('USE'),
+  } as unknown as Router;
+  return { router, routes };
+}
+
+export function findRoute(routes: RouteHandler[], method: string, path: string) {
+  const r = routes.find((x) => x.method === method && x.path === path);
+  if (!r) throw new Error(`${method} ${path} not registered`);
+  return r;
+}
+
+export function makeReq(o: {
+  body?: Record<string, unknown>;
+  params?: Record<string, string>;
+  headers?: Record<string, string>;
+  method?: string;
+  path?: string;
+  sessionId?: string;
+}): Request {
+  return {
+    body: o.body ?? {},
+    params: o.params ?? {},
+    query: {},
+    headers: o.headers ?? {},
+    method: o.method ?? 'GET',
+    path: o.path ?? '/',
+    sessionId: o.sessionId,
+  } as unknown as Request;
+}
+
+export interface MockRes {
+  _status: number;
+  _body: unknown;
+  res: Response;
+}
+
+export function makeRes(): MockRes {
+  const r = { _status: 200, _body: undefined as unknown } as MockRes;
+  const res = {
+    status(code: number) {
+      r._status = code;
+      return res;
+    },
+    json(data: unknown) {
+      r._body = data;
+      return res;
+    },
+    end() {
+      return res;
+    },
+  };
+  r.res = res as unknown as Response;
+  return r;
+}
+
+/** Run the `/rag/collections/:id` guard, then the route, as Express would. */
+export async function runIdRoute(
+  routes: RouteHandler[],
+  method: string,
+  path: string,
+  req: Request,
+): Promise<MockRes> {
+  const res = makeRes();
+  let passed = false;
+  await findRoute(routes, 'USE', '/rag/collections/:id').handler(req, res.res, () => {
+    passed = true;
+  });
+  if (!passed) return res;
+  await findRoute(routes, method, path).handler(req, res.res);
+  return res;
+}
+```
+
+- [ ] **Step 2: Write the failing test**
+
+Create `test/unit/retention-wiring.test.ts`:
+
+```ts
+const mockCdsContext: { user?: { id: string; is: (role: string) => boolean } } = {};
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: {
+      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      get context() {
+        return mockCdsContext;
+      },
+    },
+  }),
+  { virtual: true },
+);
+jest.mock('../../srv/request-session', () => ({
+  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
+  getRequestSessionId: () => undefined,
+  getRequestHistory: () => [],
+}));
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { sessionCollectionId } from '../../srv/collection-ids';
+import {
+  clearGatekeeperConfig,
+} from '../../srv/lib/gatekeeper-config';
+import type { Request, Response } from 'express';
+import { isRefusal, type Lease } from '../../srv/lib/session-retention';
+import {
+  findRoute,
+  makeMockRouter,
+  makeReq,
+  makeRes,
+  runIdRoute,
+} from './helpers/rag-routes';
+
+const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-wiring-'));
+process.env.RAG_STORAGE_PATH = storage;
+
+// Loaded after the environment is set: the registry reads its storage path
+// once, on first use.
+const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+const gatekeeper = require('../../srv/lib/gatekeeper') as typeof import('../../srv/lib/gatekeeper');
+const { registerRagRoutes } = require('../../srv/rag-handler') as typeof import('../../srv/rag-handler');
+const { sessionMiddleware } = require('../../srv/lib/session-middleware') as typeof import('../../srv/lib/session-middleware');
+
+/** A backend whose calls wait until the test lets them go. */
+function gatedBackend() {
+  let open!: () => void;
+  const gate = new Promise<void>((r) => {
+    open = r;
+  });
+  class GatedRag extends InMemoryRag {
+    async upsert(...args: Parameters<InMemoryRag['upsert']>) {
+      await gate;
+      return super.upsert(...args);
+    }
+    async query(...args: Parameters<InMemoryRag['query']>) {
+      await gate;
+      return super.query(...args);
+    }
+    async deleteById(...args: Parameters<InMemoryRag['deleteById']>) {
+      await gate;
+      return super.deleteById(...args);
+    }
+  }
+  return { open, factory: () => new GatedRag() };
+}
+
+const registry = manager.getCollectionRegistry();
+const { router, routes } = makeMockRouter();
+registerRagRoutes(router, registry);
+
+function as(user: string) {
+  mockCdsContext.user = { id: user, is: () => false };
+}
+
+function configure(live: number, retained: number) {
+  process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = String(live);
+  process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = String(retained);
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+}
+
+async function createSessionCollection(user: string, sid: string, backend?: string) {
+  as(user);
+  const res = makeRes();
+  await findRoute(routes, 'POST', '/rag/collections').handler(
+    makeReq({
+      method: 'POST',
+      body: { id: 'notes', displayName: 'Notes', scope: 'session', backend },
+      headers: { cookie: `clh_session=${sid}` },
+      sessionId: sid,
+    }),
+    res.res,
+  );
+  return res;
+}
+
+function dirOf(user: string, sid: string) {
+  return path.join(storage, sessionCollectionId('notes', user, sid));
+}
+
+beforeEach(() => configure(1, 1));
+
+afterEach(async () => {
+  for (const [u, s] of [
+    ['alice', 'A'],
+    ['bob', 'B'],
+  ]) {
+    await gatekeeper.deleteSession(u, s);
+  }
+  delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  delete process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS;
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+});
+
+afterAll(() => fs.rmSync(storage, { recursive: true, force: true }));
+
+describe('the retention cap on the RAG routes', () => {
+  it('a RAG route cannot exceed the cap', async () => {
+    // Alice's session is running a pipeline. There is one place, and it is hers.
+    const running = gatekeeper.leaseSession('alice', 'A', 'pipeline') as Lease;
+    const res = await createSessionCollection('bob', 'B');
+    expect(res._status).toBe(503);
+    expect(res._body).toEqual({
+      error: {
+        message: 'The service has no room to hold another session right now. Please try again shortly.',
+        code: 'gatekeeper_retention',
+      },
+    });
+    expect(registry.getCollection(sessionCollectionId('notes', 'bob', 'B'))).toBeNull();
+    running.release();
+  });
+
+  it('evicts an idle session for a new one — all of it, directory included', async () => {
+    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
+    await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
+      id: 'd1',
+      text: 'hello',
+      metadata: {},
+    });
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(true);
+
+    expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
+
+    expect(registry.getCollection(sessionCollectionId('notes', 'alice', 'A'))).toBeNull();
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+  });
+});
+
+/** Three operations that each hold a session-scoped lease while their backend call is out. */
+const OPERATIONS: Array<{
+  name: string;
+  start: (physId: string) => Promise<ReturnType<typeof makeRes>>;
+}> = [
+  {
+    name: 'a bulk upload',
+    start: (physId) =>
+      runIdRoute(
+        routes,
+        'POST',
+        '/rag/collections/:id/documents/bulk',
+        makeReq({
+          method: 'POST',
+          path: '/documents/bulk',
+          params: { id: physId },
+          body: {
+            documents: [
+              { id: 'd1', text: 'one' },
+              { id: 'd2', text: 'two' },
+              { id: 'd3', text: 'three' },
+            ],
+          },
+          headers: { cookie: 'clh_session=A' },
+          sessionId: 'A',
+        }),
+      ),
+  },
+  {
+    name: 'a query',
+    start: (physId) =>
+      runIdRoute(
+        routes,
+        'POST',
+        '/rag/collections/:id/query',
+        makeReq({
+          method: 'POST',
+          path: '/query',
+          params: { id: physId },
+          body: { text: 'hello' },
+          headers: { cookie: 'clh_session=A' },
+          sessionId: 'A',
+        }),
+      ),
+  },
+  {
+    name: 'a document delete',
+    start: (physId) =>
+      runIdRoute(
+        routes,
+        'DELETE',
+        '/rag/collections/:id/documents/:did',
+        makeReq({
+          method: 'DELETE',
+          path: '/documents/d0',
+          params: { id: physId, did: 'd0' },
+          headers: { cookie: 'clh_session=A' },
+          sessionId: 'A',
+        }),
+      ),
+  },
+];
+
+describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
+  async function inFlight() {
+    configure(2, 2);
+    const backend = gatedBackend();
+    registry.registerBackend('gated', backend.factory);
+    expect((await createSessionCollection('alice', 'A', 'gated'))._status).toBe(201);
+    const physId = sessionCollectionId('notes', 'alice', 'A');
+    // A document to delete, written before the gate matters.
+    backend.open();
+    await registry.addDocument(physId, { id: 'd0', text: 'zero', metadata: {} });
+    // A fresh gate for the operation under test.
+    const held = gatedBackend();
+    registry.registerBackend('gated', held.factory);
+    (registry as unknown as {
+      collections: Map<string, { rag: unknown }>;
+    }).collections.get(physId)!.rag = held.factory();
+    as('alice');
+    const running = start(physId);
+    await new Promise((r) => setImmediate(r));
+    return { physId, running, open: held.open };
+  }
+
+  it('is not evicted, slot or no slot', async () => {
+    const { physId, running, open } = await inFlight();
+    // Bob takes the second place; carol would need Alice's, which is in use.
+    expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
+    const refused = await createSessionCollection('carol', 'C');
+    expect(refused._status).toBe(503);
+    open();
+    await running;
+    expect(registry.getCollection(physId)).not.toBeNull();
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(true);
+    await gatekeeper.deleteSession('carol', 'C');
+  });
+
+  it('logout answers at once, refuses new work, and removes everything after it settles', async () => {
+    const { physId, running, open } = await inFlight();
+
+    let removed = false;
+    const removal = gatekeeper.deleteSession('alice', 'A').then(() => {
+      removed = true;
+    });
+    await Promise.resolve();
+    expect(removed).toBe(false);
+
+    // Closed to new leases from the mark.
+    const late = await runIdRoute(
+      routes,
+      'POST',
+      '/rag/collections/:id/query',
+      makeReq({
+        method: 'POST',
+        path: '/query',
+        params: { id: physId },
+        body: { text: 'late' },
+        headers: { cookie: 'clh_session=A' },
+        sessionId: 'A',
+      }),
+    );
+    expect(late._status).toBe(410);
+    expect((late._body as { error: { code: string } }).error.code).toBe('session_closed');
+
+    open();
+    await running;
+    await removal;
+
+    // The assertion that matters is made after the operation has finished: a
+    // cleanup racing it passes every check made before.
+    expect(registry.getCollection(physId)).toBeNull();
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+    await new Promise((r) => setImmediate(r));
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+  });
+});
+
+describe('the TTL sweep', () => {
+  it('skips a leased session and takes it on the next pass, directory included', async () => {
+    configure(2, 2);
+    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
+    const physId = sessionCollectionId('notes', 'alice', 'A');
+    await registry.addDocument(physId, { id: 'd1', text: 'hello', metadata: {} });
+    (registry as unknown as {
+      collections: Map<string, { meta: { expiresAt?: number } }>;
+    }).collections.get(physId)!.meta.expiresAt = Date.now() - 1;
+
+    const held = gatekeeper.leaseSession('alice', 'A', 'rag');
+    expect(isRefusal(held)).toBe(false);
+    registry.sweepExpiredSessions(gatekeeper.maySweepSession);
+    expect(registry.getCollection(physId)).not.toBeNull();
+
+    (held as Lease).release();
+    registry.sweepExpiredSessions(gatekeeper.maySweepSession);
+    expect(registry.getCollection(physId)).toBeNull();
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+  });
+});
+
+describe('a retired cookie', () => {
+  it('gets a new session, and none of the old state is visible through it', async () => {
+    configure(2, 2);
+    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
+    await gatekeeper.deleteSession('alice', 'A');
+
+    as('alice');
+    const req = { headers: { cookie: 'clh_session=A' }, secure: false } as unknown as Request & {
+      sessionId?: string;
+    };
+    const set: Record<string, string> = {};
+    sessionMiddleware({ isLive: gatekeeper.sessionIsLive, userIdOf: () => 'alice' })(
+      req,
+      { setHeader: (k: string, v: string) => (set[k] = v) } as unknown as Response,
+      () => {},
+    );
+    expect(req.sessionId).not.toBe('A');
+    expect(set['Set-Cookie']).toContain(`clh_session=${req.sessionId}`);
+
+    const list = makeRes();
+    findRoute(routes, 'GET', '/rag/collections').handler(
+      makeReq({ method: 'GET', headers: { cookie: `clh_session=${req.sessionId}` }, sessionId: req.sessionId }),
+      list.res,
+    );
+    const ids = (list._body as { collections: Array<{ id: string }> }).collections.map((c) => c.id);
+    expect(ids).not.toContain(sessionCollectionId('notes', 'alice', 'A'));
+  });
+});
+
+describe('logout and clear-chat in server.ts', () => {
+  it('answer at the mark and do not wait for the removal', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../srv/server.ts'), 'utf8');
+    expect(src).toMatch(/void\s+deleteSession\(\s*userId\s*,\s*sessionId\s*\)/);
+    expect(src).toMatch(/sweepExpiredSessions\(\s*maySweepSession\s*\)/);
+    expect(src).toMatch(/isLive:\s*sessionIsLive/);
+  });
+});
+```
+
+- [ ] **Step 3: Run it to verify it fails**
+
+Run: `npx jest test/unit/retention-wiring.test.ts`
+Expected: FAIL — `srv/lib/gatekeeper` is not found.
+
+- [ ] **Step 4: The refusal sentences**
+
+In `srv/lib/throttle-surfacing.ts`, append:
+
+```ts
+/** Why admission was withheld, in the order admission checks. */
+export type DoorRefusalReason = 'session_busy' | 'capacity' | 'retention';
+
+const DOOR_SENTENCES: Record<DoorRefusalReason, string> = {
+  session_busy:
+    'This session is still working on an earlier request. Wait for it to finish before sending another.',
+  capacity: 'The service is at capacity right now. Please try again shortly.',
+  retention:
+    'The service has no room to hold another session right now. Please try again shortly.',
+};
+
+/**
+ * The sentence for the person. No number: how long the sessions ahead will run
+ * or be held is not something we measure, and inventing one is the guess this
+ * design refuses everywhere.
+ */
+export function doorRefusalSentence(reason: DoorRefusalReason): string {
+  return DOOR_SENTENCES[reason];
+}
+
+/** A request against a session already closed for deletion. */
+export function sessionClosedText(): string {
+  return 'This session is being deleted. Send the request again to start a new one.';
+}
+```
+
+- [ ] **Step 5: The process-wide retention**
+
+Create `srv/lib/gatekeeper.ts`:
+
+```ts
+/**
+ * The gatekeeper as the service sees it: one door and one retention per process,
+ * built from the configuration and the real stores.
+ *
+ * The only module the channels, the RAG routes, the server and the health
+ * function call. Everything with rules in it lives in the pure units beside it.
+ */
+
+import { gatekeeperConfig } from './gatekeeper-config';
+import {
+  type Lease,
+  type LeaseKind,
+  type LeaseRefusal,
+  SessionRetention,
+} from './session-retention';
+import { deleteSessionState, hasSessionState } from './session-state';
+
+let retention: SessionRetention | undefined;
+
+export function theRetention(): SessionRetention {
+  if (!retention) {
+    retention = new SessionRetention(
+      { hasState: hasSessionState, deleteAll: deleteSessionState },
+      gatekeeperConfig().maxRetainedSessions,
+    );
+  }
+  return retention;
+}
+
+/**
+ * Whether a presented cookie still names a session.
+ *
+ * Closing means no, from the mark: the session is unreachable from that moment.
+ * Otherwise yes when retention knows it or any store still holds it — the
+ * second covers collections loaded from disk after a restart, which retention
+ * has never seen.
+ */
+export function sessionIsLive(userId: string, sessionId: string): boolean {
+  const r = theRetention();
+  if (r.isClosing(userId, sessionId)) return false;
+  return r.isKnown(userId, sessionId) || hasSessionState(userId, sessionId);
+}
+
+export function leaseSession(
+  userId: string,
+  sessionId: string,
+  kind: LeaseKind,
+): Lease | LeaseRefusal {
+  return theRetention().lease(userId, sessionId, kind);
+}
+
+/** Close, wait for what is running, remove. The caller answers without awaiting it. */
+export function deleteSession(userId: string, sessionId: string): Promise<void> {
+  return theRetention().close(userId, sessionId);
+}
+
+export function maySweepSession(userId: string, sessionId: string): boolean {
+  return theRetention().maySweep(userId, sessionId);
+}
+
+export function forgetEmptySessions(): number {
+  return theRetention().forgetEmpty();
+}
+
+/** Test seam. */
+export function resetGatekeeperForTest(): void {
+  retention = undefined;
+}
+```
+
+- [ ] **Step 6: The registry asks before sweeping, and bulk writes stop when told**
+
+In `srv/rag-collections.ts`, change `sweepExpiredSessions`:
+
+```ts
+  /**
+   * Remove expired session collections.
+   *
+   * `maySweep` is asked about each collection's session in the same synchronous
+   * pass that removes it, so nothing can take a lease on the session between
+   * the answer and the removal.
+   */
+  sweepExpiredSessions(
+    maySweep: (userId: string, sessionId: string) => boolean = () => true,
+  ): void {
+    const now = Date.now();
+    let changed = false;
+    for (const [id, stored] of [...this.collections]) {
+      if (
+        stored.meta.scope === 'session' &&
+        (stored.meta.expiresAt ?? 0) <= now &&
+        maySweep(stored.meta.owner ?? '', stored.meta.sessionId ?? '')
+      ) {
+        changed = this.removeCollection(id) || changed;
+      }
+    }
+    if (changed) {
+      this.persistMeta();
+      this.persistEnabled();
+    }
+  }
+```
+
+In `addDocumentsBulk`, add to the `options` type:
+
+```ts
+      /**
+       * Stop between documents once aborted. The document already sent is not
+       * taken back: its session is being removed, and the removal waits for
+       * this call to return.
+       */
+      signal?: AbortSignal;
+```
+
+and as the first statement inside `for (const doc of docs) {`:
+
+```ts
+      if (options?.signal?.aborted) break;
+```
+
+- [ ] **Step 7: The RAG routes lease what they touch**
+
+In `srv/rag-handler.ts`, add imports:
+
+```ts
+import { leaseSession } from './lib/gatekeeper';
+import { isRefusal, type Lease, type LeaseRefusal } from './lib/session-retention';
+import { doorRefusalSentence, sessionClosedText } from './lib/throttle-surfacing';
+```
+
+Inside `registerRagRoutes`, after `canAccess` is declared, add:
+
+```ts
+  function refuseLease(res: Response, refusal: LeaseRefusal): void {
+    if (refusal.refused === 'closing') {
+      res.status(410).json({ error: { message: sessionClosedText(), code: 'session_closed' } });
+      return;
+    }
+    res.status(503).json({
+      error: { message: doorRefusalSentence('retention'), code: 'gatekeeper_retention' },
+    });
+  }
+
+  /**
+   * Hold a lease on the collection's session for as long as the handler runs.
+   *
+   * Only session-scoped collections: a user collection belongs to no session and
+   * nothing here deletes it. The lease is released when the handler's work
+   * settles — not on the response's `close`, which fires on a client disconnect
+   * while the backend call is still out.
+   */
+  const leased =
+    (
+      handler: (req: Request, res: Response, lease?: Lease) => void | Promise<void>,
+    ) =>
+    async (req: Request, res: Response): Promise<void> => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      const meta = physId ? registry.getCollection(physId) : null;
+      if (meta?.scope !== 'session' || !meta.owner || !meta.sessionId) {
+        await handler(req, res);
+        return;
+      }
+      const lease = leaseSession(meta.owner, meta.sessionId, 'rag');
+      if (isRefusal(lease)) {
+        refuseLease(res, lease);
+        return;
+      }
+      try {
+        await handler(req, res, lease);
+      } finally {
+        lease.release();
+      }
+    };
+```
+
+Wrap the handler passed to each of these registrations in `leased(...)`, bodies otherwise unchanged:
+
+- `router.delete('/rag/collections/:id', ...)`
+- `router.post('/rag/collections/:id/documents', ...)`
+- `router.post('/rag/collections/:id/documents/bulk', ...)`
+- `router.put('/rag/collections/:id/documents/:did', ...)`
+- `router.delete('/rag/collections/:id/documents/:did', ...)`
+- `router.post('/rag/collections/:id/upload', ...)`
+- `router.post('/rag/collections/:id/query', ...)`
+
+For example:
+
+```ts
+  router.post(
+    '/rag/collections/:id/documents/bulk',
+    leased(async (req: Request, res: Response, lease?: Lease) => {
+      // ... unchanged, except the call:
+      const result = await registry.addDocumentsBulk(physId, docs, namespace, {
+        signal: lease?.signal,
+      });
+      // ... unchanged
+    }),
+  );
+```
+
+and in the upload route, likewise: `registry.addDocumentsBulk(collectionId, docs, namespace, { signal: lease?.signal })`.
+
+In `POST /rag/collections`, declare `let lease: Lease | undefined;` immediately before the outer `try {`, take the lease in the session branch right after `physical = sessionCollectionId(logicalId, userId, sid);`:
+
+```ts
+        const taken = leaseSession(userId, sid, 'rag');
+        if (isRefusal(taken)) {
+          refuseLease(res, taken);
+          return;
+        }
+        lease = taken;
+```
+
+and add after the outer `catch (err) { error(res, 409, ...); }`:
+
+```ts
+    finally {
+      lease?.release();
+    }
+```
+
+In `POST /rag/tool/:name`, replace the body after the unknown-tool check with:
+
+```ts
+    const sid = sessionIdOf(req);
+    // rag_add may create a session collection, so a place is reserved for the
+    // caller's session before it can.
+    const lease = sid ? leaseSession(getUserId(), sid, 'rag') : undefined;
+    if (lease && isRefusal(lease)) {
+      refuseLease(res, lease);
+      return;
+    }
+    try {
+      const result = await runWithSessionId(sid, () =>
+        dispatchRagTool(registry, name, req.body ?? {}),
+      );
+      json(res, result.ok ? 200 : 400, result);
+    } finally {
+      lease?.release();
+    }
+```
+
+- [ ] **Step 8: The server — liveness, logout at the mark, and the sweeps**
+
+In `srv/server.ts`, add `import { deleteSession, forgetEmptySessions, maySweepSession, sessionIsLive } from './lib/gatekeeper';` and remove the `deleteSessionState` import.
+
+The middleware:
+
+```ts
+  app.use(
+    '/v1',
+    sessionMiddleware({
+      userIdOf: () => cds.context?.user?.id ?? 'anonymous',
+      isLive: sessionIsLive,
+    }),
+  );
+```
+
+In `DELETE /v1/session`, replace `deleteSessionState(userId, sessionId);` and its comment with:
+
+```ts
+    // Answered at the mark. The session is unreachable from this moment; its
+    // bytes go when the last operation against them has stopped — a pipeline
+    // runs to its own end, a RAG upload is cancelled and then waited for.
+    void deleteSession(userId, sessionId).catch((err) =>
+      cds.log('session').warn('session removal failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+```
+
+In the `cds.on('served')` block, replace the RAG sweep interval with:
+
+```ts
+        // Hourly: expired session collections, skipping any session with an
+        // operation still running against it — the next pass collects those.
+        setInterval(
+          () => registry.sweepExpiredSessions(maySweepSession),
+          60 * 60 * 1000,
+        ).unref();
+        // Every five minutes, beside the history sweep: a session whose turns
+        // have expired and which owns no collection stops counting.
+        setInterval(() => forgetEmptySessions(), 5 * 60 * 1000).unref();
+```
+
+- [ ] **Step 9: Run, lint, commit**
+
+```bash
+npx jest test/unit/retention-wiring.test.ts test/unit/rag-handler.test.ts test/unit/cross-user-isolation.test.ts test/unit/rag-collections-disk.test.ts
+npm run test:unit && npm run test:check
+npx biome check --write srv/lib/gatekeeper.ts srv/lib/throttle-surfacing.ts srv/rag-collections.ts srv/rag-handler.ts srv/server.ts test/unit/helpers/rag-routes.ts test/unit/retention-wiring.test.ts
+git add srv/lib/gatekeeper.ts srv/lib/throttle-surfacing.ts srv/rag-collections.ts srv/rag-handler.ts srv/server.ts test/unit/helpers/rag-routes.ts test/unit/retention-wiring.test.ts
+git commit -m "feat(gatekeeper): sessions are leased while worked on, closed before deleted, and evicted only when idle"
+```
+
+---
+
+## Phase 3 — the door
+
+### Task 7: The door
+
+**Files:**
+- Create: `srv/lib/door.ts`
+- Test: `test/unit/door.test.ts`
+
+**Interfaces:**
+- Consumes: `Lease`, `LeaseRefusal`, `isRefusal` (Task 5); `DoorRefusalReason` (Task 6, type only).
+- Produces:
+  - `export interface DoorRetention { canReserve(userId: string, sessionId: string): boolean; lease(userId: string, sessionId: string, kind: 'pipeline'): Lease | LeaseRefusal }`
+  - `export interface Admission { readonly userId: string; readonly sessionId: string; readonly signal: AbortSignal; readonly outstanding: number; track<T>(p: Promise<T>): Promise<T>; drain(): Promise<void>; release(): void }`
+  - `export type AdmitResult = { admitted: Admission } | { refused: DoorRefusalReason }`
+  - `export interface DoorSnapshot { live: number; capacity: number; queued: number; queueLength: number; highWater: number; refusals: Record<DoorRefusalReason, number>; left: number }`
+  - `export class Door`:
+    - `constructor(opts: { capacity: number; queueLength: number; retention: DoorRetention; onPressure?: (depth: number, queueLength: number) => void })`
+    - `admit(userId: string, sessionId: string, signal?: AbortSignal): Promise<AdmitResult>` — rejects with the signal's reason if the caller leaves while queued
+    - `poke(): void` — dispatch after a retention place was freed elsewhere
+    - `abortAll(reason?: unknown): void`
+    - `snapshot(): DoorSnapshot`
+
+**One rule for dispatch:** the oldest waiter that can be served goes next. Eligible means the session holds no slot, a slot is free, and retention can give a place — all three, taken in the same synchronous step, so admission never promises what retention then refuses.
+
+**The invariant that makes a lost wake-up impossible:** after every change of state — an arrival, a release, a waiter leaving, a poke — the door dispatches until no queued waiter is eligible. So at rest no eligible waiter is ever queued, and an arrival that is eligible may be admitted at once without jumping anyone.
+
+**Why `poke` exists:** a place can be freed by something the door never sees — a RAG lease settling, a logout finishing its cleanup. The gatekeeper (Task 10) calls `poke` on each; without it a waiter blocked only on retention would wait for an unrelated release.
+
+**The register is on the admission.** Every dispatched call is tracked before it is awaited, and `drain` resolves when the last has settled, whether it resolved or rejected.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/door.test.ts`:
+
+```ts
+import { type Admission, type AdmitResult, Door } from '../../srv/lib/door';
+
+function fakeRetention() {
+  const r = {
+    open: true,
+    leases: 0,
+    canReserve: (_u: string, _s: string) => r.open,
+    lease: (_u: string, _s: string, kind: 'pipeline') => {
+      if (!r.open) return { refused: 'retention' as const };
+      r.leases++;
+      let done = false;
+      return {
+        kind,
+        signal: new AbortController().signal,
+        release: () => {
+          if (done) return;
+          done = true;
+          r.leases--;
+        },
+      };
+    },
+  };
+  return r;
+}
+
+function door(capacity: number, queueLength = capacity, retention = fakeRetention()) {
+  const pressure: number[] = [];
+  const d = new Door({
+    capacity,
+    queueLength,
+    retention,
+    onPressure: (depth) => pressure.push(depth),
+  });
+  return { d, retention, pressure };
+}
+
+function admitted(r: AdmitResult): Admission {
+  if (!('admitted' in r)) throw new Error(`refused: ${r.refused}`);
+  return r.admitted;
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+/** Start an admission without awaiting it; report when it lands. */
+function pending(d: Door, u: string, s: string, signal?: AbortSignal) {
+  const state: { result?: AdmitResult; error?: unknown } = {};
+  const p = d.admit(u, s, signal).then(
+    (r) => {
+      state.result = r;
+      return r;
+    },
+    (e) => {
+      state.error = e;
+      throw e;
+    },
+  );
+  p.catch(() => {});
+  return { p, state };
+}
+
+describe('capacity and the queue', () => {
+  it('a capacity of one admits one', async () => {
+    const { d } = door(1);
+    admitted(await d.admit('u', 'A'));
+    const b = pending(d, 'u', 'B');
+    await tick();
+    expect(b.state.result).toBeUndefined();
+    expect(d.snapshot()).toMatchObject({ live: 1, queued: 1 });
+  });
+
+  it('holds the limit under pressure', async () => {
+    const { d } = door(5, 20);
+    const all = Array.from({ length: 20 }, (_, i) => pending(d, 'u', `S${i}`));
+    await tick();
+    expect(d.snapshot()).toMatchObject({ live: 5, queued: 15 });
+    expect(all.filter((x) => x.state.result).length).toBe(5);
+  });
+
+  it('absorbs and then refuses', async () => {
+    const { d } = door(5, 5);
+    for (let i = 0; i < 10; i++) void pending(d, 'u', `S${i}`);
+    await tick();
+    expect(await d.admit('u', 'S10')).toEqual({ refused: 'capacity' });
+    expect(d.snapshot().refusals.capacity).toBe(1);
+  });
+
+  it('reports three quarters before anyone is refused', async () => {
+    const { d, pressure } = door(1, 4);
+    for (let i = 0; i < 5; i++) void pending(d, 'u', `S${i}`);
+    await tick();
+    expect(pressure).toEqual([3]);
+    expect(d.snapshot().highWater).toBe(4);
+    expect(await d.admit('u', 'S5')).toEqual({ refused: 'capacity' });
+  });
+});
+
+describe('order', () => {
+  it('is first in, first out under contention', async () => {
+    const { d } = door(1, 3);
+    const a = admitted(await d.admit('u', 'A'));
+    const b = pending(d, 'u', 'B');
+    const c = pending(d, 'u', 'C');
+    const e = pending(d, 'u', 'E');
+    a.release();
+    await tick();
+    expect(b.state.result).toBeDefined();
+    expect(c.state.result).toBeUndefined();
+    admitted(b.state.result!).release();
+    await tick();
+    expect(c.state.result).toBeDefined();
+    expect(e.state.result).toBeUndefined();
+  });
+
+  it('has no lost wake-up: a release always dispatches', async () => {
+    const { d } = door(1);
+    const a = admitted(await d.admit('u', 'A'));
+    const b = pending(d, 'u', 'B');
+    a.release();
+    await expect(b.p).resolves.toHaveProperty('admitted');
+  });
+});
+
+describe('one session, one pipeline', () => {
+  it('a second request for a live session waits, with slots to spare', async () => {
+    // Written with capacity free: a test that fills the door first would pass
+    // on the queue alone and prove nothing about the key.
+    const { d } = door(5);
+    admitted(await d.admit('alice', 'A'));
+    const again = pending(d, 'alice', 'A');
+    await tick();
+    expect(again.state.result).toBeUndefined();
+    expect(d.snapshot().live).toBe(1);
+  });
+
+  it('two users cannot collide, whatever id they send', async () => {
+    const { d } = door(5);
+    admitted(await d.admit('alice', 'A'));
+    admitted(await d.admit('bob', 'A'));
+    expect(d.snapshot().live).toBe(2);
+  });
+
+  it('a caller colliding with itself is serialised, and both complete', async () => {
+    const { d } = door(5);
+    const first = admitted(await d.admit('alice', 'A'));
+    const second = pending(d, 'alice', 'A');
+    first.release();
+    await expect(second.p).resolves.toHaveProperty('admitted');
+  });
+
+  it('a repeated session id cannot build a backlog', async () => {
+    const { d } = door(5, 10);
+    admitted(await d.admit('alice', 'A'));
+    for (let i = 0; i < 10; i++) void pending(d, 'alice', 'A');
+    await tick();
+    expect(await d.admit('alice', 'A')).toEqual({ refused: 'session_busy' });
+  });
+
+  it('a blocked waiter does not hold the queue, and is not starved', async () => {
+    const { d } = door(2, 5);
+    const a = admitted(await d.admit('u', 'A'));
+    const c = admitted(await d.admit('u', 'C'));
+    const a2 = pending(d, 'u', 'A');
+    const b = pending(d, 'u', 'B');
+    c.release();
+    await tick();
+    // B is served while A is still busy, rather than the slot sitting empty.
+    expect(b.state.result).toBeDefined();
+    expect(a2.state.result).toBeUndefined();
+    const later = pending(d, 'u', 'D');
+    a.release();
+    await tick();
+    // A's waiter goes before anyone who arrived after it.
+    expect(a2.state.result).toBeDefined();
+    expect(later.state.result).toBeUndefined();
+  });
+});
+
+describe('retention is part of admission', () => {
+  it('a free slot with no retention place admits nobody, until a place frees', async () => {
+    const { d, retention } = door(3);
+    retention.open = false;
+    const w = pending(d, 'u', 'A');
+    await tick();
+    expect(w.state.result).toBeUndefined();
+    expect(retention.leases).toBe(0);
+    retention.open = true;
+    d.poke();
+    await expect(w.p).resolves.toHaveProperty('admitted');
+    expect(retention.leases).toBe(1);
+  });
+
+  it('a full queue refuses with every slot free, and says retention', async () => {
+    const { d, retention } = door(3, 2);
+    retention.open = false;
+    void pending(d, 'u', 'A');
+    void pending(d, 'u', 'B');
+    await tick();
+    expect(await d.admit('u', 'C')).toEqual({ refused: 'retention' });
+    expect(d.snapshot()).toMatchObject({ live: 0, queued: 2 });
+  });
+
+  it('checks the session before capacity, and capacity before retention', async () => {
+    const { d, retention } = door(1, 1);
+    admitted(await d.admit('alice', 'A'));
+    void pending(d, 'bob', 'B');
+    await tick();
+    retention.open = false;
+    expect(await d.admit('alice', 'A')).toEqual({ refused: 'session_busy' });
+    expect(await d.admit('carol', 'C')).toEqual({ refused: 'capacity' });
+  });
+
+  it('releasing gives the place back as well as the slot', async () => {
+    const { d, retention } = door(2);
+    const a = admitted(await d.admit('u', 'A'));
+    a.release();
+    a.release();
+    expect(retention.leases).toBe(0);
+    expect(d.snapshot().live).toBe(0);
+  });
+});
+
+describe('a waiter that leaves', () => {
+  it('takes no slot and starts nothing', async () => {
+    const { d, retention } = door(1);
+    const a = admitted(await d.admit('u', 'A'));
+    const controller = new AbortController();
+    const b = pending(d, 'u', 'B', controller.signal);
+    controller.abort(new Error('client gone'));
+    await expect(b.p).rejects.toThrow('client gone');
+    a.release();
+    await tick();
+    expect(d.snapshot()).toMatchObject({ live: 0, queued: 0, left: 1 });
+    expect(retention.leases).toBe(0);
+  });
+});
+
+describe('the register', () => {
+  it('drains only when every tracked call has settled, rejected ones included', async () => {
+    const { d } = door(1);
+    const a = admitted(await d.admit('u', 'A'));
+    let finish!: () => void;
+    let fail!: (e: Error) => void;
+    void a.track(new Promise<void>((r) => (finish = r)));
+    a.track(new Promise<void>((_, j) => (fail = j))).catch(() => {});
+    expect(a.outstanding).toBe(2);
+    let drained = false;
+    void a.drain().then(() => (drained = true));
+    finish();
+    await tick();
+    expect(drained).toBe(false);
+    fail(new Error('write failed'));
+    await tick();
+    expect(drained).toBe(true);
+    expect(a.outstanding).toBe(0);
+  });
+
+  it('drains at once when nothing was tracked', async () => {
+    const { d } = door(1);
+    await expect(admitted(await d.admit('u', 'A')).drain()).resolves.toBeUndefined();
+  });
+});
+
+describe('shutdown', () => {
+  it('aborts every admitted session and every waiter, and nothing else does', async () => {
+    const { d } = door(1);
+    const a = admitted(await d.admit('u', 'A'));
+    const b = pending(d, 'u', 'B');
+    await tick();
+    expect(a.signal.aborted).toBe(false);
+    d.abortAll(new Error('shutdown'));
+    expect(a.signal.aborted).toBe(true);
+    await expect(b.p).rejects.toThrow('shutdown');
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/door.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Write the door**
+
+Create `srv/lib/door.ts`:
+
+```ts
+/**
+ * The door: how many sessions may be live at once, and the one queue in front.
+ *
+ * Pure. Retention is injected; there is no timer and no clock, because nothing
+ * here waits for a duration — only for a slot, a session or a place.
+ */
+
+import { isRefusal, type Lease, type LeaseRefusal } from './session-retention';
+import type { DoorRefusalReason } from './throttle-surfacing';
+
+export interface DoorRetention {
+  canReserve(userId: string, sessionId: string): boolean;
+  lease(userId: string, sessionId: string, kind: 'pipeline'): Lease | LeaseRefusal;
+}
+
+export interface Admission {
+  readonly userId: string;
+  readonly sessionId: string;
+  /** Aborted by shutdown, and by nothing else. */
+  readonly signal: AbortSignal;
+  readonly outstanding: number;
+  /** Register a dispatched call before awaiting it. */
+  track<T>(p: Promise<T>): Promise<T>;
+  /** Resolves when every tracked call has settled. */
+  drain(): Promise<void>;
+  /** Give back the retention lease and the slot. Last in teardown. Idempotent. */
+  release(): void;
+}
+
+export type AdmitResult = { admitted: Admission } | { refused: DoorRefusalReason };
+
+export interface DoorSnapshot {
+  live: number;
+  capacity: number;
+  queued: number;
+  queueLength: number;
+  highWater: number;
+  refusals: Record<DoorRefusalReason, number>;
+  left: number;
+}
+
+interface Waiter {
+  userId: string;
+  sessionId: string;
+  key: string;
+  resolve: (r: AdmitResult) => void;
+  reject: (e: unknown) => void;
+  detach: () => void;
+}
+
+function keyOf(userId: string, sessionId: string): string {
+  return `${userId} ${sessionId}`;
+}
+
+export class Door {
+  private readonly live = new Map<string, Admission & { abort(reason: unknown): void }>();
+  private readonly waiters: Waiter[] = [];
+  private readonly refusals: Record<DoorRefusalReason, number> = {
+    session_busy: 0,
+    capacity: 0,
+    retention: 0,
+  };
+  private highWater = 0;
+  private left = 0;
+  private readonly capacity: number;
+  private readonly queueLength: number;
+  private readonly retention: DoorRetention;
+  private readonly onPressure?: (depth: number, queueLength: number) => void;
+
+  constructor(opts: {
+    capacity: number;
+    queueLength: number;
+    retention: DoorRetention;
+    onPressure?: (depth: number, queueLength: number) => void;
+  }) {
+    this.capacity = opts.capacity;
+    this.queueLength = opts.queueLength;
+    this.retention = opts.retention;
+    this.onPressure = opts.onPressure;
+  }
+
+  admit(userId: string, sessionId: string, signal?: AbortSignal): Promise<AdmitResult> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (this.eligible(userId, sessionId)) {
+      const admission = this.take(userId, sessionId);
+      if (admission) return Promise.resolve({ admitted: admission });
+    }
+    if (this.waiters.length >= this.queueLength) {
+      const reason = this.reasonFor(userId, sessionId);
+      this.refusals[reason]++;
+      return Promise.resolve({ refused: reason });
+    }
+    return new Promise<AdmitResult>((resolve, reject) => {
+      const onAbort = () => {
+        const i = this.waiters.indexOf(waiter);
+        if (i === -1) return;
+        this.waiters.splice(i, 1);
+        this.left++;
+        reject(signal?.reason);
+        this.dispatch();
+      };
+      const waiter: Waiter = {
+        userId,
+        sessionId,
+        key: keyOf(userId, sessionId),
+        resolve,
+        reject,
+        detach: () => signal?.removeEventListener('abort', onAbort),
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const before = this.waiters.length;
+      this.waiters.push(waiter);
+      this.noteDepth(before);
+    });
+  }
+
+  poke(): void {
+    this.dispatch();
+  }
+
+  abortAll(reason: unknown = new Error('shutdown')): void {
+    for (const w of this.waiters.splice(0)) {
+      w.detach();
+      w.reject(reason);
+    }
+    for (const a of this.live.values()) a.abort(reason);
+  }
+
+  snapshot(): DoorSnapshot {
+    return {
+      live: this.live.size,
+      capacity: this.capacity,
+      queued: this.waiters.length,
+      queueLength: this.queueLength,
+      highWater: this.highWater,
+      refusals: { ...this.refusals },
+      left: this.left,
+    };
+  }
+
+  private eligible(userId: string, sessionId: string): boolean {
+    return (
+      !this.live.has(keyOf(userId, sessionId)) &&
+      this.live.size < this.capacity &&
+      this.retention.canReserve(userId, sessionId)
+    );
+  }
+
+  /** In the order admission checks, so the caller hears what it can act on first. */
+  private reasonFor(userId: string, sessionId: string): DoorRefusalReason {
+    if (this.live.has(keyOf(userId, sessionId))) return 'session_busy';
+    if (this.live.size >= this.capacity) return 'capacity';
+    return 'retention';
+  }
+
+  private noteDepth(before: number): void {
+    const depth = this.waiters.length;
+    if (depth > this.highWater) this.highWater = depth;
+    const mark = (this.queueLength * 3) / 4;
+    if (before < mark && depth >= mark) this.onPressure?.(depth, this.queueLength);
+  }
+
+  /** Slot and place together, in this synchronous step, or neither. */
+  private take(userId: string, sessionId: string): Admission | undefined {
+    const lease = this.retention.lease(userId, sessionId, 'pipeline');
+    if (isRefusal(lease)) return undefined;
+    const key = keyOf(userId, sessionId);
+    const controller = new AbortController();
+    const register = new Set<Promise<unknown>>();
+    let drainers: Array<() => void> = [];
+    let released = false;
+    const settleOne = (p: Promise<unknown>) => {
+      register.delete(p);
+      if (register.size === 0) {
+        const waiting = drainers;
+        drainers = [];
+        for (const d of waiting) d();
+      }
+    };
+    const admission = {
+      userId,
+      sessionId,
+      signal: controller.signal,
+      get outstanding() {
+        return register.size;
+      },
+      track: <T>(p: Promise<T>): Promise<T> => {
+        register.add(p);
+        p.then(
+          () => settleOne(p),
+          () => settleOne(p),
+        );
+        return p;
+      },
+      drain: () =>
+        register.size === 0
+          ? Promise.resolve()
+          : new Promise<void>((r) => {
+              drainers.push(r);
+            }),
+      release: () => {
+        if (released) return;
+        released = true;
+        lease.release();
+        this.live.delete(key);
+        this.dispatch();
+      },
+      abort: (reason: unknown) => controller.abort(reason),
+    };
+    this.live.set(key, admission);
+    return admission;
+  }
+
+  /** Admit the oldest eligible waiter, repeatedly, until none is eligible. */
+  private dispatch(): void {
+    for (let i = 0; i < this.waiters.length; ) {
+      const w = this.waiters[i];
+      if (!this.eligible(w.userId, w.sessionId)) {
+        i++;
+        continue;
+      }
+      const admission = this.take(w.userId, w.sessionId);
+      if (!admission) {
+        i++;
+        continue;
+      }
+      this.waiters.splice(i, 1);
+      w.detach();
+      w.resolve({ admitted: admission });
+      i = 0;
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Run, lint, commit**
+
+```bash
+npx jest test/unit/door.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/door.ts test/unit/door.test.ts
+git add srv/lib/door.ts test/unit/door.test.ts
+git commit -m "feat(gatekeeper): the door — one queue, the oldest eligible waiter, slot and place together"
+```
+
+---
+
+### Task 8: Each channel refuses in its own dialect
+
+**Files:**
+- Modify: `srv/lib/throttle-surfacing.ts`
+- Test: `test/unit/door-refusal.test.ts`
+
+**Interfaces:**
+- Consumes: `DoorRefusalReason`, `doorRefusalSentence` (Task 6).
+- Produces:
+  - `export interface HttpRefusal { status: number; body: unknown }`
+  - `export function openAiDoorRefusal(reason: DoorRefusalReason): HttpRefusal` — `503`, `{ error: { message, type: 'server_error', code: 'gatekeeper_<reason>' } }`
+  - `export function anthropicDoorRefusal(reason: DoorRefusalReason): HttpRefusal` — `529`, `{ type: 'error', error: { type: 'overloaded_error', message } }`
+  - `export function executeStepDoorRefusal(reason: DoorRefusalReason): string` — `gatekeeper_<reason>: <sentence>`
+
+**Why here and not in the handlers:** a test must exercise what the handler actually sends. Tasks 10 and 11 assert the handlers send these; this task pins the shapes.
+
+**Why no header:** a door refusal carries no `Retry-After` and no number. The formatters return no headers, so a handler has nothing to forward.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/door-refusal.test.ts`:
+
+```ts
+import {
+  anthropicDoorRefusal,
+  type DoorRefusalReason,
+  doorRefusalSentence,
+  executeStepDoorRefusal,
+  openAiDoorRefusal,
+} from '../../srv/lib/throttle-surfacing';
+
+const REASONS: DoorRefusalReason[] = ['session_busy', 'capacity', 'retention'];
+
+describe.each(REASONS)('refusing for %s', (reason) => {
+  it('speaks the OpenAI envelope with a code a program can branch on', () => {
+    expect(openAiDoorRefusal(reason)).toEqual({
+      status: 503,
+      body: {
+        error: {
+          message: doorRefusalSentence(reason),
+          type: 'server_error',
+          code: `gatekeeper_${reason}`,
+        },
+      },
+    });
+  });
+
+  it("speaks Anthropic's overloaded_error under 529, the reason in the sentence", () => {
+    expect(anthropicDoorRefusal(reason)).toEqual({
+      status: 529,
+      body: {
+        type: 'error',
+        error: { type: 'overloaded_error', message: doorRefusalSentence(reason) },
+      },
+    });
+  });
+
+  it('gives execute_step a prefixed line a planner can branch on without parsing prose', () => {
+    expect(executeStepDoorRefusal(reason)).toBe(
+      `gatekeeper_${reason}: ${doorRefusalSentence(reason)}`,
+    );
+  });
+
+  it('carries no number anywhere', () => {
+    for (const text of [
+      JSON.stringify(openAiDoorRefusal(reason).body),
+      JSON.stringify(anthropicDoorRefusal(reason).body),
+      executeStepDoorRefusal(reason),
+    ]) {
+      expect(text).not.toMatch(/\d/);
+    }
+  });
+});
+
+describe('the sentences say what is missing, and only that', () => {
+  it('retention never mentions pipelines, and capacity never mentions memory', () => {
+    // The wrong one sends an operator to tune the wrong variable.
+    expect(doorRefusalSentence('retention')).not.toMatch(/pipeline|capacity/i);
+    expect(doorRefusalSentence('capacity')).not.toMatch(/memory|hold another session/i);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/door-refusal.test.ts`
+Expected: FAIL — `openAiDoorRefusal` is not exported.
+
+- [ ] **Step 3: Write the formatters**
+
+Append to `srv/lib/throttle-surfacing.ts`:
+
+```ts
+/** A refusal a handler writes as-is: a status and a JSON body, and no headers. */
+export interface HttpRefusal {
+  status: number;
+  body: unknown;
+}
+
+/** `/v1/chat/completions`. */
+export function openAiDoorRefusal(reason: DoorRefusalReason): HttpRefusal {
+  return {
+    status: 503,
+    body: {
+      error: {
+        message: doorRefusalSentence(reason),
+        type: 'server_error',
+        code: `gatekeeper_${reason}`,
+      },
+    },
+  };
+}
+
+/**
+ * `/v1/messages`. `overloaded_error` under `529` is the dialect's own pairing,
+ * argued above for throttling. The envelope has no field for a reason, so the
+ * reason travels in the sentence.
+ */
+export function anthropicDoorRefusal(reason: DoorRefusalReason): HttpRefusal {
+  return {
+    status: 529,
+    body: {
+      type: 'error',
+      error: { type: 'overloaded_error', message: doorRefusalSentence(reason) },
+    },
+  };
+}
+
+/** `execute_step`: a failure line whose prefix a planner can branch on. */
+export function executeStepDoorRefusal(reason: DoorRefusalReason): string {
+  return `gatekeeper_${reason}: ${doorRefusalSentence(reason)}`;
+}
+```
+
+- [ ] **Step 4: Run, lint, commit**
+
+```bash
+npx jest test/unit/door-refusal.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/throttle-surfacing.ts test/unit/door-refusal.test.ts
+git add srv/lib/throttle-surfacing.ts test/unit/door-refusal.test.ts
+git commit -m "feat(gatekeeper): each channel refuses at the door in its own dialect, with no number"
+```
+
+---
+
+### Task 9: The register is written by the calls themselves
+
+**Files:**
+- Create: `srv/lib/admission-scope.ts`, `srv/lib/tracked-llm.ts`
+- Modify: `srv/agent-manager.ts` (every `makeLlm` result wrapped; `invokeEmbeddedTool` tracks its dispatch)
+- Modify: `srv/lib/door.ts` (the admission's register comes from `createCallRegister`)
+- Test: `test/unit/admission-scope.test.ts`
+
+**Interfaces:**
+- Consumes: `Admission.track` (Task 7), structurally — this module does not import the door.
+- Produces:
+  - `export interface CallRegister { track<T>(p: Promise<T>): Promise<T> }`
+  - `export function runWithAdmission<T>(register: CallRegister, fn: () => T): T`
+  - `export function currentAdmission(): CallRegister | undefined`
+  - `export function trackCall<T>(p: Promise<T>): Promise<T>` — registers when a scope exists, passes through otherwise
+  - `export interface DrainableRegister extends CallRegister { readonly outstanding: number; drain(): Promise<void> }`
+  - `export function createCallRegister(): DrainableRegister` — the one register implementation; the door and the no-door path (Task 10) both use it
+  - `export function trackedLlm(inner: ILlm): ILlm`
+
+**Why this task exists:** Task 7 gives the admission a register and a drain, and nothing writes to it. A register nobody writes to drains instantly, so `safeStop` would close the ADT session on top of a live write — the defect the register exists to prevent, dressed as a passing test.
+
+**Why an async-local scope and not a parameter:** the two places that dispatch — the embedded tool handler and the LLM — sit below the library's pipeline, with no parameter to thread. This codebase already carries per-request state this way (`connectionALS`, `request-session`).
+
+**Why no scope means no registration:** the shared tool corpus is built outside any request. Attributing it to whichever caller arrived first would make a process-wide build the property of a caller that may be gone before it ends.
+
+**Why every `makeLlm` result, the helpers included:** a wrapper costs nothing outside a scope, and a rule with exceptions is a rule someone breaks on the next hot-swap. The structural test counts them.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/admission-scope.test.ts`:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import {
+  createCallRegister,
+  currentAdmission,
+  runWithAdmission,
+  trackCall,
+} from '../../srv/lib/admission-scope';
+import { trackedLlm } from '../../srv/lib/tracked-llm';
+
+function register() {
+  const set = new Set<Promise<unknown>>();
+  return {
+    set,
+    track<T>(p: Promise<T>): Promise<T> {
+      set.add(p);
+      p.then(
+        () => set.delete(p),
+        () => set.delete(p),
+      );
+      return p;
+    },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+describe('trackCall', () => {
+  it('registers a call started inside the scope, before it is awaited', async () => {
+    const reg = register();
+    const call = deferred<string>();
+    await runWithAdmission(reg, async () => {
+      void trackCall(call.promise);
+    });
+    // Registered at dispatch. Written after the await, an aborted caller would
+    // free the slot on top of a call still running.
+    expect(reg.set.size).toBe(1);
+    call.resolve('done');
+    await tick();
+    expect(reg.set.size).toBe(0);
+  });
+
+  it('registers nothing with no scope', async () => {
+    expect(currentAdmission()).toBeUndefined();
+    await expect(trackCall(Promise.resolve(1))).resolves.toBe(1);
+  });
+
+  it('keeps two pipelines apart', async () => {
+    const a = register();
+    const b = register();
+    const call = deferred<void>();
+    await runWithAdmission(a, async () => {
+      void trackCall(call.promise);
+    });
+    expect(a.set.size).toBe(1);
+    expect(b.set.size).toBe(0);
+    call.resolve();
+  });
+});
+
+describe('createCallRegister', () => {
+  it('drains only after every tracked call settles, rejected ones included', async () => {
+    const reg = createCallRegister();
+    const ok = deferred<void>();
+    let fail!: (e: Error) => void;
+    void reg.track(ok.promise);
+    reg.track(new Promise<void>((_, j) => (fail = j))).catch(() => {});
+    expect(reg.outstanding).toBe(2);
+    let drained = false;
+    void reg.drain().then(() => (drained = true));
+    ok.resolve();
+    await tick();
+    expect(drained).toBe(false);
+    fail(new Error('x'));
+    await tick();
+    expect(drained).toBe(true);
+  });
+
+  it('drains at once when empty', async () => {
+    await expect(createCallRegister().drain()).resolves.toBeUndefined();
+  });
+});
+
+describe('trackedLlm', () => {
+  function fakeLlm(chat: Promise<unknown>, chunks: unknown[] = []): ILlm {
+    return {
+      model: 'm',
+      chat: () => chat as ReturnType<ILlm['chat']>,
+      async *streamChat() {
+        for (const c of chunks) yield c as never;
+      },
+    };
+  }
+
+  it('registers a model call for as long as it is pending', async () => {
+    const reg = register();
+    const call = deferred<unknown>();
+    const llm = trackedLlm(fakeLlm(call.promise));
+    await runWithAdmission(reg, async () => {
+      void llm.chat([]);
+    });
+    expect(reg.set.size).toBe(1);
+    call.resolve({ ok: true, value: { content: '' } });
+    await tick();
+    expect(reg.set.size).toBe(0);
+  });
+
+  it('registers a stream until it ends, and when the reader stops early', async () => {
+    const reg = register();
+    const llm = trackedLlm(fakeLlm(Promise.resolve(), [1, 2, 3]));
+    await runWithAdmission(reg, async () => {
+      for await (const _ of llm.streamChat([])) {
+        expect(reg.set.size).toBe(1);
+        break;
+      }
+    });
+    await tick();
+    expect(reg.set.size).toBe(0);
+  });
+
+  it('keeps the model name', () => {
+    expect(trackedLlm(fakeLlm(Promise.resolve())).model).toBe('m');
+  });
+});
+
+describe('the calls that dispatch are the ones that register', () => {
+  const src = readFileSync(join(__dirname, '../../srv/agent-manager.ts'), 'utf8');
+
+  it('wraps every LLM this service constructs', () => {
+    const made = src.match(/makeLlm\(/g)?.length ?? 0;
+    const wrapped = src.match(/trackedLlm\(/g)?.length ?? 0;
+    expect(made).toBeGreaterThan(0);
+    // Each construction site passes its result through trackedLlm: directly, or
+    // via `.then(trackedLlm)` which the second pattern counts.
+    const thenWrapped = src.match(/\.then\(\s*trackedLlm\s*\)/g)?.length ?? 0;
+    expect(wrapped + thenWrapped).toBe(made);
+  });
+
+  it('tracks the embedded tool dispatch', () => {
+    expect(src).toMatch(/await\s+trackCall\(\s*Promise\.resolve\(\s*toolCall\s*\)\s*\)/);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/admission-scope.test.ts`
+Expected: FAIL — modules not found.
+
+- [ ] **Step 3: The scope**
+
+Create `srv/lib/admission-scope.ts`:
+
+```ts
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/** What a dispatched call needs from the admission it runs under. */
+export interface CallRegister {
+  track<T>(p: Promise<T>): Promise<T>;
+}
+
+const als = new AsyncLocalStorage<CallRegister>();
+
+/** Run a pipeline so that every call it dispatches registers against `register`. */
+export function runWithAdmission<T>(register: CallRegister, fn: () => T): T {
+  return als.run(register, fn);
+}
+
+/** The register in scope, or nothing — the correct answer for process-owned work. */
+export function currentAdmission(): CallRegister | undefined {
+  return als.getStore();
+}
+
+/** Register `p` against the admission in scope, if any, and return it. */
+export function trackCall<T>(p: Promise<T>): Promise<T> {
+  return currentAdmission()?.track(p) ?? p;
+}
+
+/** A register that can say when everything it holds has settled. */
+export interface DrainableRegister extends CallRegister {
+  readonly outstanding: number;
+  drain(): Promise<void>;
+}
+
+export function createCallRegister(): DrainableRegister {
+  const inFlight = new Set<Promise<unknown>>();
+  let drainers: Array<() => void> = [];
+  const settle = (p: Promise<unknown>) => {
+    inFlight.delete(p);
+    if (inFlight.size > 0) return;
+    const waiting = drainers;
+    drainers = [];
+    for (const d of waiting) d();
+  };
+  return {
+    get outstanding() {
+      return inFlight.size;
+    },
+    track<T>(p: Promise<T>): Promise<T> {
+      inFlight.add(p);
+      p.then(
+        () => settle(p),
+        () => settle(p),
+      );
+      return p;
+    },
+    drain: () =>
+      inFlight.size === 0
+        ? Promise.resolve()
+        : new Promise<void>((r) => {
+            drainers.push(r);
+          }),
+  };
+}
+```
+
+The door built its own register in Task 7, before this module existed. Replace it: in `srv/lib/door.ts`, add `import { createCallRegister } from './admission-scope';`, and in `take` delete `register`, `drainers` and `settleOne`, create `const register = createCallRegister();`, and give the admission `get outstanding() { return register.outstanding; }`, `track: (p) => register.track(p)` and `drain: () => register.drain()`. `test/unit/door.test.ts` stays green unchanged — it is the check that the swap kept the behaviour.
+
+- [ ] **Step 4: The LLM wrapper**
+
+Create `srv/lib/tracked-llm.ts`:
+
+```ts
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import { trackCall } from './admission-scope';
+
+/**
+ * An `ILlm` whose calls register against the admission in scope.
+ *
+ * A stream is registered when the reader starts it and settles when the reader
+ * stops, whether at the end, on an early `break`, or on a throw.
+ */
+export function trackedLlm(inner: ILlm): ILlm {
+  return {
+    get model() {
+      return inner.model;
+    },
+    chat: (...args: Parameters<ILlm['chat']>) => trackCall(inner.chat(...args)),
+    streamChat: (...args: Parameters<ILlm['streamChat']>) =>
+      trackStream(inner.streamChat(...args)),
+    ...(inner.healthCheck
+      ? { healthCheck: (...a: Parameters<NonNullable<ILlm['healthCheck']>>) => inner.healthCheck!(...a) }
+      : {}),
+    ...(inner.getModels
+      ? { getModels: (...a: Parameters<NonNullable<ILlm['getModels']>>) => inner.getModels!(...a) }
+      : {}),
+  };
+}
+
+async function* trackStream<T>(source: AsyncIterable<T>): AsyncIterable<T> {
+  let done!: () => void;
+  void trackCall(
+    new Promise<void>((r) => {
+      done = r;
+    }),
+  );
+  try {
+    for await (const chunk of source) yield chunk;
+  } finally {
+    done();
+  }
+}
+```
+
+If Biome rejects the two non-null assertions, bind the method first: `const hc = inner.healthCheck; ...(hc ? { healthCheck: (...a) => hc.call(inner, ...a) } : {})`, and the same for `getModels`.
+
+- [ ] **Step 5: Wrap every construction, and track the tool dispatch**
+
+In `srv/agent-manager.ts`, add `import { trackCall } from './lib/admission-scope';` and `import { trackedLlm } from './lib/tracked-llm';`.
+
+The two helper constructions (`const helperLlm = await makeLlm(` — there are two):
+
+```ts
+  const helperLlm = trackedLlm(
+    await makeLlm(
+      // ... arguments unchanged ...
+    ),
+  );
+```
+
+In `getOrCreateSharedLlms`, both `sharedMainLlm = makeLlm(...)` and `sharedClassifierLlm = makeLlm(...)` gain `.then(trackedLlm)` after the closing parenthesis of the call:
+
+```ts
+    sharedMainLlm = makeLlm(
+      // ... arguments unchanged ...
+      config.llm.temperature,
+    ).then(trackedLlm);
+```
+
+In the model hot-swap, likewise:
+
+```ts
+    const newLlmPromise = makeLlm(
+      // ... arguments unchanged ...
+      config.llm.temperature,
+    ).then(trackedLlm);
+```
+
+The declared types (`ReturnType<typeof makeLlm>`, i.e. `Promise<ILlm>`) are unchanged.
+
+In `invokeEmbeddedTool`, replace:
+
+```ts
+      const result = await toolCall;
+```
+
+with:
+
+```ts
+      // Registered before it is awaited. An ADT call is asynchronous in
+      // substance: the slot, and the ADT session, must outlive it even when
+      // everything waiting on it has stopped.
+      const result = await trackCall(Promise.resolve(toolCall));
+```
+
+- [ ] **Step 6: Run, lint, commit**
+
+```bash
+npx jest test/unit/admission-scope.test.ts test/unit/door.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/admission-scope.ts srv/lib/tracked-llm.ts srv/lib/door.ts srv/agent-manager.ts test/unit/admission-scope.test.ts
+git add srv/lib/admission-scope.ts srv/lib/tracked-llm.ts srv/lib/door.ts srv/agent-manager.ts test/unit/admission-scope.test.ts
+git commit -m "feat(gatekeeper): model and tool calls register themselves against the admission in scope"
+```
+
+---
+
+### Task 10: The detached sink, and the door inside the gatekeeper
+
+**Files:**
+- Create: `srv/lib/detached-sink.ts`
+- Modify: `srv/lib/gatekeeper.ts` (the door; `admitPipeline`; pokes when a place frees)
+- Test: `test/unit/detached-sink.test.ts`, `test/unit/gatekeeper-door.test.ts`
+
+**Interfaces:**
+- Consumes: `Door`, `AdmitResult` (Task 7); `runWithAdmission`, `createCallRegister` (Task 9); `theRetention`, `leaseSession`, `deleteSession`, `forgetEmptySessions`, `resetGatekeeperForTest` (Task 6); `gatekeeperConfig` (Task 4); `DoorRefusalReason` (Task 6).
+- Produces:
+  - `export interface OutputSink { readonly detached: boolean; detach(): void; writeHead(status: number, headers?: Record<string, string>): void; setHeader(name: string, value: string): void; write(chunk: string): void; end(chunk?: string): void; json(status: number, body: unknown): void }`
+  - `export function detachedSink(res: Response): OutputSink`
+  - in `srv/lib/gatekeeper.ts`:
+    - `export function theDoor(): Door | undefined` — `undefined` when no capacity is configured
+    - `export interface PipelineSession { readonly signal: AbortSignal | undefined; run<T>(fn: () => T): T; drain(): Promise<void>; release(): void }`
+    - `export type PipelineAdmission = { admitted: PipelineSession } | { refused: DoorRefusalReason }`
+    - `export function admitPipeline(userId: string, sessionId: string, signal?: AbortSignal): Promise<PipelineAdmission>`
+
+**Why a disconnect detaches the sink rather than guarding writes.** A client that leaves ends nothing — the pipeline runs on, because SAP is still waiting for the rest of the chain. What the pipeline must not do is fail on a dead socket. So after `detach`, every chunk and closing envelope is dropped before the socket, and a write that throws detaches the sink rather than raising into the pipeline.
+
+**Why `admitPipeline` exists with no door configured.** Nothing is refused and nothing waits, but the session still takes a pipeline lease, so a logout during the run waits for it instead of deleting under it, and calls still register, so teardown still waits for them. Absent means no admission limit; it does not mean deleting state out from under a running write.
+
+**Why the gatekeeper pokes the door.** A retention place frees when a RAG lease settles, when a logout's cleanup runs, and when an empty session is forgotten — none of which the door sees. A waiter blocked only on retention is admitted the moment one of them happens, not at the next unrelated release.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `test/unit/detached-sink.test.ts`:
+
+```ts
+import type { Response } from 'express';
+import { detachedSink } from '../../srv/lib/detached-sink';
+
+function fakeRes(opts: { throwOnWrite?: boolean } = {}) {
+  const out: string[] = [];
+  const res = {
+    headersSent: false,
+    writableEnded: false,
+    writeHead(status: number) {
+      out.push(`head ${status}`);
+      res.headersSent = true;
+    },
+    setHeader(n: string, v: string) {
+      out.push(`header ${n}=${v}`);
+    },
+    write(c: string) {
+      if (opts.throwOnWrite) throw new Error('EPIPE');
+      out.push(c);
+    },
+    end(c?: string) {
+      if (c) out.push(c);
+      out.push('end');
+      res.writableEnded = true;
+    },
+    status(s: number) {
+      out.push(`status ${s}`);
+      return res;
+    },
+    json(b: unknown) {
+      out.push(JSON.stringify(b));
+      res.writableEnded = true;
+    },
+  };
+  return { res: res as unknown as Response, out };
+}
+
+describe('the detached sink', () => {
+  it('passes writes through while attached', () => {
+    const { res, out } = fakeRes();
+    const sink = detachedSink(res);
+    sink.writeHead(200, {});
+    sink.write('a');
+    sink.end('b');
+    expect(out).toEqual(['head 200', 'a', 'b', 'end']);
+  });
+
+  it('drops every chunk and closing envelope once detached, and none throws', () => {
+    const { res, out } = fakeRes();
+    const sink = detachedSink(res);
+    sink.write('before');
+    sink.detach();
+    expect(() => {
+      sink.write('chunk');
+      sink.end('[DONE]');
+      sink.json(500, { error: 'late' });
+    }).not.toThrow();
+    expect(out).toEqual(['before']);
+    expect(sink.detached).toBe(true);
+  });
+
+  it('detaches itself when the socket is already dead, rather than raising into the pipeline', () => {
+    const { res } = fakeRes({ throwOnWrite: true });
+    const sink = detachedSink(res);
+    expect(() => sink.write('x')).not.toThrow();
+    expect(sink.detached).toBe(true);
+  });
+
+  it('writes nothing after the response has ended', () => {
+    const { res, out } = fakeRes();
+    const sink = detachedSink(res);
+    sink.end();
+    sink.write('late');
+    expect(out).toEqual(['end']);
+  });
+});
+```
+
+Create `test/unit/gatekeeper-door.test.ts`:
+
+```ts
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: {
+      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      context: undefined,
+    },
+  }),
+  { virtual: true },
+);
+jest.mock('../../srv/request-session', () => ({
+  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
+  getRequestSessionId: () => undefined,
+  getRequestHistory: () => [],
+}));
+
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
+import { isRefusal, type Lease } from '../../srv/lib/session-retention';
+import { trackCall } from '../../srv/lib/admission-scope';
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+function configure(live?: number, retained?: number) {
+  if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  else process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = String(live);
+  if (retained === undefined) delete process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS;
+  else process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = String(retained);
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+}
+
+afterEach(() => configure());
+
+function admitted(r: gatekeeper.PipelineAdmission) {
+  if (!('admitted' in r)) throw new Error(`refused: ${r.refused}`);
+  return r.admitted;
+}
+
+describe('with a door', () => {
+  it('admits up to the capacity and queues the rest', async () => {
+    configure(1);
+    const a = admitted(await gatekeeper.admitPipeline('u', 'A'));
+    let bAdmitted = false;
+    const b = gatekeeper.admitPipeline('u', 'B').then((r) => {
+      bAdmitted = true;
+      return r;
+    });
+    await tick();
+    expect(bAdmitted).toBe(false);
+    a.release();
+    admitted(await b).release();
+  });
+
+  it('admits a retention-blocked waiter the moment a RAG lease settles', async () => {
+    configure(2, 2);
+    const ragA = gatekeeper.leaseSession('u', 'A', 'rag') as Lease;
+    const ragB = gatekeeper.leaseSession('u', 'B', 'rag') as Lease;
+    expect(isRefusal(ragA) || isRefusal(ragB)).toBe(false);
+    let admittedC = false;
+    const c = gatekeeper.admitPipeline('u', 'C').then((r) => {
+      admittedC = true;
+      return r;
+    });
+    await tick();
+    // Both slots free, no place: no pipeline starts.
+    expect(admittedC).toBe(false);
+    ragA.release();
+    admitted(await c).release();
+    ragB.release();
+  });
+
+  it('registers calls made inside run, and drains after them', async () => {
+    configure(1);
+    const s = admitted(await gatekeeper.admitPipeline('u', 'A'));
+    let finish!: () => void;
+    s.run(() => {
+      void trackCall(new Promise<void>((r) => (finish = r)));
+    });
+    let drained = false;
+    void s.drain().then(() => (drained = true));
+    await tick();
+    expect(drained).toBe(false);
+    finish();
+    await tick();
+    expect(drained).toBe(true);
+    s.release();
+  });
+});
+
+describe('logout with a door', () => {
+  it('waits for the admitted pipeline and does not abort it', async () => {
+    // A logout is a disconnect with a better name: it may not cut an ADT write
+    // between create and activate.
+    configure(1);
+    const s = admitted(await gatekeeper.admitPipeline('u', 'A'));
+    let removed = false;
+    const removal = gatekeeper.deleteSession('u', 'A').then(() => (removed = true));
+    await tick();
+    expect(s.signal?.aborted).toBe(false);
+    expect(removed).toBe(false);
+    s.release();
+    await removal;
+    expect(removed).toBe(true);
+  });
+});
+
+describe('without a door', () => {
+  it('admits at once and refuses nothing', async () => {
+    configure();
+    expect(gatekeeper.theDoor()).toBeUndefined();
+    const sessions = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => gatekeeper.admitPipeline('u', `S${i}`)),
+    );
+    for (const s of sessions) admitted(s).release();
+  });
+
+  it('still leases the session, so a logout waits for the run', async () => {
+    configure();
+    const s = admitted(await gatekeeper.admitPipeline('u', 'A'));
+    let removed = false;
+    const removal = gatekeeper.deleteSession('u', 'A').then(() => (removed = true));
+    await tick();
+    expect(removed).toBe(false);
+    s.release();
+    await removal;
+    expect(removed).toBe(true);
+  });
+
+  it('still registers calls, so teardown waits for them', async () => {
+    configure();
+    const s = admitted(await gatekeeper.admitPipeline('u', 'A'));
+    let finish!: () => void;
+    s.run(() => {
+      void trackCall(new Promise<void>((r) => (finish = r)));
+    });
+    let drained = false;
+    void s.drain().then(() => (drained = true));
+    await tick();
+    expect(drained).toBe(false);
+    finish();
+    await tick();
+    expect(drained).toBe(true);
+    s.release();
+  });
+});
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `npx jest test/unit/detached-sink.test.ts test/unit/gatekeeper-door.test.ts`
+Expected: FAIL — `srv/lib/detached-sink` is not found; `admitPipeline` is not exported.
+
+- [ ] **Step 3: The sink**
+
+Create `srv/lib/detached-sink.ts`:
+
+```ts
+import type { Response } from 'express';
+
+/**
+ * Where a pipeline's output goes, detachable.
+ *
+ * A client that disconnects ends nothing: SAP is still waiting for the rest of
+ * a write chain, and nobody else is. What the pipeline must not do is fail on
+ * the dead socket. After `detach`, every write is dropped before the socket;
+ * a write that throws detaches the sink instead of raising into the pipeline.
+ */
+export interface OutputSink {
+  readonly detached: boolean;
+  detach(): void;
+  writeHead(status: number, headers?: Record<string, string>): void;
+  setHeader(name: string, value: string): void;
+  write(chunk: string): void;
+  end(chunk?: string): void;
+  json(status: number, body: unknown): void;
+}
+
+export function detachedSink(res: Response): OutputSink {
+  let detached = false;
+  const guard = (fn: () => void) => {
+    if (detached || res.writableEnded) return;
+    try {
+      fn();
+    } catch {
+      detached = true;
+    }
+  };
+  return {
+    get detached() {
+      return detached;
+    },
+    detach() {
+      detached = true;
+    },
+    writeHead: (status, headers) =>
+      guard(() => {
+        if (!res.headersSent) res.writeHead(status, headers);
+      }),
+    setHeader: (name, value) =>
+      guard(() => {
+        if (!res.headersSent) res.setHeader(name, value);
+      }),
+    write: (chunk) =>
+      guard(() => {
+        res.write(chunk);
+      }),
+    end: (chunk) =>
+      guard(() => {
+        if (chunk === undefined) res.end();
+        else res.end(chunk);
+      }),
+    json: (status, body) =>
+      guard(() => {
+        res.status(status).json(body);
+      }),
+  };
+}
+```
+
+- [ ] **Step 4: The door inside the gatekeeper**
+
+In `srv/lib/gatekeeper.ts`, add imports:
+
+```ts
+import cds from '@sap/cds';
+import { createCallRegister, runWithAdmission } from './admission-scope';
+import { Door } from './door';
+import { isRefusal } from './session-retention';
+import type { DoorRefusalReason } from './throttle-surfacing';
+```
+
+Add, after `theRetention`:
+
+```ts
+/** `null` once built and not configured; `undefined` before the first call. */
+let door: Door | null | undefined;
+
+/** The door, or `undefined` when no capacity is configured. */
+export function theDoor(): Door | undefined {
+  if (door === undefined) {
+    const cfg = gatekeeperConfig();
+    door =
+      cfg.maxLiveSessions === undefined
+        ? null
+        : new Door({
+            capacity: cfg.maxLiveSessions,
+            queueLength: cfg.queueLength ?? cfg.maxLiveSessions,
+            retention: theRetention(),
+            onPressure: (depth, queueLength) =>
+              cds.log('gatekeeper').warn('admission queue three quarters full', {
+                depth,
+                queueLength,
+              }),
+          });
+  }
+  return door ?? undefined;
+}
+
+/** A running pipeline's hold on its session, door or no door. */
+export interface PipelineSession {
+  /** Aborted by shutdown, and by nothing else. `undefined` with no door. */
+  readonly signal: AbortSignal | undefined;
+  /** Run the pipeline so that its calls register against this session. */
+  run<T>(fn: () => T): T;
+  /** Resolves when every registered call has settled. */
+  drain(): Promise<void>;
+  /** Last in teardown. Idempotent. */
+  release(): void;
+}
+
+export type PipelineAdmission =
+  | { admitted: PipelineSession }
+  | { refused: DoorRefusalReason };
+
+/**
+ * Admit a pipeline for this user's session.
+ *
+ * With a door: waits in the queue or is refused. Without one: admitted at once,
+ * and still leased and registered, so a logout waits for the run and teardown
+ * waits for its calls.
+ */
+export async function admitPipeline(
+  userId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<PipelineAdmission> {
+  const d = theDoor();
+  if (d) {
+    const r = await d.admit(userId, sessionId, signal);
+    if ('refused' in r) return r;
+    const a = r.admitted;
+    return {
+      admitted: {
+        signal: a.signal,
+        run: (fn) => runWithAdmission(a, fn),
+        drain: () => a.drain(),
+        release: () => a.release(),
+      },
+    };
+  }
+  // Refused only when the session is already closing, which the middleware
+  // makes rare: run without a lease rather than refuse where no limit is set.
+  const lease = theRetention().lease(userId, sessionId, 'pipeline');
+  const register = createCallRegister();
+  let released = false;
+  return {
+    admitted: {
+      signal: undefined,
+      run: (fn) => runWithAdmission(register, fn),
+      drain: () => register.drain(),
+      release: () => {
+        if (released) return;
+        released = true;
+        if (!isRefusal(lease)) lease.release();
+      },
+    },
+  };
+}
+```
+
+Make the three functions that free a place poke the door. Replace `leaseSession`, `deleteSession` and `forgetEmptySessions`:
+
+```ts
+export function leaseSession(
+  userId: string,
+  sessionId: string,
+  kind: LeaseKind,
+): Lease | LeaseRefusal {
+  const lease = theRetention().lease(userId, sessionId, kind);
+  if (isRefusal(lease)) return lease;
+  return {
+    kind: lease.kind,
+    signal: lease.signal,
+    release: () => {
+      lease.release();
+      // A place may have freed that a queued pipeline is waiting for.
+      theDoor()?.poke();
+    },
+  };
+}
+
+export function deleteSession(userId: string, sessionId: string): Promise<void> {
+  return theRetention()
+    .close(userId, sessionId)
+    .finally(() => theDoor()?.poke());
+}
+
+export function forgetEmptySessions(): number {
+  const n = theRetention().forgetEmpty();
+  if (n > 0) theDoor()?.poke();
+  return n;
+}
+```
+
+and extend `resetGatekeeperForTest`:
+
+```ts
+export function resetGatekeeperForTest(): void {
+  door?.abortAll(new Error('test reset'));
+  door = undefined;
+  retention = undefined;
+}
+```
+
+Wrapping `leaseSession` changes nothing for Task 6's callers: the returned object has the same `Lease` shape.
+
+- [ ] **Step 5: Run, lint, commit**
+
+```bash
+npx jest test/unit/detached-sink.test.ts test/unit/gatekeeper-door.test.ts test/unit/retention-wiring.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/detached-sink.ts srv/lib/gatekeeper.ts test/unit/detached-sink.test.ts test/unit/gatekeeper-door.test.ts
+git add srv/lib/detached-sink.ts srv/lib/gatekeeper.ts test/unit/detached-sink.test.ts test/unit/gatekeeper-door.test.ts
+git commit -m "feat(gatekeeper): a detachable sink, and one admission call for every channel, door or no door"
+```
+
+---
+
+### Task 11: Both chat channels — admitted after the agent, detached on disconnect, torn down in order
+
+**Files:**
+- Create: `test/unit/helpers/channel-harness.ts`
+- Modify: `srv/openai-handler.ts` (the `res.on('close')` teardown at `:560-576`; admission before the pipeline `try`; `opts.signal`; the runs; writes through the sink; the `finally`)
+- Modify: `srv/anthropic-handler.ts` (the same, at `:126-138`, before `agentOpts`, and the `finally`)
+- Test: `test/unit/openai-channel.test.ts`, `test/unit/anthropic-channel.test.ts`
+
+**Interfaces:**
+- Consumes: `admitPipeline`, `PipelineSession`, `theDoor`, `resetGatekeeperForTest` (Task 10); `detachedSink` (Task 10); `openAiDoorRefusal`, `anthropicDoorRefusal` (Task 8); `trackCall` (Task 9); `clearGatekeeperConfig` (Task 4).
+- Produces: nothing new for later tasks. The harness is reused by Task 12.
+
+**Where admission sits.** After `getSmartAgent`. A caller waiting for a destination to warm, or for the shared tool corpus to build, waits outside the door holding an HTTP request and no session; that wait is already bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`.
+
+**What a disconnect does now.** It detaches the sink and removes the caller from the queue if it is still waiting. It does not tear down the connection, and it does not reach the pipeline: the pipeline's signal is the admission's, which only shutdown aborts.
+
+**Teardown order.** The pipeline returns, which is when it stops starting calls; then wait for the register to empty; then `safeStop`; then `dropRequest`; then release the slot, last. `safeStop` first would close the ADT session under a live write.
+
+- [ ] **Step 1: The harness**
+
+Create `test/unit/helpers/channel-harness.ts`:
+
+```ts
+/**
+ * Drive a chat channel in-process: a fake request and response, and the agent,
+ * connection and config seams mocked. Each test file wires the mocks with
+ *
+ *   jest.mock('../../srv/agent-manager', () => require('./helpers/channel-harness').agentManagerMock());
+ *   jest.mock('../../srv/agent-config', () => require('./helpers/channel-harness').agentConfigMock());
+ *   jest.mock('../../srv/lib/request-connection', () => require('./helpers/channel-harness').requestConnectionMock());
+ *   jest.mock('../../srv/lib/ai-core-models', () => ({ getAvailableModels: async () => [] }));
+ *
+ * and a `@sap/cds` mock whose `context.user` is `harness.user`.
+ */
+
+type Chunk = { ok: true; value: Record<string, unknown> } | { ok: false; error: Error };
+
+export const harness = {
+  user: { id: 'alice', is: () => true, roles: ['MCP_Full'] } as {
+    id: string;
+    is: (r: string) => boolean;
+    roles: string[];
+  },
+  events: [] as string[],
+  seenOptions: [] as Array<Record<string, unknown>>,
+  process: async (_messages: unknown, _opts: Record<string, unknown>): Promise<Chunk> => ({
+    ok: true,
+    value: { content: 'done', stopReason: 'stop' },
+  }),
+  stream: async function* (_messages: unknown, _opts: Record<string, unknown>): AsyncIterable<Chunk> {
+    yield { ok: true, value: { content: 'done' } };
+    yield { ok: true, value: { finishReason: 'stop' } };
+  },
+  reset() {
+    harness.events = [];
+    harness.seenOptions = [];
+    harness.process = async () => ({ ok: true, value: { content: 'done', stopReason: 'stop' } });
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'done' } };
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+  },
+};
+
+const handle = {
+  agent: {
+    deps: { ragStores: {} },
+    process: (m: unknown, o: Record<string, unknown>) => {
+      harness.seenOptions.push(o);
+      harness.events.push('pipeline');
+      return harness.process(m, o);
+    },
+    streamProcess: (m: unknown, o: Record<string, unknown>) => {
+      harness.seenOptions.push(o);
+      harness.events.push('pipeline');
+      return harness.stream(m, o);
+    },
+  },
+  recMcp: { dropRequest: () => harness.events.push('dropRequest') },
+};
+
+export function agentManagerMock() {
+  const { CollectionRegistry } = jest.requireActual('../../../srv/rag-collections');
+  const registry = new CollectionRegistry();
+  return {
+    isAgentReady: () => true,
+    getSmartAgent: async () => {
+      harness.events.push('getSmartAgent');
+      return handle;
+    },
+    getCurrentDestination: () => 'DEST',
+    setSessionDestination: () => {},
+    forgetSessionDestination: () => {},
+    getCollectionRegistry: () => registry,
+    getCurrentModel: () => 'm',
+    getCurrentClassifierModel: () => 'm',
+    getDestinationStates: () => [],
+    getSharedHistoryRag: () => undefined,
+    runWithRequestConnection: (_c: unknown, fn: () => unknown) => fn(),
+    ExpositionFilteringRag: class {
+      constructor(readonly inner: unknown) {}
+    },
+    // Mocked ahead of Tasks 15 and 18, which add these to the handlers' imports;
+    // without them every channel test would break at Task 15.
+    isDestinationClosed: () => false,
+    retryAfterForDestination: () => undefined,
+    closeDestination: () => {},
+    knownDestinations: () => [],
+  };
+}
+
+export function agentConfigMock() {
+  return {
+    isAiCoreConfigured: () => true,
+    getAgentConfig: () => ({ llm: { model: 'm' }, mcp: { destination: 'DEST' }, agent: {} }),
+  };
+}
+
+export function requestConnectionMock() {
+  return {
+    establishRequestConnection: async () => ({
+      handled: false,
+      connection: { id: 'conn' },
+      dumpScope: undefined,
+    }),
+    safeStop: async () => {
+      harness.events.push('safeStop');
+    },
+  };
+}
+
+export function fakeReq(body: unknown, sessionId = 's-1') {
+  return {
+    body,
+    headers: { 'x-sap-destination': 'DEST', cookie: `clh_session=${sessionId}` },
+    sessionId,
+    sessionMinted: false,
+    secure: false,
+  };
+}
+
+export function fakeRes() {
+  const closeListeners: Array<() => void> = [];
+  const r = {
+    statusCode: 200,
+    headers: {} as Record<string, string>,
+    body: '' as string,
+    headersSent: false,
+    writableEnded: false,
+    writeHead(status: number, headers?: Record<string, string>) {
+      r.statusCode = status;
+      Object.assign(r.headers, headers ?? {});
+      r.headersSent = true;
+      return r;
+    },
+    setHeader(n: string, v: string) {
+      r.headers[n] = v;
+    },
+    status(s: number) {
+      r.statusCode = s;
+      return r;
+    },
+    json(b: unknown) {
+      r.body = JSON.stringify(b);
+      r.headersSent = true;
+      r.writableEnded = true;
+      return r;
+    },
+    write(c: string) {
+      r.body += c;
+      return true;
+    },
+    end(c?: string) {
+      if (c) r.body += c;
+      r.writableEnded = true;
+      return r;
+    },
+    on(event: string, fn: () => void) {
+      if (event === 'close') closeListeners.push(fn);
+      return r;
+    },
+    /** The client goes away before the response ends. */
+    disconnect() {
+      for (const fn of closeListeners) fn();
+    },
+  };
+  return r;
+}
+
+export function deferred<T = void>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+export const tick = () => new Promise((r) => setImmediate(r));
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `test/unit/openai-channel.test.ts`:
+
+```ts
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: {
+      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      get context() {
+        return { user: require('./helpers/channel-harness').harness.user };
+      },
+    },
+  }),
+  { virtual: true },
+);
+jest.mock('../../srv/agent-manager', () => require('./helpers/channel-harness').agentManagerMock());
+jest.mock('../../srv/agent-config', () => require('./helpers/channel-harness').agentConfigMock());
+jest.mock('../../srv/lib/request-connection', () =>
+  require('./helpers/channel-harness').requestConnectionMock(),
+);
+jest.mock('../../srv/lib/ai-core-models', () => ({ getAvailableModels: async () => [] }));
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Request, Response } from 'express';
+import { trackCall } from '../../srv/lib/admission-scope';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import { openAiDoorRefusal } from '../../srv/lib/throttle-surfacing';
+import { handleChatCompletions } from '../../srv/openai-handler';
+import { deferred, fakeReq, fakeRes, harness, tick } from './helpers/channel-harness';
+
+function configure(live?: number, queue?: number) {
+  if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  else process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = String(live);
+  if (queue === undefined) delete process.env.LLM_GATEKEEPER_QUEUE_LENGTH;
+  else process.env.LLM_GATEKEEPER_QUEUE_LENGTH = String(queue);
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+}
+
+const body = (stream = false) => ({ model: 'm', stream, messages: [{ role: 'user', content: 'hi' }] });
+
+function call(b: unknown, res = fakeRes(), sessionId = 's-1') {
+  const done = handleChatCompletions(
+    fakeReq(b, sessionId) as unknown as Request,
+    res as unknown as Response,
+  );
+  return { res, done };
+}
+
+beforeEach(() => harness.reset());
+afterEach(() => configure());
+
+describe('/v1/chat/completions at the door', () => {
+  it('refuses in the OpenAI envelope, with no Retry-After, after resolving the agent', async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    void gatekeeper.admitPipeline('carol', 'queued');
+    await tick();
+
+    const { res, done } = call(body());
+    await done;
+
+    const refusal = openAiDoorRefusal('capacity');
+    expect(res.statusCode).toBe(refusal.status);
+    expect(JSON.parse(res.body)).toEqual(refusal.body);
+    expect(res.headers['Retry-After']).toBeUndefined();
+    expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
+    if ('admitted' in hold) hold.admitted.release();
+  });
+
+  it('hands the pipeline the admission signal, not the caller', async () => {
+    configure(2);
+    const { done } = call(body());
+    await done;
+    expect(harness.seenOptions[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('a disconnect ends nothing, a dead socket cannot fail the run, and teardown is in order', async () => {
+    configure(1);
+    const tool = deferred();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      // A write chain in flight, registered as the embedded handler registers it.
+      void trackCall(tool.promise.then(() => harness.events.push('tool settled')));
+      yield { ok: true, value: { content: 'more' } };
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+
+    const res = fakeRes();
+    const { done } = call(body(true), res);
+    await tick();
+    res.disconnect();
+    await tick();
+    expect(harness.events).not.toContain('safeStop');
+
+    tool.resolve();
+    await expect(done).resolves.toBeUndefined();
+    expect(harness.events).toEqual([
+      'getSmartAgent',
+      'pipeline',
+      'tool settled',
+      'safeStop',
+      'dropRequest',
+    ]);
+    expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
+  });
+
+  it('the slot outlives an aborted tool call', async () => {
+    configure(1, 1);
+    const tool = deferred();
+    harness.process = async () => {
+      // The library answered its caller; the ADT write underneath is still out.
+      void trackCall(tool.promise);
+      return { ok: true, value: { content: 'aborted', stopReason: 'stop' } };
+    };
+    const { done } = call(body());
+    await tick();
+
+    let admitted = false;
+    const next = gatekeeper.admitPipeline('bob', 'next').then((r) => {
+      admitted = true;
+      return r;
+    });
+    await tick();
+    expect(admitted).toBe(false);
+
+    tool.resolve();
+    await done;
+    const r = await next;
+    expect(admitted).toBe(true);
+    if ('admitted' in r) r.admitted.release();
+  });
+
+  it('a caller that leaves while queued starts no pipeline', async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    const res = fakeRes();
+    const { done } = call(body(), res);
+    await tick();
+    res.disconnect();
+    await done;
+    expect(harness.events).not.toContain('pipeline');
+    expect(harness.events).toContain('safeStop');
+    if ('admitted' in hold) hold.admitted.release();
+    expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({ live: 0, queued: 0, left: 1 });
+  });
+
+  it('absent means no door: nothing refused, and teardown still waits for calls', async () => {
+    configure();
+    const tool = deferred();
+    harness.process = async () => {
+      void trackCall(tool.promise.then(() => harness.events.push('tool settled')));
+      return { ok: true, value: { content: 'x', stopReason: 'stop' } };
+    };
+    const { res, done } = call(body());
+    await tick();
+    tool.resolve();
+    await done;
+    expect(res.statusCode).toBe(200);
+    expect(harness.events.indexOf('tool settled')).toBeLessThan(harness.events.indexOf('safeStop'));
+  });
+});
+
+describe('a shared corpus build holds no caller slot', () => {
+  it('resolves the agent before admitting', () => {
+    const src = readFileSync(join(__dirname, '../../srv/openai-handler.ts'), 'utf8');
+    expect(src.indexOf('getSmartAgent(')).toBeLessThan(src.indexOf('admitPipeline('));
+  });
+});
+```
+
+Create `test/unit/anthropic-channel.test.ts` with the same five `jest.mock` calls and `configure`, and:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Request, Response } from 'express';
+import { trackCall } from '../../srv/lib/admission-scope';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import { anthropicDoorRefusal } from '../../srv/lib/throttle-surfacing';
+import { handleAnthropicMessages } from '../../srv/anthropic-handler';
+import { deferred, fakeReq, fakeRes, harness, tick } from './helpers/channel-harness';
+
+const body = (stream = false) => ({
+  model: 'm',
+  max_tokens: 100,
+  stream,
+  messages: [{ role: 'user', content: 'hi' }],
+});
+
+function call(b: unknown, res = fakeRes()) {
+  const done = handleAnthropicMessages(fakeReq(b) as unknown as Request, res as unknown as Response);
+  return { res, done };
+}
+
+beforeEach(() => harness.reset());
+afterEach(() => configure());
+
+describe('/v1/messages at the door', () => {
+  it("refuses with Anthropic's overloaded_error under 529, and no Retry-After", async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    void gatekeeper.admitPipeline('carol', 'queued');
+    await tick();
+    const { res, done } = call(body());
+    await done;
+    const refusal = anthropicDoorRefusal('capacity');
+    expect(res.statusCode).toBe(refusal.status);
+    expect(JSON.parse(res.body)).toEqual(refusal.body);
+    expect(res.headers['Retry-After']).toBeUndefined();
+    if ('admitted' in hold) hold.admitted.release();
+  });
+
+  it('a disconnect ends nothing, and teardown waits for the call in flight', async () => {
+    configure(1);
+    const tool = deferred();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'working' } };
+      void trackCall(tool.promise.then(() => harness.events.push('tool settled')));
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+    const res = fakeRes();
+    const { done } = call(body(true), res);
+    await tick();
+    res.disconnect();
+    await tick();
+    expect(harness.events).not.toContain('safeStop');
+    tool.resolve();
+    await done;
+    expect(harness.events.slice(-3)).toEqual(['tool settled', 'safeStop', 'dropRequest']);
+    expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
+  });
+
+  it('resolves the agent before admitting', () => {
+    const src = readFileSync(join(__dirname, '../../srv/anthropic-handler.ts'), 'utf8');
+    expect(src.indexOf('getSmartAgent(')).toBeLessThan(src.indexOf('admitPipeline('));
+  });
+});
+```
+
+- [ ] **Step 3: Run them to verify they fail**
+
+Run: `npx jest test/unit/openai-channel.test.ts test/unit/anthropic-channel.test.ts`
+Expected: FAIL — no refusal is written (the handlers never ask the door), and `safeStop` runs on disconnect.
+
+- [ ] **Step 4: `/v1/chat/completions`**
+
+In `srv/openai-handler.ts`, add imports:
+
+```ts
+import { detachedSink } from './lib/detached-sink';
+import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+```
+
+and add `openAiDoorRefusal` to the `./lib/throttle-surfacing` import.
+
+Replace the `res.on('close', ...)` block and its comment (`:560-576`) with:
+
+```ts
+  // A client disconnect ends nothing. Tearing the connection down on `close` is
+  // the recorded cause of the orphaned ADT locks in SM12: nobody is waiting for
+  // the answer, and SAP is waiting for the rest of the chain. So the sink is
+  // detached — nothing written afterwards reaches the socket or fails the run —
+  // and a caller still queued is removed from the queue.
+  const out = detachedSink(res);
+  const callerLeft = new AbortController();
+  res.on('close', () => {
+    if (res.writableEnded) return;
+    log.info('Caller disconnected; the session runs to its end', { sessionId });
+    out.detach();
+    callerLeft.abort(new Error('caller disconnected'));
+  });
+```
+
+Immediately before the line `  try {` that is followed by `    const pipelineLog = cds.log('smart-pipeline');`, insert:
+
+```ts
+  // Admitted after the agent is resolved: a caller waiting for a destination to
+  // warm waits outside the door, holding a request and no session.
+  let pipeline: PipelineSession;
+  try {
+    const admission = await admitPipeline(userId, sessionId, callerLeft.signal);
+    if ('refused' in admission) {
+      restoreRagStores();
+      await safeStop(requestConnection);
+      const refusal = openAiDoorRefusal(admission.refused);
+      out.json(refusal.status, refusal.body);
+      return;
+    }
+    pipeline = admission.admitted;
+  } catch {
+    // Left while queued. Nothing was started, so nothing is owed but the connection.
+    restoreRagStores();
+    await safeStop(requestConnection);
+    return;
+  }
+```
+
+In the `opts` object, after `sessionId,`, add:
+
+```ts
+      // The admission's signal, which only shutdown aborts. Not the caller's.
+      signal: pipeline.signal,
+```
+
+Wrap both pipeline runs. The streaming one:
+
+```ts
+      await pipeline.run(() =>
+        runWithSessionId(
+          sessionId,
+          () =>
+            withRequestConnectionAuthorized(
+              // ... unchanged ...
+            ),
+          priorTurns,
+        ),
+      );
+```
+
+and the non-streaming one:
+
+```ts
+    const result = await pipeline.run(() =>
+      runWithSessionId(
+        sessionId,
+        () =>
+          withRequestConnectionAuthorized(requestConnection, requestDumpScope, async () => {
+            return handle.agent.process(normalizedMessages, opts);
+          }),
+        priorTurns,
+      ),
+    );
+```
+
+Route every write after admission through the sink:
+
+```bash
+python3 - <<'PY'
+p = 'srv/openai-handler.ts'
+s = open(p).read()
+start = s.index("const pipelineLog = cds.log('smart-pipeline');")
+end = s.index('export async function handleModels')
+body = s[start:end]
+for old, new in [
+    ('if (!res.writableEnded) res.write(', 'out.write('),
+    ('res.writeHead(', 'out.writeHead('),
+    ('res.write(', 'out.write('),
+    ('res.end(', 'out.end('),
+]:
+    body = body.replace(old, new)
+open(p, 'w').write(s[:start] + body + s[end:])
+PY
+```
+
+`res.on('close', () => clearInterval(keepAlive));` is deliberately left on `res`.
+
+Replace the `finally` at the end of `handleChatCompletions`:
+
+```ts
+  } finally {
+    restoreRagStores();
+    // The pipeline has returned, so it starts no more calls. Wait for the ones it
+    // started, then end the ADT session, then give the slot back — last.
+    await pipeline.drain();
+    await safeStop(requestConnection);
+    // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
+    // omitting this leaks memory per request (Verified fact 10).
+    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    pipeline.release();
+  }
+```
+
+- [ ] **Step 5: `/v1/messages`**
+
+In `srv/anthropic-handler.ts`, add the same two imports and `anthropicDoorRefusal` to the `./lib/throttle-surfacing` import.
+
+Replace the `res.on('close', ...)` block and its comment (`:126-138`) with the same block as in Step 4, logging `{ sessionId }`.
+
+Immediately before `  const agentOpts = {`, insert:
+
+```ts
+  let pipeline: PipelineSession;
+  try {
+    const admission = await admitPipeline(userId, sessionId ?? traceId, callerLeft.signal);
+    if ('refused' in admission) {
+      await safeStop(requestConnection);
+      const refusal = anthropicDoorRefusal(admission.refused);
+      out.json(refusal.status, refusal.body);
+      return;
+    }
+    pipeline = admission.admitted;
+  } catch {
+    await safeStop(requestConnection);
+    return;
+  }
+```
+
+In `agentOpts`, after `stream,`, add `signal: pipeline.signal,`.
+
+`runAgent` becomes:
+
+```ts
+  const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
+    pipeline.run(() =>
+      runWithSessionId(
+        undefined,
+        () =>
+          requestConnection
+            ? runWithRequestConnection(requestConnection, fn, requestDumpScope, callerExposition)
+            : fn(),
+        priorTurns,
+      ),
+    );
+```
+
+Route the writes through the sink. The streaming branch:
+
+- `res.writeHead(200, {` → `out.writeHead(200, {`
+- `if (!res.writableEnded) res.write(': keep-alive\n\n');` → `out.write(': keep-alive\n\n');`
+- `res.write(\`event: ${event.event}\ndata: ${event.data}\n\n\`);` → `out.write(\`event: ${event.event}\ndata: ${event.data}\n\n\`);`
+- in the stream `catch`, `if (!res.writableEnded) { res.write(` → `out.write(` with the guard removed
+- `res.end();` → `out.end();`
+
+and the non-streaming result becomes:
+
+```ts
+    if (result.ok) {
+      out.json(200, adapter.formatResult(result.value, context));
+    } else {
+      const limit = throttleOf(result.error);
+      log.error('Agent processing failed', {
+        error: result.error.message,
+        throttled: limit?.reason,
+      });
+      if (limit) {
+        const retryAfter = retryAfterHeader(result.error);
+        if (retryAfter) out.setHeader('Retry-After', retryAfter);
+        out.json(statusForError(result.error), anthropicErrorPayload(result.error));
+      } else {
+        out.json(500, adapter.formatError(result.error, context as ApiRequestContext));
+      }
+    }
+```
+
+Replace the `finally`:
+
+```ts
+  } finally {
+    await pipeline.drain();
+    await safeStop(requestConnection);
+    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    pipeline.release();
+  }
+```
+
+The `Retry-After` kept here is the throttle one — an interval the server named — and not the door's, which has none.
+
+- [ ] **Step 6: Run, lint, commit**
+
+```bash
+npx jest test/unit/openai-channel.test.ts test/unit/anthropic-channel.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/openai-handler.ts srv/anthropic-handler.ts test/unit/helpers/channel-harness.ts test/unit/openai-channel.test.ts test/unit/anthropic-channel.test.ts
+git add srv/openai-handler.ts srv/anthropic-handler.ts test/unit/helpers/channel-harness.ts test/unit/openai-channel.test.ts test/unit/anthropic-channel.test.ts
+git commit -m "feat(gatekeeper): chat channels admit after the agent, detach on disconnect, and tear down in order"
+```
+
+---
+
+### Task 12: `execute_step` goes through the same door
+
+**Files:**
+- Modify: `srv/agent-mcp.ts` (the tool body becomes the exported `executeStep`; the door replaces the semaphore when configured)
+- Test: `test/unit/execute-step-channel.test.ts`
+
+**Interfaces:**
+- Consumes: `admitPipeline`, `theDoor`, `PipelineSession`, `resetGatekeeperForTest` (Task 10); `executeStepDoorRefusal` (Task 8); `trackCall` (Task 9); the channel harness (Task 11).
+- Produces:
+  - `export interface StepCaller { userId: string; exposition: ExpositionLevel | undefined }`
+  - `export async function executeStep(req: Request, caller: StepCaller, args: { destination?: string; task: string }): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: true }>`
+
+**One counter, every channel.** `execute_step` spends the same memory as the chat channels, so with a capacity configured it counts against the same door. Two caps on one resource would each be wrong about the other, so the semaphore is off for this route whenever the door is on.
+
+**Absent means today.** With no capacity, the semaphore of two stays exactly where it is, and `admitPipeline` still leases the session and registers calls.
+
+**Its session.** Each call already mints `agent-step-<uuid>`, so parallel steps are parallel sessions — as they always were.
+
+**Why the body is extracted.** `McpServer.registerTool` keeps its callbacks private. A function the callback delegates to can be driven by a test directly, which is the only way to assert what this channel sends.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/unit/execute-step-channel.test.ts`:
+
+```ts
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: {
+      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      get context() {
+        return { user: require('./helpers/channel-harness').harness.user };
+      },
+    },
+  }),
+  { virtual: true },
+);
+jest.mock('../../srv/env-setup', () => ({}));
+jest.mock('../../srv/agent-manager', () => require('./helpers/channel-harness').agentManagerMock());
+jest.mock('../../srv/lib/request-connection', () =>
+  require('./helpers/channel-harness').requestConnectionMock(),
+);
+jest.mock('../../srv/connections/destinationResolver', () => ({
+  resolveDestinationSapConfig: async () => ({
+    proxyType: 'Internet',
+    authenticationType: 'OAuth2JWTBearer',
+    sapConfig: { authType: 'jwt' },
+    destinationName: 'DEST',
+  }),
+}));
+jest.mock('../../srv/connections/connectionFactory', () => ({
+  createConnection: () => ({ connect: async () => {} }),
+}));
+jest.mock('../../srv/lib/responsible', () => ({ setRequestResponsible: () => {} }));
+jest.mock('../../srv/lib/principal', () => ({ computeDumpScope: () => undefined }));
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Request } from 'express';
+import { executeStep } from '../../srv/agent-mcp';
+import { trackCall } from '../../srv/lib/admission-scope';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import { executeStepDoorRefusal } from '../../srv/lib/throttle-surfacing';
+import { deferred, harness, tick } from './helpers/channel-harness';
+
+function configure(live?: number, queue?: number) {
+  if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  else process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = String(live);
+  if (queue === undefined) delete process.env.LLM_GATEKEEPER_QUEUE_LENGTH;
+  else process.env.LLM_GATEKEEPER_QUEUE_LENGTH = String(queue);
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+}
+
+const req = { headers: { 'x-sap-destination': 'DEST' } } as unknown as Request;
+const caller = { userId: 'alice', exposition: undefined };
+const step = () => executeStep(req, caller, { task: 'read class ZCL_X' });
+
+beforeEach(() => harness.reset());
+afterEach(() => configure());
+
+describe('execute_step at the door', () => {
+  it('refuses with the prefixed line, after resolving the agent', async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    void gatekeeper.admitPipeline('carol', 'queued');
+    await tick();
+    const result = await step();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(executeStepDoorRefusal('capacity'));
+    expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
+    if ('admitted' in hold) hold.admitted.release();
+  });
+
+  it('counts against the one door, not a second cap', async () => {
+    configure(3);
+    const gates = [deferred(), deferred(), deferred()];
+    let n = 0;
+    harness.process = async () => {
+      await gates[n++].promise;
+      return { ok: true, value: { content: 'x' } };
+    };
+    const running = [step(), step(), step()];
+    await tick();
+    // Three at once: the semaphore of two is off while the door is on.
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(3);
+    for (const g of gates) g.resolve();
+    await Promise.all(running);
+  });
+
+  it('tears down in order: calls, then safeStop, then the slot', async () => {
+    configure(1);
+    const tool = deferred();
+    harness.process = async () => {
+      void trackCall(tool.promise.then(() => harness.events.push('tool settled')));
+      return { ok: true, value: { content: 'done' } };
+    };
+    const running = step();
+    await tick();
+    expect(harness.events).not.toContain('safeStop');
+    tool.resolve();
+    await running;
+    expect(harness.events.slice(-3)).toEqual(['tool settled', 'safeStop', 'dropRequest']);
+    expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
+  });
+});
+
+describe('absent means today', () => {
+  it('keeps the semaphore of two', async () => {
+    configure();
+    const gates = [deferred(), deferred(), deferred()];
+    let n = 0;
+    harness.process = async () => {
+      await gates[n++].promise;
+      return { ok: true, value: { content: 'x' } };
+    };
+    const running = [step(), step(), step()];
+    await tick();
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(2);
+    for (const g of gates) g.resolve();
+    await Promise.all(running);
+  });
+
+  it('still resolves the agent before admitting', () => {
+    const src = readFileSync(join(__dirname, '../../srv/agent-mcp.ts'), 'utf8');
+    const body = src.slice(src.indexOf('export async function executeStep'));
+    expect(body.indexOf('getSmartAgent(')).toBeLessThan(body.indexOf('admitPipeline('));
+  });
+});
+```
+
+The `pipeline` event fires for the gated third call only after one of the first two releases; the gates above resolve in order, so the test waits on all three.
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest test/unit/execute-step-channel.test.ts`
+Expected: FAIL — `executeStep` is not exported.
+
+- [ ] **Step 3: Extract the body and put it behind the door**
+
+In `srv/agent-mcp.ts`, add imports:
+
+```ts
+import type { ExpositionLevel } from './lib/exposition';
+import { admitPipeline, type PipelineSession, theDoor } from './lib/gatekeeper';
+```
+
+and add `executeStepDoorRefusal` to the `./lib/throttle-surfacing` import.
+
+Replace the comment above `EXEC_STEP_MAX_CONCURRENCY` with:
+
+```ts
+/**
+ * The cap on concurrent `execute_step` runs when no door is configured.
+ *
+ * The ancestor of the gatekeeper's door: parallel steps each spike memory, and
+ * an unbounded fan-out OOMed a 1 GB container. With `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`
+ * set, this route counts against the shared door instead and the semaphore is
+ * not taken — two caps on one resource would each be wrong about the other.
+ */
+```
+
+Add, after `textResult`:
+
+```ts
+export interface StepCaller {
+  userId: string;
+  exposition: ExpositionLevel | undefined;
+}
+
+/** One `execute_step` call. The tool callback delegates here so a test can drive it. */
+export async function executeStep(
+  req: Request,
+  caller: StepCaller,
+  { destination, task }: { destination?: string; task: string },
+) {
+  const log = cds.log('agent-mcp');
+  const { userId, exposition } = caller;
+  // With a door, this route counts against it; without one, today's semaphore.
+  const releaseSemaphore = theDoor() ? undefined : await execStepSemaphore.acquire();
+  let connection: IAbapConnection | undefined;
+  let handle: Awaited<ReturnType<typeof getSmartAgent>> | undefined;
+  let traceId: string | undefined;
+  let pipeline: PipelineSession | undefined;
+  try {
+    // ... the existing body of the `try`, from `// Destination from the arg, else
+    // the connection's default header.` down to `handle = await getSmartAgent(...)`
+    // and `const agentHandle = handle;`, unchanged ...
+
+    const sessionId = `agent-step-${randomUUID()}`;
+    traceId = sessionId;
+
+    // Admitted after the agent is resolved, like every channel.
+    const admission = await admitPipeline(userId, sessionId);
+    if ('refused' in admission) {
+      return textResult(executeStepDoorRefusal(admission.refused), true);
+    }
+    pipeline = admission.admitted;
+    const admitted = pipeline;
+
+    const opts = {
+      // ... the existing opts, unchanged, plus:
+      signal: admitted.signal,
+    };
+
+    const conn = connection;
+    const r = await admitted.run(() =>
+      runWithSessionId(sessionId, () =>
+        runWithRequestConnection(
+          conn,
+          () => agentHandle.agent.process([{ role: 'user', content: task }], opts),
+          dumpScope,
+          exposition,
+        ),
+      ),
+    );
+
+    // ... the existing handling of `r`, unchanged ...
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn('execute_step failed', { destination, error: message });
+    return textResult(`ERROR: ${message}`, true);
+  } finally {
+    // Wait for the calls this step started, then end the ADT session, then
+    // release — the slot last, and the semaphore with it.
+    await pipeline?.drain();
+    await safeStop(connection);
+    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    pipeline?.release();
+    releaseSemaphore?.();
+  }
+}
+```
+
+`sessionId` and `traceId` move up from their old place inside the `try` so that `admitPipeline` has the session; delete the old `const sessionId = ...` and `traceId = sessionId;` lines further down. The `if (execStepSemaphore.active >= ...)` queued-log block is deleted with the old acquisition.
+
+In `createAgentMcpServerForRequest`, the `execute_step` registration's callback becomes:
+
+```ts
+    async (args: { destination?: string; task: string }) =>
+      executeStep(req, { userId, exposition }, args),
+```
+
+- [ ] **Step 4: Run, lint, commit**
+
+```bash
+npx jest test/unit/execute-step-channel.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/agent-mcp.ts test/unit/execute-step-channel.test.ts
+git add srv/agent-mcp.ts test/unit/execute-step-channel.test.ts
+git commit -m "feat(gatekeeper): execute_step counts against the one door, and keeps its semaphore only without one"
+```
+
+---
+
+### Task 13: Shutdown ends admitted work, and a `429` with an interval does not
+
+**Files:**
+- Modify: `srv/lib/gatekeeper.ts` (`shutdownGatekeeper`)
+- Modify: `srv/server.ts` (the shutdown hook)
+- Modify: `srv/agent-config.ts` (the strategy follows the door)
+- Test: `test/unit/gatekeeper-shutdown.test.ts`, `test/unit/throttle-choice.test.ts`
+
+**Interfaces:**
+- Consumes: `theDoor`, `admitPipeline` (Task 10); `gatekeeperConfig` (Task 4); `WaitAsTold` from `@mcp-abap-adt/llm-agent`.
+- Produces:
+  - `export function shutdownGatekeeper(): void`
+
+**Only shutdown ends an admitted session.** It aborts every live admission's controller and rejects every waiter. It is the one place teardown may be best-effort: it does not wait for the register before the process exits.
+
+**Why `WaitAsTold` with a door.** The door now protects capacity, so a ceiling behind it would only kill work in flight — and `WaitIfShortEnough`'s twenty seconds is shorter than most intervals SAP AI Core names. An admitted session waits out exactly what the server named. A `429` naming no interval leaves nothing to wait out and fails the session: the one hole in the guarantee, asserted so it stays a decision.
+
+**Why `WaitIfShortEnough` without a door.** Nothing is admitted, and an unbounded wait would hold a connection the client cuts at about a minute. Absent means today. (Decision 2 in the header.)
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `test/unit/gatekeeper-shutdown.test.ts`:
+
+```ts
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
+  }),
+  { virtual: true },
+);
+jest.mock('../../srv/request-session', () => ({
+  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
+  getRequestSessionId: () => undefined,
+  getRequestHistory: () => [],
+}));
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+
+afterEach(() => {
+  delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+});
+
+describe('shutdown', () => {
+  it('aborts every admitted session and every waiter', async () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '1';
+    clearGatekeeperConfig();
+    gatekeeper.resetGatekeeperForTest();
+    const first = await gatekeeper.admitPipeline('u', 'A');
+    if (!('admitted' in first)) throw new Error('refused');
+    const waiting = gatekeeper.admitPipeline('u', 'B');
+    waiting.catch(() => {});
+
+    expect(first.admitted.signal?.aborted).toBe(false);
+    gatekeeper.shutdownGatekeeper();
+    expect(first.admitted.signal?.aborted).toBe(true);
+    await expect(waiting).rejects.toThrow('shutdown');
+  });
+
+  it('is a no-op with no door', () => {
+    expect(() => gatekeeper.shutdownGatekeeper()).not.toThrow();
+  });
+
+  it('is hooked to CAP shutdown', () => {
+    const src = readFileSync(join(__dirname, '../../srv/server.ts'), 'utf8');
+    expect(src).toMatch(/cds\.on\(\s*'shutdown'[\s\S]{0,120}shutdownGatekeeper\(\)/);
+  });
+});
+```
+
+Create `test/unit/throttle-choice.test.ts`:
+
+```ts
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
+  }),
+  { virtual: true },
+);
+
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
+import { loadAgentConfig } from '../../srv/agent-config';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+
+afterEach(() => {
+  delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  clearGatekeeperConfig();
+});
+
+describe('the throttle strategy follows the door', () => {
+  it('waits as told when a door protects capacity', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '4';
+    expect(loadAgentConfig().llm.whenThrottled.name).toBe('wait-as-told');
+  });
+
+  it('keeps the ceiling with no door, as today', () => {
+    expect(loadAgentConfig().llm.whenThrottled.name).toBe('wait-if-short-enough');
+  });
+});
+
+describe('an admitted session and a 429', () => {
+  const strategy = new WaitAsTold();
+  const ctx = (retryAfterSeconds?: number) =>
+    ({ attempt: 1, retryAfterSeconds, waitedMs: 0, source: 'response' }) as Parameters<
+      WaitAsTold['decide']
+    >[0];
+
+  it('waits out exactly what the server named, past the old twenty-second ceiling', () => {
+    expect(strategy.decide(ctx(45))).toMatchObject({ retry: true, waitMs: 45_000 });
+  });
+
+  it('fails when the server named no interval — the one hole, kept a decision', () => {
+    expect(strategy.decide(ctx(undefined)).retry).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `npx jest test/unit/gatekeeper-shutdown.test.ts test/unit/throttle-choice.test.ts`
+Expected: FAIL — `shutdownGatekeeper` is not exported; with the door set the strategy is still `wait-if-short-enough`.
+
+- [ ] **Step 3: The shutdown**
+
+In `srv/lib/gatekeeper.ts`:
+
+```ts
+/**
+ * End every admitted session and every waiter. The only thing that does.
+ *
+ * Best-effort by necessity: it aborts and returns without waiting for the
+ * register, because the process is exiting.
+ */
+export function shutdownGatekeeper(): void {
+  theDoor()?.abortAll(new Error('shutdown'));
+}
+```
+
+In `srv/server.ts`, import `shutdownGatekeeper` from `./lib/gatekeeper` and add at module level, next to the `cds.on('served', ...)` block:
+
+```ts
+// Only shutdown ends an admitted session.
+cds.on('shutdown', () => shutdownGatekeeper());
+```
+
+- [ ] **Step 4: The strategy**
+
+In `srv/agent-config.ts`, add `WaitAsTold` to the `@mcp-abap-adt/llm-agent` imports and replace:
+
+```ts
+  const throttleStrategy = new WaitIfShortEnough(readThrottleMaxWaitMs());
+```
+
+and its comment with:
+
+```ts
+  // With a door, an admitted session is carried to the end: it waits out exactly
+  // what the server named, and a ceiling behind the door would only kill work in
+  // flight. With no door nothing is admitted, and the ceiling still keeps a wait
+  // shorter than the client's own timeout.
+  const throttleStrategy =
+    gatekeeper.maxLiveSessions !== undefined
+      ? new WaitAsTold()
+      : new WaitIfShortEnough(readThrottleMaxWaitMs());
+```
+
+`gatekeeper` is the value Task 4 reads at the top of `loadAgentConfig`. Add to the startup log beside `throttleMaxWaitMs`:
+
+```ts
+    // Meaningless once the door is on, and said so rather than printed as if it applied.
+    throttleMaxWaitMs:
+      gatekeeper.maxLiveSessions !== undefined ? 'not applied (door on)' : readThrottleMaxWaitMs(),
+```
+
+replacing the existing `throttleMaxWaitMs: readThrottleMaxWaitMs(),` line.
+
+- [ ] **Step 5: Run, lint, commit**
+
+```bash
+npx jest test/unit/gatekeeper-shutdown.test.ts test/unit/throttle-choice.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/gatekeeper.ts srv/server.ts srv/agent-config.ts test/unit/gatekeeper-shutdown.test.ts test/unit/throttle-choice.test.ts
+git add srv/lib/gatekeeper.ts srv/server.ts srv/agent-config.ts test/unit/gatekeeper-shutdown.test.ts test/unit/throttle-choice.test.ts
+git commit -m "feat(gatekeeper): shutdown ends admitted work, and behind a door a 429 waits as told"
+```
+
+---
+
+## Phase 4 — a dependency that is down
+
+### Task 14: Tell an outage from a tool that failed
 
 **Files:**
 - Create: `srv/lib/mcp-outage.ts`
@@ -3113,8 +5639,7 @@ A BTP-side failure is not a destination problem and must not be reported as
 one:
 
 - **AI Core down.** The model calls fail. That error never passes through
-  `classifyProbe` at all — it comes up the provider path, through the gated
-  wrapper, and is not a `429`, so it surfaces as the failure it is. Nothing is
+  `classifyProbe` at all — it comes up the provider path and is not a `429`, so it surfaces as the failure it is. Nothing is
   closed, because there is no destination to close: every destination is
   equally affected and none is at fault.
 - **The destination service down.** Resolution fails before admission, so
@@ -3129,7 +5654,7 @@ one:
 None of that is built here. This task closes an ABAP system that has gone away,
 which is the failure the gatekeeper's own guarantee has to survive. Recognising
 a platform-wide outage as one thing rather than N is separate work, and the
-observability scopes in Task 13 are where it would show first — every
+observability scopes in Task 18 are where it would show first — every
 destination closing within the same few seconds.
 
 - [ ] **Step 1: Write the failing test**
@@ -3499,40 +6024,18 @@ describe('the connector tags the failures it sees', () => {
 
 - [ ] **Step 5: Raise it from the handler**
 
-In `srv/agent-manager.ts`, inside `invokeEmbeddedTool`, put the connector's own
-failure through the classifier and rethrow only what it calls an outage:
-
-This composes with Task 6b rather than replacing it. Both wrap the **same**
-promise: it is registered before it is awaited, and classified after it comes
-back. Written out in full so the two orders cannot be read as alternatives:
+In `srv/agent-manager.ts`, `invokeEmbeddedTool` already registers the dispatch (Task 14: `await trackCall(Promise.resolve(toolCall))`) and already has a `catch (err)` that logs and rethrows. Classify on the way out, in that same `catch` — replace its final `throw err;` with:
 
 ```ts
-  async function invokeEmbeddedTool(
-    name: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-    // ... the authorization check, unchanged ...
-
-    const dispatched = dispatchEmbeddedTool(name, args, signal);
-    // Registered at dispatch (Task 6b): the slot outlives the calls this
-    // pipeline started.
-    currentAdmission()?.track(dispatched);
-    try {
-      return await dispatched;
-    } catch (err) {
-      // And classified on the way out. The connector has already decided what
-      // happened and written its verdict into the message; this re-raises it
-      // in a form that survives the wrapper's string-only return.
+      // The connector has already decided what happened and written its verdict
+      // into the message; this re-raises it in a form that survives the
+      // embedded wrapper's string-only return.
       throw asOutage(err, destinationName) ?? err;
-    }
-  }
 ```
 
-`destinationName` is the closure `buildEmbeddedMcpAdapter` already has — the
-destination this adapter was built for. There is no `currentDestination()`
-anywhere, and `connectionALS` carries `connection`, `context`, `dumpScope` and
-`exposition` but no destination, so neither was available to reach for.
+and add `import { asOutage, outageClassifier } from './lib/mcp-outage';`. The registration and the classification wrap the same promise: registered before it is awaited, classified after it comes back.
+
+`destinationName` is the closure the embedded adapter builder already has — the destination this adapter was built for. `connectionALS` carries `connection`, `context`, `dumpScope` and `exposition` but no destination, so it is not the source.
 
 > Do not widen `OUTAGE_STATUSES`. A tool that reached SAP and was refused is
 > feedback, and closing a destination on it would take a working system out of
@@ -3574,14 +6077,14 @@ git commit -m "feat(outage): a lost connection is raised as one, not left to rea
 
 ---
 
-### Task 10: A closed destination, and a `Retry-After` that is true
+### Task 15: A closed destination, and a `Retry-After` that is true
 
 **Files:**
 - Modify: `srv/agent-manager.ts` (destination state gains `nextProbeAt`; the probe scheduler records it), `srv/lib/throttle-surfacing.ts` (the refusal)
 - Test: `test/unit/destination-closed.test.ts`, `test/unit/destination-close-wiring.test.ts`
 
 **Interfaces:**
-- Consumes: `isUnavailable` from Task 9.
+- Consumes: `isUnavailable` from Task 14.
 - Produces:
   - `export function closeDestination(name: string, reason: string): void` in `agent-manager`
   - `export function retryAfterForDestination(name: string, now?: number): number | undefined`
@@ -3826,6 +6329,8 @@ no header here, so the interval goes into the text where a planner can read it:
 
 A pipeline already admitted is **not** cut: it fails only if it actually calls the missing server.
 
+Each check sits **before** `admitPipeline` (Tasks 11 and 12): a closed destination refuses before the caller takes a slot or a place, and `safeStop(requestConnection)` runs first in the two HTTP channels, as on every other early return there.
+
 And in `srv/lib/throttle-surfacing.ts`:
 
 ```ts
@@ -3894,7 +6399,7 @@ the non-streaming `Result`, the streaming error chunk, and the `catch`.
         ...
 ```
 
-**`srv/anthropic-handler.ts`** — the same three places, but the variable is
+**`srv/anthropic-handler.ts`** — two places, the returned `Result` and the `catch` (its stream reaches the handler as adapter events, so a stream failure arrives as a throw), and the variable is
 `destination` (`srv/anthropic-handler.ts:113`); there is no `destAfter` in this
 file at all.
 
@@ -3904,7 +6409,7 @@ file at all.
         }
 ```
 
-`describeCause` comes from `./lib/mcp-outage`, added in Step 3 of Task 9 — add
+`describeCause` comes from `./lib/mcp-outage`, added in Step 3 of Task 14 — add
 it to each channel's imports alongside `isOutageError` and `closeDestination`.
 
 - [ ] **Step 7: Assert the production paths are wired**
@@ -3970,7 +6475,9 @@ describe('every channel closes a destination it finds unreachable', () => {
     });
   }
 
-  for (const file of ['openai-handler.ts', 'anthropic-handler.ts']) {
+  // Only the OpenAI handler reads chunks. The Anthropic stream reaches its
+  // handler as adapter events, so a failure there arrives as a throw.
+  for (const file of ['openai-handler.ts']) {
     it(`${file} closes on an error chunk too`, () => {
       // Three shapes, three wirings. Covering two of them leaves a whole
       // transport silently open.
@@ -4071,14 +6578,14 @@ git add -A
 git commit -m "feat(outage): a closed destination refuses arrivals, with the time until we next look"
 ```
 
-### Task 11: An unanswered write is reported, never repeated
+### Task 16: An unanswered write is reported, never repeated
 
 **Files:**
 - Modify: `srv/lib/recording-mcp-client.ts` (open the record at dispatch), `srv/lib/throttle-surfacing.ts` (the failure text)
 - Test: `test/unit/unanswered-write.test.ts`
 
 **Interfaces:**
-- Consumes: `isUnavailable` from Task 9.
+- Consumes: `isUnavailable` from Task 14.
 - Produces:
   - `RecordingMcpClient.unanswered(traceId): ToolCallRecord[]` — calls dispatched and never answered
   - `export function unverifiedWriteText(calls: Array<{ name: string }>, cause: string): string`
@@ -4244,6 +6751,8 @@ In each channel's error path, before formatting the failure:
       : failureText(err);
 ```
 
+`recMcp` is typed in each handler by a local `HandleWithRecMcp`; widen it to `{ recMcp?: { dropRequest(traceId?: string): void; unanswered?(traceId: string): Array<{ call: { name: string } }> } }` so the call above type-checks.
+
 - [ ] **Step 5: Run, lint, commit**
 
 ```bash
@@ -4255,331 +6764,238 @@ git commit -m "feat(outage): an unanswered write is named in the failure, and ne
 
 ---
 
-## Phase 3 - collision and visibility
+---
 
-### Task 12: The collision guard
+## Phase 5 — surface and record
+
+### Task 17: Remove the fourth entrance
 
 **Files:**
-- Modify: `srv/lib/admission.ts` (caller-less bookkeeping, the guard), `srv/lib/throttle-surfacing.ts` (the 409 envelopes), `srv/openai-handler.ts`, `srv/anthropic-handler.ts`
-- Test: `test/unit/collision-guard.test.ts`
+- Modify: `srv/agent-service.ts` (the `Chat` handler)
+- Modify: `srv/agent-service.cds` (the `Chat` function)
+- Test: `test/unit/agent-service-surface.test.ts`
 
 **Interfaces:**
-- Consumes: `admit`, `AdmissionHandle`, `markCallerGone` from Tasks 5 to 7.
-- Produces:
-  - `admit(key?: CallerKey)` where `CallerKey = { principal: string; session: string; destination: string }`
-  - `export class PipelineInFlightError extends Error { readonly code = 'pipeline_in_flight' }`
-  - `export function collisionPayload(dialect: 'openai' | 'anthropic'): { status: number; body: unknown }` in `throttle-surfacing`
+- Consumes: nothing.
+- Produces: nothing. `AgentService.Health`, `GetHistory` and `ClearHistory` are unchanged.
 
-**Scope, and its honest limit:** the guard fires only where a caller identifies itself. `/v1/chat/completions` mints a fresh UUID when no `x-session-id`, `mcp-session-id` or cookie arrives, and `execute_step` mints `agent-step-<uuid>` per call by design, so two retries from Cline, a script or an MCP planner share no session and both run. That is a known limit, not a bug to find later. `execute_step` is excluded outright: it sees no disconnect, so no pipeline of its is ever caller-less.
+**Why removed rather than gated.** `AgentService.Chat` starts a pipeline and is not an Express route, which makes it easy to miss. It calls `agent.process` straight through — no destination, no per-request credentials, no connection scope, no `safeStop` — so its embedded ABAP tool calls already throw, and it has neither a door nor a session lifecycle. A door with one way around it is not a door, and gating dead surface would be work spent keeping it alive.
 
-**The key includes the principal** because the session id is client-supplied, and the codebase already scopes session state by user and session for that reason.
+**Why `Health` stays.** It probes and returns, starting no pipeline and opening no session. `GetHistory` and `ClearHistory` are stubs that touch nothing and are outside this spec.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/unit/collision-guard.test.ts`:
+Create `test/unit/agent-service-surface.test.ts`:
 
 ```ts
-const load = () => {
-  jest.resetModules();
-  const mod = require('../../srv/lib/admission') as typeof import('../../srv/lib/admission');
-  mod.clearAdmission();
-  return mod;
-};
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-afterEach(() => jest.resetModules());
+const read = (f: string) => readFileSync(join(__dirname, '../../srv', f), 'utf8');
 
-const key = (over: Partial<{ principal: string; session: string; destination: string }> = {}) => ({
-  principal: 'alice',
-  session: 's1',
-  destination: 'S4HANA_DEV',
-  ...over,
-});
-
-describe('the collision guard', () => {
-  it('refuses an identified retry while the orphan is still running', async () => {
-    const mod = load();
-    const first = await mod.admit(key());
-    mod.markCallerGone(first);
-    await expect(mod.admit(key())).rejects.toBeInstanceOf(mod.PipelineInFlightError);
+describe('AgentService starts no pipeline', () => {
+  it('declares no Chat function', () => {
+    expect(read('agent-service.cds')).not.toMatch(/function\s+Chat\s*\(/);
   });
 
-  it('leaves a caller that is still connected alone', async () => {
-    // Parallel work from a live caller is ordinary and must not be blocked;
-    // parallel execute_step is established as safe here.
-    const mod = load();
-    await mod.admit(key());
-    await expect(mod.admit(key())).resolves.toBeDefined();
+  it('registers no Chat handler', () => {
+    expect(read('agent-service.ts')).not.toMatch(/on\(\s*'Chat'/);
+    expect(read('agent-service.ts')).not.toMatch(/agent\.process\(/);
   });
 
-  it('keys on the principal, so one user cannot block another', async () => {
-    const mod = load();
-    const first = await mod.admit(key({ principal: 'alice' }));
-    mod.markCallerGone(first);
-    await expect(mod.admit(key({ principal: 'bob' }))).resolves.toBeDefined();
-  });
-
-  it('does not reach across destinations', async () => {
-    const mod = load();
-    const first = await mod.admit(key());
-    mod.markCallerGone(first);
-    await expect(mod.admit(key({ destination: 'S4HANA_QAS' }))).resolves.toBeDefined();
-  });
-
-  it('lets both run when nothing identifies the caller, which is the known limit', async () => {
-    const mod = load();
-    const first = await mod.admit();
-    mod.markCallerGone(first);
-    await expect(mod.admit()).resolves.toBeDefined();
-  });
-
-  it('stops refusing once the orphan finishes', async () => {
-    const mod = load();
-    const first = await mod.admit(key());
-    mod.markCallerGone(first);
-    await first.release();
-    await expect(mod.admit(key())).resolves.toBeDefined();
+  it('keeps Health, which probes and starts nothing', () => {
+    expect(read('agent-service.cds')).toMatch(/function\s+Health\s*\(/);
+    expect(read('agent-service.ts')).toMatch(/on\(\s*'Health'/);
   });
 });
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx jest test/unit/collision-guard.test.ts`
-Expected: FAIL, `admit` takes no argument and `PipelineInFlightError` is undefined.
+Run: `npx jest test/unit/agent-service-surface.test.ts`
+Expected: FAIL — `Chat` is still declared and registered.
 
-- [ ] **Step 3: Add the guard**
+- [ ] **Step 3: Remove it**
 
-In `srv/lib/admission.ts`:
+In `srv/agent-service.cds`, delete:
 
-```ts
-export interface CallerKey {
-  principal: string;
-  session: string;
-  destination: string;
-}
+```cds
+  /**
+   * Send a message to the agent and get response
+   */
+  function Chat(message: String) returns String;
 
-/**
- * A predecessor from this caller is still finishing.
- *
- * Not an overload, because 529 or a retryable 503 invites an immediate retry
- * into a guard that is still closed. Not a bad request either, because the same
- * call becomes valid the moment the earlier pipeline ends.
- */
-export class PipelineInFlightError extends Error {
-  readonly code = 'pipeline_in_flight';
-  constructor() {
-    super(
-      'An earlier request from this session is still finishing on this system. It was not interrupted; try again once it completes.',
-    );
-    this.name = 'PipelineInFlightError';
-  }
-}
-
-const callerless = new Map<string, AdmissionHandle>();
-const keyOf = (k: CallerKey) => `${k.principal} ${k.session} ${k.destination}`;
-
-/** The caller is gone. The work is not: see Cancellation in the spec. */
-export function markCallerGone(handle: AdmissionHandle): void {
-  const k = (handle as AdmissionHandle & { key?: CallerKey }).key;
-  if (k) callerless.set(keyOf(k), handle);
-}
 ```
 
-In `admit(key?: CallerKey)`, before taking a place:
+In `srv/agent-service.ts`, delete the whole `srv.on('Chat', ...)` block together with its doc comment (`Chat endpoint - send message to SmartAgent ...`). `getSmartAgent` stays imported: `Health` uses it.
 
-```ts
-  if (key && callerless.has(keyOf(key))) {
-    return Promise.reject(new PipelineInFlightError());
-  }
-```
-
-Store the key on the handle so `markCallerGone` can read it, and in `release()`, after the register empties, `if (key) callerless.delete(keyOf(key));`. Clear the map in `clearAdmission()`.
-
-- [ ] **Step 4: Add the wire shape**
-
-In `srv/lib/throttle-surfacing.ts`:
-
-```ts
-/**
- * 409, with a stable code of ours and the nearest type each dialect already
- * knows, so no client meets a type it has never seen. No Retry-After: when the
- * predecessor finishes is as unknown as how long a full door's pipelines run.
- */
-export function collisionPayload(dialect: 'openai' | 'anthropic'): {
-  status: number;
-  body: unknown;
-} {
-  const error = {
-    type: 'invalid_request_error',
-    code: 'pipeline_in_flight',
-    message:
-      'An earlier request from this session is still finishing on this system. It was not interrupted; try again once it completes.',
-  };
-  return {
-    status: 409,
-    body: dialect === 'anthropic' ? { type: 'error', error } : { error },
-  };
-}
-```
-
-- [ ] **Step 5: Wire the two chat channels**
-
-Pass the key into `admit`, built from the authenticated principal, the client-sent session (only when the client actually sent one) and the resolved destination; answer a `PipelineInFlightError` with `collisionPayload`. The guard runs at admission, before any byte of response is written, so it is never emitted mid-stream. `execute_step` passes no key.
-
-- [ ] **Step 6: Assert the wire shape and the exclusion**
-
-Append to `test/unit/collision-guard.test.ts`:
-
-```ts
-import { collisionPayload } from '../../srv/lib/throttle-surfacing';
-
-describe('the collision refusal on the wire', () => {
-  it('is a conflict, not an overload, on both dialects', () => {
-    for (const dialect of ['openai', 'anthropic'] as const) {
-      const { status, body } = collisionPayload(dialect);
-      expect(status).toBe(409);
-      expect(JSON.stringify(body)).toContain('pipeline_in_flight');
-      // A client reading 529 or a retryable 503 is right to come straight
-      // back, into a guard that has not moved.
-      expect(status).not.toBe(529);
-      expect(status).not.toBe(503);
-    }
-  });
-});
-```
-
-- [ ] **Step 7: Run, lint, commit**
+Then confirm nothing else calls it:
 
 ```bash
-npm run test:unit && npm run test:check
-npx biome check --write srv/lib/admission.ts srv/lib/throttle-surfacing.ts srv/openai-handler.ts srv/anthropic-handler.ts test/unit/collision-guard.test.ts
-git add -A
-git commit -m "feat(gatekeeper): an identified retry meets a 409 while its predecessor finishes"
+grep -rn "agent/Chat\|on('Chat'\|AgentService.*Chat" srv test app
+```
+
+Expected: no output. Documentation that mentions it is updated in Task 19.
+
+- [ ] **Step 4: Build, run, lint, commit**
+
+```bash
+npx cds build --production >/dev/null
+npx jest test/unit/agent-service-surface.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/agent-service.ts test/unit/agent-service-surface.test.ts
+git add srv/agent-service.ts srv/agent-service.cds test/unit/agent-service-surface.test.ts
+git commit -m "feat(gatekeeper)!: remove AgentService.Chat, the entrance with neither a door nor a session"
 ```
 
 ---
 
-### Task 13: Four scopes, kept apart
+### Task 18: Four scopes, kept apart
 
 **Files:**
 - Create: `srv/lib/gatekeeper-metrics.ts`
-- Modify: `srv/lib/quota-gate.ts`, `srv/lib/admission.ts`, `srv/agent-manager.ts` (emit), `srv/mcp-proxy.ts` (expose on the health payload)
+- Modify: `srv/openai-handler.ts`, `srv/anthropic-handler.ts`, `srv/agent-mcp.ts` (count a closed-destination refusal where Task 15 refuses)
+- Modify: `srv/mcp-proxy.ts`, `srv/mcp-proxy.cds` (`Health` carries the snapshot)
+- Modify: `srv/server.ts` (install the throttle observer)
 - Test: `test/unit/gatekeeper-metrics.test.ts`
 
 **Interfaces:**
-- Consumes: `QuotaGate` (Task 1), `admission` counters (Tasks 5, 12), `isDestinationClosed` (Task 10).
+- Consumes: `theDoor`, `theRetention` (Tasks 6, 10); `DoorSnapshot` (Task 7); `RetentionSnapshot` (Task 5); `knownDestinations`, `isDestinationClosed` (Task 15); `setThrottleObserver`, `ThrottleEvent` from `@mcp-abap-adt/llm-agent`.
 - Produces:
-  - `export function recordDoorRefusal(): void`
-  - `export function recordCollisionRefusal(): void`
   - `export function recordDestinationRefusal(destination: string): void`
-  - `export function recordAdmittedWait(quotaKey: string, waitedMs: number): void`
+  - `export function installThrottleObserver(): void`
+  - `export interface GatekeeperSnapshot { door: DoorSnapshot | { configured: false }; retention: RetentionSnapshot; destinations: Array<{ name: string; closed: boolean; refusals: number }>; throttling: { events: number; gaveUp: number; noInterval: number; byQuota: Record<string, number> } }`
   - `export function gatekeeperSnapshot(): GatekeeperSnapshot`
+  - `export function clearGatekeeperMetrics(): void` — test seam
 
-**Why apart:** the four refusals belong to different things and adding them up would answer nothing. The quota queue refuses nobody, so its scope counts work rather than refusals. Counting collisions as door refusals would read as memory pressure and send someone to buy memory that changes nothing.
+**Why apart.** They answer different questions, and adding them up answers none.
+
+- **Door** — capacity questions. `capacity` refusals argue for more slots, `retention` refusals for a larger cap, `session_busy` for neither: a client retrying against itself.
+- **Retention** — memory at rest. Evictions climbing while the door is quiet means no amount of capacity tuning will help. `closing` should read zero for longer than an upload takes; a number that stays up is a lease that never settled.
+- **Per destination** — availability. Mixed into the door's numbers, an unreachable SAP system would look like a full container.
+- **Throttling** — the tenant's limit. Since nothing here tries to stay inside it, this is how anyone would know it became the binding constraint.
+
+**Why a JSON string on `Health`.** CDS types are closed. One `gatekeeper : LargeString` field carries the snapshot without a CDS type per scope that would have to change whenever a counter is added.
 
 - [ ] **Step 1: Write the failing test**
 
 Create `test/unit/gatekeeper-metrics.test.ts`:
 
 ```ts
-/**
- * One reset, one load, every module from the same registry.
- *
- * `jest.resetModules()` gives the next `require` a fresh module instance, so a
- * test that loads agent-manager or the registry BEFORE calling this would then
- * have the snapshot lazily require a second, empty copy — and pass or fail for
- * reasons unrelated to the code.
- */
-const load = () => {
-  jest.resetModules();
-  const metrics = require('../../srv/lib/gatekeeper-metrics') as typeof import('../../srv/lib/gatekeeper-metrics');
-  const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
-  const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-  const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
-  metrics.clearGatekeeperMetrics();
-  registry.clearQuotaRegistry();
-  return { ...metrics, manager, registry, gated };
-};
+jest.mock(
+  '@sap/cds',
+  () => ({
+    __esModule: true,
+    default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
+  }),
+  { virtual: true },
+);
+jest.mock('../../srv/request-session', () => ({
+  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
+  getRequestSessionId: () => undefined,
+  getRequestHistory: () => [],
+}));
 
-describe('gatekeeper metrics', () => {
-  it('keeps a collision out of the door count', () => {
-    // Folded together, rising collisions would read as memory pressure and
-    // send someone to buy memory that changes nothing.
-    const mod = load();
-    mod.recordCollisionRefusal();
-    mod.recordCollisionRefusal();
-    mod.recordDoorRefusal();
-    const snap = mod.gatekeeperSnapshot();
-    expect(snap.door.refusals).toBe(1);
-    expect(snap.collisions.refusals).toBe(2);
+const observers: Array<(e: unknown) => void> = [];
+jest.mock('@mcp-abap-adt/llm-agent', () => ({
+  ...jest.requireActual('@mcp-abap-adt/llm-agent'),
+  setThrottleObserver: (fn: (e: unknown) => void) => observers.push(fn),
+}));
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import {
+  clearGatekeeperMetrics,
+  gatekeeperSnapshot,
+  installThrottleObserver,
+  recordDestinationRefusal,
+} from '../../srv/lib/gatekeeper-metrics';
+
+function configure(live?: number, queue?: number) {
+  if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+  else process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = String(live);
+  if (queue === undefined) delete process.env.LLM_GATEKEEPER_QUEUE_LENGTH;
+  else process.env.LLM_GATEKEEPER_QUEUE_LENGTH = String(queue);
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+}
+
+afterEach(() => {
+  configure();
+  clearGatekeeperMetrics();
+});
+
+describe('the door scope', () => {
+  it('says it is off when no capacity is configured', () => {
+    expect(gatekeeperSnapshot().door).toEqual({ configured: false });
   });
 
-  it('keeps an unreachable system out of the quota numbers', () => {
-    const mod = load();
-    mod.recordDestinationRefusal('S4HANA_DEV');
-    const snap = mod.gatekeeperSnapshot();
-    expect(snap.destinations['S4HANA_DEV'].refusals).toBe(1);
-    expect(snap.quotas).toEqual({});
+  it('counts live sessions and refusals by reason', async () => {
+    configure(1, 1);
+    const held = await gatekeeper.admitPipeline('u', 'A');
+    void gatekeeper.admitPipeline('u', 'B');
+    await new Promise((r) => setImmediate(r));
+    await gatekeeper.admitPipeline('u', 'C');
+    const door = gatekeeperSnapshot().door;
+    expect(door).toMatchObject({ live: 1, queued: 1, refusals: { capacity: 1 } });
+    if ('admitted' in held) held.admitted.release();
   });
+});
 
-  afterEach(() => {
-    const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
-    manager.clearDestinationStatesForTest();
-  });
-
-  it('reports a closed system as closed before anyone has been refused', () => {
-    // Built only from refusals, a system closed a minute ago with no arrival
-    // since would be missing from the payload entirely — and that is precisely
-    // the moment an operator goes looking at it.
-    const mod = load();
-    mod.manager.closeDestination('S4HANA_DEV', 'tunnel down');
-    const entry = mod.gatekeeperSnapshot().destinations['S4HANA_DEV'];
-    expect(entry.closed).toBe(true);
-    expect(entry.refusals).toBe(0);
-  });
-
-  it('reports no refusals for a quota, because the queue refuses nobody', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
-    const mod = load();
-    mod.registry.gateForModel('shared');
-    mod.recordAdmittedWait('shared', 1_500);
-    const quota = mod.gatekeeperSnapshot().quotas.shared;
-    expect(quota.lastWaitMs).toBe(1_500);
-    expect(quota).not.toHaveProperty('refusals');
-    delete process.env.LLM_GATEKEEPER_QUOTAS;
-  });
-
-  it('records a real queued wait, not only a hand-made one', async () => {
-    // Through the wrapper, not the recorder: a unit test that calls
-    // recordAdmittedWait directly passes while nothing in production ever does.
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 1, windowMs: 50 } });
-    const mod = load();
-    const llm = mod.gated.gateLlm(
-      {
-        model: 'm',
-        chat: async () => ({ ok: true as const, value: { content: 'ok', finishReason: 'stop' as const } }),
-        streamChat: async function* () {},
-      } as never,
-      'm',
+describe('the scopes do not mix', () => {
+  it('a closed-destination refusal is not a door refusal', async () => {
+    configure(2);
+    recordDestinationRefusal('S4HANA_DEV');
+    recordDestinationRefusal('S4HANA_DEV');
+    const snap = gatekeeperSnapshot();
+    expect(snap.destinations).toContainEqual(
+      expect.objectContaining({ name: 'S4HANA_DEV', refusals: 2 }),
     );
-    await llm.chat([]);
-    await llm.chat([]); // the second one queues behind the first
-    expect(mod.gatekeeperSnapshot().quotas.m.lastWaitMs).toBeGreaterThan(0);
-    delete process.env.LLM_GATEKEEPER_QUOTAS;
+    expect(snap.door).toMatchObject({
+      refusals: { session_busy: 0, capacity: 0, retention: 0 },
+    });
   });
 
-  it('aggregates models that share a quota into one scope', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ shared: { limit: 10 } });
-    process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL = JSON.stringify({
-      'model-a': 'shared',
-      'model-b': 'shared',
+  it('retention reports held, evictions and sessions awaiting cleanup', () => {
+    expect(gatekeeperSnapshot().retention).toEqual(
+      expect.objectContaining({ retained: 0, evictions: 0, closing: 0 }),
+    );
+  });
+});
+
+describe('the throttling scope', () => {
+  it('counts what the provider observed, including a 429 with no interval', () => {
+    installThrottleObserver();
+    const observe = observers[observers.length - 1];
+    const base = { strategy: 'wait-as-told', attempt: 1, waitMs: 0, waitedMs: 0 };
+    observe({ ...base, key: 'q1', source: 'response', retryAfterSeconds: 30, willRetry: true });
+    observe({ ...base, key: 'q1', source: 'response', willRetry: false, reason: 'no-interval' });
+    expect(gatekeeperSnapshot().throttling).toEqual({
+      events: 2,
+      gaveUp: 1,
+      noInterval: 1,
+      byQuota: { q1: 2 },
     });
-    const mod = load();
-    mod.registry.gateForModel('model-a');
-    mod.registry.gateForModel('model-b');
-    expect(Object.keys(mod.gatekeeperSnapshot().quotas)).toEqual(['shared']);
-    delete process.env.LLM_GATEKEEPER_QUOTAS;
-    delete process.env.LLM_GATEKEEPER_QUOTA_OF_MODEL;
+  });
+});
+
+describe('wired where it is read and where it is counted', () => {
+  const read = (f: string) => readFileSync(join(__dirname, '../../srv', f), 'utf8');
+
+  it('Health carries the snapshot', () => {
+    expect(read('mcp-proxy.ts')).toMatch(/gatekeeper:\s*JSON\.stringify\(\s*gatekeeperSnapshot\(\)\s*\)/);
+    expect(read('mcp-proxy.cds')).toMatch(/gatekeeper\s*:\s*LargeString/);
+  });
+
+  it('the observer is installed at startup', () => {
+    expect(read('server.ts')).toMatch(/installThrottleObserver\(\)/);
+  });
+
+  it('every channel counts the closed-destination refusals it sends', () => {
+    for (const f of ['openai-handler.ts', 'anthropic-handler.ts', 'agent-mcp.ts']) {
+      expect(read(f)).toMatch(/recordDestinationRefusal\(/);
+    }
   });
 });
 ```
@@ -4587,417 +7003,320 @@ describe('gatekeeper metrics', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `npx jest test/unit/gatekeeper-metrics.test.ts`
-Expected: FAIL, module not found.
+Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write the metrics**
+- [ ] **Step 3: The metrics**
 
 Create `srv/lib/gatekeeper-metrics.ts`:
 
 ```ts
+import { setThrottleObserver, type ThrottleEvent } from '@mcp-abap-adt/llm-agent';
+import { isDestinationClosed, knownDestinations } from '../agent-manager';
+import type { DoorSnapshot } from './door';
+import { theDoor, theRetention } from './gatekeeper';
+import type { RetentionSnapshot } from './session-retention';
+
 /**
- * Four scopes, because what they measure belongs to different things and
- * adding them up would answer nothing. Only three count refusals; the first
- * counts the work itself, since the quota queue refuses nobody.
+ * Four scopes, because they answer different questions and adding them up
+ * answers none. A closed SAP system counted as a door refusal would look like
+ * a full container and send someone to buy memory that changes nothing.
  */
-
-export interface QuotaNumbers {
-  /** Starts inside the window, read live from the gate. */
-  starts: number;
-  /** Callers parked in the queue, read live from the gate. */
-  waiting: number;
-  /** How long the caller just admitted had waited. */
-  lastWaitMs: number;
-}
-
 export interface GatekeeperSnapshot {
-  quotas: Record<string, QuotaNumbers>;
-  door: { live: number; capacity?: number; refusals: number };
-  destinations: Record<string, { closed: boolean; refusals: number }>;
-  collisions: { refusals: number; callerless: number };
+  door: DoorSnapshot | { configured: false };
+  retention: RetentionSnapshot;
+  destinations: Array<{ name: string; closed: boolean; refusals: number }>;
+  throttling: {
+    events: number;
+    gaveUp: number;
+    /** A server refusal that named no interval: the one case an admitted session cannot survive. */
+    noInterval: number;
+    byQuota: Record<string, number>;
+  };
 }
 
-const quotaWaits = new Map<string, number>();
 const destinationRefusals = new Map<string, number>();
-let doorRefusals = 0;
-let collisionRefusals = 0;
-
-export function recordAdmittedWait(quotaKey: string, waitedMs: number): void {
-  quotaWaits.set(quotaKey, waitedMs);
-}
-
-export function recordDoorRefusal(): void {
-  doorRefusals++;
-}
-
-export function recordCollisionRefusal(): void {
-  collisionRefusals++;
-}
+const throttling = { events: 0, gaveUp: 0, noInterval: 0, byQuota: new Map<string, number>() };
 
 export function recordDestinationRefusal(destination: string): void {
   destinationRefusals.set(destination, (destinationRefusals.get(destination) ?? 0) + 1);
 }
 
-/**
- * The live numbers. Read by the health payload, so a deep queue with no 429s
- * says our limit is too low, an empty queue with 429s says another consumer is
- * spending the tenant's minute, and door refusals rising against a shallow
- * queue says memory is the binding constraint rather than rate.
- */
+/** Watch the provider's throttling. Since nothing here tries to stay inside the tenant's limit, this is how anyone would know it binds. */
+export function installThrottleObserver(): void {
+  setThrottleObserver((e: ThrottleEvent) => {
+    throttling.events++;
+    if (!e.willRetry) throttling.gaveUp++;
+    if (e.source === 'response' && e.retryAfterSeconds === undefined) throttling.noInterval++;
+    throttling.byQuota.set(e.key, (throttling.byQuota.get(e.key) ?? 0) + 1);
+  });
+}
+
 export function gatekeeperSnapshot(): GatekeeperSnapshot {
-  const { livePipelines, configuredCapacity, callerlessCount } =
-    require('./admission') as typeof import('./admission');
-  // Lazy requires: agent-manager imports this module, so a top-level import
-  // would close the cycle.
-  const { liveGates } = require('./quota-registry') as typeof import('./quota-registry');
-  const { isDestinationClosed, knownDestinations } =
-    require('../agent-manager') as typeof import('../agent-manager');
-  const quotas: Record<string, QuotaNumbers> = {};
-  for (const { key, gate } of liveGates()) {
-    quotas[key] = {
-      starts: gate.liveStarts,
-      waiting: gate.waiting,
-      lastWaitMs: quotaWaits.get(key) ?? 0,
-    };
-  }
-  // Every destination we know about, not only those that have already turned
-  // someone away. A system closed a minute ago with no arrival since is exactly
-  // what an operator is looking at the health payload to find.
-  const destinations: Record<string, { closed: boolean; refusals: number }> = {};
-  for (const name of knownDestinations()) {
-    destinations[name] = {
+  const names = new Set([...knownDestinations(), ...destinationRefusals.keys()]);
+  return {
+    door: theDoor()?.snapshot() ?? { configured: false },
+    retention: theRetention().snapshot(),
+    destinations: [...names].sort().map((name) => ({
+      name,
       closed: isDestinationClosed(name),
       refusals: destinationRefusals.get(name) ?? 0,
-    };
-  }
-  for (const [name, refusals] of destinationRefusals) {
-    if (destinations[name]) continue;
-    // Read, not assumed. A hard-coded `false` would report every system as
-    // healthy while it was refusing callers, which is the one thing this scope
-    // exists to show.
-    destinations[name] = { closed: isDestinationClosed(name), refusals };
-  }
-  const capacity = configuredCapacity();
-  return {
-    quotas,
-    door: {
-      live: livePipelines(),
-      ...(capacity !== undefined ? { capacity } : {}),
-      refusals: doorRefusals,
+    })),
+    throttling: {
+      events: throttling.events,
+      gaveUp: throttling.gaveUp,
+      noInterval: throttling.noInterval,
+      byQuota: Object.fromEntries(throttling.byQuota),
     },
-    destinations,
-    collisions: { refusals: collisionRefusals, callerless: callerlessCount() },
   };
 }
 
+/** Test seam. */
 export function clearGatekeeperMetrics(): void {
-  quotaWaits.clear();
   destinationRefusals.clear();
-  doorRefusals = 0;
-  collisionRefusals = 0;
+  throttling.events = 0;
+  throttling.gaveUp = 0;
+  throttling.noInterval = 0;
+  throttling.byQuota.clear();
 }
 ```
 
-`starts`, `waiting` and `closed` are all read live inside the snapshot rather than copied. The module keeps no copy of state it can read.
+- [ ] **Step 4: Count, expose, install**
 
-`recordAdmittedWait` is called with the **quota key** from `quotaForModel(model).key`, never the model name, so two models sharing one quota aggregate into one scope.
+In each of `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`, import `recordDestinationRefusal` from `./lib/gatekeeper-metrics` and call it as the first statement inside the `if (isDestinationClosed(...)) {` block Task 15 added, with that block's own destination variable (`destAfter`, `destination`, `targetDestination`).
 
-Add `callerlessCount()` to `srv/lib/admission.ts`:
+In `srv/mcp-proxy.cds`:
 
-```ts
-/** Pipelines running with no caller behind them. */
-export function callerlessCount(): number {
-  return callerless.size;
+```cds
+type HealthStatus {
+  status     : String;
+  timestamp  : DateTime;
+  /** JSON: the four gatekeeper scopes — door, retention, destinations, throttling. */
+  gatekeeper : LargeString;
 }
 ```
 
-- [ ] **Step 4: Emit at each refusal**
-
-**Measure the wait in `srv/lib/gated-llm.ts`**, the only place that knows both halves — the key the call spends against and how long it waited for its place. In `runGated` and in the streaming path, around each `acquire`:
+In `srv/mcp-proxy.ts`, import `gatekeeperSnapshot` from `./lib/gatekeeper-metrics` and return:
 
 ```ts
-      const askedAt = Date.now();
-      permit = await quota.gate.acquire(signal, { notBefore: nextAttemptAt });
-      // Filed under the key, never the model name, so two models sharing a
-      // quota report as one scope rather than two half-full ones.
-      recordAdmittedWait(quota.key, Date.now() - askedAt);
-```
-
-Then call `recordDoorRefusal()` at each of the three places a `DoorFullError` is answered — `execute_step` and both chat channels — `recordCollisionRefusal()` where `PipelineInFlightError` is answered, `recordDestinationRefusal(name)` where a closed destination is refused, and `recordAdmittedWait(key, waited)` in the gated wrapper after a permit is granted.
-
-> These calls are added **here**, not in the tasks that created those refusals. Each task has to end green on its own, and a task cannot call into a module a later one creates.
-
-- [ ] **Step 5: Expose on the health payload**
-
-In `srv/mcp-proxy.ts`, add `gatekeeper: gatekeeperSnapshot()` to the health check response so the numbers are readable without a log search.
-
-- [ ] **Step 6: Run, lint, commit**
-
-```bash
-npm run test:unit && npm run test:check
-npx biome check --write srv/lib/gatekeeper-metrics.ts srv/lib/admission.ts srv/lib/gated-llm.ts srv/agent-manager.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts srv/mcp-proxy.ts test/unit/gatekeeper-metrics.test.ts
-git add -A
-git commit -m "feat(gatekeeper): four scopes, so a collision never reads as memory pressure"
-```
-
----
-
-### Task 14: Calls with nobody waiting, and calls nobody may wait for
-
-**Files:**
-- Modify: `srv/agent-manager.ts` (health path and the shared corpus build), `srv/lib/gated-llm.ts` (a reporting strategy)
-- Test: `test/unit/non-pipeline-calls.test.ts`
-
-**Interfaces:**
-- Consumes: `gateLlm` (Task 3), `AdmissionHandle.track` (Task 6).
-- Produces: `healthCheck` on the `ILlm` that `gateLlm` returns — takes its permit, reports at once, never waits. There is no second wrapper.
-
-**The rule underneath:** every model call takes a permit, and only work with somebody waiting on it gets a door slot.
-
-- **The shared corpus build** is gated and waits as told: nobody is waiting for it when it runs in the background, it spends real quota on the fallback path, and restarting it later costs more than waiting. It is never registered against an admission handle, even when a request is the one awaiting it, and it is started from startup rather than from a request.
-- **A health check** is the opposite. A liveness probe that waits out a `Retry-After` is not a liveness probe, it is a hung request with no lifetime over it. So it takes its permit, because it is still a request the window must see, and reports at once.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `test/unit/non-pipeline-calls.test.ts`:
-
-```ts
-import type { ILlm, LlmError, LlmResponse, Result } from '@mcp-abap-adt/llm-agent';
-
-const load = () => {
-  jest.resetModules();
-  const registry = require('../../srv/lib/quota-registry') as typeof import('../../srv/lib/quota-registry');
-  registry.clearQuotaRegistry();
-  const gated = require('../../srv/lib/gated-llm') as typeof import('../../srv/lib/gated-llm');
-  return { registry, gated };
-};
-
-afterEach(() => {
-  delete process.env.LLM_GATEKEEPER_QUOTAS;
-  jest.resetModules();
-});
-
-function throttledLlm(): ILlm {
-  const e = new Error('429') as LlmError & {
-    throttled?: boolean;
-    attempts?: number;
-    retryAfterSeconds?: number;
-  };
-  e.throttled = true;
-  e.attempts = 1;
-  e.retryAfterSeconds = 30;
-  return {
-    model: 'm',
-    async chat(): Promise<Result<LlmResponse, LlmError>> {
-      return { ok: false, error: e };
-    },
-    async healthCheck(): Promise<Result<boolean, LlmError>> {
-      return { ok: false, error: e };
-    },
-    async *streamChat() {
-      yield { ok: false as const, error: e };
-    },
-  };
-}
-
-describe('a health check', () => {
-  it('reports a shut quota at once instead of sitting out the interval', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { gated } = load();
-    const started = Date.now();
-    // healthCheck, not chat: the probe path calls agent.healthCheck(), and a
-    // test against chat() would pass while the method that matters bypassed
-    // the gate entirely.
-    const result = await gated.gateLlm(throttledLlm(), 'm').healthCheck?.();
-    expect(result?.ok).toBe(false);
-    // Thirty seconds were named. A probe that waits them out is a hung
-    // request, not a liveness check.
-    expect(Date.now() - started).toBeLessThan(1_000);
-  });
-
-  it('still spends a permit, because it is still a request', async () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { registry, gated } = load();
-    await gated.gateLlm(throttledLlm(), 'm').healthCheck?.();
-    expect(registry.gateForModel('m')?.liveStarts).toBe(1);
-  });
-
-  it('leaves chat waiting as told, which is the guarantee the door rests on', async () => {
-    // The same wrapper, the opposite behaviour, deliberately: an admitted
-    // pipeline is slowed by a 429 and never ended by one. A wrapper that
-    // reported here would undo that for every ordinary call.
-    jest.useFakeTimers();
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ m: { limit: 10 } });
-    const { gated } = load();
-    let settled = false;
-    void gated.gateLlm(throttledLlm(), 'm').chat([]).then(() => { settled = true; });
-    await Promise.resolve();
-    jest.advanceTimersByTime(1_000);
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    jest.useRealTimers();
-  });
-});
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `npx jest test/unit/non-pipeline-calls.test.ts`
-Expected: FAIL, `healthCheck` waits out the interval instead of reporting.
-
-- [ ] **Step 3: Make `healthCheck` the reporting method on the ordinary wrapper**
-
-There is no second wrapper. `AgentService.Health` calls `agent.healthCheck()`
-and is the one production caller — Task 8 keeps it for exactly this reason —
-and a `gateLlmReporting` swapped in for the shared LLM would take wait-as-told
-away from ordinary pipeline calls, which is the guarantee the door rests on.
-The difference is per **method**, not per wrapper: `chat` and `streamChat` wait
-as told, and `healthCheck` reports.
-
-In `srv/lib/gated-llm.ts`, add to the object `gateLlm` returns:
-
-```ts
-  // A probe that waits out a Retry-After is not a probe: it is a hung request
-  // with no lifetime over it. So this one takes its permit — it is still a
-  // request the window must see — and answers with what the server said,
-  // immediately. `chat` and `streamChat` above are unchanged: they wait.
-  if (inner.healthCheck) {
-    const innerHealth = inner.healthCheck.bind(inner);
-    gated.healthCheck = async (options?: CallOptions) => {
-      const quota = quotaForModel(model);
-      const permit = quota ? await quota.gate.acquire(options?.signal) : undefined;
-      const result = await innerHealth(options);
-      if (!result.ok && findThrottled(result.error)?.attempts === 0) {
-        permit?.giveBack();
-      }
-      return result;
+    return {
+      status: 'UP',
+      timestamp: now,
+      gatekeeper: JSON.stringify(gatekeeperSnapshot()),
     };
-  }
 ```
 
-- [ ] **Step 4: Confirm there is no ungated health path left**
-
-Run: `grep -rn "healthCheck" srv/ | grep -v node_modules`
-
-Expected: the caller in `srv/agent-service.ts`, the decorators that forward it
-(`srv/lib/recording-mcp-client.ts`, `srv/rag-collections.ts`), and the wrapper
-added in Step 3. Any new probe site inherits the behaviour by construction,
-because every LLM in this service comes from `buildGatedLlm`.
-
-- [ ] **Step 5: Keep the corpus build out of every register**
-
-In `srv/agent-manager.ts`, confirm and comment the two properties:
+In `srv/server.ts`, import `installThrottleObserver` and call it at the top of the `cds.on('served', () => { ... })` callback, before `initSmartAgents()`:
 
 ```ts
-  // The shared corpus build is process-owned. It is never handed to an
-  // admission handle's register, even when a request is the one awaiting it:
-  // the register exists so a pipeline's slot outlives the calls that pipeline
-  // started, and this work outlives every pipeline. Attributing it to whoever
-  // arrived first would make a global lifecycle the property of a caller that
-  // may be gone before it ends.
+  installThrottleObserver();
 ```
 
-Assert the ordering property covered in Task 7: a request waiting for the build waits **before** admission, so it does not consume the last free place while it waits.
-
-- [ ] **Step 6: Run, lint, commit**
+- [ ] **Step 5: Build, run, lint, commit**
 
 ```bash
-npx jest test/unit/non-pipeline-calls.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/lib/gated-llm.ts srv/agent-manager.ts test/unit/non-pipeline-calls.test.ts
-git add -A
-git commit -m "feat(gatekeeper): a probe reports and a corpus build waits, and both spend a permit"
+npx cds build --production >/dev/null
+npx jest test/unit/gatekeeper-metrics.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/gatekeeper-metrics.ts srv/mcp-proxy.ts srv/server.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts test/unit/gatekeeper-metrics.test.ts
+git add srv/lib/gatekeeper-metrics.ts srv/mcp-proxy.ts srv/mcp-proxy.cds srv/server.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts test/unit/gatekeeper-metrics.test.ts
+git commit -m "feat(gatekeeper): four observability scopes on Health, kept apart"
 ```
 
 ---
 
-### Task 15: Documentation, and the release
+### Task 19: The documentation says what the service now does
 
 **Files:**
-- Modify: `docs/architecture/ARCHITECTURE.md`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `docs/deployment/templates/*.mtaext.template`, `docs/examples/*/.mtaext`, `package.json` + `mta.yaml` (version)
-- Delete: `docs/superpowers/specs/2026-09-13-llm-gatekeeper-design.md`, `docs/superpowers/plans/2026-09-14-llm-gatekeeper.md`
+- Modify: `docs/llm-agent/CONFIG_USAGE.md`, `docs/architecture/API_REFERENCE.md`, `docs/architecture/ARCHITECTURE.md`, `docs/architecture/EXTENSION_GUIDE.md`, `docs/llm-agent/TESTING.md`, `docs/llm-agent/EMBEDDED_USAGE.md`, `docs/deployment/TESTING_AFTER_DEPLOYMENT.md`, `docs/tutorials/code-review/examples/ZDEMO_REPORT/curl/run-checks.sh`
+- Test: `npm run docs:check`
 
-**Why the deletions:** plans and specs live in the tree only while active. Once implemented, history holds them.
+**Interfaces:** none.
 
-- [ ] **Step 1: Document the three variables**
+**Why this is a task and not a footnote.** Stale docs describing the previous contract are believed. Three things changed that a reader acts on: a header no longer names a session, a door can refuse, and an OData function is gone. The spec is deleted when the work lands, so what it explained has to live in the docs by then.
 
-In `README.md` and `docs/architecture/ARCHITECTURE.md`, add a section covering:
+- [ ] **Step 1: Configuration**
 
-| Variable | Meaning | Absent |
-|---|---|---|
-| `LLM_GATEKEEPER_QUOTAS` | JSON map of quota key to `{ limit, windowMs }`; `windowMs` defaults to 60000 | no rate limiting, calls pass straight through |
-| `LLM_GATEKEEPER_QUOTA_OF_MODEL` | JSON map of model name to quota key, where several models share one limit | each model is its own quota key |
-| `LLM_GATEKEEPER_MAX_LIVE_PIPELINES` | positive integer, pipelines admitted at once across all channels | no door, and the old `execute_step` cap of two is gone with it |
+In `docs/llm-agent/CONFIG_USAGE.md`, replace the `LLM_AGENT_THROTTLE_MAX_WAIT_MS` row with these four:
 
-State the guarantee in one line: a caller is either refused before anything starts, or carried to the end; throttling costs speed, never the request; only a shutdown ends admitted work.
-
-- [ ] **Step 2: Record the removed surface**
-
-In `CHANGELOG.md` under a new version, list the breaking changes. Name the
-behaviour change for a deployment that configures **nothing**, because it is
-the one that is easy to miss: a `429` used to be waited out up to twenty
-seconds by `WaitIfShortEnough`, and now comes back to the caller instead. The
-ceiling that made waiting safe is gone with it, and without a quota there is no
-queue to pace a retry against. Configure `LLM_GATEKEEPER_QUOTAS` and the
-waiting returns, governed by the window. Then: `AgentService.Chat` removed (`AgentService.Health` is unchanged and still there); `LLM_AGENT_THROTTLE_MAX_WAIT_MS` removed along with `WaitIfShortEnough`, since waiting as told is now the gated wrapper's business; and `EXEC_STEP_MAX_CONCURRENCY` replaced by `LLM_GATEKEEPER_MAX_LIVE_PIPELINES`, which covers every channel rather than one route. Name the migration for a deployment that relied on the old cap.
-
-- [ ] **Step 3: Add the sample configuration**
-
-There is no `deploy/` directory. The samples that exist are
-`docs/deployment/templates/*.mtaext.template` (`llm-only`, `mcp-anthropic`,
-`mcp-only`, and any sibling) and `docs/examples/*/.mtaext`.
-
-Add all **three** variables to each template, commented out, with a line saying
-where each number comes from:
-
-```yaml
-    # LLM_GATEKEEPER_QUOTAS: '{"anthropic--claude-4.5-sonnet":{"limit":60}}'
-    #   The tenant's per-minute rate limit for that model, from AI Launchpad.
-    #   Set it BELOW the real limit: this deployment is not the tenant's only
-    #   consumer, and the window cannot see the others.
-    # LLM_GATEKEEPER_QUOTA_OF_MODEL: '{"model-a":"shared","model-b":"shared"}'
-    #   Only where several models are metered together. Omitted, each model is
-    #   its own quota.
-    # LLM_GATEKEEPER_MAX_LIVE_PIPELINES: '4'
-    #   How many pipelines may be admitted at once, across every channel. This
-    #   is a memory decision: it replaces the old execute_step cap of two, and
-    #   the right number depends on the memory bought for the service.
+```markdown
+| `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | The longest LLM-side `429` interval we wait out **when no door is configured**. Anything longer is reported with the number attached. Not applied once `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set: behind a door an admitted session waits exactly the interval the server named. A value that is not a whole number of milliseconds is refused at startup |
+| `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | unset | How many sessions may run a pipeline at once, across `/v1/chat/completions`, `/v1/messages` and `execute_step`. Unset: no door on the chat channels, and `execute_step` keeps its cap of two. Size it against the container's memory |
+| `LLM_GATEKEEPER_QUEUE_LENGTH` | the capacity | How many callers may wait to be admitted — for a slot, for their own session, or for a retention place. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`. The queue passing three quarters is logged as pressure |
+| `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | unbounded | How many sessions may hold history and session collections. The least recently used idle one is evicted — history, collections and their files — to make room; a session with a pipeline or a RAG operation running is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller. With `/v1/rag/*` in use, set it above the capacity by the number of concurrent uploads |
 ```
 
-The `docs/examples/*/.mtaext` files are working deployments rather than
-templates; add the same block there only where the example actually runs a
-gated model, and leave the others alone.
+Below the table, add:
 
-- [ ] **Step 4: Update the project instructions**
+```markdown
+All `LLM_GATEKEEPER_*` values: unset means off, and a value that is not a positive integer — or a combination the notes above forbid — stops the service at startup, naming the variable. The values in force are logged at startup and returned in `Health()`.
+```
 
-In `CLAUDE.md`, add the gatekeeper to the architecture section: one counter of live pipelines across every channel, one gate per quota, a permit per HTTP attempt, and the teardown order (drain, safe-stop, release).
+- [ ] **Step 2: The API contract**
 
-- [ ] **Step 5: Delete the spec and this plan**
+In `docs/architecture/API_REFERENCE.md`, replace the paragraph starting `**Inbound** — no limit is enforced on callers of this service.` with:
+
+```markdown
+**Inbound — the gatekeeper.** With `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` set, every
+pipeline-starting channel counts against one door. A caller that cannot start
+at once waits in a bounded queue; once admitted it is carried to the end — only
+a shutdown ends it. When the queue is full the caller is refused, with the reason
+and **without** a `Retry-After`: how long the sessions ahead will run is not
+something the service measures.
+
+| Reason | Meaning | `/v1/chat/completions` | `/v1/messages` | `execute_step` |
+|---|---|---|---|---|
+| `session_busy` | this session is still running a request | `503`, `error.code: gatekeeper_session_busy` | `529` `overloaded_error` | text prefixed `gatekeeper_session_busy:` |
+| `capacity` | every slot is taken | `503`, `error.code: gatekeeper_capacity` | `529` `overloaded_error` | text prefixed `gatekeeper_capacity:` |
+| `retention` | no room to keep another session | `503`, `error.code: gatekeeper_retention` | `529` `overloaded_error` | text prefixed `gatekeeper_retention:` |
+
+A client disconnect does not stop a running session: SAP may be halfway through
+a write, and cutting it leaves objects locked. The session finishes and its
+output is discarded.
+```
+
+In the paragraph starting `The wait budget is **20 seconds** here`, append:
+
+```markdown
+With a door configured this budget is not applied: an admitted session waits
+out exactly the interval the server named, and a `429` that names none fails it.
+```
+
+Add a new section, `### Sessions`, after the rate-limiting section:
+
+```markdown
+### Sessions
+
+The service issues the session in an `HttpOnly` cookie, `clh_session`, on the
+first `/v1` response that has none, and keys every session by that value
+**together with the authenticated user**. Request headers do not name a
+session: `x-session-id` and `mcp-session-id` are not read.
+
+**Migrating from `x-session-id`.** A client that wants a session across
+requests keeps the cookie and sends it back — `curl -c jar -b jar`. A
+`/v1/rag/collections` request with `scope: 'session'` that still sends
+`x-session-id` is answered `400`, naming the cookie. A client that keeps no
+cookies gets a fresh session per request; use `scope: 'user'` instead, with its
+different lifetime and visibility.
+
+**Ending a session.** `DELETE /v1/session` answers `204` at once. The session is
+unreachable from that moment; its history, collections and their files are
+removed once whatever is running against it has stopped — a RAG upload is
+cancelled and then waited for, a running pipeline is waited for. A request
+against a session being removed is answered `410` with `error.code:
+session_closed`. The next request carrying the old cookie is given a new
+session.
+
+**Retention.** With `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` set, creating a
+session-scoped collection when every place is taken by something running is
+answered `503` with `error.code: gatekeeper_retention`. An idle session is
+evicted instead when one exists — silently, so its next question arrives
+without the earlier context.
+```
+
+- [ ] **Step 3: The architecture**
+
+In `docs/architecture/ARCHITECTURE.md`:
+
+- delete the blockquote starting `> The legacy \`AgentService\` OData path`
+- in the **Agent / LLM surfaces** row, replace from `A legacy secondary surface, the OData \`AgentService\`` to the end of the cell with `The OData \`AgentService\` (\`/odata/v4/agent/*\`) keeps \`Health\` only; it starts no pipeline.`
+- in the **Agent MCP** row, replace `concurrency capped by \`Semaphore\` (\`EXEC_STEP_MAX_CONCURRENCY=2\`)` with `counts against the gatekeeper's door when \`LLM_GATEKEEPER_MAX_LIVE_SESSIONS\` is set, and is otherwise capped at two by \`Semaphore\``
+- delete the sentence `The legacy \`/odata/v4/agent/Chat\` endpoint (\`agent-service.ts\`) also delegates to \`getSmartAgent\`, but is a secondary surface — see §4 and §11.`
+- in **Where the waiting decision sits**, append: `With a door configured the strategy is \`WaitAsTold\` instead: admission already decided the caller is carried to the end, so a ceiling behind the door would only kill work in flight.`
+
+Then add a section before `### Honesty controller (executor + reviewer)`:
+
+```markdown
+### Gatekeeper
+
+Memory is the binding resource, spent two ways: pipelines in flight, and
+sessions at rest. `srv/lib/door.ts` bounds the first, `srv/lib/session-retention.ts`
+the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
+
+- **One session, one pipeline.** The door keys by the authenticated user and
+  the issued `clh_session`. A second request for a running session waits.
+- **One queue.** Bounded by `LLM_GATEKEEPER_QUEUE_LENGTH`; the oldest waiter that
+  can be served goes next. Admission takes a slot and a retention place
+  together, or neither.
+- **Carried to the end.** Only shutdown aborts an admitted session. A client
+  disconnect detaches the output sink (`srv/lib/detached-sink.ts`) and nothing
+  more.
+- **Teardown order.** Wait for every model and tool call the session started
+  (they register themselves through `srv/lib/admission-scope.ts`), then
+  `safeStop`, then release the slot.
+- **Leases.** Every operation on a session's state holds one. Eviction and the
+  TTL sweep skip leased sessions. Every deletion closes the session to new
+  leases, cancels RAG operations, waits for the rest, then removes history,
+  collections and their directories through one primitive
+  (`srv/lib/session-state.ts`).
+- **Observability.** `Health()` returns door, retention, per-destination and
+  throttling scopes separately (`srv/lib/gatekeeper-metrics.ts`).
+```
+
+Then check nothing else still describes the removed function:
 
 ```bash
-git rm docs/superpowers/specs/2026-09-13-llm-gatekeeper-design.md
-git rm docs/superpowers/plans/2026-09-14-llm-gatekeeper.md
+grep -n "agent/Chat\|Chat(message\|Chat\`/\`Health" docs/architecture/ARCHITECTURE.md
 ```
 
-- [ ] **Step 6: Bump and tag**
+Expected: no output. Any remaining mermaid node or table cell naming `Chat` under `AgentService` is edited to name `Health` alone.
+
+- [ ] **Step 4: The guides and examples**
+
+`docs/architecture/EXTENSION_GUIDE.md` — delete the tree line `├── /odata/v4/agent/Chat          → SmartAgent.process()`.
+
+`docs/llm-agent/EMBEDDED_USAGE.md` — replace `which is why the legacy OData \`AgentService\` path has no working ABAP edge.` with `which is why every agent entrance runs its pipeline inside that scope.`
+
+`docs/llm-agent/TESTING.md` — delete the blockquote starting `> **The legacy OData \`Chat\` is LLM-only.**` and the `curl` block after it. Replace **Scenario 1** with:
+
+```markdown
+### Scenario 1: The model answers — no SAP involved
+
+`Health()` asks the LLM provider whether the configured model is available,
+without a completion and without a connection:
 
 ```bash
-npm run bump:version   # minor, unless the removed endpoints make it major for this deployment
-npm run sync:version
-npm run docs:check && npm run test:unit && npm run test:check && npm run lint:check
-git add -A
-git commit -m "release(X.Y.Z): the gatekeeper — admission control against the model quota"
-git tag -a vX.Y.Z -m "vX.Y.Z — the gatekeeper"
+curl "http://localhost:4004/odata/v4/agent/Health()" -H "Authorization: Basic YWxpY2U6"
 ```
 
-- [ ] **Step 7: Deploy to staging before production**
+`agentReady: true` means the model is reachable.
+```
 
-Build and deploy to one staging target, watch the health payload's `gatekeeper` block under real traffic, and confirm two things before going further: door refusals stay at zero when the quota is the binding constraint, and the queue is not deep while `429`s arrive. The second combination means another consumer is spending the tenant's minute and the configured number is too high.
+`docs/deployment/TESTING_AFTER_DEPLOYMENT.md` — replace section `#### 2. Simple Chat (LLM Only)` and its `curl` with:
+
+```markdown
+#### 2. Simple Chat, keeping the session
+
+The session lives in the `clh_session` cookie the service issues; keep it with a
+cookie jar so the second request continues the first.
+
+```bash
+curl -s -c jar -b jar -X POST "$BASE_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello! Remember the word PINE."}]}' | jq '.choices[0].message.content'
+
+curl -s -c jar -b jar -X POST "$BASE_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Which word did I ask you to remember?"}]}' | jq '.choices[0].message.content'
+```
+```
+
+and correct its **Expected Response** to an OpenAI `chat.completion` whose second answer names `PINE`.
+
+`docs/tutorials/code-review/examples/ZDEMO_REPORT/curl/run-checks.sh:292` — `stateless per call (no x-session-id)` → `stateless per call (no clh_session cookie kept)`.
+
+- [ ] **Step 5: Check, commit**
+
+```bash
+npm run docs:check
+grep -rn "x-session-id" docs README.md --include='*.md' | grep -v "docs/superpowers/"
+```
+
+Expected: `docs:check — OK`; the grep prints only the migration paragraph in `API_REFERENCE.md`.
+
+```bash
+git add docs
+git commit -m "docs: the door, sessions the service issues, and the removed OData Chat"
+```
+
+The spec and this plan are deleted in the merge commit's follow-up on `main`, after the PR is merged — not in the PR, so a reviewer can read both against the code.
 
 ---
-
-## Self-review notes
-
-**Spec coverage.** Every section of the spec maps to a task: the register's wiring to Task 6b, without which the register is an API nobody writes to and every drain finds it empty; the gatekeeper and its hot path to Task 1; configuration to Task 2; the acquire invariant, the permit given back and `RetryLlm` staying above to Task 3; entrances to Task 4; the door to Task 5; cancellation, the register and teardown order to Task 6; the detached sink and the disconnect that ends nothing to Task 7; the fourth entrance to Task 8; the outage classification to Task 9; the closed destination and `Retry-After` to Task 10; the unanswered write to Task 11; the collision guard and its wire shape to Task 12; observability to Task 13; non-pipeline calls to Task 14; documentation to Task 15.
-
-**Deliberately not built.** The spec's "Not in scope" section stays out. The upstream removal of `MCPClientWrapper`'s blind reconnect is not here and is not a prerequisite: this service uses the embedded transport, whose branch neither reconnects nor retries. It remains worth doing for other consumers of llm-agent.
-
-**Carried limits, all stated in the spec and none of them surprises.** A caller who leaves still costs a slot. A permanent refusal costs a slot until shutdown, and with capacity N, N of them close the door until a restart. Two instances would run two windows against one quota, so `instances: 1` still holds. An anonymous retry runs as a second pipeline.
