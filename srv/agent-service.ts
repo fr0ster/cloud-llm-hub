@@ -23,53 +23,6 @@ export default async function registerAgentServiceHandlers(
   log.info('Registering AgentService handlers');
 
   /**
-   * Chat endpoint - send message to SmartAgent
-   *
-   * SmartAgent orchestrates: intent classification → RAG lookup → LLM + MCP tool loop → response
-   */
-  srv.on('Chat', async (req: Request) => {
-    const message = req.data.message as string;
-
-    if (!message || typeof message !== 'string') {
-      const error = new Error(
-        'Message parameter is required and must be a string',
-      );
-      (error as Error & { statusCode?: number }).statusCode = 400;
-      throw error;
-    }
-
-    const user = req.user as { id?: string } | undefined;
-    log.info('Chat request received', {
-      messageLength: message.length,
-      user: user?.id,
-    });
-
-    try {
-      const handle = await getSmartAgent();
-      const result = await handle.agent.process(message);
-
-      if (result.ok) {
-        log.debug('SmartAgent response', {
-          iterations: result.value.iterations,
-          toolCalls: result.value.toolCallCount,
-          stopReason: result.value.stopReason,
-        });
-        return result.value.content || '';
-      }
-
-      log.error('SmartAgent processing failed', {
-        error: result.error.message,
-        code: result.error.code,
-      });
-      throw new Error(result.error.message);
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      log.error('Chat handler error', { error: err.message });
-      throw error;
-    }
-  });
-
-  /**
    * Get conversation history
    */
   srv.on('GetHistory', async (_req: Request) => {
