@@ -172,3 +172,37 @@ describe('a closed destination', () => {
     expect(res.headers['Retry-After']).toBeUndefined();
   });
 });
+
+describe('an unanswered write, non-streaming', () => {
+  it('is named in the error payload and marked not retried', async () => {
+    configure();
+    harness.process = async () => ({
+      ok: false,
+      error: new Error('socket hang up'),
+    });
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const { res, done } = call(body());
+    await done;
+
+    const text = JSON.parse(res.body).error.message;
+    expect(text).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(text).toContain('was NOT retried');
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+  });
+
+  it('leaves the ordinary failure text untouched when nothing is unanswered', async () => {
+    configure();
+    harness.process = async () => ({
+      ok: false,
+      error: new Error('socket hang up'),
+    });
+    harness.unanswered = [];
+
+    const { res, done } = call(body());
+    await done;
+
+    const text = JSON.parse(res.body).error.message;
+    expect(text).toBe('socket hang up');
+  });
+});

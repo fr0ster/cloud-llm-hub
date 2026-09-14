@@ -52,6 +52,7 @@ import {
   executeStepDoorRefusal,
   failureText,
   sessionClosedText,
+  unverifiedWriteText,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 
@@ -106,7 +107,20 @@ const EXECUTE_STEP_DESCRIPTION = [
  * LLM-only handle (no destination) has no per-destination recMcp.
  */
 interface HandleWithRecMcp {
-  recMcp?: { dropRequest(traceId?: string): void };
+  recMcp?: {
+    dropRequest(traceId?: string): void;
+    unanswered?(traceId: string): Array<{ call: { name: string } }>;
+  };
+}
+
+/** Writes dispatched under `traceId` that never got an answer, or `[]` when
+ *  there is nothing to report (no handle, no recMcp, or no traceId yet). */
+function pendingWrites(
+  handle: unknown,
+  traceId: string | undefined,
+): Array<{ call: { name: string } }> {
+  if (!traceId) return [];
+  return (handle as HandleWithRecMcp)?.recMcp?.unanswered?.(traceId) ?? [];
 }
 
 export interface AgentMcpResult {
@@ -276,8 +290,16 @@ export async function executeStep(
         ok: false,
         destination: targetDestination,
       });
+      const pending = pendingWrites(handle, traceId);
+      const message =
+        pending.length > 0
+          ? unverifiedWriteText(
+              pending.map((p) => p.call),
+              describeCause(r.error),
+            )
+          : failureText(r.error);
       return textResult(
-        `ERROR on destination "${targetDestination}": ${failureText(r.error)}`,
+        `ERROR on destination "${targetDestination}": ${message}`,
         true,
       );
     }
@@ -309,7 +331,16 @@ export async function executeStep(
     if (targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
     }
-    const message = err instanceof Error ? err.message : String(err);
+    const pending = pendingWrites(handle, traceId);
+    const message =
+      pending.length > 0
+        ? unverifiedWriteText(
+            pending.map((p) => p.call),
+            describeCause(err),
+          )
+        : err instanceof Error
+          ? err.message
+          : String(err);
     log.warn('execute_step failed', { destination, error: message });
     return textResult(`ERROR: ${message}`, true);
   } finally {

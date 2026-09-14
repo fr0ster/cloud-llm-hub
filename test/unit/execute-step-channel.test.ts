@@ -182,3 +182,36 @@ describe('a closed destination', () => {
     expect(result.content[0].text).toBe(destinationClosedText('DEST'));
   });
 });
+
+describe('an unanswered write', () => {
+  it('is named in the returned text and marked not retried', async () => {
+    configure();
+    harness.process = async () => ({
+      ok: false,
+      error: new Error('socket hang up'),
+    });
+    harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const result = await step();
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(result.content[0].text).toContain('was NOT retried');
+    expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+  });
+
+  it('leaves the ordinary failure text untouched when nothing is unanswered', async () => {
+    configure();
+    harness.process = async () => ({
+      ok: false,
+      error: new Error('socket hang up'),
+    });
+    harness.unanswered = [];
+
+    const result = await step();
+
+    expect(result.content[0].text).toBe(
+      'ERROR on destination "DEST": socket hang up',
+    );
+  });
+});

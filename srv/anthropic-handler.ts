@@ -43,6 +43,7 @@ import {
   retryAfterHeader,
   statusForError,
   throttleOf,
+  unverifiedWriteText,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { sessionIdOf, type WithSession } from './session-id';
@@ -56,7 +57,20 @@ const adapter = new AnthropicApiAdapter();
  * LLM-only handle (no destination) has no per-destination recMcp.
  */
 interface HandleWithRecMcp {
-  recMcp?: { dropRequest(traceId?: string): void };
+  recMcp?: {
+    dropRequest(traceId?: string): void;
+    unanswered?(traceId: string): Array<{ call: { name: string } }>;
+  };
+}
+
+/** Writes dispatched under `traceId` that never got an answer, or `[]` when
+ *  there is nothing to report (no handle, no recMcp, or no traceId yet). */
+function pendingWrites(
+  handle: unknown,
+  traceId: string | undefined,
+): Array<{ call: { name: string } }> {
+  if (!traceId) return [];
+  return (handle as HandleWithRecMcp)?.recMcp?.unanswered?.(traceId) ?? [];
 }
 
 /**
@@ -319,9 +333,21 @@ export async function handleAnthropicMessages(
         // channel is not. Closing in silence leaves the client with a truncated
         // stream and nothing to act on, which for a throttled request is the
         // one case where we know exactly what it should do next.
-        out.write(
-          `event: error\ndata: ${JSON.stringify(anthropicErrorPayload(err))}\n\n`,
-        );
+        const pending = pendingWrites(handle, traceId);
+        const payload =
+          pending.length > 0
+            ? {
+                type: 'error' as const,
+                error: {
+                  type: 'api_error',
+                  message: unverifiedWriteText(
+                    pending.map((r) => r.call),
+                    describeCause(err),
+                  ),
+                },
+              }
+            : anthropicErrorPayload(err);
+        out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 
       clearInterval(keepAlive);
@@ -345,7 +371,19 @@ export async function handleAnthropicMessages(
         error: result.error.message,
         throttled: limit?.reason,
       });
-      if (limit) {
+      const pending = pendingWrites(handle, traceId);
+      if (pending.length > 0) {
+        out.json(500, {
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: unverifiedWriteText(
+              pending.map((r) => r.call),
+              describeCause(result.error),
+            ),
+          },
+        });
+      } else if (limit) {
         const retryAfter = retryAfterHeader(result.error);
         if (retryAfter) out.setHeader('Retry-After', retryAfter);
         out.json(

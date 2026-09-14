@@ -28,6 +28,8 @@ export const harness = {
   closedDestination: undefined as string | undefined,
   /** What `retryAfterForDestination` reports while a destination is closed. */
   retryAfterSeconds: undefined as number | undefined,
+  /** What `recMcp.unanswered(traceId)` reports for the current test. */
+  unanswered: [] as Array<{ call: { name: string } }>,
   process: async (
     _messages: unknown,
     _opts: Record<string, unknown>,
@@ -48,6 +50,7 @@ export const harness = {
     harness.agentGate = Promise.resolve();
     harness.closedDestination = undefined;
     harness.retryAfterSeconds = undefined;
+    harness.unanswered = [];
     harness.process = async () => ({
       ok: true,
       value: { content: 'done', stopReason: 'stop' },
@@ -73,7 +76,10 @@ const handle = {
       return harness.stream(m, o);
     },
   },
-  recMcp: { dropRequest: () => harness.events.push('dropRequest') },
+  recMcp: {
+    dropRequest: () => harness.events.push('dropRequest'),
+    unanswered: (_traceId: string) => harness.unanswered,
+  },
 };
 
 export function agentManagerMock() {

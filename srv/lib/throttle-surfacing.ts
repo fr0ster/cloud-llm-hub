@@ -240,3 +240,19 @@ export function anthropicSessionClosed(): HttpRefusal {
 export function destinationClosedText(destination: string): string {
   return `SAP system ${destination} is not reachable right now. Other systems are unaffected.`;
 }
+
+/**
+ * A write we sent and never got an answer for.
+ *
+ * We cannot tell an applied change from a lost one, because an ADT call is
+ * asynchronous in substance. So this neither retries nor assumes. It says what
+ * happened and leaves the reading to the consumer, which is what a planner and
+ * a human are both for.
+ */
+export function unverifiedWriteText(
+  calls: Array<{ name: string }>,
+  cause: string,
+): string {
+  const names = calls.map((c) => c.name).join(', ');
+  return `UNVERIFIED_WRITE: ${names} was sent and no answer came back (${cause}). It may or may not have been applied, so read the object back before deciding. It was NOT retried.`;
+}

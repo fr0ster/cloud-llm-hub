@@ -48,6 +48,7 @@ import {
   openAiSessionClosed,
   throttleMessage,
   throttleOf,
+  unverifiedWriteText,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
@@ -80,7 +81,20 @@ function jsonError(message: string, type: string): string {
  * LLM-only handle (no destination) has no per-destination recMcp.
  */
 interface HandleWithRecMcp {
-  recMcp?: { dropRequest(traceId?: string): void };
+  recMcp?: {
+    dropRequest(traceId?: string): void;
+    unanswered?(traceId: string): Array<{ call: { name: string } }>;
+  };
+}
+
+/** Writes dispatched under `traceId` that never got an answer, or `[]` when
+ *  there is nothing to report (no handle, no recMcp, or no traceId yet). */
+function pendingWrites(
+  handle: unknown,
+  traceId: string | undefined,
+): Array<{ call: { name: string } }> {
+  if (!traceId) return [];
+  return (handle as HandleWithRecMcp)?.recMcp?.unanswered?.(traceId) ?? [];
 }
 
 /**
@@ -917,9 +931,16 @@ export async function handleChatCompletions(
                         causes,
                       });
                       const limit = throttleOf(err);
-                      const userMessage = limit
-                        ? throttleMessage(limit)
-                        : err.message;
+                      const pending = pendingWrites(handle, traceId);
+                      const userMessage =
+                        pending.length > 0
+                          ? unverifiedWriteText(
+                              pending.map((r) => r.call),
+                              describeCause(err),
+                            )
+                          : limit
+                            ? throttleMessage(limit)
+                            : err.message;
                       out.write(
                         `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                       );
@@ -1044,9 +1065,16 @@ export async function handleChatCompletions(
                     stack: err instanceof Error ? err.stack : undefined,
                   });
                   const streamLimit = throttleOf(err);
-                  const userMessage = streamLimit
-                    ? throttleMessage(streamLimit)
-                    : errMsg;
+                  const streamPending = pendingWrites(handle, traceId);
+                  const userMessage =
+                    streamPending.length > 0
+                      ? unverifiedWriteText(
+                          streamPending.map((r) => r.call),
+                          describeCause(err),
+                        )
+                      : streamLimit
+                        ? throttleMessage(streamLimit)
+                        : errMsg;
                   out.write(
                     `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                   );
@@ -1175,11 +1203,17 @@ export async function handleChatCompletions(
     }
 
     const resultLimit = result.ok ? undefined : throttleOf(result.error);
+    const resultPending = result.ok ? [] : pendingWrites(handle, traceId);
     const finalContent = result.ok
       ? result.value.content || '(no response)'
-      : resultLimit
-        ? throttleMessage(resultLimit)
-        : `Error: ${result.error.message}`;
+      : resultPending.length > 0
+        ? unverifiedWriteText(
+            resultPending.map((r) => r.call),
+            describeCause(result.error),
+          )
+        : resultLimit
+          ? throttleMessage(resultLimit)
+          : `Error: ${result.error.message}`;
 
     const finalFinishReason = result.ok
       ? mapStopReason(result.value.stopReason)

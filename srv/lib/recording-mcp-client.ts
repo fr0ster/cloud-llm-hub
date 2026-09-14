@@ -7,6 +7,7 @@ import type {
   Result,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { isWriteTool } from './write-guardrail';
 
 /**
  * Transparent decorator around an `IMcpClient` that captures every executed
@@ -45,20 +46,25 @@ export class RecordingMcpClient implements IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
-    const res = await this.inner.callTool(name, args, options);
-
-    const result: McpToolResult = res.ok
-      ? res.value
-      : { content: res.error?.message ?? String(res.error), isError: true };
-
-    const record: ToolCallRecord = {
-      call: { id: '', name, arguments: args },
-      result,
-    };
-
     const traceId = options?.trace?.traceId;
+    // Opened BEFORE the call, so "sent, unanswered" is a state the error path
+    // can read rather than an absence it has to infer. Written after the await,
+    // a thrown transport error leaves nothing at all.
+    const record: ToolCallRecord & { answered?: boolean } = {
+      call: { id: '', name, arguments: args },
+      result: { content: '', isError: false },
+      answered: false,
+    };
     if (traceId) this.deltaFor(traceId).push(record);
 
+    const res = await this.inner.callTool(name, args, options);
+    // Reached only when an answer came back. A throw leaves `answered` false,
+    // deliberately: we do not know whether SAP applied the change, and a retry
+    // here would be a second attempt at it.
+    record.result = res.ok
+      ? res.value
+      : { content: res.error?.message ?? String(res.error), isError: true };
+    record.answered = true;
     return res;
   }
 
@@ -69,6 +75,22 @@ export class RecordingMcpClient implements IMcpClient {
       this.deltas.set(traceId, bucket);
     }
     return bucket;
+  }
+
+  /**
+   * Writes dispatched under this trace that never received an answer.
+   *
+   * Writes only. An unanswered `ReadClass` is a lost answer and nothing more;
+   * reporting it as possibly-applied would teach a planner to distrust reads
+   * and to re-check objects nothing touched. `isWriteTool` is the same
+   * classifier the write guardrail already uses, so the two cannot drift.
+   */
+  unanswered(traceId: string): ToolCallRecord[] {
+    return (this.deltas.get(traceId) ?? []).filter(
+      (r) =>
+        (r as ToolCallRecord & { answered?: boolean }).answered !== true &&
+        isWriteTool(r.call.name),
+    );
   }
 
   /** Tool-call records for `requestId`'s delta. No id (or an unknown id)
