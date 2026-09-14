@@ -84,13 +84,31 @@ is a claim and not a mechanism — with two slots free, two concurrent requests
 carrying the same session id would both be admitted, both run, and both read
 and write the same history.
 
-**And the key is the authenticated user with the session, never the session
-alone.** `x-session-id` is supplied by the client, so a key without the user
-lets one caller serialise another's work by sending an id that collides — and
-lets a guess at an id become a way to interfere. `sessionStore` already keys on
-`${userId}\u0000${sessionId}` for the neighbouring reason, that two users must
-never read each other's history; the same pair keys the slot, so the two cannot
-drift apart.
+**And the identity is ours to issue, not the caller's to assert.** Today an
+`x-session-id` or `mcp-session-id` sent by the client is honoured as a session
+on equal terms with the `clh_session` cookie the service mints for its own
+WebUI (`resolveSessionId` reads, and deliberately never mints). That is the
+vector: a value the caller chooses becomes the key that decides whose work
+waits for whose, so a colliding id serialises someone else's requests and a
+guessed one is a way to interfere.
+
+So **cloud-llm-hub issues the session identity**. The service mints it, binds
+it to the authenticated user at that moment, and hands it back for the caller
+to echo. An identifier presented by a caller is honoured only if this service
+issued it *to that user*; anything else starts a new session rather than
+joining one. The slot is keyed on that identity, and the store keys on
+`${userId}\u0000${sessionId}` as it already does, so the two cannot drift
+apart.
+
+A caller that echoes nothing is not penalised: it gets a fresh session per
+request, which is exactly what a stateless client sending its full history
+already gets today, and each such request is admitted on its own. What changes
+is only that an id we did not issue no longer buys continuity — or a key.
+
+> This is a change to the session contract, not only to admission: a client
+> that sends its own `x-session-id` today to keep server-side history will
+> stop being given it until it echoes ours. The plan owns the migration, and it
+> is the one part of this design visible to an existing caller.
 
 So live sessions and live pipelines are the same number by construction rather
 than by assertion. `execute_step` needs no special case: each of its calls
@@ -452,10 +470,13 @@ These properties, because they are what this shape gets wrong.
   five: the second waits for the first rather than taking a second slot.
   Written with capacity free, because a test that fills the door first would
   pass on the global queue alone and prove nothing about the key.
-- **Two users sending the same session id do not collide.** Same id, different
-  authenticated user, capacity of five: both run at once. The id is
-  client-supplied, so a key without the user is a way for one caller to
-  serialise another's work by guessing.
+- **An identifier we did not issue buys nothing.** A request carrying an
+  invented `x-session-id` starts a fresh session rather than joining one, and
+  two callers inventing the same one do not wait for each other. This is the
+  interference the issued identity exists to remove.
+- **An identifier issued to one user is not another's.** Presented by a
+  different authenticated user it is refused as a session and a fresh one is
+  started — the key and the history store agree on whose it is.
 - **A waiter that leaves takes no slot.** Queue a caller, abort it, then free a
   slot: it is gone from the queue and no pipeline starts for it.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
