@@ -540,6 +540,11 @@ turns, twenty-four hours for the collections. A deployment whose memory is spent
 on idle state can lower either, and they are separate knobs and separate
 decisions.
 
+**Reclaim is not instant.** Freeing a collection's directory is filesystem
+work, and a deployment evicting heavily will do it on the request path that
+triggered the eviction. Small against the alternative, and worth knowing before
+someone measures a slow first request after a busy hour.
+
 **A single session can still be large.** The bound counts sessions, not bytes,
 and one session that ingests a great many documents is one session. Counting
 bytes would mean measuring them, which nothing here does; the count is the
@@ -661,11 +666,14 @@ These properties, because they are what this shape gets wrong.
 - **Retention is bounded and eviction prefers the idle.** With the cap reached,
   a new session evicts the least recently used idle one, and never one holding
   a slot.
-- **An evicted session is gone from every store.** After eviction its turns,
-  its session collections and its bookkeeping entries are all absent — asserted
-  store by store, because a count that falls while the documents stay is the
-  failure this bound exists to prevent, and it is invisible to any test that
-  only counts sessions.
+- **An evicted session is gone from every store, and off the disk.** After
+  eviction its turns, its bookkeeping entries and its session collections are
+  absent — and each collection's directory is gone, not merely its registry
+  entry. Asserted store by store and on the filesystem, because a count that
+  falls while the documents stay is the failure this bound exists to prevent,
+  and it is invisible to every test that stops at the registry.
+- **The same holds on logout and clear-chat.** Those paths call the same
+  eviction and leave no directories behind either, which they do today.
 - **Retention below capacity, or without one, is refused at startup.** Naming
   both variables, because the alternative is a running service that must break
   one of them.
