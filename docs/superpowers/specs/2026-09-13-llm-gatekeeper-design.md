@@ -1145,9 +1145,10 @@ These properties, because they are what this shape gets wrong:
 - **An unknown model is a bad request, not an overload.** With quotas
   configured, a `body.model` naming no quota answers `400`
   `invalid_request_error` — never `529`, never a retryable `503`.
-- **A shared corpus build holds no caller's slot.** A request that arrives
-  mid-build and awaits it does not have those embedding calls counted against
-  its own register, and its slot frees on its own work alone.
+- **A shared corpus build holds no caller's slot.** A request arriving
+  mid-build waits before admission, so with the door at capacity minus one it
+  does not consume the last place while it waits — and once admitted, the
+  build's embedding calls are not in its register either.
 - **A health check never waits.** With the quota shut, `healthCheck` reports
   throttled at once rather than sitting out the interval, and it still spends a
   permit, because it is still a request the window must see.
@@ -1211,9 +1212,29 @@ And one thing it must not do: **the corpus build is never registered against
 an admission handle**, not even when a request is the one awaiting it. The
 register exists so a pipeline's slot outlives the calls that pipeline started;
 this work belongs to the process and outlives every pipeline. Attributing it to
-whichever request happened to arrive first would hold that caller's slot for a
-job serving everyone, and — worse — make a global lifecycle the property of one
-pipeline that may be gone before it ends.
+whichever request happened to arrive first would make a global lifecycle the
+property of one pipeline that may be gone before it ends.
+
+**Keeping it out of the register is not enough on its own, though, and saying
+so was half an answer.** A slot is held from admission until the pipeline ends,
+so a request that is admitted and *then* waits for the build holds its slot for
+the whole wait whatever the register says. `initDestination` awaits
+`ensureSharedToolsVectorized` today (`srv/agent-manager.ts`), so this is the
+ordinary path, not a corner.
+
+So the order is fixed, and it is the useful half of the rule:
+
+1. **Resolve the agent first** — the destination's readiness and any shared
+   corpus build, both already bounded on the request path by
+   `LLM_AGENT_DESTINATION_INIT_WAIT_MS`.
+2. **Then admission.** The door is entered with an agent already in hand.
+3. Pipeline, register, teardown, slot released, as above.
+
+A caller waiting for the corpus is therefore waiting *outside* the door,
+holding an HTTP request and no pipeline — which is the cheap thing to hold, and
+the reason the wait is bounded there rather than here. And the background build
+is started from startup, outside any request's admission context, so joining it
+never transfers ownership to a caller.
 
 **Health checks** are the opposite. `AgentService.Health` and the model probe
 behind the OpenAI surface call `agent.healthCheck()` (`srv/agent-service.ts`,
