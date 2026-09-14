@@ -259,19 +259,35 @@ export class QuotaGate {
   /**
    * When our own rate next allows a start, in milliseconds.
    *
-   * This is what a throttled call with no named interval paces against. It is
-   * not a guess about the server: either the oldest start in our window is
-   * about to age out, or the window is empty and the honest spacing is the
-   * operator's own rate — the window divided by the limit. Without it, "go
-   * back to the tail of our queue" is a busy loop whenever the queue is short.
+   * This is what a throttled call with no named interval paces against, and it
+   * is our configured rate rather than our window. Two things can hold a start
+   * back and the answer is the later of them:
+   *
+   * - **spacing.** At a limit of ten a minute, starts belong six seconds
+   *   apart, so a call goes six seconds after the most recent one. Returning
+   *   the oldest start's expiry instead would delay it by nearly the whole
+   *   minute while nine places sat empty.
+   * - **a full window.** When every place is taken, no spacing helps: the
+   *   oldest start has to age out first.
+   *
+   * Neither is a guess about the server. Both come from the operator's own
+   * numbers, which is what makes this ours to decide.
    */
   msUntilNextOpening(): number {
     this.trim();
+    const now = this.now();
+    const spacing = Math.ceil(this.limits.windowMs / this.limits.limit);
+    const newest =
+      this.starts.length > this.head ? this.starts[this.starts.length - 1] : undefined;
+    const untilSpaced = newest === undefined ? 0 : Math.max(0, newest.at + spacing - now);
+
     const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
-    if (oldest === undefined) {
-      return Math.ceil(this.limits.windowMs / this.limits.limit);
-    }
-    return Math.max(0, oldest.at + this.limits.windowMs - this.now());
+    const untilPlace =
+      this.live < this.limits.limit || oldest === undefined
+        ? 0
+        : Math.max(0, oldest.at + this.limits.windowMs - now);
+
+    return Math.max(untilSpaced, untilPlace);
   }
 
   /**
@@ -369,8 +385,11 @@ export class QuotaGate {
     // After trim the head IS the oldest live start, so there is nothing to
     // search for.
     const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
+    // Only a FULL window makes anyone wait for an expiry. With room to spare
+    // the place is already there, and timing the wake to the oldest start
+    // would park a delayed waiter for the rest of the window over nothing.
     const untilPlace =
-      oldest === undefined
+      this.live < this.limits.limit || oldest === undefined
         ? 0
         : Math.max(0, oldest.at + this.limits.windowMs - this.now());
     // And the head waiter may not be eligible yet, in which case waking on the
@@ -514,6 +533,51 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
     jest.useRealTimers();
   });
 
+  it('paces a retry at the configured rate, not at the whole window', async () => {
+    // Ten a minute is one every six seconds. Returning the oldest start's
+    // expiry would hold the retry for nearly a minute while nine places stood
+    // empty — and a limit of 1 in the test would have hidden it, because there
+    // the two answers coincide.
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
+    await gate.acquire();
+    expect(gate.msUntilNextOpening()).toBe(6_000);
+    clock.advance(6_000);
+    expect(gate.msUntilNextOpening()).toBe(0);
+    gate.stop();
+  });
+
+  it('waits for an expiry only when the window is actually full', async () => {
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 2, windowMs: 60_000 }, clock.now);
+    await gate.acquire();
+    clock.advance(30_000);
+    await gate.acquire();
+    // Full now, so the oldest start's expiry is the binding constraint.
+    expect(gate.msUntilNextOpening()).toBe(30_000);
+    gate.stop();
+  });
+
+  it('does not park a delayed waiter behind an expiry when places are free', async () => {
+    jest.useFakeTimers();
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 10, windowMs: 60_000 }, clock.now);
+    await gate.acquire();
+
+    let admitted = false;
+    const parked = gate
+      .acquire(undefined, { notBefore: clock.now() + 200 })
+      .then(() => { admitted = true; });
+
+    clock.advance(200);
+    jest.advanceTimersByTime(200);
+    await parked;
+    // Nine places were free the whole time; only eligibility was pending.
+    expect(admitted).toBe(true);
+    gate.stop();
+    jest.useRealTimers();
+  });
+
   it('turns away everyone still parked when it stops', async () => {
     // stop() runs on shutdown and from clearQuotaRegistry. A waiter left
     // holding an unsettled promise would hang its pipeline for the life of the
@@ -567,7 +631,7 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: PASS, 11 tests.
+Expected: PASS, 14 tests.
 
 > **On the hot path being constant-time.** The queue is a serialisation point,
 > so `shift`, `find`, `indexOf` and `splice` are all wrong here — each is linear
@@ -1506,7 +1570,7 @@ configuration would read as a setting that still does something.
 Run: `npx jest test/unit/gated-construction.test.ts && npm run test:unit`
 Expected: PASS; the existing suite stays green.
 
-- [ ] **Step 6: Refuse an unknown model at the swap, before anything moves**
+- [ ] **Step 8: Refuse an unknown model at the swap, before anything moves**
 
 The registry throwing is not enough on its own: `gateForModel` is reached only
 once `GatedLlm.chat` is already running, and by then `getSmartAgent` has
@@ -1562,7 +1626,7 @@ export function unknownModelPayload(
 }
 ```
 
-- [ ] **Step 7: Assert the swap does not happen**
+- [ ] **Step 9: Assert the swap does not happen**
 
 Append to `test/unit/quota-registry.test.ts`:
 
@@ -1584,17 +1648,28 @@ task:
 
 ```ts
 describe('agent-manager — the model check comes before the swap', () => {
-  it('resolves the quota before makeLlm and before the shared state moves', () => {
+  it('resolves the quota before anything is built or replaced', () => {
+    // Not `makeLlm(` — after this refactor its one call site lives inside
+    // buildGatedLlm, declared above the swap, so searching forward from the
+    // swap finds nothing and the assertion would compare against -1.
     const swap = source.indexOf('requestedModel !== activeModel');
-    const check = source.indexOf('quotaForModel(requestedModel)');
-    const build = source.indexOf('makeLlm(', swap);
+    const check = source.indexOf('quotaForModel(requestedModel)', swap);
+    const build = source.indexOf('buildGatedLlm(', swap);
+    const assign = source.indexOf('sharedMainLlm =', swap);
+    expect(swap).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(swap);
-    expect(check).toBeLessThan(build);
+    expect(build).toBeGreaterThan(check);
+    expect(assign).toBeGreaterThan(check);
   });
 });
 ```
 
-- [ ] **Step 9: Lint, typecheck, commit**
+- [ ] **Step 10: Run both suites**
+
+Run: `npx jest test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts && npm run test:unit`
+Expected: PASS, 14 and 6 tests, and the existing suite stays green.
+
+- [ ] **Step 11: Lint, typecheck, commit**
 
 ```bash
 npx biome check --write srv/agent-manager.ts srv/agent-config.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/lib/throttle-surfacing.ts test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts
@@ -2603,10 +2678,12 @@ git commit -m "feat(gatekeeper): chat channels take a place, and a disconnect en
 ### Task 8: Remove the fourth entrance
 
 **Files:**
-- Modify: `srv/agent-service.cds` (drop `Chat` and `Health`), `srv/agent-service.ts` (drop their handlers)
+- Modify: `srv/agent-service.cds` (drop `Chat`), `srv/agent-service.ts` (drop its handler)
 - Test: `test/unit/agent-service-surface.test.ts`
 
 **Why delete rather than gate:** `AgentService.Chat` takes no destination and no per-request credentials, so it cannot reach a SAP system the way the other three channels can. It establishes no request connection and calls no `safeStop`. It is the one entrance with neither a door nor a session lifecycle — an endpoint that no path in this design fits is dead surface, not a gap in the design.
+
+**`Health` stays, and is not an entrance at all.** It calls `agent.healthCheck()` and nothing else: no `process`, no connection, no session, no pipeline. It is exactly the "call with nobody waiting" the spec's policy is written for, so it needs no door — only a permit, which Task 14 gives it. Deleting it would have removed the only production caller of the behaviour that task implements, leaving a policy with nothing to apply to.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2625,15 +2702,16 @@ describe('AgentService — the surface that is left', () => {
     expect(ts).not.toMatch(/srv\.on\(\s*'Chat'/);
   });
 
-  it('no longer exposes Health', () => {
-    expect(cds).not.toMatch(/function\s+Health\s*\(/);
-    expect(ts).not.toMatch(/srv\.on\(\s*'Health'/);
+  it('starts no pipeline anywhere in this file', () => {
+    // The Chat handler called agent.process straight through, past every door.
+    expect(ts).not.toMatch(/agent\.process\(/);
   });
 
-  it('calls the agent from nowhere in this file', () => {
-    // The handler called agent.process straight through, past every door.
-    expect(ts).not.toMatch(/agent\.process\(/);
-    expect(ts).not.toMatch(/agent\.healthCheck\(/);
+  it('keeps Health, which starts nothing and needs no door', () => {
+    // Not an entrance: it probes and returns. Deleting it would leave the
+    // health policy in Task 14 with nothing to apply to.
+    expect(cds).toMatch(/function\s+Health\s*\(/);
+    expect(ts).toMatch(/agent\.healthCheck\(/);
   });
 });
 ```
@@ -2645,7 +2723,7 @@ Expected: FAIL — all three still present.
 
 - [ ] **Step 3: Remove the endpoints**
 
-Delete the `Chat` and `Health` function declarations from `srv/agent-service.cds`, and their `srv.on(...)` handlers from `srv/agent-service.ts`. Keep everything else in both files unchanged.
+Delete the `Chat` function declaration from `srv/agent-service.cds` and its `srv.on('Chat', ...)` handler from `srv/agent-service.ts`. Leave `Health` and everything else in both files untouched.
 
 - [ ] **Step 4: Check nothing else calls them**
 
@@ -2659,7 +2737,7 @@ Any hit in `app/` or `docs/` is a caller to update or a document to correct. The
 npx jest test/unit/agent-service-surface.test.ts && npm run test:unit && npm run test:check
 npx biome check --write srv/agent-service.ts test/unit/agent-service-surface.test.ts
 git add srv/agent-service.cds srv/agent-service.ts test/unit/agent-service-surface.test.ts
-git commit -m "refactor: drop AgentService.Chat and Health, the entrance with no door and no session"
+git commit -m "refactor: drop AgentService.Chat, the entrance with no door and no session"
 ```
 
 ## Phase 2 — a dependency that is down
@@ -3634,7 +3712,7 @@ In `srv/mcp-proxy.ts`, add `gatekeeper: gatekeeperSnapshot()` to the health chec
 
 ```bash
 npm run test:unit && npm run test:check
-npx biome check --write srv/lib/gatekeeper-metrics.ts srv/lib/admission.ts srv/mcp-proxy.ts test/unit/gatekeeper-metrics.test.ts
+npx biome check --write srv/lib/gatekeeper-metrics.ts srv/lib/admission.ts srv/lib/gated-llm.ts srv/agent-manager.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/agent-mcp.ts srv/mcp-proxy.ts test/unit/gatekeeper-metrics.test.ts
 git add -A
 git commit -m "feat(gatekeeper): four scopes, so a collision never reads as memory pressure"
 ```
@@ -3746,12 +3824,12 @@ Expected: FAIL, `healthCheck` waits out the interval instead of reporting.
 
 - [ ] **Step 3: Make `healthCheck` the reporting method on the ordinary wrapper**
 
-There is no second wrapper and no second construction site. After Task 8 the
-only `agent.healthCheck()` caller is gone, so a `gateLlmReporting` would have
-nowhere to be used — and swapping it in for the shared LLM would take
-wait-as-told away from ordinary pipeline calls, which is the guarantee the door
-rests on. The difference is per **method**, not per wrapper: `chat` and
-`streamChat` wait as told, and `healthCheck` reports.
+There is no second wrapper. `AgentService.Health` calls `agent.healthCheck()`
+and is the one production caller — Task 8 keeps it for exactly this reason —
+and a `gateLlmReporting` swapped in for the shared LLM would take wait-as-told
+away from ordinary pipeline calls, which is the guarantee the door rests on.
+The difference is per **method**, not per wrapper: `chat` and `streamChat` wait
+as told, and `healthCheck` reports.
 
 In `srv/lib/gated-llm.ts`, add to the object `gateLlm` returns:
 
@@ -3778,10 +3856,10 @@ In `srv/lib/gated-llm.ts`, add to the object `gateLlm` returns:
 
 Run: `grep -rn "healthCheck" srv/ | grep -v node_modules`
 
-After Task 8 the expected hits are the decorators that forward it
-(`srv/lib/recording-mcp-client.ts`, `srv/rag-collections.ts`) and the wrapper
-added in Step 3. If a new probe site appears later it inherits the behaviour by
-construction, because every LLM in this service comes from `buildGatedLlm`.
+Expected: the caller in `srv/agent-service.ts`, the decorators that forward it
+(`srv/lib/recording-mcp-client.ts`, `srv/rag-collections.ts`), and the wrapper
+added in Step 3. Any new probe site inherits the behaviour by construction,
+because every LLM in this service comes from `buildGatedLlm`.
 
 - [ ] **Step 5: Keep the corpus build out of every register**
 
