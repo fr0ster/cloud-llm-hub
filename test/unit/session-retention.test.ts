@@ -292,3 +292,123 @@ describe('the sweep asks first', () => {
     held.release();
   });
 });
+
+describe('a store that fails to delete', () => {
+  function failingStores() {
+    const held = new Set<string>();
+    const log: string[] = [];
+    const reported: Array<{
+      userId: string;
+      sessionId: string;
+      error: unknown;
+    }> = [];
+    let fail = false;
+    return {
+      held,
+      log,
+      reported,
+      put: (u: string, s: string) => held.add(`${u}/${s}`),
+      setFail: (f: boolean) => {
+        fail = f;
+      },
+      stores: {
+        hasState: (u: string, s: string) => held.has(`${u}/${s}`),
+        deleteAll: (u: string, s: string) => {
+          if (fail) throw new Error('EACCES');
+          log.push(`delete ${u}/${s}`);
+          held.delete(`${u}/${s}`);
+        },
+        reportDeleteError: (u: string, s: string, error: unknown) => {
+          reported.push({ userId: u, sessionId: s, error });
+        },
+      },
+    };
+  }
+
+  it('close on a known idle session rejects, reports, and drops the entry', async () => {
+    const f = failingStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    f.setFail(true);
+    const closed = r.close('alice', 'A');
+    let rejected = false;
+    let rejectionError: unknown;
+    await closed.catch((e) => {
+      rejected = true;
+      rejectionError = e;
+    });
+    expect(rejected).toBe(true);
+    expect((rejectionError as Error).message).toBe('EACCES');
+    expect(f.reported).toEqual([
+      { userId: 'alice', sessionId: 'A', error: rejectionError },
+    ]);
+    expect(r.isKnown('alice', 'A')).toBe(false);
+  });
+
+  it('close on a session retention never saw rejects and reports', async () => {
+    const f = failingStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    f.setFail(true);
+    const closed = r.close('alice', 'A');
+    let rejected = false;
+    let rejectionError: unknown;
+    await closed.catch((e) => {
+      rejected = true;
+      rejectionError = e;
+    });
+    expect(rejected).toBe(true);
+    expect((rejectionError as Error).message).toBe('EACCES');
+    expect(f.reported).toEqual([
+      { userId: 'alice', sessionId: 'A', error: rejectionError },
+    ]);
+  });
+
+  it('eviction during lease at a full cap returns Lease, reports once, no unhandled rejection', async () => {
+    const f = failingStores();
+    const r = new SessionRetention(f.stores, 2);
+    let unhandledRejection = false;
+    const unhandledListener = () => {
+      unhandledRejection = true;
+    };
+    process.on('unhandledRejection', unhandledListener);
+    try {
+      f.put('alice', 'A');
+      lease(r.lease('alice', 'A', 'rag')).release();
+      f.put('alice', 'B');
+      lease(r.lease('alice', 'B', 'rag')).release();
+      f.setFail(true);
+      const l = lease(r.lease('alice', 'C', 'rag'));
+      expect(l).toHaveProperty('kind');
+      expect(f.reported).toEqual([
+        { userId: 'alice', sessionId: 'A', error: expect.any(Error) },
+      ]);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandledRejection).toBe(false);
+      l.release();
+    } finally {
+      process.removeListener('unhandledRejection', unhandledListener);
+    }
+  });
+
+  it('release that finishes a pending close rejects with the error', async () => {
+    const f = failingStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    const held = lease(r.lease('alice', 'A', 'rag'));
+    f.setFail(true);
+    const closed = r.close('alice', 'A');
+    let rejectionError: unknown;
+    const afterRelease = closed.catch((e) => {
+      rejectionError = e;
+    });
+    expect(f.reported.length).toBe(0);
+    held.release();
+    await afterRelease;
+    expect((rejectionError as Error).message).toBe('EACCES');
+    expect(f.reported).toEqual([
+      { userId: 'alice', sessionId: 'A', error: rejectionError },
+    ]);
+  });
+});

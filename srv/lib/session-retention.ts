@@ -8,8 +8,17 @@
 export interface RetentionStores {
   /** Whether anything is still held for this session. */
   hasState(userId: string, sessionId: string): boolean;
-  /** Remove everything held for this session. Must be synchronous. */
+  /**
+   * Remove everything held for this session. Must be synchronous.
+   * May throw if a metadata write fails; retention reports that here instead
+   * of throwing from lease, release or close.
+   */
   deleteAll(userId: string, sessionId: string): void;
+  /**
+   * A metadata write in deleteAll failed. Retention calls this instead of
+   * throwing to the caller.
+   */
+  reportDeleteError?(userId: string, sessionId: string, error: unknown): void;
 }
 
 /**
@@ -48,7 +57,11 @@ interface Entry {
   sessionId: string;
   lastUsed: number;
   leases: Set<Lease>;
-  closing?: { settled: Promise<void>; resolve: () => void };
+  closing?: {
+    settled: Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  };
 }
 
 function keyOf(userId: string, sessionId: string): string {
@@ -138,15 +151,22 @@ export class SessionRetention {
   close(userId: string, sessionId: string): Promise<void> {
     const e = this.entries.get(keyOf(userId, sessionId));
     if (!e) {
-      this.stores.deleteAll(userId, sessionId);
+      try {
+        this.stores.deleteAll(userId, sessionId);
+      } catch (error) {
+        this.stores.reportDeleteError?.(userId, sessionId, error);
+        return Promise.reject(error);
+      }
       return Promise.resolve();
     }
     if (e.closing) return e.closing.settled;
     let resolve!: () => void;
-    const settled = new Promise<void>((r) => {
+    let reject!: (error: unknown) => void;
+    const settled = new Promise<void>((r, rej) => {
       resolve = r;
+      reject = rej;
     });
-    e.closing = { settled, resolve };
+    e.closing = { settled, resolve, reject };
     for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
     if (e.leases.size === 0) this.finishClose(e);
     return settled;
@@ -229,7 +249,8 @@ export class SessionRetention {
   /** An idle session has no lease, so closing it removes it in this same turn. */
   private evict(e: Entry): void {
     this.evictions++;
-    void this.close(e.userId, e.sessionId);
+    // Failure already reported through reportDeleteError; must not fail the lease or become unhandled.
+    this.close(e.userId, e.sessionId).catch(() => {});
   }
 
   private settle(e: Entry, lease: Lease): void {
@@ -246,11 +267,17 @@ export class SessionRetention {
   }
 
   private finishClose(e: Entry): void {
+    let failed = false;
+    let failure: unknown;
     try {
       this.stores.deleteAll(e.userId, e.sessionId);
-    } finally {
-      this.entries.delete(keyOf(e.userId, e.sessionId));
-      e.closing?.resolve();
+    } catch (error) {
+      failed = true;
+      failure = error;
+      this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
     }
+    this.entries.delete(keyOf(e.userId, e.sessionId));
+    if (failed) e.closing?.reject(failure);
+    else e.closing?.resolve();
   }
 }
