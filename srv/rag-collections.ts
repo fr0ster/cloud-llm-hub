@@ -617,13 +617,23 @@ export class CollectionRegistry {
     }
   }
 
-  sweepExpiredSessions(): void {
+  /**
+   * Remove expired session collections.
+   *
+   * `maySweep` is asked about each collection's session in the same synchronous
+   * pass that removes it, so nothing can take a lease on the session between
+   * the answer and the removal.
+   */
+  sweepExpiredSessions(
+    maySweep: (userId: string, sessionId: string) => boolean = () => true,
+  ): void {
     const now = Date.now();
     let changed = false;
     for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
-        (stored.meta.expiresAt ?? 0) <= now
+        (stored.meta.expiresAt ?? 0) <= now &&
+        maySweep(stored.meta.owner ?? '', stored.meta.sessionId ?? '')
       ) {
         changed = this.removeCollection(id) || changed;
       }
@@ -799,6 +809,12 @@ export class CollectionRegistry {
       sleep?: (ms: number) => Promise<void>;
       /** Override the shared retry-sleep budget (ms). Defaults to RETRY_BUDGET_MS. */
       budgetMs?: number;
+      /**
+       * Stop between documents once aborted. The document already sent is not
+       * taken back: its session is being removed, and the removal waits for
+       * this call to return.
+       */
+      signal?: AbortSignal;
     },
   ): Promise<{ added: number; errors: string[] }> {
     const errors: string[] = [];
@@ -808,6 +824,7 @@ export class CollectionRegistry {
     let retrySleepSpentMs = 0;
 
     for (const doc of docs) {
+      if (options?.signal?.aborted) break;
       const result = await tryWithRetry(
         () =>
           this.addDocument(collectionId, doc, namespace, {

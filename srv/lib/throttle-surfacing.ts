@@ -145,3 +145,28 @@ export function failureText(error: unknown): string {
   if (limit) return throttleMessage(limit);
   return error instanceof Error ? error.message : String(error);
 }
+
+/** Why admission was withheld, in the order admission checks. */
+export type DoorRefusalReason = 'session_busy' | 'capacity' | 'retention';
+
+const DOOR_SENTENCES: Record<DoorRefusalReason, string> = {
+  session_busy:
+    'This session is still working on an earlier request. Wait for it to finish before sending another.',
+  capacity: 'The service is at capacity right now. Please try again shortly.',
+  retention:
+    'The service has no room to hold another session right now. Please try again shortly.',
+};
+
+/**
+ * The sentence for the person. No number: how long the sessions ahead will run
+ * or be held is not something we measure, and inventing one is the guess this
+ * design refuses everywhere.
+ */
+export function doorRefusalSentence(reason: DoorRefusalReason): string {
+  return DOOR_SENTENCES[reason];
+}
+
+/** A request against a session already closed for deletion. */
+export function sessionClosedText(): string {
+  return 'This session is being deleted. Send the request again to start a new one.';
+}

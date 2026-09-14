@@ -29,9 +29,14 @@ import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
+import {
+  deleteSession,
+  forgetEmptySessions,
+  maySweepSession,
+  sessionIsLive,
+} from './lib/gatekeeper';
 import { needsSapConnection } from './lib/mcp-request';
 import { sessionMiddleware } from './lib/session-middleware';
-import { deleteSessionState } from './lib/session-state';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   handleChatCompletions,
@@ -478,7 +483,10 @@ cds.on('bootstrap', (app: Application) => {
   // the only thing read; a header naming a session is not.
   app.use(
     '/v1',
-    sessionMiddleware({ userIdOf: () => cds.context?.user?.id ?? 'anonymous' }),
+    sessionMiddleware({
+      userIdOf: () => cds.context?.user?.id ?? 'anonymous',
+      isLive: sessionIsLive,
+    }),
   );
 
   // CORS preflight for /v1/* routes
@@ -577,10 +585,14 @@ cds.on('bootstrap', (app: Application) => {
       return;
     }
     const userId = cds.context?.user?.id ?? 'anonymous';
-    // Every store, through one primitive. Task 6 puts the close-then-delete
-    // sequence in front of this, so a pipeline or upload still running is not
-    // cut from under.
-    deleteSessionState(userId, sessionId);
+    // Answered at the mark. The session is unreachable from this moment; its
+    // bytes go when the last operation against them has stopped — a pipeline
+    // runs to its own end, a RAG upload is cancelled and then waited for.
+    void deleteSession(userId, sessionId).catch((err) =>
+      cds.log('session').warn('session removal failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
     res.writeHead(204);
     res.end();
   }) as never);
@@ -615,11 +627,15 @@ cds.on('served', () => {
       try {
         const registry = getCollectionRegistry();
         await registry.loadFromDisk();
-        // Periodically sweep expired session-scoped collections (every hour).
+        // Hourly: expired session collections, skipping any session with an
+        // operation still running against it — the next pass collects those.
         setInterval(
-          () => registry.sweepExpiredSessions(),
+          () => registry.sweepExpiredSessions(maySweepSession),
           60 * 60 * 1000,
         ).unref();
+        // Every five minutes, beside the history sweep: a session whose turns
+        // have expired and which owns no collection stops counting.
+        setInterval(() => forgetEmptySessions(), 5 * 60 * 1000).unref();
       } catch (err) {
         log.warn('RAG collection load failed', {
           error: err instanceof Error ? err.message : String(err),
