@@ -169,6 +169,13 @@ interface Waiter {
   resolve: (permit: Permit) => void;
   reject: (reason: unknown) => void;
   cancelled: boolean;
+  /**
+   * Not eligible before this moment. A retry joins the queue immediately and
+   * keeps its place; sleeping outside and re-acquiring afterwards would let
+   * newcomers overtake it, and would wake every throttled caller at once to
+   * race — which is the herd this queue exists to prevent.
+   */
+  notBefore: number;
 }
 
 export class QuotaGate {
@@ -217,16 +224,17 @@ export class QuotaGate {
    * The caller's signal is the only bound: this method sets no deadline of its
    * own, because how long anyone may be held is not ours to decide.
    */
-  acquire(signal?: AbortSignal): Promise<Permit> {
+  acquire(signal?: AbortSignal, opts?: { notBefore?: number }): Promise<Permit> {
     if (signal?.aborted) {
       return Promise.reject(signal.reason ?? new Error('Aborted'));
     }
+    const notBefore = opts?.notBefore ?? 0;
     this.trim();
-    if (this.waiting === 0 && this.live < this.limits.limit) {
+    if (this.waiting === 0 && this.live < this.limits.limit && notBefore <= this.now()) {
       return Promise.resolve(this.record());
     }
     return new Promise<Permit>((resolve, reject) => {
-      const waiter: Waiter = { resolve, reject, cancelled: false };
+      const waiter: Waiter = { resolve, reject, cancelled: false, notBefore };
       if (signal) {
         signal.addEventListener(
           'abort',
@@ -266,11 +274,27 @@ export class QuotaGate {
     return Math.max(0, oldest.at + this.limits.windowMs - this.now());
   }
 
-  /** Drop the timer. For tests and for shutdown; the gate is unusable after. */
-  stop(): void {
+  /**
+   * Drop the timer and turn away everyone still parked. The gate is unusable
+   * after.
+   *
+   * Rejecting is the point: this runs on shutdown and from
+   * `clearQuotaRegistry`, and a waiter left holding an unsettled promise would
+   * hang its pipeline for the life of the process — the one thing a shutdown
+   * path must not do.
+   */
+  stop(reason: unknown = new Error('Gate stopped')): void {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    for (let i = this.waitHead; i < this.waiters.length; i++) {
+      const waiter = this.waiters[i];
+      if (waiter.cancelled) continue;
+      waiter.cancelled = true;
+      this.liveWaiters--;
+      waiter.reject(reason);
+    }
+    this.waitHead = this.waiters.length;
   }
 
   /** Append a start and hand back the node that undoes it. */
@@ -313,8 +337,16 @@ export class QuotaGate {
     if (this.stopped) return;
     this.trim();
     while (this.waitHead < this.waiters.length && this.live < this.limits.limit) {
-      const waiter = this.waiters[this.waitHead++];
-      if (waiter.cancelled) continue;
+      const waiter = this.waiters[this.waitHead];
+      if (waiter.cancelled) {
+        this.waitHead++;
+        continue;
+      }
+      // Strictly first come, first served, including a retry waiting out an
+      // interval: the head holds the line rather than being stepped over. The
+      // timer below wakes for it.
+      if (waiter.notBefore > this.now()) break;
+      this.waitHead++;
       waiter.cancelled = true; // settled; its abort listener has nothing left to do
       this.liveWaiters--;
       waiter.resolve(this.record());
@@ -337,10 +369,21 @@ export class QuotaGate {
     // After trim the head IS the oldest live start, so there is nothing to
     // search for.
     const oldest = this.head < this.starts.length ? this.starts[this.head] : undefined;
-    const waitMs =
+    const untilPlace =
       oldest === undefined
         ? 0
         : Math.max(0, oldest.at + this.limits.windowMs - this.now());
+    // And the head waiter may not be eligible yet, in which case waking on the
+    // place alone would spin.
+    let head: Waiter | undefined;
+    for (let i = this.waitHead; i < this.waiters.length; i++) {
+      if (!this.waiters[i].cancelled) {
+        head = this.waiters[i];
+        break;
+      }
+    }
+    const untilEligible = head ? Math.max(0, head.notBefore - this.now()) : 0;
+    const waitMs = Math.max(untilPlace, untilEligible);
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.dispatch();
@@ -444,6 +487,46 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
     jest.useRealTimers();
   });
 
+  it('keeps a retrying caller in its place rather than behind a newcomer', async () => {
+    jest.useFakeTimers();
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 1, windowMs: 1_000 }, clock.now);
+    await gate.acquire();
+
+    const order: string[] = [];
+    // A retry that may not go for 200ms, queued first.
+    const retry = gate
+      .acquire(undefined, { notBefore: clock.now() + 200 })
+      .then(() => order.push('retry'));
+    // A newcomer, eligible at once, queued second.
+    const fresh = gate.acquire().then(() => order.push('fresh'));
+
+    for (let i = 0; i < 3; i++) {
+      clock.advance(1_000);
+      jest.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    }
+    await Promise.all([retry, fresh]);
+    // Strictly first come, first served: the head holds the line while it
+    // waits out its interval instead of being stepped over.
+    expect(order).toEqual(['retry', 'fresh']);
+    gate.stop();
+    jest.useRealTimers();
+  });
+
+  it('turns away everyone still parked when it stops', async () => {
+    // stop() runs on shutdown and from clearQuotaRegistry. A waiter left
+    // holding an unsettled promise would hang its pipeline for the life of the
+    // process, which is the one thing a shutdown path must not do.
+    const clock = fakeClock();
+    const gate = new QuotaGate({ limit: 1, windowMs: 60_000 }, clock.now);
+    await gate.acquire();
+    const parked = gate.acquire();
+    gate.stop(new Error('shutting down'));
+    await expect(parked).rejects.toThrow('shutting down');
+    expect(gate.waiting).toBe(0);
+  });
+
   it('ignores a permit given back after it has aged out of the window', async () => {
     jest.useFakeTimers();
     const clock = fakeClock();
@@ -484,7 +567,7 @@ describe('QuotaGate — the properties this shape gets wrong', () => {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npx jest test/unit/quota-gate.test.ts`
-Expected: PASS, 9 tests.
+Expected: PASS, 11 tests.
 
 > **On the hot path being constant-time.** The queue is a serialisation point,
 > so `shift`, `find`, `indexOf` and `splice` are all wrong here — each is linear
@@ -817,97 +900,9 @@ export function clearQuotaRegistry(): void {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx jest test/unit/quota-registry.test.ts`
-Expected: PASS, 14 tests.
+Expected: PASS, 13 tests.
 
-- [ ] **Step 5: Refuse an unknown model at the swap, before anything moves**
-
-The registry throwing is not enough on its own: `gateForModel` is reached only
-once `GatedLlm.chat` is already running, and by then `getSmartAgent` has
-replaced `currentModel` and the shared LLM for this request **and every one
-after it**. A typo would be accepted, become the active model, pass admission,
-and only then fail inside the pipeline, with the swap left in place.
-
-So the check happens at the swap. In `srv/agent-manager.ts`, at the top of the
-block that reacts to `requestedModel !== activeModel`, before `makeLlm` and
-before any shared state is touched:
-
-```ts
-  if (requestedModel && requestedModel !== activeModel) {
-    // Throws UnknownModelError when quotas are in force and this name has
-    // neither an entry nor a mapping. Before the swap, deliberately: a name we
-    // will not meter must not become the model every later call uses.
-    quotaForModel(requestedModel);
-```
-
-In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, turn it into a bad
-request, never an overload, because it will not become valid by waiting:
-
-```ts
-  } catch (err) {
-    if (err instanceof UnknownModelError) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(unknownModelPayload(err, dialect)));
-      return;
-    }
-    throw err;
-  }
-```
-
-and in `srv/lib/throttle-surfacing.ts`:
-
-```ts
-/**
- * A model nobody configured. A bad request, not an overload: 529 or a
- * retryable 503 would invite a retry loop that cannot succeed, because the
- * name will never become valid on its own.
- */
-export function unknownModelPayload(
-  err: { model: string; message: string },
-  dialect: 'openai' | 'anthropic',
-): unknown {
-  const error = {
-    type: 'invalid_request_error',
-    code: 'model_not_configured',
-    param: 'model',
-    message: err.message,
-  };
-  return dialect === 'anthropic' ? { type: 'error', error } : { error };
-}
-```
-
-- [ ] **Step 6: Assert the swap does not happen**
-
-Append to `test/unit/quota-registry.test.ts`:
-
-```ts
-describe('an unknown model does not become the active one', () => {
-  it('is refused before the swap, so later calls keep the model that works', () => {
-    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ known: { limit: 1 } });
-    const mod = load();
-    // The check that runs at the swap. Reached only inside chat(),
-    // `currentModel` would already have moved for every later request.
-    expect(() => mod.quotaForModel('knwon')).toThrow(mod.UnknownModelError);
-    expect(mod.quotaForModel('known')?.key).toBe('known');
-  });
-});
-```
-
-and in `test/unit/gated-construction.test.ts` (written in Task 4, so add this
-there once that file exists):
-
-```ts
-describe('agent-manager — the model check comes before the swap', () => {
-  it('resolves the quota before makeLlm and before the shared state moves', () => {
-    const swap = source.indexOf('requestedModel !== activeModel');
-    const check = source.indexOf('quotaForModel(requestedModel)');
-    const build = source.indexOf('makeLlm(', swap);
-    expect(check).toBeGreaterThan(swap);
-    expect(check).toBeLessThan(build);
-  });
-});
-```
-
-- [ ] **Step 7: Log the configuration at startup**
+- [ ] **Step 5: Log the configuration at startup**
 
 In `srv/agent-config.ts`, inside `loadAgentConfig()` just before it returns, add:
 
@@ -923,12 +918,12 @@ and at the top of the file:
 import { describeQuotas } from './lib/quota-registry';
 ```
 
-- [ ] **Step 8: Run the whole suite and typecheck**
+- [ ] **Step 6: Run the whole suite and typecheck**
 
 Run: `npm run test:unit && npm run test:check`
 Expected: PASS, no type errors.
 
-- [ ] **Step 9: Lint and commit**
+- [ ] **Step 7: Lint and commit**
 
 ```bash
 npx biome check --write srv/lib/quota-registry.ts srv/agent-config.ts test/unit/quota-registry.test.ts
@@ -1137,10 +1132,11 @@ async function runGated<T>(
   signal: AbortSignal | undefined,
   attempt: () => Promise<{ value: T; throttled?: unknown }>,
 ): Promise<T> {
+  let nextAttemptAt = 0;
   for (;;) {
     const gate = gateForModel(model);
     let permit: Permit | undefined;
-    if (gate) permit = await gate.acquire(signal);
+    if (gate) permit = await gate.acquire(signal, { notBefore: nextAttemptAt });
 
     const { value, throttled } = await attempt();
     const limit = throttled ? findThrottled(throttled) : undefined;
@@ -1148,20 +1144,23 @@ async function runGated<T>(
 
     if (limit.attempts === 0) permit?.giveBack();
 
-    // An abort from here on leaves by throwing: `wait` rejects with the
-    // signal's reason and so does the next `acquire`.
+    // How long before this call may go again. Exactly what the server named,
+    // however long — a ceiling here would kill work the door has promised to
+    // carry — or, when it named nothing, our own configured rate. We may not
+    // invent an interval and do not have to.
     const seconds = limit.retryAfterSeconds;
-    if (seconds !== undefined && Number.isFinite(seconds)) {
-      // Wait exactly what the server named, however long. A ceiling here would
-      // kill work the door has already promised to carry.
-      await wait(seconds * 1000, signal);
-    } else {
-      // Named nothing: we may not invent an interval, and we do not have to —
-      // we pace at our own configured rate instead. Looping straight back to
-      // `acquire` would spin hot whenever the window has room, which is most
-      // of the time and exactly when the server is least happy to hear from us.
-      await wait(gate?.msUntilNextOpening() ?? 0, signal);
-    }
+    const delayMs =
+      seconds !== undefined && Number.isFinite(seconds)
+        ? seconds * 1000
+        : (gate?.msUntilNextOpening() ?? 0);
+
+    // The retry waits INSIDE the queue, not beside it. Sleeping out here and
+    // re-acquiring afterwards would drop this call to the back behind every
+    // newcomer, and would wake every throttled caller at once to race for the
+    // same place. With no gate configured there is no queue to wait in, so the
+    // sleep is all there is.
+    nextAttemptAt = Date.now() + delayMs;
+    if (!gate) await wait(delayMs, signal);
   }
 }
 
@@ -1190,9 +1189,12 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
       // ARE flowing the request is under way — a permit re-taken mid-stream
       // would count a start that never happened, and a mid-stream failure is
       // not ours to replay.
+      let nextAttemptAt = 0;
       for (;;) {
         const gate = gateForModel(model);
-        const permit = gate ? await gate.acquire(options?.signal) : undefined;
+        const permit = gate
+          ? await gate.acquire(options?.signal, { notBefore: nextAttemptAt })
+          : undefined;
         let yielded = 0;
         let reopen: { waitMs: number } | undefined;
 
@@ -1219,12 +1221,10 @@ export function gateLlm(inner: ILlm, model: string): ILlm {
         }
 
         if (!reopen) return;
-        // Named an interval: wait exactly that. Named nothing: fall through and
-        // re-join the tail of our own queue, which is our pacing rather than a
-        // guess about theirs.
-        // Rejects on abort, which leaves this generator by throwing — the
-        // caller sees a cancellation, not the 429 it was waiting out.
-        await wait(reopen.waitMs, options?.signal);
+        // As in `runGated`: the wait happens inside the queue so the place is
+        // kept, unless there is no gate at all to keep it in.
+        nextAttemptAt = Date.now() + reopen.waitMs;
+        if (!gate) await wait(reopen.waitMs, options?.signal);
       }
     },
   };
@@ -1321,8 +1321,11 @@ git commit -m "feat(gatekeeper): a permit per HTTP attempt, and none for a call 
 ### Task 4: Every construction site goes through the gate
 
 **Files:**
-- Modify: `srv/agent-manager.ts` — the five `makeLlm` call sites (main, classifier, two helpers, critic) and the embedder built at `srv/agent-manager.ts:974-987`
-- Test: `test/unit/gated-construction.test.ts`
+- Modify: `srv/agent-manager.ts` — the five `makeLlm` call sites (main, classifier, two helpers, critic), the embedder built at `srv/agent-manager.ts:974-987`, and the model hot-swap
+- Modify: `srv/agent-config.ts` (the retired ceiling), `srv/openai-handler.ts`, `srv/anthropic-handler.ts`, `srv/lib/throttle-surfacing.ts` (the unknown-model refusal)
+- Test: `test/unit/gated-construction.test.ts`, and additions to `test/unit/quota-registry.test.ts`
+
+> Task 2 leaves the registry able to refuse an unknown model; this task is where that refusal is wired to the swap and to the wire, because these are the files it already owns. Splitting it would leave production changes in a task that lints and commits neither.
 
 **Interfaces:**
 - Consumes: `gateLlm`, `gateEmbedder` from Task 3.
@@ -1503,10 +1506,98 @@ configuration would read as a setting that still does something.
 Run: `npx jest test/unit/gated-construction.test.ts && npm run test:unit`
 Expected: PASS; the existing suite stays green.
 
-- [ ] **Step 8: Lint, typecheck, commit**
+- [ ] **Step 6: Refuse an unknown model at the swap, before anything moves**
+
+The registry throwing is not enough on its own: `gateForModel` is reached only
+once `GatedLlm.chat` is already running, and by then `getSmartAgent` has
+replaced `currentModel` and the shared LLM for this request **and every one
+after it**. A typo would be accepted, become the active model, pass admission,
+and only then fail inside the pipeline, with the swap left in place.
+
+So the check happens at the swap. In `srv/agent-manager.ts`, at the top of the
+block that reacts to `requestedModel !== activeModel`, before `makeLlm` and
+before any shared state is touched:
+
+```ts
+  if (requestedModel && requestedModel !== activeModel) {
+    // Throws UnknownModelError when quotas are in force and this name has
+    // neither an entry nor a mapping. Before the swap, deliberately: a name we
+    // will not meter must not become the model every later call uses.
+    quotaForModel(requestedModel);
+```
+
+In `srv/openai-handler.ts` and `srv/anthropic-handler.ts`, turn it into a bad
+request, never an overload, because it will not become valid by waiting:
+
+```ts
+  } catch (err) {
+    if (err instanceof UnknownModelError) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(unknownModelPayload(err, dialect)));
+      return;
+    }
+    throw err;
+  }
+```
+
+and in `srv/lib/throttle-surfacing.ts`:
+
+```ts
+/**
+ * A model nobody configured. A bad request, not an overload: 529 or a
+ * retryable 503 would invite a retry loop that cannot succeed, because the
+ * name will never become valid on its own.
+ */
+export function unknownModelPayload(
+  err: { model: string; message: string },
+  dialect: 'openai' | 'anthropic',
+): unknown {
+  const error = {
+    type: 'invalid_request_error',
+    code: 'model_not_configured',
+    param: 'model',
+    message: err.message,
+  };
+  return dialect === 'anthropic' ? { type: 'error', error } : { error };
+}
+```
+
+- [ ] **Step 7: Assert the swap does not happen**
+
+Append to `test/unit/quota-registry.test.ts`:
+
+```ts
+describe('an unknown model does not become the active one', () => {
+  it('is refused before the swap, so later calls keep the model that works', () => {
+    process.env.LLM_GATEKEEPER_QUOTAS = JSON.stringify({ known: { limit: 1 } });
+    const mod = load();
+    // The check that runs at the swap. Reached only inside chat(),
+    // `currentModel` would already have moved for every later request.
+    expect(() => mod.quotaForModel('knwon')).toThrow(mod.UnknownModelError);
+    expect(mod.quotaForModel('known')?.key).toBe('known');
+  });
+});
+```
+
+and in `test/unit/gated-construction.test.ts`, created at the start of this
+task:
+
+```ts
+describe('agent-manager — the model check comes before the swap', () => {
+  it('resolves the quota before makeLlm and before the shared state moves', () => {
+    const swap = source.indexOf('requestedModel !== activeModel');
+    const check = source.indexOf('quotaForModel(requestedModel)');
+    const build = source.indexOf('makeLlm(', swap);
+    expect(check).toBeGreaterThan(swap);
+    expect(check).toBeLessThan(build);
+  });
+});
+```
+
+- [ ] **Step 9: Lint, typecheck, commit**
 
 ```bash
-npx biome check --write srv/agent-manager.ts srv/agent-config.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts
+npx biome check --write srv/agent-manager.ts srv/agent-config.ts srv/openai-handler.ts srv/anthropic-handler.ts srv/lib/throttle-surfacing.ts test/unit/quota-registry.test.ts test/unit/gated-construction.test.ts test/unit/gated-llm.test.ts
 npm run test:check
 git add -A
 git commit -m "feat(gatekeeper): every model passes the window, and the provider absorbs nothing"
@@ -2780,16 +2871,34 @@ Expected: FAIL — `closeDestination is not a function`.
 
 In `srv/agent-manager.ts`, add `nextProbeAt?: number` to `DestinationState`, and in `scheduleUnreachableRetry` set it for every unreachable destination each time the timer is armed:
 
+Replace the `setInterval` with a recursive `setTimeout`. That is not tidying:
+with an interval, the next tick is measured from the start of the previous one,
+so a stamp written at the end of a slow probe is later than the run it claims
+to describe — and the `Retry-After` built from it tells callers to wait longer
+than they need to. A timeout armed after the work has finished has a deadline
+that is true by construction.
+
 ```ts
   const armProbe = () => {
     const at = Date.now() + UNREACHABLE_RETRY_INTERVAL_MS;
     for (const [, state] of destinationStates) {
       if (state.status === 'unreachable') state.nextProbeAt = at;
     }
+    unreachableRetryTimer = setTimeout(runProbe, UNREACHABLE_RETRY_INTERVAL_MS);
+  };
+
+  const runProbe = async () => {
+    unreachableRetryTimer = null;
+    // ... the existing tick body ...
+    if (stillUnreachable.length === 0) {
+      for (const [, state] of destinationStates) state.nextProbeAt = undefined;
+      return; // nothing left to probe; the loop stops until something closes
+    }
+    armProbe(); // stamped and armed together, after the work, from the same now
   };
 ```
 
-Call `armProbe()` where the interval is created and again at the end of each tick. When the timer stops because everything is reachable, clear `nextProbeAt` on every state.
+`scheduleUnreachableRetry` becomes: if a timer is already pending, do nothing; otherwise `armProbe()`.
 
 - [ ] **Step 4: Add the three exports**
 
@@ -2829,6 +2938,11 @@ export function closeDestination(name: string, reason: string): void {
 
 export function isDestinationClosed(name: string): boolean {
   return destinationStates.get(name)?.status === 'unreachable';
+}
+
+/** Every destination this process knows about, closed or not. */
+export function knownDestinations(): string[] {
+  return [...destinationStates.keys()];
 }
 
 /**
@@ -3337,14 +3451,16 @@ describe('gatekeeper metrics', () => {
     expect(snap.quotas).toEqual({});
   });
 
-  it('reports a closed system as closed', () => {
-    // Hard-coded false would show every system healthy while it refused
-    // callers, which is the one thing this scope is for.
+  it('reports a closed system as closed before anyone has been refused', () => {
+    // Built only from refusals, a system closed a minute ago with no arrival
+    // since would be missing from the payload entirely — and that is precisely
+    // the moment an operator goes looking at it.
     const manager = require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
     manager.closeDestination('S4HANA_DEV', 'tunnel down');
     const mod = load();
-    mod.recordDestinationRefusal('S4HANA_DEV');
-    expect(mod.gatekeeperSnapshot().destinations['S4HANA_DEV'].closed).toBe(true);
+    const entry = mod.gatekeeperSnapshot().destinations['S4HANA_DEV'];
+    expect(entry.closed).toBe(true);
+    expect(entry.refusals).toBe(0);
   });
 
   it('reports no refusals for a quota, because the queue refuses nobody', () => {
@@ -3443,7 +3559,8 @@ export function gatekeeperSnapshot(): GatekeeperSnapshot {
   // Lazy requires: agent-manager imports this module, so a top-level import
   // would close the cycle.
   const { liveGates } = require('./quota-registry') as typeof import('./quota-registry');
-  const { isDestinationClosed } = require('../agent-manager') as typeof import('../agent-manager');
+  const { isDestinationClosed, knownDestinations } =
+    require('../agent-manager') as typeof import('../agent-manager');
   const quotas: Record<string, QuotaNumbers> = {};
   for (const { key, gate } of liveGates()) {
     quotas[key] = {
@@ -3452,8 +3569,18 @@ export function gatekeeperSnapshot(): GatekeeperSnapshot {
       lastWaitMs: quotaWaits.get(key) ?? 0,
     };
   }
+  // Every destination we know about, not only those that have already turned
+  // someone away. A system closed a minute ago with no arrival since is exactly
+  // what an operator is looking at the health payload to find.
   const destinations: Record<string, { closed: boolean; refusals: number }> = {};
+  for (const name of knownDestinations()) {
+    destinations[name] = {
+      closed: isDestinationClosed(name),
+      refusals: destinationRefusals.get(name) ?? 0,
+    };
+  }
   for (const [name, refusals] of destinationRefusals) {
+    if (destinations[name]) continue;
     // Read, not assumed. A hard-coded `false` would report every system as
     // healthy while it was refusing callers, which is the one thing this scope
     // exists to show.
