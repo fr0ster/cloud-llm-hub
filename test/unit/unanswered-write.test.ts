@@ -195,5 +195,15 @@ describe('an unanswered write does not satisfy the reviewer', () => {
       rec.getToolRecords('t5'),
     );
     expect(verdict.ok).toBe(false);
+    // Ruling 34: the placeholder's content must read correctly through
+    // reviewer-core.ts's `write tool X returned error: <text>` wording — not
+    // as a blank trailing the colon.
+    if (!verdict.ok) {
+      expect(verdict.issues[0]).toMatchObject({
+        kind: 'unverified-write',
+        claimedOp: 'created',
+        reason: 'write tool CreateClass returned error: no answer yet',
+      });
+    }
   });
 });

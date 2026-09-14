@@ -101,9 +101,16 @@ export class RecordingMcpClient implements IMcpClient {
     // CreateClass satisfy a "created" claim and suppress its own
     // UNVERIFIED_WRITE notice. `isError:true` keeps the placeholder read as
     // "not (yet) a success", which is the only honest default.
+    //
+    // `content: 'no answer yet'` — not `''` — because `reviewer-core.ts`
+    // reports a failed write as `write tool X returned error: <content>`; an
+    // empty string there reads as `returned error: ` with nothing after the
+    // colon, which looks like a formatting bug rather than the true state
+    // ("no answer has arrived"). This is read ONLY while unanswered — the
+    // very next line below always overwrites it once one arrives.
     const record: ToolCallRecord & { answered?: boolean } = {
       call: { id: '', name, arguments: args },
-      result: { content: '', isError: true },
+      result: { content: 'no answer yet', isError: true },
       answered: false,
     };
     if (traceId) this.deltaFor(traceId).push(record);

@@ -31,6 +31,7 @@ import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import { McpUnavailableError } from '../../srv/lib/mcp-outage';
 import {
   anthropicDoorRefusal,
   destinationClosedText,
@@ -237,6 +238,34 @@ describe('an unanswered write, streaming (swallowed error chunk)', () => {
     const { res, done } = call(body(true));
     await done;
 
+    expect(res.body).not.toContain('event: error');
+    expect(res.body).not.toContain('UNVERIFIED_WRITE');
+  });
+});
+
+describe('an outage error chunk, streaming', () => {
+  // Ruling 34: an outage closes the destination REGARDLESS of whether a
+  // write is left unanswered — the two facts are independent. The trailing
+  // `event: error` line stays conditional on `unverifiedWriteFor`; the
+  // stream must still close nothing extra when nothing is pending.
+  it('closes the destination even with nothing unanswered, and leaves the stream unchanged', async () => {
+    configure();
+    const outage = new McpUnavailableError(
+      'DEST',
+      'tunnel down',
+      'tunnel_timeout',
+    );
+    harness.stream = async function* () {
+      yield { ok: false, error: outage };
+    };
+    harness.unanswered = [];
+
+    const { res, done } = call(body(true));
+    await done;
+
+    expect(harness.closeDestinationCalls).toEqual([
+      { destination: 'DEST', reason: outage.message },
+    ]);
     expect(res.body).not.toContain('event: error');
     expect(res.body).not.toContain('UNVERIFIED_WRITE');
   });

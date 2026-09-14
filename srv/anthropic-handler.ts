@@ -320,15 +320,19 @@ export async function handleAnthropicMessages(
           }
         });
 
-        // Only append anything when a write is left unanswered — otherwise
-        // today's streamed output (the adapter's own message_delta/
-        // message_stop close) stays exactly as it is.
+        // An outage closes the destination regardless of whether a write is
+        // left unanswered — the two facts are independent, and a chunk that
+        // named neither pending write nor throttle would otherwise leave an
+        // unreachable destination open (as OpenAI's matching site already
+        // does not). The trailing `event: error` line stays conditional on
+        // `unverifiedWriteFor`: otherwise today's streamed output (the
+        // adapter's own message_delta/message_stop close) stays as it is.
         if (streamError !== undefined) {
+          if (isOutageError(streamError)) {
+            closeDestination(destination, describeCause(streamError));
+          }
           const unverified = unverifiedWriteFor(handle, traceId, streamError);
           if (unverified) {
-            if (isOutageError(streamError)) {
-              closeDestination(destination, describeCause(streamError));
-            }
             const limit = throttleOf(streamError);
             log.error('Stream error chunk', {
               error: describeCause(streamError),

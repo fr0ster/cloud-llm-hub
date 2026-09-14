@@ -30,6 +30,8 @@ export const harness = {
   retryAfterSeconds: undefined as number | undefined,
   /** What `recMcp.unanswered(traceId)` reports for the current test. */
   unanswered: [] as Array<{ call: { name: string } }>,
+  /** Every `closeDestination(name, reason)` call a test observed. */
+  closeDestinationCalls: [] as Array<{ destination: string; reason: string }>,
   process: async (
     _messages: unknown,
     _opts: Record<string, unknown>,
@@ -51,6 +53,7 @@ export const harness = {
     harness.closedDestination = undefined;
     harness.retryAfterSeconds = undefined;
     harness.unanswered = [];
+    harness.closeDestinationCalls = [];
     harness.process = async () => ({
       ok: true,
       value: { content: 'done', stopReason: 'stop' },
@@ -112,7 +115,9 @@ export function agentManagerMock() {
     // simulate a closed destination per-call instead of a fixed stub.
     isDestinationClosed: (name: string) => harness.closedDestination === name,
     retryAfterForDestination: () => harness.retryAfterSeconds,
-    closeDestination: () => {},
+    closeDestination: (destination: string, reason: string) => {
+      harness.closeDestinationCalls.push({ destination, reason });
+    },
     knownDestinations: () => [],
   };
 }
