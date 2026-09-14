@@ -2842,8 +2842,8 @@ git commit -m "refactor: drop AgentService.Chat, the entrance with no door and n
 
 **Files:**
 - Create: `srv/lib/mcp-outage.ts`
-- Modify: `srv/agent-manager.ts` (the dispatch helper, the raise and the builder wiring), `srv/connections/CloudSdkAbapConnection.ts` (tag a plain network failure)
-- Test: `test/unit/mcp-outage.test.ts`
+- Modify: `srv/agent-manager.ts` (the dispatch helper, the raise and the builder wiring), `srv/connections/CloudSdkAbapConnection.ts` (ask about a plain network failure), `srv/lib/probe-classifier.ts` (recognise one)
+- Test: `test/unit/mcp-outage.test.ts`, `test/unit/probe-classifier-network.test.ts`
 
 **Interfaces:**
 - Consumes: `ProbeStatus` from `srv/lib/probe-classifier.ts`, whose verdict `CloudSdkAbapConnection` has already written into the message, and `isMcpUnavailable` from `@mcp-abap-adt/llm-agent`.
@@ -2925,8 +2925,11 @@ destination closing within the same few seconds.
 Create `test/unit/mcp-outage.test.ts`:
 
 ```ts
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   asOutage,
+  isOutageError,
   isUnavailable,
   McpUnavailableError,
   outageClassifier,
@@ -3196,8 +3199,60 @@ those are the ordinary shapes of a system that has gone away. Reading a tag
 that is never written would make this whole path work only for the failures
 that announce themselves.
 
-Widen the condition where it already is, in the place that has the response
-object and knows the proxy type:
+**Two files, not one.** The connector decides *whether to ask*; the classifier
+decides *what the answer is*. Widening only the first would ask about errors the
+second still reads as `unknown`, so no tag would be written and `asOutage` would
+go on seeing nothing. `srv/lib/probe-classifier.ts:118` currently knows
+`ENOTFOUND`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN` and `getaddrinfo` — not
+`ECONNRESET`, `EHOSTUNREACH`, `ENETUNREACH` or `socket hang up`.
+
+First the classifier:
+
+```ts
+  if (
+    /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|socket hang up/i.test(
+      msg,
+    )
+  ) {
+    return {
+      status: 'dns_or_network',
+      hint: 'Backend host is unresolvable, refused TCP, or dropped the connection — check destination URL and on-premise network.',
+    };
+  }
+```
+
+with its own test, in `test/unit/probe-classifier-network.test.ts`:
+
+```ts
+import { classifyProbe } from '../../srv/lib/probe-classifier';
+
+describe('classifyProbe — the plain shapes of a host that is gone', () => {
+  for (const signature of [
+    'ENOTFOUND',
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'EHOSTUNREACH',
+    'ENETUNREACH',
+    'socket hang up',
+  ]) {
+    it(`reads ${signature} as a network failure`, () => {
+      expect(classifyProbe(0, `connect ${signature} 10.0.0.1:44300`, 'OnPremise').status)
+        .toBe('dns_or_network');
+    });
+  }
+
+  it('still leaves a backend answer alone', () => {
+    // The host answered; it simply said no. Reading this as a network failure
+    // would close a destination that is working.
+    expect(classifyProbe(401, 'Unauthorized', 'OnPremise').status).not.toBe(
+      'dns_or_network',
+    );
+  });
+});
+```
+
+Then the connector, in the place that has the response object and knows the
+proxy type:
 
 ```ts
         const looksTunnelRelated =
@@ -3296,9 +3351,9 @@ describe('the classifier is installed, not merely written', () => {
 - [ ] **Step 7: Run, lint, commit**
 
 ```bash
-npx jest test/unit/mcp-outage.test.ts && npm run test:unit && npm run test:check
-npx biome check --write srv/lib/mcp-outage.ts srv/agent-manager.ts srv/connections/CloudSdkAbapConnection.ts test/unit/mcp-outage.test.ts
-git add srv/lib/mcp-outage.ts srv/agent-manager.ts test/unit/mcp-outage.test.ts
+npx jest test/unit/mcp-outage.test.ts test/unit/probe-classifier-network.test.ts && npm run test:unit && npm run test:check
+npx biome check --write srv/lib/mcp-outage.ts srv/lib/probe-classifier.ts srv/agent-manager.ts srv/connections/CloudSdkAbapConnection.ts test/unit/mcp-outage.test.ts test/unit/probe-classifier-network.test.ts
+git add srv/lib/mcp-outage.ts srv/lib/probe-classifier.ts srv/agent-manager.ts srv/connections/CloudSdkAbapConnection.ts test/unit/mcp-outage.test.ts test/unit/probe-classifier-network.test.ts
 git commit -m "feat(outage): a lost connection is raised as one, not left to read like one"
 ```
 
@@ -3784,7 +3839,7 @@ describe('the classifier closes the destination it names', () => {
     current = mod;
     const { McpUnavailableError, isUnavailable } =
       require('../../srv/lib/mcp-outage') as typeof import('../../srv/lib/mcp-outage');
-    const err = new McpUnavailableError('S4HANA_DEV', 'tunnel down');
+    const err = new McpUnavailableError('S4HANA_DEV', 'tunnel down', 'tunnel_timeout');
     expect(isUnavailable(err)).toBe(true);
     mod.closeDestination('S4HANA_DEV', err.message);
     expect(mod.isDestinationClosed('S4HANA_DEV')).toBe(true);
