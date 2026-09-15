@@ -43,11 +43,41 @@ jest.mock('../../srv/lib/responsible', () => ({
 jest.mock('../../srv/lib/principal', () => ({
   computeDumpScope: () => undefined,
 }));
+// The SDK's server, reduced to what the test needs from it: the callback
+// `registerTool` was handed, so a test can call it the way the SDK does —
+// with the request's `extra`, whose signal the transport aborts on close.
+jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
+  const tools = new Map<
+    string,
+    (args: unknown, extra: { signal: AbortSignal }) => unknown
+  >();
+  return {
+    tools,
+    McpServer: class {
+      registerTool(
+        name: string,
+        _config: unknown,
+        cb: (args: unknown, extra: { signal: AbortSignal }) => unknown,
+      ) {
+        tools.set(name, cb);
+      }
+      async connect() {}
+    },
+  };
+});
+jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
+  StreamableHTTPServerTransport: class {
+    async close() {}
+  },
+}));
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Request } from 'express';
-import { executeStep } from '../../srv/agent-mcp';
+import {
+  createAgentMcpServerForRequest,
+  executeStep,
+} from '../../srv/agent-mcp';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
@@ -87,12 +117,51 @@ describe('execute_step at the door', () => {
     const result = await step();
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe(executeStepDoorRefusal('capacity'));
-    expect(harness.events).toEqual([
-      'resolveDestinationSapConfig',
-      'getSmartAgent',
-      'safeStop',
-    ]);
+    // Refused before a connection is built: nothing was CSRF-fetched for a
+    // step that never ran.
+    expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
     if ('admitted' in hold) hold.admitted.release();
+  });
+
+  it('a step that leaves while queued takes no slot and runs nothing', async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    await createAgentMcpServerForRequest(req);
+    const { tools } = jest.requireMock(
+      '@modelcontextprotocol/sdk/server/mcp.js',
+    ) as {
+      tools: Map<
+        string,
+        (args: unknown, extra: { signal: AbortSignal }) => Promise<unknown>
+      >;
+    };
+    const tool = tools.get('execute_step');
+    if (!tool) throw new Error('execute_step was not registered');
+
+    // The SDK aborts this signal when the transport closes: the planner's own
+    // timeout fired and it went away.
+    const transportClosed = new AbortController();
+    const running = tool(
+      { task: 'create class ZCL_X' },
+      { signal: transportClosed.signal },
+    );
+    await tick();
+    expect(gatekeeper.theDoor()?.snapshot().queued).toBe(1);
+
+    transportClosed.abort(new Error('Connection closed'));
+    await tick();
+    if ('admitted' in hold) hold.admitted.release();
+    await running;
+    await tick();
+
+    // Handed no slot later, so the write is not run a second time for nobody.
+    expect(harness.events).not.toContain('pipeline');
+    expect(harness.events).not.toContain('resolveDestinationSapConfig');
+    expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({
+      live: 0,
+      queued: 0,
+      left: 1,
+    });
   });
 
   it('counts against the one door, not a second cap', async () => {

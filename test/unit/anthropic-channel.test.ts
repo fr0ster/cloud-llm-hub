@@ -38,6 +38,7 @@ import {
 import { McpUnavailableError } from '../../srv/lib/mcp-outage';
 import {
   anthropicDoorRefusal,
+  anthropicSessionClosed,
   destinationClosedText,
 } from '../../srv/lib/throttle-surfacing';
 import {
@@ -131,6 +132,25 @@ describe('/v1/messages at the door', () => {
     expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
   });
 
+  it('a caller that leaves while queued starts no pipeline', async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    const res = fakeRes();
+    const { done } = call(body(), res);
+    await tick();
+    expect(gatekeeper.theDoor()?.snapshot().queued).toBe(1);
+    res.disconnect();
+    await done;
+    if ('admitted' in hold) hold.admitted.release();
+    await tick();
+    expect(harness.events).not.toContain('pipeline');
+    expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({
+      live: 0,
+      queued: 0,
+      left: 1,
+    });
+  });
+
   it('resolves the agent before admitting', () => {
     const src = readFileSync(
       join(__dirname, '../../srv/anthropic-handler.ts'),
@@ -188,6 +208,42 @@ describe('a closed destination', () => {
     expect(res.statusCode).toBe(503);
     expect(res.headers['Retry-After']).toBeUndefined();
   });
+});
+
+describe('a request that outlived its session', () => {
+  for (const [label, live] of [
+    ['with a door', 2],
+    ['without a door', undefined],
+  ] as const) {
+    it(`is answered 410 session_closed and starts nothing — ${label}`, async () => {
+      configure(live);
+      const store =
+        require('../../srv/session-store') as typeof import('../../srv/session-store');
+      store.appendToSession('s-race', 'alice', {
+        role: 'user',
+        content: 'earlier',
+      });
+      const gate = deferred();
+      harness.agentGate = gate.promise;
+      const res = fakeRes();
+      // The middleware kept the cookie: the session was live when it arrived.
+      const done = handleAnthropicMessages(
+        fakeReq(body(), 's-race', false) as unknown as Request,
+        res as unknown as Response,
+      );
+      await tick();
+      // Agent resolution is still waiting when the logout completes.
+      await gatekeeper.deleteSession('alice', 's-race');
+      gate.resolve();
+      await done;
+
+      expect(harness.events).not.toContain('pipeline');
+      expect(res.statusCode).toBe(410);
+      expect(JSON.parse(res.body)).toEqual(anthropicSessionClosed().body);
+      expect(store.getSessionHistory('s-race', 'alice')).toEqual([]);
+      expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
+    });
+  }
 });
 
 describe('an unanswered write, non-streaming', () => {

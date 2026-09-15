@@ -41,7 +41,12 @@ import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
 import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
-import { admitPipeline, type PipelineSession, theDoor } from './lib/gatekeeper';
+import {
+  admitPipeline,
+  type PipelineAdmission,
+  type PipelineSession,
+  theDoor,
+} from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { computeDumpScope } from './lib/principal';
@@ -123,11 +128,21 @@ export interface StepCaller {
   exposition: ExpositionLevel[] | undefined;
 }
 
-/** One `execute_step` call. The tool callback delegates here so a test can drive it. */
+/**
+ * One `execute_step` call. The tool callback delegates here so a test can drive it.
+ *
+ * `callerSignal` is the MCP request's own signal, which the SDK aborts when the
+ * transport closes — the planner's timeout fired and it went away. It reaches
+ * the door's queue and nothing else: a waiter nobody is behind leaves, and is
+ * never later handed a slot to run the step (and its write) for nobody. Once
+ * admitted, the pipeline runs under the admission's signal, which only shutdown
+ * aborts.
+ */
 export async function executeStep(
   req: Request,
   caller: StepCaller,
   { destination, task }: { destination?: string; task: string },
+  callerSignal?: AbortSignal,
 ) {
   const log = cds.log('agent-mcp');
   const { userId, exposition } = caller;
@@ -149,11 +164,9 @@ export async function executeStep(
   // right after this JSON-RPC call starts — NOT reliably on client abort.
   // Wiring safeStop(connection) to it could tear down the ABAP session
   // (closeSession) while a tool call is still in flight, which is exactly
-  // the orphaned-state failure we're trying to avoid. `res` (the real
-  // socket/response) is not threaded into this per-tool-call scope — it
-  // lives in server.ts's route handler — so there is no safe abort signal
-  // available here. Teardown is left entirely to the `finally` below,
-  // which always runs safeStop(connection) once the step completes.
+  // the orphaned-state failure we're trying to avoid. `callerSignal` is only
+  // ever used to leave the queue; teardown is left entirely to the `finally`
+  // below, which always runs safeStop(connection) once the step completes.
   try {
     // Destination from the arg, else the connection's default header.
     const headerDestination = (
@@ -181,6 +194,43 @@ export async function executeStep(
       );
     }
 
+    handle = await getSmartAgent(undefined, targetDestination);
+    const agentHandle = handle;
+
+    // Ephemeral session per call → the executor loads/saves no history.
+    // Doubles as the per-trace telemetry id (Verified fact 10): unique per
+    // call, threaded below as `trace.traceId`, dropped in the `finally`.
+    const sessionId = `agent-step-${randomUUID()}`;
+    traceId = sessionId;
+
+    // Admitted after the agent is resolved, like every channel, and before a
+    // connection is built: a queued step holds no CSRF-fetched SAP session.
+    let admission: PipelineAdmission;
+    try {
+      admission = await admitPipeline(userId, sessionId, callerSignal);
+    } catch {
+      // Left while queued (or the process is shutting down). Nothing was
+      // started and no connection exists, so nothing is owed; nobody reads
+      // this result, the transport it would go back on is already closed.
+      log.info('execute_step caller left before admission', {
+        destination: targetDestination,
+      });
+      return textResult(
+        'ERROR: the caller left before this step was admitted; nothing was run.',
+        true,
+      );
+    }
+    if ('refused' in admission) {
+      return textResult(executeStepDoorRefusal(admission.refused), true);
+    }
+    if ('closed' in admission) {
+      // Unreachable: a step mints its own session and never presents one. The
+      // union still has to be answered.
+      return textResult(sessionClosedText(), true);
+    }
+    pipeline = admission.admitted;
+    const admitted = pipeline;
+
     const built = await buildConnectionForDestination(req, targetDestination);
     connection = built.connection;
     const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
@@ -205,27 +255,6 @@ export async function executeStep(
 
     // Per-request responsible person for ADT writes (create/update/delete).
     setRequestResponsible(req.headers);
-    handle = await getSmartAgent(undefined, targetDestination);
-    const agentHandle = handle;
-
-    // Ephemeral session per call → the executor loads/saves no history.
-    // Doubles as the per-trace telemetry id (Verified fact 10): unique per
-    // call, threaded below as `trace.traceId`, dropped in the `finally`.
-    const sessionId = `agent-step-${randomUUID()}`;
-    traceId = sessionId;
-
-    // Admitted after the agent is resolved, like every channel.
-    const admission = await admitPipeline(userId, sessionId);
-    if ('refused' in admission) {
-      return textResult(executeStepDoorRefusal(admission.refused), true);
-    }
-    if ('closed' in admission) {
-      // Unreachable: a step mints its own session and never presents one. The
-      // union still has to be answered.
-      return textResult(sessionClosedText(), true);
-    }
-    pipeline = admission.admitted;
-    const admitted = pipeline;
 
     const opts = {
       stream: false,
@@ -464,8 +493,10 @@ export async function createAgentMcpServerForRequest(
           ),
       },
     },
-    async (args: { destination?: string; task: string }) =>
-      executeStep(req, { userId, exposition }, args),
+    // `extra.signal` is aborted by the SDK when the transport closes; it lets a
+    // step still queued at the door leave, and reaches nothing after admission.
+    async (args: { destination?: string; task: string }, extra) =>
+      executeStep(req, { userId, exposition }, args, extra.signal),
   );
 
   const transport = new StreamableHTTPServerTransport({
