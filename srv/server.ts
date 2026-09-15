@@ -36,6 +36,7 @@ import {
   sessionIsLive,
   shutdownGatekeeper,
 } from './lib/gatekeeper';
+import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { needsSapConnection } from './lib/mcp-request';
 import { sessionMiddleware } from './lib/session-middleware';
@@ -246,6 +247,11 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
  * by checking cds.context.user roles.
  */
 cds.on('bootstrap', (app: Application) => {
+  // First, and synchronously. CAP emits `bootstrap` inside `cds_server` with a
+  // plain EventEmitter emit, so a throw here rejects what `cds serve` awaits and
+  // no server ever listens. On `served` the same throw was caught and logged as
+  // "will retry on first request", and the service came up answering 500.
+  gatekeeperConfig();
   ensureAiCoreCredentials();
 
   const log = cds.log('mcp-proxy/bootstrap');

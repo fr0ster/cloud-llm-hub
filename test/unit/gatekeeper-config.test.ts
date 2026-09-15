@@ -65,6 +65,26 @@ describe('malformed means refuse to start, naming the variable', () => {
   }
 });
 
+describe('a positive integer is digits and nothing else', () => {
+  // `Number()` reads every one of these as a whole number, so each would have
+  // configured a limit nobody wrote down: sixteen slots from "0x10", a thousand
+  // from "1e3".
+  for (const v of VARS) {
+    for (const bad of ['0x10', '1e3', ' 5', '5 ', '5.0', '+5', '0b11']) {
+      it(`${v}=${JSON.stringify(bad)}`, () => {
+        process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '8';
+        process.env[v] = bad;
+        expect(() => loadGatekeeperConfig()).toThrow(new RegExp(v));
+      });
+    }
+  }
+
+  it('still reads plain digits', () => {
+    process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '12';
+    expect(loadGatekeeperConfig().maxLiveSessions).toBe(12);
+  });
+});
+
 describe('retention requires a capacity and may not be smaller than it', () => {
   it('refuses retention without a capacity', () => {
     process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = '10';
