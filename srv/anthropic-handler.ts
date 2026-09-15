@@ -36,7 +36,11 @@ import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
-import { setRequestResponsible } from './lib/responsible';
+import {
+  type RequestSystemInput,
+  resolveRequestSystem,
+  runWithRequestSystem,
+} from './lib/request-system-context';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -150,11 +154,19 @@ export async function handleAnthropicMessages(
     | import('@mcp-abap-adt/interfaces').IAbapConnection
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
+  let requestSystemInput: RequestSystemInput | undefined;
   if (destination) {
     const established = await establishRequestConnection(req, res, destination);
     if (established.handled) return;
     requestConnection = established.connection;
     requestDumpScope = established.dumpScope;
+    if (established.connection && established.requestSystem) {
+      requestSystemInput = {
+        headers: req.headers,
+        connection: established.connection,
+        ...established.requestSystem,
+      };
+    }
   }
 
   // A client disconnect ends nothing. Tearing the connection down on `close` is
@@ -266,23 +278,22 @@ export async function handleAnthropicMessages(
     pipeline.run(() =>
       runWithSessionId(
         undefined,
-        () => {
-          if (!requestConnection) return fn();
-          // Admitted, and immediately before the pipeline: the responsible
-          // person is a process singleton, so set before the queue wait the
-          // last arrival would name it for every queued run. Two admitted runs
-          // can still race on it while capacity is above one: lib reads
-          // `responsible` (and `masterSystem`) from the `getSystemContext()`
-          // singleton, though it already reads `masterLanguage` per request via
-          // `getRequestContext()` (`@mcp-abap-adt/lib` dist/lib/clients.js).
-          // Once it reads `responsible` there too, wrap the admitted run in
-          // `runWithRequestContext({ responsible })` instead.
-          setRequestResponsible(req.headers);
-          return runWithRequestConnection(
-            requestConnection,
-            fn,
-            requestDumpScope,
-            callerExposition,
+        async () => {
+          const connection = requestConnection;
+          if (!connection) return fn();
+          const bound = () =>
+            runWithRequestConnection(
+              connection,
+              fn,
+              requestDumpScope,
+              callerExposition,
+            );
+          if (!requestSystemInput) return bound();
+          // Admitted, right before the pipeline: this run's responsible person
+          // and master system, visible to it alone — `request-system-context.ts`.
+          return runWithRequestSystem(
+            await resolveRequestSystem(requestSystemInput),
+            bound,
           );
         },
         priorTurns,

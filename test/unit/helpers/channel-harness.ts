@@ -36,6 +36,17 @@ export const harness = {
   establishCalls: [] as string[],
   /** Make `recMcp.dropRequest` throw, after it is recorded. */
   dropRequestThrows: false,
+  /** What `resolveRequestSystem` answers. */
+  requestSystem: { responsible: 'ALICE', masterSystem: 'DEV' } as {
+    responsible?: string;
+    masterSystem?: string;
+  },
+  /** Every input `resolveRequestSystem` was given, headers and connection dropped. */
+  requestSystemInputs: [] as Array<Record<string, unknown>>,
+  /** The request-system scope the run is inside, if any. */
+  activeRequestSystem: undefined as Record<string, unknown> | undefined,
+  /** The scope each pipeline call ran in: `undefined` means none. */
+  requestSystemAtPipeline: [] as Array<Record<string, unknown> | undefined>,
   /** Last destination per `JSON.stringify([userId, sessionId])`; unset reads as `DEST`. */
   sessionDestinations: new Map<string, string>(),
   /** Every `setSessionDestination(userId, sessionId, destination)` call. */
@@ -68,6 +79,10 @@ export const harness = {
     harness.closeDestinationCalls = [];
     harness.establishCalls = [];
     harness.dropRequestThrows = false;
+    harness.requestSystem = { responsible: 'ALICE', masterSystem: 'DEV' };
+    harness.requestSystemInputs = [];
+    harness.activeRequestSystem = undefined;
+    harness.requestSystemAtPipeline = [];
     harness.sessionDestinations = new Map();
     harness.destinationSets = [];
     harness.process = async () => ({
@@ -87,11 +102,13 @@ const handle = {
     process: (m: unknown, o: Record<string, unknown>) => {
       harness.seenOptions.push(o);
       harness.events.push('pipeline');
+      harness.requestSystemAtPipeline.push(harness.activeRequestSystem);
       return harness.process(m, o);
     },
     streamProcess: (m: unknown, o: Record<string, unknown>) => {
       harness.seenOptions.push(o);
       harness.events.push('pipeline');
+      harness.requestSystemAtPipeline.push(harness.activeRequestSystem);
       return harness.stream(m, o);
     },
   },
@@ -181,6 +198,11 @@ export function requestConnectionMock() {
         handled: false,
         connection: { id: 'conn' },
         dumpScope: undefined,
+        requestSystem: {
+          proxyType: 'OnPremise',
+          destinationName: destination,
+          callerIdentity: 'principal',
+        },
       };
     },
     safeStop: async () => {
@@ -190,14 +212,30 @@ export function requestConnectionMock() {
 }
 
 /**
- * `setSystemContext({ responsible })` is a process singleton, so when it is set
- * matters: recorded into `harness.events` so a test can see it lands inside the
- * admitted section, right before the pipeline, and not before the queue wait.
+ * The responsible person and master system are resolved, and their scope
+ * entered, only once admitted and right before the pipeline: both recorded
+ * into `harness.events`, and the scope into `harness.activeRequestSystem` for
+ * as long as the run inside it lasts.
  */
-export function responsibleMock() {
+export function requestSystemMock() {
   return {
-    setRequestResponsible: () => {
-      harness.events.push('setRequestResponsible');
+    resolveRequestSystem: async (input: Record<string, unknown>) => {
+      harness.events.push('resolveRequestSystem');
+      const { headers: _h, connection: _c, ...rest } = input;
+      harness.requestSystemInputs.push(rest);
+      return harness.requestSystem;
+    },
+    runWithRequestSystem: async <T>(
+      values: Record<string, unknown>,
+      fn: () => Promise<T>,
+    ): Promise<T> => {
+      harness.events.push('requestSystemScope');
+      harness.activeRequestSystem = values;
+      try {
+        return await fn();
+      } finally {
+        harness.activeRequestSystem = undefined;
+      }
     },
   };
 }

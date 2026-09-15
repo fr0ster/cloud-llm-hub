@@ -470,6 +470,13 @@ from its own `x-sap-*` headers, so there is nothing to reset.
 
 **Credential Override:** For any destination type, you can override authentication by providing `X-SAP-Login` and `X-SAP-Password` headers. This is useful for testing or when destination-configured credentials need to be replaced.
 
+**Responsible person and master system:** ABAP objects are created with a responsible person and a master system, set per request and seen only by that request's run.
+
+- `X-SAP-Responsible` (optional) - SAP user ID named as responsible; defaults to `X-SAP-Login`. Uppercased.
+- `X-SAP-Master-System` (optional) - master system (system ID) of created objects. Uppercased.
+
+On-premise destinations (`ProxyType=OnPremise`) take both values from these headers only: the caller sets them, and a missing one stays unset. Cloud destinations let the headers win and fill a missing value from the ABAP system's own information (its user and system ID) where that lookup is available; otherwise the value stays unset.
+
 **Example (standard destination):**
 
 ```bash

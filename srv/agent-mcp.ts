@@ -51,7 +51,10 @@ import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
-import { setRequestResponsible } from './lib/responsible';
+import {
+  resolveRequestSystem,
+  runWithRequestSystem,
+} from './lib/request-system-context';
 import { Semaphore } from './lib/semaphore';
 import {
   destinationClosedText,
@@ -279,27 +282,31 @@ export async function executeStep(
     };
 
     const conn = connection;
-    // Per-request responsible person for ADT writes (create/update/delete).
-    // Admitted, and immediately before the run: it is a process singleton, so
-    // set before the queue wait the last step to arrive would name it for every
-    // step queued ahead. Two admitted runs can still race on it while capacity
-    // is above one: lib reads `responsible` (and `masterSystem`) from the
-    // `getSystemContext()` singleton, though it already reads `masterLanguage`
-    // per request via `getRequestContext()` (`@mcp-abap-adt/lib`
-    // dist/lib/clients.js). Once it reads `responsible` there too, wrap the
-    // admitted run in `runWithRequestContext({ responsible })` instead.
-    setRequestResponsible(req.headers);
-    const r = await admitted.run(() =>
-      runWithSessionId(sessionId, () =>
-        runWithRequestConnection(
-          conn,
-          () =>
-            agentHandle.agent.process([{ role: 'user', content: task }], opts),
-          dumpScope,
-          exposition,
+    const r = await admitted.run(async () => {
+      // Admitted, right before the run: this step's responsible person and
+      // master system, visible to it alone — see `lib/request-system-context.ts`.
+      const system = await resolveRequestSystem({
+        headers: req.headers,
+        connection: conn,
+        proxyType: resolved.proxyType,
+        destinationName: resolved.destinationName,
+        callerIdentity: dumpScope?.principalHash,
+      });
+      return runWithRequestSystem(system, () =>
+        runWithSessionId(sessionId, () =>
+          runWithRequestConnection(
+            conn,
+            () =>
+              agentHandle.agent.process(
+                [{ role: 'user', content: task }],
+                opts,
+              ),
+            dumpScope,
+            exposition,
+          ),
         ),
-      ),
-    );
+      );
+    });
 
     if (!r.ok) {
       if (isOutageError(r.error)) {

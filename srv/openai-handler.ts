@@ -46,7 +46,11 @@ import {
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
-import { setRequestResponsible } from './lib/responsible';
+import {
+  type RequestSystemInput,
+  resolveRequestSystem,
+  runWithRequestSystem,
+} from './lib/request-system-context';
 import { turnOwner } from './lib/session-history-rag';
 import {
   destinationClosedText,
@@ -455,6 +459,7 @@ export async function handleChatCompletions(
     | import('@mcp-abap-adt/interfaces').IAbapConnection
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
+  let requestSystemInput: RequestSystemInput | undefined;
 
   log.debug('Destination tracking', {
     sessionId,
@@ -493,7 +498,21 @@ export async function handleChatCompletions(
     if (established.handled) return;
     requestConnection = established.connection;
     requestDumpScope = established.dumpScope;
+    if (established.connection && established.requestSystem) {
+      requestSystemInput = {
+        headers: req.headers,
+        connection: established.connection,
+        ...established.requestSystem,
+      };
+    }
   }
+
+  /** Called admitted, right before the run: this request's responsible person
+   *  and master system, visible to this run alone (`request-system-context.ts`). */
+  const inRequestSystem = async <T>(fn: () => Promise<T>): Promise<T> =>
+    requestSystemInput
+      ? runWithRequestSystem(await resolveRequestSystem(requestSystemInput), fn)
+      : fn();
 
   // A client disconnect ends nothing. Tearing the connection down on `close` is
   // the recorded cause of the orphaned ADT locks in SM12: nobody is waiting for
@@ -916,208 +935,204 @@ export async function handleChatCompletions(
             withRequestConnectionAuthorized(
               requestConnection,
               requestDumpScope,
-              async () => {
-                // Admitted, and immediately before the pipeline: the
-                // responsible person is a process singleton, so set before the
-                // queue wait the last arrival would name it for every queued
-                // run. Two admitted runs can still race on it while capacity
-                // is above one: lib reads `responsible` (and `masterSystem`)
-                // from the `getSystemContext()` singleton, though it already
-                // reads `masterLanguage` per request via `getRequestContext()`
-                // (`@mcp-abap-adt/lib` dist/lib/clients.js). Once it reads
-                // `responsible` there too, wrap the admitted run in
-                // `runWithRequestContext({ responsible })` instead.
-                if (requestConnection) setRequestResponsible(req.headers);
-                const stream = handle.agent.streamProcess(
-                  normalizedMessages,
-                  opts,
-                );
+              // Admitted: the responsible person and master system are resolved
+              // here, not before the queue wait — see `inRequestSystem`.
+              () =>
+                inRequestSystem(async () => {
+                  const stream = handle.agent.streamProcess(
+                    normalizedMessages,
+                    opts,
+                  );
 
-                try {
-                  for await (const chunk of stream) {
-                    chunkCount++;
-                    if (!chunk.ok) {
-                      const err = chunk.error;
-                      if (isOutageError(chunk.error)) {
-                        closeDestination(destAfter, describeCause(chunk.error));
-                      }
-
-                      const causes: string[] = [];
-                      let current: unknown = err;
-                      while (current) {
-                        if (current instanceof Error) {
-                          causes.push(current.message);
-                          current = (current as { cause?: unknown }).cause;
-                        } else {
-                          causes.push(String(current));
-                          break;
+                  try {
+                    for await (const chunk of stream) {
+                      chunkCount++;
+                      if (!chunk.ok) {
+                        const err = chunk.error;
+                        if (isOutageError(chunk.error)) {
+                          closeDestination(
+                            destAfter,
+                            describeCause(chunk.error),
+                          );
                         }
-                      }
-                      log.error('Stream error chunk', {
-                        chunkCount,
-                        error: err.message,
-                        causes,
-                      });
-                      const limit = throttleOf(err);
-                      const unverified = unverifiedWriteFor(
-                        handle,
-                        traceId,
-                        err,
-                      );
-                      const userMessage = unverified
-                        ? limit
-                          ? `${unverified} ${throttleMessage(limit)}`
-                          : unverified
-                        : limit
-                          ? throttleMessage(limit)
-                          : err.message;
-                      out.write(
-                        `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                      );
-                      break;
-                    }
 
-                    const v = chunk.value;
-
-                    // Forward heartbeats as SSE comments to keep the connection alive.
-                    // Without this, CF Router / Cloud Connector may close idle TCP
-                    // connections before the tool loop finishes, causing the browser's
-                    // reader.read() to hang forever (onDone never fires).
-                    if (v.heartbeat) {
-                      out.write(
-                        `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
-                      );
-                      continue;
-                    }
-                    if (v.usage) {
-                      lastUsage = {
-                        prompt_tokens: v.usage.promptTokens,
-                        completion_tokens: v.usage.completionTokens,
-                        total_tokens: v.usage.totalTokens,
-                        ...(v.usage.models ? { models: v.usage.models } : {}),
-                      };
-                    }
-                    if (v.timing) {
-                      log.info('Pipeline stage timing', { timing: v.timing });
-                      continue;
-                    }
-
-                    const baseResponse = {
-                      id,
-                      object: 'chat.completion.chunk',
-                      created,
-                      model: getCurrentModel(),
-                      usage: null,
-                    };
-
-                    // First chunk: role + initial content (matches SmartServer)
-                    if (firstChunk) {
-                      const initialContent = v.content || '';
-                      if (initialContent) accumulatedContent += initialContent;
-                      out.write(
-                        `data: ${JSON.stringify({
-                          ...baseResponse,
-                          choices: [
-                            {
-                              index: 0,
-                              delta: {
-                                role: 'assistant',
-                                content: initialContent,
-                              },
-                              finish_reason: null,
-                            },
-                          ],
-                        })}\n\n`,
-                      );
-                      firstChunk = false;
-                      if (!v.finishReason && !v.toolCalls) continue;
-                    }
-
-                    // Content and/or tool_calls delta (matches SmartServer)
-                    if (v.content || v.toolCalls) {
-                      const delta: Record<string, unknown> = {};
-                      if (v.content) {
-                        accumulatedContent += v.content;
-                        delta.content = v.content;
-                      }
-                      if (v.toolCalls) {
-                        delta.tool_calls = v.toolCalls.map((call, index) => {
-                          const tc = toToolCallDelta(call, index);
-                          return {
-                            index: tc.index,
-                            id: tc.id,
-                            type: 'function',
-                            function: {
-                              name: tc.name,
-                              arguments: tc.arguments || '',
-                            },
-                          };
+                        const causes: string[] = [];
+                        let current: unknown = err;
+                        while (current) {
+                          if (current instanceof Error) {
+                            causes.push(current.message);
+                            current = (current as { cause?: unknown }).cause;
+                          } else {
+                            causes.push(String(current));
+                            break;
+                          }
+                        }
+                        log.error('Stream error chunk', {
+                          chunkCount,
+                          error: err.message,
+                          causes,
                         });
+                        const limit = throttleOf(err);
+                        const unverified = unverifiedWriteFor(
+                          handle,
+                          traceId,
+                          err,
+                        );
+                        const userMessage = unverified
+                          ? limit
+                            ? `${unverified} ${throttleMessage(limit)}`
+                            : unverified
+                          : limit
+                            ? throttleMessage(limit)
+                            : err.message;
+                        out.write(
+                          `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                        );
+                        break;
                       }
-                      out.write(
-                        `data: ${JSON.stringify({
-                          ...baseResponse,
-                          choices: [
-                            {
-                              index: 0,
-                              delta,
-                              finish_reason: null,
-                            },
-                          ],
-                        })}\n\n`,
-                      );
-                    }
 
-                    if (v.finishReason) {
-                      out.write(
-                        `data: ${JSON.stringify({
-                          ...baseResponse,
-                          choices: [
-                            {
-                              index: 0,
-                              delta: {},
-                              finish_reason: mapStopReason(v.finishReason),
-                            },
-                          ],
-                        })}\n\n`,
-                      );
-                      finishReasonSent = true;
-                    }
-                  }
-                } catch (err) {
-                  if (isOutageError(err)) {
-                    closeDestination(destAfter, describeCause(err));
-                  }
-                  const errMsg =
-                    err instanceof Error ? err.message : String(err);
-                  log.error('Stream exception', {
-                    error: errMsg,
-                    stack: err instanceof Error ? err.stack : undefined,
-                  });
-                  const streamLimit = throttleOf(err);
-                  const streamUnverified = unverifiedWriteFor(
-                    handle,
-                    traceId,
-                    err,
-                  );
-                  const userMessage = streamUnverified
-                    ? streamLimit
-                      ? `${streamUnverified} ${throttleMessage(streamLimit)}`
-                      : streamUnverified
-                    : streamLimit
-                      ? throttleMessage(streamLimit)
-                      : errMsg;
-                  out.write(
-                    `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                  );
-                }
+                      const v = chunk.value;
 
-                // Log per-model token breakdown if available (inside runWithSessionId so TS
-                // can track lastUsage mutations; this is pure logging with no ordering concern).
-                if (lastUsage?.models) {
-                  log.info('Token usage by model', lastUsage.models);
-                }
-              },
+                      // Forward heartbeats as SSE comments to keep the connection alive.
+                      // Without this, CF Router / Cloud Connector may close idle TCP
+                      // connections before the tool loop finishes, causing the browser's
+                      // reader.read() to hang forever (onDone never fires).
+                      if (v.heartbeat) {
+                        out.write(
+                          `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
+                        );
+                        continue;
+                      }
+                      if (v.usage) {
+                        lastUsage = {
+                          prompt_tokens: v.usage.promptTokens,
+                          completion_tokens: v.usage.completionTokens,
+                          total_tokens: v.usage.totalTokens,
+                          ...(v.usage.models ? { models: v.usage.models } : {}),
+                        };
+                      }
+                      if (v.timing) {
+                        log.info('Pipeline stage timing', { timing: v.timing });
+                        continue;
+                      }
+
+                      const baseResponse = {
+                        id,
+                        object: 'chat.completion.chunk',
+                        created,
+                        model: getCurrentModel(),
+                        usage: null,
+                      };
+
+                      // First chunk: role + initial content (matches SmartServer)
+                      if (firstChunk) {
+                        const initialContent = v.content || '';
+                        if (initialContent)
+                          accumulatedContent += initialContent;
+                        out.write(
+                          `data: ${JSON.stringify({
+                            ...baseResponse,
+                            choices: [
+                              {
+                                index: 0,
+                                delta: {
+                                  role: 'assistant',
+                                  content: initialContent,
+                                },
+                                finish_reason: null,
+                              },
+                            ],
+                          })}\n\n`,
+                        );
+                        firstChunk = false;
+                        if (!v.finishReason && !v.toolCalls) continue;
+                      }
+
+                      // Content and/or tool_calls delta (matches SmartServer)
+                      if (v.content || v.toolCalls) {
+                        const delta: Record<string, unknown> = {};
+                        if (v.content) {
+                          accumulatedContent += v.content;
+                          delta.content = v.content;
+                        }
+                        if (v.toolCalls) {
+                          delta.tool_calls = v.toolCalls.map((call, index) => {
+                            const tc = toToolCallDelta(call, index);
+                            return {
+                              index: tc.index,
+                              id: tc.id,
+                              type: 'function',
+                              function: {
+                                name: tc.name,
+                                arguments: tc.arguments || '',
+                              },
+                            };
+                          });
+                        }
+                        out.write(
+                          `data: ${JSON.stringify({
+                            ...baseResponse,
+                            choices: [
+                              {
+                                index: 0,
+                                delta,
+                                finish_reason: null,
+                              },
+                            ],
+                          })}\n\n`,
+                        );
+                      }
+
+                      if (v.finishReason) {
+                        out.write(
+                          `data: ${JSON.stringify({
+                            ...baseResponse,
+                            choices: [
+                              {
+                                index: 0,
+                                delta: {},
+                                finish_reason: mapStopReason(v.finishReason),
+                              },
+                            ],
+                          })}\n\n`,
+                        );
+                        finishReasonSent = true;
+                      }
+                    }
+                  } catch (err) {
+                    if (isOutageError(err)) {
+                      closeDestination(destAfter, describeCause(err));
+                    }
+                    const errMsg =
+                      err instanceof Error ? err.message : String(err);
+                    log.error('Stream exception', {
+                      error: errMsg,
+                      stack: err instanceof Error ? err.stack : undefined,
+                    });
+                    const streamLimit = throttleOf(err);
+                    const streamUnverified = unverifiedWriteFor(
+                      handle,
+                      traceId,
+                      err,
+                    );
+                    const userMessage = streamUnverified
+                      ? streamLimit
+                        ? `${streamUnverified} ${throttleMessage(streamLimit)}`
+                        : streamUnverified
+                      : streamLimit
+                        ? throttleMessage(streamLimit)
+                        : errMsg;
+                    out.write(
+                      `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                    );
+                  }
+
+                  // Log per-model token breakdown if available (inside runWithSessionId so TS
+                  // can track lastUsage mutations; this is pure logging with no ordering concern).
+                  if (lastUsage?.models) {
+                    log.info('Token usage by model', lastUsage.models);
+                  }
+                }),
             ),
           priorTurns,
         ),
@@ -1217,12 +1232,11 @@ export async function handleChatCompletions(
           withRequestConnectionAuthorized(
             requestConnection,
             requestDumpScope,
-            async () => {
-              // Admitted, and immediately before the pipeline — see the
-              // streaming branch for why, and for the race that remains.
-              if (requestConnection) setRequestResponsible(req.headers);
-              return handle.agent.process(normalizedMessages, opts);
-            },
+            // Admitted — see `inRequestSystem`.
+            () =>
+              inRequestSystem(async () =>
+                handle.agent.process(normalizedMessages, opts),
+              ),
           ),
         priorTurns,
       ),

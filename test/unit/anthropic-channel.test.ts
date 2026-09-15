@@ -23,8 +23,8 @@ jest.mock('../../srv/lib/request-connection', () =>
 jest.mock('../../srv/lib/ai-core-models', () => ({
   getAvailableModels: async () => [],
 }));
-jest.mock('../../srv/lib/responsible', () =>
-  require('./helpers/channel-harness').responsibleMock(),
+jest.mock('../../srv/lib/request-system-context', () =>
+  require('./helpers/channel-harness').requestSystemMock(),
 );
 
 import { readFileSync } from 'node:fs';
@@ -95,6 +95,9 @@ describe('/v1/messages at the door', () => {
     expect(res.statusCode).toBe(refusal.status);
     expect(JSON.parse(res.body)).toEqual(refusal.body);
     expect(res.headers['Retry-After']).toBeUndefined();
+    // Refused: nothing resolved, so no system information was asked for.
+    expect(harness.events).not.toContain('resolveRequestSystem');
+    expect(harness.requestSystemInputs).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
   });
 
@@ -160,6 +163,8 @@ describe('/v1/messages at the door', () => {
     if ('admitted' in hold) hold.admitted.release();
     await tick();
     expect(harness.events).not.toContain('pipeline');
+    expect(harness.events).not.toContain('resolveRequestSystem');
+    expect(harness.requestSystemInputs).toEqual([]);
     expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({
       live: 0,
       queued: 0,
@@ -168,19 +173,33 @@ describe('/v1/messages at the door', () => {
   });
 
   for (const stream of [false, true]) {
-    it(`sets the responsible person only once admitted, right before the pipeline — stream: ${stream}`, async () => {
-      // A process singleton: set before the queue wait, the last request to
-      // arrive would name the responsible person for every run queued ahead.
+    it(`runs the pipeline inside its request-system scope, entered once admitted — stream: ${stream}`, async () => {
+      // Resolved before the queue wait, the values would be looked up over a
+      // connection whose run may never start, and not be scoped to that run.
       configure(1, 1);
       const hold = await gatekeeper.admitPipeline('bob', 'busy');
       const { done } = call(body(stream));
       await tick();
-      expect(harness.events).not.toContain('setRequestResponsible');
+      expect(harness.events).not.toContain('resolveRequestSystem');
+      expect(harness.events).not.toContain('requestSystemScope');
       if ('admitted' in hold) hold.admitted.release();
       await done;
-      const at = harness.events.indexOf('setRequestResponsible');
-      expect(at).toBeGreaterThan(-1);
-      expect(harness.events[at + 1]).toBe('pipeline');
+      const at = harness.events.indexOf('resolveRequestSystem');
+      expect(harness.events.slice(at, at + 3)).toEqual([
+        'resolveRequestSystem',
+        'requestSystemScope',
+        'pipeline',
+      ]);
+      expect(harness.requestSystemInputs).toEqual([
+        {
+          proxyType: 'OnPremise',
+          destinationName: 'DEST',
+          callerIdentity: 'principal',
+        },
+      ]);
+      expect(harness.requestSystemAtPipeline).toEqual([
+        { responsible: 'ALICE', masterSystem: 'DEV' },
+      ]);
     });
   }
 

@@ -206,7 +206,7 @@ cloud-llm-hub/
 │       ├── step-gate.ts          # Tool-call-count gating for the LLM critic
 │       ├── write-guardrail.ts    # Write-tool result envelope checks
 │       ├── request-connection.ts   # establishRequestConnection + safeStop (release ADT lock on every exit path)
-│       ├── principal.ts / responsible.ts   # principalHash, system scope, responsible-person propagation
+│       ├── principal.ts / request-system-context.ts   # principalHash, system scope, per-request responsible person + master system
 │       ├── dump-buffer.ts / dump-parser.ts / get-dump-section.ts   # Dump section buffering/parsing for GetDumpSection
 │       ├── composite-skill-manager.ts / skills-pool.ts   # Skill RAG exposure (skills are NOT role-gated)
 │       ├── exposition.ts / tool-exposition-map.ts / tool-authorization.ts  # Role → tool-group levels, and the execution check
@@ -423,7 +423,7 @@ graph TB
         logger_mod["logger.ts"]
         log_mask["log-mask.ts"]
         principal_ts["principal.ts"]
-        responsible_ts["responsible.ts"]
+        request_system_ts["request-system-context.ts"]
         exposition_ts["exposition.ts"]
         semaphore_ts["semaphore.ts"]
         agent_mgr_libs["dump-buffer/dump-parser/get-dump-section,
@@ -497,13 +497,15 @@ graph TB
     agent_mcp_ts --> dest_resolver
     agent_mcp_ts --> exposition_ts
     agent_mcp_ts --> principal_ts
-    agent_mcp_ts --> responsible_ts
+    agent_mcp_ts --> request_system_ts
     agent_mcp_ts --> semaphore_ts
     openai_handler_ts --> request_conn
     openai_handler_ts --> agent_manager
     openai_handler_ts --> exposition_ts
+    openai_handler_ts --> request_system_ts
     anthropic_handler_ts --> request_conn
     anthropic_handler_ts --> agent_manager
+    anthropic_handler_ts --> request_system_ts
 
     %% agent-service.ts dependencies (Health probe only, same agent-manager)
     agent_service_ts --> agent_config
@@ -516,7 +518,7 @@ graph TB
     request_conn --> dest_resolver
     request_conn --> log_mask
     request_conn --> principal_ts
-    request_conn --> responsible_ts
+    request_conn --> request_system_ts
 
     %% agent-manager.ts dependencies — tools come from the EMBEDDED in-process
     %% adapter (HandlerExporter + McpClientAdapter), never from mcp-manager.ts
@@ -547,8 +549,8 @@ graph TB
     step_reviewer --> reviewer_core
     step_reviewer --> step_gate
 
-    %% principal.ts / responsible.ts dependencies
-    responsible_ts --> mcp_adt_core
+    %% principal.ts / request-system-context.ts dependencies
+    request_system_ts --> mcp_adt_core
 
     %% agent-config.ts dependencies
     agent_config --> sap_cds
@@ -1076,8 +1078,8 @@ graph TB
     DEF_ENV -->|VCAP_SERVICES mock| DR2
     DOT_ENV -->|LLM keys| ES
     HEADERS -->|X-SAP-Destination<br/>X-SAP-URL, Authorization| MM2
-    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client| RC
-    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>Authorization| AM
+    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client, x-sap-responsible,<br/>x-sap-master-system| RC
+    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>x-sap-responsible, x-sap-master-system,<br/>Authorization| AM
     RC -->|resolveDestinationSapConfig| DR2
     MM2 -->|resolveDestinationSapConfig| DR2
     AM -->|resolveDestinationSapConfig| DR2
@@ -1418,6 +1420,10 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
   history, collections or destination, the shared agent's RAG stores, and the
   responsible person only once admitted; a queued caller that leaves is never
   admitted later.
+- **Responsible person and master system.** Resolved per request once admitted
+  and visible to that run alone (`srv/lib/request-system-context.ts`, a
+  workaround for fr0ster/mcp-abap-adt#202): the caller's headers on-premise,
+  the headers then the system's own information on cloud.
 - **Closed destinations.** Every channel refuses a closed destination before
   attempting a connection to it.
 - **Startup.** The `LLM_GATEKEEPER_*` variables are validated in `bootstrap`; a

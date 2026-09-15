@@ -37,8 +37,8 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 jest.mock('../../srv/connections/connectionFactory', () => ({
   createConnection: () => ({ connect: async () => {} }),
 }));
-jest.mock('../../srv/lib/responsible', () =>
-  require('./helpers/channel-harness').responsibleMock(),
+jest.mock('../../srv/lib/request-system-context', () =>
+  require('./helpers/channel-harness').requestSystemMock(),
 );
 jest.mock('../../srv/lib/principal', () => ({
   computeDumpScope: () => undefined,
@@ -120,6 +120,8 @@ describe('execute_step at the door', () => {
     // Refused before a connection is built: nothing was CSRF-fetched for a
     // step that never ran.
     expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
+    // Refused: nothing resolved, so no system information was asked for.
+    expect(harness.requestSystemInputs).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
   });
 
@@ -134,19 +136,37 @@ describe('execute_step at the door', () => {
     expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
   });
 
-  it('sets the responsible person only once admitted, right before the run', async () => {
-    // A process singleton: set before the queue wait, the last step to arrive
-    // would name the responsible person for every step queued ahead of it.
+  it('runs the step inside its request-system scope, entered once admitted', async () => {
+    // Resolved before the queue wait, the values would be looked up over a
+    // connection whose step may never run, and not be scoped to that step.
     configure(1, 1);
     const hold = await gatekeeper.admitPipeline('bob', 'busy');
     const running = step();
     await tick();
-    expect(harness.events).not.toContain('setRequestResponsible');
+    expect(harness.events).not.toContain('resolveRequestSystem');
+    expect(harness.events).not.toContain('requestSystemScope');
     if ('admitted' in hold) hold.admitted.release();
     await running;
-    const at = harness.events.indexOf('setRequestResponsible');
-    expect(at).toBeGreaterThan(-1);
-    expect(harness.events[at + 1]).toBe('pipeline');
+    const at = harness.events.indexOf('resolveRequestSystem');
+    expect(at).toBeGreaterThan(
+      harness.events.indexOf('resolveDestinationSapConfig'),
+    );
+    expect(harness.events.slice(at, at + 3)).toEqual([
+      'resolveRequestSystem',
+      'requestSystemScope',
+      'pipeline',
+    ]);
+    // The destination's own proxy type and name; no principal in this harness.
+    expect(harness.requestSystemInputs).toEqual([
+      {
+        proxyType: 'Internet',
+        destinationName: 'DEST',
+        callerIdentity: undefined,
+      },
+    ]);
+    expect(harness.requestSystemAtPipeline).toEqual([
+      { responsible: 'ALICE', masterSystem: 'DEV' },
+    ]);
   });
 
   it('a step that leaves while queued takes no slot and runs nothing', async () => {
@@ -183,6 +203,7 @@ describe('execute_step at the door', () => {
     // Handed no slot later, so the write is not run a second time for nobody.
     expect(harness.events).not.toContain('pipeline');
     expect(harness.events).not.toContain('resolveDestinationSapConfig');
+    expect(harness.requestSystemInputs).toEqual([]);
     expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({
       live: 0,
       queued: 0,

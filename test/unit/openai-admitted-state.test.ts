@@ -34,8 +34,8 @@ jest.mock('../../srv/lib/request-connection', () =>
 jest.mock('../../srv/lib/ai-core-models', () => ({
   getAvailableModels: async () => [],
 }));
-jest.mock('../../srv/lib/responsible', () =>
-  require('./helpers/channel-harness').responsibleMock(),
+jest.mock('../../srv/lib/request-system-context', () =>
+  require('./helpers/channel-harness').requestSystemMock(),
 );
 // Any collection id the request names resolves to itself: the registry lookup
 // is not what these tests are about.
