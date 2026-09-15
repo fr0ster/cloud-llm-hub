@@ -584,6 +584,10 @@ a shutdown ends it. When the queue is full the caller is refused, with the reaso
 and **without** a `Retry-After`: how long the sessions ahead will run is not
 something the service measures.
 
+A caller that goes away while it waits leaves the queue and is never admitted
+later. On `execute_step` that is the MCP transport closing — a planner whose own
+timeout fired — so a step it retries is not also run for nobody.
+
 | Reason | Meaning | `/v1/chat/completions` | `/v1/messages` | `execute_step` |
 |---|---|---|---|---|
 | `session_busy` | this session is still running a request | `503`, `error.code: gatekeeper_session_busy` | `529` `overloaded_error` | text prefixed `gatekeeper_session_busy:` |
@@ -682,12 +686,17 @@ answered `503` with `error.code: gatekeeper_retention`. An idle session is
 evicted instead when one exists — silently, so its next question arrives
 without the earlier context.
 
+Eviction takes sessions no caller ever came back to first — a client that keeps
+no cookie is given one per request — and only then the least recently used
+session a caller did present.
+
 ### A closed destination
 
 When an SAP destination has been closed after an outage
 (`srv/agent-manager.ts` — `closeDestination` / `isDestinationClosed` /
 `retryAfterForDestination`), each pipeline-starting channel refuses **before**
-building a connection or resolving an agent for it:
+attempting a connection or resolving an agent for it. The system that is down is
+not contacted again, and the caller is not told its credentials failed:
 
 | Channel | Status | Shape |
 |---|---|---|

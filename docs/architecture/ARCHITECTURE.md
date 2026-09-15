@@ -1412,6 +1412,16 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
   leases, cancels RAG operations, waits for the rest, then removes history,
   collections and their directories through one primitive
   (`srv/lib/session-state.ts`).
+- **Eviction order.** Idle sessions nobody ever presented go before idle ones a
+  caller came back to; least recently used within each group.
+- **Admitted before it changes anything.** A request changes a session's
+  history, collections or destination, the shared agent's RAG stores, and the
+  responsible person only once admitted; a queued caller that leaves is never
+  admitted later.
+- **Closed destinations.** Every channel refuses a closed destination before
+  attempting a connection to it.
+- **Startup.** The `LLM_GATEKEEPER_*` variables are validated in `bootstrap`; a
+  malformed one stops `cds serve` before it listens.
 - **Observability.** `Health()` returns door, retention, per-destination and
   throttling scopes separately (`srv/lib/gatekeeper-metrics.ts`).
 
