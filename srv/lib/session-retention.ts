@@ -9,22 +9,13 @@ export interface RetentionStores {
   /** Whether anything is still held for this session. */
   hasState(userId: string, sessionId: string): boolean;
   /**
-   * Remove everything held for this session. Must be synchronous.
-   * Throws when something could not be removed — a metadata write, or a
-   * collection directory that would not go. Retention reports it instead of
-   * throwing from lease or release; the session is closed all the same.
+   * Remove everything held for this session. Must be synchronous, and should
+   * not throw. If it does, retention reports it instead of throwing from lease
+   * or release, and the session is closed all the same.
    */
   deleteAll(userId: string, sessionId: string): void;
   /**
-   * Why the state cannot be removed right now — a directory not writable, a
-   * read-only volume — or undefined when it can. Asked before a session is
-   * closed: a refused session stays live and untouched, so nothing is half
-   * removed and nothing needs retrying.
-   */
-  removable?(userId: string, sessionId: string): string | undefined;
-  /**
-   * A metadata write in deleteAll failed. Retention calls this instead of
-   * throwing to the caller.
+   * deleteAll threw. Retention calls this instead of throwing to the caller.
    */
   reportDeleteError?(userId: string, sessionId: string, error: unknown): void;
 }
@@ -52,23 +43,13 @@ export function isRefusal(x: Lease | LeaseRefusal): x is LeaseRefusal {
   return 'refused' in x;
 }
 
-/** A removal the check before closing refused; the session was left as it was. */
-export class RemovalRefused extends Error {
-  constructor(readonly reason: string) {
-    super(`session state cannot be removed: ${reason}`);
-    this.name = 'RemovalRefused';
-  }
-}
-
 export interface RetentionSnapshot {
   retained: number;
   cap: number | undefined;
   evictions: number;
   /** Closed to new leases, cleanup not yet run. Normally zero for longer than an upload. */
   closing: number;
-  /** Removals the check before closing refused, since start; those sessions stayed live. */
-  removalRefused: number;
-  /** Removals that passed the check and still failed, since start; those sessions were closed. */
+  /** Removals that threw, since start; those sessions were closed all the same. */
   cleanupFailed: number;
 }
 
@@ -113,7 +94,6 @@ function pendingClose(): NonNullable<Entry['closing']> {
 export class SessionRetention {
   private readonly entries = new Map<string, Entry>();
   private evictions = 0;
-  private removalRefusals = 0;
   private cleanupFailures = 0;
 
   constructor(
@@ -154,16 +134,9 @@ export class SessionRetention {
       return { refused: 'closed' };
     }
     if (!e) {
-      // A victim whose state cannot be removed is passed over and left as it
-      // is; the next idle one is tried, until a place frees or none is left.
-      const passedOver = new Set<Entry>();
       while (this.cap !== undefined && this.entries.size >= this.cap) {
-        const victim = this.evictionCandidate(passedOver);
+        const victim = this.evictionCandidate();
         if (!victim) return { refused: 'retention' };
-        if (this.refusal(victim.userId, victim.sessionId)) {
-          passedOver.add(victim);
-          continue;
-        }
         this.evict(victim);
       }
       e = {
@@ -208,8 +181,6 @@ export class SessionRetention {
     const key = keyOf(userId, sessionId);
     const e = this.entries.get(key);
     if (!e) {
-      const refused = this.refusal(userId, sessionId);
-      if (refused) return Promise.reject(refused);
       try {
         this.stores.deleteAll(userId, sessionId);
       } catch (error) {
@@ -220,10 +191,6 @@ export class SessionRetention {
       return Promise.resolve();
     }
     if (e.closing) return e.closing.settled;
-    // Checked before anything is closed: a refused session stays live and
-    // untouched, and the caller is told.
-    const refused = this.refusal(userId, sessionId);
-    if (refused) return Promise.reject(refused);
     return this.startClose(e);
   }
 
@@ -233,33 +200,6 @@ export class SessionRetention {
     for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
     if (e.leases.size === 0) this.finishClose(e);
     return settled;
-  }
-
-  /**
-   * Count a session found on disk after a restart, as idle.
-   *
-   * Retention starts empty in a new process; without this, persisted sessions
-   * would not count against the cap and never be eviction candidates. Nothing
-   * is evicted here: everything persisted is counted, even over the cap, and the
-   * next lease evicts idle sessions until there is room. It held state across a
-   * restart, so somebody used it — cookie-less one-request sessions go first.
-   * Returns whether the session was new to retention.
-   */
-  adopt(
-    userId: string,
-    sessionId: string,
-    lastUsed: number = this.now(),
-  ): boolean {
-    const key = keyOf(userId, sessionId);
-    if (this.entries.has(key)) return false;
-    this.entries.set(key, {
-      userId,
-      sessionId,
-      lastUsed,
-      presented: true,
-      leases: new Set(),
-    });
-    return true;
   }
 
   /** Known, and not closing. */
@@ -332,35 +272,19 @@ export class SessionRetention {
       cap: this.cap,
       evictions: this.evictions,
       closing,
-      removalRefused: this.removalRefusals,
       cleanupFailed: this.cleanupFailures,
     };
-  }
-
-  /** Why this session's state cannot be removed now, as the error to answer with. */
-  private refusal(
-    userId: string,
-    sessionId: string,
-  ): RemovalRefused | undefined {
-    const reason = this.stores.removable?.(userId, sessionId);
-    if (reason === undefined) return undefined;
-    this.removalRefusals++;
-    const refused = new RemovalRefused(reason);
-    this.stores.reportDeleteError?.(userId, sessionId, refused);
-    return refused;
   }
 
   /**
    * An idle session nobody ever presented, least recently used first; only
    * when there is none, the least recently used idle one somebody did.
    */
-  private evictionCandidate(
-    passedOver: ReadonlySet<Entry> = new Set(),
-  ): Entry | undefined {
+  private evictionCandidate(): Entry | undefined {
     let neverPresented: Entry | undefined;
     let presented: Entry | undefined;
     for (const e of this.entries.values()) {
-      if (e.leases.size > 0 || e.closing || passedOver.has(e)) continue;
+      if (e.leases.size > 0 || e.closing) continue;
       if (e.presented) {
         if (!presented || e.lastUsed < presented.lastUsed) presented = e;
       } else if (!neverPresented || e.lastUsed < neverPresented.lastUsed) {
@@ -373,8 +297,8 @@ export class SessionRetention {
   /** An idle session has no lease, so closing it removes it in this same turn. */
   private evict(e: Entry): void {
     this.evictions++;
-    // Already checked by the caller. A failure is reported through
-    // reportDeleteError and must not fail the lease or become unhandled.
+    // A failure is reported through reportDeleteError and must not fail the
+    // lease or become unhandled.
     this.startClose(e).catch(() => {});
   }
 
@@ -396,9 +320,8 @@ export class SessionRetention {
     try {
       this.stores.deleteAll(e.userId, e.sessionId);
     } catch (error) {
-      // The check before closing said it could go, so the filesystem changed in
-      // between. Reported and counted; the session is closed all the same —
-      // nothing is kept or retried (issue #234).
+      // Reported and counted; the session is closed all the same — nothing is
+      // kept or retried (issue #234).
       this.cleanupFailures++;
       this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
       this.entries.delete(keyOf(e.userId, e.sessionId));

@@ -17,12 +17,7 @@ import {
   type LeaseRefusal,
   SessionRetention,
 } from './session-retention';
-import {
-  deleteSessionState,
-  hasSessionState,
-  persistedSessions,
-  sessionStateRemovable,
-} from './session-state';
+import { deleteSessionState, hasSessionState } from './session-state';
 import type { DoorRefusalReason } from './throttle-surfacing';
 
 let retention: SessionRetention | undefined;
@@ -33,7 +28,6 @@ export function theRetention(): SessionRetention {
       {
         hasState: hasSessionState,
         deleteAll: deleteSessionState,
-        removable: sessionStateRemovable,
         reportDeleteError: (userId, sessionId, error) =>
           cds.log('gatekeeper').warn('session removal failed', {
             userId,
@@ -139,21 +133,6 @@ export async function admitPipeline(
 }
 
 /**
- * Count the sessions whose collections were loaded from disk, before anything
- * is admitted after a restart. Retention starts empty in a new process: without
- * this the cap would admit new sessions over the persisted ones, and those would
- * never be evicted. Returns how many were adopted.
- */
-export function adoptPersistedSessions(): number {
-  const r = theRetention();
-  let adopted = 0;
-  for (const s of persistedSessions()) {
-    if (r.adopt(s.userId, s.sessionId, s.lastUsed)) adopted++;
-  }
-  return adopted;
-}
-
-/**
  * Whether a presented cookie still names a session.
  *
  * Closing means no, from the mark: the session is unreachable from that moment.
@@ -195,18 +174,6 @@ export function deleteSession(
   // to wait for a session that is going.
   theDoor()?.poke();
   return removal.finally(() => theDoor()?.poke());
-}
-
-/**
- * Why this session's state cannot be removed right now, or undefined when it
- * can. Asked before a logout is answered, so a caller is never told 204 for
- * data that stays.
- */
-export function sessionRemovalRefusal(
-  userId: string,
-  sessionId: string,
-): string | undefined {
-  return sessionStateRemovable(userId, sessionId);
 }
 
 export function maySweepSession(userId: string, sessionId: string): boolean {

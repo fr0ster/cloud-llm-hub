@@ -969,7 +969,6 @@ export function getCollectionRegistry(): CollectionRegistry {
   if (!collectionRegistryInstance) {
     const embedding = getOrCreateEmbedder(getAgentConfig().llm.resourceGroup);
     collectionRegistryInstance = new CollectionRegistry({
-      storagePath: process.env.RAG_STORAGE_PATH || undefined,
       embedder: embedding?.embedder ?? null,
       breaker: embedding?.breaker ?? null,
     });

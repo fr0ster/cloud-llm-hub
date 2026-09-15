@@ -34,9 +34,6 @@ jest.mock('../../srv/agent-manager', () => ({
   // Initialisation fails here, as it does when AI Core is not reachable yet.
   initSmartAgents: () => Promise.reject(new Error('AI Core not reachable')),
   getCollectionRegistry: () => ({
-    loadFromDisk: async () => {
-      throw new Error('disk');
-    },
     sweepExpiredSessions: () => {},
   }),
 }));
