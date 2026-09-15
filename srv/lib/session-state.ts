@@ -34,3 +34,15 @@ export function hasSessionState(userId: string, sessionId: string): boolean {
     getCollectionRegistry().hasSessionCollections(userId, sessionId)
   );
 }
+
+/**
+ * The sessions whose collections are on disk, as the registry loaded them: what
+ * retention must count after a restart before anything is admitted.
+ */
+export function persistedSessions(): Array<{
+  userId: string;
+  sessionId: string;
+  lastUsed: number;
+}> {
+  return getCollectionRegistry().sessionOwners();
+}

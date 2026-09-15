@@ -30,6 +30,7 @@ import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import {
+  adoptPersistedSessions,
   deleteSession,
   forgetEmptySessions,
   maySweepSession,
@@ -647,20 +648,35 @@ cds.on('served', () => {
     guardedTask('Empty session forget', log, () => forgetEmptySessions()),
     5 * 60 * 1000,
   ).unref();
+  // Persisted collections load first, and their sessions are counted by
+  // retention before anything is admitted: an empty retention after a restart
+  // would admit new sessions over the persisted ones and never evict those.
+  // loadFromDisk has no await, so its body has run by the time it returns;
+  // re-vectorizing the loaded documents carries on in the background. The
+  // AI Core credentials it may need were ensured at bootstrap.
+  try {
+    getCollectionRegistry()
+      .loadFromDisk()
+      .catch((err: unknown) =>
+        log.warn('RAG collection load failed', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    const adopted = adoptPersistedSessions();
+    if (adopted > 0) {
+      log.info('Persisted sessions counted by retention', { adopted });
+    }
+  } catch (err) {
+    log.warn('RAG collection load failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
   initSmartAgents()
-    .then(async () => {
+    .then(() => {
       log.info('SmartAgents initialized and ready');
-      // Load persisted RAG collections in background
-      try {
-        await getCollectionRegistry().loadFromDisk();
-      } catch (err) {
-        log.warn('RAG collection load failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
     })
     .catch((err) => {
       log.warn(

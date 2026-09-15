@@ -493,6 +493,32 @@ describe('a request that outlived its session', () => {
   });
 });
 
+describe('sessions persisted before a restart', () => {
+  it('count against the cap from the start, and are evicted for a new session', async () => {
+    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
+    await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
+      id: 'd1',
+      text: 'hello',
+      metadata: {},
+    });
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(true);
+
+    // A restart: retention starts empty, while the registry holds what
+    // loadFromDisk put back.
+    gatekeeper.resetGatekeeperForTest();
+    expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
+    expect(gatekeeper.adoptPersistedSessions()).toBe(1);
+    expect(gatekeeper.theRetention().snapshot().retained).toBe(1);
+
+    // Cap 1: bob's new session evicts alice's persisted one, directory included.
+    expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
+    expect(
+      registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
+    ).toBeNull();
+    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+  });
+});
+
 describe('logout and clear-chat in server.ts', () => {
   it('answer at the mark and do not wait for the removal', () => {
     const src = fs.readFileSync(
@@ -502,5 +528,7 @@ describe('logout and clear-chat in server.ts', () => {
     expect(src).toMatch(/void\s+deleteSession\(\s*userId\s*,\s*sessionId\s*\)/);
     expect(src).toMatch(/sweepExpiredSessions\(\s*maySweepSession\s*\)/);
     expect(src).toMatch(/isLive:\s*sessionIsLive/);
+    // Persisted sessions are counted before the agents start, so before any request.
+    expect(src).toMatch(/adoptPersistedSessions\(\)[\s\S]*initSmartAgents\(\)/);
   });
 });

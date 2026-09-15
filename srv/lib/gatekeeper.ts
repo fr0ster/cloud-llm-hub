@@ -17,7 +17,11 @@ import {
   type LeaseRefusal,
   SessionRetention,
 } from './session-retention';
-import { deleteSessionState, hasSessionState } from './session-state';
+import {
+  deleteSessionState,
+  hasSessionState,
+  persistedSessions,
+} from './session-state';
 import type { DoorRefusalReason } from './throttle-surfacing';
 
 let retention: SessionRetention | undefined;
@@ -133,12 +137,26 @@ export async function admitPipeline(
 }
 
 /**
+ * Count the sessions whose collections were loaded from disk, before anything
+ * is admitted after a restart. Retention starts empty in a new process: without
+ * this the cap would admit new sessions over the persisted ones, and those would
+ * never be evicted. Returns how many were adopted.
+ */
+export function adoptPersistedSessions(): number {
+  const r = theRetention();
+  let adopted = 0;
+  for (const s of persistedSessions()) {
+    if (r.adopt(s.userId, s.sessionId, s.lastUsed)) adopted++;
+  }
+  return adopted;
+}
+
+/**
  * Whether a presented cookie still names a session.
  *
  * Closing means no, from the mark: the session is unreachable from that moment.
  * Otherwise yes when retention knows it or any store still holds it — the
- * second covers collections loaded from disk after a restart, which retention
- * has never seen.
+ * second covers state no lease has touched in this process, such as history.
  */
 export function sessionIsLive(userId: string, sessionId: string): boolean {
   const r = theRetention();

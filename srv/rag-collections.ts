@@ -964,6 +964,34 @@ export class CollectionRegistry {
   // -------------------------------------------------------------------------
 
   /** Load collections from disk and re-vectorize documents */
+  /**
+   * The sessions that own session-scoped collections, each once, with when it
+   * was last used: `expiresAt` is refreshed on every use, so the latest one
+   * less the TTL. After a restart these are counted against the retention cap.
+   */
+  sessionOwners(): Array<{
+    userId: string;
+    sessionId: string;
+    lastUsed: number;
+  }> {
+    const byKey = new Map<
+      string,
+      { userId: string; sessionId: string; lastUsed: number }
+    >();
+    for (const stored of this.collections.values()) {
+      const { scope, owner, sessionId, expiresAt } = stored.meta;
+      if (scope !== 'session' || !owner || !sessionId) continue;
+      const lastUsed =
+        (expiresAt ?? Date.now() + SESSION_TTL_MS) - SESSION_TTL_MS;
+      const key = JSON.stringify([owner, sessionId]);
+      const known = byKey.get(key);
+      if (!known || lastUsed > known.lastUsed) {
+        byKey.set(key, { userId: owner, sessionId, lastUsed });
+      }
+    }
+    return [...byKey.values()];
+  }
+
   async loadFromDisk(): Promise<void> {
     const storagePath = this.storagePath;
     if (!storagePath) return;

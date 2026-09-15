@@ -222,6 +222,33 @@ export class SessionRetention {
     return settled;
   }
 
+  /**
+   * Count a session found on disk after a restart, as idle.
+   *
+   * Retention starts empty in a new process; without this, persisted sessions
+   * would not count against the cap and never be eviction candidates. Nothing
+   * is evicted here: everything persisted is counted, even over the cap, and the
+   * next lease evicts idle sessions until there is room. It held state across a
+   * restart, so somebody used it — cookie-less one-request sessions go first.
+   * Returns whether the session was new to retention.
+   */
+  adopt(
+    userId: string,
+    sessionId: string,
+    lastUsed: number = this.now(),
+  ): boolean {
+    const key = keyOf(userId, sessionId);
+    if (this.entries.has(key)) return false;
+    this.entries.set(key, {
+      userId,
+      sessionId,
+      lastUsed,
+      presented: true,
+      leases: new Set(),
+    });
+    return true;
+  }
+
   /** Known, and not closing. */
   isKnown(userId: string, sessionId: string): boolean {
     const e = this.entries.get(keyOf(userId, sessionId));

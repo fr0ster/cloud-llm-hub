@@ -10,7 +10,7 @@ jest.mock(
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CollectionRegistry } from '../../srv/rag-collections';
+import { CollectionRegistry, SESSION_TTL_MS } from '../../srv/rag-collections';
 
 let dir: string;
 let reg: CollectionRegistry;
@@ -206,5 +206,32 @@ describe('a directory that will not go', () => {
     reg.sweepExpiredSessions();
     expect(reg.getCollection('s__s_9')).toBeNull();
     expect(fs.existsSync(d)).toBe(false);
+  });
+});
+
+describe('sessions persisted on disk', () => {
+  it('a registry loaded from disk lists each session once, with its last use', async () => {
+    const now = Date.now();
+    await withDocument('s__p_1', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'p',
+      expiresAt: now + 60_000,
+    });
+    await withDocument('s__p_2', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'p',
+      expiresAt: now + 120_000,
+    });
+    await withDocument('u__p_3', { scope: 'user', owner: 'alice' });
+
+    const fresh = new CollectionRegistry({ storagePath: dir });
+    await fresh.loadFromDisk();
+    const owners = fresh.sessionOwners();
+    expect(owners).toHaveLength(1);
+    expect(owners[0]).toMatchObject({ userId: 'alice', sessionId: 'p' });
+    // The later of the two collections is the last use: its expiry less the TTL.
+    expect(owners[0].lastUsed).toBe(now + 120_000 - SESSION_TTL_MS);
   });
 });

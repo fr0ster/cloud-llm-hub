@@ -549,3 +549,30 @@ describe('a store that fails to delete', () => {
     ]);
   });
 });
+
+describe('sessions persisted before a restart', () => {
+  it('an adopted session counts against the cap and is evicted like any idle one', () => {
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 1, c.now);
+    f.put('alice', 'A');
+    expect(r.adopt('alice', 'A', 0)).toBe(true);
+    expect(r.adopt('alice', 'A', 0)).toBe(false);
+    expect(r.snapshot().retained).toBe(1);
+    c.tick();
+    lease(r.lease('bob', 'B', 'rag')).release();
+    expect(f.log).toEqual(['delete alice/A']);
+  });
+
+  it('adopting more than the cap is corrected by the next lease', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 1);
+    f.put('alice', 'A');
+    f.put('carol', 'C');
+    r.adopt('alice', 'A', 0);
+    r.adopt('carol', 'C', 1);
+    expect(r.snapshot().retained).toBe(2);
+    lease(r.lease('bob', 'B', 'rag')).release();
+    expect([...f.log].sort()).toEqual(['delete alice/A', 'delete carol/C']);
+  });
+});
