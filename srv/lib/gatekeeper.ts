@@ -21,6 +21,7 @@ import {
   deleteSessionState,
   hasSessionState,
   persistedSessions,
+  sessionStateRemovable,
 } from './session-state';
 import type { DoorRefusalReason } from './throttle-surfacing';
 
@@ -32,6 +33,7 @@ export function theRetention(): SessionRetention {
       {
         hasState: hasSessionState,
         deleteAll: deleteSessionState,
+        removable: sessionStateRemovable,
         reportDeleteError: (userId, sessionId, error) =>
           cds.log('gatekeeper').warn('session removal failed', {
             userId,
@@ -193,6 +195,18 @@ export function deleteSession(
   // to wait for a session that is going.
   theDoor()?.poke();
   return removal.finally(() => theDoor()?.poke());
+}
+
+/**
+ * Why this session's state cannot be removed right now, or undefined when it
+ * can. Asked before a logout is answered, so a caller is never told 204 for
+ * data that stays.
+ */
+export function sessionRemovalRefusal(
+  userId: string,
+  sessionId: string,
+): string | undefined {
+  return sessionStateRemovable(userId, sessionId);
 }
 
 export function maySweepSession(userId: string, sessionId: string): boolean {

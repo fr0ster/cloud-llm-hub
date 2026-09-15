@@ -46,3 +46,15 @@ export function persistedSessions(): Array<{
 }> {
   return getCollectionRegistry().sessionOwners();
 }
+
+/**
+ * Why this session's state cannot be removed right now, or undefined when it
+ * can. History and the destination live in memory and always can; the session
+ * collections need writable directories.
+ */
+export function sessionStateRemovable(
+  userId: string,
+  sessionId: string,
+): string | undefined {
+  return getCollectionRegistry().sessionCollectionsRemovable(userId, sessionId);
+}

@@ -35,6 +35,7 @@ import {
   forgetEmptySessions,
   maySweepSession,
   sessionIsLive,
+  sessionRemovalRefusal,
   shutdownGatekeeper,
 } from './lib/gatekeeper';
 import { gatekeeperConfig } from './lib/gatekeeper-config';
@@ -597,6 +598,24 @@ cds.on('bootstrap', (app: Application) => {
       return;
     }
     const userId = cds.context?.user?.id ?? 'anonymous';
+    // Checked before anything is closed: if the data cannot be removed right
+    // now (a directory not writable, a read-only volume), the session stays as
+    // it was and the caller is told so — never 204 for data that stays.
+    const refusal = sessionRemovalRefusal(userId, sessionId);
+    if (refusal !== undefined) {
+      cds.log('session').warn('session removal refused', { reason: refusal });
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: {
+            message:
+              'The session could not be removed right now; its data is unchanged. Please try again later.',
+            code: 'session_removal_refused',
+          },
+        }),
+      );
+      return;
+    }
     // Answered at the mark. The session is unreachable from this moment; its
     // bytes go when the last operation against them has stopped — a pipeline
     // runs to its own end, a RAG upload is cancelled and then waited for.

@@ -670,7 +670,7 @@ requests keeps the cookie and sends it back — `curl -c jar -b jar`. A
 cookies gets a fresh session per request; use `scope: 'user'` instead, with its
 different lifetime and visibility.
 
-**Ending a session.** `DELETE /v1/session` answers `204` at once. The session is
+**Ending a session.** `DELETE /v1/session` answers `204` at once. If the session's data cannot be removed right now — a directory not writable, a read-only volume — it answers `503` with `error.code: session_removal_refused` instead, and the session stays exactly as it was. The session is
 unreachable from that moment; its history, collections and their files are
 removed once whatever is running against it has stopped — a RAG upload is
 cancelled and then waited for, a running pipeline is waited for. A request
@@ -750,7 +750,7 @@ The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
   is unset; otherwise `srv/lib/door.ts`'s `DoorSnapshot`: `live`, `capacity`,
   `queued`, `queueLength`, `highWater`, `refusals` (by reason), `left`.
 - **`retention`** — `srv/lib/session-retention.ts`'s `RetentionSnapshot`:
-  `retained`, `cap`, `evictions`, `closing`, `cleanupFailed` — removals that failed (a directory that would not go); their sessions stay closed and keep their places until the service restarts; the removal is not retried.
+  `retained`, `cap`, `evictions`, `closing`, `removalRefused` — removals the check before closing refused (a directory not writable, a read-only volume); those sessions stayed live and untouched — and `cleanupFailed` — removals that passed the check and still failed; those sessions were closed. Both count since start; nothing is retried.
 - **`destinations`** — one entry per known destination: `name`, `closed`,
   `refusals`.
 - **`throttling`** — `events`, `gaveUp`, `noInterval`, `byQuota` (per quota

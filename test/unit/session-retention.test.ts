@@ -2,6 +2,7 @@ import {
   isRefusal,
   type Lease,
   type LeaseRefusal,
+  RemovalRefused,
   SessionRetention,
 } from '../../srv/lib/session-retention';
 
@@ -363,8 +364,8 @@ describe('the sweep asks first', () => {
   });
 });
 
-describe('a store that fails to delete', () => {
-  function failingStores() {
+describe('a store that cannot, or does not, remove', () => {
+  function removalStores() {
     const held = new Set<string>();
     const log: string[] = [];
     const reported: Array<{
@@ -372,17 +373,21 @@ describe('a store that fails to delete', () => {
       sessionId: string;
       error: unknown;
     }> = [];
+    const blocked = new Set<string>();
     let fail = false;
     return {
       held,
       log,
       reported,
       put: (u: string, s: string) => held.add(`${u}/${s}`),
+      block: (u: string, s: string) => blocked.add(`${u}/${s}`),
       setFail: (f: boolean) => {
         fail = f;
       },
       stores: {
         hasState: (u: string, s: string) => held.has(`${u}/${s}`),
+        removable: (u: string, s: string) =>
+          blocked.has(`${u}/${s}`) ? `${u}/${s}: EACCES` : undefined,
         deleteAll: (u: string, s: string) => {
           if (fail) throw new Error('EACCES');
           log.push(`delete ${u}/${s}`);
@@ -395,91 +400,90 @@ describe('a store that fails to delete', () => {
     };
   }
 
-  it('close on a known idle session rejects, reports, and keeps the session closed and counted', async () => {
-    const f = failingStores();
+  it('a close the check refuses leaves the session live and untouched, and says why', async () => {
+    const f = removalStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    f.block('alice', 'A');
+    const closed = r.close('alice', 'A');
+    await expect(closed).rejects.toBeInstanceOf(RemovalRefused);
+    await expect(closed).rejects.toThrow('alice/A: EACCES');
+    expect(f.log).toEqual([]);
+    expect(f.held.has('alice/A')).toBe(true);
+    expect(r.isKnown('alice', 'A')).toBe(true);
+    expect(r.isClosing('alice', 'A')).toBe(false);
+    expect(r.snapshot()).toMatchObject({
+      retained: 1,
+      closing: 0,
+      removalRefused: 1,
+      cleanupFailed: 0,
+    });
+    expect(f.reported).toHaveLength(1);
+    // Still live: new work on it goes on as before.
+    lease(r.lease('alice', 'A', 'rag')).release();
+  });
+
+  it('a close on a session retention never saw is refused the same way', async () => {
+    const f = removalStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    f.block('alice', 'A');
+    await expect(r.close('alice', 'A')).rejects.toBeInstanceOf(RemovalRefused);
+    expect(f.log).toEqual([]);
+    expect(r.snapshot()).toMatchObject({ retained: 0, removalRefused: 1 });
+  });
+
+  it('eviction passes over a session whose state cannot be removed', () => {
+    const f = removalStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 2, c.now);
+    f.put('alice', 'A');
+    f.put('alice', 'B');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    c.tick();
+    lease(r.lease('alice', 'B', 'rag')).release();
+    c.tick();
+    f.block('alice', 'A');
+    const l = lease(r.lease('alice', 'C', 'rag'));
+    expect(f.log).toEqual(['delete alice/B']);
+    expect(r.isKnown('alice', 'A')).toBe(true);
+    l.release();
+  });
+
+  it('eviction refuses when no idle session can be removed', () => {
+    const f = removalStores();
+    const r = new SessionRetention(f.stores, 2);
+    f.put('alice', 'A');
+    f.put('alice', 'B');
+    lease(r.lease('alice', 'A', 'rag')).release();
+    lease(r.lease('alice', 'B', 'rag')).release();
+    f.block('alice', 'A');
+    f.block('alice', 'B');
+    expect(r.lease('alice', 'C', 'rag')).toEqual({ refused: 'retention' });
+    expect(f.log).toEqual([]);
+    expect(r.snapshot()).toMatchObject({ retained: 2, removalRefused: 2 });
+  });
+
+  it('a removal that passed the check and still fails closes the session, reports and counts it', async () => {
+    const f = removalStores();
     const r = new SessionRetention(f.stores, 2);
     f.put('alice', 'A');
     lease(r.lease('alice', 'A', 'rag')).release();
     f.setFail(true);
-    const closed = r.close('alice', 'A');
-    let rejected = false;
-    let rejectionError: unknown;
-    await closed.catch((e) => {
-      rejected = true;
-      rejectionError = e;
-    });
-    expect(rejected).toBe(true);
-    expect((rejectionError as Error).message).toBe('EACCES');
-    expect(f.reported).toEqual([
-      { userId: 'alice', sessionId: 'A', error: rejectionError },
-    ]);
-    // Its state is still there: it stays closed, and keeps its place.
-    expect(r.isKnown('alice', 'A')).toBe(false);
-    expect(r.isClosing('alice', 'A')).toBe(true);
-    expect(r.lease('alice', 'A', 'rag')).toEqual({ refused: 'closed' });
-    expect(r.snapshot()).toMatchObject({
-      retained: 1,
-      closing: 1,
-      cleanupFailed: 1,
-    });
-  });
-
-  it('a failed cleanup keeps its place: a full cap refuses rather than let a session in over it', async () => {
-    const f = failingStores();
-    const r = new SessionRetention(f.stores, 1);
-    f.put('alice', 'A');
-    lease(r.lease('alice', 'A', 'rag')).release();
-    f.setFail(true);
-    await r.close('alice', 'A').catch(() => {});
-    expect(r.canReserve('bob', 'B')).toBe(false);
-    expect(r.lease('bob', 'B', 'rag')).toEqual({ refused: 'retention' });
-  });
-
-  it('nothing retries a failed removal: closing again answers with the same failure', async () => {
-    const f = failingStores();
-    const r = new SessionRetention(f.stores, 1);
-    f.put('alice', 'A');
-    lease(r.lease('alice', 'A', 'rag')).release();
-    f.setFail(true);
-    await expect(r.close('alice', 'A')).rejects.toThrow('EACCES');
-    // Even once the store would succeed, the removal is not run again.
-    f.setFail(false);
     await expect(r.close('alice', 'A')).rejects.toThrow('EACCES');
     expect(f.reported).toHaveLength(1);
-    expect(f.held.has('alice/A')).toBe(true);
-    expect(r.forgetEmpty()).toBe(0);
+    expect(r.isKnown('alice', 'A')).toBe(false);
+    expect(r.isClosing('alice', 'A')).toBe(false);
     expect(r.snapshot()).toMatchObject({
-      retained: 1,
-      closing: 1,
+      retained: 0,
+      closing: 0,
       cleanupFailed: 1,
     });
-    expect(r.lease('bob', 'B', 'rag')).toEqual({ refused: 'retention' });
   });
 
-  it('close on a session retention never saw rejects and reports', async () => {
-    const f = failingStores();
-    const r = new SessionRetention(f.stores, 2);
-    f.put('alice', 'A');
-    f.setFail(true);
-    const closed = r.close('alice', 'A');
-    let rejected = false;
-    let rejectionError: unknown;
-    await closed.catch((e) => {
-      rejected = true;
-      rejectionError = e;
-    });
-    expect(rejected).toBe(true);
-    expect((rejectionError as Error).message).toBe('EACCES');
-    expect(f.reported).toEqual([
-      { userId: 'alice', sessionId: 'A', error: rejectionError },
-    ]);
-    // Nothing counted it before; its state is still there, so it counts now.
-    expect(r.isClosing('alice', 'A')).toBe(true);
-    expect(r.snapshot()).toMatchObject({ retained: 1, cleanupFailed: 1 });
-  });
-
-  it('eviction whose removals all fail refuses, keeps both victims, reports each once, no unhandled rejection', async () => {
-    const f = failingStores();
+  it('eviction whose removal fails still frees the place, reports once, no unhandled rejection', async () => {
+    const f = removalStores();
     const r = new SessionRetention(f.stores, 2);
     let unhandledRejection = false;
     const unhandledListener = () => {
@@ -492,45 +496,18 @@ describe('a store that fails to delete', () => {
       f.put('alice', 'B');
       lease(r.lease('alice', 'B', 'rag')).release();
       f.setFail(true);
-      expect(r.lease('alice', 'C', 'rag')).toEqual({ refused: 'retention' });
-      expect(f.reported.map((x) => x.sessionId)).toEqual(['A', 'B']);
-      expect(r.snapshot()).toMatchObject({ retained: 2, cleanupFailed: 2 });
+      const l = lease(r.lease('alice', 'C', 'rag'));
+      expect(f.reported.map((x) => x.sessionId)).toEqual(['A']);
       await new Promise((resolve) => setImmediate(resolve));
       expect(unhandledRejection).toBe(false);
+      l.release();
     } finally {
       process.removeListener('unhandledRejection', unhandledListener);
     }
   });
 
-  it('eviction moves on when the least recently used session will not go', () => {
-    const held = new Set<string>(['alice/A', 'alice/B']);
-    const reported: string[] = [];
-    const c = clock();
-    const r = new SessionRetention(
-      {
-        hasState: (u, s) => held.has(`${u}/${s}`),
-        deleteAll: (u, s) => {
-          if (s === 'A') throw new Error('EACCES');
-          held.delete(`${u}/${s}`);
-        },
-        reportDeleteError: (_u, s) => reported.push(s),
-      },
-      2,
-      c.now,
-    );
-    lease(r.lease('alice', 'A', 'rag')).release();
-    c.tick();
-    lease(r.lease('alice', 'B', 'rag')).release();
-    c.tick();
-    const l = lease(r.lease('alice', 'C', 'rag'));
-    expect(reported).toEqual(['A']);
-    expect(held.has('alice/B')).toBe(false);
-    expect(r.isClosing('alice', 'A')).toBe(true);
-    l.release();
-  });
-
   it('release that finishes a pending close rejects with the error', async () => {
-    const f = failingStores();
+    const f = removalStores();
     const r = new SessionRetention(f.stores, 2);
     f.put('alice', 'A');
     const held = lease(r.lease('alice', 'A', 'rag'));

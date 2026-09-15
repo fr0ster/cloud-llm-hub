@@ -177,7 +177,7 @@ describe('the retention cap on the RAG routes', () => {
     expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
   });
 
-  it('a removal that fails keeps the session closed and its place taken, and nothing retries it', async () => {
+  it('a logout the check refuses leaves the session live, its data in place, and says so', async () => {
     expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
     await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
       id: 'd1',
@@ -187,50 +187,44 @@ describe('the retention cap on the RAG routes', () => {
     const dir = dirOf('alice', 'A');
     expect(fs.existsSync(dir)).toBe(true);
 
-    const realRm = fs.rmSync;
-    const rm = jest.spyOn(fs, 'rmSync').mockImplementation(((
+    const realAccess = fs.accessSync;
+    const access = jest.spyOn(fs, 'accessSync').mockImplementation(((
       p: fs.PathLike,
-      opts?: fs.RmOptions,
+      mode?: number,
     ) => {
       if (String(p) === dir) {
         throw Object.assign(new Error('EACCES: permission denied'), {
           code: 'EACCES',
         });
       }
-      return realRm(p, opts);
-    }) as typeof fs.rmSync);
+      return realAccess(p, mode);
+    }) as typeof fs.accessSync);
     try {
+      // What DELETE /v1/session asks before answering: refused, so not 204.
+      expect(gatekeeper.sessionRemovalRefusal('alice', 'A')).toMatch(/EACCES/);
       await expect(gatekeeper.deleteSession('alice', 'A')).rejects.toThrow(
         'EACCES',
       );
-      // The directory is still there, so nothing let go of the session.
+      // Nothing was closed or removed: the cookie still names a live session,
+      // and its data was never promised gone.
+      expect(gatekeeper.sessionIsLive('alice', 'A')).toBe(true);
       expect(fs.existsSync(dir)).toBe(true);
+      expect(
+        registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
+      ).not.toBeNull();
       expect(gatekeeper.theRetention().snapshot()).toMatchObject({
-        retained: 1,
-        closing: 1,
-        cleanupFailed: 1,
+        closing: 0,
+        removalRefused: 1,
       });
-      // The one place is still hers: bob is refused, not let in over her files.
-      expect((await createSessionCollection('bob', 'B'))._status).toBe(503);
-      // A pass while the directory still will not go frees nothing.
-      expect(gatekeeper.forgetEmptySessions()).toBe(0);
     } finally {
-      rm.mockRestore();
+      access.mockRestore();
     }
 
-    // Nothing retries it: even with the filesystem working again, a pass leaves
-    // the session closed, its directory on disk and its place taken.
-    expect(gatekeeper.forgetEmptySessions()).toBe(0);
-    expect(fs.existsSync(dir)).toBe(true);
-    expect(gatekeeper.theRetention().snapshot()).toMatchObject({
-      retained: 1,
-      cleanupFailed: 1,
-    });
-
-    // What a restart does: a fresh retention; the state is removed by hand here.
-    gatekeeper.resetGatekeeperForTest();
-    registry.deleteSessionCollections('alice', 'A');
+    // Once the directory can go, the same logout removes everything.
+    expect(gatekeeper.sessionRemovalRefusal('alice', 'A')).toBeUndefined();
+    await gatekeeper.deleteSession('alice', 'A');
     expect(fs.existsSync(dir)).toBe(false);
+    expect(gatekeeper.sessionIsLive('alice', 'A')).toBe(false);
   });
 });
 
@@ -530,5 +524,9 @@ describe('logout and clear-chat in server.ts', () => {
     expect(src).toMatch(/isLive:\s*sessionIsLive/);
     // Persisted sessions are counted before the agents start, so before any request.
     expect(src).toMatch(/adoptPersistedSessions\(\)[\s\S]*initSmartAgents\(\)/);
+    // A logout is checked before it is answered, and only then removed.
+    expect(src).toMatch(
+      /sessionRemovalRefusal\(userId, sessionId\)[\s\S]*void\s+deleteSession\(/,
+    );
   });
 });

@@ -992,6 +992,49 @@ export class CollectionRegistry {
     return [...byKey.values()];
   }
 
+  /**
+   * Why this session's collections cannot be removed right now, or undefined
+   * when they can: the storage directory and each collection directory must be
+   * writable. Asked before a session is closed, so a removal that would fail on
+   * permissions or a read-only volume is refused up front instead of being half
+   * done — and nothing is left to retry.
+   */
+  sessionCollectionsRemovable(
+    userId: string,
+    sessionId: string,
+  ): string | undefined {
+    if (!this.storagePath) return undefined;
+    const ids: string[] = [];
+    for (const [id, stored] of this.collections) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        ids.push(id);
+      }
+    }
+    if (ids.length === 0) return undefined;
+    const notWritable = (p: string): string | undefined => {
+      try {
+        fs.accessSync(p, fs.constants.W_OK | fs.constants.X_OK);
+        return undefined;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        // Nothing there is nothing to remove.
+        if (code === 'ENOENT') return undefined;
+        return `${p}: ${code ?? (err as Error).message}`;
+      }
+    };
+    const root = notWritable(this.storagePath);
+    if (root) return root;
+    for (const id of ids) {
+      const refusal = notWritable(path.join(this.storagePath, id));
+      if (refusal) return refusal;
+    }
+    return undefined;
+  }
+
   async loadFromDisk(): Promise<void> {
     const storagePath = this.storagePath;
     if (!storagePath) return;

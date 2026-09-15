@@ -12,10 +12,16 @@ export interface RetentionStores {
    * Remove everything held for this session. Must be synchronous.
    * Throws when something could not be removed — a metadata write, or a
    * collection directory that would not go. Retention reports it instead of
-   * throwing from lease or release, and keeps the session closed and counted;
-   * the removal is not retried.
+   * throwing from lease or release; the session is closed all the same.
    */
   deleteAll(userId: string, sessionId: string): void;
+  /**
+   * Why the state cannot be removed right now — a directory not writable, a
+   * read-only volume — or undefined when it can. Asked before a session is
+   * closed: a refused session stays live and untouched, so nothing is half
+   * removed and nothing needs retrying.
+   */
+  removable?(userId: string, sessionId: string): string | undefined;
   /**
    * A metadata write in deleteAll failed. Retention calls this instead of
    * throwing to the caller.
@@ -46,13 +52,23 @@ export function isRefusal(x: Lease | LeaseRefusal): x is LeaseRefusal {
   return 'refused' in x;
 }
 
+/** A removal the check before closing refused; the session was left as it was. */
+export class RemovalRefused extends Error {
+  constructor(readonly reason: string) {
+    super(`session state cannot be removed: ${reason}`);
+    this.name = 'RemovalRefused';
+  }
+}
+
 export interface RetentionSnapshot {
   retained: number;
   cap: number | undefined;
   evictions: number;
   /** Closed to new leases, cleanup not yet run. Normally zero for longer than an upload. */
   closing: number;
-  /** Removals that ran and failed; each keeps its place until the service restarts. */
+  /** Removals the check before closing refused, since start; those sessions stayed live. */
+  removalRefused: number;
+  /** Removals that passed the check and still failed, since start; those sessions were closed. */
   cleanupFailed: number;
 }
 
@@ -73,12 +89,6 @@ interface Entry {
     resolve: () => void;
     reject: (error: unknown) => void;
   };
-  /**
-   * Set when the removal ran and failed. The session stays closed and keeps its
-   * place: its state is still there, and letting either go would let a new
-   * session in over files nothing counts any more.
-   */
-  cleanupFailed?: { error: unknown };
 }
 
 function keyOf(userId: string, sessionId: string): string {
@@ -103,6 +113,8 @@ function pendingClose(): NonNullable<Entry['closing']> {
 export class SessionRetention {
   private readonly entries = new Map<string, Entry>();
   private evictions = 0;
+  private removalRefusals = 0;
+  private cleanupFailures = 0;
 
   constructor(
     private readonly stores: RetentionStores,
@@ -142,11 +154,16 @@ export class SessionRetention {
       return { refused: 'closed' };
     }
     if (!e) {
-      // A victim whose removal fails stays, closed, in its place; the next idle
-      // one is tried, until a place frees or there is none left to try.
+      // A victim whose state cannot be removed is passed over and left as it
+      // is; the next idle one is tried, until a place frees or none is left.
+      const passedOver = new Set<Entry>();
       while (this.cap !== undefined && this.entries.size >= this.cap) {
-        const victim = this.evictionCandidate();
+        const victim = this.evictionCandidate(passedOver);
         if (!victim) return { refused: 'retention' };
+        if (this.refusal(victim.userId, victim.sessionId)) {
+          passedOver.add(victim);
+          continue;
+        }
         this.evict(victim);
       }
       e = {
@@ -191,30 +208,26 @@ export class SessionRetention {
     const key = keyOf(userId, sessionId);
     const e = this.entries.get(key);
     if (!e) {
+      const refused = this.refusal(userId, sessionId);
+      if (refused) return Promise.reject(refused);
       try {
         this.stores.deleteAll(userId, sessionId);
       } catch (error) {
+        this.cleanupFailures++;
         this.stores.reportDeleteError?.(userId, sessionId, error);
-        // Nothing counted this session, yet its state is still there: count it
-        // now, closed, so its place stays taken. Nothing retries the removal.
-        const closing = pendingClose();
-        closing.reject(error);
-        this.entries.set(key, {
-          userId,
-          sessionId,
-          lastUsed: this.now(),
-          presented: false,
-          leases: new Set(),
-          closing,
-          cleanupFailed: { error },
-        });
-        return closing.settled;
+        return Promise.reject(error);
       }
       return Promise.resolve();
     }
-    // Still waiting for its leases, or removed and failed: the same answer
-    // either way, and nothing runs the removal a second time.
     if (e.closing) return e.closing.settled;
+    // Checked before anything is closed: a refused session stays live and
+    // untouched, and the caller is told.
+    const refused = this.refusal(userId, sessionId);
+    if (refused) return Promise.reject(refused);
+    return this.startClose(e);
+  }
+
+  private startClose(e: Entry): Promise<void> {
     e.closing = pendingClose();
     const settled = e.closing.settled;
     for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
@@ -313,29 +326,41 @@ export class SessionRetention {
 
   snapshot(): RetentionSnapshot {
     let closing = 0;
-    let cleanupFailed = 0;
-    for (const e of this.entries.values()) {
-      if (e.closing) closing++;
-      if (e.cleanupFailed) cleanupFailed++;
-    }
+    for (const e of this.entries.values()) if (e.closing) closing++;
     return {
       retained: this.entries.size,
       cap: this.cap,
       evictions: this.evictions,
       closing,
-      cleanupFailed,
+      removalRefused: this.removalRefusals,
+      cleanupFailed: this.cleanupFailures,
     };
+  }
+
+  /** Why this session's state cannot be removed now, as the error to answer with. */
+  private refusal(
+    userId: string,
+    sessionId: string,
+  ): RemovalRefused | undefined {
+    const reason = this.stores.removable?.(userId, sessionId);
+    if (reason === undefined) return undefined;
+    this.removalRefusals++;
+    const refused = new RemovalRefused(reason);
+    this.stores.reportDeleteError?.(userId, sessionId, refused);
+    return refused;
   }
 
   /**
    * An idle session nobody ever presented, least recently used first; only
    * when there is none, the least recently used idle one somebody did.
    */
-  private evictionCandidate(): Entry | undefined {
+  private evictionCandidate(
+    passedOver: ReadonlySet<Entry> = new Set(),
+  ): Entry | undefined {
     let neverPresented: Entry | undefined;
     let presented: Entry | undefined;
     for (const e of this.entries.values()) {
-      if (e.leases.size > 0 || e.closing) continue;
+      if (e.leases.size > 0 || e.closing || passedOver.has(e)) continue;
       if (e.presented) {
         if (!presented || e.lastUsed < presented.lastUsed) presented = e;
       } else if (!neverPresented || e.lastUsed < neverPresented.lastUsed) {
@@ -348,8 +373,9 @@ export class SessionRetention {
   /** An idle session has no lease, so closing it removes it in this same turn. */
   private evict(e: Entry): void {
     this.evictions++;
-    // Failure already reported through reportDeleteError; must not fail the lease or become unhandled.
-    this.close(e.userId, e.sessionId).catch(() => {});
+    // Already checked by the caller. A failure is reported through
+    // reportDeleteError and must not fail the lease or become unhandled.
+    this.startClose(e).catch(() => {});
   }
 
   private settle(e: Entry, lease: Lease): void {
@@ -370,11 +396,12 @@ export class SessionRetention {
     try {
       this.stores.deleteAll(e.userId, e.sessionId);
     } catch (error) {
+      // The check before closing said it could go, so the filesystem changed in
+      // between. Reported and counted; the session is closed all the same —
+      // nothing is kept or retried (issue #234).
+      this.cleanupFailures++;
       this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
-      // The state is still there, so the session stays closed and keeps its
-      // place until the service restarts. Nothing retries it: a filesystem
-      // that refused the removal once refuses it again.
-      e.cleanupFailed = { error };
+      this.entries.delete(keyOf(e.userId, e.sessionId));
       current?.reject(error);
       return;
     }
