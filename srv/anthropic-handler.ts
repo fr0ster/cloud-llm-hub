@@ -36,6 +36,7 @@ import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { setRequestResponsible } from './lib/responsible';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -265,15 +266,20 @@ export async function handleAnthropicMessages(
     pipeline.run(() =>
       runWithSessionId(
         undefined,
-        () =>
-          requestConnection
-            ? runWithRequestConnection(
-                requestConnection,
-                fn,
-                requestDumpScope,
-                callerExposition,
-              )
-            : fn(),
+        () => {
+          if (!requestConnection) return fn();
+          // Admitted, and immediately before the pipeline: the responsible
+          // person is a process singleton, so set before the queue wait the
+          // last arrival would name it for every queued run. Two admitted runs
+          // can still race on it — a pre-existing limitation of the singleton.
+          setRequestResponsible(req.headers);
+          return runWithRequestConnection(
+            requestConnection,
+            fn,
+            requestDumpScope,
+            callerExposition,
+          );
+        },
         priorTurns,
       ),
     );

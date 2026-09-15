@@ -37,9 +37,9 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 jest.mock('../../srv/connections/connectionFactory', () => ({
   createConnection: () => ({ connect: async () => {} }),
 }));
-jest.mock('../../srv/lib/responsible', () => ({
-  setRequestResponsible: () => {},
-}));
+jest.mock('../../srv/lib/responsible', () =>
+  require('./helpers/channel-harness').responsibleMock(),
+);
 jest.mock('../../srv/lib/principal', () => ({
   computeDumpScope: () => undefined,
 }));
@@ -121,6 +121,21 @@ describe('execute_step at the door', () => {
     // step that never ran.
     expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
     if ('admitted' in hold) hold.admitted.release();
+  });
+
+  it('sets the responsible person only once admitted, right before the run', async () => {
+    // A process singleton: set before the queue wait, the last step to arrive
+    // would name the responsible person for every step queued ahead of it.
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    const running = step();
+    await tick();
+    expect(harness.events).not.toContain('setRequestResponsible');
+    if ('admitted' in hold) hold.admitted.release();
+    await running;
+    const at = harness.events.indexOf('setRequestResponsible');
+    expect(at).toBeGreaterThan(-1);
+    expect(harness.events[at + 1]).toBe('pipeline');
   });
 
   it('a step that leaves while queued takes no slot and runs nothing', async () => {

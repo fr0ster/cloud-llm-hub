@@ -159,6 +159,19 @@ export function requestConnectionMock() {
   };
 }
 
+/**
+ * `setSystemContext({ responsible })` is a process singleton, so when it is set
+ * matters: recorded into `harness.events` so a test can see it lands inside the
+ * admitted section, right before the pipeline, and not before the queue wait.
+ */
+export function responsibleMock() {
+  return {
+    setRequestResponsible: () => {
+      harness.events.push('setRequestResponsible');
+    },
+  };
+}
+
 /** `minted: false` is a cookie the middleware kept because the session was live. */
 export function fakeReq(body: unknown, sessionId = 's-1', minted = true) {
   return {

@@ -253,9 +253,6 @@ export async function executeStep(
       jwtSub: null,
     });
 
-    // Per-request responsible person for ADT writes (create/update/delete).
-    setRequestResponsible(req.headers);
-
     const opts = {
       stream: false,
       externalTools: [],
@@ -282,6 +279,12 @@ export async function executeStep(
     };
 
     const conn = connection;
+    // Per-request responsible person for ADT writes (create/update/delete).
+    // Admitted, and immediately before the run: it is a process singleton, so
+    // set before the queue wait the last step to arrive would name it for every
+    // step queued ahead. Two admitted runs can still race on it — a pre-existing
+    // limitation of the singleton, not of the door.
+    setRequestResponsible(req.headers);
     const r = await admitted.run(() =>
       runWithSessionId(sessionId, () =>
         runWithRequestConnection(

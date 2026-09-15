@@ -42,6 +42,7 @@ import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { setRequestResponsible } from './lib/responsible';
 import { turnOwner } from './lib/session-history-rag';
 import {
   destinationClosedText,
@@ -882,6 +883,12 @@ export async function handleChatCompletions(
               requestConnection,
               requestDumpScope,
               async () => {
+                // Admitted, and immediately before the pipeline: the
+                // responsible person is a process singleton, so set before the
+                // queue wait the last arrival would name it for every queued
+                // run. Two admitted runs can still race on it — a pre-existing
+                // limitation of the singleton, not of the door.
+                if (requestConnection) setRequestResponsible(req.headers);
                 const stream = handle.agent.streamProcess(
                   normalizedMessages,
                   opts,
@@ -1172,6 +1179,9 @@ export async function handleChatCompletions(
             requestConnection,
             requestDumpScope,
             async () => {
+              // Admitted, and immediately before the pipeline — see the
+              // streaming branch for why, and for the race that remains.
+              if (requestConnection) setRequestResponsible(req.headers);
               return handle.agent.process(normalizedMessages, opts);
             },
           ),
