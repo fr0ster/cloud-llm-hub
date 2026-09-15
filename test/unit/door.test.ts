@@ -103,6 +103,13 @@ describe('capacity and the queue', () => {
   });
 });
 
+/** What a pending admission landed with; fails the test if it has not landed. */
+function landed(p: { state: { result?: AdmitResult } }): AdmitResult {
+  const r = p.state.result;
+  if (!r) throw new Error('the admission has not landed');
+  return r;
+}
+
 describe('order', () => {
   it('is first in, first out under contention', async () => {
     const { d } = door(1, 3);
@@ -114,7 +121,7 @@ describe('order', () => {
     await tick();
     expect(b.state.result).toBeDefined();
     expect(c.state.result).toBeUndefined();
-    admitted(b.state.result!).release();
+    admitted(landed(b)).release();
     await tick();
     expect(c.state.result).toBeDefined();
     expect(e.state.result).toBeUndefined();
@@ -372,9 +379,9 @@ describe('a retention that pokes the door from inside a lease', () => {
     await tick();
 
     // B, C still admitted; E should be admitted; F should still wait
-    const b_adm = admitted(b.state.result!);
-    const c_adm = admitted(c.state.result!);
-    const e_adm = admitted(e.state.result!);
+    const b_adm = admitted(landed(b));
+    const c_adm = admitted(landed(c));
+    const e_adm = admitted(landed(e));
     expect(f.state.result).toBeUndefined(); // The fourth waits
 
     // Invariants the bug broke
@@ -391,7 +398,7 @@ describe('a retention that pokes the door from inside a lease', () => {
     c_adm.release();
     e_adm.release();
     await tick();
-    const f_adm = admitted(f.state.result!);
+    const f_adm = admitted(landed(f));
     f_adm.release();
     await tick();
 
@@ -447,8 +454,8 @@ describe('a retention that pokes the door from inside a lease', () => {
 
     // Get the admitted one
     const adm = queuedAnswered
-      ? admitted(queued.state.result!)
-      : admitted(arrival.state.result!);
+      ? admitted(landed(queued))
+      : admitted(landed(arrival));
 
     // Release that one admission
     adm.release();
@@ -459,8 +466,8 @@ describe('a retention that pokes the door from inside a lease', () => {
       queuedAnswered ? arrival.state.result : queued.state.result,
     ).toBeDefined();
     const otherAdm = queuedAnswered
-      ? admitted(arrival.state.result!)
-      : admitted(queued.state.result!);
+      ? admitted(landed(arrival))
+      : admitted(landed(queued));
     expect(d.snapshot()).toMatchObject({ live: 1, queued: 0 });
     expect(retention.leases).toBe(1);
 

@@ -77,6 +77,17 @@ function gatedBackend() {
 
 const registry = manager.getCollectionRegistry();
 const { router, routes } = makeMockRouter();
+
+/** The registry's own record of a collection; fails the test if there is none. */
+function storedCollection(physId: string) {
+  const stored = (
+    registry as unknown as {
+      collections: Map<string, { rag: unknown; meta: { expiresAt?: number } }>;
+    }
+  ).collections.get(physId);
+  if (!stored) throw new Error(`no stored collection ${physId}`);
+  return stored;
+}
 registerRagRoutes(router, registry);
 
 function as(user: string) {
@@ -249,11 +260,7 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
     // A fresh gate for the operation under test.
     const held = gatedBackend();
     registry.registerBackend('gated', held.factory);
-    (
-      registry as unknown as {
-        collections: Map<string, { rag: unknown }>;
-      }
-    ).collections.get(physId)!.rag = held.factory();
+    storedCollection(physId).rag = held.factory();
     as('alice');
     const running = start(physId);
     await new Promise((r) => setImmediate(r));
@@ -346,11 +353,7 @@ describe('the TTL sweep', () => {
       text: 'hello',
       metadata: {},
     });
-    (
-      registry as unknown as {
-        collections: Map<string, { meta: { expiresAt?: number } }>;
-      }
-    ).collections.get(physId)!.meta.expiresAt = Date.now() - 1;
+    storedCollection(physId).meta.expiresAt = Date.now() - 1;
 
     const held = gatekeeper.leaseSession('alice', 'A', 'rag');
     expect(isRefusal(held)).toBe(false);
