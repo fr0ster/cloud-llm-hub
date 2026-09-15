@@ -11,6 +11,7 @@ import { InMemoryRag, RagError } from '@mcp-abap-adt/llm-agent';
 import {
   CollectionRegistry,
   collectionRemovalFailureCount,
+  type RagBackendFactory,
   resetCollectionRemovalFailuresForTest,
 } from '../../srv/rag-collections';
 
@@ -201,6 +202,101 @@ describe('a session with several collections', () => {
     expect(reg.getCollection('s__g_2')).toBeNull();
     expect(await holds(kept, 's__g_2')).toBe(false);
     expect(collectionRemovalFailureCount()).toBe(1);
+  });
+});
+
+describe('collections over one shared backend', () => {
+  /** A store whose clear waits until the test lets it go. */
+  class HeldClearRag extends InMemoryRag {
+    constructor(private readonly hold: Promise<void>) {
+      super();
+    }
+    writer() {
+      const w = super.writer();
+      return {
+        ...w,
+        clearAll: async () => {
+          await this.hold;
+          return (
+            (await w.clearAll?.()) ?? { ok: true as const, value: undefined }
+          );
+        },
+      };
+    }
+  }
+
+  /**
+   * One server for every collection, keeping a physical store per name — as
+   * Qdrant or a database would. A factory given no name gets the one store the
+   * server has under no name.
+   */
+  function sharedServer() {
+    const stores = new Map<string, HeldClearRag>();
+    const names: string[] = [];
+    let release!: () => void;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const factory: RagBackendFactory = ({ store }) => {
+      names.push(store);
+      let rag = stores.get(store);
+      if (!rag) {
+        rag = new HeldClearRag(hold);
+        stores.set(store, rag);
+      }
+      return rag;
+    };
+    return { factory, names, release };
+  }
+
+  it('removing one collection leaves the other collection’s records in place', async () => {
+    const server = sharedServer();
+    reg.registerBackend('shared', server.factory);
+    const first = await withDocument('s__a_1', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'a',
+      expiresAt: Date.now() + 60_000,
+      backend: 'shared',
+    });
+    const second = await withDocument('s__b_1', {
+      scope: 'session',
+      owner: 'bob',
+      sessionId: 'b',
+      expiresAt: Date.now() + 60_000,
+      backend: 'shared',
+    });
+    expect(new Set(server.names).size).toBe(2);
+
+    reg.deleteSessionCollections('alice', 'a');
+    server.release();
+    expect(await holds(first, 's__a_1')).toBe(false);
+    expect(await holds(second, 's__b_1')).toBe(true);
+    expect(reg.getCollection('s__b_1')).not.toBeNull();
+  });
+
+  it('a collection re-created under the same id gets a new store the pending clear cannot reach', async () => {
+    const server = sharedServer();
+    reg.registerBackend('shared', server.factory);
+    const old = await withDocument('s__r_1', {
+      scope: 'user',
+      owner: 'alice',
+      backend: 'shared',
+    });
+    reg.deleteCollection('s__r_1');
+    // The old clear is still waiting when the same id is created and written again.
+    const renewed = await withDocument('s__r_1', {
+      scope: 'user',
+      owner: 'alice',
+      backend: 'shared',
+    });
+    expect(server.names).toHaveLength(2);
+    expect(server.names[0]).not.toBe(server.names[1]);
+
+    server.release();
+    expect(await holds(old, 's__r_1')).toBe(false);
+    expect(await holds(renewed, 's__r_1')).toBe(true);
+    expect(collectionRemovalFailureCount()).toBe(0);
   });
 });
 
