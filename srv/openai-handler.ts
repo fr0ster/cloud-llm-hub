@@ -641,34 +641,10 @@ export async function handleChatCompletions(
         })()
       : [];
 
-  // Inject dynamic RAG collections per-request (save/restore pattern).
-  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
+  // The destination agent's internal deps: its embedder for the search below,
+  // and its RAG stores, which are swapped in only once admitted (see there).
   // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
   const deps = (handle.agent as any).deps;
-  const originalRagStores = deps.ragStores;
-  if (resolvedCollectionIds.length > 0) {
-    const registry = getCollectionRegistry();
-    const dynamicStores = registry.getRagStores(resolvedCollectionIds);
-    const injected = Object.keys(dynamicStores);
-    if (injected.length > 0) {
-      const mergedStores = { ...originalRagStores };
-      for (const [key, store] of Object.entries(dynamicStores)) {
-        mergedStores[key] = new ExpositionFilteringRag(store);
-      }
-      deps.ragStores = mergedStores;
-      log.info('Dynamic RAG collections injected', {
-        requested: ragCollectionIds,
-        resolved: resolvedCollectionIds,
-        injected,
-      });
-    }
-  }
-
-  // Restore original ragStores after request completes (finally block at end of function)
-  const restoreRagStores = () => {
-    if (deps.ragStores !== originalRagStores)
-      deps.ragStores = originalRagStores;
-  };
 
   // Semantic search across active RAG collections and inject relevant results.
   // llm-agent hardcoded flow only queries RAG for "action" subprompts —
@@ -758,7 +734,6 @@ export async function handleChatCompletions(
       },
     );
     if ('refused' in admission) {
-      restoreRagStores();
       await safeStop(requestConnection);
       const refusal = openAiDoorRefusal(admission.refused);
       out.json(refusal.status, refusal.body);
@@ -767,7 +742,6 @@ export async function handleChatCompletions(
     if ('closed' in admission) {
       // Logged out while this request waited for its agent. Running now would
       // bring the session back under the id the caller asked us to destroy.
-      restoreRagStores();
       await safeStop(requestConnection);
       const closed = openAiSessionClosed();
       out.json(closed.status, closed.body);
@@ -776,12 +750,43 @@ export async function handleChatCompletions(
     pipeline = admission.admitted;
   } catch {
     // Left while queued. Nothing was started, so nothing is owed but the connection.
-    restoreRagStores();
     await safeStop(requestConnection);
     return;
   }
 
+  // Inject dynamic RAG collections per-request (save/restore pattern), and only
+  // now that the request is admitted: every pipeline on this destination runs on
+  // this same agent, so stores installed before the queue wait would be seen by
+  // every run admitted ahead of this one. Restored in the `finally` below.
+  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
+  // Interleaved admitted runs that both inject can still restore each other's
+  // set — a pre-existing race of mutating shared deps, left for per-request
+  // stores.
+  const originalRagStores = deps.ragStores;
+  const restoreRagStores = () => {
+    if (deps.ragStores !== originalRagStores)
+      deps.ragStores = originalRagStores;
+  };
+
   try {
+    if (resolvedCollectionIds.length > 0) {
+      const registry = getCollectionRegistry();
+      const dynamicStores = registry.getRagStores(resolvedCollectionIds);
+      const injected = Object.keys(dynamicStores);
+      if (injected.length > 0) {
+        const mergedStores = { ...originalRagStores };
+        for (const [key, store] of Object.entries(dynamicStores)) {
+          mergedStores[key] = new ExpositionFilteringRag(store);
+        }
+        deps.ragStores = mergedStores;
+        log.info('Dynamic RAG collections injected', {
+          requested: ragCollectionIds,
+          resolved: resolvedCollectionIds,
+          injected,
+        });
+      }
+    }
+
     const pipelineLog = cds.log('smart-pipeline');
     const opts = {
       stream: body.stream,
