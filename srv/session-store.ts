@@ -28,7 +28,7 @@ interface SessionEntry {
 }
 
 /**
- * Session store keyed by `${userId}\u0000${sessionId}`.
+ * Session store keyed by `JSON.stringify([userId, sessionId])`.
  *
  * Deliberately NOT keyed by sessionId alone: two BTP users that happen to
  * share or collide on the same session id (header spoofing, cookie theft,
@@ -39,7 +39,9 @@ const sessionStore = new Map<string, SessionEntry>();
 
 /** Composite key that isolates sessions by user identity. */
 function sessionStoreKey(sessionId: string, userId: string): string {
-  return `${userId}\u0000${sessionId}`;
+  // A tuple, not a join: no separator keeps two pairs apart whatever a
+  // caller puts in a cookie, and the NUL this used before was no exception.
+  return JSON.stringify([userId, sessionId]);
 }
 
 /** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the

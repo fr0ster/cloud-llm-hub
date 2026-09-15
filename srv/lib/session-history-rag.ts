@@ -42,9 +42,13 @@ const MAX_TURNS_PER_OWNER = 200;
  * A turn is recalled only inside the conversation that produced it. Two people
  * on the same destination must never see each other's turns, and neither
  * should the same person's unrelated session.
+ *
+ * A tuple, not a join: with a colon, ("alice:x", "y") and ("alice", "x:y") were
+ * one owner. The store lives in memory, so no recorded owner outlives the
+ * process in the old shape.
  */
 export function turnOwner(userId: string, sessionId: string): string {
-  return `${userId}:${sessionId}`;
+  return JSON.stringify([userId, sessionId]);
 }
 
 /**
