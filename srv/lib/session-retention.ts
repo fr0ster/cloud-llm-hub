@@ -12,8 +12,8 @@ export interface RetentionStores {
    * Remove everything held for this session. Must be synchronous.
    * Throws when something could not be removed — a metadata write, or a
    * collection directory that would not go. Retention reports it instead of
-   * throwing from lease or release, and keeps the session closed and counted
-   * until a retry succeeds.
+   * throwing from lease or release, and keeps the session closed and counted;
+   * the removal is not retried.
    */
   deleteAll(userId: string, sessionId: string): void;
   /**
@@ -52,7 +52,7 @@ export interface RetentionSnapshot {
   evictions: number;
   /** Closed to new leases, cleanup not yet run. Normally zero for longer than an upload. */
   closing: number;
-  /** Removals that ran and failed; each keeps its place until a retry succeeds. */
+  /** Removals that ran and failed; each keeps its place until the service restarts. */
   cleanupFailed: number;
 }
 
@@ -94,7 +94,7 @@ function pendingClose(): NonNullable<Entry['closing']> {
     resolve = r;
     reject = rej;
   });
-  // A removal nobody awaits — an eviction, a retry — must not surface as an
+  // A removal nobody awaits — an eviction, say — must not surface as an
   // unhandled rejection; whoever does await it still sees the failure.
   settled.catch(() => {});
   return { settled, resolve, reject };
@@ -196,27 +196,25 @@ export class SessionRetention {
       } catch (error) {
         this.stores.reportDeleteError?.(userId, sessionId, error);
         // Nothing counted this session, yet its state is still there: count it
-        // now, closed, so its place is taken until a retry removes it.
+        // now, closed, so its place stays taken. Nothing retries the removal.
+        const closing = pendingClose();
+        closing.reject(error);
         this.entries.set(key, {
           userId,
           sessionId,
           lastUsed: this.now(),
           presented: false,
           leases: new Set(),
-          closing: pendingClose(),
+          closing,
           cleanupFailed: { error },
         });
-        return Promise.reject(error);
+        return closing.settled;
       }
       return Promise.resolve();
     }
-    if (e.closing) {
-      // A removal that failed is tried again; one still waiting for its leases
-      // is simply waited for.
-      const current = e.closing;
-      if (e.cleanupFailed && e.leases.size === 0) this.finishClose(e);
-      return current.settled;
-    }
+    // Still waiting for its leases, or removed and failed: the same answer
+    // either way, and nothing runs the removal a second time.
+    if (e.closing) return e.closing.settled;
     e.closing = pendingClose();
     const settled = e.closing.settled;
     for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
@@ -286,21 +284,6 @@ export class SessionRetention {
     return n;
   }
 
-  /**
-   * Try again every removal that failed and has nothing running against it.
-   * Returns how many succeeded now, so the caller can let waiters at the places
-   * they freed.
-   */
-  retryFailedCleanups(): number {
-    let freed = 0;
-    for (const e of [...this.entries.values()]) {
-      if (!e.cleanupFailed || e.leases.size > 0) continue;
-      this.finishClose(e);
-      if (!e.cleanupFailed) freed++;
-    }
-    return freed;
-  }
-
   snapshot(): RetentionSnapshot {
     let closing = 0;
     let cleanupFailed = 0;
@@ -362,13 +345,12 @@ export class SessionRetention {
     } catch (error) {
       this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
       // The state is still there, so the session stays closed and keeps its
-      // place; the next close() or retryFailedCleanups() tries again.
+      // place until the service restarts. Nothing retries it: a filesystem
+      // that refused the removal once refuses it again.
       e.cleanupFailed = { error };
-      e.closing = pendingClose();
       current?.reject(error);
       return;
     }
-    e.cleanupFailed = undefined;
     this.entries.delete(keyOf(e.userId, e.sessionId));
     current?.resolve();
   }

@@ -189,14 +189,8 @@ export function hasRagLease(userId: string, sessionId: string): boolean {
   return theRetention().hasLease(userId, sessionId, 'rag');
 }
 
-/**
- * The five-minute pass: forget sessions that hold nothing, and retry removals
- * that failed. A directory that would not go keeps its session closed and its
- * place taken until one of these passes, or another close, removes it.
- */
 export function forgetEmptySessions(): number {
-  const r = theRetention();
-  const n = r.forgetEmpty() + r.retryFailedCleanups();
+  const n = theRetention().forgetEmpty();
   if (n > 0) theDoor()?.poke();
   return n;
 }

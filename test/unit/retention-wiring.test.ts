@@ -177,7 +177,7 @@ describe('the retention cap on the RAG routes', () => {
     expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
   });
 
-  it('a removal that fails keeps the session closed and its place taken, and the next pass removes it', async () => {
+  it('a removal that fails keeps the session closed and its place taken, and nothing retries it', async () => {
     expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
     await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
       id: 'd1',
@@ -218,17 +218,19 @@ describe('the retention cap on the RAG routes', () => {
       rm.mockRestore();
     }
 
-    // The next pass removes it: directory, collection and place.
-    expect(gatekeeper.forgetEmptySessions()).toBe(1);
-    expect(fs.existsSync(dir)).toBe(false);
-    expect(
-      registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
-    ).toBeNull();
+    // Nothing retries it: even with the filesystem working again, a pass leaves
+    // the session closed, its directory on disk and its place taken.
+    expect(gatekeeper.forgetEmptySessions()).toBe(0);
+    expect(fs.existsSync(dir)).toBe(true);
     expect(gatekeeper.theRetention().snapshot()).toMatchObject({
-      retained: 0,
-      cleanupFailed: 0,
+      retained: 1,
+      cleanupFailed: 1,
     });
-    expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
+
+    // What a restart does: a fresh retention; the state is removed by hand here.
+    gatekeeper.resetGatekeeperForTest();
+    registry.deleteSessionCollections('alice', 'A');
+    expect(fs.existsSync(dir)).toBe(false);
   });
 });
 

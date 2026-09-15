@@ -435,42 +435,25 @@ describe('a store that fails to delete', () => {
     expect(r.lease('bob', 'B', 'rag')).toEqual({ refused: 'retention' });
   });
 
-  it('a retry that succeeds removes the state and frees the place', async () => {
+  it('nothing retries a failed removal: closing again answers with the same failure', async () => {
     const f = failingStores();
     const r = new SessionRetention(f.stores, 1);
     f.put('alice', 'A');
     lease(r.lease('alice', 'A', 'rag')).release();
     f.setFail(true);
-    await r.close('alice', 'A').catch(() => {});
-    // Still failing: nothing freed, the failure reported again.
-    expect(r.retryFailedCleanups()).toBe(0);
-    expect(f.reported).toHaveLength(2);
-    expect(r.isClosing('alice', 'A')).toBe(true);
-
+    await expect(r.close('alice', 'A')).rejects.toThrow('EACCES');
+    // Even once the store would succeed, the removal is not run again.
     f.setFail(false);
-    expect(r.retryFailedCleanups()).toBe(1);
-    expect(f.held.has('alice/A')).toBe(false);
-    expect(r.isClosing('alice', 'A')).toBe(false);
+    await expect(r.close('alice', 'A')).rejects.toThrow('EACCES');
+    expect(f.reported).toHaveLength(1);
+    expect(f.held.has('alice/A')).toBe(true);
+    expect(r.forgetEmpty()).toBe(0);
     expect(r.snapshot()).toMatchObject({
-      retained: 0,
-      closing: 0,
-      cleanupFailed: 0,
+      retained: 1,
+      closing: 1,
+      cleanupFailed: 1,
     });
-    lease(r.lease('bob', 'B', 'rag')).release();
-  });
-
-  it('closing again retries the removal, and resolves once it succeeds', async () => {
-    const f = failingStores();
-    const r = new SessionRetention(f.stores, 2);
-    f.put('alice', 'A');
-    lease(r.lease('alice', 'A', 'rag')).release();
-    f.setFail(true);
-    await expect(r.close('alice', 'A')).rejects.toThrow('EACCES');
-    await expect(r.close('alice', 'A')).rejects.toThrow('EACCES');
-    f.setFail(false);
-    await expect(r.close('alice', 'A')).resolves.toBeUndefined();
-    expect(f.held.has('alice/A')).toBe(false);
-    expect(r.isClosing('alice', 'A')).toBe(false);
+    expect(r.lease('bob', 'B', 'rag')).toEqual({ refused: 'retention' });
   });
 
   it('close on a session retention never saw rejects and reports', async () => {
