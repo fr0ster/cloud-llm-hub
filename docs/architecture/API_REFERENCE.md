@@ -663,9 +663,18 @@ different lifetime and visibility.
 unreachable from that moment; its history, collections and their files are
 removed once whatever is running against it has stopped — a RAG upload is
 cancelled and then waited for, a running pipeline is waited for. A request
-against a session being removed is answered `410` with `error.code:
-session_closed`. The next request carrying the old cookie is given a new
-session.
+against a session being removed is answered `410` on every channel that has a
+session — the shape differs, since only the OpenAI and RAG envelopes carry a
+`code` field:
+
+| Channel | Shape |
+|---|---|
+| `/v1/chat/completions` | `{ error: { message, type: 'invalid_request_error', code: 'session_closed' } }` |
+| `/v1/messages` | `{ type: 'error', error: { type: 'invalid_request_error', message } }` — no `code` field |
+| `/v1/rag/*` | `{ error: { message, code: 'session_closed' } }` — no `type` field |
+
+`execute_step` has no such path: it issues no cookie, so there is no session for
+it to close. The next request carrying the old cookie is given a new session.
 
 **Retention.** With `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` set, creating a
 session-scoped collection when every place is taken by something running is

@@ -87,7 +87,7 @@ graph LR
 | Path | Entry Point | Purpose |
 |------|-------------|---------|
 | **Raw MCP tools** | `POST /mcp/stream/http` | Orchestrates MCP protocol requests: auth, destination resolution, connection creation, then delegates to embedded `mcp-abap-adt` server; used by AI assistants directly. No agent involved. |
-| **Agent / LLM surfaces** | `POST /mcp/agent/stream/http` (`execute_step`, `srv/agent-mcp.ts`), `POST /v1/chat/completions` (`srv/openai-handler.ts`), `POST /v1/messages` (`srv/anthropic-handler.ts`) | All three call `getSmartAgent` (`srv/agent-manager.ts`) → the DAG-coordinator controller (executor worker + reviewer, see §7). The OData `AgentService` (`/odata/v4/agent/*`) keeps `Health` only; it starts no pipeline. |
+| **Agent / LLM surfaces** | `POST /mcp/agent/stream/http` (`execute_step`, `srv/agent-mcp.ts`), `POST /v1/chat/completions` (`srv/openai-handler.ts`), `POST /v1/messages` (`srv/anthropic-handler.ts`) | All three call `getSmartAgent` (`srv/agent-manager.ts`) → the DAG-coordinator controller (executor worker + reviewer, see §7). The OData `AgentService` (`/odata/v4/agent/*`) keeps `Health` (and the `GetHistory`/`ClearHistory` stubs); it starts no pipeline. |
 
 ---
 
