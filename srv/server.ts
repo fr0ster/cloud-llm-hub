@@ -38,6 +38,7 @@ import {
 } from './lib/gatekeeper';
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
+import { guardedTask } from './lib/guarded-task';
 import { needsSapConnection } from './lib/mcp-request';
 import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
@@ -630,16 +631,22 @@ cds.on('served', () => {
   const log = cds.log('agent-manager/init');
   // Both sweeps start here, whatever initialisation and the collection load do
   // next. Inside their success path, a failed first init or a failed load left
-  // neither running until restart.
+  // neither running until restart. Each tick is guarded: a throw inside a timer
+  // is an uncaught exception, and CAP would shut the process down on it.
   // Hourly: expired session collections, skipping any session with an
   // operation still running against it — the next pass collects those.
   setInterval(
-    () => getCollectionRegistry().sweepExpiredSessions(maySweepSession),
+    guardedTask('Session collection sweep', log, () =>
+      getCollectionRegistry().sweepExpiredSessions(maySweepSession),
+    ),
     60 * 60 * 1000,
   ).unref();
   // Every five minutes, beside the history sweep: a session whose turns have
   // expired and which owns no collection stops counting.
-  setInterval(() => forgetEmptySessions(), 5 * 60 * 1000).unref();
+  setInterval(
+    guardedTask('Empty session forget', log, () => forgetEmptySessions()),
+    5 * 60 * 1000,
+  ).unref();
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
