@@ -38,7 +38,11 @@ import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
-import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+import {
+  admitPipeline,
+  hasRagLease,
+  type PipelineSession,
+} from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
@@ -420,22 +424,6 @@ export async function handleChatCompletions(
   const rawHistorySize = normalizedMessages.length;
   normalizedMessages = trimHistoryForContext(normalizedMessages);
 
-  /**
-   * Everything before this request's new user message.
-   *
-   * The coordinator composes the executor's prompt from the LAST user message
-   * alone, so the executor needs the turns that came before it — and only
-   * those, or the new message would appear twice. Bound to the request scope
-   * below and read back inside the executor.
-   */
-  const priorTurns = (() => {
-    for (let i = normalizedMessages.length - 1; i >= 0; i--) {
-      if (normalizedMessages[i].role === 'user')
-        return normalizedMessages.slice(0, i);
-    }
-    return [];
-  })();
-
   log.info('Chat completions request', {
     stream: body.stream ?? false,
     traceId,
@@ -592,26 +580,6 @@ export async function handleChatCompletions(
     return;
   }
 
-  // Track which destination this session is using. A changed destination is a
-  // reconnect boundary: wipe session-scoped state before continuing.
-  setSessionDestination(userId, sessionId, destAfter);
-  if (destBefore !== destAfter && serverManaged) {
-    log.info('Destination reconnect, clearing session history', {
-      from: destBefore,
-      to: destAfter,
-      sessionId,
-    });
-    clearSession(sessionId, userId);
-    // Drop the session's ephemeral RAG collections too (owner-guarded), so they
-    // don't keep shadowing user collections after a destination reconnect.
-    getCollectionRegistry().deleteSessionCollections(userId, sessionId);
-    // Re-build normalizedMessages with only the new user message (no stale history)
-    const lastUserContent = extractText(
-      userMessages[userMessages.length - 1].content,
-    );
-    normalizedMessages = [{ role: 'user', content: lastUserContent }];
-  }
-
   // Inject dynamic RAG collections from X-Rag-Collections header or body
   const ragCollectionIds: string[] = (() => {
     const header = req.headers['x-rag-collections'] as string | undefined;
@@ -626,100 +594,10 @@ export async function handleChatCompletions(
     return [];
   })();
 
-  // Resolve each entry: bare logical names → caller's own physical id; physical ids
-  // owned by another user → dropped. Session collection shadows user collection.
-  // Done once here and reused by both the RAG store injection and semantic search below.
-  const resolvedCollectionIds: string[] =
-    ragCollectionIds.length > 0
-      ? (() => {
-          const registry = getCollectionRegistry();
-          return ragCollectionIds
-            .map((entry) =>
-              resolveRouteId(registry, entry, getUserId(), sessionId, false),
-            )
-            .filter((id): id is string => id !== undefined);
-        })()
-      : [];
-
   // The destination agent's internal deps: its embedder for the search below,
   // and its RAG stores, which are swapped in only once admitted (see there).
   // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
   const deps = (handle.agent as any).deps;
-
-  // Semantic search across active RAG collections and inject relevant results.
-  // llm-agent hardcoded flow only queries RAG for "action" subprompts —
-  // chat questions classified as "chat" → RAG skipped. We do our own search.
-  if (resolvedCollectionIds.length > 0) {
-    const registry = getCollectionRegistry();
-    const userMessage = normalizedMessages
-      .filter((m) => m.role === 'user')
-      .slice(-1)[0];
-    const queryText =
-      typeof userMessage?.content === 'string' ? userMessage.content : '';
-
-    if (queryText) {
-      // Search user collections in the ORIGINAL language (no translation).
-      // User content may be in any language — translating the query would
-      // break matching (e.g., Ukrainian query → English translation won't
-      // match Ukrainian anecdote in vector space).
-      // Tool selection has its own _toEnglishForRag() in llm-agent.
-      const { QueryEmbedding, TextOnlyEmbedding } = await import(
-        '@mcp-abap-adt/llm-agent'
-      );
-      const embedding = deps.embedder
-        ? new QueryEmbedding(queryText, deps.embedder)
-        : new TextOnlyEmbedding(queryText);
-
-      const relevantTexts: string[] = [];
-      for (const colId of resolvedCollectionIds) {
-        const store = registry.getRagStore(colId);
-        if (!store) continue;
-        const result = await new ExpositionFilteringRag(store).query(
-          embedding,
-          3,
-        );
-        if (result.ok) {
-          for (const r of result.value) {
-            log.info('RAG search result', {
-              collection: colId,
-              score: r.score.toFixed(4),
-              preview: r.text.slice(0, 80),
-            });
-            const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
-            if (r.score >= threshold) {
-              relevantTexts.push(r.text);
-            }
-          }
-        }
-      }
-
-      if (relevantTexts.length > 0) {
-        const ragContext = relevantTexts.join('\n---\n');
-        let lastUserIdx = -1;
-        for (let i = normalizedMessages.length - 1; i >= 0; i--) {
-          if (normalizedMessages[i].role === 'user') {
-            lastUserIdx = i;
-            break;
-          }
-        }
-        if (lastUserIdx >= 0) {
-          const original = normalizedMessages[lastUserIdx];
-          const originalContent =
-            typeof original.content === 'string' ? original.content : '';
-          normalizedMessages = [...normalizedMessages];
-          normalizedMessages[lastUserIdx] = {
-            ...original,
-            content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
-          };
-        }
-        log.info('RAG semantic search results injected', {
-          collections: resolvedCollectionIds,
-          resultCount: relevantTexts.length,
-          contextChars: ragContext.length,
-        });
-      }
-    }
-  }
 
   // Admitted after the agent is resolved: a caller waiting for a destination to
   // warm waits outside the door, holding a request and no session.
@@ -769,6 +647,78 @@ export async function handleChatCompletions(
   };
 
   try {
+    // Track which destination this session is using. A changed destination is
+    // a reconnect boundary: wipe session-scoped state before continuing — and
+    // only now, admitted. A request refused, answered 410 or gone while queued
+    // started nothing, so it changes nothing; the admission's pipeline lease
+    // already excludes this session's other pipelines, so none of them loses
+    // its history mid-run. Read again here rather than at arrival: a run of
+    // this session that ended while this request waited may have moved it.
+    const lastDestination = getCurrentDestination(userId, sessionId);
+    if (lastDestination !== destAfter && serverManaged) {
+      log.info('Destination reconnect, clearing session history', {
+        from: lastDestination,
+        to: destAfter,
+        sessionId,
+      });
+      clearSession(sessionId, userId);
+      // Drop the session's ephemeral RAG collections too (owner-guarded), so
+      // they don't keep shadowing user collections after a reconnect — unless a
+      // RAG operation is still writing into them. Removing the registry entry
+      // and directory under a live upload is the leak three-step deletion
+      // closes; the collections then stay, and go with the session. Asked and
+      // removed in one synchronous step, so no lease is taken in between.
+      if (hasRagLease(userId, sessionId)) {
+        log.info(
+          'Destination reconnect kept the session collections: a RAG operation holds the session',
+          { sessionId },
+        );
+      } else {
+        getCollectionRegistry().deleteSessionCollections(userId, sessionId);
+      }
+      // Re-build normalizedMessages with only the new user message (no stale history)
+      const lastUserContent = extractText(
+        userMessages[userMessages.length - 1].content,
+      );
+      normalizedMessages = [{ role: 'user', content: lastUserContent }];
+    }
+    // Under the admission's lease: a logout's removal waits for it, so this
+    // entry cannot be written back after the session it names is gone.
+    setSessionDestination(userId, sessionId, destAfter);
+
+    /**
+     * Everything before this request's new user message.
+     *
+     * The coordinator composes the executor's prompt from the LAST user message
+     * alone, so the executor needs the turns that came before it — and only
+     * those, or the new message would appear twice. Bound to the request scope
+     * below and read back inside the executor. Taken after the switch above, so
+     * turns it cleared do not reach the executor anyway.
+     */
+    const priorTurns = (() => {
+      for (let i = normalizedMessages.length - 1; i >= 0; i--) {
+        if (normalizedMessages[i].role === 'user')
+          return normalizedMessages.slice(0, i);
+      }
+      return [];
+    })();
+
+    // Resolve each entry: bare logical names → caller's own physical id; physical
+    // ids owned by another user → dropped. Session collection shadows user
+    // collection. After the switch, which may have removed session collections;
+    // reused by both the RAG store injection and semantic search below.
+    const resolvedCollectionIds: string[] =
+      ragCollectionIds.length > 0
+        ? (() => {
+            const registry = getCollectionRegistry();
+            return ragCollectionIds
+              .map((entry) =>
+                resolveRouteId(registry, entry, getUserId(), sessionId, false),
+              )
+              .filter((id): id is string => id !== undefined);
+          })()
+        : [];
+
     if (resolvedCollectionIds.length > 0) {
       const registry = getCollectionRegistry();
       const dynamicStores = registry.getRagStores(resolvedCollectionIds);
@@ -784,6 +734,83 @@ export async function handleChatCompletions(
           resolved: resolvedCollectionIds,
           injected,
         });
+      }
+    }
+
+    // Semantic search across active RAG collections and inject relevant results.
+    // llm-agent hardcoded flow only queries RAG for "action" subprompts —
+    // chat questions classified as "chat" → RAG skipped. We do our own search.
+    // After the switch: it reads the session's collections and adds to the
+    // message the switch may have just rebuilt.
+    if (resolvedCollectionIds.length > 0) {
+      const registry = getCollectionRegistry();
+      const userMessage = normalizedMessages
+        .filter((m) => m.role === 'user')
+        .slice(-1)[0];
+      const queryText =
+        typeof userMessage?.content === 'string' ? userMessage.content : '';
+
+      if (queryText) {
+        // Search user collections in the ORIGINAL language (no translation).
+        // User content may be in any language — translating the query would
+        // break matching (e.g., Ukrainian query → English translation won't
+        // match Ukrainian anecdote in vector space).
+        // Tool selection has its own _toEnglishForRag() in llm-agent.
+        const { QueryEmbedding, TextOnlyEmbedding } = await import(
+          '@mcp-abap-adt/llm-agent'
+        );
+        const embedding = deps.embedder
+          ? new QueryEmbedding(queryText, deps.embedder)
+          : new TextOnlyEmbedding(queryText);
+
+        const relevantTexts: string[] = [];
+        for (const colId of resolvedCollectionIds) {
+          const store = registry.getRagStore(colId);
+          if (!store) continue;
+          const result = await new ExpositionFilteringRag(store).query(
+            embedding,
+            3,
+          );
+          if (result.ok) {
+            for (const r of result.value) {
+              log.info('RAG search result', {
+                collection: colId,
+                score: r.score.toFixed(4),
+                preview: r.text.slice(0, 80),
+              });
+              const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
+              if (r.score >= threshold) {
+                relevantTexts.push(r.text);
+              }
+            }
+          }
+        }
+
+        if (relevantTexts.length > 0) {
+          const ragContext = relevantTexts.join('\n---\n');
+          let lastUserIdx = -1;
+          for (let i = normalizedMessages.length - 1; i >= 0; i--) {
+            if (normalizedMessages[i].role === 'user') {
+              lastUserIdx = i;
+              break;
+            }
+          }
+          if (lastUserIdx >= 0) {
+            const original = normalizedMessages[lastUserIdx];
+            const originalContent =
+              typeof original.content === 'string' ? original.content : '';
+            normalizedMessages = [...normalizedMessages];
+            normalizedMessages[lastUserIdx] = {
+              ...original,
+              content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
+            };
+          }
+          log.info('RAG semantic search results injected', {
+            collections: resolvedCollectionIds,
+            resultCount: relevantTexts.length,
+            contextChars: ragContext.length,
+          });
+        }
       }
     }
 

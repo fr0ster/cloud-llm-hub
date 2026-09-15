@@ -34,6 +34,14 @@ export const harness = {
   closeDestinationCalls: [] as Array<{ destination: string; reason: string }>,
   /** Every destination `establishRequestConnection` was asked to connect to. */
   establishCalls: [] as string[],
+  /** Last destination per `JSON.stringify([userId, sessionId])`; unset reads as `DEST`. */
+  sessionDestinations: new Map<string, string>(),
+  /** Every `setSessionDestination(userId, sessionId, destination)` call. */
+  destinationSets: [] as Array<{
+    userId: string;
+    sessionId: string;
+    destination: string;
+  }>,
   process: async (
     _messages: unknown,
     _opts: Record<string, unknown>,
@@ -57,6 +65,8 @@ export const harness = {
     harness.unanswered = [];
     harness.closeDestinationCalls = [];
     harness.establishCalls = [];
+    harness.sessionDestinations = new Map();
+    harness.destinationSets = [];
     harness.process = async () => ({
       ok: true,
       value: { content: 'done', stopReason: 'stop' },
@@ -100,8 +110,22 @@ export function agentManagerMock() {
       await harness.agentGate;
       return handle;
     },
-    getCurrentDestination: () => 'DEST',
-    setSessionDestination: () => {},
+    getCurrentDestination: (userId?: string, sessionId?: string) =>
+      (userId &&
+        sessionId &&
+        harness.sessionDestinations.get(JSON.stringify([userId, sessionId]))) ||
+      'DEST',
+    setSessionDestination: (
+      userId: string,
+      sessionId: string,
+      destination: string,
+    ) => {
+      harness.destinationSets.push({ userId, sessionId, destination });
+      harness.sessionDestinations.set(
+        JSON.stringify([userId, sessionId]),
+        destination,
+      );
+    },
     forgetSessionDestination: () => {},
     getCollectionRegistry: () => registry,
     getCurrentModel: () => 'm',

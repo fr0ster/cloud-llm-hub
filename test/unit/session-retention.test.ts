@@ -182,6 +182,24 @@ describe('places', () => {
   });
 });
 
+describe('what is holding a session', () => {
+  it('says whether a lease of one kind is live, whatever else holds it', () => {
+    const f = fakeStores();
+    const r = new SessionRetention(f.stores, 5);
+    expect(r.hasLease('alice', 'A', 'rag')).toBe(false);
+    const run = lease(r.lease('alice', 'A', 'pipeline'));
+    expect(r.hasLease('alice', 'A', 'pipeline')).toBe(true);
+    expect(r.hasLease('alice', 'A', 'rag')).toBe(false);
+    const upload = lease(r.lease('alice', 'A', 'rag'));
+    expect(r.hasLease('alice', 'A', 'rag')).toBe(true);
+    // Keyed by the user too: the same session id under another user holds nothing.
+    expect(r.hasLease('bob', 'A', 'rag')).toBe(false);
+    upload.release();
+    expect(r.hasLease('alice', 'A', 'rag')).toBe(false);
+    run.release();
+  });
+});
+
 describe('closing, then deleting', () => {
   it('deletes at once when nothing holds the session', async () => {
     const f = fakeStores();

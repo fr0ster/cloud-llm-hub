@@ -196,6 +196,14 @@ export class SessionRetention {
     return !!this.entries.get(keyOf(userId, sessionId))?.closing;
   }
 
+  /** Whether a lease of this kind is live on the session. */
+  hasLease(userId: string, sessionId: string, kind: LeaseKind): boolean {
+    const e = this.entries.get(keyOf(userId, sessionId));
+    if (!e) return false;
+    for (const l of e.leases) if (l.kind === kind) return true;
+    return false;
+  }
+
   /**
    * Whether a session a request presented has been closed or removed since.
    *

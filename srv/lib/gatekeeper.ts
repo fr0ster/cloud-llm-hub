@@ -181,6 +181,14 @@ export function maySweepSession(userId: string, sessionId: string): boolean {
   return theRetention().maySweep(userId, sessionId);
 }
 
+/**
+ * Whether a RAG operation is running against this session now — one that
+ * writes into its session collections, so they must not be removed under it.
+ */
+export function hasRagLease(userId: string, sessionId: string): boolean {
+  return theRetention().hasLease(userId, sessionId, 'rag');
+}
+
 export function forgetEmptySessions(): number {
   const n = theRetention().forgetEmpty();
   if (n > 0) theDoor()?.poke();

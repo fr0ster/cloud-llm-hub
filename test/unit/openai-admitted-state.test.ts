@@ -44,12 +44,22 @@ jest.mock('../../srv/collection-ids', () => ({
   resolveRouteId: (_registry: unknown, id: string) => id,
 }));
 
+import type { Message } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import * as manager from '../../srv/agent-manager';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import type { Lease } from '../../srv/lib/session-retention';
 import { handleChatCompletions } from '../../srv/openai-handler';
-import { fakeReq, fakeRes, harness, tick } from './helpers/channel-harness';
+import { getRequestHistory } from '../../srv/request-session';
+import * as sessionStore from '../../srv/session-store';
+import {
+  deferred,
+  fakeReq,
+  fakeRes,
+  harness,
+  tick,
+} from './helpers/channel-harness';
 
 function configure(live?: number, queue?: number) {
   if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
@@ -110,7 +120,7 @@ describe('the RAG stores a request names', () => {
     expect(Object.keys(deps.ragStores)).not.toContain('col-1');
   });
 
-  it('are never installed for a request refused at the door', async () => {
+  it('are never installed for a request refused at the door (RAG)', async () => {
     configure(1, 1);
     const registry = manager.getCollectionRegistry();
     const getRagStores = jest
@@ -137,5 +147,157 @@ describe('the RAG stores a request names', () => {
       const queued = await filler;
       if (queued && 'admitted' in queued) queued.admitted.release();
     }
+  });
+});
+
+describe('a destination switch', () => {
+  const USER = 'alice';
+  const SID = 's-1';
+
+  /** A session the caller presented, with one earlier turn on DEST, now asking for OTHER. */
+  function switchingRequest() {
+    sessionStore.appendToSession(SID, USER, {
+      role: 'user',
+      content: 'earlier',
+    });
+    harness.sessionDestinations.set(JSON.stringify([USER, SID]), 'DEST');
+    const req = fakeReq(body(), SID, false) as unknown as Request;
+    req.headers['x-sap-destination'] = 'OTHER';
+    return req;
+  }
+  const history = () =>
+    sessionStore.getSessionHistory(SID, USER).map((m) => m.content);
+  const switchedTo = (destination: string) => [
+    { userId: USER, sessionId: SID, destination },
+  ];
+
+  // Before as well as after: the RAG tests above answer on the same session id
+  // and store their turn under it.
+  beforeEach(() => sessionStore.clearSession(SID, USER));
+  afterEach(() => sessionStore.clearSession(SID, USER));
+
+  it('wipes and switches nothing for a request refused at the door', async () => {
+    configure(1, 1);
+    const del = jest.spyOn(
+      manager.getCollectionRegistry(),
+      'deleteSessionCollections',
+    );
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    const filler = gatekeeper
+      .admitPipeline('carol', 'queued')
+      .catch(() => undefined);
+    await tick();
+    try {
+      const res = fakeRes();
+      await handleChatCompletions(
+        switchingRequest(),
+        res as unknown as Response,
+      );
+
+      expect(res.statusCode).toBe(503);
+      expect(history()).toEqual(['earlier']);
+      expect(del).not.toHaveBeenCalled();
+      expect(harness.destinationSets).toEqual([]);
+    } finally {
+      if ('admitted' in hold) hold.admitted.release();
+      const queued = await filler;
+      if (queued && 'admitted' in queued) queued.admitted.release();
+    }
+  });
+
+  it('wipes and switches nothing for a request that leaves while queued', async () => {
+    configure(1, 1);
+    const del = jest.spyOn(
+      manager.getCollectionRegistry(),
+      'deleteSessionCollections',
+    );
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    try {
+      const res = fakeRes();
+      const done = handleChatCompletions(
+        switchingRequest(),
+        res as unknown as Response,
+      );
+      await tick();
+      res.disconnect();
+      await done;
+
+      expect(harness.events).not.toContain('pipeline');
+      expect(history()).toEqual(['earlier']);
+      expect(del).not.toHaveBeenCalled();
+      expect(harness.destinationSets).toEqual([]);
+    } finally {
+      if ('admitted' in hold) hold.admitted.release();
+    }
+  });
+
+  it('does not re-create destination tracking for a session removed while it waited', async () => {
+    configure(2);
+    const gate = deferred();
+    harness.agentGate = gate.promise;
+    const res = fakeRes();
+    const done = handleChatCompletions(
+      switchingRequest(),
+      res as unknown as Response,
+    );
+    await tick();
+    await gatekeeper.deleteSession(USER, SID);
+    gate.resolve();
+    await done;
+
+    expect(res.statusCode).toBe(410);
+    expect(harness.destinationSets).toEqual([]);
+  });
+
+  it('keeps the session collections while a RAG operation holds the session', async () => {
+    configure(2);
+    const del = jest.spyOn(
+      manager.getCollectionRegistry(),
+      'deleteSessionCollections',
+    );
+    const req = switchingRequest();
+    // An upload into this session's collection is still writing: removing the
+    // registry entry and directory under it is the leak three-step deletion
+    // closes.
+    const upload = gatekeeper.leaseSession(USER, SID, 'rag') as Lease;
+    try {
+      const res = fakeRes();
+      await handleChatCompletions(req, res as unknown as Response);
+
+      expect(res.statusCode).toBe(200);
+      expect(del).not.toHaveBeenCalled();
+      // The history is still cleared: the admission's pipeline lease already
+      // excludes this session's other pipelines.
+      expect(history()).not.toContain('earlier');
+      expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
+    } finally {
+      upload.release();
+    }
+  });
+
+  it('clears the history, removes the collections and switches, once admitted', async () => {
+    configure(2);
+    const del = jest.spyOn(
+      manager.getCollectionRegistry(),
+      'deleteSessionCollections',
+    );
+    let priorTurns: Message[] = [];
+    let messages: unknown;
+    harness.process = async (m) => {
+      messages = m;
+      priorTurns = getRequestHistory();
+      return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+    };
+    const res = fakeRes();
+    await handleChatCompletions(switchingRequest(), res as unknown as Response);
+
+    expect(res.statusCode).toBe(200);
+    expect(del).toHaveBeenCalledWith(USER, SID);
+    expect(history()).not.toContain('earlier');
+    expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
+    // The run itself starts clean: neither its messages nor the prior turns
+    // bound for the executor carry the history the switch cleared.
+    expect(JSON.stringify(messages)).not.toContain('earlier');
+    expect(JSON.stringify(priorTurns)).not.toContain('earlier');
   });
 });
