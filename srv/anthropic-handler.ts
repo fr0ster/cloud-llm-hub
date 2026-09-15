@@ -305,6 +305,10 @@ export async function handleAnthropicMessages(
       if (typeof keepAlive.unref === 'function') keepAlive.unref();
       res.on('close', () => clearInterval(keepAlive));
 
+      // `message_stop`, held back once a chunk has failed so that a notice can
+      // still go before it: Anthropic clients, the Claude CLI among them, stop
+      // reading at `message_stop`, and a notice after it reaches nobody.
+      let heldStop = undefined as { event?: string; data: string } | undefined;
       try {
         // `AnthropicApiAdapter.transformStream` turns an error chunk
         // (`!chunk.ok`) into an ordinary `message_delta`/`message_stop` pair
@@ -327,6 +331,12 @@ export async function handleAnthropicMessages(
           })();
           const sseStream = adapter.transformStream(observed, context);
           for await (const event of sseStream) {
+            // Only after a failed chunk. With none, every event is written as
+            // it arrives, byte for byte what the adapter emitted.
+            if (event.event === 'message_stop' && streamError !== undefined) {
+              heldStop = event;
+              continue;
+            }
             out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
           }
         });
@@ -382,6 +392,10 @@ export async function handleAnthropicMessages(
         out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 
+      // The held `message_stop` closes the message after any notice above.
+      if (heldStop) {
+        out.write(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
+      }
       clearInterval(keepAlive);
       out.end();
       return;

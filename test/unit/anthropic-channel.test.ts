@@ -29,6 +29,7 @@ jest.mock('../../srv/lib/responsible', () =>
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { AnthropicApiAdapter } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { trackCall } from '../../srv/lib/admission-scope';
@@ -61,6 +62,8 @@ function configure(live?: number, queue?: number) {
   gatekeeper.resetGatekeeperForTest();
   clearGatekeeperMetrics();
 }
+
+const MESSAGE_STOP = 'event: message_stop\ndata: {"type":"message_stop"}\n\n';
 
 const body = (stream = false) => ({
   model: 'm',
@@ -321,6 +324,13 @@ describe('an unanswered write, streaming (swallowed error chunk)', () => {
     expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
     expect(res.body).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
+    // Anthropic clients, the Claude CLI among them, stop reading at
+    // message_stop: a notice after it is a notice nobody receives.
+    expect(res.body).toContain('event: message_stop');
+    expect(res.body.indexOf('event: error')).toBeLessThan(
+      res.body.indexOf('event: message_stop'),
+    );
+    expect(res.body.endsWith(`${MESSAGE_STOP}`)).toBe(true);
   });
 
   it('leaves the streamed output unchanged when nothing is unanswered', async () => {
@@ -336,6 +346,59 @@ describe('an unanswered write, streaming (swallowed error chunk)', () => {
     expect(res.body).not.toContain('event: error');
     expect(res.body).not.toContain('UNVERIFIED_WRITE');
   });
+});
+
+describe('streamed output with no notice to add', () => {
+  /** What the adapter itself emits for these chunks, as the handler writes it. */
+  async function adapterBytes(
+    chunks: Array<
+      { ok: true; value: Record<string, unknown> } | { ok: false; error: Error }
+    >,
+  ) {
+    const adapter = new AnthropicApiAdapter();
+    const { context } = adapter.normalizeRequest(body(true));
+    let out = '';
+    const source = (async function* () {
+      for (const c of chunks) yield c;
+    })();
+    for await (const event of adapter.transformStream(
+      source as never,
+      context,
+    )) {
+      out += `event: ${event.event}\ndata: ${event.data}\n\n`;
+    }
+    return out;
+  }
+  const withoutIds = (s: string) => s.replace(/"id":"[^"]*"/g, '"id":"-"');
+
+  for (const [label, chunks] of [
+    [
+      'a successful stream',
+      [
+        { ok: true, value: { content: 'done' } },
+        { ok: true, value: { finishReason: 'stop' } },
+      ],
+    ],
+    [
+      'an error chunk that leaves no write unanswered',
+      [{ ok: false, error: new Error('socket hang up') }],
+    ],
+  ] as const) {
+    it(`is byte-identical to the adapter's own output — ${label}`, async () => {
+      configure();
+      harness.stream = async function* () {
+        for (const c of chunks) yield c as never;
+      };
+      harness.unanswered = [];
+
+      const { res, done } = call(body(true));
+      await done;
+
+      expect(withoutIds(res.body)).toBe(
+        withoutIds(await adapterBytes([...chunks] as never)),
+      );
+    });
+  }
 });
 
 describe('an outage error chunk, streaming', () => {
