@@ -95,7 +95,7 @@ describe('/v1/messages at the door', () => {
     expect(res.statusCode).toBe(refusal.status);
     expect(JSON.parse(res.body)).toEqual(refusal.body);
     expect(res.headers['Retry-After']).toBeUndefined();
-    // Refused: nothing resolved, so no system information was asked for.
+    // Refused: nothing resolved and no request scope entered.
     expect(harness.events).not.toContain('resolveRequestSystem');
     expect(harness.requestSystemHeaders).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
@@ -174,8 +174,8 @@ describe('/v1/messages at the door', () => {
 
   for (const stream of [false, true]) {
     it(`runs the pipeline inside its request-system scope, entered once admitted — stream: ${stream}`, async () => {
-      // Resolved before the queue wait, the values would be looked up over a
-      // connection whose run may never start, and not be scoped to that run.
+      // Entered before the queue wait, the scope would carry this request's
+      // values into a wait whose run may never start.
       configure(1, 1);
       const hold = await gatekeeper.admitPipeline('bob', 'busy');
       const { done } = call(body(stream));

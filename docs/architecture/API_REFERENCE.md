@@ -475,7 +475,7 @@ from its own `x-sap-*` headers, so there is nothing to reset.
 - `X-SAP-Responsible` (optional) - SAP user ID named as responsible; defaults to `X-SAP-Login`. Uppercased.
 - `X-SAP-Master-System` (optional) - master system (system ID) of created objects. Uppercased.
 
-Both values come from these headers, for every destination, and a missing one stays unset. On cloud destinations a missing responsible person or master system is currently not filled from the ABAP system's own information.
+`/v1/chat/completions`, `/v1/messages` and `execute_step` read both headers and scope the values to the run. On an ABAP Cloud destination a missing responsible person or master system is filled from the system itself when a tool runs (`@mcp-abap-adt/lib` 10.2.0); on-premise a missing one stays unset.
 
 **Example (standard destination):**
 

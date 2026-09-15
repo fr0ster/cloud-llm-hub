@@ -4,10 +4,12 @@
  * Several SAP users share this process and their runs are admitted
  * concurrently, so `srv/lib/request-system-context.ts` resolves the values from
  * each request's headers and hands them to `@mcp-abap-adt/lib` through its own
- * request scope (`RequestContext`, lib 10.1.0, fr0ster/mcp-abap-adt#202).
+ * request scope (`RequestContext`, fr0ster/mcp-abap-adt#202). What lib sees is
+ * read through its public API only: `getSystemInformation()` reports the
+ * responsible person and master system lib creates objects with.
  */
 
-import { dirname, join } from 'node:path';
+import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
 import {
   getSystemContext,
   getSystemInformation,
@@ -18,23 +20,6 @@ import {
   runWithRequestSystem,
 } from '../../srv/lib/request-system-context';
 
-type Ctx = {
-  responsible?: string;
-  masterSystem?: string;
-  masterLanguage?: string;
-};
-
-const libDir = dirname(require.resolve('@mcp-abap-adt/lib/utils'));
-// Test-only: `createAdtClient` is not in lib's `exports`, so it is required by
-// path. It builds the real `AdtClient` from lib's own adt-clients, unmocked;
-// the client records the context it was created with and sends nothing.
-const libClients = require(join(libDir, 'clients.js')) as {
-  createAdtClient: (c: unknown) => { systemContext: Ctx };
-};
-const libSystemContext = require(join(libDir, 'systemContext.js')) as {
-  resetSystemContextCache: () => void;
-};
-
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => {
@@ -44,7 +29,11 @@ function deferred() {
 }
 
 afterEach(() => {
-  libSystemContext.resetSystemContextCache();
+  setSystemContext({
+    responsible: undefined,
+    masterSystem: undefined,
+    masterLanguage: undefined,
+  });
 });
 
 describe('the values come from the request headers', () => {
@@ -86,15 +75,6 @@ describe('the values come from the request headers', () => {
 });
 
 describe('delivery through the installed @mcp-abap-adt/lib request scope', () => {
-  /** What lib creates objects with, and what it reports, from inside a run. */
-  async function whatLibSees() {
-    return {
-      client: libClients.createAdtClient({ makeAdtRequest: async () => ({}) })
-        .systemContext,
-      info: await getSystemInformation(),
-    };
-  }
-
   it('gives two concurrent runs their own responsible person and master system', async () => {
     setSystemContext({ responsible: 'PROCESS', masterSystem: 'PRC' });
     const bothEntered = deferred();
@@ -104,7 +84,7 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
         entered++;
         if (entered === 2) bothEntered.resolve();
         await bothEntered.promise;
-        return whatLibSees();
+        return getSystemInformation();
       });
 
     const [alice, bob] = await Promise.all([
@@ -112,50 +92,38 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
       run('BOB', 'QAS'),
     ]);
 
-    expect(alice.client).toMatchObject({
-      responsible: 'ALICE',
-      masterSystem: 'DEV',
-    });
-    expect(alice.info).toEqual({ systemID: 'DEV', userName: 'ALICE' });
-    expect(bob.client).toMatchObject({
-      responsible: 'BOB',
-      masterSystem: 'QAS',
-    });
-    expect(bob.info).toEqual({ systemID: 'QAS', userName: 'BOB' });
+    expect(alice).toEqual({ systemID: 'DEV', userName: 'ALICE' });
+    expect(bob).toEqual({ systemID: 'QAS', userName: 'BOB' });
   });
 
   it('a run with no responsible person does not inherit the process one', async () => {
     setSystemContext({ responsible: 'PROCESS', masterSystem: 'PRC' });
     const seen = await runWithRequestSystem(
       { responsible: undefined, masterSystem: 'DEV' },
-      whatLibSees,
+      getSystemInformation,
     );
-    expect(seen.client.responsible).toBeUndefined();
-    expect(seen.client.masterSystem).toBe('DEV');
+    expect(seen?.userName).toBeUndefined();
+    expect(seen?.systemID).toBe('DEV');
 
-    const none = await runWithRequestSystem({}, whatLibSees);
-    expect(none.client.responsible).toBeUndefined();
-    expect(none.client.masterSystem).toBeUndefined();
-    expect(none.info).toBeNull();
+    const none = await runWithRequestSystem({}, getSystemInformation);
+    expect(none).toBeNull();
   });
 
   it('outside a run, lib sees the process values', async () => {
     setSystemContext({ responsible: 'PROCESS', masterSystem: 'PRC' });
-    const seen = await whatLibSees();
-    expect(seen.client).toMatchObject({
-      responsible: 'PROCESS',
-      masterSystem: 'PRC',
+    expect(await getSystemInformation()).toEqual({
+      systemID: 'PRC',
+      userName: 'PROCESS',
     });
     expect(getSystemContext().responsible).toBe('PROCESS');
   });
 
   it('carries the process master language into the run', async () => {
     setSystemContext({ masterLanguage: 'EN' });
-    const seen = await runWithRequestSystem(
+    const scope = await runWithRequestSystem(
       { responsible: 'ALICE' },
-      whatLibSees,
+      async () => getRequestContext(),
     );
-    expect(seen.client.masterLanguage).toBe('EN');
-    expect(seen.client.responsible).toBe('ALICE');
+    expect(scope).toMatchObject({ responsible: 'ALICE', masterLanguage: 'EN' });
   });
 });

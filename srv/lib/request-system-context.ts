@@ -13,8 +13,9 @@
  * `getEffectiveSystemContext()` in `createAdtClient`, `ListTransports` and
  * `utils.getSystemInformation()`.
  *
- * The values come from the caller's headers only. Filling a missing one from
- * the system's own information belongs in lib, next to the request context.
+ * The values come from the caller's headers. When a tool call runs on an ABAP
+ * Cloud connection, lib (10.2.0, fr0ster/mcp-abap-adt#206) fills a missing one
+ * from the system's own information; on-premise a missing one stays unset.
  */
 
 import {

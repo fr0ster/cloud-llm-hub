@@ -120,7 +120,7 @@ describe('execute_step at the door', () => {
     // Refused before a connection is built: nothing was CSRF-fetched for a
     // step that never ran.
     expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
-    // Refused: nothing resolved, so no system information was asked for.
+    // Refused: nothing resolved and no request scope entered.
     expect(harness.requestSystemHeaders).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
   });
@@ -137,8 +137,8 @@ describe('execute_step at the door', () => {
   });
 
   it('runs the step inside its request-system scope, entered once admitted', async () => {
-    // Resolved before the queue wait, the values would be looked up over a
-    // connection whose step may never run, and not be scoped to that step.
+    // Entered before the queue wait, the scope would carry this request's
+    // values into a wait whose step may never run.
     configure(1, 1);
     const hold = await gatekeeper.admitPipeline('bob', 'busy');
     const running = step();

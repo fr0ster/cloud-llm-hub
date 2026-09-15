@@ -19,6 +19,8 @@
 
 const mockTool = {
   calls: [] as string[],
+  /** What lib reports as responsible and master system inside each tool call. */
+  seen: [] as unknown[],
   release: (() => {}) as () => void,
   gate: Promise.resolve() as Promise<void>,
   hold() {
@@ -62,6 +64,11 @@ jest.mock('@mcp-abap-adt/lib/handlers', () => {
           ...e,
           handler: async (_context: unknown, _args: unknown) => {
             mockTool.calls.push(e.toolDefinition.name);
+            mockTool.seen.push(
+              await jest
+                .requireActual('@mcp-abap-adt/lib/utils')
+                .getSystemInformation(),
+            );
             await mockTool.gate;
             return { content: [{ type: 'text', text: 'written' }] };
           },
@@ -122,6 +129,8 @@ const manager =
   require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
 const gatekeeper =
   require('../../srv/lib/gatekeeper') as typeof import('../../srv/lib/gatekeeper');
+const { runWithRequestSystem } =
+  require('../../srv/lib/request-system-context') as typeof import('../../srv/lib/request-system-context');
 const { HANDLER_GROUPS } =
   require('../../srv/lib/tool-exposition-map') as typeof import('../../srv/lib/tool-exposition-map');
 
@@ -141,7 +150,7 @@ afterAll(async () => {
 });
 
 describe('an admitted pipeline built by getSmartAgent', () => {
-  it('registers its embedded tool call, and drain waits for it', async () => {
+  it('registers its embedded tool call, runs it in the request scope, and drain waits for it', async () => {
     // `getSmartAgent` races the destination's initialisation against a bounded
     // wait whose timer it never clears. Unref'd for this call only, so the
     // timer cannot keep Jest running for the rest of that wait.
@@ -166,15 +175,26 @@ describe('an admitted pipeline built by getSmartAgent', () => {
     const running = session.run(() =>
       manager.runWithRequestConnection(
         connection as never,
+        // The same nesting the channels use: the request scope inside the
+        // connection scope, inside the admission.
         () =>
-          handle.agent.process(
-            [{ role: 'user', content: 'Read the source of class ZCL_FAKE' }],
-            {
-              sessionId: 's-1',
-              trace: { traceId: 'trace-1' },
-              ragFilter: { exposition },
-              signal: session.signal,
-            } as never,
+          runWithRequestSystem(
+            { responsible: 'ALICE', masterSystem: 'DEV' },
+            () =>
+              handle.agent.process(
+                [
+                  {
+                    role: 'user',
+                    content: 'Read the source of class ZCL_FAKE',
+                  },
+                ],
+                {
+                  sessionId: 's-1',
+                  trace: { traceId: 'trace-1' },
+                  ragFilter: { exposition },
+                  signal: session.signal,
+                } as never,
+              ),
           ),
         undefined,
         exposition,
@@ -184,6 +204,10 @@ describe('an admitted pipeline built by getSmartAgent', () => {
     // The real chain — coordinator, executor worker, MCP adapter,
     // invokeEmbeddedTool — reached the embedded handler.
     expect(await until(() => mockTool.calls.length > 0)).toBe(true);
+    // And lib saw this request's responsible person and master system there,
+    // not the process-wide context.
+    expect(await until(() => mockTool.seen.length > 0)).toBe(true);
+    expect(mockTool.seen[0]).toEqual({ systemID: 'DEV', userName: 'ALICE' });
 
     let drained = false;
     const drain = session.drain().then(() => {
