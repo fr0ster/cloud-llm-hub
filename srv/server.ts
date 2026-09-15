@@ -503,7 +503,9 @@ cds.on('bootstrap', (app: Application) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Session-Id, X-Rag-Collections',
+      // No X-Session-Id: the service issues the session in its cookie and no
+      // route reads a header naming one.
+      'Content-Type, Authorization, X-Rag-Collections',
     );
     res.writeHead(204);
     res.end();
@@ -626,6 +628,18 @@ cds.on('bootstrap', (app: Application) => {
 cds.on('served', () => {
   installThrottleObserver();
   const log = cds.log('agent-manager/init');
+  // Both sweeps start here, whatever initialisation and the collection load do
+  // next. Inside their success path, a failed first init or a failed load left
+  // neither running until restart.
+  // Hourly: expired session collections, skipping any session with an
+  // operation still running against it — the next pass collects those.
+  setInterval(
+    () => getCollectionRegistry().sweepExpiredSessions(maySweepSession),
+    60 * 60 * 1000,
+  ).unref();
+  // Every five minutes, beside the history sweep: a session whose turns have
+  // expired and which owns no collection stops counting.
+  setInterval(() => forgetEmptySessions(), 5 * 60 * 1000).unref();
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
@@ -634,17 +648,7 @@ cds.on('served', () => {
       log.info('SmartAgents initialized and ready');
       // Load persisted RAG collections in background
       try {
-        const registry = getCollectionRegistry();
-        await registry.loadFromDisk();
-        // Hourly: expired session collections, skipping any session with an
-        // operation still running against it — the next pass collects those.
-        setInterval(
-          () => registry.sweepExpiredSessions(maySweepSession),
-          60 * 60 * 1000,
-        ).unref();
-        // Every five minutes, beside the history sweep: a session whose turns
-        // have expired and which owns no collection stops counting.
-        setInterval(() => forgetEmptySessions(), 5 * 60 * 1000).unref();
+        await getCollectionRegistry().loadFromDisk();
       } catch (err) {
         log.warn('RAG collection load failed', {
           error: err instanceof Error ? err.message : String(err),

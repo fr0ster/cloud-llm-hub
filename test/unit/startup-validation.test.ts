@@ -31,7 +31,14 @@ jest.mock(
 jest.mock('../../srv/env-setup', () => ({}));
 jest.mock('../../srv/agent-config', () => ({ ensureAiCoreCredentials }));
 jest.mock('../../srv/agent-manager', () => ({
-  getCollectionRegistry: () => ({}),
+  // Initialisation fails here, as it does when AI Core is not reachable yet.
+  initSmartAgents: () => Promise.reject(new Error('AI Core not reachable')),
+  getCollectionRegistry: () => ({
+    loadFromDisk: async () => {
+      throw new Error('disk');
+    },
+    sweepExpiredSessions: () => {},
+  }),
 }));
 jest.mock('../../srv/agent-mcp', () => ({}));
 jest.mock('../../srv/anthropic-handler', () => ({}));
@@ -96,6 +103,68 @@ describe("CAP's cds_server", () => {
       expect(listen).not.toHaveBeenCalled();
     } finally {
       realCds.off('bootstrap', listener);
+    }
+  });
+});
+
+describe('the /v1 CORS preflight', () => {
+  it('does not advertise X-Session-Id, which no route reads any more', () => {
+    const registered: Array<{ method: string; args: unknown[] }> = [];
+    const app = new Proxy(
+      {},
+      {
+        get:
+          (_t, method: string) =>
+          (...args: unknown[]) => {
+            registered.push({ method, args });
+          },
+      },
+    );
+    handlers.bootstrap(app);
+    const preflight = registered.find(
+      (r) => r.method === 'options' && r.args[0] === '/v1/*',
+    );
+    if (!preflight) throw new Error('no /v1 preflight was registered');
+    const headers: Record<string, string> = {};
+    (preflight.args[1] as (req: unknown, res: unknown) => void)(
+      {},
+      {
+        setHeader: (name: string, value: string) => {
+          headers[name] = value;
+        },
+        writeHead() {},
+        end() {},
+      },
+    );
+    expect(headers['Access-Control-Allow-Headers']).toContain('Authorization');
+    expect(headers['Access-Control-Allow-Headers']).not.toMatch(
+      /x-session-id/i,
+    );
+  });
+});
+
+describe("server.ts's served listener", () => {
+  it('starts both session sweeps even when initialisation fails', async () => {
+    // Started inside the success path, neither sweep ever ran on an instance
+    // whose first initialisation failed: expired session collections and
+    // sessions holding nothing were kept until restart.
+    const periods: number[] = [];
+    const spy = jest.spyOn(global, 'setInterval').mockImplementation(((
+      _fn: () => void,
+      ms?: number,
+    ) => {
+      periods.push(ms ?? 0);
+      return { unref: () => undefined } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setInterval);
+    try {
+      handlers.served();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(periods).toEqual(
+        expect.arrayContaining([60 * 60 * 1000, 5 * 60 * 1000]),
+      );
+    } finally {
+      spy.mockRestore();
     }
   });
 });
