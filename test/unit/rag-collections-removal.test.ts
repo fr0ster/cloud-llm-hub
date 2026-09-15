@@ -11,7 +11,7 @@ import { InMemoryRag, RagError } from '@mcp-abap-adt/llm-agent';
 import {
   CollectionRegistry,
   collectionRemovalFailureCount,
-  type RagBackendFactory,
+  type RagBackend,
   resetCollectionRemovalFailuresForTest,
 } from '../../srv/rag-collections';
 
@@ -206,53 +206,63 @@ describe('a session with several collections', () => {
 });
 
 describe('collections over one shared backend', () => {
-  /** A store whose clear waits until the test lets it go. */
-  class HeldClearRag extends InMemoryRag {
-    constructor(private readonly hold: Promise<void>) {
-      super();
-    }
-    writer() {
-      const w = super.writer();
-      return {
-        ...w,
-        clearAll: async () => {
-          await this.hold;
-          return (
-            (await w.clearAll?.()) ?? { ok: true as const, value: undefined }
-          );
-        },
-      };
-    }
-  }
+  type Deletion = 'deletes' | 'not-ok' | 'rejects' | 'throws';
 
   /**
-   * One server for every collection, keeping a physical store per name — as
-   * Qdrant or a database would. A factory given no name gets the one store the
-   * server has under no name.
+   * One server for every collection, keeping a physical store per name — as a
+   * Qdrant collection or a table would be — and deleting one on request. Its
+   * deletions wait until the test lets them go. A factory given no name gets the
+   * one store the server keeps under no name.
    */
-  function sharedServer() {
-    const stores = new Map<string, HeldClearRag>();
+  function sharedServer(deletion: Deletion = 'deletes') {
+    const stores = new Map<string, InMemoryRag>();
     const names: string[] = [];
     let release!: () => void;
     const hold = new Promise<void>((r) => {
       release = r;
     });
-    const factory: RagBackendFactory = ({ store }) => {
-      names.push(store);
-      let rag = stores.get(store);
-      if (!rag) {
-        rag = new HeldClearRag(hold);
-        stores.set(store, rag);
-      }
-      return rag;
+    const backend: RagBackend = {
+      create: ({ store }) => {
+        names.push(store);
+        let rag = stores.get(store);
+        if (!rag) {
+          rag = new InMemoryRag();
+          stores.set(store, rag);
+        }
+        return rag;
+      },
+      deleteStore: (store) => {
+        switch (deletion) {
+          case 'not-ok':
+            return Promise.resolve({
+              ok: false as const,
+              error: new RagError('drop refused'),
+            });
+          case 'rejects':
+            return Promise.reject(new Error('server unreachable'));
+          case 'throws':
+            throw new Error('server unreachable');
+          default:
+            return hold.then(() => {
+              stores.delete(store);
+              return { ok: true as const, value: undefined };
+            });
+        }
+      },
     };
-    return { factory, names, release };
+    return { backend, names, release, list: () => [...stores.keys()] };
   }
 
-  it('removing one collection leaves the other collection’s records in place', async () => {
+  /** Let the server's held deletions run. */
+  async function settle(server: { release(): void }) {
+    server.release();
+    await new Promise((r) => setImmediate(r));
+  }
+
+  it('removing a collection deletes its store from the server, and only its store', async () => {
     const server = sharedServer();
-    reg.registerBackend('shared', server.factory);
-    const first = await withDocument('s__a_1', {
+    reg.registerBackend('shared', server.backend);
+    await withDocument('s__a_1', {
       scope: 'session',
       owner: 'alice',
       sessionId: 'a',
@@ -266,38 +276,59 @@ describe('collections over one shared backend', () => {
       expiresAt: Date.now() + 60_000,
       backend: 'shared',
     });
-    expect(new Set(server.names).size).toBe(2);
+    const [first, other] = server.names;
+    expect(first).not.toBe(other);
+    expect(server.list()).toEqual([first, other]);
 
     reg.deleteSessionCollections('alice', 'a');
-    server.release();
-    expect(await holds(first, 's__a_1')).toBe(false);
+    await settle(server);
+    // The store itself is gone, not merely emptied.
+    expect(server.list()).toEqual([other]);
     expect(await holds(second, 's__b_1')).toBe(true);
     expect(reg.getCollection('s__b_1')).not.toBeNull();
+    expect(collectionRemovalFailureCount()).toBe(0);
   });
 
-  it('a collection re-created under the same id gets a new store the pending clear cannot reach', async () => {
+  it('a collection re-created under the same id gets a new store the pending deletion cannot reach', async () => {
     const server = sharedServer();
-    reg.registerBackend('shared', server.factory);
-    const old = await withDocument('s__r_1', {
+    reg.registerBackend('shared', server.backend);
+    await withDocument('s__r_1', {
       scope: 'user',
       owner: 'alice',
       backend: 'shared',
     });
     reg.deleteCollection('s__r_1');
-    // The old clear is still waiting when the same id is created and written again.
+    // The old deletion is still waiting when the same id is created and written again.
     const renewed = await withDocument('s__r_1', {
       scope: 'user',
       owner: 'alice',
       backend: 'shared',
     });
-    expect(server.names).toHaveLength(2);
-    expect(server.names[0]).not.toBe(server.names[1]);
+    const [old, current] = server.names;
+    expect(old).not.toBe(current);
 
-    server.release();
-    expect(await holds(old, 's__r_1')).toBe(false);
+    await settle(server);
+    expect(server.list()).toEqual([current]);
     expect(await holds(renewed, 's__r_1')).toBe(true);
     expect(collectionRemovalFailureCount()).toBe(0);
   });
+
+  it.each<Deletion>(['not-ok', 'rejects', 'throws'])(
+    'a deletion that %s: the collection is removed all the same, never thrown, counted',
+    async (deletion) => {
+      const server = sharedServer(deletion);
+      reg.registerBackend('shared', server.backend);
+      await withDocument('s__f_1', {
+        scope: 'user',
+        owner: 'alice',
+        backend: 'shared',
+      });
+      expect(() => reg.deleteCollection('s__f_1')).not.toThrow();
+      expect(reg.getCollection('s__f_1')).toBeNull();
+      await settle(server);
+      expect(collectionRemovalFailureCount()).toBe(1);
+    },
+  );
 });
 
 describe('the enabled flag', () => {

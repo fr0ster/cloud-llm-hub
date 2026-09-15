@@ -24,6 +24,8 @@ import {
   type IRag,
   type IRagBackendWriter,
   type IRagEditor,
+  type RagError,
+  type Result,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -37,7 +39,7 @@ export const SESSION_TTL_MS =
   Number(process.env.RAG_SESSION_TTL_MS) || 24 * 60 * 60 * 1000;
 
 /**
- * Collection removals whose data the RAG backend did not clear, since start.
+ * Collection removals whose store the RAG backend did not delete or clear, since start.
  * The collections themselves were removed from the registry regardless.
  */
 let removalFailures = 0;
@@ -71,9 +73,10 @@ export type RagBackendType =
  * name. The IRag returned must hold this collection's records and nothing else
  * — its query, getById and writer().clearAll() act on this store alone. A
  * backend over a shared server (Qdrant, HANA, Postgres) keeps a separate
- * physical collection or table under this name, adapted to its naming rules.
- * Removing a collection clears its store with clearAll, so a factory handing
- * out one shared store would have every removal wipe every collection.
+ * physical collection or table under this name, adapted to its naming rules —
+ * and deletes it through RagBackend.deleteStore. Removing a collection deletes
+ * or clears its store, so a factory handing out one shared store would have
+ * every removal wipe every collection.
  *
  * Also receives the shared embedder + breaker so backends can reuse them.
  */
@@ -83,6 +86,25 @@ export type RagBackendFactory = (ctx: {
   embedder: IEmbedder | null;
   breaker: CircuitBreaker | null;
 }) => IRag;
+
+/**
+ * A RAG backend: how a collection's own store is created and, where stores are
+ * physical resources, how one is deleted.
+ */
+export interface RagBackend {
+  create: RagBackendFactory;
+  /**
+   * Delete a store itself, its data included: the Qdrant collection, the table.
+   *
+   * Required of a backend whose stores are physical resources. Every collection
+   * created gets a new store, so emptying one and leaving it behind would pile
+   * up an empty resource per collection. Without it, removal empties the store
+   * with writer().clearAll() — enough for a store living in this process, which
+   * goes with the collection. Same shape as llm-agent's
+   * IRagProvider.deleteCollection.
+   */
+  deleteStore?(store: string): Promise<Result<void, RagError>>;
+}
 
 /** A store name for a collection being created: its id, and what makes this one new. */
 function storeNameFor(collectionId: string): string {
@@ -122,6 +144,8 @@ interface StoredCollection {
   meta: CollectionMeta;
   /** The store name its backend was created with; see RagBackendFactory. */
   store: string;
+  /** The backend that created the store, asked to delete it on removal. */
+  backend?: RagBackend;
   documents: Map<string, RagDocument>;
   rag: RecencyBoostedRag;
 }
@@ -361,19 +385,21 @@ class RecencyBoostedRag implements IRag, IRagEditor {
 // CollectionRegistry
 // ---------------------------------------------------------------------------
 
-/** Built-in backend factories */
-const builtInBackends: Record<string, RagBackendFactory> = {
-  'in-memory': () => new InMemoryRag(),
+/** Built-in backends. Their stores live in this process, so none deletes one. */
+const builtInBackends: Record<string, RagBackend> = {
+  'in-memory': { create: () => new InMemoryRag() },
 
-  vector: ({ embedder, breaker }) => {
-    if (!embedder) return new InMemoryRag();
-    const vectorRag = new VectorRag(embedder, {
-      vectorWeight: 0.7,
-      keywordWeight: 0.3,
-    });
-    return breaker
-      ? new FallbackRag(vectorRag, new InMemoryRag(), breaker)
-      : vectorRag;
+  vector: {
+    create: ({ embedder, breaker }) => {
+      if (!embedder) return new InMemoryRag();
+      const vectorRag = new VectorRag(embedder, {
+        vectorWeight: 0.7,
+        keywordWeight: 0.3,
+      });
+      return breaker
+        ? new FallbackRag(vectorRag, new InMemoryRag(), breaker)
+        : vectorRag;
+    },
   },
 
   // Qdrant and HANA are placeholders — require external config at registration time.
@@ -382,7 +408,7 @@ const builtInBackends: Record<string, RagBackendFactory> = {
 
 export class CollectionRegistry {
   private collections = new Map<string, StoredCollection>();
-  private backends = new Map<string, RagBackendFactory>(
+  private backends = new Map<string, RagBackend>(
     Object.entries(builtInBackends),
   );
   private defaultBackend: RagBackendType;
@@ -403,9 +429,18 @@ export class CollectionRegistry {
       opts?.defaultBackend ?? (opts?.embedder ? 'vector' : 'in-memory');
   }
 
-  /** Register a custom RAG backend (e.g. qdrant, hana). */
-  registerBackend(type: RagBackendType, factory: RagBackendFactory): void {
-    this.backends.set(type, factory);
+  /**
+   * Register a custom RAG backend (e.g. qdrant, hana). A bare factory is a
+   * backend whose stores need no deleting; see RagBackend.deleteStore.
+   */
+  registerBackend(
+    type: RagBackendType,
+    backend: RagBackendFactory | RagBackend,
+  ): void {
+    this.backends.set(
+      type,
+      typeof backend === 'function' ? { create: backend } : backend,
+    );
     this.log.info('RAG backend registered', { type });
   }
 
@@ -420,15 +455,15 @@ export class CollectionRegistry {
     store: string = storeNameFor('collection'),
   ): RecencyBoostedRag {
     const type = backend ?? this.defaultBackend;
-    const factory = this.backends.get(type);
-    if (!factory) {
+    const impl = this.backends.get(type);
+    if (!impl) {
       this.log.warn('Unknown RAG backend, falling back to in-memory', {
         requested: type,
         available: this.listBackends(),
       });
       return new RecencyBoostedRag(new InMemoryRag());
     }
-    const base = factory({
+    const base = impl.create({
       store,
       embedder: this.embedder,
       breaker: this.breaker,
@@ -481,6 +516,7 @@ export class CollectionRegistry {
     this.collections.set(meta.id, {
       meta: full,
       store,
+      backend: this.backends.get(full.backend ?? this.defaultBackend),
       documents: new Map(),
       rag: this.createRagStore(full.backend, store),
     });
@@ -507,11 +543,12 @@ export class CollectionRegistry {
    * Remove one collection, whatever backend holds it.
    *
    * It leaves the registry at once — its entry and every user's enabled flag —
-   * so nothing can reach it again. Its data is cleared through the RAG contract
-   * (`writer().clearAll()`), the same for an in-memory store as for a vector
-   * database. The store is this collection's alone (see RagBackendFactory):
-   * clearing it touches no other collection, and a collection re-created under
-   * the same id gets a new store that a clear still running cannot reach.
+   * so nothing can reach it again. Its store goes with it: deleted by a backend
+   * whose stores are physical resources (RagBackend.deleteStore), otherwise
+   * emptied through the RAG contract (`writer().clearAll()`). The store is this
+   * collection's alone (see RagBackendFactory): removing it touches no other
+   * collection, and a collection re-created under the same id gets a new store
+   * that a removal still running cannot reach.
    * That is not retried: a failure is reported and counted, and at
    * worst leaves data in the backend that nothing points at (issue #234).
    * Never throws.
@@ -521,29 +558,33 @@ export class CollectionRegistry {
     if (!stored) return false;
     this.collections.delete(id);
     for (const m of this.enabledByUser.values()) m.delete(id);
-    this.clearStore(id, stored.store, stored.rag);
+    this.releaseStore(id, stored);
     return true;
   }
 
-  /** Clear a removed collection's data through the backend's own writer. */
-  private clearStore(id: string, store: string, rag: IRag): void {
-    const writer = rag.writer?.();
-    if (!writer?.clearAll) {
-      this.reportRemovalFailure(
-        id,
-        store,
-        new Error('the RAG backend offers no writer().clearAll()'),
-      );
-      return;
-    }
-    let cleared: ReturnType<NonNullable<IRagBackendWriter['clearAll']>>;
+  /** Delete a removed collection's store, or empty it where the backend deletes none. */
+  private releaseStore(id: string, stored: StoredCollection): void {
+    const { store, backend, rag } = stored;
+    let released: Promise<Result<void, RagError>> | undefined;
     try {
-      cleared = writer.clearAll();
+      if (backend?.deleteStore) {
+        released = backend.deleteStore(store);
+      } else {
+        released = rag.writer?.()?.clearAll?.();
+      }
     } catch (err) {
       this.reportRemovalFailure(id, store, err);
       return;
     }
-    cleared.then(
+    if (!released) {
+      this.reportRemovalFailure(
+        id,
+        store,
+        new Error('the RAG backend can neither delete nor clear a store'),
+      );
+      return;
+    }
+    released.then(
       (r) => {
         if (!r.ok) this.reportRemovalFailure(id, store, r.error);
       },
@@ -557,7 +598,7 @@ export class CollectionRegistry {
     error: unknown,
   ): void {
     removalFailures++;
-    this.log.warn('Collection removed, but its data could not be cleared', {
+    this.log.warn('Collection removed, but its store could not be released', {
       id,
       store,
       error: error instanceof Error ? error.message : String(error),
