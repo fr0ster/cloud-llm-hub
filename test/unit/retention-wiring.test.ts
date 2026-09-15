@@ -176,6 +176,60 @@ describe('the retention cap on the RAG routes', () => {
     ).toBeNull();
     expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
   });
+
+  it('a removal that fails keeps the session closed and its place taken, and the next pass removes it', async () => {
+    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
+    await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
+      id: 'd1',
+      text: 'hello',
+      metadata: {},
+    });
+    const dir = dirOf('alice', 'A');
+    expect(fs.existsSync(dir)).toBe(true);
+
+    const realRm = fs.rmSync;
+    const rm = jest.spyOn(fs, 'rmSync').mockImplementation(((
+      p: fs.PathLike,
+      opts?: fs.RmOptions,
+    ) => {
+      if (String(p) === dir) {
+        throw Object.assign(new Error('EACCES: permission denied'), {
+          code: 'EACCES',
+        });
+      }
+      return realRm(p, opts);
+    }) as typeof fs.rmSync);
+    try {
+      await expect(gatekeeper.deleteSession('alice', 'A')).rejects.toThrow(
+        'EACCES',
+      );
+      // The directory is still there, so nothing let go of the session.
+      expect(fs.existsSync(dir)).toBe(true);
+      expect(gatekeeper.theRetention().snapshot()).toMatchObject({
+        retained: 1,
+        closing: 1,
+        cleanupFailed: 1,
+      });
+      // The one place is still hers: bob is refused, not let in over her files.
+      expect((await createSessionCollection('bob', 'B'))._status).toBe(503);
+      // A pass while the directory still will not go frees nothing.
+      expect(gatekeeper.forgetEmptySessions()).toBe(0);
+    } finally {
+      rm.mockRestore();
+    }
+
+    // The next pass removes it: directory, collection and place.
+    expect(gatekeeper.forgetEmptySessions()).toBe(1);
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(
+      registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
+    ).toBeNull();
+    expect(gatekeeper.theRetention().snapshot()).toMatchObject({
+      retained: 0,
+      cleanupFailed: 0,
+    });
+    expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
+  });
 });
 
 /** Three operations that each hold a session-scoped lease while their backend call is out. */

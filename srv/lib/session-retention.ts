@@ -10,8 +10,10 @@ export interface RetentionStores {
   hasState(userId: string, sessionId: string): boolean;
   /**
    * Remove everything held for this session. Must be synchronous.
-   * May throw if a metadata write fails; retention reports that here instead
-   * of throwing from lease, release or close.
+   * Throws when something could not be removed — a metadata write, or a
+   * collection directory that would not go. Retention reports it instead of
+   * throwing from lease or release, and keeps the session closed and counted
+   * until a retry succeeds.
    */
   deleteAll(userId: string, sessionId: string): void;
   /**
@@ -50,6 +52,8 @@ export interface RetentionSnapshot {
   evictions: number;
   /** Closed to new leases, cleanup not yet run. Normally zero for longer than an upload. */
   closing: number;
+  /** Removals that ran and failed; each keeps its place until a retry succeeds. */
+  cleanupFailed: number;
 }
 
 interface Entry {
@@ -69,12 +73,31 @@ interface Entry {
     resolve: () => void;
     reject: (error: unknown) => void;
   };
+  /**
+   * Set when the removal ran and failed. The session stays closed and keeps its
+   * place: its state is still there, and letting either go would let a new
+   * session in over files nothing counts any more.
+   */
+  cleanupFailed?: { error: unknown };
 }
 
 function keyOf(userId: string, sessionId: string): string {
   // A tuple, not a join: no separator keeps ("a", "b c") and ("a b", "c") apart
   // whatever a caller puts in a cookie.
   return JSON.stringify([userId, sessionId]);
+}
+
+function pendingClose(): NonNullable<Entry['closing']> {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const settled = new Promise<void>((r, rej) => {
+    resolve = r;
+    reject = rej;
+  });
+  // A removal nobody awaits — an eviction, a retry — must not surface as an
+  // unhandled rejection; whoever does await it still sees the failure.
+  settled.catch(() => {});
+  return { settled, resolve, reject };
 }
 
 export class SessionRetention {
@@ -119,7 +142,9 @@ export class SessionRetention {
       return { refused: 'closed' };
     }
     if (!e) {
-      if (this.cap !== undefined && this.entries.size >= this.cap) {
+      // A victim whose removal fails stays, closed, in its place; the next idle
+      // one is tried, until a place frees or there is none left to try.
+      while (this.cap !== undefined && this.entries.size >= this.cap) {
         const victim = this.evictionCandidate();
         if (!victim) return { refused: 'retention' };
         this.evict(victim);
@@ -163,24 +188,37 @@ export class SessionRetention {
    * for it — the user is answered at the mark.
    */
   close(userId: string, sessionId: string): Promise<void> {
-    const e = this.entries.get(keyOf(userId, sessionId));
+    const key = keyOf(userId, sessionId);
+    const e = this.entries.get(key);
     if (!e) {
       try {
         this.stores.deleteAll(userId, sessionId);
       } catch (error) {
         this.stores.reportDeleteError?.(userId, sessionId, error);
+        // Nothing counted this session, yet its state is still there: count it
+        // now, closed, so its place is taken until a retry removes it.
+        this.entries.set(key, {
+          userId,
+          sessionId,
+          lastUsed: this.now(),
+          presented: false,
+          leases: new Set(),
+          closing: pendingClose(),
+          cleanupFailed: { error },
+        });
         return Promise.reject(error);
       }
       return Promise.resolve();
     }
-    if (e.closing) return e.closing.settled;
-    let resolve!: () => void;
-    let reject!: (error: unknown) => void;
-    const settled = new Promise<void>((r, rej) => {
-      resolve = r;
-      reject = rej;
-    });
-    e.closing = { settled, resolve, reject };
+    if (e.closing) {
+      // A removal that failed is tried again; one still waiting for its leases
+      // is simply waited for.
+      const current = e.closing;
+      if (e.cleanupFailed && e.leases.size === 0) this.finishClose(e);
+      return current.settled;
+    }
+    e.closing = pendingClose();
+    const settled = e.closing.settled;
     for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
     if (e.leases.size === 0) this.finishClose(e);
     return settled;
@@ -248,14 +286,34 @@ export class SessionRetention {
     return n;
   }
 
+  /**
+   * Try again every removal that failed and has nothing running against it.
+   * Returns how many succeeded now, so the caller can let waiters at the places
+   * they freed.
+   */
+  retryFailedCleanups(): number {
+    let freed = 0;
+    for (const e of [...this.entries.values()]) {
+      if (!e.cleanupFailed || e.leases.size > 0) continue;
+      this.finishClose(e);
+      if (!e.cleanupFailed) freed++;
+    }
+    return freed;
+  }
+
   snapshot(): RetentionSnapshot {
     let closing = 0;
-    for (const e of this.entries.values()) if (e.closing) closing++;
+    let cleanupFailed = 0;
+    for (const e of this.entries.values()) {
+      if (e.closing) closing++;
+      if (e.cleanupFailed) cleanupFailed++;
+    }
     return {
       retained: this.entries.size,
       cap: this.cap,
       evictions: this.evictions,
       closing,
+      cleanupFailed,
     };
   }
 
@@ -298,17 +356,20 @@ export class SessionRetention {
   }
 
   private finishClose(e: Entry): void {
-    let failed = false;
-    let failure: unknown;
+    const current = e.closing;
     try {
       this.stores.deleteAll(e.userId, e.sessionId);
     } catch (error) {
-      failed = true;
-      failure = error;
       this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
+      // The state is still there, so the session stays closed and keeps its
+      // place; the next close() or retryFailedCleanups() tries again.
+      e.cleanupFailed = { error };
+      e.closing = pendingClose();
+      current?.reject(error);
+      return;
     }
+    e.cleanupFailed = undefined;
     this.entries.delete(keyOf(e.userId, e.sessionId));
-    if (failed) e.closing?.reject(failure);
-    else e.closing?.resolve();
+    current?.resolve();
   }
 }

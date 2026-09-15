@@ -750,7 +750,7 @@ The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
   is unset; otherwise `srv/lib/door.ts`'s `DoorSnapshot`: `live`, `capacity`,
   `queued`, `queueLength`, `highWater`, `refusals` (by reason), `left`.
 - **`retention`** — `srv/lib/session-retention.ts`'s `RetentionSnapshot`:
-  `retained`, `cap`, `evictions`, `closing`.
+  `retained`, `cap`, `evictions`, `closing`, `cleanupFailed` — removals that failed (a directory that would not go); their sessions stay closed and keep their places until a retry succeeds.
 - **`destinations`** — one entry per known destination: `name`, `closed`,
   `refusals`.
 - **`throttling`** — `events`, `gaveUp`, `noInterval`, `byQuota` (per quota

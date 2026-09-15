@@ -574,9 +574,14 @@ export class CollectionRegistry {
    * nothing, so a caller removing several writes the metadata once.
    */
   private removeCollection(id: string): boolean {
-    if (!this.collections.delete(id)) return false;
-    for (const m of this.enabledByUser.values()) m.delete(id);
+    if (!this.collections.has(id)) return false;
+    // The directory goes first. If it will not, the collection stays registered:
+    // its session still counts as holding state, and the next attempt removes
+    // both. Dropping the entry first left files on disk that nothing counted and
+    // nothing would ever try again.
     this.deleteCollectionDir(id);
+    this.collections.delete(id);
+    for (const m of this.enabledByUser.values()) m.delete(id);
     return true;
   }
 
@@ -635,7 +640,15 @@ export class CollectionRegistry {
         (stored.meta.expiresAt ?? 0) <= now &&
         maySweep(stored.meta.owner ?? '', stored.meta.sessionId ?? '')
       ) {
-        changed = this.removeCollection(id) || changed;
+        try {
+          changed = this.removeCollection(id) || changed;
+        } catch (err) {
+          // Kept registered, so the next pass tries again.
+          this.log.warn('Expired collection could not be removed', {
+            id,
+            error: (err as Error).message,
+          });
+        }
       }
     }
     if (changed) {
@@ -644,21 +657,37 @@ export class CollectionRegistry {
     }
   }
 
+  /**
+   * Remove every collection of one session. Removes all it can; a collection
+   * whose directory will not go stays registered, and the first such error is
+   * thrown once the rest are done — so the caller knows the session still holds
+   * state and must not be let go of.
+   */
   deleteSessionCollections(userId: string, sessionId: string): void {
     let changed = false;
+    let failed = false;
+    let failure: unknown;
     for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         stored.meta.owner === userId &&
         stored.meta.sessionId === sessionId
       ) {
-        changed = this.removeCollection(id) || changed;
+        try {
+          changed = this.removeCollection(id) || changed;
+        } catch (err) {
+          if (!failed) {
+            failed = true;
+            failure = err;
+          }
+        }
       }
     }
     if (changed) {
       this.persistMeta();
       this.persistEnabled();
     }
+    if (failed) throw failure;
   }
 
   /** Whether this user's session still owns any session-scoped collection. */
@@ -1076,13 +1105,14 @@ export class CollectionRegistry {
     }
   }
 
+  /**
+   * Throws when the directory exists and cannot be removed; a missing one is
+   * fine (`force`). Not best-effort: a directory left behind is exactly the leak
+   * the removal exists to prevent, so the caller must learn of it.
+   */
   private deleteCollectionDir(collectionId: string): void {
     if (!this.storagePath) return;
-    try {
-      const dir = path.join(this.storagePath, collectionId);
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
+    const dir = path.join(this.storagePath, collectionId);
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -122,3 +122,89 @@ describe('hasSessionCollections', () => {
     expect(reg.hasSessionCollections('alice', 'other')).toBe(false);
   });
 });
+
+describe('a directory that will not go', () => {
+  /** rmSync fails with EACCES for this one path and works for every other. */
+  function failRemovalOf(target: string) {
+    const real = fs.rmSync;
+    return jest.spyOn(fs, 'rmSync').mockImplementation(((
+      p: fs.PathLike,
+      opts?: fs.RmOptions,
+    ) => {
+      if (String(p) === target) {
+        throw Object.assign(new Error('EACCES: permission denied'), {
+          code: 'EACCES',
+        });
+      }
+      return real(p, opts);
+    }) as typeof fs.rmSync);
+  }
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('keeps the collection registered and throws, so a later attempt removes both', async () => {
+    const d = await withDocument('s__s_6', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'f',
+      expiresAt: Date.now() + 60_000,
+    });
+    const spy = failRemovalOf(d);
+    expect(() => reg.deleteSessionCollections('alice', 'f')).toThrow('EACCES');
+    // The session still counts as holding state: nothing let go of it.
+    expect(reg.hasSessionCollections('alice', 'f')).toBe(true);
+    expect(fs.existsSync(d)).toBe(true);
+
+    spy.mockRestore();
+    reg.deleteSessionCollections('alice', 'f');
+    expect(reg.hasSessionCollections('alice', 'f')).toBe(false);
+    expect(fs.existsSync(d)).toBe(false);
+  });
+
+  it('still removes the session’s other collections', async () => {
+    const bad = await withDocument('s__s_7', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'g',
+      expiresAt: Date.now() + 60_000,
+    });
+    const good = await withDocument('s__s_8', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'g',
+      expiresAt: Date.now() + 60_000,
+    });
+    failRemovalOf(bad);
+    expect(() => reg.deleteSessionCollections('alice', 'g')).toThrow('EACCES');
+    expect(reg.getCollection('s__s_8')).toBeNull();
+    expect(fs.existsSync(good)).toBe(false);
+    expect(reg.getCollection('s__s_7')).not.toBeNull();
+    expect(fs.existsSync(bad)).toBe(true);
+  });
+
+  it('deleteCollection throws and keeps the collection', async () => {
+    const d = await withDocument('u__u_3', { scope: 'user', owner: 'alice' });
+    failRemovalOf(d);
+    expect(() => reg.deleteCollection('u__u_3')).toThrow('EACCES');
+    expect(reg.getCollection('u__u_3')).not.toBeNull();
+    expect(fs.existsSync(d)).toBe(true);
+  });
+
+  it('the TTL sweep keeps what it could not remove for its next pass', async () => {
+    const d = await withDocument('s__s_9', {
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'h',
+      expiresAt: Date.now() - 1,
+    });
+    const spy = failRemovalOf(d);
+    expect(() => reg.sweepExpiredSessions()).not.toThrow();
+    expect(reg.getCollection('s__s_9')).not.toBeNull();
+    expect(fs.existsSync(d)).toBe(true);
+
+    spy.mockRestore();
+    reg.sweepExpiredSessions();
+    expect(reg.getCollection('s__s_9')).toBeNull();
+    expect(fs.existsSync(d)).toBe(false);
+  });
+});
