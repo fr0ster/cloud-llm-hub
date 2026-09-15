@@ -49,9 +49,10 @@ curl -X POST "https://<subdomain>.authentication.<region>.hana.ondemand.com/oaut
 
 ### Scenario 1: LLM Only (Without MCP)
 
-Test the agent with LLM only. The legacy OData `Chat` used here cannot call ABAP
-tools — it never enters the per-request connection scope — which is exactly why
-it suits an LLM-only check.
+Test the agent with LLM only. `Health()` below probes the model without a
+connection; the chat call below sends no `X-SAP-Destination`, so no ABAP tool
+runs either — just the model, and the session cookie carrying context between
+the two requests.
 
 #### 1. Health Check
 
@@ -87,23 +88,35 @@ ignores headers entirely, reporting on the server's own configuration. Passing
 
 **Note:** `mcpConnected: false` is expected for LLM-only mode (no MCP tools).
 
-#### 2. Simple Chat (LLM Only)
+#### 2. Simple Chat, keeping the session
+
+The session lives in the `clh_session` cookie the service issues; keep it with a
+cookie jar so the second request continues the first.
 
 ```bash
-curl -X POST \
-  "$BASE_URL/odata/v4/agent/Chat" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Hello! Can you introduce yourself?"
-  }' | jq '.'
+curl -s -c jar -b jar -X POST "$BASE_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello! Remember the word PINE."}]}' | jq '.choices[0].message.content'
+
+curl -s -c jar -b jar -X POST "$BASE_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Which word did I ask you to remember?"}]}' | jq '.choices[0].message.content'
 ```
 
-**Expected Response:**
+**Expected Response:** each call is an OpenAI `chat.completion`; the second
+answer names `PINE`:
 ```json
 {
-  "@odata.context": "$metadata#Edm.String",
-  "value": "Hello! I'm an AI assistant powered by SAP AI Core..."
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "...",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "You asked me to remember PINE." },
+      "finish_reason": "stop"
+    }
+  ]
 }
 ```
 
@@ -124,8 +137,6 @@ curl -X POST "$BASE_URL/v1/chat/completions" \
 > then records it as the current model. The next caller — anyone — keeps the
 > model you asked for until someone asks for another. Treat it as changing a
 > global setting through a request, not as an isolated override.
->
-> The legacy OData `Chat` has no such parameter; it always uses the current model.
 
 **Provider and credentials — no.** `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
 `LLM_AGENT_BASE_URL` are read once from the environment, so changing those means:

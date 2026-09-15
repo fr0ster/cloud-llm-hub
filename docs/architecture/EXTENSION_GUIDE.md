@@ -436,7 +436,6 @@ SmartAgent will automatically discover tools from both MCP servers and use the a
 ```
 CAP Express (port 4004)
 ├── /mcp/stream/http              → MCP proxy (ABAP)
-├── /odata/v4/agent/Chat          → SmartAgent.process()
 ├── /v1/chat/completions          → SmartAgent (OpenAI-compatible)
 ├── /v1/models                    → model list
 └── /v1/usage                     → token usage

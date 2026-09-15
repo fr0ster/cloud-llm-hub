@@ -163,17 +163,6 @@ curl -X GET \
 
 ### 2. Chat with Agent
 
-> **The legacy OData `Chat` is LLM-only.** `srv/agent-service.ts` calls
-> `getSmartAgent()` with no destination and never enters the per-request
-> connection scope, so ABAP tool calls throw. `X-SAP-Destination` is ignored
-> here. Use it to check that the LLM answers at all — nothing more.
-
-```bash
-curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='Reply with the word OK')" \
-  -H "Authorization: Basic YWxpY2U6"
-```
-
 **To test ABAP tools, use the OpenAI-compatible endpoint** — it establishes the
 connection from the request's own headers:
 
@@ -274,15 +263,16 @@ per-request ABAP connection, so only here do the tools work.
 
 ## Testing Scenarios
 
-### Scenario 1: LLM only — no SAP involved
+### Scenario 1: The model answers — no SAP involved
 
-The one case the legacy OData endpoint is good for: proving the model answers.
+`Health()` asks the LLM provider whether the configured model is available,
+without a completion and without a connection:
 
 ```bash
-curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='Reply with the word OK')" \
-  -H "Authorization: Basic YWxpY2U6"
+curl "http://localhost:4004/odata/v4/agent/Health()" -H "Authorization: Basic YWxpY2U6"
 ```
+
+`agentReady: true` means the model is reachable.
 
 ### Scenario 2: Query available tools
 

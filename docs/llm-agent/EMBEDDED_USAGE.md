@@ -22,7 +22,7 @@ handler (openai-handler.ts / anthropic-handler.ts / agent-mcp.ts)
 The adapter is built once, over a **placeholder** connection. The real ABAP
 connection is created per request and delivered to each tool call through
 `connectionALS` (an `AsyncLocalStorage`). A tool call outside that scope throws —
-which is why the legacy OData `AgentService` path has no working ABAP edge.
+which is why every agent entrance runs its pipeline inside that scope.
 
 ## Two caches, different lifetimes
 

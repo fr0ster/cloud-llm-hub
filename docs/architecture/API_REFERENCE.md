@@ -577,9 +577,22 @@ All endpoints return errors in the following format:
 
 ## Rate Limiting
 
-**Inbound** — no limit is enforced on callers of this service. Consider
-implementing per-user, per-IP and per-connection limits before opening it to a
-wide audience.
+**Inbound — the gatekeeper.** With `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` set, every
+pipeline-starting channel counts against one door. A caller that cannot start
+at once waits in a bounded queue; once admitted it is carried to the end — only
+a shutdown ends it. When the queue is full the caller is refused, with the reason
+and **without** a `Retry-After`: how long the sessions ahead will run is not
+something the service measures.
+
+| Reason | Meaning | `/v1/chat/completions` | `/v1/messages` | `execute_step` |
+|---|---|---|---|---|
+| `session_busy` | this session is still running a request | `503`, `error.code: gatekeeper_session_busy` | `529` `overloaded_error` | text prefixed `gatekeeper_session_busy:` |
+| `capacity` | every slot is taken | `503`, `error.code: gatekeeper_capacity` | `529` `overloaded_error` | text prefixed `gatekeeper_capacity:` |
+| `retention` | no room to keep another session | `503`, `error.code: gatekeeper_retention` | `529` `overloaded_error` | text prefixed `gatekeeper_retention:` |
+
+A client disconnect does not stop a running session: SAP may be halfway through
+a write, and cutting it leaves objects locked. The session finishes and its
+output is discarded.
 
 **Outbound (the LLM provider)** — handled since v6.35, by the provider itself
 (`@mcp-abap-adt/llm-agent` 23.0.0). A `429` from SAP AI Core, OpenAI or
@@ -592,6 +605,9 @@ expires when the caller does never gets to deliver its answer: our chat clients
 give up around a minute, so the policy must give up well before that and say
 when to come back. Override with `LLM_AGENT_THROTTLE_MAX_WAIT_MS`; the value in
 force is logged at startup, since it shows itself only under load.
+
+With a door configured this budget is not applied: an admitted session waits
+out exactly the interval the server named, and a `429` that names none fails it.
 
 This service therefore does **not** retry a rate limit of its own. Another
 request into a quota the server has just said is closed only earns another
@@ -626,6 +642,94 @@ text for a human to read; a client retrying on its own reads the header.
 
 The number is the server's own `Retry-After`, carried on the error rather than
 guessed at.
+
+---
+
+### Sessions
+
+The service issues the session in an `HttpOnly` cookie, `clh_session`, on the
+first `/v1` response that has none, and keys every session by that value
+**together with the authenticated user**. Request headers do not name a
+session: `x-session-id` and `mcp-session-id` are not read.
+
+**Migrating from `x-session-id`.** A client that wants a session across
+requests keeps the cookie and sends it back — `curl -c jar -b jar`. A
+`/v1/rag/collections` request with `scope: 'session'` that still sends
+`x-session-id` is answered `400`, naming the cookie. A client that keeps no
+cookies gets a fresh session per request; use `scope: 'user'` instead, with its
+different lifetime and visibility.
+
+**Ending a session.** `DELETE /v1/session` answers `204` at once. The session is
+unreachable from that moment; its history, collections and their files are
+removed once whatever is running against it has stopped — a RAG upload is
+cancelled and then waited for, a running pipeline is waited for. A request
+against a session being removed is answered `410` with `error.code:
+session_closed`. The next request carrying the old cookie is given a new
+session.
+
+**Retention.** With `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` set, creating a
+session-scoped collection when every place is taken by something running is
+answered `503` with `error.code: gatekeeper_retention`. An idle session is
+evicted instead when one exists — silently, so its next question arrives
+without the earlier context.
+
+### A closed destination
+
+When an SAP destination has been closed after an outage
+(`srv/agent-manager.ts` — `closeDestination` / `isDestinationClosed` /
+`retryAfterForDestination`), each pipeline-starting channel refuses **before**
+building a connection or resolving an agent for it:
+
+| Channel | Status | Shape |
+|---|---|---|
+| `/v1/chat/completions` | `503` | `{ error: { type: 'overloaded_error', message } }`, `Retry-After` header when known |
+| `/v1/messages` | `503` | `{ type: 'error', error: { type: 'overloaded_error', message } }`, `Retry-After` header when known |
+| `execute_step` | — (text result, `isError: true`) | `<message>` (a `Try again in about N seconds.` suffix when the wait is known) |
+
+Neither JSON body carries an `error.code` here — this is not one of the door's
+three `gatekeeper_*` reasons above, and the `/v1/messages` status is `503`, not
+the `529` the door and the throttle path use. `Retry-After`, when present, is
+**when the next background probe of that destination is due** — not an
+estimate of when SAP itself will be reachable again, which the service cannot
+know. This is a different fact from the door's own refusals (`session_busy` /
+`capacity` / `retention`), which never carry a `Retry-After`: those measure
+sessions ahead in a queue, which the service does not time.
+
+### An unanswered write
+
+A request can fail while a write tool call was sent and no answer ever came
+back — the connection dropped mid-flight, for instance
+(`srv/lib/recording-mcp-client.ts`, `RecordingMcpClient.unanswered`). When that
+happens the failure text names the tool(s) and is prefixed `UNVERIFIED_WRITE:`;
+it says the write was sent and **not retried**, that it may or may not have
+been applied, and that the caller must read the object back to find out — the
+service never repeats a write it cannot confirm.
+
+| Channel | Where it appears |
+|---|---|
+| `/v1/chat/completions` | the response `message.content`, HTTP `200` (same shape as a normal completion) |
+| `/v1/messages` non-streaming | the response body via `anthropicUnverifiedWrite`, status `500` alone or the throttle status when a throttle also applies |
+| `/v1/messages` streaming | an SSE `event: error` carrying the same envelope |
+| `execute_step` | the step's `ERROR on destination "…": UNVERIFIED_WRITE: …` text |
+
+The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
+(`unverifiedWriteText`, `unverifiedWriteFor`, `anthropicUnverifiedWrite`).
+
+### `Health` carries the gatekeeper snapshot
+
+`GET /odata/v4/mcp-proxy/Health()` gains a `gatekeeper` field: a JSON *string*
+(counts only, per process — not per session) with four scopes
+(`srv/lib/gatekeeper-metrics.ts`):
+
+- **`door`** — `{ configured: false }` when `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`
+  is unset; otherwise `srv/lib/door.ts`'s `DoorSnapshot`: `live`, `capacity`,
+  `queued`, `queueLength`, `highWater`, `refusals` (by reason), `left`.
+- **`retention`** — `srv/lib/session-retention.ts`'s `RetentionSnapshot`:
+  `retained`, `cap`, `evictions`, `closing`.
+- **`destinations`** — one entry per known destination: `name`, `closed`,
+  `refusals`.
+- **`throttling`** — `events`, `gaveUp`, `noInterval`, `byQuota` (per quota
+  key).
 
 ---
 
