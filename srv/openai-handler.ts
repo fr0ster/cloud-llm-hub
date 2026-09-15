@@ -67,7 +67,9 @@ import {
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
 function getUserId(): string {
-  return cds.context?.user?.id || 'anonymous';
+  // `??`, as the middleware, the other channels and the RAG routes read it: with
+  // `||` an empty id would key this channel's state differently from theirs.
+  return cds.context?.user?.id ?? 'anonymous';
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,8 +1309,16 @@ export async function handleChatCompletions(
     await pipeline.drain();
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
-    // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+    // omitting this leaks memory per request (Verified fact 10). Guarded: a
+    // throw here must not skip the release below, which would hold the slot
+    // until restart.
+    try {
+      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+    } catch (err) {
+      log.warn('dropRequest failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     pipeline.release();
   }
 }

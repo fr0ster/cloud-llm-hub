@@ -138,6 +138,16 @@ describe('/v1/messages at the door', () => {
     expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
   });
 
+  it('releases the slot last even when dropRequest throws', async () => {
+    // A slot leaked here closes the door until restart.
+    configure(1);
+    harness.dropRequestThrows = true;
+    const { done } = call(body());
+    await expect(done).resolves.toBeUndefined();
+    expect(harness.events.slice(-2)).toEqual(['safeStop', 'dropRequest']);
+    expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
+  });
+
   it('a caller that leaves while queued starts no pipeline', async () => {
     configure(1, 1);
     const hold = await gatekeeper.admitPipeline('bob', 'busy');

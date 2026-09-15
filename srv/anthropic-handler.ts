@@ -452,8 +452,16 @@ export async function handleAnthropicMessages(
     await pipeline.drain();
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
-    // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+    // omitting this leaks memory per request (Verified fact 10). Guarded: a
+    // throw here must not skip the release below, which would hold the slot
+    // until restart.
+    try {
+      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+    } catch (err) {
+      log.warn('dropRequest failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     pipeline.release();
   }
 }

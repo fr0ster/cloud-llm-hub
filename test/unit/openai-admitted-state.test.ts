@@ -301,3 +301,24 @@ describe('a destination switch', () => {
     expect(JSON.stringify(priorTurns)).not.toContain('earlier');
   });
 });
+
+describe('the user a request is keyed by', () => {
+  it('keys an empty user id as itself, as the other channels and the middleware do', async () => {
+    configure();
+    const before = harness.user.id;
+    harness.user.id = '';
+    try {
+      const done = handleChatCompletions(
+        fakeReq(body()) as unknown as Request,
+        fakeRes() as unknown as Response,
+      );
+      await done;
+      expect(sessionStore.getSessionHistory('s-1', '')).toHaveLength(2);
+      expect(sessionStore.getSessionHistory('s-1', 'anonymous')).toEqual([]);
+    } finally {
+      harness.user.id = before;
+      sessionStore.clearSession('s-1', '');
+      sessionStore.clearSession('s-1', 'anonymous');
+    }
+  });
+});

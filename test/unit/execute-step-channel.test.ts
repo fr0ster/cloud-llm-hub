@@ -123,6 +123,17 @@ describe('execute_step at the door', () => {
     if ('admitted' in hold) hold.admitted.release();
   });
 
+  it('releases the slot last even when dropRequest throws', async () => {
+    // A slot leaked here closes the door until restart.
+    configure(1);
+    harness.dropRequestThrows = true;
+    await expect(step()).resolves.toMatchObject({
+      content: [{ text: 'done' }],
+    });
+    expect(harness.events.slice(-2)).toEqual(['safeStop', 'dropRequest']);
+    expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
+  });
+
   it('sets the responsible person only once admitted, right before the run', async () => {
     // A process singleton: set before the queue wait, the last step to arrive
     // would name the responsible person for every step queued ahead of it.

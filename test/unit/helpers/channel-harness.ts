@@ -34,6 +34,8 @@ export const harness = {
   closeDestinationCalls: [] as Array<{ destination: string; reason: string }>,
   /** Every destination `establishRequestConnection` was asked to connect to. */
   establishCalls: [] as string[],
+  /** Make `recMcp.dropRequest` throw, after it is recorded. */
+  dropRequestThrows: false,
   /** Last destination per `JSON.stringify([userId, sessionId])`; unset reads as `DEST`. */
   sessionDestinations: new Map<string, string>(),
   /** Every `setSessionDestination(userId, sessionId, destination)` call. */
@@ -65,6 +67,7 @@ export const harness = {
     harness.unanswered = [];
     harness.closeDestinationCalls = [];
     harness.establishCalls = [];
+    harness.dropRequestThrows = false;
     harness.sessionDestinations = new Map();
     harness.destinationSets = [];
     harness.process = async () => ({
@@ -93,7 +96,10 @@ const handle = {
     },
   },
   recMcp: {
-    dropRequest: () => harness.events.push('dropRequest'),
+    dropRequest: () => {
+      harness.events.push('dropRequest');
+      if (harness.dropRequestThrows) throw new Error('dropRequest failed');
+    },
     unanswered: (_traceId: string) => harness.unanswered,
   },
 };
