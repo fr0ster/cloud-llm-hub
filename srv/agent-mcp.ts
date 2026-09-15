@@ -282,16 +282,10 @@ export async function executeStep(
     };
 
     const conn = connection;
-    const r = await admitted.run(async () => {
+    const r = await admitted.run(() => {
       // Admitted, right before the run: this step's responsible person and
       // master system, visible to it alone — see `lib/request-system-context.ts`.
-      const system = await resolveRequestSystem({
-        headers: req.headers,
-        connection: conn,
-        proxyType: resolved.proxyType,
-        destinationName: resolved.destinationName,
-        callerIdentity: dumpScope?.principalHash,
-      });
+      const system = resolveRequestSystem(req.headers);
       return runWithRequestSystem(system, () =>
         runWithSessionId(sessionId, () =>
           runWithRequestConnection(

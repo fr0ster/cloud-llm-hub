@@ -26,7 +26,6 @@ import { createConnection } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
 import { maskLoginForLog } from './log-mask';
 import { computeDumpScope, type DumpScope } from './principal';
-import type { RequestSystemInput } from './request-system-context';
 
 export type CredentialError = Error & {
   statusCode?: number;
@@ -54,8 +53,6 @@ export interface EstablishResult {
   /** Principal scope for GetDumpSection — the caller must thread it into
    * runWithRequestConnection so the tool has a principal on this (chat) path too. */
   dumpScope?: DumpScope;
-  /** What `resolveRequestSystem` needs besides the headers and the connection. */
-  requestSystem?: Omit<RequestSystemInput, 'headers' | 'connection'>;
 }
 
 /**
@@ -146,9 +143,9 @@ export async function establishRequestConnection(
         : '(destination-auth)',
     });
 
-    // The responsible person and master system are NOT resolved here: this runs
-    // before the caller waits at the door. Each channel resolves them inside
-    // its admitted section, right before the run (`request-system-context.ts`).
+    // The responsible person and master system are NOT delivered here: this
+    // runs before the caller waits at the door. Each channel enters their scope
+    // inside its admitted section, right before the run (`request-system-context.ts`).
 
     // Principal scope for GetDumpSection — same derivation as the planner path,
     // so the tool has a principal when RAG-selected on the chat (/v1) channels.
@@ -164,17 +161,7 @@ export async function establishRequestConnection(
       jwtSub: null,
     });
 
-    return {
-      connection,
-      handled: false,
-      dumpScope,
-      requestSystem: {
-        proxyType: resolved.proxyType,
-        destinationName: resolved.destinationName,
-        // The identity this connection authenticates as; no principal, no cache.
-        callerIdentity: dumpScope?.principalHash,
-      },
-    };
+    return { connection, handled: false, dumpScope };
   } catch (connErr) {
     const err = connErr instanceof Error ? connErr : new Error(String(connErr));
     const errWithCode = err as CredentialError;

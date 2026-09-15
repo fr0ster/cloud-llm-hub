@@ -93,7 +93,7 @@ describe('/v1/chat/completions at the door', () => {
     expect(res.headers['Retry-After']).toBeUndefined();
     expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
     // Refused: nothing resolved, so no system information was asked for.
-    expect(harness.requestSystemInputs).toEqual([]);
+    expect(harness.requestSystemHeaders).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
   });
 
@@ -208,12 +208,8 @@ describe('/v1/chat/completions at the door', () => {
         'requestSystemScope',
         'pipeline',
       ]);
-      expect(harness.requestSystemInputs).toEqual([
-        {
-          proxyType: 'OnPremise',
-          destinationName: 'DEST',
-          callerIdentity: 'principal',
-        },
+      expect(harness.requestSystemHeaders).toEqual([
+        expect.objectContaining({ 'x-sap-destination': 'DEST' }),
       ]);
       expect(harness.requestSystemAtPipeline).toEqual([
         { responsible: 'ALICE', masterSystem: 'DEV' },
@@ -267,7 +263,7 @@ describe('/v1/chat/completions at the door', () => {
     await done;
     expect(harness.events).not.toContain('pipeline');
     expect(harness.events).not.toContain('resolveRequestSystem');
-    expect(harness.requestSystemInputs).toEqual([]);
+    expect(harness.requestSystemHeaders).toEqual([]);
     expect(harness.events).toContain('safeStop');
     if ('admitted' in hold) hold.admitted.release();
     expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({

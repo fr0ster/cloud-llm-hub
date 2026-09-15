@@ -47,7 +47,6 @@ import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import {
-  type RequestSystemInput,
   resolveRequestSystem,
   runWithRequestSystem,
 } from './lib/request-system-context';
@@ -459,7 +458,6 @@ export async function handleChatCompletions(
     | import('@mcp-abap-adt/interfaces').IAbapConnection
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
-  let requestSystemInput: RequestSystemInput | undefined;
 
   log.debug('Destination tracking', {
     sessionId,
@@ -498,20 +496,13 @@ export async function handleChatCompletions(
     if (established.handled) return;
     requestConnection = established.connection;
     requestDumpScope = established.dumpScope;
-    if (established.connection && established.requestSystem) {
-      requestSystemInput = {
-        headers: req.headers,
-        connection: established.connection,
-        ...established.requestSystem,
-      };
-    }
   }
 
   /** Called admitted, right before the run: this request's responsible person
    *  and master system, visible to this run alone (`request-system-context.ts`). */
-  const inRequestSystem = async <T>(fn: () => Promise<T>): Promise<T> =>
-    requestSystemInput
-      ? runWithRequestSystem(await resolveRequestSystem(requestSystemInput), fn)
+  const inRequestSystem = <T>(fn: () => Promise<T>): Promise<T> =>
+    requestConnection
+      ? runWithRequestSystem(resolveRequestSystem(req.headers), fn)
       : fn();
 
   // A client disconnect ends nothing. Tearing the connection down on `close` is

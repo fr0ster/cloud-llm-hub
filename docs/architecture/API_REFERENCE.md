@@ -475,7 +475,7 @@ from its own `x-sap-*` headers, so there is nothing to reset.
 - `X-SAP-Responsible` (optional) - SAP user ID named as responsible; defaults to `X-SAP-Login`. Uppercased.
 - `X-SAP-Master-System` (optional) - master system (system ID) of created objects. Uppercased.
 
-On-premise destinations (`ProxyType=OnPremise`) take both values from these headers only: the caller sets them, and a missing one stays unset. Cloud destinations let the headers win and fill a missing value from the ABAP system's own information (its user and system ID) where that lookup is available; otherwise the value stays unset.
+Both values come from these headers, for every destination, and a missing one stays unset. On cloud destinations a missing responsible person or master system is currently not filled from the ABAP system's own information.
 
 **Example (standard destination):**
 

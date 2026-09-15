@@ -121,7 +121,7 @@ describe('execute_step at the door', () => {
     // step that never ran.
     expect(harness.events).toEqual(['getSmartAgent', 'safeStop']);
     // Refused: nothing resolved, so no system information was asked for.
-    expect(harness.requestSystemInputs).toEqual([]);
+    expect(harness.requestSystemHeaders).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
   });
 
@@ -156,14 +156,8 @@ describe('execute_step at the door', () => {
       'requestSystemScope',
       'pipeline',
     ]);
-    // The destination's own proxy type and name; no principal in this harness.
-    expect(harness.requestSystemInputs).toEqual([
-      {
-        proxyType: 'Internet',
-        destinationName: 'DEST',
-        callerIdentity: undefined,
-      },
-    ]);
+    // The step's own request headers, not another request's.
+    expect(harness.requestSystemHeaders).toEqual([req.headers]);
     expect(harness.requestSystemAtPipeline).toEqual([
       { responsible: 'ALICE', masterSystem: 'DEV' },
     ]);
@@ -203,7 +197,7 @@ describe('execute_step at the door', () => {
     // Handed no slot later, so the write is not run a second time for nobody.
     expect(harness.events).not.toContain('pipeline');
     expect(harness.events).not.toContain('resolveDestinationSapConfig');
-    expect(harness.requestSystemInputs).toEqual([]);
+    expect(harness.requestSystemHeaders).toEqual([]);
     expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({
       live: 0,
       queued: 0,

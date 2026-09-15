@@ -97,7 +97,7 @@ describe('/v1/messages at the door', () => {
     expect(res.headers['Retry-After']).toBeUndefined();
     // Refused: nothing resolved, so no system information was asked for.
     expect(harness.events).not.toContain('resolveRequestSystem');
-    expect(harness.requestSystemInputs).toEqual([]);
+    expect(harness.requestSystemHeaders).toEqual([]);
     if ('admitted' in hold) hold.admitted.release();
   });
 
@@ -164,7 +164,7 @@ describe('/v1/messages at the door', () => {
     await tick();
     expect(harness.events).not.toContain('pipeline');
     expect(harness.events).not.toContain('resolveRequestSystem');
-    expect(harness.requestSystemInputs).toEqual([]);
+    expect(harness.requestSystemHeaders).toEqual([]);
     expect(gatekeeper.theDoor()?.snapshot()).toMatchObject({
       live: 0,
       queued: 0,
@@ -190,12 +190,8 @@ describe('/v1/messages at the door', () => {
         'requestSystemScope',
         'pipeline',
       ]);
-      expect(harness.requestSystemInputs).toEqual([
-        {
-          proxyType: 'OnPremise',
-          destinationName: 'DEST',
-          callerIdentity: 'principal',
-        },
+      expect(harness.requestSystemHeaders).toEqual([
+        expect.objectContaining({ 'x-sap-destination': 'DEST' }),
       ]);
       expect(harness.requestSystemAtPipeline).toEqual([
         { responsible: 'ALICE', masterSystem: 'DEV' },

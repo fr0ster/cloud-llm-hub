@@ -12,7 +12,6 @@
 
 const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 const ensureAiCoreCredentials = jest.fn();
-const installRequestSystemContext = jest.fn();
 
 jest.mock(
   '@sap/cds',
@@ -56,9 +55,6 @@ jest.mock('../../srv/lib/gatekeeper-metrics', () => ({
   installThrottleObserver: () => {},
 }));
 jest.mock('../../srv/lib/gatekeeper', () => ({}));
-jest.mock('../../srv/lib/request-system-context', () => ({
-  installRequestSystemContext,
-}));
 
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 
@@ -67,8 +63,6 @@ require('../../srv/server');
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
   clearGatekeeperConfig();
-  installRequestSystemContext.mockReset();
-  ensureAiCoreCredentials.mockReset();
 });
 
 describe("server.ts's bootstrap listener", () => {
@@ -87,30 +81,6 @@ describe("server.ts's bootstrap listener", () => {
     expect(() => handlers.bootstrap(app)).toThrow(
       /LLM_GATEKEEPER_MAX_LIVE_SESSIONS/,
     );
-    expect(calls).toEqual([]);
-    expect(ensureAiCoreCredentials).not.toHaveBeenCalled();
-  });
-});
-
-describe('the per-request responsible person workaround', () => {
-  it('is installed in bootstrap, and a lib it cannot reach stops it before any route', () => {
-    // The same `bootstrap` listener, so the same promise: `cds serve` rejects
-    // and never listens, rather than run requests on the process singleton.
-    installRequestSystemContext.mockImplementation(() => {
-      throw new Error(
-        'Cannot deliver ... into @mcp-abap-adt/lib: ... fr0ster/mcp-abap-adt#202',
-      );
-    });
-    const calls: string[] = [];
-    const app = new Proxy(
-      {},
-      {
-        get: (_t, method: string) => () => calls.push(method),
-      },
-    );
-
-    expect(() => handlers.bootstrap(app)).toThrow(/@mcp-abap-adt\/lib/);
-    expect(installRequestSystemContext).toHaveBeenCalledTimes(1);
     expect(calls).toEqual([]);
     expect(ensureAiCoreCredentials).not.toHaveBeenCalled();
   });

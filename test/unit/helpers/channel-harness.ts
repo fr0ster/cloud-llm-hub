@@ -41,8 +41,8 @@ export const harness = {
     responsible?: string;
     masterSystem?: string;
   },
-  /** Every input `resolveRequestSystem` was given, headers and connection dropped. */
-  requestSystemInputs: [] as Array<Record<string, unknown>>,
+  /** The headers every `resolveRequestSystem` call was given. */
+  requestSystemHeaders: [] as Array<Record<string, unknown>>,
   /** The request-system scope the run is inside, if any. */
   activeRequestSystem: undefined as Record<string, unknown> | undefined,
   /** The scope each pipeline call ran in: `undefined` means none. */
@@ -80,7 +80,7 @@ export const harness = {
     harness.establishCalls = [];
     harness.dropRequestThrows = false;
     harness.requestSystem = { responsible: 'ALICE', masterSystem: 'DEV' };
-    harness.requestSystemInputs = [];
+    harness.requestSystemHeaders = [];
     harness.activeRequestSystem = undefined;
     harness.requestSystemAtPipeline = [];
     harness.sessionDestinations = new Map();
@@ -198,11 +198,6 @@ export function requestConnectionMock() {
         handled: false,
         connection: { id: 'conn' },
         dumpScope: undefined,
-        requestSystem: {
-          proxyType: 'OnPremise',
-          destinationName: destination,
-          callerIdentity: 'principal',
-        },
       };
     },
     safeStop: async () => {
@@ -219,10 +214,9 @@ export function requestConnectionMock() {
  */
 export function requestSystemMock() {
   return {
-    resolveRequestSystem: async (input: Record<string, unknown>) => {
+    resolveRequestSystem: (headers: Record<string, unknown>) => {
       harness.events.push('resolveRequestSystem');
-      const { headers: _h, connection: _c, ...rest } = input;
-      harness.requestSystemInputs.push(rest);
+      harness.requestSystemHeaders.push(headers);
       return harness.requestSystem;
     },
     runWithRequestSystem: async <T>(

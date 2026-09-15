@@ -40,7 +40,6 @@ import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
 import { needsSapConnection } from './lib/mcp-request';
-import { installRequestSystemContext } from './lib/request-system-context';
 import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
@@ -254,9 +253,6 @@ cds.on('bootstrap', (app: Application) => {
   // no server ever listens. On `served` the same throw was caught and logged as
   // "will retry on first request", and the service came up answering 500.
   gatekeeperConfig();
-  // Same placement, same reason: a lib this workaround cannot reach must stop
-  // `cds serve`, not run every request on the process-wide responsible person.
-  installRequestSystemContext();
   ensureAiCoreCredentials();
 
   const log = cds.log('mcp-proxy/bootstrap');

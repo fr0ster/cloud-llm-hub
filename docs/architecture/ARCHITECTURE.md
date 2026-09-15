@@ -518,7 +518,6 @@ graph TB
     request_conn --> dest_resolver
     request_conn --> log_mask
     request_conn --> principal_ts
-    request_conn --> request_system_ts
 
     %% agent-manager.ts dependencies — tools come from the EMBEDDED in-process
     %% adapter (HandlerExporter + McpClientAdapter), never from mcp-manager.ts
@@ -1421,9 +1420,8 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
   responsible person only once admitted; a queued caller that leaves is never
   admitted later.
 - **Responsible person and master system.** Resolved per request once admitted
-  and visible to that run alone (`srv/lib/request-system-context.ts`, a
-  workaround for fr0ster/mcp-abap-adt#202): the caller's headers on-premise,
-  the headers then the system's own information on cloud.
+  and delivered through lib's `RequestContext`, so each run sees only its own
+  (`srv/lib/request-system-context.ts`), from the caller's `x-sap-*` headers.
 - **Closed destinations.** Every channel refuses a closed destination before
   attempting a connection to it.
 - **Startup.** The `LLM_GATEKEEPER_*` variables are validated in `bootstrap`; a
