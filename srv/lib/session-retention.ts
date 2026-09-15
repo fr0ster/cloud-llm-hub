@@ -56,6 +56,13 @@ interface Entry {
   userId: string;
   sessionId: string;
   lastUsed: number;
+  /**
+   * Whether any lease on it was taken for a session the caller presented. A
+   * client that keeps no cookie is minted a session per request, none of which
+   * anybody will name again; eviction takes those before a session somebody
+   * came back to.
+   */
+  presented: boolean;
   leases: Set<Lease>;
   closing?: {
     settled: Promise<void>;
@@ -117,10 +124,17 @@ export class SessionRetention {
         if (!victim) return { refused: 'retention' };
         this.evict(victim);
       }
-      e = { userId, sessionId, lastUsed: this.now(), leases: new Set() };
+      e = {
+        userId,
+        sessionId,
+        lastUsed: this.now(),
+        presented: false,
+        leases: new Set(),
+      };
       this.entries.set(key, e);
     }
     e.lastUsed = this.now();
+    if (opts.presented) e.presented = true;
 
     const controller = new AbortController();
     const entry = e;
@@ -237,13 +251,22 @@ export class SessionRetention {
     };
   }
 
+  /**
+   * An idle session nobody ever presented, least recently used first; only
+   * when there is none, the least recently used idle one somebody did.
+   */
   private evictionCandidate(): Entry | undefined {
-    let oldest: Entry | undefined;
+    let neverPresented: Entry | undefined;
+    let presented: Entry | undefined;
     for (const e of this.entries.values()) {
       if (e.leases.size > 0 || e.closing) continue;
-      if (!oldest || e.lastUsed < oldest.lastUsed) oldest = e;
+      if (e.presented) {
+        if (!presented || e.lastUsed < presented.lastUsed) presented = e;
+      } else if (!neverPresented || e.lastUsed < neverPresented.lastUsed) {
+        neverPresented = e;
+      }
     }
-    return oldest;
+    return neverPresented ?? presented;
   }
 
   /** An idle session has no lease, so closing it removes it in this same turn. */

@@ -15,6 +15,7 @@ export interface DoorRetention {
     userId: string,
     sessionId: string,
     kind: 'pipeline',
+    opts?: { presented?: boolean },
   ): Lease | LeaseRefusal;
   /** A presented session closed or removed since the middleware accepted it. */
   isGone(userId: string, sessionId: string): boolean;
@@ -114,7 +115,9 @@ export class Door {
       return Promise.resolve({ closed: true });
     }
     if (this.eligible(userId, sessionId)) {
-      const admission = this.exclusive(() => this.take(userId, sessionId));
+      const admission = this.exclusive(() =>
+        this.take(userId, sessionId, !!opts.presented),
+      );
       if (admission) return Promise.resolve({ admitted: admission });
     }
     if (this.waiters.length >= this.queueLength) {
@@ -213,9 +216,22 @@ export class Door {
       this.onPressure?.(depth, this.queueLength);
   }
 
-  /** Slot and place together, in this synchronous step, or neither. */
-  private take(userId: string, sessionId: string): Admission | undefined {
-    const lease = this.retention.lease(userId, sessionId, 'pipeline');
+  /**
+   * Slot and place together, in this synchronous step, or neither.
+   *
+   * `presented` reaches retention so that eviction can tell a session a caller
+   * came back to from one minted for a single request. Both callers checked
+   * `isGone` for a presented session in this same synchronous step, so passing
+   * it cannot turn an admission into a refusal.
+   */
+  private take(
+    userId: string,
+    sessionId: string,
+    presented: boolean,
+  ): Admission | undefined {
+    const lease = this.retention.lease(userId, sessionId, 'pipeline', {
+      presented,
+    });
     if (isRefusal(lease)) return undefined;
     const key = keyOf(userId, sessionId);
     const controller = new AbortController();
@@ -266,7 +282,7 @@ export class Door {
         i++;
         continue;
       }
-      const admission = this.take(w.userId, w.sessionId);
+      const admission = this.take(w.userId, w.sessionId, w.presented);
       if (!admission) {
         i++;
         continue;

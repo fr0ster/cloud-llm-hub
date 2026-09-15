@@ -68,6 +68,58 @@ describe('places', () => {
     l.release();
   });
 
+  it('evicts sessions nobody ever presented before one a caller came back to', () => {
+    // A client that keeps no cookie is minted a session per request, and each
+    // one stores its turn. Plain LRU would let that churn empty every idle
+    // browser conversation, documents included, within a cap's worth of calls.
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 3, c.now);
+    f.put('alice', 'P');
+    lease(r.lease('alice', 'P', 'pipeline', { presented: true })).release();
+    c.tick();
+    for (let i = 0; i < 10; i++) {
+      f.put('cline', `m${i}`);
+      lease(r.lease('cline', `m${i}`, 'pipeline')).release();
+      c.tick();
+    }
+    expect(r.isKnown('alice', 'P')).toBe(true);
+    expect(f.log).not.toContain('delete alice/P');
+    // LRU still orders the never-presented group: the oldest of them went first.
+    expect(f.log.slice(0, 2)).toEqual(['delete cline/m0', 'delete cline/m1']);
+    expect(r.snapshot()).toMatchObject({ retained: 3, evictions: 8 });
+  });
+
+  it('remembers a session was presented even when a later lease is not', () => {
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 2, c.now);
+    f.put('alice', 'P');
+    lease(r.lease('alice', 'P', 'rag', { presented: true })).release();
+    c.tick();
+    lease(r.lease('alice', 'P', 'rag')).release();
+    c.tick();
+    f.put('cline', 'm0');
+    lease(r.lease('cline', 'm0', 'pipeline')).release();
+    c.tick();
+    // m0 is newer than P, and still the one that goes.
+    lease(r.lease('cline', 'm1', 'pipeline'));
+    expect(f.log).toEqual(['delete cline/m0']);
+  });
+
+  it('falls back to the least recently used presented session', () => {
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(f.stores, 2, c.now);
+    for (const s of ['A', 'B']) {
+      f.put('alice', s);
+      lease(r.lease('alice', s, 'rag', { presented: true })).release();
+      c.tick();
+    }
+    lease(r.lease('alice', 'C', 'rag'));
+    expect(f.log).toEqual(['delete alice/A']);
+  });
+
   it('never evicts a session holding a pipeline lease', () => {
     const f = fakeStores();
     const r = new SessionRetention(f.stores, 1);

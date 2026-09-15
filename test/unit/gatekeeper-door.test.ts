@@ -126,6 +126,39 @@ describe('a request that outlived its session', () => {
   });
 });
 
+describe('eviction behind the door', () => {
+  const { appendToSession, getSessionHistory } =
+    require('../../srv/session-store') as typeof import('../../srv/session-store');
+
+  it('cookie-less churn does not evict a presented idle session', async () => {
+    // The door takes the retention place itself, so what the request presented
+    // has to reach retention through it — or every admitted chat session looks
+    // like churn.
+    configure(1, 2);
+    appendToSession('P', 'alice', { role: 'user', content: 'keep me' });
+    admitted(
+      await gatekeeper.admitPipeline('alice', 'P', undefined, {
+        presented: true,
+      }),
+    ).release();
+    const minted: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const sid = `m${i}`;
+      minted.push(sid);
+      const s = admitted(await gatekeeper.admitPipeline('cline', sid));
+      appendToSession(sid, 'cline', { role: 'user', content: 'one-off' });
+      s.release();
+    }
+    try {
+      expect(getSessionHistory('P', 'alice')).toHaveLength(1);
+      expect(gatekeeper.theRetention().snapshot().evictions).toBeGreaterThan(0);
+    } finally {
+      await gatekeeper.deleteSession('alice', 'P');
+      for (const sid of minted) await gatekeeper.deleteSession('cline', sid);
+    }
+  });
+});
+
 describe('logout with a door', () => {
   it('waits for the admitted pipeline and does not abort it', async () => {
     // A logout is a disconnect with a better name: it may not cut an ADT write
