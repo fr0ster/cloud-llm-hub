@@ -119,6 +119,32 @@ export async function handleAnthropicMessages(
   const destination =
     requestedDestination || getCurrentDestination(userId, sessionId);
 
+  // A closed destination refuses before anything is built for it. Connecting
+  // first would CSRF-fetch against the system that is down and answer
+  // `401 sap_credentials_failed` from inside `establishRequestConnection`, so
+  // this 503 with its `Retry-After` would only ever be reached once SAP was
+  // back. It also comes before `getSmartAgent`, which throws its own
+  // `destination_unreachable` 503 with no `Retry-After`. No connection exists
+  // yet, so there is nothing to `safeStop`.
+  if (isDestinationClosed(destination)) {
+    recordDestinationRefusal(destination);
+    const seconds = retryAfterForDestination(destination);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destination),
+        },
+      }),
+    );
+    return;
+  }
+
   let requestConnection:
     | import('@mcp-abap-adt/interfaces').IAbapConnection
     | undefined;
@@ -143,29 +169,6 @@ export async function handleAnthropicMessages(
     out.detach();
     callerLeft.abort(new Error('caller disconnected'));
   });
-
-  // A closed destination refuses before its agent is even resolved:
-  // `getSmartAgent` on an unreachable destination throws its own
-  // `destination_unreachable` 503 below, with no `Retry-After`.
-  if (isDestinationClosed(destination)) {
-    recordDestinationRefusal(destination);
-    await safeStop(requestConnection);
-    const seconds = retryAfterForDestination(destination);
-    res.writeHead(503, {
-      'Content-Type': 'application/json',
-      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
-    });
-    res.end(
-      JSON.stringify({
-        type: 'error',
-        error: {
-          type: 'overloaded_error',
-          message: destinationClosedText(destination),
-        },
-      }),
-    );
-    return;
-  }
 
   // Get the SmartAgent handle for the SAME destination the connection was
   // established for (resolved above from x-sap-destination / session). Passing

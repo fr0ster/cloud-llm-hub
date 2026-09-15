@@ -812,6 +812,77 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   /**
+   * Tag a failed request with the connectivity verdict, in place.
+   *
+   * Enriches the error message with the shared connectivity-proxy classifier so
+   * MCP clients (curl, Cline, goose, IDE integrations) see "tunnel_timeout — SCC
+   * registered but handshake fails" etc. directly in the tool error envelope,
+   * not just an opaque 503 (issues #83 / #85). The tag is also the one verdict
+   * `srv/lib/mcp-outage.ts` reads back to close a destination, so every path
+   * that rethrows a request failure goes through here: the request itself, the
+   * CSRF refresh after a `403`, and the retry that follows it.
+   *
+   * Best-effort and never throws: a failure to classify leaves the original
+   * error as it was.
+   */
+  private async tagOutage(error: unknown): Promise<void> {
+    try {
+      const errObj = error as {
+        response?: { status?: number; data?: unknown };
+        message?: string;
+      };
+      const httpCode = errObj?.response?.status || 0;
+      const respData = errObj?.response?.data;
+      const rawMessage =
+        typeof respData === 'string' ? respData : (errObj?.message ?? '');
+      const looksTunnelRelated =
+        httpCode >= 500 ||
+        /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage) ||
+        // The plain CONNECT-PHASE shapes of a host that is not there.
+        // classifyProbe already reads these as dns_or_network; it was simply
+        // never asked. Deliberately NOT ECONNRESET / EPIPE / "socket hang
+        // up" — on the one long-lived keep-alive socket (maxSockets:1) those
+        // can mean SAP ran the write and reset afterwards, not that nothing
+        // reached it; asking about them here would tag (and later close) a
+        // destination that may simply have executed the request.
+        /ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|getaddrinfo/i.test(
+          rawMessage,
+        );
+      if (looksTunnelRelated && error instanceof Error) {
+        let classifier: typeof import('../lib/probe-classifier');
+        try {
+          // @ts-expect-error — .ts extension for cds-watch dev mode
+          classifier = await import('../lib/probe-classifier.ts');
+        } catch {
+          classifier = await import('../lib/probe-classifier.js');
+        }
+        const { status, hint } = classifier.classifyProbe(
+          httpCode,
+          rawMessage,
+          'OnPremise',
+        );
+        if (status !== 'ok' && status !== 'unknown') {
+          const tag = `[${status}]`;
+          if (!error.message.includes(tag)) {
+            error.message = `${error.message} ${tag}${hint ? ` ${hint}` : ''}`;
+          }
+          // Mirror the tag onto response.data too — see
+          // `withOutageTagInResponseData` for why `error.message` alone is
+          // not enough.
+          if (errObj.response && 'data' in errObj.response) {
+            errObj.response.data = withOutageTagInResponseData(
+              errObj.response.data,
+              tag,
+            );
+          }
+        }
+      }
+    } catch {
+      // classifier enrichment is best-effort; never block the original error
+    }
+  }
+
+  /**
    * Convert Cloud SDK response to IAdtResponse format
    */
   // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any are standard for flexible response types
@@ -1048,8 +1119,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
           'CSRF token validation failed, refreshing token and retrying',
           { url: requestUrl },
         );
-        // Shared refresh — if another parallel call is already refreshing, wait for it
-        await this.refreshCsrf(requestUrl);
+        // Shared refresh — if another parallel call is already refreshing, wait
+        // for it. A failure here, or of the retry below, is the connect phase
+        // against a system that may have gone since the first attempt: tagged
+        // like every other failure, so the destination can close. Tagging
+        // changes the message only; nothing here is retried again.
+        try {
+          await this.refreshCsrf(requestUrl);
+        } catch (refreshError: unknown) {
+          await this.tagOutage(refreshError);
+          throw refreshError;
+        }
 
         // Retry the request with fresh CSRF token + cookies
         try {
@@ -1092,6 +1172,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
             method: normalizedMethod,
             destinationName: this.destinationName,
           });
+          await this.tagOutage(retryError);
           throw retryError;
         }
       }
@@ -1103,64 +1184,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // place (see the generated SAP_SESSIONID app-server stickiness in
       // getCookieHeader), not to retry. Let the error propagate.
 
-      // Enrich the error message with the shared connectivity-proxy classifier
-      // so MCP clients (curl, Cline, goose, IDE integrations) see "tunnel_timeout
-      // — SCC registered but handshake fails" etc. directly in the tool error
-      // envelope, not just an opaque 503. See issues #83 / #85.
-      try {
-        const errObj = error as {
-          response?: { status?: number; data?: unknown };
-          message?: string;
-        };
-        const httpCode = errObj?.response?.status || 0;
-        const respData = errObj?.response?.data;
-        const rawMessage =
-          typeof respData === 'string' ? respData : (errObj?.message ?? '');
-        const looksTunnelRelated =
-          httpCode >= 500 ||
-          /tunnel|SCC|Cloud Connector|Anmeldung|Logon/i.test(rawMessage) ||
-          // The plain CONNECT-PHASE shapes of a host that is not there.
-          // classifyProbe already reads these as dns_or_network; it was simply
-          // never asked. Deliberately NOT ECONNRESET / EPIPE / "socket hang
-          // up" — on the one long-lived keep-alive socket (maxSockets:1) those
-          // can mean SAP ran the write and reset afterwards, not that nothing
-          // reached it; asking about them here would tag (and later close) a
-          // destination that may simply have executed the request.
-          /ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|getaddrinfo/i.test(
-            rawMessage,
-          );
-        if (looksTunnelRelated && error instanceof Error) {
-          let classifier: typeof import('../lib/probe-classifier');
-          try {
-            // @ts-expect-error — .ts extension for cds-watch dev mode
-            classifier = await import('../lib/probe-classifier.ts');
-          } catch {
-            classifier = await import('../lib/probe-classifier.js');
-          }
-          const { status, hint } = classifier.classifyProbe(
-            httpCode,
-            rawMessage,
-            'OnPremise',
-          );
-          if (status !== 'ok' && status !== 'unknown') {
-            const tag = `[${status}]`;
-            if (!error.message.includes(tag)) {
-              error.message = `${error.message} ${tag}${hint ? ` ${hint}` : ''}`;
-            }
-            // Mirror the tag onto response.data too — see
-            // `withOutageTagInResponseData` for why `error.message` alone is
-            // not enough.
-            if (errObj.response && 'data' in errObj.response) {
-              errObj.response.data = withOutageTagInResponseData(
-                errObj.response.data,
-                tag,
-              );
-            }
-          }
-        }
-      } catch {
-        // classifier enrichment is best-effort; never block the original error
-      }
+      await this.tagOutage(error);
 
       throw error;
     }

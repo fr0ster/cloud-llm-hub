@@ -472,6 +472,31 @@ export async function handleChatCompletions(
     requestedDestination: requestedDestination || '(none)',
   });
 
+  // A closed destination refuses before anything is built for it. Connecting
+  // first would CSRF-fetch against the system that is down — often waiting out
+  // a tunnel timeout — and answer `401 sap_credentials_failed` from inside
+  // `establishRequestConnection`, so this 503 with its `Retry-After` would only
+  // ever be reached once SAP was back. It also comes before `getSmartAgent`,
+  // which throws its own `destination_unreachable` 503 with no `Retry-After`.
+  // No connection exists yet, so there is nothing to `safeStop`.
+  if (isDestinationClosed(destAfter)) {
+    recordDestinationRefusal(destAfter);
+    const seconds = retryAfterForDestination(destAfter);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destAfter),
+        },
+      }),
+    );
+    return;
+  }
+
   if (destAfter) {
     const established = await establishRequestConnection(req, res, destAfter);
     if (established.handled) return;
@@ -492,30 +517,6 @@ export async function handleChatCompletions(
     out.detach();
     callerLeft.abort(new Error('caller disconnected'));
   });
-
-  // A closed destination refuses before its agent is even resolved: `getSmartAgent`
-  // on an unreachable destination throws its own `destination_unreachable` 503
-  // below, with no `Retry-After` and no idea a probe is already scheduled. The
-  // RAG stores are not yet swapped in at this point in the handler, so there is
-  // nothing for `restoreRagStores()` to undo here.
-  if (isDestinationClosed(destAfter)) {
-    recordDestinationRefusal(destAfter);
-    await safeStop(requestConnection);
-    const seconds = retryAfterForDestination(destAfter);
-    res.writeHead(503, {
-      'Content-Type': 'application/json',
-      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
-    });
-    res.end(
-      JSON.stringify({
-        error: {
-          type: 'overloaded_error',
-          message: destinationClosedText(destAfter),
-        },
-      }),
-    );
-    return;
-  }
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {

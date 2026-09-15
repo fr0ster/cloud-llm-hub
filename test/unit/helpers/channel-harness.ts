@@ -32,6 +32,8 @@ export const harness = {
   unanswered: [] as Array<{ call: { name: string } }>,
   /** Every `closeDestination(name, reason)` call a test observed. */
   closeDestinationCalls: [] as Array<{ destination: string; reason: string }>,
+  /** Every destination `establishRequestConnection` was asked to connect to. */
+  establishCalls: [] as string[],
   process: async (
     _messages: unknown,
     _opts: Record<string, unknown>,
@@ -54,6 +56,7 @@ export const harness = {
     harness.retryAfterSeconds = undefined;
     harness.unanswered = [];
     harness.closeDestinationCalls = [];
+    harness.establishCalls = [];
     harness.process = async () => ({
       ok: true,
       value: { content: 'done', stopReason: 'stop' },
@@ -135,11 +138,21 @@ export function agentConfigMock() {
 
 export function requestConnectionMock() {
   return {
-    establishRequestConnection: async () => ({
-      handled: false,
-      connection: { id: 'conn' },
-      dumpScope: undefined,
-    }),
+    // Recorded, because the real one CSRF-fetches over the network: a channel
+    // that calls it for a closed destination hammers the dead system and
+    // answers 401 before its closed-destination check is ever reached.
+    establishRequestConnection: async (
+      _req: unknown,
+      _res: unknown,
+      destination: string | undefined,
+    ) => {
+      if (destination) harness.establishCalls.push(destination);
+      return {
+        handled: false,
+        connection: { id: 'conn' },
+        dumpScope: undefined,
+      };
+    },
     safeStop: async () => {
       harness.events.push('safeStop');
     },

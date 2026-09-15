@@ -266,11 +266,13 @@ describe('a closed destination', () => {
         message: destinationClosedText('DEST'),
       },
     });
-    // The whole point: refused before getSmartAgent is ever called, so no
-    // pipeline runs and no slot is taken — only the connection is stopped.
+    // The whole point: refused before a connection is attempted — which would
+    // CSRF-fetch against the dead system and answer 401 — and before
+    // getSmartAgent, so no pipeline runs, no slot is taken, nothing to stop.
+    expect(harness.establishCalls).toEqual([]);
     expect(harness.events).not.toContain('getSmartAgent');
     expect(harness.events).not.toContain('pipeline');
-    expect(harness.events).toContain('safeStop');
+    expect(harness.events).not.toContain('safeStop');
     // Counted in its own scope, not the door's: an unreachable SAP system is
     // not the same question as a full container.
     const snap = gatekeeperSnapshot();
