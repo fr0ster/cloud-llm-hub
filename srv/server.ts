@@ -30,12 +30,10 @@ import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
 import {
-  adoptPersistedSessions,
   deleteSession,
   forgetEmptySessions,
   maySweepSession,
   sessionIsLive,
-  sessionRemovalRefusal,
   shutdownGatekeeper,
 } from './lib/gatekeeper';
 import { gatekeeperConfig } from './lib/gatekeeper-config';
@@ -598,24 +596,6 @@ cds.on('bootstrap', (app: Application) => {
       return;
     }
     const userId = cds.context?.user?.id ?? 'anonymous';
-    // Checked before anything is closed: if the data cannot be removed right
-    // now (a directory not writable, a read-only volume), the session stays as
-    // it was and the caller is told so — never 204 for data that stays.
-    const refusal = sessionRemovalRefusal(userId, sessionId);
-    if (refusal !== undefined) {
-      cds.log('session').warn('session removal refused', { reason: refusal });
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error: {
-            message:
-              'The session could not be removed right now; its data is unchanged. Please try again later.',
-            code: 'session_removal_refused',
-          },
-        }),
-      );
-      return;
-    }
     // Answered at the mark. The session is unreachable from this moment; its
     // bytes go when the last operation against them has stopped — a pipeline
     // runs to its own end, a RAG upload is cancelled and then waited for.
@@ -649,9 +629,8 @@ cds.on('bootstrap', (app: Application) => {
 cds.on('served', () => {
   installThrottleObserver();
   const log = cds.log('agent-manager/init');
-  // Both sweeps start here, whatever initialisation and the collection load do
-  // next. Inside their success path, a failed first init or a failed load left
-  // neither running until restart. Each tick is guarded: a throw inside a timer
+  // Both sweeps start here, whatever initialisation does next. Inside its
+  // success path, a failed first init left neither running until restart. Each tick is guarded: a throw inside a timer
   // is an uncaught exception, and CAP would shut the process down on it.
   // Hourly: expired session collections, skipping any session with an
   // operation still running against it — the next pass collects those.
@@ -667,29 +646,6 @@ cds.on('served', () => {
     guardedTask('Empty session forget', log, () => forgetEmptySessions()),
     5 * 60 * 1000,
   ).unref();
-  // Persisted collections load first, and their sessions are counted by
-  // retention before anything is admitted: an empty retention after a restart
-  // would admit new sessions over the persisted ones and never evict those.
-  // loadFromDisk has no await, so its body has run by the time it returns;
-  // re-vectorizing the loaded documents carries on in the background. The
-  // AI Core credentials it may need were ensured at bootstrap.
-  try {
-    getCollectionRegistry()
-      .loadFromDisk()
-      .catch((err: unknown) =>
-        log.warn('RAG collection load failed', {
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-    const adopted = adoptPersistedSessions();
-    if (adopted > 0) {
-      log.info('Persisted sessions counted by retention', { adopted });
-    }
-  } catch (err) {
-    log.warn('RAG collection load failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );

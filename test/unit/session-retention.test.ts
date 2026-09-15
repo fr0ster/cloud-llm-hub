@@ -2,7 +2,6 @@ import {
   isRefusal,
   type Lease,
   type LeaseRefusal,
-  RemovalRefused,
   SessionRetention,
 } from '../../srv/lib/session-retention';
 
@@ -364,7 +363,7 @@ describe('the sweep asks first', () => {
   });
 });
 
-describe('a store that cannot, or does not, remove', () => {
+describe('a store whose removal throws', () => {
   function removalStores() {
     const held = new Set<string>();
     const log: string[] = [];
@@ -373,21 +372,17 @@ describe('a store that cannot, or does not, remove', () => {
       sessionId: string;
       error: unknown;
     }> = [];
-    const blocked = new Set<string>();
     let fail = false;
     return {
       held,
       log,
       reported,
       put: (u: string, s: string) => held.add(`${u}/${s}`),
-      block: (u: string, s: string) => blocked.add(`${u}/${s}`),
       setFail: (f: boolean) => {
         fail = f;
       },
       stores: {
         hasState: (u: string, s: string) => held.has(`${u}/${s}`),
-        removable: (u: string, s: string) =>
-          blocked.has(`${u}/${s}`) ? `${u}/${s}: EACCES` : undefined,
         deleteAll: (u: string, s: string) => {
           if (fail) throw new Error('EACCES');
           log.push(`delete ${u}/${s}`);
@@ -400,72 +395,7 @@ describe('a store that cannot, or does not, remove', () => {
     };
   }
 
-  it('a close the check refuses leaves the session live and untouched, and says why', async () => {
-    const f = removalStores();
-    const r = new SessionRetention(f.stores, 2);
-    f.put('alice', 'A');
-    lease(r.lease('alice', 'A', 'rag')).release();
-    f.block('alice', 'A');
-    const closed = r.close('alice', 'A');
-    await expect(closed).rejects.toBeInstanceOf(RemovalRefused);
-    await expect(closed).rejects.toThrow('alice/A: EACCES');
-    expect(f.log).toEqual([]);
-    expect(f.held.has('alice/A')).toBe(true);
-    expect(r.isKnown('alice', 'A')).toBe(true);
-    expect(r.isClosing('alice', 'A')).toBe(false);
-    expect(r.snapshot()).toMatchObject({
-      retained: 1,
-      closing: 0,
-      removalRefused: 1,
-      cleanupFailed: 0,
-    });
-    expect(f.reported).toHaveLength(1);
-    // Still live: new work on it goes on as before.
-    lease(r.lease('alice', 'A', 'rag')).release();
-  });
-
-  it('a close on a session retention never saw is refused the same way', async () => {
-    const f = removalStores();
-    const r = new SessionRetention(f.stores, 2);
-    f.put('alice', 'A');
-    f.block('alice', 'A');
-    await expect(r.close('alice', 'A')).rejects.toBeInstanceOf(RemovalRefused);
-    expect(f.log).toEqual([]);
-    expect(r.snapshot()).toMatchObject({ retained: 0, removalRefused: 1 });
-  });
-
-  it('eviction passes over a session whose state cannot be removed', () => {
-    const f = removalStores();
-    const c = clock();
-    const r = new SessionRetention(f.stores, 2, c.now);
-    f.put('alice', 'A');
-    f.put('alice', 'B');
-    lease(r.lease('alice', 'A', 'rag')).release();
-    c.tick();
-    lease(r.lease('alice', 'B', 'rag')).release();
-    c.tick();
-    f.block('alice', 'A');
-    const l = lease(r.lease('alice', 'C', 'rag'));
-    expect(f.log).toEqual(['delete alice/B']);
-    expect(r.isKnown('alice', 'A')).toBe(true);
-    l.release();
-  });
-
-  it('eviction refuses when no idle session can be removed', () => {
-    const f = removalStores();
-    const r = new SessionRetention(f.stores, 2);
-    f.put('alice', 'A');
-    f.put('alice', 'B');
-    lease(r.lease('alice', 'A', 'rag')).release();
-    lease(r.lease('alice', 'B', 'rag')).release();
-    f.block('alice', 'A');
-    f.block('alice', 'B');
-    expect(r.lease('alice', 'C', 'rag')).toEqual({ refused: 'retention' });
-    expect(f.log).toEqual([]);
-    expect(r.snapshot()).toMatchObject({ retained: 2, removalRefused: 2 });
-  });
-
-  it('a removal that passed the check and still fails closes the session, reports and counts it', async () => {
+  it('closes the session all the same, reports and counts it', async () => {
     const f = removalStores();
     const r = new SessionRetention(f.stores, 2);
     f.put('alice', 'A');
@@ -524,32 +454,5 @@ describe('a store that cannot, or does not, remove', () => {
     expect(f.reported).toEqual([
       { userId: 'alice', sessionId: 'A', error: rejectionError },
     ]);
-  });
-});
-
-describe('sessions persisted before a restart', () => {
-  it('an adopted session counts against the cap and is evicted like any idle one', () => {
-    const f = fakeStores();
-    const c = clock();
-    const r = new SessionRetention(f.stores, 1, c.now);
-    f.put('alice', 'A');
-    expect(r.adopt('alice', 'A', 0)).toBe(true);
-    expect(r.adopt('alice', 'A', 0)).toBe(false);
-    expect(r.snapshot().retained).toBe(1);
-    c.tick();
-    lease(r.lease('bob', 'B', 'rag')).release();
-    expect(f.log).toEqual(['delete alice/A']);
-  });
-
-  it('adopting more than the cap is corrected by the next lease', () => {
-    const f = fakeStores();
-    const r = new SessionRetention(f.stores, 1);
-    f.put('alice', 'A');
-    f.put('carol', 'C');
-    r.adopt('alice', 'A', 0);
-    r.adopt('carol', 'C', 1);
-    expect(r.snapshot().retained).toBe(2);
-    lease(r.lease('bob', 'B', 'rag')).release();
-    expect([...f.log].sort()).toEqual(['delete alice/A', 'delete carol/C']);
   });
 });

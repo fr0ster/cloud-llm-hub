@@ -3,6 +3,7 @@ import {
   type ThrottleEvent,
 } from '@mcp-abap-adt/llm-agent';
 import { isDestinationClosed, knownDestinations } from '../agent-manager';
+import { collectionRemovalFailureCount } from '../rag-collections';
 import type { DoorSnapshot } from './door';
 import { theDoor, theRetention } from './gatekeeper';
 import type { RetentionSnapshot } from './session-retention';
@@ -51,6 +52,19 @@ export function installThrottleObserver(): void {
   });
 }
 
+/**
+ * Retention as Health reports it. A collection removal never throws into
+ * retention any more — the registry reports and counts what it could not clear —
+ * so those failures are added to the ones retention counted itself.
+ */
+function retentionScope(): RetentionSnapshot {
+  const r = theRetention().snapshot();
+  return {
+    ...r,
+    cleanupFailed: r.cleanupFailed + collectionRemovalFailureCount(),
+  };
+}
+
 export function gatekeeperSnapshot(): GatekeeperSnapshot {
   const names = new Set([
     ...knownDestinations(),
@@ -58,7 +72,7 @@ export function gatekeeperSnapshot(): GatekeeperSnapshot {
   ]);
   return {
     door: theDoor()?.snapshot() ?? { configured: false },
-    retention: theRetention().snapshot(),
+    retention: retentionScope(),
     destinations: [...names].sort().map((name) => ({
       name,
       closed: isDestinationClosed(name),

@@ -686,19 +686,7 @@ export async function handleChatCompletions(
           { sessionId },
         );
       } else {
-        try {
-          getCollectionRegistry().deleteSessionCollections(userId, sessionId);
-        } catch (err) {
-          // A directory that would not go: its collection stays registered, goes
-          // with the session later, and this request carries on.
-          log.warn(
-            'Destination reconnect could not remove a session collection',
-            {
-              sessionId,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
+        getCollectionRegistry().deleteSessionCollections(userId, sessionId);
       }
       // Re-build normalizedMessages with only the new user message (no stale history)
       const lastUserContent = extractText(

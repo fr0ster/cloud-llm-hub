@@ -20,13 +20,20 @@ jest.mock('../../srv/request-session', () => ({
 }));
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { type CallOptions, InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
+import * as manager from '../../srv/agent-manager';
 import { sessionCollectionId } from '../../srv/collection-ids';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import { sessionMiddleware } from '../../srv/lib/session-middleware';
 import { isRefusal, type Lease } from '../../srv/lib/session-retention';
+import {
+  collectionRemovalFailureCount,
+  resetCollectionRemovalFailuresForTest,
+} from '../../srv/rag-collections';
+import { registerRagRoutes } from '../../srv/rag-handler';
 import {
   findRoute,
   makeMockRouter,
@@ -34,20 +41,6 @@ import {
   makeRes,
   runIdRoute,
 } from './helpers/rag-routes';
-
-const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-wiring-'));
-process.env.RAG_STORAGE_PATH = storage;
-
-// Loaded after the environment is set: the registry reads its storage path
-// once, on first use.
-const manager =
-  require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
-const gatekeeper =
-  require('../../srv/lib/gatekeeper') as typeof import('../../srv/lib/gatekeeper');
-const { registerRagRoutes } =
-  require('../../srv/rag-handler') as typeof import('../../srv/rag-handler');
-const { sessionMiddleware } =
-  require('../../srv/lib/session-middleware') as typeof import('../../srv/lib/session-middleware');
 
 /** A backend whose calls wait until the test lets them go. */
 function gatedBackend() {
@@ -73,6 +66,21 @@ function gatedBackend() {
     }
   }
   return { open, factory: () => new GatedRag() };
+}
+
+/** A backend that stores as usual and fails to clear. */
+function unclearableBackend() {
+  class UnclearableRag extends InMemoryRag {
+    writer() {
+      return {
+        ...super.writer(),
+        clearAll: async (): Promise<never> => {
+          throw new Error('store unreachable');
+        },
+      };
+    }
+  }
+  return () => new UnclearableRag();
 }
 
 const registry = manager.getCollectionRegistry();
@@ -120,11 +128,24 @@ async function createSessionCollection(
   return res;
 }
 
-function dirOf(user: string, sid: string) {
-  return path.join(storage, sessionCollectionId('notes', user, sid));
+/** Whether a document is still in a store, looked up by the id the registry gives it. */
+async function storeHolds(
+  store: InMemoryRag | null,
+  physId: string,
+  docId: string,
+) {
+  if (!store) throw new Error(`no store for ${physId}`);
+  // clearAll is started, not awaited, by the removal.
+  await new Promise((r) => setImmediate(r));
+  const found = await store.getById(`doc:${physId}:${docId}`);
+  if (!found.ok) throw found.error;
+  return found.value !== null;
 }
 
-beforeEach(() => configure(1, 1));
+beforeEach(() => {
+  configure(1, 1);
+  resetCollectionRemovalFailuresForTest();
+});
 
 afterEach(async () => {
   for (const [u, s] of [
@@ -138,8 +159,6 @@ afterEach(async () => {
   clearGatekeeperConfig();
   gatekeeper.resetGatekeeperForTest();
 });
-
-afterAll(() => fs.rmSync(storage, { recursive: true, force: true }));
 
 describe('the retention cap on the RAG routes', () => {
   it('a RAG route cannot exceed the cap', async () => {
@@ -160,71 +179,50 @@ describe('the retention cap on the RAG routes', () => {
     running.release();
   });
 
-  it('evicts an idle session for a new one — all of it, directory included', async () => {
+  it('evicts an idle session for a new one — all of it, its data cleared in the backend', async () => {
     expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
-    await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
+    const physId = sessionCollectionId('notes', 'alice', 'A');
+    await registry.addDocument(physId, {
       id: 'd1',
       text: 'hello',
       metadata: {},
     });
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(true);
+    const store = registry.getRagStore(physId) as InMemoryRag | null;
+    expect(await storeHolds(store, physId, 'd1')).toBe(true);
 
     expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
 
-    expect(
-      registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
-    ).toBeNull();
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+    expect(registry.getCollection(physId)).toBeNull();
+    expect(await storeHolds(store, physId, 'd1')).toBe(false);
+    expect(collectionRemovalFailureCount()).toBe(0);
   });
+});
 
-  it('a logout the check refuses leaves the session live, its data in place, and says so', async () => {
-    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
-    await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
+describe('a removal whose backend does not clear', () => {
+  it('still ends the session: the old cookie does not reach the collection again', async () => {
+    registry.registerBackend('unclearable', unclearableBackend());
+    expect(
+      (await createSessionCollection('alice', 'A', 'unclearable'))._status,
+    ).toBe(201);
+    const physId = sessionCollectionId('notes', 'alice', 'A');
+    await registry.addDocument(physId, {
       id: 'd1',
       text: 'hello',
       metadata: {},
     });
-    const dir = dirOf('alice', 'A');
-    expect(fs.existsSync(dir)).toBe(true);
 
-    const realAccess = fs.accessSync;
-    const access = jest.spyOn(fs, 'accessSync').mockImplementation(((
-      p: fs.PathLike,
-      mode?: number,
-    ) => {
-      if (String(p) === dir) {
-        throw Object.assign(new Error('EACCES: permission denied'), {
-          code: 'EACCES',
-        });
-      }
-      return realAccess(p, mode);
-    }) as typeof fs.accessSync);
-    try {
-      // What DELETE /v1/session asks before answering: refused, so not 204.
-      expect(gatekeeper.sessionRemovalRefusal('alice', 'A')).toMatch(/EACCES/);
-      await expect(gatekeeper.deleteSession('alice', 'A')).rejects.toThrow(
-        'EACCES',
-      );
-      // Nothing was closed or removed: the cookie still names a live session,
-      // and its data was never promised gone.
-      expect(gatekeeper.sessionIsLive('alice', 'A')).toBe(true);
-      expect(fs.existsSync(dir)).toBe(true);
-      expect(
-        registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
-      ).not.toBeNull();
-      expect(gatekeeper.theRetention().snapshot()).toMatchObject({
-        closing: 0,
-        removalRefused: 1,
-      });
-    } finally {
-      access.mockRestore();
-    }
+    await expect(gatekeeper.deleteSession('alice', 'A')).resolves.toBe(
+      undefined,
+    );
+    await new Promise((r) => setImmediate(r));
 
-    // Once the directory can go, the same logout removes everything.
-    expect(gatekeeper.sessionRemovalRefusal('alice', 'A')).toBeUndefined();
-    await gatekeeper.deleteSession('alice', 'A');
-    expect(fs.existsSync(dir)).toBe(false);
     expect(gatekeeper.sessionIsLive('alice', 'A')).toBe(false);
+    expect(registry.getCollection(physId)).toBeNull();
+    expect(gatekeeper.theRetention().snapshot()).toMatchObject({
+      retained: 0,
+      closing: 0,
+    });
+    expect(collectionRemovalFailureCount()).toBe(1);
   });
 });
 
@@ -327,12 +325,10 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
       text: 'bob',
       metadata: {},
     });
-    expect(fs.existsSync(dirOf('bob', 'B'))).toBe(true);
 
     // Carol needs a place. Bob's idle session is evicted, not Alice's.
     expect((await createSessionCollection('carol', 'C'))._status).toBe(201);
     expect(registry.getCollection(bobPhys)).toBeNull();
-    expect(fs.existsSync(dirOf('bob', 'B'))).toBe(false);
 
     // With every place held by something working, nothing is evicted: refused.
     const holdCarol = gatekeeper.leaseSession(
@@ -347,7 +343,6 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
     open();
     await running;
     expect(registry.getCollection(physId)).not.toBeNull();
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(true);
     await gatekeeper.deleteSession('carol', 'C');
   });
 
@@ -380,6 +375,8 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
       'session_closed',
     );
 
+    // The collection is still there while the operation runs against it.
+    expect(registry.getCollection(physId)).not.toBeNull();
     open();
     await running;
     await removal;
@@ -387,14 +384,11 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
     // The assertion that matters is made after the operation has finished: a
     // cleanup racing it passes every check made before.
     expect(registry.getCollection(physId)).toBeNull();
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
-    await new Promise((r) => setImmediate(r));
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
   });
 });
 
 describe('the TTL sweep', () => {
-  it('skips a leased session and takes it on the next pass, directory included', async () => {
+  it('skips a leased session and takes it on the next pass', async () => {
     configure(2, 2);
     expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
     const physId = sessionCollectionId('notes', 'alice', 'A');
@@ -403,6 +397,7 @@ describe('the TTL sweep', () => {
       text: 'hello',
       metadata: {},
     });
+    const store = registry.getRagStore(physId) as InMemoryRag | null;
     storedCollection(physId).meta.expiresAt = Date.now() - 1;
 
     const held = gatekeeper.leaseSession('alice', 'A', 'rag');
@@ -413,7 +408,7 @@ describe('the TTL sweep', () => {
     (held as Lease).release();
     registry.sweepExpiredSessions(gatekeeper.maySweepSession);
     expect(registry.getCollection(physId)).toBeNull();
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
+    expect(await storeHolds(store, physId, 'd1')).toBe(false);
   });
 });
 
@@ -487,32 +482,6 @@ describe('a request that outlived its session', () => {
   });
 });
 
-describe('sessions persisted before a restart', () => {
-  it('count against the cap from the start, and are evicted for a new session', async () => {
-    expect((await createSessionCollection('alice', 'A'))._status).toBe(201);
-    await registry.addDocument(sessionCollectionId('notes', 'alice', 'A'), {
-      id: 'd1',
-      text: 'hello',
-      metadata: {},
-    });
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(true);
-
-    // A restart: retention starts empty, while the registry holds what
-    // loadFromDisk put back.
-    gatekeeper.resetGatekeeperForTest();
-    expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
-    expect(gatekeeper.adoptPersistedSessions()).toBe(1);
-    expect(gatekeeper.theRetention().snapshot().retained).toBe(1);
-
-    // Cap 1: bob's new session evicts alice's persisted one, directory included.
-    expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
-    expect(
-      registry.getCollection(sessionCollectionId('notes', 'alice', 'A')),
-    ).toBeNull();
-    expect(fs.existsSync(dirOf('alice', 'A'))).toBe(false);
-  });
-});
-
 describe('logout and clear-chat in server.ts', () => {
   it('answer at the mark and do not wait for the removal', () => {
     const src = fs.readFileSync(
@@ -522,11 +491,5 @@ describe('logout and clear-chat in server.ts', () => {
     expect(src).toMatch(/void\s+deleteSession\(\s*userId\s*,\s*sessionId\s*\)/);
     expect(src).toMatch(/sweepExpiredSessions\(\s*maySweepSession\s*\)/);
     expect(src).toMatch(/isLive:\s*sessionIsLive/);
-    // Persisted sessions are counted before the agents start, so before any request.
-    expect(src).toMatch(/adoptPersistedSessions\(\)[\s\S]*initSmartAgents\(\)/);
-    // A logout is checked before it is answered, and only then removed.
-    expect(src).toMatch(
-      /sessionRemovalRefusal\(userId, sessionId\)[\s\S]*void\s+deleteSession\(/,
-    );
   });
 });

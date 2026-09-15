@@ -34,27 +34,3 @@ export function hasSessionState(userId: string, sessionId: string): boolean {
     getCollectionRegistry().hasSessionCollections(userId, sessionId)
   );
 }
-
-/**
- * The sessions whose collections are on disk, as the registry loaded them: what
- * retention must count after a restart before anything is admitted.
- */
-export function persistedSessions(): Array<{
-  userId: string;
-  sessionId: string;
-  lastUsed: number;
-}> {
-  return getCollectionRegistry().sessionOwners();
-}
-
-/**
- * Why this session's state cannot be removed right now, or undefined when it
- * can. History and the destination live in memory and always can; the session
- * collections need writable directories.
- */
-export function sessionStateRemovable(
-  userId: string,
-  sessionId: string,
-): string | undefined {
-  return getCollectionRegistry().sessionCollectionsRemovable(userId, sessionId);
-}

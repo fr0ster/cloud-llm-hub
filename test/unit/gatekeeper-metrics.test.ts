@@ -20,6 +20,7 @@ jest.mock('@mcp-abap-adt/llm-agent', () => ({
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import {
@@ -28,6 +29,10 @@ import {
   installThrottleObserver,
   recordDestinationRefusal,
 } from '../../srv/lib/gatekeeper-metrics';
+import {
+  CollectionRegistry,
+  resetCollectionRemovalFailuresForTest,
+} from '../../srv/rag-collections';
 
 function configure(live?: number, queue?: number) {
   if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
@@ -82,6 +87,32 @@ describe('the scopes do not mix', () => {
     expect(gatekeeperSnapshot().retention).toEqual(
       expect.objectContaining({ retained: 0, evictions: 0, closing: 0 }),
     );
+  });
+});
+
+describe('collection removals the backend did not clear', () => {
+  it('count in the retention scope as cleanup failures', () => {
+    resetCollectionRemovalFailuresForTest();
+    class NoClearRag extends InMemoryRag {
+      writer() {
+        const { upsertRaw, deleteByIdRaw } = super.writer();
+        return { upsertRaw, deleteByIdRaw };
+      }
+    }
+    const reg = new CollectionRegistry();
+    reg.registerBackend('no-clear', () => new NoClearRag());
+    reg.createCollection({
+      id: 'c1',
+      logicalId: 'c1',
+      displayName: 'c1',
+      description: '',
+      scope: 'user',
+      owner: 'alice',
+      backend: 'no-clear',
+    });
+    reg.deleteCollection('c1');
+    expect(gatekeeperSnapshot().retention.cleanupFailed).toBe(1);
+    resetCollectionRemovalFailuresForTest();
   });
 });
 

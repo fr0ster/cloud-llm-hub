@@ -4,14 +4,14 @@
  * Provides CRUD for collections and documents with:
  * - Built-in "facts" collection (long-term knowledge, always present)
  * - Dynamic user/admin collections (SAP notes, product docs, etc.)
- * - JSON persistence to disk (survives restarts with re-vectorization)
  * - Namespace isolation (global vs per-user)
+ *
+ * The registry lives in this process only: nothing is written to disk, and a
+ * collection's data lives in its RAG backend.
  *
  * Collections are wired into SmartAgent as additional RAG stores.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   type CallOptions,
   type CircuitBreaker,
@@ -34,6 +34,21 @@ import cds from '@sap/cds';
 /** TTL for session-scoped RAG collections (ms). Override via RAG_SESSION_TTL_MS env var. */
 export const SESSION_TTL_MS =
   Number(process.env.RAG_SESSION_TTL_MS) || 24 * 60 * 60 * 1000;
+
+/**
+ * Collection removals whose data the RAG backend did not clear, since start.
+ * The collections themselves were removed from the registry regardless.
+ */
+let removalFailures = 0;
+
+export function collectionRemovalFailureCount(): number {
+  return removalFailures;
+}
+
+/** Test seam. */
+export function resetCollectionRemovalFailuresForTest(): void {
+  removalFailures = 0;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -351,20 +366,17 @@ export class CollectionRegistry {
     Object.entries(builtInBackends),
   );
   private defaultBackend: RagBackendType;
-  private storagePath: string | null;
   private embedder: IEmbedder | null;
   private breaker: CircuitBreaker | null;
   private log = cds.log('rag-collections');
   private enabledByUser: Map<string, Map<string, boolean>> = new Map();
 
   constructor(opts?: {
-    storagePath?: string;
     embedder?: IEmbedder | null;
     breaker?: CircuitBreaker | null;
     /** Default backend for new collections (default: "vector" if embedder provided, else "in-memory") */
     defaultBackend?: RagBackendType;
   }) {
-    this.storagePath = opts?.storagePath ?? null;
     this.embedder = opts?.embedder ?? null;
     this.breaker = opts?.breaker ?? null;
     this.defaultBackend =
@@ -406,8 +418,7 @@ export class CollectionRegistry {
 
   listCollections(userId?: string): CollectionMeta[] {
     const result: CollectionMeta[] = [];
-    for (const [id, stored] of this.collections) {
-      if (id.startsWith('__orphan__')) continue;
+    for (const stored of this.collections.values()) {
       if (stored.meta.owner === userId) {
         result.push({
           ...stored.meta,
@@ -417,102 +428,6 @@ export class CollectionRegistry {
       }
     }
     return result;
-  }
-
-  migrateToUserNamespacing(): void {
-    const {
-      userCollectionId,
-      normalizeLogicalId,
-      sanitizeUserKey,
-    } = require('./collection-ids');
-    const crypto = require('node:crypto');
-    const shortHash = (s: string) =>
-      crypto.createHash('sha256').update(s).digest('hex').slice(0, 8);
-    const takenLogical = new Map<string, Set<string>>(); // owner -> logicalIds occupied
-    const addTaken = (owner: string, logical: string) => {
-      const set = takenLogical.get(owner) ?? new Set<string>();
-      set.add(logical);
-      takenLogical.set(owner, set);
-      return set;
-    };
-    // True only for an id of the exact migrated form `<logical>__u_<userKey(owner)>`
-    // with a clean prefix. NOT for arbitrary `foo__bar`.
-    const isRealOwner = (owner?: string): owner is string =>
-      !!owner && owner !== 'anonymous';
-    const migratedPrefix = (id: string, owner?: string): string | null => {
-      if (!isRealOwner(owner)) return null; // 'anonymous' is not a real owner → never "already final"
-      const suffix = `__u_${sanitizeUserKey(owner)}`;
-      if (!id.endsWith(suffix)) return null;
-      const prefix = id.slice(0, -suffix.length);
-      return prefix && !prefix.includes('__') ? prefix : null;
-    };
-
-    // PASS 1 — record collections that are ALREADY migrated so PASS 2 can't collide with them.
-    // Trust the id-derived prefix (the source of truth), correcting any stale/mismatched logicalId.
-    for (const [id, stored] of this.collections) {
-      const m = stored.meta;
-      const prefix = migratedPrefix(id, m.owner);
-      if (prefix) {
-        m.logicalId = prefix;
-        addTaken(m.owner as string, prefix);
-      }
-    }
-
-    // PASS 2 — migrate everything not already in final form, in stable order.
-    const entries = [...this.collections.entries()].sort((a, b) =>
-      (a[1].meta.createdAt + a[0]).localeCompare(b[1].meta.createdAt + b[0]),
-    );
-    for (const [oldId, stored] of entries) {
-      const meta = stored.meta;
-      // Drop ONLY the built-in facts — the owner-less flat `facts`. A user-owned flat
-      // `facts` is a normal private collection and must migrate, not be deleted.
-      if (!meta.owner && oldId === 'facts') {
-        this.collections.delete(oldId);
-        continue;
-      }
-      if (migratedPrefix(oldId, meta.owner)) continue; // already final (recorded in PASS 1)
-      if (oldId.startsWith('__orphan__')) continue; // already quarantined
-
-      let newId: string;
-      if (!isRealOwner(meta.owner)) {
-        // no owner OR literal 'anonymous'
-        newId = `__orphan__${shortHash(oldId)}`; // quarantine: hashed key, not served
-        meta.logicalId = newId;
-      } else {
-        // Any non-final id (flat, or a stray `foo__bar`) → normalize with legacy fallback.
-        const base = normalizeLogicalId(meta.logicalId || oldId, oldId, true);
-        // Read the occupied set WITHOUT inserting first, then pick the first free candidate
-        // from the FIXED base (base, base-2, base-3, …) — never suffix an already-suffixed value.
-        const set = takenLogical.get(meta.owner) ?? new Set<string>();
-        const taken = (cand: string) =>
-          set.has(cand) ||
-          (userCollectionId(cand, meta.owner) !== oldId &&
-            this.collections.has(userCollectionId(cand, meta.owner)));
-        let logical = base;
-        if (taken(base)) {
-          let n = 2;
-          while (taken(`${base}-${n}`)) n++;
-          logical = `${base}-${n}`;
-        }
-        set.add(logical);
-        takenLogical.set(meta.owner, set);
-        meta.logicalId = logical;
-        newId = userCollectionId(logical, meta.owner);
-      }
-      if (newId !== oldId) {
-        meta.id = newId;
-        this.collections.delete(oldId);
-        this.collections.set(newId, stored);
-        for (const m of this.enabledByUser.values()) {
-          if (m.has(oldId)) {
-            m.set(newId, m.get(oldId) ?? false);
-            m.delete(oldId);
-          }
-        }
-      }
-    }
-    this.persistMeta();
-    this.persistEnabled();
   }
 
   getCollection(id: string): CollectionMeta | null {
@@ -543,7 +458,6 @@ export class CollectionRegistry {
       documents: new Map(),
       rag: this.createRagStore(full.backend),
     });
-    this.persistMeta();
     this.log.info('Collection created', { id: meta.id, scope: meta.scope });
     return full;
   }
@@ -556,7 +470,6 @@ export class CollectionRegistry {
     if (!stored) return null;
     if (update.displayName) stored.meta.displayName = update.displayName;
     if (update.description) stored.meta.description = update.description;
-    this.persistMeta();
     return {
       ...stored.meta,
       documentCount: stored.documents.size,
@@ -565,33 +478,60 @@ export class CollectionRegistry {
   }
 
   /**
-   * Remove one collection completely: its registry entry, every user's enabled
-   * flag for it, and its directory on disk.
+   * Remove one collection, whatever backend holds it.
    *
-   * The one primitive every ending goes through. Only `deleteCollection` used to
-   * free the directory; logout, clear-chat and the TTL sweep dropped the entry
-   * and left the documents on disk with nothing pointing at them. Persists
-   * nothing, so a caller removing several writes the metadata once.
+   * It leaves the registry at once — its entry and every user's enabled flag —
+   * so nothing can reach it again. Its data is cleared through the RAG contract
+   * (`writer().clearAll()`), the same for an in-memory store as for a vector
+   * database. That is not retried: a failure is reported and counted, and at
+   * worst leaves data in the backend that nothing points at (issue #234).
+   * Never throws.
    */
   private removeCollection(id: string): boolean {
-    if (!this.collections.has(id)) return false;
-    // The directory goes first. If it will not, the collection stays registered:
-    // its session still counts as holding state, and the next attempt removes
-    // both. Dropping the entry first left files on disk that nothing counted and
-    // nothing would ever try again.
-    this.deleteCollectionDir(id);
+    const stored = this.collections.get(id);
+    if (!stored) return false;
     this.collections.delete(id);
     for (const m of this.enabledByUser.values()) m.delete(id);
+    this.clearStore(id, stored.rag);
     return true;
+  }
+
+  /** Clear a removed collection's data through the backend's own writer. */
+  private clearStore(id: string, rag: IRag): void {
+    const writer = rag.writer?.();
+    if (!writer?.clearAll) {
+      this.reportRemovalFailure(
+        id,
+        new Error('the RAG backend offers no writer().clearAll()'),
+      );
+      return;
+    }
+    let cleared: ReturnType<NonNullable<IRagBackendWriter['clearAll']>>;
+    try {
+      cleared = writer.clearAll();
+    } catch (err) {
+      this.reportRemovalFailure(id, err);
+      return;
+    }
+    cleared.then(
+      (r) => {
+        if (!r.ok) this.reportRemovalFailure(id, r.error);
+      },
+      (err: unknown) => this.reportRemovalFailure(id, err),
+    );
+  }
+
+  private reportRemovalFailure(id: string, error: unknown): void {
+    removalFailures++;
+    this.log.warn('Collection removed, but its data could not be cleared', {
+      id,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   deleteCollection(id: string): boolean {
     const deleted = this.removeCollection(id);
-    if (deleted) {
-      this.persistMeta();
-      this.persistEnabled();
-      this.log.info('Collection deleted', { id });
-    }
+    if (deleted) this.log.info('Collection deleted', { id });
     return deleted;
   }
 
@@ -606,19 +546,16 @@ export class CollectionRegistry {
       this.enabledByUser.set(userId, m);
     }
     m.set(physicalId, enabled);
-    this.persistEnabled();
   }
 
   /**
    * Refresh the expiry timestamp of a session-scoped collection so it is not
-   * swept while the session is still active. Persists the updated metadata so
-   * the new deadline survives a restart.
+   * swept while the session is still active.
    */
   refreshSessionExpiry(physicalId: string): void {
     const stored = this.collections.get(physicalId);
     if (stored && stored.meta.scope === 'session') {
       stored.meta.expiresAt = Date.now() + SESSION_TTL_MS;
-      this.persistMeta();
     }
   }
 
@@ -633,61 +570,28 @@ export class CollectionRegistry {
     maySweep: (userId: string, sessionId: string) => boolean = () => true,
   ): void {
     const now = Date.now();
-    let changed = false;
     for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         (stored.meta.expiresAt ?? 0) <= now &&
         maySweep(stored.meta.owner ?? '', stored.meta.sessionId ?? '')
       ) {
-        try {
-          changed = this.removeCollection(id) || changed;
-        } catch (err) {
-          // Kept registered, so the next pass tries again.
-          this.log.warn('Expired collection could not be removed', {
-            id,
-            error: (err as Error).message,
-          });
-        }
+        this.removeCollection(id);
       }
-    }
-    if (changed) {
-      this.persistMeta();
-      this.persistEnabled();
     }
   }
 
-  /**
-   * Remove every collection of one session. Removes all it can; a collection
-   * whose directory will not go stays registered, and the first such error is
-   * thrown once the rest are done — so the caller knows the session still holds
-   * state and must not be let go of.
-   */
+  /** Remove every collection of one session. Never throws; see removeCollection. */
   deleteSessionCollections(userId: string, sessionId: string): void {
-    let changed = false;
-    let failed = false;
-    let failure: unknown;
     for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         stored.meta.owner === userId &&
         stored.meta.sessionId === sessionId
       ) {
-        try {
-          changed = this.removeCollection(id) || changed;
-        } catch (err) {
-          if (!failed) {
-            failed = true;
-            failure = err;
-          }
-        }
+        this.removeCollection(id);
       }
     }
-    if (changed) {
-      this.persistMeta();
-      this.persistEnabled();
-    }
-    if (failed) throw failure;
   }
 
   /** Whether this user's session still owns any session-scoped collection. */
@@ -702,16 +606,6 @@ export class CollectionRegistry {
       }
     }
     return false;
-  }
-
-  private persistEnabled(): void {
-    if (!this.storagePath) return;
-    const obj: Record<string, Record<string, boolean>> = {};
-    for (const [u, m] of this.enabledByUser) obj[u] = Object.fromEntries(m);
-    fs.writeFileSync(
-      path.join(this.storagePath, 'enabled.json'),
-      JSON.stringify(obj, null, 2),
-    );
   }
 
   // -------------------------------------------------------------------------
@@ -770,7 +664,7 @@ export class CollectionRegistry {
     namespace?: string,
     options?: {
       /**
-       * When true, persist the document locally even if the RAG upsert
+       * When true, keep the document in the registry even if the RAG upsert
        * fails (stamping `metadata.unindexed = true`). Used by bulk/file
        * upload paths so reassembly export can recover chunks that the
        * vector backend rejected. Default false — single-document API
@@ -800,7 +694,7 @@ export class CollectionRegistry {
         : new Error(String(result.error));
     }
 
-    // Bulk/file path (persistOnFail=true): persist locally regardless of
+    // Bulk/file path (persistOnFail=true): keep it in the registry regardless of
     // Qdrant outcome so export/reassembly recovers the chunk even when the
     // vector backend rejected it. On failure stamp `unindexed: true` so
     // callers (search, future re-index job) can tell which entries are
@@ -815,7 +709,6 @@ export class CollectionRegistry {
     };
     stored.documents.set(doc.id, persisted);
     stored.meta.documentCount = stored.documents.size;
-    this.persistDocument(collectionId, persisted);
 
     if (!result.ok) {
       // Throw so addDocumentsBulk's tryWithRetry can retry transient failures.
@@ -914,7 +807,6 @@ export class CollectionRegistry {
       ...existing.metadata,
     });
 
-    this.persistDocument(collectionId, existing);
     return existing;
   }
 
@@ -924,7 +816,6 @@ export class CollectionRegistry {
     const deleted = stored.documents.delete(docId);
     if (deleted) {
       stored.meta.documentCount = stored.documents.size;
-      this.deleteDocumentFile(collectionId, docId);
       // Also drop the vector embedding from the RAG store, otherwise
       // retrieval keeps surfacing the deleted document.
       try {
@@ -957,233 +848,5 @@ export class CollectionRegistry {
       if (rag) stores[id] = rag;
     }
     return stores;
-  }
-
-  // -------------------------------------------------------------------------
-  // JSON Persistence
-  // -------------------------------------------------------------------------
-
-  /** Load collections from disk and re-vectorize documents */
-  /**
-   * The sessions that own session-scoped collections, each once, with when it
-   * was last used: `expiresAt` is refreshed on every use, so the latest one
-   * less the TTL. After a restart these are counted against the retention cap.
-   */
-  sessionOwners(): Array<{
-    userId: string;
-    sessionId: string;
-    lastUsed: number;
-  }> {
-    const byKey = new Map<
-      string,
-      { userId: string; sessionId: string; lastUsed: number }
-    >();
-    for (const stored of this.collections.values()) {
-      const { scope, owner, sessionId, expiresAt } = stored.meta;
-      if (scope !== 'session' || !owner || !sessionId) continue;
-      const lastUsed =
-        (expiresAt ?? Date.now() + SESSION_TTL_MS) - SESSION_TTL_MS;
-      const key = JSON.stringify([owner, sessionId]);
-      const known = byKey.get(key);
-      if (!known || lastUsed > known.lastUsed) {
-        byKey.set(key, { userId: owner, sessionId, lastUsed });
-      }
-    }
-    return [...byKey.values()];
-  }
-
-  /**
-   * Why this session's collections cannot be removed right now, or undefined
-   * when they can: the storage directory and each collection directory must be
-   * writable. Asked before a session is closed, so a removal that would fail on
-   * permissions or a read-only volume is refused up front instead of being half
-   * done — and nothing is left to retry.
-   */
-  sessionCollectionsRemovable(
-    userId: string,
-    sessionId: string,
-  ): string | undefined {
-    if (!this.storagePath) return undefined;
-    const ids: string[] = [];
-    for (const [id, stored] of this.collections) {
-      if (
-        stored.meta.scope === 'session' &&
-        stored.meta.owner === userId &&
-        stored.meta.sessionId === sessionId
-      ) {
-        ids.push(id);
-      }
-    }
-    if (ids.length === 0) return undefined;
-    const notWritable = (p: string): string | undefined => {
-      try {
-        fs.accessSync(p, fs.constants.W_OK | fs.constants.X_OK);
-        return undefined;
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        // Nothing there is nothing to remove.
-        if (code === 'ENOENT') return undefined;
-        return `${p}: ${code ?? (err as Error).message}`;
-      }
-    };
-    const root = notWritable(this.storagePath);
-    if (root) return root;
-    for (const id of ids) {
-      const refusal = notWritable(path.join(this.storagePath, id));
-      if (refusal) return refusal;
-    }
-    return undefined;
-  }
-
-  async loadFromDisk(): Promise<void> {
-    const storagePath = this.storagePath;
-    if (!storagePath) return;
-
-    const metaPath = path.join(storagePath, 'collections.json');
-    if (!fs.existsSync(metaPath)) return;
-
-    try {
-      const raw = fs.readFileSync(metaPath, 'utf-8');
-      const metas: CollectionMeta[] = JSON.parse(raw);
-
-      this.log.info('Loading collections from disk', { count: metas.length });
-
-      for (const meta of metas) {
-        const rag = this.createRagStore(meta.backend);
-        const documents = new Map<string, RagDocument>();
-
-        // Load documents
-        const docsDir = path.join(storagePath, meta.id);
-        if (fs.existsSync(docsDir)) {
-          const files = fs
-            .readdirSync(docsDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of files) {
-            try {
-              const doc: RagDocument = JSON.parse(
-                fs.readFileSync(path.join(docsDir, file), 'utf-8'),
-              );
-              documents.set(doc.id, doc);
-
-              // Re-vectorize (non-blocking, best-effort)
-              rag
-                .upsert(doc.text, {
-                  id: `doc:${meta.id}:${doc.id}`,
-                  namespace: meta.owner,
-                  ...doc.metadata,
-                })
-                .catch((err: unknown) => {
-                  this.log.warn('Re-vectorization failed', {
-                    collection: meta.id,
-                    doc: doc.id,
-                    error: (err as Error).message,
-                  });
-                });
-            } catch {
-              this.log.warn('Failed to load document', {
-                collection: meta.id,
-                file,
-              });
-            }
-          }
-        }
-
-        this.collections.set(meta.id, {
-          meta: { ...meta, documentCount: documents.size },
-          documents,
-          rag,
-        });
-      }
-
-      this.log.info('Collections loaded', {
-        collections: metas.map((m) => m.id),
-      });
-    } catch (err) {
-      this.log.warn('Failed to load collections from disk', {
-        error: (err as Error).message,
-      });
-    }
-
-    // Load per-user enabled state
-    const enabledPath = path.join(storagePath, 'enabled.json');
-    if (fs.existsSync(enabledPath)) {
-      try {
-        const raw = fs.readFileSync(enabledPath, 'utf-8');
-        const obj: Record<string, Record<string, boolean>> = JSON.parse(raw);
-        for (const [userId, perUser] of Object.entries(obj)) {
-          const m = new Map<string, boolean>();
-          for (const [physicalId, val] of Object.entries(perUser)) {
-            m.set(physicalId, val);
-          }
-          this.enabledByUser.set(userId, m);
-        }
-      } catch (err) {
-        this.log.warn('Failed to load enabled.json', {
-          error: (err as Error).message,
-        });
-      }
-    }
-
-    this.migrateToUserNamespacing();
-    this.sweepExpiredSessions();
-  }
-
-  private persistMeta(): void {
-    if (!this.storagePath) return;
-    try {
-      fs.mkdirSync(this.storagePath, { recursive: true });
-      const metas = Array.from(this.collections.values()).map((s) => s.meta);
-      fs.writeFileSync(
-        path.join(this.storagePath, 'collections.json'),
-        JSON.stringify(metas, null, 2),
-      );
-    } catch (err) {
-      this.log.warn('Failed to persist collection metadata', {
-        error: (err as Error).message,
-      });
-    }
-  }
-
-  private persistDocument(collectionId: string, doc: RagDocument): void {
-    if (!this.storagePath) return;
-    try {
-      const dir = path.join(this.storagePath, collectionId);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, `${doc.id}.json`),
-        JSON.stringify(doc, null, 2),
-      );
-    } catch (err) {
-      this.log.warn('Failed to persist document', {
-        collection: collectionId,
-        doc: doc.id,
-        error: (err as Error).message,
-      });
-    }
-  }
-
-  private deleteDocumentFile(collectionId: string, docId: string): void {
-    if (!this.storagePath) return;
-    try {
-      const filePath = path.join(
-        this.storagePath,
-        collectionId,
-        `${docId}.json`,
-      );
-      fs.rmSync(filePath, { force: true });
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  /**
-   * Throws when the directory exists and cannot be removed; a missing one is
-   * fine (`force`). Not best-effort: a directory left behind is exactly the leak
-   * the removal exists to prevent, so the caller must learn of it.
-   */
-  private deleteCollectionDir(collectionId: string): void {
-    if (!this.storagePath) return;
-    const dir = path.join(this.storagePath, collectionId);
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 }

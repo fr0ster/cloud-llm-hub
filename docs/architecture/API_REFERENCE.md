@@ -670,9 +670,9 @@ requests keeps the cookie and sends it back — `curl -c jar -b jar`. A
 cookies gets a fresh session per request; use `scope: 'user'` instead, with its
 different lifetime and visibility.
 
-**Ending a session.** `DELETE /v1/session` answers `204` at once. If the session's data cannot be removed right now — a directory not writable, a read-only volume — it answers `503` with `error.code: session_removal_refused` instead, and the session stays exactly as it was. The session is
-unreachable from that moment; its history, collections and their files are
-removed once whatever is running against it has stopped — a RAG upload is
+**Ending a session.** `DELETE /v1/session` answers `204` at once. The session is
+unreachable from that moment; its history and collections are removed once
+whatever is running against it has stopped — a RAG upload is
 cancelled and then waited for, a running pipeline is waited for. A request
 against a session being removed is answered `410` on every channel that has a
 session — the shape differs, since only the OpenAI and RAG envelopes carry a
@@ -750,7 +750,10 @@ The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
   is unset; otherwise `srv/lib/door.ts`'s `DoorSnapshot`: `live`, `capacity`,
   `queued`, `queueLength`, `highWater`, `refusals` (by reason), `left`.
 - **`retention`** — `srv/lib/session-retention.ts`'s `RetentionSnapshot`:
-  `retained`, `cap`, `evictions`, `closing`, `removalRefused` — removals the check before closing refused (a directory not writable, a read-only volume); those sessions stayed live and untouched — and `cleanupFailed` — removals that passed the check and still failed; those sessions were closed. Both count since start; nothing is retried.
+  `retained`, `cap`, `evictions`, `closing`, `cleanupFailed` — removals that did
+  not complete, since start: a collection whose data its RAG backend did not
+  clear, or a session store that threw. The collection or session was removed
+  regardless, so nothing can reach it; nothing is retried.
 - **`destinations`** — one entry per known destination: `name`, `closed`,
   `refusals`.
 - **`throttling`** — `events`, `gaveUp`, `noInterval`, `byQuota` (per quota

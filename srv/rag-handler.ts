@@ -483,18 +483,8 @@ export function registerRagRoutes(
         return;
       }
 
-      try {
-        registry.deleteCollection(physId);
-        res.status(204).end();
-      } catch (err) {
-        // The directory would not go, so the collection is still there: a
-        // server-side failure, not a bad request.
-        error(
-          res,
-          500,
-          `Collection could not be removed: ${(err as Error).message}`,
-        );
-      }
+      registry.deleteCollection(physId);
+      res.status(204).end();
     }),
   );
 
