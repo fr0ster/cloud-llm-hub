@@ -7,9 +7,16 @@
  * caller-specified `x-sap-responsible`, else the connecting `x-sap-login` user.
  * `setSystemContext` MERGES, so other context fields are preserved.
  *
- * NOTE: `systemContext` is a process singleton — correct for one SAP user per
- * proxy session (the typical deployment); concurrent writes by different users on
- * the same instance could race (a pre-existing limitation of the singleton).
+ * NOTE: `systemContext` is a process singleton. The channels set it inside their
+ * admitted section, right before the pipeline, so a queue wait no longer decides
+ * it — but two admitted runs can still race on it while the door's capacity is
+ * above one. The exact gap is in `@mcp-abap-adt/lib` (dist/lib/clients.js): it
+ * reads `masterLanguage` per request through `getRequestContext()` (set by
+ * `runWithRequestContext`), yet still reads `responsible` and `masterSystem`
+ * from `getSystemContext()`. Once lib reads `responsible` from the request
+ * context the way it reads `masterLanguage`, wrap the admitted run in
+ * `runWithRequestContext({ responsible })` instead of calling this. Calling
+ * `runWithRequestContext` today would do nothing for `responsible`.
  *
  * Lives in its own lightweight module (only depends on core/utils) so the
  * lightweight request-connection helper does not have to import the heavy

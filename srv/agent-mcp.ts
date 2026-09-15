@@ -282,8 +282,12 @@ export async function executeStep(
     // Per-request responsible person for ADT writes (create/update/delete).
     // Admitted, and immediately before the run: it is a process singleton, so
     // set before the queue wait the last step to arrive would name it for every
-    // step queued ahead. Two admitted runs can still race on it — a pre-existing
-    // limitation of the singleton, not of the door.
+    // step queued ahead. Two admitted runs can still race on it while capacity
+    // is above one: lib reads `responsible` (and `masterSystem`) from the
+    // `getSystemContext()` singleton, though it already reads `masterLanguage`
+    // per request via `getRequestContext()` (`@mcp-abap-adt/lib`
+    // dist/lib/clients.js). Once it reads `responsible` there too, wrap the
+    // admitted run in `runWithRequestContext({ responsible })` instead.
     setRequestResponsible(req.headers);
     const r = await admitted.run(() =>
       runWithSessionId(sessionId, () =>

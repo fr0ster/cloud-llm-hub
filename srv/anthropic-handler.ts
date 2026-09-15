@@ -271,7 +271,12 @@ export async function handleAnthropicMessages(
           // Admitted, and immediately before the pipeline: the responsible
           // person is a process singleton, so set before the queue wait the
           // last arrival would name it for every queued run. Two admitted runs
-          // can still race on it — a pre-existing limitation of the singleton.
+          // can still race on it while capacity is above one: lib reads
+          // `responsible` (and `masterSystem`) from the `getSystemContext()`
+          // singleton, though it already reads `masterLanguage` per request via
+          // `getRequestContext()` (`@mcp-abap-adt/lib` dist/lib/clients.js).
+          // Once it reads `responsible` there too, wrap the admitted run in
+          // `runWithRequestContext({ responsible })` instead.
           setRequestResponsible(req.headers);
           return runWithRequestConnection(
             requestConnection,
