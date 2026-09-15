@@ -149,9 +149,8 @@ cf restart cloud-llm-hub-srv
 ### Scenario 2: LLM + MCP (With Tools)
 
 Test the agent with MCP tools integration. **These calls go to
-`/v1/chat/completions`, not to the OData `Chat` used in Scenario 1** — only the
-`/v1` path establishes the per-request ABAP connection, so only there do tools
-actually execute.
+`/v1/chat/completions`** — only the `/v1` path establishes the per-request ABAP
+connection, so only there do tools actually execute.
 
 #### 1. Health Check (With MCP)
 
