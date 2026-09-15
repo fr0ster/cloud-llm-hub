@@ -16,7 +16,6 @@ sap.ui.define([], function () {
      * @param {function} options.onUsage - Called with usage object
      * @param {function} options.onDone - Called when stream completes
      * @param {function} options.onError - Called with Error object
-     * @param {string} [options.sessionId] - Session ID for server-side history
      * @returns {function} abort - Call to cancel the stream
      */
     streamChat: function (options) {
@@ -25,9 +24,6 @@ sap.ui.define([], function () {
 
       var url = this._getBaseUrl() + "/v1/chat/completions";
       var headers = { "Content-Type": "application/json" };
-      if (options.sessionId) {
-        headers["x-session-id"] = options.sessionId;
-      }
 
       fetch(url, {
         method: "POST",

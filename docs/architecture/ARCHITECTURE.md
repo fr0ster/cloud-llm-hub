@@ -45,7 +45,7 @@ graph LR
         MCP_PROXY[Raw MCP Tools<br/>Stream-HTTP]
         AGENT_MCP[Agent MCP<br/>execute_step]
         V1[OpenAI + Anthropic<br/>v1/chat/completions, v1/messages]
-        AGENT_OD[Agent Service OData<br/>legacy]
+        AGENT_OD[Agent Service OData<br/>Health only]
         AUTH[Auth Service]
     end
 
@@ -75,21 +75,19 @@ graph LR
     MCP_PROXY -->|ADT Requests| ABAP
     AGENT_MCP -->|LLM Chat| LLM
     V1 -->|LLM Chat| LLM
-    AGENT_OD -->|LLM Chat| LLM
+    AGENT_OD -->|LLM probe| LLM
     LLM --> AICORE
     LLM --> EXT
     AGENT_MCP -.->|embedded tool handlers<br/>in-process, no HTTP| ABAP
     V1 -.->|embedded tool handlers<br/>in-process, no HTTP| ABAP
 ```
 
-> The legacy `AgentService` OData path (`AGENT_OD`, `agent-service.ts`) is **LLM-only**: it calls `getSmartAgent()` + `agent.process()` **without** entering the per-request ALS connection scope, so embedded ABAP tool calls throw (`agent-manager.ts` requires a `connectionALS` store) — it has no valid ABAP-tool edge.
-
 **Two runtime paths:**
 
 | Path | Entry Point | Purpose |
 |------|-------------|---------|
 | **Raw MCP tools** | `POST /mcp/stream/http` | Orchestrates MCP protocol requests: auth, destination resolution, connection creation, then delegates to embedded `mcp-abap-adt` server; used by AI assistants directly. No agent involved. |
-| **Agent / LLM surfaces** | `POST /mcp/agent/stream/http` (`execute_step`, `srv/agent-mcp.ts`), `POST /v1/chat/completions` (`srv/openai-handler.ts`), `POST /v1/messages` (`srv/anthropic-handler.ts`) | All three call `getSmartAgent` (`srv/agent-manager.ts`) → the DAG-coordinator controller (executor worker + reviewer, see §7). A legacy secondary surface, the OData `AgentService` (`GET/POST /odata/v4/agent/*`), also exists: its `Chat`/`Health` call `getSmartAgent` (its `GetHistory` returns `[]` and `ClearHistory` is a static-success stub) — not a primary path. |
+| **Agent / LLM surfaces** | `POST /mcp/agent/stream/http` (`execute_step`, `srv/agent-mcp.ts`), `POST /v1/chat/completions` (`srv/openai-handler.ts`), `POST /v1/messages` (`srv/anthropic-handler.ts`) | All three call `getSmartAgent` (`srv/agent-manager.ts`) → the DAG-coordinator controller (executor worker + reviewer, see §7). The OData `AgentService` (`/odata/v4/agent/*`) keeps `Health` (and the `GetHistory`/`ClearHistory` stubs); it starts no pipeline. |
 
 ---
 
@@ -153,7 +151,7 @@ graph TD
     ROOT --> TOOLS_DIR["tools/ — Utility scripts"]
 
     SRV_DIR --> SRV_CORE["Core modules<br/>server.ts, mcp-proxy.ts,<br/>mcp-manager.ts"]
-    SRV_DIR --> SRV_AGENT["Agent modules<br/>agent-mcp.ts,<br/>openai-handler.ts,<br/>anthropic-handler.ts,<br/>agent-service.ts (legacy),<br/>agent-manager.ts,<br/>agent-config.ts"]
+    SRV_DIR --> SRV_AGENT["Agent modules<br/>agent-mcp.ts,<br/>openai-handler.ts,<br/>anthropic-handler.ts,<br/>agent-service.ts,<br/>agent-manager.ts,<br/>agent-config.ts"]
     SRV_DIR --> SRV_AUTH["Auth module<br/>auth.ts, auth.cds"]
     SRV_DIR --> SRV_CONN["connections/<br/>Connection strategies"]
     SRV_DIR --> SRV_LIB["lib/<br/>errorUtils.ts, logger.ts,<br/>reviewer-core.ts, step-reviewer.ts,<br/>recording-mcp-client.ts, …"]
@@ -177,8 +175,8 @@ cloud-llm-hub/
 │   ├── agent-mcp.ts              # `/mcp/agent/stream/http` planner surface: `list_destinations` + `execute_step`
 │   ├── openai-handler.ts         # `/v1/chat/completions`, `/v1/models`, `/v1/usage`, `/v1/destinations/*` handlers
 │   ├── anthropic-handler.ts      # `/v1/messages` (Anthropic Messages API) handler
-│   ├── agent-service.ts          # Legacy CAP OData service handlers for Agent (Chat, Health) — secondary surface
-│   ├── agent-service.cds         # CDS model for AgentService (legacy)
+│   ├── agent-service.ts          # CAP OData service handlers for Agent (Health)
+│   ├── agent-service.cds         # CDS model for AgentService
 │   ├── agent-manager.ts          # getSmartAgent, LLM provider creation, per-destination state, DAG-coordinator wiring
 │   ├── agent-config.ts           # Agent configuration from env vars / VCAP_SERVICES
 │   ├── auth.ts                   # CAP AuthService handlers (CheckAuth, CheckRoles)
@@ -208,7 +206,7 @@ cloud-llm-hub/
 │       ├── step-gate.ts          # Tool-call-count gating for the LLM critic
 │       ├── write-guardrail.ts    # Write-tool result envelope checks
 │       ├── request-connection.ts   # establishRequestConnection + safeStop (release ADT lock on every exit path)
-│       ├── principal.ts / responsible.ts   # principalHash, system scope, responsible-person propagation
+│       ├── principal.ts / request-system-context.ts   # principalHash, system scope, per-request responsible person + master system
 │       ├── dump-buffer.ts / dump-parser.ts / get-dump-section.ts   # Dump section buffering/parsing for GetDumpSection
 │       ├── composite-skill-manager.ts / skills-pool.ts   # Skill RAG exposure (skills are NOT role-gated)
 │       ├── exposition.ts / tool-exposition-map.ts / tool-authorization.ts  # Role → tool-group levels, and the execution check
@@ -257,10 +255,10 @@ graph TD
         ━━━━━━━━━
         OData McpProxyService
         Health / Probe / List / Diagnose"]
-        C["agent-service.ts (legacy)
+        C["agent-service.ts
         ━━━━━━━━━
         OData AgentService
-        Chat / Health"]
+        Health"]
     end
 
     subgraph CORE["Layer 2 — Core Logic"]
@@ -350,11 +348,11 @@ graph TD
 | **CAP Bootstrap** | `server.ts` | Registers Express middleware on `cds.on('bootstrap')`. Mounts `/mcp/stream/http`, `/mcp/agent/stream/http`, and all `/v1/*` routes. Handles Content-Type normalization for Cline. Guards `/mcp/*` and `/v1/*` with a manual Express middleware chain — `context` (CAP `cds.context`) → `wrappedAuth` (`createBasicToBearerMiddleware` over CAP's built-in auth) → `requireMcpRole` (local: 401 if `user.is('anonymous')`, 403 unless `user.is()` matches an `MCP_*` role) → `authJsonErrorHandler`. It does **not** call the `AuthService` OData handlers. |
 | **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service annotated `@path: 'mcp-proxy'` (mounted at `/odata/v4/mcp-proxy/`). Exposes `Health()`, `ProbeDestination(destination)`, `ListDestinations()`, `DiagnoseDestinations()`, `ProbeActiveDestination()`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
 | **MCP Manager** | `mcp-manager.ts` | Core factory for the raw-tools path. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
-| **Agent MCP** | `agent-mcp.ts` | `POST /mcp/agent/stream/http` planner/controller surface — exposes `list_destinations` and `execute_step` (delegate ONE step to the SmartAgent executor via `getSmartAgent`). Connection built lazily per call from `x-sap-*` headers; concurrency capped by `Semaphore` (`EXEC_STEP_MAX_CONCURRENCY=2`). This is a **primary** agent entry point. |
+| **Agent MCP** | `agent-mcp.ts` | `POST /mcp/agent/stream/http` planner/controller surface — exposes `list_destinations` and `execute_step` (delegate ONE step to the SmartAgent executor via `getSmartAgent`). Connection built lazily per call from `x-sap-*` headers; counts against the gatekeeper's door when `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set, and is otherwise capped at two by `Semaphore`. This is a **primary** agent entry point. |
 | **OpenAI Handler** | `openai-handler.ts` | `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (destination metadata), `GET /v1/usage`, `/v1/destinations/*`. Reads `X-SAP-Destination` header for per-request destination switching. **Primary** agent entry point. |
 | **Anthropic Handler** | `anthropic-handler.ts` | `POST /v1/messages` — Anthropic Messages API, translated to the SmartAgent pipeline via `getSmartAgent`; enables Claude CLI via `ANTHROPIC_BASE_URL`. **Primary** agent entry point. |
-| **Agent Service (legacy)** | `agent-service.ts` + `.cds` | CAP service annotated `@path: 'agent'` (mounted at `/odata/v4/agent/`). Exposes `Chat(message)`, `GetHistory()`, `ClearHistory()`, `Health()`. Only `Chat`/`Health` delegate to `agent-manager.ts` via `getSmartAgent`; `GetHistory` returns `[]` and `ClearHistory` is a static-success stub. **Secondary/legacy** surface — not the primary chat path (see §1). |
-| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (each destination's own `McpClientAdapter`). The **tool RAG is a single shared corpus vectorized once** (`sharedToolsRag`, from the destination-independent `HandlerExporter`) and reused by every destination; the embedder and facts/feedback/state RAG stores are likewise shared. Background + on-demand **initialization** for all destinations (no privileged primary; the tool corpus is vectorized once, not per destination); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Wires the honesty-controller DAG coordinator: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). Consumed by `agent-mcp.ts`, `openai-handler.ts`, `anthropic-handler.ts`, and the legacy `agent-service.ts`. |
+| **Agent Service** | `agent-service.ts` + `.cds` | CAP service annotated `@path: 'agent'` (mounted at `/odata/v4/agent/`). Exposes `GetHistory()`, `ClearHistory()`, `Health()`. `Health` delegates to `agent-manager.ts` via `getSmartAgent` to probe the LLM; `GetHistory` returns `[]` and `ClearHistory` is a static-success stub. Starts no pipeline (see §1). |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (each destination's own `McpClientAdapter`). The **tool RAG is a single shared corpus vectorized once** (`sharedToolsRag`, from the destination-independent `HandlerExporter`) and reused by every destination; the embedder and facts/feedback/state RAG stores are likewise shared. Background + on-demand **initialization** for all destinations (no privileged primary; the tool corpus is vectorized once, not per destination); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Wires the honesty-controller DAG coordinator: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). Consumed by `agent-mcp.ts`, `openai-handler.ts`, `anthropic-handler.ts`, and `agent-service.ts` (its `Health` probe only). |
 | **Honesty Reviewer** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer,step-gate,write-guardrail}.ts` | Result-based honesty guard (v6.28+). `recording-mcp-client.ts` decorates `IMcpClient` to capture each tool's `McpToolResult` per `traceId`; `reviewer-core.ts` + `notice-finalizer.ts` implement `IFinalizer`/`NoticeFinalizer` comparing response claims against captured results; `notify-policy.ts` decides notice wording; `step-reviewer.ts` provides `evaluateGated`, which `NoticeFinalizer` invokes: a deterministic check (claims vs. tool RESULTS, plus a read claimed with zero calls) and, on every step, an LLM reviewer asking only whether the response delivered what the USER asked — it is forbidden to reason about tools, since every false notice came from doing so; `write-guardrail.ts` checks the write tool's result envelope. The controller wiring itself lives in `agent-manager.ts` (`buildAgentForDestination` → `builder.withDagCoordinator({ …, finalizer: new NoticeFinalizer(recMcp, …) })`). Kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`. |
 | **Agent Config** | `agent-config.ts` | Singleton that assembles runtime config from `LLM_AGENT_*` env vars: provider/auth (`LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`, `LLM_AGENT_BASE_URL`, `LLM_AGENT_RESOURCE_GROUP`), model params (`LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`), agent behaviour (`LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_HISTORY_RECENCY_WINDOW`), and MCP wiring (`LLM_AGENT_MCP_DESTINATION`, `LLM_AGENT_MCP_ENDPOINT`). Also reads the AI Core service binding from `VCAP_SERVICES`. See §12 for per-var semantics. |
 | **Auth Service** | `auth.ts` + `.cds` | Standalone CAP OData service annotated `@path: 'auth'` (mounted at `/odata/v4/auth/`). `CheckAuth()` returns the caller's identity, `CheckRoles(required)` reports which roles they hold — a **diagnostic/introspection endpoint** clients can call directly. It is **not** in the `/mcp/*` or `/v1/*` request path — those are gated by `server.ts`'s `requireMcpRole` middleware (`user.is()`), not by this service. |
@@ -383,7 +381,7 @@ graph TB
         (/v1/messages, primary)"]
         mcp_proxy_ts["mcp-proxy.ts"]
         agent_service_ts["agent-service.ts
-        (legacy /odata/v4/agent)"]
+        (/odata/v4/agent, Health only)"]
         auth_ts["auth.ts"]
     end
 
@@ -425,7 +423,7 @@ graph TB
         logger_mod["logger.ts"]
         log_mask["log-mask.ts"]
         principal_ts["principal.ts"]
-        responsible_ts["responsible.ts"]
+        request_system_ts["request-system-context.ts"]
         exposition_ts["exposition.ts"]
         semaphore_ts["semaphore.ts"]
         agent_mgr_libs["dump-buffer/dump-parser/get-dump-section,
@@ -499,15 +497,17 @@ graph TB
     agent_mcp_ts --> dest_resolver
     agent_mcp_ts --> exposition_ts
     agent_mcp_ts --> principal_ts
-    agent_mcp_ts --> responsible_ts
+    agent_mcp_ts --> request_system_ts
     agent_mcp_ts --> semaphore_ts
     openai_handler_ts --> request_conn
     openai_handler_ts --> agent_manager
     openai_handler_ts --> exposition_ts
+    openai_handler_ts --> request_system_ts
     anthropic_handler_ts --> request_conn
     anthropic_handler_ts --> agent_manager
+    anthropic_handler_ts --> request_system_ts
 
-    %% agent-service.ts dependencies (legacy secondary surface, same agent-manager)
+    %% agent-service.ts dependencies (Health probe only, same agent-manager)
     agent_service_ts --> agent_config
     agent_service_ts --> agent_manager
 
@@ -518,7 +518,6 @@ graph TB
     request_conn --> dest_resolver
     request_conn --> log_mask
     request_conn --> principal_ts
-    request_conn --> responsible_ts
 
     %% agent-manager.ts dependencies — tools come from the EMBEDDED in-process
     %% adapter (HandlerExporter + McpClientAdapter), never from mcp-manager.ts
@@ -549,8 +548,8 @@ graph TB
     step_reviewer --> reviewer_core
     step_reviewer --> step_gate
 
-    %% principal.ts / responsible.ts dependencies
-    responsible_ts --> mcp_adt_core
+    %% principal.ts / request-system-context.ts dependencies
+    request_system_ts --> mcp_adt_core
 
     %% agent-config.ts dependencies
     agent_config --> sap_cds
@@ -695,7 +694,7 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
-> This is the flow through the **primary** agent surfaces — `/mcp/agent/stream/http` (`execute_step`), `/v1/chat/completions`, `/v1/messages`. The two `/v1/*` handlers build their per-request connection via `establishRequestConnection` (`request-connection.ts`); `/mcp/agent/stream/http` builds its own via the local `buildConnectionForDestination` in `agent-mcp.ts`. All three then call `getSmartAgent` directly (not via the legacy `AgentService` OData endpoint), enter the per-request ALS scope through `runWithRequestConnection` (exported from `agent-manager.ts`), and converge on the same DAG-coordinator controller shown in Step 4. The legacy `/odata/v4/agent/Chat` endpoint (`agent-service.ts`) also delegates to `getSmartAgent`, but is a secondary surface — see §4 and §11.
+> This is the flow through the **primary** agent surfaces — `/mcp/agent/stream/http` (`execute_step`), `/v1/chat/completions`, `/v1/messages`. The two `/v1/*` handlers build their per-request connection via `establishRequestConnection` (`request-connection.ts`); `/mcp/agent/stream/http` builds its own via the local `buildConnectionForDestination` in `agent-mcp.ts`. All three then call `getSmartAgent` directly, enter the per-request ALS scope through `runWithRequestConnection` (exported from `agent-manager.ts`), and converge on the same DAG-coordinator controller shown in Step 4.
 
 #### Step 1 — Connection + Agent Handle
 
@@ -1027,8 +1026,7 @@ graph LR
         MIT["InvokeTool(request) → ProxyResult  ⚠️ DEPRECATED"]
     end
 
-    subgraph "AgentService (@path: agent, mounted /odata/v4/agent/) — legacy secondary surface"
-        AC["Chat(message) → String"]
+    subgraph "AgentService (@path: agent, mounted /odata/v4/agent/) — starts no pipeline"
         AGH["GetHistory() → ChatMessage[]"]
         ACH["ClearHistory() → {success, message}"]
         AAH["Health() → AgentHealthStatus"]
@@ -1041,7 +1039,7 @@ graph LR
 
     style MH fill:#2563eb,color:#fff
     style MPD fill:#2563eb,color:#fff
-    style AC fill:#16a34a,color:#fff
+    style AAH fill:#16a34a,color:#fff
     style ACA fill:#dc2626,color:#fff
 ```
 
@@ -1079,8 +1077,8 @@ graph TB
     DEF_ENV -->|VCAP_SERVICES mock| DR2
     DOT_ENV -->|LLM keys| ES
     HEADERS -->|X-SAP-Destination<br/>X-SAP-URL, Authorization| MM2
-    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client| RC
-    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>Authorization| AM
+    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client, x-sap-responsible,<br/>x-sap-master-system| RC
+    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>x-sap-responsible, x-sap-master-system,<br/>Authorization| AM
     RC -->|resolveDestinationSapConfig| DR2
     MM2 -->|resolveDestinationSapConfig| DR2
     AM -->|resolveDestinationSapConfig| DR2
@@ -1386,8 +1384,50 @@ one. A signal bounds the whole agent run, and a tool loop legitimately takes
 minutes — the deadline we want applies to waiting for a quota, not to doing the
 work.
 
+With a door configured the strategy is `WaitAsTold` instead: admission already
+decided the caller is carried to the end, so a ceiling behind the door would
+only kill work in flight.
+
 The reasoning for the library refusing to choose any of this for us is in
 llm-agent's `docs/ARCHITECTURE.md`, under Server-governed throttling.
+
+### Gatekeeper
+
+Memory is the binding resource, spent two ways: pipelines in flight, and
+sessions at rest. `srv/lib/door.ts` bounds the first, `srv/lib/session-retention.ts`
+the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
+
+- **One session, one pipeline.** The door keys by the authenticated user and
+  the issued `clh_session`. A second request for a running session waits.
+- **One queue.** Bounded by `LLM_GATEKEEPER_QUEUE_LENGTH`; the oldest waiter that
+  can be served goes next. Admission takes a slot and a retention place
+  together, or neither.
+- **Carried to the end.** Only shutdown aborts an admitted session. A client
+  disconnect detaches the output sink (`srv/lib/detached-sink.ts`) and nothing
+  more.
+- **Teardown order.** Wait for every model and tool call the session started
+  (they register themselves through `srv/lib/admission-scope.ts`), then
+  `safeStop`, then release the slot.
+- **Leases.** Every operation on a session's state holds one. Eviction and the
+  TTL sweep skip leased sessions. Every deletion closes the session to new
+  leases, cancels RAG operations, waits for the rest, then removes history,
+  collections and their directories through one primitive
+  (`srv/lib/session-state.ts`).
+- **Eviction order.** Idle sessions nobody ever presented go before idle ones a
+  caller came back to; least recently used within each group.
+- **Admitted before it changes anything.** A request changes a session's
+  history, collections or destination, the shared agent's RAG stores, and the
+  responsible person only once admitted; a queued caller that leaves is never
+  admitted later.
+- **Responsible person and master system.** Resolved per request once admitted
+  and delivered through lib's `RequestContext`, so each run sees only its own
+  (`srv/lib/request-system-context.ts`), from the caller's `x-sap-*` headers.
+- **Closed destinations.** Every channel refuses a closed destination before
+  attempting a connection to it.
+- **Startup.** The `LLM_GATEKEEPER_*` variables are validated in `bootstrap`; a
+  malformed one stops `cds serve` before it listens.
+- **Observability.** `Health()` returns door, retention, per-destination and
+  throttling scopes separately (`srv/lib/gatekeeper-metrics.ts`).
 
 ### Honesty controller (executor + reviewer)
 

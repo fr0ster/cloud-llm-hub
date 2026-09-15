@@ -19,7 +19,7 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
-  clearSessionTopic,
+  closeDestination,
   ExpositionFilteringRag,
   getCollectionRegistry,
   getCurrentClassifierModel,
@@ -29,21 +29,50 @@ import {
   getSharedHistoryRag,
   getSmartAgent,
   isAgentReady,
+  isDestinationClosed,
+  retryAfterForDestination,
   runWithRequestConnection,
   setSessionDestination,
 } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
+import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
+import {
+  admitPipeline,
+  hasRagLease,
+  type PipelineSession,
+} from './lib/gatekeeper';
+import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
+import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
+import {
+  resolveRequestSystem,
+  runWithRequestSystem,
+} from './lib/request-system-context';
 import { turnOwner } from './lib/session-history-rag';
-import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
+import {
+  destinationClosedText,
+  openAiDoorRefusal,
+  openAiSessionClosed,
+  type RecMcpHandle,
+  throttleMessage,
+  throttleOf,
+  unverifiedWriteFor,
+} from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
-import { resolveSessionId } from './session-id';
+import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
+import {
+  appendToSession,
+  clearSession,
+  getSessionHistory,
+} from './session-store';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
 function getUserId(): string {
-  return cds.context?.user?.id || 'anonymous';
+  // `??`, as the middleware, the other channels and the RAG routes read it: with
+  // `||` an empty id would key this channel's state differently from theirs.
+  return cds.context?.user?.id ?? 'anonymous';
 }
 
 // ---------------------------------------------------------------------------
@@ -56,15 +85,6 @@ function mapStopReason(r: string): string {
 
 function jsonError(message: string, type: string): string {
   return JSON.stringify({ error: { message, type } });
-}
-
-/**
- * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
- * part of the library's `SmartAgentHandle` type — optional, since an
- * LLM-only handle (no destination) has no per-destination recMcp.
- */
-interface HandleWithRecMcp {
-  recMcp?: { dropRequest(traceId?: string): void };
 }
 
 /**
@@ -104,83 +124,8 @@ function extractText(c: unknown): string {
     .join('\n');
 }
 
-// ---------------------------------------------------------------------------
-// Server-side session history
-// ---------------------------------------------------------------------------
-
-/** Max messages kept in server session (before SmartAgent's own summarization) */
-const SESSION_MAX_MESSAGES = 20;
-
-/** Session TTL: 30 minutes of inactivity */
-const SESSION_TTL_MS = 30 * 60 * 1000;
-
-/** Cleanup interval: every 5 minutes */
-const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
-
-interface SessionEntry {
-  messages: Message[];
-  lastAccess: number;
-}
-
-/**
- * Session store keyed by `${userId}\u0000${sessionId}`.
- *
- * Deliberately NOT keyed by sessionId alone: two BTP users that happen to
- * share or collide on the same session id (header spoofing, cookie theft,
- * UUID collision) must never share chat history. Scoping by userId makes
- * cross-user reads impossible by construction.
- */
-const sessionStore = new Map<string, SessionEntry>();
-
-/** Composite key that isolates sessions by user identity. */
-function sessionStoreKey(sessionId: string, userId: string): string {
-  return `${userId}\u0000${sessionId}`;
-}
-
-/** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the
- *  Node process (or Jest workers) alive after everything else exits. */
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, entry] of sessionStore) {
-    if (now - entry.lastAccess > SESSION_TTL_MS) {
-      sessionStore.delete(id);
-    }
-  }
-}, SESSION_CLEANUP_INTERVAL_MS).unref();
-
-/** Get session history for a specific user. Returns empty array if none. */
-export function getSessionHistory(
-  sessionId: string,
-  userId: string,
-): Message[] {
-  const entry = sessionStore.get(sessionStoreKey(sessionId, userId));
-  if (entry) {
-    entry.lastAccess = Date.now();
-    return entry.messages;
-  }
-  return [];
-}
-
-/** Append messages to session history for a specific user, trimming to max size */
-export function appendToSession(
-  sessionId: string,
-  userId: string,
-  ...msgs: Message[]
-): void {
-  const key = sessionStoreKey(sessionId, userId);
-  let entry = sessionStore.get(key);
-  if (!entry) {
-    entry = { messages: [], lastAccess: Date.now() };
-    sessionStore.set(key, entry);
-  }
-  entry.lastAccess = Date.now();
-  entry.messages.push(...msgs);
-
-  // Keep only last N messages
-  if (entry.messages.length > SESSION_MAX_MESSAGES) {
-    entry.messages = entry.messages.slice(-SESSION_MAX_MESSAGES);
-  }
-}
+// Re-exported: tests and other modules imported these from the handler.
+export { appendToSession, clearSession, getSessionHistory };
 
 /**
  * Store the completed turn for semantic recall, beside the verbatim store.
@@ -209,17 +154,6 @@ function recordTurnForRecall(
       userText: question,
       assistantText: answer,
     })
-    .catch(() => {});
-}
-
-/** Clear session history for a specific user */
-export function clearSession(sessionId: string, userId: string): void {
-  sessionStore.delete(sessionStoreKey(sessionId, userId));
-  // The recall store holds the same conversation in another shape. Clearing one
-  // and leaving the other would let a cleared session keep answering from turns
-  // the user believes they deleted.
-  void getSharedHistoryRag()
-    ?.forgetOwner(turnOwner(userId, sessionId))
     .catch(() => {});
 }
 
@@ -397,17 +331,11 @@ export async function handleChatCompletions(
   }
 
   const traceId = randomUUID();
-  // Prefer the session id already stashed by the session middleware; otherwise resolve from
-  // headers/cookie directly (handles cases where the middleware ran before us).
-  // An EXPLICIT session is one the client actually sent — `x-session-id`/`mcp-session-id`
-  // header or the `clh_session` cookie. `resolveSessionId` returns only that (it never mints).
-  const explicitSessionId = resolveSessionId(req);
-  // Session id used for history + RAG keying: the middleware-stashed id (explicit, or the
-  // freshly-minted cookie id), falling back defensively if the middleware didn't run.
-  const sessionId =
-    (req as Request & { sessionId?: string }).sessionId ??
-    explicitSessionId ??
-    randomUUID();
+  // A session the caller presented and we kept. A freshly minted one is not
+  // explicit: a stateless API client sending its full history must never be
+  // truncated to its last message.
+  const explicitSessionId = honouredSessionId(req);
+  const sessionId = sessionIdOf(req) ?? randomUUID();
   const t0 = Date.now();
 
   // Two modes of history management:
@@ -501,22 +429,6 @@ export async function handleChatCompletions(
   const rawHistorySize = normalizedMessages.length;
   normalizedMessages = trimHistoryForContext(normalizedMessages);
 
-  /**
-   * Everything before this request's new user message.
-   *
-   * The coordinator composes the executor's prompt from the LAST user message
-   * alone, so the executor needs the turns that came before it — and only
-   * those, or the new message would appear twice. Bound to the request scope
-   * below and read back inside the executor.
-   */
-  const priorTurns = (() => {
-    for (let i = normalizedMessages.length - 1; i >= 0; i--) {
-      if (normalizedMessages[i].role === 'user')
-        return normalizedMessages.slice(0, i);
-    }
-    return [];
-  })();
-
   log.info('Chat completions request', {
     stream: body.stream ?? false,
     traceId,
@@ -540,7 +452,7 @@ export async function handleChatCompletions(
     | undefined;
 
   // Track destination before/after to detect switches
-  const destBefore = getCurrentDestination(sessionId);
+  const destBefore = getCurrentDestination(userId, sessionId);
   const destAfter = requestedDestination || destBefore;
   let requestConnection:
     | import('@mcp-abap-adt/interfaces').IAbapConnection
@@ -554,6 +466,31 @@ export async function handleChatCompletions(
     requestedDestination: requestedDestination || '(none)',
   });
 
+  // A closed destination refuses before anything is built for it. Connecting
+  // first would CSRF-fetch against the system that is down — often waiting out
+  // a tunnel timeout — and answer `401 sap_credentials_failed` from inside
+  // `establishRequestConnection`, so this 503 with its `Retry-After` would only
+  // ever be reached once SAP was back. It also comes before `getSmartAgent`,
+  // which throws its own `destination_unreachable` 503 with no `Retry-After`.
+  // No connection exists yet, so there is nothing to `safeStop`.
+  if (isDestinationClosed(destAfter)) {
+    recordDestinationRefusal(destAfter);
+    const seconds = retryAfterForDestination(destAfter);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destAfter),
+        },
+      }),
+    );
+    return;
+  }
+
   if (destAfter) {
     const established = await establishRequestConnection(req, res, destAfter);
     if (established.handled) return;
@@ -561,18 +498,25 @@ export async function handleChatCompletions(
     requestDumpScope = established.dumpScope;
   }
 
-  // Client abort/disconnect mid-request must still release the ADT edit-lock
-  // (the SM12 orphaned-lock symptom). `req`'s `close` event fires once the
-  // request body is consumed — NOT reliably on client abort — so tearing down
-  // the connection there can cut an in-flight tool call. `res`'s `close`
-  // fires when the underlying connection is closed; guarding with
-  // `!res.writableEnded` narrows it to a genuine early client disconnect
-  // (the response hadn't finished yet). safeStop is idempotent, so this
-  // racing with the handler's own `finally` teardown below is safe either order.
+  /** Called admitted, right before the run: this request's responsible person
+   *  and master system, visible to this run alone (`request-system-context.ts`). */
+  const inRequestSystem = <T>(fn: () => Promise<T>): Promise<T> =>
+    requestConnection
+      ? runWithRequestSystem(resolveRequestSystem(req.headers), fn)
+      : fn();
+
+  // A client disconnect ends nothing. Tearing the connection down on `close` is
+  // the recorded cause of the orphaned ADT locks in SM12: nobody is waiting for
+  // the answer, and SAP is waiting for the rest of the chain. So the sink is
+  // detached — nothing written afterwards reaches the socket or fails the run —
+  // and a caller still queued is removed from the queue.
+  const out = detachedSink(res);
+  const callerLeft = new AbortController();
   res.on('close', () => {
-    if (!res.writableEnded) {
-      void safeStop(requestConnection);
-    }
+    if (res.writableEnded) return;
+    log.info('Caller disconnected; the session runs to its end', { sessionId });
+    out.detach();
+    callerLeft.abort(new Error('caller disconnected'));
   });
 
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
@@ -648,27 +592,6 @@ export async function handleChatCompletions(
     return;
   }
 
-  // Track which destination this session is using. A changed destination is a
-  // reconnect boundary: wipe session-scoped state before continuing.
-  setSessionDestination(sessionId, destAfter);
-  if (destBefore !== destAfter && serverManaged) {
-    log.info('Destination reconnect, clearing session history', {
-      from: destBefore,
-      to: destAfter,
-      sessionId,
-    });
-    clearSession(sessionId, userId);
-    clearSessionTopic(sessionId);
-    // Drop the session's ephemeral RAG collections too (owner-guarded), so they
-    // don't keep shadowing user collections after a destination reconnect.
-    getCollectionRegistry().deleteSessionCollections(userId, sessionId);
-    // Re-build normalizedMessages with only the new user message (no stale history)
-    const lastUserContent = extractText(
-      userMessages[userMessages.length - 1].content,
-    );
-    normalizedMessages = [{ role: 'user', content: lastUserContent }];
-  }
-
   // Inject dynamic RAG collections from X-Rag-Collections header or body
   const ragCollectionIds: string[] = (() => {
     const header = req.headers['x-rag-collections'] as string | undefined;
@@ -683,126 +606,238 @@ export async function handleChatCompletions(
     return [];
   })();
 
-  // Resolve each entry: bare logical names → caller's own physical id; physical ids
-  // owned by another user → dropped. Session collection shadows user collection.
-  // Done once here and reused by both the RAG store injection and semantic search below.
-  const resolvedCollectionIds: string[] =
-    ragCollectionIds.length > 0
-      ? (() => {
-          const registry = getCollectionRegistry();
-          return ragCollectionIds
-            .map((entry) =>
-              resolveRouteId(registry, entry, getUserId(), sessionId, false),
-            )
-            .filter((id): id is string => id !== undefined);
-        })()
-      : [];
-
-  // Inject dynamic RAG collections per-request (save/restore pattern).
-  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
+  // The destination agent's internal deps: its embedder for the search below,
+  // and its RAG stores, which are swapped in only once admitted (see there).
   // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
   const deps = (handle.agent as any).deps;
-  const originalRagStores = deps.ragStores;
-  if (resolvedCollectionIds.length > 0) {
-    const registry = getCollectionRegistry();
-    const dynamicStores = registry.getRagStores(resolvedCollectionIds);
-    const injected = Object.keys(dynamicStores);
-    if (injected.length > 0) {
-      const mergedStores = { ...originalRagStores };
-      for (const [key, store] of Object.entries(dynamicStores)) {
-        mergedStores[key] = new ExpositionFilteringRag(store);
-      }
-      deps.ragStores = mergedStores;
-      log.info('Dynamic RAG collections injected', {
-        requested: ragCollectionIds,
-        resolved: resolvedCollectionIds,
-        injected,
-      });
+
+  // Admitted after the agent is resolved: a caller waiting for a destination to
+  // warm waits outside the door, holding a request and no session.
+  let pipeline: PipelineSession;
+  try {
+    const admission = await admitPipeline(
+      userId,
+      sessionId,
+      callerLeft.signal,
+      {
+        presented: (req as Request & WithSession).sessionMinted === false,
+      },
+    );
+    if ('refused' in admission) {
+      await safeStop(requestConnection);
+      const refusal = openAiDoorRefusal(admission.refused);
+      out.json(refusal.status, refusal.body);
+      return;
     }
+    if ('closed' in admission) {
+      // Logged out while this request waited for its agent. Running now would
+      // bring the session back under the id the caller asked us to destroy.
+      await safeStop(requestConnection);
+      const closed = openAiSessionClosed();
+      out.json(closed.status, closed.body);
+      return;
+    }
+    pipeline = admission.admitted;
+  } catch {
+    // Left while queued. Nothing was started, so nothing is owed but the connection.
+    await safeStop(requestConnection);
+    return;
   }
 
-  // Restore original ragStores after request completes (finally block at end of function)
+  // Inject dynamic RAG collections per-request (save/restore pattern), and only
+  // now that the request is admitted: every pipeline on this destination runs on
+  // this same agent, so stores installed before the queue wait would be seen by
+  // every run admitted ahead of this one. Restored in the `finally` below.
+  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
+  // Interleaved admitted runs that both inject can still restore each other's
+  // set — a pre-existing race of mutating shared deps, left for per-request
+  // stores.
+  const originalRagStores = deps.ragStores;
   const restoreRagStores = () => {
     if (deps.ragStores !== originalRagStores)
       deps.ragStores = originalRagStores;
   };
 
-  // Semantic search across active RAG collections and inject relevant results.
-  // llm-agent hardcoded flow only queries RAG for "action" subprompts —
-  // chat questions classified as "chat" → RAG skipped. We do our own search.
-  if (resolvedCollectionIds.length > 0) {
-    const registry = getCollectionRegistry();
-    const userMessage = normalizedMessages
-      .filter((m) => m.role === 'user')
-      .slice(-1)[0];
-    const queryText =
-      typeof userMessage?.content === 'string' ? userMessage.content : '';
-
-    if (queryText) {
-      // Search user collections in the ORIGINAL language (no translation).
-      // User content may be in any language — translating the query would
-      // break matching (e.g., Ukrainian query → English translation won't
-      // match Ukrainian anecdote in vector space).
-      // Tool selection has its own _toEnglishForRag() in llm-agent.
-      const { QueryEmbedding, TextOnlyEmbedding } = await import(
-        '@mcp-abap-adt/llm-agent'
-      );
-      const embedding = deps.embedder
-        ? new QueryEmbedding(queryText, deps.embedder)
-        : new TextOnlyEmbedding(queryText);
-
-      const relevantTexts: string[] = [];
-      for (const colId of resolvedCollectionIds) {
-        const store = registry.getRagStore(colId);
-        if (!store) continue;
-        const result = await new ExpositionFilteringRag(store).query(
-          embedding,
-          3,
+  try {
+    // Track which destination this session is using. A changed destination is
+    // a reconnect boundary: wipe session-scoped state before continuing — and
+    // only now, admitted. A request refused, answered 410 or gone while queued
+    // started nothing, so it changes nothing; the admission's pipeline lease
+    // already excludes this session's other pipelines, so none of them loses
+    // its history mid-run. Read again here rather than at arrival: a run of
+    // this session that ended while this request waited may have moved it.
+    const lastDestination = getCurrentDestination(userId, sessionId);
+    if (lastDestination !== destAfter && serverManaged) {
+      log.info('Destination reconnect, clearing session history', {
+        from: lastDestination,
+        to: destAfter,
+        sessionId,
+      });
+      clearSession(sessionId, userId);
+      // Drop the session's ephemeral RAG collections too (owner-guarded), so
+      // they don't keep shadowing user collections after a reconnect — unless a
+      // RAG operation is still writing into them. Removing the registry entry
+      // and directory under a live upload is the leak three-step deletion
+      // closes; the collections then stay, and go with the session. Asked and
+      // removed in one synchronous step, so no lease is taken in between.
+      if (hasRagLease(userId, sessionId)) {
+        log.info(
+          'Destination reconnect kept the session collections: a RAG operation holds the session',
+          { sessionId },
         );
-        if (result.ok) {
-          for (const r of result.value) {
-            log.info('RAG search result', {
-              collection: colId,
-              score: r.score.toFixed(4),
-              preview: r.text.slice(0, 80),
-            });
-            const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
-            if (r.score >= threshold) {
-              relevantTexts.push(r.text);
-            }
-          }
+      } else {
+        try {
+          getCollectionRegistry().deleteSessionCollections(userId, sessionId);
+        } catch (err) {
+          // A directory that would not go: its collection stays registered, goes
+          // with the session later, and this request carries on.
+          log.warn(
+            'Destination reconnect could not remove a session collection',
+            {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         }
       }
+      // Re-build normalizedMessages with only the new user message (no stale history)
+      const lastUserContent = extractText(
+        userMessages[userMessages.length - 1].content,
+      );
+      normalizedMessages = [{ role: 'user', content: lastUserContent }];
+    }
+    // Under the admission's lease: a logout's removal waits for it, so this
+    // entry cannot be written back after the session it names is gone.
+    setSessionDestination(userId, sessionId, destAfter);
 
-      if (relevantTexts.length > 0) {
-        const ragContext = relevantTexts.join('\n---\n');
-        let lastUserIdx = -1;
-        for (let i = normalizedMessages.length - 1; i >= 0; i--) {
-          if (normalizedMessages[i].role === 'user') {
-            lastUserIdx = i;
-            break;
-          }
+    /**
+     * Everything before this request's new user message.
+     *
+     * The coordinator composes the executor's prompt from the LAST user message
+     * alone, so the executor needs the turns that came before it — and only
+     * those, or the new message would appear twice. Bound to the request scope
+     * below and read back inside the executor. Taken after the switch above, so
+     * turns it cleared do not reach the executor anyway.
+     */
+    const priorTurns = (() => {
+      for (let i = normalizedMessages.length - 1; i >= 0; i--) {
+        if (normalizedMessages[i].role === 'user')
+          return normalizedMessages.slice(0, i);
+      }
+      return [];
+    })();
+
+    // Resolve each entry: bare logical names → caller's own physical id; physical
+    // ids owned by another user → dropped. Session collection shadows user
+    // collection. After the switch, which may have removed session collections;
+    // reused by both the RAG store injection and semantic search below.
+    const resolvedCollectionIds: string[] =
+      ragCollectionIds.length > 0
+        ? (() => {
+            const registry = getCollectionRegistry();
+            return ragCollectionIds
+              .map((entry) =>
+                resolveRouteId(registry, entry, getUserId(), sessionId, false),
+              )
+              .filter((id): id is string => id !== undefined);
+          })()
+        : [];
+
+    if (resolvedCollectionIds.length > 0) {
+      const registry = getCollectionRegistry();
+      const dynamicStores = registry.getRagStores(resolvedCollectionIds);
+      const injected = Object.keys(dynamicStores);
+      if (injected.length > 0) {
+        const mergedStores = { ...originalRagStores };
+        for (const [key, store] of Object.entries(dynamicStores)) {
+          mergedStores[key] = new ExpositionFilteringRag(store);
         }
-        if (lastUserIdx >= 0) {
-          const original = normalizedMessages[lastUserIdx];
-          const originalContent =
-            typeof original.content === 'string' ? original.content : '';
-          normalizedMessages = [...normalizedMessages];
-          normalizedMessages[lastUserIdx] = {
-            ...original,
-            content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
-          };
-        }
-        log.info('RAG semantic search results injected', {
-          collections: resolvedCollectionIds,
-          resultCount: relevantTexts.length,
-          contextChars: ragContext.length,
+        deps.ragStores = mergedStores;
+        log.info('Dynamic RAG collections injected', {
+          requested: ragCollectionIds,
+          resolved: resolvedCollectionIds,
+          injected,
         });
       }
     }
-  }
 
-  try {
+    // Semantic search across active RAG collections and inject relevant results.
+    // llm-agent hardcoded flow only queries RAG for "action" subprompts —
+    // chat questions classified as "chat" → RAG skipped. We do our own search.
+    // After the switch: it reads the session's collections and adds to the
+    // message the switch may have just rebuilt.
+    if (resolvedCollectionIds.length > 0) {
+      const registry = getCollectionRegistry();
+      const userMessage = normalizedMessages
+        .filter((m) => m.role === 'user')
+        .slice(-1)[0];
+      const queryText =
+        typeof userMessage?.content === 'string' ? userMessage.content : '';
+
+      if (queryText) {
+        // Search user collections in the ORIGINAL language (no translation).
+        // User content may be in any language — translating the query would
+        // break matching (e.g., Ukrainian query → English translation won't
+        // match Ukrainian anecdote in vector space).
+        // Tool selection has its own _toEnglishForRag() in llm-agent.
+        const { QueryEmbedding, TextOnlyEmbedding } = await import(
+          '@mcp-abap-adt/llm-agent'
+        );
+        const embedding = deps.embedder
+          ? new QueryEmbedding(queryText, deps.embedder)
+          : new TextOnlyEmbedding(queryText);
+
+        const relevantTexts: string[] = [];
+        for (const colId of resolvedCollectionIds) {
+          const store = registry.getRagStore(colId);
+          if (!store) continue;
+          const result = await new ExpositionFilteringRag(store).query(
+            embedding,
+            3,
+          );
+          if (result.ok) {
+            for (const r of result.value) {
+              log.info('RAG search result', {
+                collection: colId,
+                score: r.score.toFixed(4),
+                preview: r.text.slice(0, 80),
+              });
+              const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
+              if (r.score >= threshold) {
+                relevantTexts.push(r.text);
+              }
+            }
+          }
+        }
+
+        if (relevantTexts.length > 0) {
+          const ragContext = relevantTexts.join('\n---\n');
+          let lastUserIdx = -1;
+          for (let i = normalizedMessages.length - 1; i >= 0; i--) {
+            if (normalizedMessages[i].role === 'user') {
+              lastUserIdx = i;
+              break;
+            }
+          }
+          if (lastUserIdx >= 0) {
+            const original = normalizedMessages[lastUserIdx];
+            const originalContent =
+              typeof original.content === 'string' ? original.content : '';
+            normalizedMessages = [...normalizedMessages];
+            normalizedMessages[lastUserIdx] = {
+              ...original,
+              content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
+            };
+          }
+          log.info('RAG semantic search results injected', {
+            collections: resolvedCollectionIds,
+            resultCount: relevantTexts.length,
+            contextChars: ragContext.length,
+          });
+        }
+      }
+    }
+
     const pipelineLog = cds.log('smart-pipeline');
     const opts = {
       stream: body.stream,
@@ -810,6 +845,8 @@ export async function handleChatCompletions(
       // for ClineClientAdapter detection and external tool_call routing.
       externalTools,
       sessionId,
+      // The admission's signal, which only shutdown aborts. Not the caller's.
+      signal: pipeline.signal,
       // RAG filtering: namespace isolates user/destination data, exposition filters tools by role.
       // ExpositionFilteringRag strips namespace (tools have none) and post-filters by exposition.
       ragFilter: {
@@ -850,7 +887,7 @@ export async function handleChatCompletions(
 
     // --- Streaming ---
     if (body.stream) {
-      res.writeHead(200, {
+      out.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
@@ -868,7 +905,7 @@ export async function handleChatCompletions(
       // streaming too.
       const KEEPALIVE_MS = 10_000;
       const keepAlive = setInterval(() => {
-        if (!res.writableEnded) res.write(': keep-alive\n\n');
+        out.write(': keep-alive\n\n');
       }, KEEPALIVE_MS);
       if (typeof keepAlive.unref === 'function') keepAlive.unref();
       res.on('close', () => clearInterval(keepAlive));
@@ -894,187 +931,220 @@ export async function handleChatCompletions(
       // The wrapper must enclose the whole retry loop so the context stays alive across
       // all stream iterations, including rate-limit retries.
       // Retry loop: restart stream on rate-limit errors (only before first content chunk)
-      await runWithSessionId(
-        sessionId,
-        () =>
-          withRequestConnectionAuthorized(
-            requestConnection,
-            requestDumpScope,
-            async () => {
-              const stream = handle.agent.streamProcess(
-                normalizedMessages,
-                opts,
-              );
+      await pipeline.run(() =>
+        runWithSessionId(
+          sessionId,
+          () =>
+            withRequestConnectionAuthorized(
+              requestConnection,
+              requestDumpScope,
+              // Admitted: the responsible person and master system are resolved
+              // here, not before the queue wait — see `inRequestSystem`.
+              () =>
+                inRequestSystem(async () => {
+                  const stream = handle.agent.streamProcess(
+                    normalizedMessages,
+                    opts,
+                  );
 
-              try {
-                for await (const chunk of stream) {
-                  chunkCount++;
-                  if (!chunk.ok) {
-                    const err = chunk.error;
+                  try {
+                    for await (const chunk of stream) {
+                      chunkCount++;
+                      if (!chunk.ok) {
+                        const err = chunk.error;
+                        if (isOutageError(chunk.error)) {
+                          closeDestination(
+                            destAfter,
+                            describeCause(chunk.error),
+                          );
+                        }
 
-                    const causes: string[] = [];
-                    let current: unknown = err;
-                    while (current) {
-                      if (current instanceof Error) {
-                        causes.push(current.message);
-                        current = (current as { cause?: unknown }).cause;
-                      } else {
-                        causes.push(String(current));
+                        const causes: string[] = [];
+                        let current: unknown = err;
+                        while (current) {
+                          if (current instanceof Error) {
+                            causes.push(current.message);
+                            current = (current as { cause?: unknown }).cause;
+                          } else {
+                            causes.push(String(current));
+                            break;
+                          }
+                        }
+                        log.error('Stream error chunk', {
+                          chunkCount,
+                          error: err.message,
+                          causes,
+                        });
+                        const limit = throttleOf(err);
+                        const unverified = unverifiedWriteFor(
+                          handle,
+                          traceId,
+                          err,
+                        );
+                        const userMessage = unverified
+                          ? limit
+                            ? `${unverified} ${throttleMessage(limit)}`
+                            : unverified
+                          : limit
+                            ? throttleMessage(limit)
+                            : err.message;
+                        out.write(
+                          `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                        );
                         break;
                       }
+
+                      const v = chunk.value;
+
+                      // Forward heartbeats as SSE comments to keep the connection alive.
+                      // Without this, CF Router / Cloud Connector may close idle TCP
+                      // connections before the tool loop finishes, causing the browser's
+                      // reader.read() to hang forever (onDone never fires).
+                      if (v.heartbeat) {
+                        out.write(
+                          `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
+                        );
+                        continue;
+                      }
+                      if (v.usage) {
+                        lastUsage = {
+                          prompt_tokens: v.usage.promptTokens,
+                          completion_tokens: v.usage.completionTokens,
+                          total_tokens: v.usage.totalTokens,
+                          ...(v.usage.models ? { models: v.usage.models } : {}),
+                        };
+                      }
+                      if (v.timing) {
+                        log.info('Pipeline stage timing', { timing: v.timing });
+                        continue;
+                      }
+
+                      const baseResponse = {
+                        id,
+                        object: 'chat.completion.chunk',
+                        created,
+                        model: getCurrentModel(),
+                        usage: null,
+                      };
+
+                      // First chunk: role + initial content (matches SmartServer)
+                      if (firstChunk) {
+                        const initialContent = v.content || '';
+                        if (initialContent)
+                          accumulatedContent += initialContent;
+                        out.write(
+                          `data: ${JSON.stringify({
+                            ...baseResponse,
+                            choices: [
+                              {
+                                index: 0,
+                                delta: {
+                                  role: 'assistant',
+                                  content: initialContent,
+                                },
+                                finish_reason: null,
+                              },
+                            ],
+                          })}\n\n`,
+                        );
+                        firstChunk = false;
+                        if (!v.finishReason && !v.toolCalls) continue;
+                      }
+
+                      // Content and/or tool_calls delta (matches SmartServer)
+                      if (v.content || v.toolCalls) {
+                        const delta: Record<string, unknown> = {};
+                        if (v.content) {
+                          accumulatedContent += v.content;
+                          delta.content = v.content;
+                        }
+                        if (v.toolCalls) {
+                          delta.tool_calls = v.toolCalls.map((call, index) => {
+                            const tc = toToolCallDelta(call, index);
+                            return {
+                              index: tc.index,
+                              id: tc.id,
+                              type: 'function',
+                              function: {
+                                name: tc.name,
+                                arguments: tc.arguments || '',
+                              },
+                            };
+                          });
+                        }
+                        out.write(
+                          `data: ${JSON.stringify({
+                            ...baseResponse,
+                            choices: [
+                              {
+                                index: 0,
+                                delta,
+                                finish_reason: null,
+                              },
+                            ],
+                          })}\n\n`,
+                        );
+                      }
+
+                      if (v.finishReason) {
+                        out.write(
+                          `data: ${JSON.stringify({
+                            ...baseResponse,
+                            choices: [
+                              {
+                                index: 0,
+                                delta: {},
+                                finish_reason: mapStopReason(v.finishReason),
+                              },
+                            ],
+                          })}\n\n`,
+                        );
+                        finishReasonSent = true;
+                      }
                     }
-                    log.error('Stream error chunk', {
-                      chunkCount,
-                      error: err.message,
-                      causes,
+                  } catch (err) {
+                    if (isOutageError(err)) {
+                      closeDestination(destAfter, describeCause(err));
+                    }
+                    const errMsg =
+                      err instanceof Error ? err.message : String(err);
+                    log.error('Stream exception', {
+                      error: errMsg,
+                      stack: err instanceof Error ? err.stack : undefined,
                     });
-                    const limit = throttleOf(err);
-                    const userMessage = limit
-                      ? throttleMessage(limit)
-                      : err.message;
-                    res.write(
+                    const streamLimit = throttleOf(err);
+                    const streamUnverified = unverifiedWriteFor(
+                      handle,
+                      traceId,
+                      err,
+                    );
+                    const userMessage = streamUnverified
+                      ? streamLimit
+                        ? `${streamUnverified} ${throttleMessage(streamLimit)}`
+                        : streamUnverified
+                      : streamLimit
+                        ? throttleMessage(streamLimit)
+                        : errMsg;
+                    out.write(
                       `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                     );
-                    break;
                   }
 
-                  const v = chunk.value;
-
-                  // Forward heartbeats as SSE comments to keep the connection alive.
-                  // Without this, CF Router / Cloud Connector may close idle TCP
-                  // connections before the tool loop finishes, causing the browser's
-                  // reader.read() to hang forever (onDone never fires).
-                  if (v.heartbeat) {
-                    res.write(`: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`);
-                    continue;
+                  // Log per-model token breakdown if available (inside runWithSessionId so TS
+                  // can track lastUsage mutations; this is pure logging with no ordering concern).
+                  if (lastUsage?.models) {
+                    log.info('Token usage by model', lastUsage.models);
                   }
-                  if (v.usage) {
-                    lastUsage = {
-                      prompt_tokens: v.usage.promptTokens,
-                      completion_tokens: v.usage.completionTokens,
-                      total_tokens: v.usage.totalTokens,
-                      ...(v.usage.models ? { models: v.usage.models } : {}),
-                    };
-                  }
-                  if (v.timing) {
-                    log.info('Pipeline stage timing', { timing: v.timing });
-                    continue;
-                  }
-
-                  const baseResponse = {
-                    id,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model: getCurrentModel(),
-                    usage: null,
-                  };
-
-                  // First chunk: role + initial content (matches SmartServer)
-                  if (firstChunk) {
-                    const initialContent = v.content || '';
-                    if (initialContent) accumulatedContent += initialContent;
-                    res.write(
-                      `data: ${JSON.stringify({
-                        ...baseResponse,
-                        choices: [
-                          {
-                            index: 0,
-                            delta: {
-                              role: 'assistant',
-                              content: initialContent,
-                            },
-                            finish_reason: null,
-                          },
-                        ],
-                      })}\n\n`,
-                    );
-                    firstChunk = false;
-                    if (!v.finishReason && !v.toolCalls) continue;
-                  }
-
-                  // Content and/or tool_calls delta (matches SmartServer)
-                  if (v.content || v.toolCalls) {
-                    const delta: Record<string, unknown> = {};
-                    if (v.content) {
-                      accumulatedContent += v.content;
-                      delta.content = v.content;
-                    }
-                    if (v.toolCalls) {
-                      delta.tool_calls = v.toolCalls.map((call, index) => {
-                        const tc = toToolCallDelta(call, index);
-                        return {
-                          index: tc.index,
-                          id: tc.id,
-                          type: 'function',
-                          function: {
-                            name: tc.name,
-                            arguments: tc.arguments || '',
-                          },
-                        };
-                      });
-                    }
-                    res.write(
-                      `data: ${JSON.stringify({
-                        ...baseResponse,
-                        choices: [
-                          {
-                            index: 0,
-                            delta,
-                            finish_reason: null,
-                          },
-                        ],
-                      })}\n\n`,
-                    );
-                  }
-
-                  if (v.finishReason) {
-                    res.write(
-                      `data: ${JSON.stringify({
-                        ...baseResponse,
-                        choices: [
-                          {
-                            index: 0,
-                            delta: {},
-                            finish_reason: mapStopReason(v.finishReason),
-                          },
-                        ],
-                      })}\n\n`,
-                    );
-                    finishReasonSent = true;
-                  }
-                }
-              } catch (streamErr) {
-                const errMsg =
-                  streamErr instanceof Error
-                    ? streamErr.message
-                    : String(streamErr);
-                log.error('Stream exception', {
-                  error: errMsg,
-                  stack:
-                    streamErr instanceof Error ? streamErr.stack : undefined,
-                });
-                const streamLimit = throttleOf(streamErr);
-                const userMessage = streamLimit
-                  ? throttleMessage(streamLimit)
-                  : errMsg;
-                res.write(
-                  `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                );
-              }
-
-              // Log per-model token breakdown if available (inside runWithSessionId so TS
-              // can track lastUsage mutations; this is pure logging with no ordering concern).
-              if (lastUsage?.models) {
-                log.info('Token usage by model', lastUsage.models);
-              }
-            },
-          ),
-        priorTurns,
-      ); // end runWithSessionId / runWithRequestConnection
+                }),
+            ),
+          priorTurns,
+        ),
+      );
+      // end runWithSessionId / runWithRequestConnection / pipeline.run
 
       // Ensure finish_reason is always sent — clients require it to detect stream end
       if (!finishReasonSent) {
-        res.write(
+        out.write(
           `data: ${JSON.stringify({
             id,
             object: 'chat.completion.chunk',
@@ -1096,7 +1166,7 @@ export async function handleChatCompletions(
       // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
       // clients that don't need it simply ignore the extra chunk.
       if (lastUsage) {
-        res.write(
+        out.write(
           `data: ${JSON.stringify({
             id,
             object: 'chat.completion.chunk',
@@ -1149,8 +1219,8 @@ export async function handleChatCompletions(
       }
 
       clearInterval(keepAlive);
-      res.write('data: [DONE]\n\n');
-      res.end();
+      out.write('data: [DONE]\n\n');
+      out.end();
       return;
     }
 
@@ -1158,17 +1228,21 @@ export async function handleChatCompletions(
     // Bind the active session id into AsyncLocalStorage so the RAG tool dispatcher
     // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
     // The wrapper encloses the whole retry block so the context stays alive across retries.
-    const result = await runWithSessionId(
-      sessionId,
-      () =>
-        withRequestConnectionAuthorized(
-          requestConnection,
-          requestDumpScope,
-          async () => {
-            return handle.agent.process(normalizedMessages, opts);
-          },
-        ),
-      priorTurns,
+    const result = await pipeline.run(() =>
+      runWithSessionId(
+        sessionId,
+        () =>
+          withRequestConnectionAuthorized(
+            requestConnection,
+            requestDumpScope,
+            // Admitted — see `inRequestSystem`.
+            () =>
+              inRequestSystem(async () =>
+                handle.agent.process(normalizedMessages, opts),
+              ),
+          ),
+        priorTurns,
+      ),
     );
 
     log.info('Chat completions done', {
@@ -1176,12 +1250,23 @@ export async function handleChatCompletions(
       durationMs: Date.now() - t0,
     });
 
+    if (!result.ok && isOutageError(result.error)) {
+      closeDestination(destAfter, describeCause(result.error));
+    }
+
     const resultLimit = result.ok ? undefined : throttleOf(result.error);
+    const resultUnverified = result.ok
+      ? undefined
+      : unverifiedWriteFor(handle, traceId, result.error);
     const finalContent = result.ok
       ? result.value.content || '(no response)'
-      : resultLimit
-        ? throttleMessage(resultLimit)
-        : `Error: ${result.error.message}`;
+      : resultUnverified
+        ? resultLimit
+          ? `${resultUnverified} ${throttleMessage(resultLimit)}`
+          : resultUnverified
+        : resultLimit
+          ? throttleMessage(resultLimit)
+          : `Error: ${result.error.message}`;
 
     const finalFinishReason = result.ok
       ? mapStopReason(result.value.stopReason)
@@ -1215,11 +1300,11 @@ export async function handleChatCompletions(
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.
     }
 
-    res.writeHead(200, {
+    out.writeHead(200, {
       'Content-Type': 'application/json',
       ...invalidToolsHeader,
     });
-    res.end(
+    out.end(
       JSON.stringify({
         id: `chatcmpl-${randomUUID()}`,
         object: 'chat.completion',
@@ -1241,10 +1326,22 @@ export async function handleChatCompletions(
     );
   } finally {
     restoreRagStores();
+    // The pipeline has returned, so it starts no more calls. Wait for the ones it
+    // started, then end the ADT session, then give the slot back — last.
+    await pipeline.drain();
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
-    // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    // omitting this leaks memory per request (Verified fact 10). Guarded: a
+    // throw here must not skip the release below, which would hold the slot
+    // until restart.
+    try {
+      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+    } catch (err) {
+      log.warn('dropRequest failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    pipeline.release();
   }
 }
 

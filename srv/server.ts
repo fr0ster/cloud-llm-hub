@@ -13,14 +13,12 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before any submodule imports
 import './env-setup';
 
-import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
 import { ensureAiCoreCredentials } from './agent-config';
 import {
-  clearSessionTopic,
   getCollectionRegistry,
   getDestinationMappings,
   initSmartAgents,
@@ -31,16 +29,28 @@ import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
+import {
+  adoptPersistedSessions,
+  deleteSession,
+  forgetEmptySessions,
+  maySweepSession,
+  sessionIsLive,
+  sessionRemovalRefusal,
+  shutdownGatekeeper,
+} from './lib/gatekeeper';
+import { gatekeeperConfig } from './lib/gatekeeper-config';
+import { installThrottleObserver } from './lib/gatekeeper-metrics';
+import { guardedTask } from './lib/guarded-task';
 import { needsSapConnection } from './lib/mcp-request';
+import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
-  clearSession,
   handleChatCompletions,
   handleModels,
   handleUsage,
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
-import { buildSetCookie, resolveSessionId } from './session-id';
+import { sessionIdOf } from './session-id';
 
 /**
  * Type guard for MCP request body
@@ -240,6 +250,11 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
  * by checking cds.context.user roles.
  */
 cds.on('bootstrap', (app: Application) => {
+  // First, and synchronously. CAP emits `bootstrap` inside `cds_server` with a
+  // plain EventEmitter emit, so a throw here rejects what `cds serve` awaits and
+  // no server ever listens. On `served` the same throw was caught and logged as
+  // "will retry on first request", and the service came up answering 500.
+  gatekeeperConfig();
   ensureAiCoreCredentials();
 
   const log = cds.log('mcp-proxy/bootstrap');
@@ -475,23 +490,15 @@ cds.on('bootstrap', (app: Application) => {
   // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
-  // Session middleware: resolves (or mints) the session ID for every /v1/* request.
-  // Priority: x-session-id header > mcp-session-id header > clh_session cookie > new id.
-  // When a new id is minted, an HttpOnly session cookie is issued so the browser
-  // session survives page reloads without JS generating a new random id each time.
-  // Header still wins, so API/MCP clients (Cline, curl) are unaffected.
-  app.use('/v1', (req: Request, res: Response, next: NextFunction) => {
-    let sid = resolveSessionId(req);
-    if (!sid) {
-      sid = `s-${randomUUID()}`;
-      const secure = !!(
-        req.secure || req.headers['x-forwarded-proto'] === 'https'
-      );
-      res.setHeader('Set-Cookie', buildSetCookie(sid, secure));
-    }
-    (req as Request & { sessionId?: string }).sessionId = sid;
-    next();
-  });
+  // Every /v1 request runs under a session this service issued. The cookie is
+  // the only thing read; a header naming a session is not.
+  app.use(
+    '/v1',
+    sessionMiddleware({
+      userIdOf: () => cds.context?.user?.id ?? 'anonymous',
+      isLive: sessionIsLive,
+    }),
+  );
 
   // CORS preflight for /v1/* routes
   app.options('/v1/*', (_req: Request, res: Response) => {
@@ -499,7 +506,9 @@ cds.on('bootstrap', (app: Application) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Session-Id, X-Rag-Collections',
+      // No X-Session-Id: the service issues the session in its cookie and no
+      // route reads a header naming one.
+      'Content-Type, Authorization, X-Rag-Collections',
     );
     res.writeHead(204);
     res.end();
@@ -578,28 +587,45 @@ cds.on('bootstrap', (app: Application) => {
 
   // DELETE /v1/session — clear server-side conversation history
   app.delete('/v1/session', ((req: Request, res: Response) => {
-    // Prefer the stashed sessionId from the session middleware; fall back to direct resolution.
-    const sessionId =
-      (req as Request & { sessionId?: string }).sessionId ??
-      resolveSessionId(req);
-    if (sessionId) {
-      const userId = cds.context?.user?.id ?? 'anonymous';
-      clearSession(sessionId, userId);
-      clearSessionTopic(sessionId);
-      getCollectionRegistry().deleteSessionCollections(userId, sessionId);
-      res.writeHead(204);
-      res.end();
-    } else {
+    const sessionId = sessionIdOf(req);
+    if (!sessionId) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: { message: 'no session (the clh_session cookie is required)' },
+        }),
+      );
+      return;
+    }
+    const userId = cds.context?.user?.id ?? 'anonymous';
+    // Checked before anything is closed: if the data cannot be removed right
+    // now (a directory not writable, a read-only volume), the session stays as
+    // it was and the caller is told so — never 204 for data that stays.
+    const refusal = sessionRemovalRefusal(userId, sessionId);
+    if (refusal !== undefined) {
+      cds.log('session').warn('session removal refused', { reason: refusal });
+      res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
           error: {
             message:
-              'no session id (x-session-id header or clh_session cookie required)',
+              'The session could not be removed right now; its data is unchanged. Please try again later.',
+            code: 'session_removal_refused',
           },
         }),
       );
+      return;
     }
+    // Answered at the mark. The session is unreachable from this moment; its
+    // bytes go when the last operation against them has stopped — a pipeline
+    // runs to its own end, a RAG upload is cancelled and then waited for.
+    void deleteSession(userId, sessionId).catch((err) =>
+      cds.log('session').warn('session removal failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    res.writeHead(204);
+    res.end();
   }) as never);
 
   log.info('Custom Express endpoints registered', {
@@ -621,27 +647,55 @@ cds.on('bootstrap', (app: Application) => {
 // server from listening on port 8080, causing CF health check timeout (60s).
 // The 503 readiness guard in openai-handler.ts protects against requests before ready.
 cds.on('served', () => {
+  installThrottleObserver();
   const log = cds.log('agent-manager/init');
+  // Both sweeps start here, whatever initialisation and the collection load do
+  // next. Inside their success path, a failed first init or a failed load left
+  // neither running until restart. Each tick is guarded: a throw inside a timer
+  // is an uncaught exception, and CAP would shut the process down on it.
+  // Hourly: expired session collections, skipping any session with an
+  // operation still running against it — the next pass collects those.
+  setInterval(
+    guardedTask('Session collection sweep', log, () =>
+      getCollectionRegistry().sweepExpiredSessions(maySweepSession),
+    ),
+    60 * 60 * 1000,
+  ).unref();
+  // Every five minutes, beside the history sweep: a session whose turns have
+  // expired and which owns no collection stops counting.
+  setInterval(
+    guardedTask('Empty session forget', log, () => forgetEmptySessions()),
+    5 * 60 * 1000,
+  ).unref();
+  // Persisted collections load first, and their sessions are counted by
+  // retention before anything is admitted: an empty retention after a restart
+  // would admit new sessions over the persisted ones and never evict those.
+  // loadFromDisk has no await, so its body has run by the time it returns;
+  // re-vectorizing the loaded documents carries on in the background. The
+  // AI Core credentials it may need were ensured at bootstrap.
+  try {
+    getCollectionRegistry()
+      .loadFromDisk()
+      .catch((err: unknown) =>
+        log.warn('RAG collection load failed', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    const adopted = adoptPersistedSessions();
+    if (adopted > 0) {
+      log.info('Persisted sessions counted by retention', { adopted });
+    }
+  } catch (err) {
+    log.warn('RAG collection load failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   log.info(
     'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
   initSmartAgents()
-    .then(async () => {
+    .then(() => {
       log.info('SmartAgents initialized and ready');
-      // Load persisted RAG collections in background
-      try {
-        const registry = getCollectionRegistry();
-        await registry.loadFromDisk();
-        // Periodically sweep expired session-scoped collections (every hour).
-        setInterval(
-          () => registry.sweepExpiredSessions(),
-          60 * 60 * 1000,
-        ).unref();
-      } catch (err) {
-        log.warn('RAG collection load failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
     })
     .catch((err) => {
       log.warn(
@@ -652,3 +706,6 @@ cds.on('served', () => {
       );
     });
 });
+
+// Only shutdown ends an admitted session.
+cds.on('shutdown', () => shutdownGatekeeper());

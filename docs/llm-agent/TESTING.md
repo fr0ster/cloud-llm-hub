@@ -161,18 +161,7 @@ curl -X GET \
 > `model` and the app's environment instead; do not use this endpoint to confirm
 > which provider is active.
 
-### 2. Chat with Agent
-
-> **The legacy OData `Chat` is LLM-only.** `srv/agent-service.ts` calls
-> `getSmartAgent()` with no destination and never enters the per-request
-> connection scope, so ABAP tool calls throw. `X-SAP-Destination` is ignored
-> here. Use it to check that the LLM answers at all — nothing more.
-
-```bash
-curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='Reply with the word OK')" \
-  -H "Authorization: Basic YWxpY2U6"
-```
+### 2. Chat through the OpenAI-compatible endpoint
 
 **To test ABAP tools, use the OpenAI-compatible endpoint** — it establishes the
 connection from the request's own headers:
@@ -210,8 +199,6 @@ OData shapes):
   "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
 }
 ```
-
-The OData `Chat` function, by contrast, returns `{ "@odata.context": "...", "value": "..." }`.
 
 ### 3. Conversation History (not implemented)
 
@@ -259,8 +246,8 @@ curl -X POST \
    - `Content-Type: application/json`
    - `X-SAP-Destination: SAP_DEV_DEST`
 
-Use `/v1/chat/completions`, not the OData `Chat` — only this path establishes the
-per-request ABAP connection, so only here do the tools work.
+Use `/v1/chat/completions` — it establishes the per-request ABAP connection from
+the request's own headers, so this is where the tools work.
 
 **Body (JSON):**
 ```json
@@ -274,15 +261,16 @@ per-request ABAP connection, so only here do the tools work.
 
 ## Testing Scenarios
 
-### Scenario 1: LLM only — no SAP involved
+### Scenario 1: The model answers — no SAP involved
 
-The one case the legacy OData endpoint is good for: proving the model answers.
+`Health()` asks the LLM provider whether the configured model is available,
+without a completion and without a connection:
 
 ```bash
-curl -X GET \
-  "http://localhost:4004/odata/v4/agent/Chat(message='Reply with the word OK')" \
-  -H "Authorization: Basic YWxpY2U6"
+curl "http://localhost:4004/odata/v4/agent/Health()" -H "Authorization: Basic YWxpY2U6"
 ```
+
+`agentReady: true` means the model is reachable.
 
 ### Scenario 2: Query available tools
 
@@ -304,9 +292,6 @@ curl -X POST http://localhost:4004/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Find ABAP classes whose name contains CUSTOMER"}]}'
 ```
 
-If a tool call is attempted through the OData `Chat` endpoint instead, it throws:
-that path never enters the per-request connection scope.
-
 ## Troubleshooting
 
 ### Error: the provider reports a missing API key
@@ -325,8 +310,8 @@ There is no MCP endpoint to check — the agent calls the ABAP handlers in-proce
 What can be missing is the **per-request connection**, so check:
 - the request carries `X-SAP-Destination` (or the direct-mode `x-sap-*` headers)
 - the destination exists and is reachable — `GET /odata/v4/mcp-proxy/ProbeDestination?destination=<name>`
-- the call goes through `/v1/*` or the agent MCP surface, not the legacy OData `Chat`,
-  which never establishes a connection
+- the call goes through `/v1/*` or the agent MCP surface — the only paths that
+  establish a connection
 
 ### Error: "Connection failed" or "MCP server not ready"
 
@@ -351,8 +336,8 @@ What can be missing is the **per-request connection**, so check:
 ## Quick Test Script
 
 > **`test/test-agent.sh` is out of date — do not treat its output as a verdict.**
-> It sends `X-SAP-Core-AI-*` headers that nothing reads, drives LLM+MCP through
-> the legacy OData `Chat` (which cannot call ABAP tools), and assumes every
+> It sends `X-SAP-Core-AI-*` headers that nothing reads, calls
+> `/odata/v4/agent/Chat` — removed, so those calls now 404 — and assumes every
 > provider goes through SAP AI Core. Use the curl calls above until it is
 > rewritten.
 

@@ -62,13 +62,20 @@ import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
+import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
+import {
+  asOutage,
+  outageClassifier,
+  outageFromToolResult,
+} from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
 import { buildToolExpositionMap } from './lib/tool-exposition-map';
+import { trackedLlm } from './lib/tracked-llm';
 import { getRequestHistory, getRequestSessionId } from './request-session';
 
 // ---------------------------------------------------------------------------
@@ -728,6 +735,12 @@ export interface DestinationState {
    * login/password on connect. Cloud destinations (JWT) are false.
    */
   requiresCredentials?: boolean;
+  /**
+   * When the background retry loop will next look at this destination, as an
+   * epoch millisecond timestamp. Set only while `status === 'unreachable'`
+   * and a retry is armed; `undefined` when nothing is scheduled.
+   */
+  nextProbeAt?: number;
 }
 
 /**
@@ -827,40 +840,50 @@ export function getDestinationMappings(): Record<string, string> {
   return Object.fromEntries(systemDestinationMap);
 }
 
-/** Last-used destination per session (for detecting switches in openai-handler) */
+/**
+ * Last-used destination per (user, session), for detecting switches.
+ *
+ * Keyed by the user as well as the session: keyed by the session alone, two
+ * users whose sessions carried the same id shared an entry, so one user's
+ * destination could be read for another's request.
+ */
 const lastDestinationBySession = new Map<string, string>();
 
-/**
- * Per-session conversation topic — the classified ragText from the previous request.
- * Used by CustomToolSelectHandler to enrich short follow-up messages with topic context,
- * so RAG tool selection stays relevant without extra LLM token cost.
- * Example: "create hello world class" persists → next message "ZCL_DEMO_HELLO_AI1"
- * gets enriched → CreateClass found by RAG.
- */
-const sessionTopicMap = new Map<string, string>();
+function destinationKey(userId: string, sessionId: string): string {
+  // A tuple, not a join: no separator keeps ("a", "b c") and ("a b", "c") apart
+  // whatever a caller puts in a cookie.
+  return JSON.stringify([userId, sessionId]);
+}
 
-/** Get last-used destination for a session, or config default */
-export function getCurrentDestination(sessionId?: string): string {
-  if (sessionId) {
+/** Last-used destination for a user's session, or the configured default. */
+export function getCurrentDestination(
+  userId?: string,
+  sessionId?: string,
+): string {
+  if (userId && sessionId) {
     return (
-      lastDestinationBySession.get(sessionId) ||
+      lastDestinationBySession.get(destinationKey(userId, sessionId)) ||
       getAgentConfig().mcp.destination
     );
   }
   return getAgentConfig().mcp.destination;
 }
 
-/** Clear session topic (call on destination switch alongside clearSession) */
-export function clearSessionTopic(sessionId: string): void {
-  sessionTopicMap.delete(sessionId);
-}
-
-/** Track which destination was used for a session */
+/** Track which destination a user's session is using. */
 export function setSessionDestination(
+  userId: string,
   sessionId: string,
   destination: string,
 ): void {
-  lastDestinationBySession.set(sessionId, destination);
+  lastDestinationBySession.set(destinationKey(userId, sessionId), destination);
+}
+
+/** Forget a user's session destination. Nothing cleared it before. */
+export function forgetSessionDestination(
+  userId: string,
+  sessionId: string,
+): void {
+  lastDestinationBySession.delete(destinationKey(userId, sessionId));
 }
 
 /** Get all destination states for API/UI consumption */
@@ -1011,16 +1034,18 @@ async function createToolsRagStore(
   }
 
   const config = getAgentConfig();
-  const helperLlm = await makeLlm(
-    {
-      provider: config.llm.provider,
-      apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
-      baseURL: config.llm.baseUrl,
-      model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
-      resourceGroup: config.llm.resourceGroup,
-      whenThrottled: config.llm.whenThrottled,
-    },
-    0.1,
+  const helperLlm = trackedLlm(
+    await makeLlm(
+      {
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        baseURL: config.llm.baseUrl,
+        model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+        resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
+      },
+      0.1,
+    ),
   );
 
   // Enrichment is handled in vectorizeToolDocs() — either from cache or via
@@ -1213,16 +1238,18 @@ async function vectorizeToolDocs(
   // Enrich uncached tools via LLM (only runs for tools missing from cache)
   if (uncachedTools.length > 0 && cache) {
     const config = getAgentConfig();
-    const helperLlm = await makeLlm(
-      {
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
-        baseURL: config.llm.baseUrl,
-        model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
-      },
-      0.1,
+    const helperLlm = trackedLlm(
+      await makeLlm(
+        {
+          provider: config.llm.provider,
+          apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+          baseURL: config.llm.baseUrl,
+          model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+          resourceGroup: config.llm.resourceGroup,
+          whenThrottled: config.llm.whenThrottled,
+        },
+        0.1,
+      ),
     );
     const enricher = new IntentEnricher(helperLlm);
     log.info('Enriching uncached tools via LLM', {
@@ -1513,7 +1540,9 @@ function ensureSharedToolsVectorized(): Promise<ExpositionFilteringRag> {
   if (sharedToolsRag) return Promise.resolve(sharedToolsRag);
   if (sharedToolsInit) return sharedToolsInit;
   const log = cds.log('agent-manager');
-  sharedToolsInit = (async () => {
+  // Process-owned: whichever request happens to trigger the build must not be
+  // charged for it — the corpus is shared, and its slot must not wait on it.
+  sharedToolsInit = runOutsideAdmission(async () => {
     const config = getAgentConfig();
     const store = await createToolsRagStore(config.llm.resourceGroup);
     const embedding = getOrCreateEmbedder(config.llm.resourceGroup);
@@ -1589,7 +1618,7 @@ function ensureSharedToolsVectorized(): Promise<ExpositionFilteringRag> {
       bundle: 'absent-or-mismatch',
     });
     return store;
-  })();
+  });
   sharedToolsInit.catch(() => {
     // Allow a retry on the next call after a failed build.
     sharedToolsInit = null;
@@ -1699,7 +1728,9 @@ async function initDestination(
 function ensureDestinationInit(name: string): Promise<DestinationState> {
   const existing = destinationInits.get(name);
   if (existing) return existing;
-  const p = initDestination(name).finally(() => {
+  // Process-owned: the caller that happens to trigger a destination's first
+  // init must not be charged for it — the init is shared via single-flight.
+  const p = runOutsideAdmission(() => initDestination(name)).finally(() => {
     destinationInits.delete(name);
   });
   destinationInits.set(name, p);
@@ -1785,40 +1816,226 @@ async function initBackgroundDestinations(): Promise<void> {
 
 /** Periodically retry unreachable destinations (every 5 min) */
 const UNREACHABLE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
-let unreachableRetryTimer: ReturnType<typeof setInterval> | null = null;
+let unreachableRetryTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * True for the whole span of one retry tick — from the moment its timer
+ * fires to the moment it either re-arms or gives up. `scheduleUnreachableRetry`
+ * treats this exactly like a pending timer: a second chain must not start
+ * just because the first one is momentarily between "timer fired" and
+ * "timer re-armed".
+ */
+let probeRunning = false;
+/**
+ * The deadline the currently-pending timer commits to, or `undefined` when
+ * no timer is pending. Lets `closeDestination` stamp a destination that
+ * closes while a timer is already counting down with the REAL remaining
+ * wait, instead of leaving it unstamped until that timer happens to fire.
+ */
+let nextProbeDeadline: number | undefined;
 
-function scheduleUnreachableRetry(): void {
-  if (unreachableRetryTimer) return;
+/**
+ * Stamp every unreachable destination with the deadline this timer commits
+ * to, then arm it. Stamping and arming happen together, from the same `now`,
+ * so a `Retry-After` built from `nextProbeAt` is never later than the wait
+ * this timer actually keeps.
+ *
+ * Clears any timer already pending first: two chains racing to arm would
+ * otherwise leave the earlier one orphaned-but-still-firing while
+ * `unreachableRetryTimer` only remembers the later one.
+ */
+function armProbe(): void {
+  if (unreachableRetryTimer) clearTimeout(unreachableRetryTimer);
+  const at = Date.now() + UNREACHABLE_RETRY_INTERVAL_MS;
+  nextProbeDeadline = at;
+  for (const [, state] of destinationStates) {
+    if (state.status === 'unreachable') state.nextProbeAt = at;
+  }
+  unreachableRetryTimer = setTimeout(runProbe, UNREACHABLE_RETRY_INTERVAL_MS);
+}
+
+/**
+ * One retry tick. A `setTimeout` re-armed only after the probe work
+ * finishes — not a `setInterval` — so the next deadline is measured from
+ * when this tick actually ended, not from when the previous one started.
+ * With an interval, a stamp written at the end of a slow probe would already
+ * be later than the tick it claims to describe.
+ */
+async function runProbe(): Promise<void> {
+  probeRunning = true;
+  unreachableRetryTimer = null;
+  // No timer is pending for the length of this run — `closeDestination`
+  // must not treat this deadline as real until `armProbe` sets a fresh one.
+  nextProbeDeadline = undefined;
   const log = cds.log('agent-manager');
 
-  unreachableRetryTimer = setInterval(async () => {
+  // A throw anywhere in here (notably `ensureDestinationInit` →
+  // `initDestination`'s unguarded `await ensureSharedToolsVectorized()`,
+  // which rejects whenever the shared corpus build fails) must not leave
+  // `probeRunning` stuck true forever — every later `closeDestination` would
+  // see it and arm nothing, for the rest of the process's life. It also must
+  // not reject this function's own promise: `setTimeout(runProbe, ...)`
+  // below drops it, so an uncaught rejection here becomes an unhandled one.
+  try {
     const unreachable = [...destinationStates.entries()].filter(
       ([, s]) => s.status === 'unreachable',
     );
-    if (unreachable.length === 0) {
-      // All destinations reachable — stop retrying
-      if (unreachableRetryTimer) {
-        clearInterval(unreachableRetryTimer);
-        unreachableRetryTimer = null;
-      }
-      return;
-    }
+    // Clear the stamp on everything about to be re-probed: a stamp left over
+    // from the timer that just fired is already in the past, and reading it
+    // mid-run would report `Retry-After: 1` instead of "no number yet".
+    for (const [, state] of unreachable) state.nextProbeAt = undefined;
 
-    log.info('Retrying unreachable destinations', {
-      destinations: unreachable.map(([name]) => name),
+    if (unreachable.length > 0) {
+      log.info('Retrying unreachable destinations', {
+        destinations: unreachable.map(([name]) => name),
+      });
+
+      for (const [name] of unreachable) {
+        await ensureDestinationInit(name);
+        const state = destinationStates.get(name);
+        if (state?.status === 'ready') {
+          log.info('Previously unreachable destination is now ready', {
+            destination: name,
+            toolCount: state.toolCount,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    log.warn('Probe run failed', {
+      error: err instanceof Error ? err.message : String(err),
     });
+  } finally {
+    probeRunning = false;
+  }
 
-    for (const [name] of unreachable) {
-      await ensureDestinationInit(name);
-      const state = destinationStates.get(name);
-      if (state?.status === 'ready') {
-        log.info('Previously unreachable destination is now ready', {
-          destination: name,
-          toolCount: state.toolCount,
-        });
-      }
-    }
-  }, UNREACHABLE_RETRY_INTERVAL_MS);
+  // Re-arm (or clear) only after `probeRunning` is back down — a failed run
+  // still re-arms when destinations remain unreachable, and a close that
+  // raced the failure sees the flag down rather than assuming this call
+  // will arm a timer on its behalf.
+  const stillUnreachable = [...destinationStates.values()].filter(
+    (s) => s.status === 'unreachable',
+  );
+  if (stillUnreachable.length === 0) {
+    // Nothing left to probe — the loop stops until something closes again.
+    // Also covers any stray stamp left on a destination that isn't
+    // `unreachable` any more.
+    for (const [, state] of destinationStates) state.nextProbeAt = undefined;
+    return;
+  }
+  armProbe();
+}
+
+function scheduleUnreachableRetry(): void {
+  if (unreachableRetryTimer || probeRunning) return;
+  armProbe();
+}
+
+/**
+ * Mark a destination unreachable because MCP could not be reached.
+ *
+ * Creates the entry when there is none: a destination that fails on its very
+ * first call has no state yet, and returning early there would silently keep
+ * the door open on the system we just found to be gone.
+ *
+ * The field is `error` — the one `DestinationState` already has — not a second
+ * one beside it.
+ */
+export function closeDestination(name: string, reason: string): void {
+  const existing = destinationStates.get(name);
+  if (existing) {
+    existing.status = 'unreachable';
+    existing.error = reason;
+  } else {
+    // The same shape the background discovery pass builds for a pending
+    // destination (above, where `status: 'pending'` entries are created).
+    // `toolsRag` is not optional on `DestinationState` and is read without a
+    // guard in several places, so a half-built entry would surface later as
+    // a different bug.
+    destinationStates.set(name, {
+      mcpAdapter: null,
+      toolsRag: new ExpositionFilteringRag(
+        new InMemoryRag(),
+        new InMemoryRag(),
+      ),
+      toolCount: 0,
+      status: 'unreachable',
+      error: reason,
+    });
+  }
+  cds
+    .log('agent-manager')
+    .warn('destination closed', { destination: name, reason });
+
+  // `scheduleUnreachableRetry` below is a no-op while a timer is already
+  // pending, so without this a destination closed mid-countdown would report
+  // no `Retry-After` for up to the rest of that interval. While a probe run
+  // is actually in flight (no timer pending — `runProbe` cleared it), leave
+  // this destination unstamped: the run stamps or clears it itself, from the
+  // same `now` as every other destination it just finished checking.
+  if (unreachableRetryTimer && nextProbeDeadline !== undefined) {
+    const state = destinationStates.get(name);
+    if (state) state.nextProbeAt = nextProbeDeadline;
+  }
+
+  scheduleUnreachableRetry();
+}
+
+export function isDestinationClosed(name: string): boolean {
+  return destinationStates.get(name)?.status === 'unreachable';
+}
+
+/** Every destination this process knows about, closed or not. */
+export function knownDestinations(): string[] {
+  return [...destinationStates.keys()];
+}
+
+/**
+ * Seconds until we next LOOK at this destination — not an estimate of when SAP
+ * returns, which we cannot know. Coming back sooner is certainly wasted.
+ */
+export function retryAfterForDestination(
+  name: string,
+  now = Date.now(),
+): number | undefined {
+  const at = destinationStates.get(name)?.nextProbeAt;
+  if (at === undefined) return undefined;
+  return Math.max(1, Math.ceil((at - now) / 1000));
+}
+
+/** Test seam: set the scheduled probe without running the real timer. */
+export function setNextProbeAtForTest(
+  name: string,
+  at: number | undefined,
+): void {
+  const state = destinationStates.get(name);
+  if (state) state.nextProbeAt = at;
+}
+
+/**
+ * Test seam: whether OUR probe timer is currently armed.
+ *
+ * Not `jest.getTimerCount()`: under fake timers that counts every timer in
+ * the whole module graph (CDS, HTTP clients, other libraries this module
+ * pulls in transitively), not just this one.
+ */
+export function isProbeTimerArmedForTest(): boolean {
+  return unreachableRetryTimer !== null;
+}
+
+/**
+ * Test seam: forget every destination and stop the probe timer.
+ *
+ * The timer matters as much as the state. `closeDestination` arms a five-minute
+ * `setTimeout`, so a test that closes a destination and returns leaves Jest
+ * holding an open handle — reported as a leak, or waited on after the suite
+ * has finished.
+ */
+export function clearDestinationStatesForTest(): void {
+  if (unreachableRetryTimer) clearTimeout(unreachableRetryTimer);
+  unreachableRetryTimer = null;
+  probeRunning = false;
+  nextProbeDeadline = undefined;
+  destinationStates.clear();
 }
 
 /**
@@ -1964,7 +2181,19 @@ async function buildEmbeddedMcpAdapter(
       // availability is covered by the ProbeDestination reachability check —
       // a redundant Promise.race here only fought those legitimate limits
       // (e.g. cutting heavy where-used scans that the ABAP layer allows).
-      const result = await toolCall;
+      //
+      // Registered before it is awaited. An ADT call is asynchronous in
+      // substance: the slot, and the ADT session, must outlive it even when
+      // everything waiting on it has stopped.
+      const result = await trackCall(Promise.resolve(toolCall));
+
+      // Most ABAP handlers never throw: `@mcp-abap-adt/lib`'s `return_error`
+      // catches the connector's tagged failure and RETURNS
+      // `{ isError: true, content: [...] }` — a successful dispatch as far as
+      // the `try` above is concerned, so the `catch` below and its `asOutage`
+      // never run. Read the same tag out of the RETURNED result here instead.
+      const outage = outageFromToolResult(result, destinationName);
+      if (outage) throw outage;
 
       const resultStr = JSON.stringify(result).slice(0, 1000);
       log.info('MCP tool call', {
@@ -1984,7 +2213,10 @@ async function buildEmbeddedMcpAdapter(
         args: JSON.stringify(args).slice(0, 500),
         error: err instanceof Error ? err.message : String(err),
       });
-      throw err;
+      // The connector has already decided what happened and written its verdict
+      // into the message; this re-raises it in a form that survives the
+      // embedded wrapper's string-only return.
+      throw asOutage(err, destinationName) ?? err;
     } finally {
       // Restore shared group.context after per-request override
       if (prevGroupContexts && handlerGroups) {
@@ -2045,7 +2277,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
         whenThrottled: config.llm.whenThrottled,
       },
       config.llm.temperature,
-    );
+    ).then(trackedLlm);
   }
   if (!sharedClassifierLlm) {
     const classifierModel =
@@ -2061,7 +2293,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
         whenThrottled: config.llm.whenThrottled,
       },
       0.1,
-    );
+    ).then(trackedLlm);
   }
   return {
     mainLlm: sharedMainLlm,
@@ -2171,7 +2403,17 @@ async function configureDestinationAgentBuilder(
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)
-    .withClientAdapter(new ClineClientAdapter());
+    .withClientAdapter(new ClineClientAdapter())
+    // Consumer-owned seam: tells the tool loop an MCP failure means the
+    // destination is unavailable (fail loud) rather than a tool-level error to
+    // feed back to the LLM, using the same verdict the connector already
+    // wrote. Installed HERE, not only on the DAG-coordinator's own builder in
+    // `buildAgentForDestination`: that builder's tool-loop stage is gated off
+    // while a coordinator is active, so it never calls tools and never
+    // consults this classifier. The executor worker's builder — built from
+    // this same shared helper — is the one whose tool loop actually runs
+    // tools and needs it.
+    .withMcpFailureClassifier(outageClassifier);
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
@@ -2232,6 +2474,12 @@ export async function buildAgentForDestination(
     // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
   });
 
+  // NOTE: this builder's OWN tool-loop stage is gated off while the DAG
+  // coordinator is active (see `configureDestinationAgentBuilder` below), so
+  // it never consults an `mcpFailureClassifier` itself. The classifier that
+  // actually matters — the one the executor worker's tool loop calls — is
+  // wired inside `configureDestinationAgentBuilder`, which both this build and
+  // `buildExecutorWorker` share.
   const handle = await builder.build();
 
   // Expose recMcp on the handle so channel handlers can call
@@ -2412,7 +2660,7 @@ export async function getSmartAgent(
         whenThrottled: config.llm.whenThrottled,
       },
       config.llm.temperature,
-    );
+    ).then(trackedLlm);
     const newLlm = await newLlmPromise;
 
     for (const handle of agentHandles.values()) {

@@ -23,7 +23,12 @@
  */
 
 import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
+import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import {
+  describeGatekeeperConfig,
+  gatekeeperConfig,
+} from './lib/gatekeeper-config';
 import {
   DEFAULT_MAX_THROTTLE_WAIT_MS,
   WaitIfShortEnough,
@@ -121,14 +126,22 @@ export interface AgentConfig {
 export function loadAgentConfig(): AgentConfig {
   const log = cds.log('agent-config');
 
+  // Validated here because this runs at startup. A malformed limit must stop
+  // the service before it takes traffic, not on the first request that meets it.
+  const gatekeeper = gatekeeperConfig();
+
   // LLM Configuration
   const provider = (process.env.LLM_AGENT_PROVIDER ||
     'sap-ai-sdk') as LlmProvider;
 
-  // Deliberately below the client timeouts we see (Cline and the chat UI both
-  // sit around a minute): a wait must end before the caller does, so the
-  // "try again in N seconds" answer still reaches them.
-  const throttleStrategy = new WaitIfShortEnough(readThrottleMaxWaitMs());
+  // With a door, an admitted session is carried to the end: it waits out exactly
+  // what the server named, and a ceiling behind the door would only kill work in
+  // flight. With no door nothing is admitted, and the ceiling still keeps a wait
+  // shorter than the client's own timeout.
+  const throttleStrategy =
+    gatekeeper.maxLiveSessions !== undefined
+      ? new WaitAsTold()
+      : new WaitIfShortEnough(readThrottleMaxWaitMs());
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
@@ -204,7 +217,11 @@ export function loadAgentConfig(): AgentConfig {
     // it only shows itself under load, as the difference between an answer and
     // a dropped connection.
     throttleStrategy: config.llm.whenThrottled.name,
-    throttleMaxWaitMs: readThrottleMaxWaitMs(),
+    // Meaningless once the door is on, and said so rather than printed as if it applied.
+    throttleMaxWaitMs:
+      gatekeeper.maxLiveSessions !== undefined
+        ? 'not applied (door on)'
+        : readThrottleMaxWaitMs(),
     model: config.llm.model,
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',
@@ -212,6 +229,7 @@ export function loadAgentConfig(): AgentConfig {
     maxIterations: config.agent.maxIterations,
     ragType: config.agent.ragType,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
+    gatekeeper: describeGatekeeperConfig(gatekeeper),
   });
 
   return config;

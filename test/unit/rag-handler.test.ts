@@ -1,7 +1,7 @@
 /**
  * Unit tests for rag-handler Task 6 behaviour:
  * - POST /rag/collections: user-scope creates <logical>__u_<key>, idempotent
- * - POST /rag/collections: session-scope requires x-session-id
+ * - POST /rag/collections: session-scope requires the issued clh_session cookie
  * - POST /rag/collections: scope:'global' → 400
  * - POST /rag/collections: __ in id → 400
  * - PATCH /rag/collections/:id/enabled: persists enabled state; 404 when absent
@@ -245,7 +245,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       );
     });
 
-    test('session-scope without x-session-id → 400', async () => {
+    test('session-scope without the issued cookie → 400', async () => {
       asUser('alice@example.com');
       const res = await doPost({
         id: 'result',
@@ -256,11 +256,11 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       expect(JSON.stringify(res._body)).toMatch(/session/i);
     });
 
-    test('session-scope with x-session-id: physical id is <logical>__s_<key>', async () => {
+    test('session-scope with the issued cookie: physical id is <logical>__s_<key>', async () => {
       asUser('alice@example.com');
       const res = await doPost(
         { id: 'result', displayName: 'Result', scope: 'session' },
-        { 'x-session-id': 'sess-abc' },
+        { cookie: 'clh_session=sess-abc' },
       );
       expect(res._status).toBe(201);
       const expectedId = sessionCollectionId(
@@ -269,6 +269,43 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         'sess-abc',
       );
       expect((res._body as { id?: string }).id).toBe(expectedId);
+    });
+
+    test('session-scope that still sends x-session-id → 400 naming the cookie', async () => {
+      asUser('alice@example.com');
+      const res = await doPost(
+        { id: 'result', displayName: 'Result', scope: 'session' },
+        { 'x-session-id': 'sess-abc', cookie: 'clh_session=sess-abc' },
+      );
+      expect(res._status).toBe(400);
+      expect(JSON.stringify(res._body)).toMatch(/clh_session/);
+    });
+
+    test('a client that keeps the cookie keeps its session collection', async () => {
+      // The migration path for every client that used to send the header, so it
+      // is a test and not a sentence in a release note.
+      asUser('alice@example.com');
+      const cookie = { cookie: 'clh_session=kept-1' };
+      const created = await doPost(
+        { id: 'notes', displayName: 'Notes', scope: 'session' },
+        cookie,
+      );
+      expect(created._status).toBe(201);
+      const req = makeReq({
+        method: 'GET',
+        params: { id: 'notes' },
+        headers: cookie,
+      });
+      const res = await runWithMiddleware(
+        routes,
+        'GET',
+        '/rag/collections/:id',
+        req,
+      );
+      expect(res._status).toBe(200);
+      expect((res._body as { id?: string }).id).toBe(
+        sessionCollectionId('notes', 'alice@example.com', 'kept-1'),
+      );
     });
 
     test('scope global → 400', async () => {
@@ -503,7 +540,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       });
 
       // Request from session-1 — should only see session-1 collection
-      const res = doGet({ 'x-session-id': 'session-1' });
+      const res = doGet({ cookie: 'clh_session=session-1' });
       const body = res._body as { collections: Array<{ id: string }> };
       expect(body.collections.map((c) => c.id)).toContain(sessId1);
       expect(body.collections.map((c) => c.id)).not.toContain(sessId2);
@@ -521,7 +558,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         owner: 'alice@example.com',
       });
 
-      const res = doGet({ 'x-session-id': 'some-session' });
+      const res = doGet({ cookie: 'clh_session=some-session' });
       const body = res._body as { collections: Array<{ id: string }> };
       expect(body.collections.map((c) => c.id)).toContain(physId);
     });

@@ -22,33 +22,42 @@ import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { isAiCoreConfigured } from './agent-config';
 import {
+  closeDestination,
   getCurrentDestination,
   getSmartAgent,
   isAgentReady,
+  isDestinationClosed,
+  retryAfterForDestination,
   runWithRequestConnection,
 } from './agent-manager';
+import { detachedSink } from './lib/detached-sink';
 import { describeCaller } from './lib/exposition';
+import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
+import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
+import { describeCause, isOutageError } from './lib/mcp-outage';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import {
+  resolveRequestSystem,
+  runWithRequestSystem,
+} from './lib/request-system-context';
+import {
+  anthropicDoorRefusal,
   anthropicErrorPayload,
+  anthropicSessionClosed,
+  anthropicUnverifiedWrite,
+  destinationClosedText,
+  type RecMcpHandle,
   retryAfterHeader,
   statusForError,
+  throttleMessage,
   throttleOf,
+  unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
-import { resolveSessionId } from './session-id';
+import { sessionIdOf, type WithSession } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
-
-/**
- * `recMcp` is attached to the handle at runtime (agent-manager.ts) but is not
- * part of the library's `SmartAgentHandle` type — optional, since an
- * LLM-only handle (no destination) has no per-destination recMcp.
- */
-interface HandleWithRecMcp {
-  recMcp?: { dropRequest(traceId?: string): void };
-}
 
 /**
  * POST /v1/messages
@@ -109,8 +118,36 @@ export async function handleAnthropicMessages(
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
-  const sessionId = resolveSessionId(req);
-  const destination = requestedDestination || getCurrentDestination(sessionId);
+  const sessionId = sessionIdOf(req);
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  const destination =
+    requestedDestination || getCurrentDestination(userId, sessionId);
+
+  // A closed destination refuses before anything is built for it. Connecting
+  // first would CSRF-fetch against the system that is down and answer
+  // `401 sap_credentials_failed` from inside `establishRequestConnection`, so
+  // this 503 with its `Retry-After` would only ever be reached once SAP was
+  // back. It also comes before `getSmartAgent`, which throws its own
+  // `destination_unreachable` 503 with no `Retry-After`. No connection exists
+  // yet, so there is nothing to `safeStop`.
+  if (isDestinationClosed(destination)) {
+    recordDestinationRefusal(destination);
+    const seconds = retryAfterForDestination(destination);
+    res.writeHead(503, {
+      'Content-Type': 'application/json',
+      ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
+    });
+    res.end(
+      JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destination),
+        },
+      }),
+    );
+    return;
+  }
 
   let requestConnection:
     | import('@mcp-abap-adt/interfaces').IAbapConnection
@@ -123,18 +160,18 @@ export async function handleAnthropicMessages(
     requestDumpScope = established.dumpScope;
   }
 
-  // Client abort/disconnect mid-request must still release the ADT edit-lock
-  // (the SM12 orphaned-lock symptom). `req`'s `close` event fires once the
-  // request body is consumed — NOT reliably on client abort — so tearing down
-  // the connection there can cut an in-flight tool call. `res`'s `close`
-  // fires when the underlying connection is closed; guarding with
-  // `!res.writableEnded` narrows it to a genuine early client disconnect
-  // (the response hadn't finished yet). safeStop is idempotent, so this
-  // racing with the handler's own `finally` teardown below is safe either order.
+  // A client disconnect ends nothing. Tearing the connection down on `close` is
+  // the recorded cause of the orphaned ADT locks in SM12: nobody is waiting for
+  // the answer, and SAP is waiting for the rest of the chain. So the sink is
+  // detached — nothing written afterwards reaches the socket or fails the run —
+  // and a caller still queued is removed from the queue.
+  const out = detachedSink(res);
+  const callerLeft = new AbortController();
   res.on('close', () => {
-    if (!res.writableEnded) {
-      void safeStop(requestConnection);
-    }
+    if (res.writableEnded) return;
+    log.info('Caller disconnected; the session runs to its end', { sessionId });
+    out.detach();
+    callerLeft.abort(new Error('caller disconnected'));
   });
 
   // Get the SmartAgent handle for the SAME destination the connection was
@@ -171,9 +208,41 @@ export async function handleAnthropicMessages(
   log.info('MCP caller', caller);
   const callerExposition = caller.exposition;
 
+  let pipeline: PipelineSession;
+  try {
+    const admission = await admitPipeline(
+      userId,
+      sessionId ?? traceId,
+      callerLeft.signal,
+      {
+        presented:
+          sessionId !== undefined &&
+          (req as Request & WithSession).sessionMinted === false,
+      },
+    );
+    if ('refused' in admission) {
+      await safeStop(requestConnection);
+      const refusal = anthropicDoorRefusal(admission.refused);
+      out.json(refusal.status, refusal.body);
+      return;
+    }
+    if ('closed' in admission) {
+      await safeStop(requestConnection);
+      const closed = anthropicSessionClosed();
+      out.json(closed.status, closed.body);
+      return;
+    }
+    pipeline = admission.admitted;
+  } catch {
+    await safeStop(requestConnection);
+    return;
+  }
+
   const agentOpts = {
     stream,
     ...options,
+    // After the spread: nothing in `options` may override the admission's signal.
+    signal: pipeline.signal,
     ragFilter: {
       ...(options as { ragFilter?: Record<string, unknown> })?.ragFilter,
       exposition: callerExposition,
@@ -197,24 +266,31 @@ export async function handleAnthropicMessages(
   })();
 
   const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
-    runWithSessionId(
-      undefined,
-      () =>
-        requestConnection
-          ? runWithRequestConnection(
-              requestConnection,
+    pipeline.run(() =>
+      runWithSessionId(
+        undefined,
+        () => {
+          const connection = requestConnection;
+          if (!connection) return fn();
+          // Admitted, right before the pipeline: this run's responsible person
+          // and master system, visible to it alone — `request-system-context.ts`.
+          return runWithRequestSystem(resolveRequestSystem(req.headers), () =>
+            runWithRequestConnection(
+              connection,
               fn,
               requestDumpScope,
               callerExposition,
-            )
-          : fn(),
-      priorTurns,
+            ),
+          );
+        },
+        priorTurns,
+      ),
     );
 
   try {
     // --- Streaming ---
     if (stream) {
-      res.writeHead(200, {
+      out.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
@@ -227,22 +303,81 @@ export async function handleAnthropicMessages(
       // comment lines are ignored by clients, harmless during active streaming.
       const KEEPALIVE_MS = 10_000;
       const keepAlive = setInterval(() => {
-        if (!res.writableEnded) res.write(': keep-alive\n\n');
+        out.write(': keep-alive\n\n');
       }, KEEPALIVE_MS);
       if (typeof keepAlive.unref === 'function') keepAlive.unref();
       res.on('close', () => clearInterval(keepAlive));
 
+      // `message_stop`, held back once a chunk has failed so that a notice can
+      // still go before it: Anthropic clients, the Claude CLI among them, stop
+      // reading at `message_stop`, and a notice after it reaches nobody.
+      let heldStop = undefined as { event?: string; data: string } | undefined;
       try {
+        // `AnthropicApiAdapter.transformStream` turns an error chunk
+        // (`!chunk.ok`) into an ordinary `message_delta`/`message_stop` pair
+        // and returns — it never throws — so the `catch` below never sees a
+        // failure that arrived as a STREAM CHUNK (only an exception thrown by
+        // the pipeline itself). This wrapper is the only way to learn a chunk
+        // failed: it notes the first such error and passes every chunk
+        // through unchanged, so the adapter's own (already-correct) output is
+        // untouched either way.
+        let streamError: unknown;
         await runAgent(async () => {
-          const sseStream = adapter.transformStream(
-            handle.agent.streamProcess(messages, agentOpts),
-            context,
-          );
+          const source = handle.agent.streamProcess(messages, agentOpts);
+          const observed = (async function* () {
+            for await (const chunk of source) {
+              if (!chunk.ok && streamError === undefined) {
+                streamError = chunk.error;
+              }
+              yield chunk;
+            }
+          })();
+          const sseStream = adapter.transformStream(observed, context);
           for await (const event of sseStream) {
-            res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+            // Only after a failed chunk. With none, every event is written as
+            // it arrives, byte for byte what the adapter emitted.
+            if (event.event === 'message_stop' && streamError !== undefined) {
+              heldStop = event;
+              continue;
+            }
+            out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
           }
         });
+
+        // An outage closes the destination regardless of whether a write is
+        // left unanswered — the two facts are independent, and a chunk that
+        // named neither pending write nor throttle would otherwise leave an
+        // unreachable destination open (as OpenAI's matching site already
+        // does not). The trailing `event: error` line stays conditional on
+        // `unverifiedWriteFor`: otherwise today's streamed output (the
+        // adapter's own message_delta/message_stop close) stays as it is.
+        if (streamError !== undefined) {
+          if (isOutageError(streamError)) {
+            closeDestination(destination, describeCause(streamError));
+          }
+          const unverified = unverifiedWriteFor(handle, traceId, streamError);
+          if (unverified) {
+            const limit = throttleOf(streamError);
+            log.error('Stream error chunk', {
+              error: describeCause(streamError),
+              throttled: limit?.reason,
+            });
+            const text = limit
+              ? `${unverified} ${throttleMessage(limit)}`
+              : unverified;
+            out.write(
+              `event: error\ndata: ${JSON.stringify(
+                anthropicUnverifiedWrite(
+                  text,
+                  limit ? 'overloaded_error' : 'api_error',
+                ),
+              )}\n\n`,
+            );
+          }
+        }
       } catch (err) {
+        if (isOutageError(err))
+          closeDestination(destination, describeCause(err));
         const message = err instanceof Error ? err.message : String(err);
         const limit = throttleOf(err);
         log.error('Stream error', { error: message, throttled: limit?.reason });
@@ -250,15 +385,22 @@ export async function handleAnthropicMessages(
         // channel is not. Closing in silence leaves the client with a truncated
         // stream and nothing to act on, which for a throttled request is the
         // one case where we know exactly what it should do next.
-        if (!res.writableEnded) {
-          res.write(
-            `event: error\ndata: ${JSON.stringify(anthropicErrorPayload(err))}\n\n`,
-          );
-        }
+        const unverified = unverifiedWriteFor(handle, traceId, err);
+        const payload = unverified
+          ? anthropicUnverifiedWrite(
+              limit ? `${unverified} ${throttleMessage(limit)}` : unverified,
+              limit ? 'overloaded_error' : 'api_error',
+            )
+          : anthropicErrorPayload(err);
+        out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 
+      // The held `message_stop` closes the message after any notice above.
+      if (heldStop) {
+        out.write(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
+      }
       clearInterval(keepAlive);
-      res.end();
+      out.end();
       return;
     }
 
@@ -268,36 +410,61 @@ export async function handleAnthropicMessages(
     );
 
     if (result.ok) {
-      const formatted = adapter.formatResult(result.value, context);
-      res.status(200).json(formatted);
+      out.json(200, adapter.formatResult(result.value, context));
     } else {
+      if (isOutageError(result.error)) {
+        closeDestination(destination, describeCause(result.error));
+      }
       const limit = throttleOf(result.error);
       log.error('Agent processing failed', {
         error: result.error.message,
         throttled: limit?.reason,
       });
-      // The adapter's generic envelope cannot say when to come back, and 500
-      // tells a client to treat a closed quota as our fault. Both matter to a
-      // caller deciding whether to retry, so the throttled case is shaped here
-      // and everything else keeps the adapter's formatting exactly as before.
-      if (limit) {
+      const unverified = unverifiedWriteFor(handle, traceId, result.error);
+      if (unverified && limit) {
+        // Both apply: the write notice leads, the throttle sentence follows
+        // it — but the STATUS and Retry-After stay the throttle path's own.
+        // Dropping them to a flat 500 would silently take away the "come back
+        // in N seconds" fact a throttled caller still needs.
         const retryAfter = retryAfterHeader(result.error);
-        if (retryAfter) res.setHeader('Retry-After', retryAfter);
-        res
-          .status(statusForError(result.error))
-          .json(anthropicErrorPayload(result.error));
+        if (retryAfter) out.setHeader('Retry-After', retryAfter);
+        out.json(
+          statusForError(result.error),
+          anthropicUnverifiedWrite(
+            `${unverified} ${throttleMessage(limit)}`,
+            'overloaded_error',
+          ),
+        );
+      } else if (unverified) {
+        out.json(500, anthropicUnverifiedWrite(unverified));
+      } else if (limit) {
+        const retryAfter = retryAfterHeader(result.error);
+        if (retryAfter) out.setHeader('Retry-After', retryAfter);
+        out.json(
+          statusForError(result.error),
+          anthropicErrorPayload(result.error),
+        );
       } else {
-        res
-          .status(500)
-          .json(
-            adapter.formatError(result.error, context as ApiRequestContext),
-          );
+        out.json(
+          500,
+          adapter.formatError(result.error, context as ApiRequestContext),
+        );
       }
     }
   } finally {
+    await pipeline.drain();
     await safeStop(requestConnection);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
-    // omitting this leaks memory per request (Verified fact 10).
-    (handle as unknown as HandleWithRecMcp)?.recMcp?.dropRequest(traceId);
+    // omitting this leaks memory per request (Verified fact 10). Guarded: a
+    // throw here must not skip the release below, which would hold the slot
+    // until restart.
+    try {
+      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+    } catch (err) {
+      log.warn('dropRequest failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    pipeline.release();
   }
 }

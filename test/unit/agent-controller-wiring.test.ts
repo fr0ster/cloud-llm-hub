@@ -16,6 +16,7 @@ const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
 const withSkillManager = jest.fn();
 const withMcpClients = jest.fn();
+const withMcpFailureClassifier = jest.fn();
 const buildMock = jest.fn();
 
 function makeChainableBuilder() {
@@ -42,6 +43,7 @@ function makeChainableBuilder() {
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
   builder.withDagCoordinator = chainable(withDagCoordinator);
+  builder.withMcpFailureClassifier = chainable(withMcpFailureClassifier);
   builder.build = buildMock;
   return builder;
 }
@@ -69,6 +71,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 // full destination-initialization path.
 import * as agentManager from '../../srv/agent-manager';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
+import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
@@ -201,6 +204,26 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     await agentManager.buildExecutorWorker({} as never, {} as never, config);
 
     expect(withSkillManager).toHaveBeenCalledTimes(1);
+  });
+
+  // NOTE: a "wires outageClassifier into the executor worker's builder via
+  // buildAgentForDestination" test used to live here, asserting on
+  // `withMcpFailureClassifier.mock.calls[0][0]`. Removed: it passes even
+  // against the WRONG wiring (the classifier installed only on the
+  // DAG-coordinator's own controller builder, never reaching the worker's
+  // tool loop) whenever that is the ONLY call `configureDestinationAgentBuilder`
+  // makes in the mock's build order — `calls[0]` is still the (sole) call,
+  // with the right argument, so the assertion is satisfied by an
+  // indistinguishable wrong implementation. The test below — calling
+  // `buildExecutorWorker` DIRECTLY, with no controller build in the picture
+  // at all — is the one that actually proves the worker's builder gets it.
+  it('buildExecutorWorker alone still wires the failure classifier', async () => {
+    buildMock.mockReset();
+    buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });
+
+    await agentManager.buildExecutorWorker({} as never, {} as never, config);
+
+    expect(withMcpFailureClassifier).toHaveBeenCalledWith(outageClassifier);
   });
 
   it('buildLlmOnlyAgent never wires a coordinator', async () => {

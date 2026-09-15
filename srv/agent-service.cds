@@ -1,11 +1,6 @@
 @path: 'agent'
 service AgentService {
   /**
-   * Send a message to the agent and get response
-   */
-  function Chat(message: String) returns String;
-  
-  /**
    * Get conversation history
    */
   function GetHistory() returns array of ChatMessage;

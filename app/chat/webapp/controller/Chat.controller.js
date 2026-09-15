@@ -13,12 +13,9 @@ sap.ui.define([
   return Controller.extend("cloud.llm.hub.chat.controller.Chat", {
     _abortStream: null,
     _messages: [],
-    _sessionId: null,
 
     onInit: function () {
-      // Generate unique session ID for server-side history management
-      this._sessionId = "chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-      console.log("[Chat] Controller v3 initialized, sessionId:", this._sessionId);
+      console.log("[Chat] Controller v3 initialized");
       var that = this;
       StreamClient.getModels()
         .then(function (data) {
@@ -62,7 +59,6 @@ sap.ui.define([
 
       this._abortStream = StreamClient.streamChat({
         messages: apiMessages,
-        sessionId: this._sessionId,
 
         onDelta: function (content) {
           that._messages[assistantIdx].content += content;
@@ -124,15 +120,12 @@ sap.ui.define([
         this._abortStream = null;
         oModel.setProperty("/busy", false);
       }
-      // Clear server-side session history
-      if (this._sessionId) {
-        fetch(StreamClient._getBaseUrl() + "/v1/session", {
-          method: "DELETE",
-          headers: { "x-session-id": this._sessionId }
-        }).catch(function () { /* best effort */ });
-      }
-      // Generate new session ID
-      this._sessionId = "chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+      // The clh_session cookie is sent automatically; the server issues a new
+      // session on the next request once this one is gone.
+      fetch(StreamClient._getBaseUrl() + "/v1/session", {
+        method: "DELETE",
+        credentials: "same-origin"
+      }).catch(function () { /* best effort */ });
       this._renderChat();
     },
 

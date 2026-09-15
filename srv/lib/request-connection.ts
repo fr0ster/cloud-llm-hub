@@ -26,7 +26,6 @@ import { createConnection } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
 import { maskLoginForLog } from './log-mask';
 import { computeDumpScope, type DumpScope } from './principal';
-import { setRequestResponsible } from './responsible';
 
 export type CredentialError = Error & {
   statusCode?: number;
@@ -144,9 +143,9 @@ export async function establishRequestConnection(
         : '(destination-auth)',
     });
 
-    // Per-request responsible person for ADT writes (create/update/delete):
-    // x-sap-responsible, else the connecting x-sap-login user.
-    setRequestResponsible(req.headers);
+    // The responsible person and master system are NOT delivered here: this
+    // runs before the caller waits at the door. Each channel enters their scope
+    // inside its admitted section, right before the run (`request-system-context.ts`).
 
     // Principal scope for GetDumpSection — same derivation as the planner path,
     // so the tool has a principal when RAG-selected on the chat (/v1) channels.

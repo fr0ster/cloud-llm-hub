@@ -15,6 +15,16 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
+import { leaseSession } from './lib/gatekeeper';
+import {
+  isRefusal,
+  type Lease,
+  type LeaseRefusal,
+} from './lib/session-retention';
+import {
+  doorRefusalSentence,
+  sessionClosedText,
+} from './lib/throttle-surfacing';
 import { ensurePresets } from './presets';
 import type { CollectionRegistry } from './rag-collections';
 import { SESSION_TTL_MS } from './rag-collections';
@@ -24,7 +34,11 @@ import {
   getRagToolNames,
 } from './rag-tool-dispatcher';
 import { runWithSessionId } from './request-session';
-import { resolveSessionId } from './session-id';
+import {
+  carriesSessionHeader,
+  sessionIdOf,
+  type WithSession,
+} from './session-id';
 
 const log = cds.log('rag-handler');
 
@@ -119,9 +133,7 @@ export function registerRagRoutes(
     // would match every anonymous-owned legacy collection (cross-user leak).
     const effectiveUserId =
       userId && userId !== 'anonymous' ? userId : undefined;
-    const sid =
-      (req as Request & { sessionId?: string }).sessionId ??
-      resolveSessionId(req);
+    const sid = sessionIdOf(req);
 
     let collections = registry.listCollections(effectiveUserId);
     // Filter session-scoped collections to the current session only — prevents
@@ -169,6 +181,7 @@ export function registerRagRoutes(
 
   // POST /v1/rag/collections
   router.post('/rag/collections', (req: Request, res: Response) => {
+    let lease: Lease | undefined;
     try {
       const { id, displayName, description, scope, backend } = req.body;
 
@@ -205,18 +218,35 @@ export function registerRagRoutes(
       let createMeta: Parameters<typeof registry.createCollection>[0];
 
       if (scope === 'session') {
-        const sid =
-          (req as Request & { sessionId?: string }).sessionId ??
-          resolveSessionId(req);
+        // Refused, not ignored. Ignoring it would create the collection under
+        // the issued session, which this caller evidently is not tracking, and
+        // it would find nothing where it looks next.
+        if (carriesSessionHeader(req)) {
+          error(
+            res,
+            400,
+            'x-session-id is no longer read. A session collection belongs to the session this service issued: keep the clh_session cookie from a previous response and send it back.',
+          );
+          return;
+        }
+        const sid = sessionIdOf(req);
         if (!sid) {
           error(
             res,
             400,
-            'session scope requires an active session (x-session-id header or clh_session cookie)',
+            'session scope requires the clh_session cookie issued by this service',
           );
           return;
         }
         physical = sessionCollectionId(logicalId, userId, sid);
+        const taken = leaseSession(userId, sid, 'rag', {
+          presented: (req as Request & WithSession).sessionMinted === false,
+        });
+        if (isRefusal(taken)) {
+          refuseLease(res, taken);
+          return;
+        }
+        lease = taken;
         createMeta = {
           id: physical,
           logicalId,
@@ -262,6 +292,8 @@ export function registerRagRoutes(
       json(res, 201, meta);
     } catch (err) {
       error(res, 409, (err as Error).message);
+    } finally {
+      lease?.release();
     }
   });
 
@@ -294,6 +326,60 @@ export function registerRagRoutes(
     return false;
   };
 
+  function refuseLease(res: Response, refusal: LeaseRefusal): void {
+    if (refusal.refused === 'closed') {
+      res.status(410).json({
+        error: { message: sessionClosedText(), code: 'session_closed' },
+      });
+      return;
+    }
+    res.status(503).json({
+      error: {
+        message: doorRefusalSentence('retention'),
+        code: 'gatekeeper_retention',
+      },
+    });
+  }
+
+  /**
+   * Hold a lease on the collection's session for as long as the handler runs.
+   *
+   * Only session-scoped collections: a user collection belongs to no session and
+   * nothing here deletes it. The lease is released when the handler's work
+   * settles — not on the response's `close`, which fires on a client disconnect
+   * while the backend call is still out.
+   */
+  const leased =
+    (
+      handler: (
+        req: Request,
+        res: Response,
+        lease?: Lease,
+      ) => void | Promise<void>,
+    ) =>
+    async (req: Request, res: Response): Promise<void> => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      const meta = physId ? registry.getCollection(physId) : null;
+      if (meta?.scope !== 'session' || !meta.owner || !meta.sessionId) {
+        await handler(req, res);
+        return;
+      }
+      // The collection exists, so its session was live; presented, so a session
+      // closing under this request is refused rather than written into.
+      const lease = leaseSession(meta.owner, meta.sessionId, 'rag', {
+        presented: true,
+      });
+      if (isRefusal(lease)) {
+        refuseLease(res, lease);
+        return;
+      }
+      try {
+        await handler(req, res, lease);
+      } finally {
+        lease.release();
+      }
+    };
+
   // Gate all /rag/collections/:id* sub-paths (collection by id, documents,
   // upload, query). resolveRouteId performs ownership + session checks so
   // callers cannot access another user's collection even if they know the id.
@@ -312,8 +398,7 @@ export function registerRagRoutes(
       registry,
       req.params.id,
       getUserId(),
-      (req as Request & { sessionId?: string }).sessionId ??
-        resolveSessionId(req),
+      sessionIdOf(req),
       isContentWrite,
     );
 
@@ -384,25 +469,34 @@ export function registerRagRoutes(
   });
 
   // DELETE /v1/rag/collections/:id
-  router.delete('/rag/collections/:id', (req: Request, res: Response) => {
-    const physId = (req as Request & { _physId?: string })._physId;
-    if (!physId) {
-      error(res, 404, 'Collection not found');
-      return;
-    }
-    const meta = registry.getCollection(physId);
-    if (!meta) {
-      error(res, 404, `Collection "${physId}" not found`);
-      return;
-    }
+  router.delete(
+    '/rag/collections/:id',
+    leased((req: Request, res: Response) => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
+      const meta = registry.getCollection(physId);
+      if (!meta) {
+        error(res, 404, `Collection "${physId}" not found`);
+        return;
+      }
 
-    try {
-      registry.deleteCollection(physId);
-      res.status(204).end();
-    } catch (err) {
-      error(res, 400, (err as Error).message);
-    }
-  });
+      try {
+        registry.deleteCollection(physId);
+        res.status(204).end();
+      } catch (err) {
+        // The directory would not go, so the collection is still there: a
+        // server-side failure, not a bad request.
+        error(
+          res,
+          500,
+          `Collection could not be removed: ${(err as Error).message}`,
+        );
+      }
+    }),
+  );
 
   // -------------------------------------------------------------------
   // Documents
@@ -431,7 +525,7 @@ export function registerRagRoutes(
   // POST /v1/rag/collections/:id/documents
   router.post(
     '/rag/collections/:id/documents',
-    async (req: Request, res: Response) => {
+    leased(async (req: Request, res: Response) => {
       try {
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
@@ -454,13 +548,13 @@ export function registerRagRoutes(
       } catch (err) {
         error(res, 400, (err as Error).message);
       }
-    },
+    }),
   );
 
   // POST /v1/rag/collections/:id/documents/bulk
   router.post(
     '/rag/collections/:id/documents/bulk',
-    async (req: Request, res: Response) => {
+    leased(async (req: Request, res: Response, lease?: Lease) => {
       try {
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
@@ -490,7 +584,14 @@ export function registerRagRoutes(
           }),
         );
 
-        const result = await registry.addDocumentsBulk(physId, docs, namespace);
+        const result = await registry.addDocumentsBulk(
+          physId,
+          docs,
+          namespace,
+          {
+            signal: lease?.signal,
+          },
+        );
 
         log.info('Bulk upload completed', {
           collection: physId,
@@ -503,7 +604,7 @@ export function registerRagRoutes(
       } catch (err) {
         error(res, 400, (err as Error).message);
       }
-    },
+    }),
   );
 
   // GET /v1/rag/collections/:id/documents/:did
@@ -527,7 +628,7 @@ export function registerRagRoutes(
   // PUT /v1/rag/collections/:id/documents/:did
   router.put(
     '/rag/collections/:id/documents/:did',
-    async (req: Request, res: Response) => {
+    leased(async (req: Request, res: Response) => {
       try {
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
@@ -547,13 +648,13 @@ export function registerRagRoutes(
       } catch (err) {
         error(res, 400, (err as Error).message);
       }
-    },
+    }),
   );
 
   // DELETE /v1/rag/collections/:id/documents/:did
   router.delete(
     '/rag/collections/:id/documents/:did',
-    async (req: Request, res: Response) => {
+    leased(async (req: Request, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId) {
         error(res, 404, 'Collection not found');
@@ -565,7 +666,7 @@ export function registerRagRoutes(
         return;
       }
       res.status(204).end();
-    },
+    }),
   );
 
   // -------------------------------------------------------------------
@@ -577,7 +678,7 @@ export function registerRagRoutes(
   // Body: { filename: string, content: string, chunkSize?: number }
   router.post(
     '/rag/collections/:id/upload',
-    async (req: Request, res: Response) => {
+    leased(async (req: Request, res: Response, lease?: Lease) => {
       try {
         const collectionId = (req as Request & { _physId?: string })._physId;
         if (!collectionId) {
@@ -625,6 +726,9 @@ export function registerRagRoutes(
           collectionId,
           docs,
           namespace,
+          {
+            signal: lease?.signal,
+          },
         );
 
         log.info('File uploaded', {
@@ -644,7 +748,7 @@ export function registerRagRoutes(
       } catch (err) {
         error(res, 500, (err as Error).message);
       }
-    },
+    }),
   );
 
   // -------------------------------------------------------------------
@@ -654,7 +758,7 @@ export function registerRagRoutes(
   // POST /v1/rag/collections/:id/query
   router.post(
     '/rag/collections/:id/query',
-    async (req: Request, res: Response) => {
+    leased(async (req: Request, res: Response) => {
       try {
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
@@ -689,7 +793,7 @@ export function registerRagRoutes(
       } catch (err) {
         error(res, 500, (err as Error).message);
       }
-    },
+    }),
   );
 
   // -------------------------------------------------------------------
@@ -708,13 +812,26 @@ export function registerRagRoutes(
       error(res, 404, `Unknown RAG tool: ${name}`);
       return;
     }
-    const sid =
-      (req as Request & { sessionId?: string }).sessionId ??
-      resolveSessionId(req);
-    const result = await runWithSessionId(sid, () =>
-      dispatchRagTool(registry, name, req.body ?? {}),
-    );
-    json(res, result.ok ? 200 : 400, result);
+    const sid = sessionIdOf(req);
+    // rag_add may create a session collection, so a place is reserved for the
+    // caller's session before it can.
+    const lease = sid
+      ? leaseSession(getUserId(), sid, 'rag', {
+          presented: (req as Request & WithSession).sessionMinted === false,
+        })
+      : undefined;
+    if (lease && isRefusal(lease)) {
+      refuseLease(res, lease);
+      return;
+    }
+    try {
+      const result = await runWithSessionId(sid, () =>
+        dispatchRagTool(registry, name, req.body ?? {}),
+      );
+      json(res, result.ok ? 200 : 400, result);
+    } finally {
+      lease?.release();
+    }
   });
 
   log.info('RAG management routes registered', {

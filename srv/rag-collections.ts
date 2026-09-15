@@ -564,11 +564,32 @@ export class CollectionRegistry {
     };
   }
 
+  /**
+   * Remove one collection completely: its registry entry, every user's enabled
+   * flag for it, and its directory on disk.
+   *
+   * The one primitive every ending goes through. Only `deleteCollection` used to
+   * free the directory; logout, clear-chat and the TTL sweep dropped the entry
+   * and left the documents on disk with nothing pointing at them. Persists
+   * nothing, so a caller removing several writes the metadata once.
+   */
+  private removeCollection(id: string): boolean {
+    if (!this.collections.has(id)) return false;
+    // The directory goes first. If it will not, the collection stays registered:
+    // its session still counts as holding state, and the next attempt removes
+    // both. Dropping the entry first left files on disk that nothing counted and
+    // nothing would ever try again.
+    this.deleteCollectionDir(id);
+    this.collections.delete(id);
+    for (const m of this.enabledByUser.values()) m.delete(id);
+    return true;
+  }
+
   deleteCollection(id: string): boolean {
-    const deleted = this.collections.delete(id);
+    const deleted = this.removeCollection(id);
     if (deleted) {
       this.persistMeta();
-      this.deleteCollectionDir(id);
+      this.persistEnabled();
       this.log.info('Collection deleted', { id });
     }
     return deleted;
@@ -601,17 +622,33 @@ export class CollectionRegistry {
     }
   }
 
-  sweepExpiredSessions(): void {
+  /**
+   * Remove expired session collections.
+   *
+   * `maySweep` is asked about each collection's session in the same synchronous
+   * pass that removes it, so nothing can take a lease on the session between
+   * the answer and the removal.
+   */
+  sweepExpiredSessions(
+    maySweep: (userId: string, sessionId: string) => boolean = () => true,
+  ): void {
     const now = Date.now();
     let changed = false;
-    for (const [id, stored] of this.collections) {
+    for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
-        (stored.meta.expiresAt ?? 0) <= now
+        (stored.meta.expiresAt ?? 0) <= now &&
+        maySweep(stored.meta.owner ?? '', stored.meta.sessionId ?? '')
       ) {
-        this.collections.delete(id);
-        for (const m of this.enabledByUser.values()) m.delete(id);
-        changed = true;
+        try {
+          changed = this.removeCollection(id) || changed;
+        } catch (err) {
+          // Kept registered, so the next pass tries again.
+          this.log.warn('Expired collection could not be removed', {
+            id,
+            error: (err as Error).message,
+          });
+        }
       }
     }
     if (changed) {
@@ -620,23 +657,51 @@ export class CollectionRegistry {
     }
   }
 
+  /**
+   * Remove every collection of one session. Removes all it can; a collection
+   * whose directory will not go stays registered, and the first such error is
+   * thrown once the rest are done — so the caller knows the session still holds
+   * state and must not be let go of.
+   */
   deleteSessionCollections(userId: string, sessionId: string): void {
     let changed = false;
-    for (const [id, stored] of this.collections) {
+    let failed = false;
+    let failure: unknown;
+    for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         stored.meta.owner === userId &&
         stored.meta.sessionId === sessionId
       ) {
-        this.collections.delete(id);
-        for (const m of this.enabledByUser.values()) m.delete(id);
-        changed = true;
+        try {
+          changed = this.removeCollection(id) || changed;
+        } catch (err) {
+          if (!failed) {
+            failed = true;
+            failure = err;
+          }
+        }
       }
     }
     if (changed) {
       this.persistMeta();
       this.persistEnabled();
     }
+    if (failed) throw failure;
+  }
+
+  /** Whether this user's session still owns any session-scoped collection. */
+  hasSessionCollections(userId: string, sessionId: string): boolean {
+    for (const stored of this.collections.values()) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private persistEnabled(): void {
@@ -773,6 +838,12 @@ export class CollectionRegistry {
       sleep?: (ms: number) => Promise<void>;
       /** Override the shared retry-sleep budget (ms). Defaults to RETRY_BUDGET_MS. */
       budgetMs?: number;
+      /**
+       * Stop between documents once aborted. The document already sent is not
+       * taken back: its session is being removed, and the removal waits for
+       * this call to return.
+       */
+      signal?: AbortSignal;
     },
   ): Promise<{ added: number; errors: string[] }> {
     const errors: string[] = [];
@@ -782,6 +853,7 @@ export class CollectionRegistry {
     let retrySleepSpentMs = 0;
 
     for (const doc of docs) {
+      if (options?.signal?.aborted) break;
       const result = await tryWithRetry(
         () =>
           this.addDocument(collectionId, doc, namespace, {
@@ -892,6 +964,77 @@ export class CollectionRegistry {
   // -------------------------------------------------------------------------
 
   /** Load collections from disk and re-vectorize documents */
+  /**
+   * The sessions that own session-scoped collections, each once, with when it
+   * was last used: `expiresAt` is refreshed on every use, so the latest one
+   * less the TTL. After a restart these are counted against the retention cap.
+   */
+  sessionOwners(): Array<{
+    userId: string;
+    sessionId: string;
+    lastUsed: number;
+  }> {
+    const byKey = new Map<
+      string,
+      { userId: string; sessionId: string; lastUsed: number }
+    >();
+    for (const stored of this.collections.values()) {
+      const { scope, owner, sessionId, expiresAt } = stored.meta;
+      if (scope !== 'session' || !owner || !sessionId) continue;
+      const lastUsed =
+        (expiresAt ?? Date.now() + SESSION_TTL_MS) - SESSION_TTL_MS;
+      const key = JSON.stringify([owner, sessionId]);
+      const known = byKey.get(key);
+      if (!known || lastUsed > known.lastUsed) {
+        byKey.set(key, { userId: owner, sessionId, lastUsed });
+      }
+    }
+    return [...byKey.values()];
+  }
+
+  /**
+   * Why this session's collections cannot be removed right now, or undefined
+   * when they can: the storage directory and each collection directory must be
+   * writable. Asked before a session is closed, so a removal that would fail on
+   * permissions or a read-only volume is refused up front instead of being half
+   * done — and nothing is left to retry.
+   */
+  sessionCollectionsRemovable(
+    userId: string,
+    sessionId: string,
+  ): string | undefined {
+    if (!this.storagePath) return undefined;
+    const ids: string[] = [];
+    for (const [id, stored] of this.collections) {
+      if (
+        stored.meta.scope === 'session' &&
+        stored.meta.owner === userId &&
+        stored.meta.sessionId === sessionId
+      ) {
+        ids.push(id);
+      }
+    }
+    if (ids.length === 0) return undefined;
+    const notWritable = (p: string): string | undefined => {
+      try {
+        fs.accessSync(p, fs.constants.W_OK | fs.constants.X_OK);
+        return undefined;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        // Nothing there is nothing to remove.
+        if (code === 'ENOENT') return undefined;
+        return `${p}: ${code ?? (err as Error).message}`;
+      }
+    };
+    const root = notWritable(this.storagePath);
+    if (root) return root;
+    for (const id of ids) {
+      const refusal = notWritable(path.join(this.storagePath, id));
+      if (refusal) return refusal;
+    }
+    return undefined;
+  }
+
   async loadFromDisk(): Promise<void> {
     const storagePath = this.storagePath;
     if (!storagePath) return;
@@ -1033,13 +1176,14 @@ export class CollectionRegistry {
     }
   }
 
+  /**
+   * Throws when the directory exists and cannot be removed; a missing one is
+   * fine (`force`). Not best-effort: a directory left behind is exactly the leak
+   * the removal exists to prevent, so the caller must learn of it.
+   */
   private deleteCollectionDir(collectionId: string): void {
     if (!this.storagePath) return;
-    try {
-      const dir = path.join(this.storagePath, collectionId);
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
+    const dir = path.join(this.storagePath, collectionId);
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }

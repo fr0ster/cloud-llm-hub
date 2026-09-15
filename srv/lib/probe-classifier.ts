@@ -115,7 +115,18 @@ export function classifyProbe(
       hint: 'Tunnel works; backend returned 5xx. Inspect ABAP system / on-premise service health.',
     };
   }
-  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo/i.test(msg)) {
+  // Connect-phase signatures only — the host never accepted or resolved the
+  // connection. Deliberately NOT ECONNRESET / EPIPE / "socket hang up": those
+  // fire on a connection that opened, possibly after the request body (and on
+  // the connector's one long-lived keep-alive socket, maxSockets:1) — a reset
+  // there can mean SAP ran the write and then dropped the connection, not that
+  // nothing reached it. Reading a reset as "network failure" would close a
+  // destination that may simply have executed the request.
+  if (
+    /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|EHOSTUNREACH|ENETUNREACH/i.test(
+      msg,
+    )
+  ) {
     return {
       status: 'dns_or_network',
       hint: 'Backend host is unresolvable or refuses TCP — check destination URL and on-premise network.',
