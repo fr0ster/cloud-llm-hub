@@ -7,7 +7,7 @@
  * reviewer; token telemetry uses the builder's default logger.
  *
  * A full live SmartAgent build needs AI Core creds this environment does not
- * have, so `SmartAgentBuilder` and `makeLlm` are mocked to capture what the
+ * have, so `SmartAgentBuilder` and `makeHubLlm` are mocked to capture what the
  * build path DOES (which methods are called, with what), without doing any
  * network/model work. This still genuinely asserts the contract points: the
  * wrapped result is an `ISubAgent` named 'executor', and no coordinator
@@ -59,9 +59,13 @@ jest.mock('@mcp-abap-adt/llm-agent-libs', () => {
     SmartAgentBuilder: jest
       .fn()
       .mockImplementation(() => makeChainableBuilder()),
-    makeLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
   };
 });
+
+jest.mock('../../srv/lib/llm-factory', () => ({
+  ...jest.requireActual('../../srv/lib/llm-factory'),
+  makeHubLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
+}));
 
 import type { AgentConfig } from '../../srv/agent-config';
 import { buildExecutorWorker } from '../../srv/agent-manager';

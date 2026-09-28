@@ -7,7 +7,8 @@
  *
  * Architecture:
  * - Configuration comes from environment variables (mta.yaml deployment or CF CLI)
- * - SAP AI Core access via @sap-ai-sdk/orchestration (reads AICORE_SERVICE_KEY or VCAP_SERVICES)
+ * - SAP AI Core access: the service key comes from the aicore binding in VCAP_SERVICES or
+ *   AICORE_SERVICE_KEY, read by srv/lib/llm-factory.ts (llm-agent 27 providers read no env)
  * - MCP destination is resolved via SAP Cloud SDK (same as MCP proxy)
  *
  * Configuration variables:

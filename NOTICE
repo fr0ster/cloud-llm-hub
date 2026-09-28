@@ -15,16 +15,22 @@ Apache-2.0
 LGPL-3.0-only
 
   @mcp-abap-adt/llm-agent         and llm-agent-libs, llm-agent-mcp, llm-agent-rag
-  @mcp-abap-adt/anthropic-llm     and deepseek-llm, openai-llm
+  @mcp-abap-adt/anthropic-llm     and deepseek-llm, openai-llm, sap-aicore-llm
   @mcp-abap-adt/openai-embedder   and ollama-embedder, sap-aicore-embedder
-  @mcp-abap-adt/sap-aicore-llm
   @mcp-abap-adt/qdrant-rag
-
-MIT
-
-  @mcp-abap-adt/adt-clients       and connection, interfaces, logger
+  @mcp-abap-adt/sap-aicore-auth
+  @mcp-abap-adt/adt-clients       and adt-strategies, connection, logger
   @mcp-abap-adt/auth-broker       and auth-providers, auth-stores
   @mcp-abap-adt/header-validator
+  @mcp-abap-adt/interfaces-adt    and interfaces-adt-connection, interfaces-auth,
+                                  interfaces-auth-sap, interfaces-network,
+                                  interfaces-utils
+
+GPL-3.0-only, development only
+
+  @mcp-abap-adt/proxy             a local command-line proxy for development. It is
+                                  a devDependency, runs as a separate process, and
+                                  is not part of the built service (gen/srv).
 
 The LGPL-3.0-only packages are linked at runtime, as ordinary npm dependencies
 resolved from node_modules. Nothing is bundled: this product ships no browser
@@ -33,10 +39,6 @@ those packages, not to the code that links them. Any distribution of this
 product must carry their licence text and leave the recipient able to replace
 them with a modified version — which, given they remain separate packages on
 disk, means replacing a directory.
-
-Several of the MIT packages above are being relicensed to LGPL-3.0-only
-upstream. This notice follows the versions in the lockfile, not the intent, and
-is updated when those versions are adopted.
 
 Two sibling packages are deliberately NOT dependencies of this product:
 @mcp-abap-adt/core, the standalone ADT MCP server (AGPL-3.0-only), and

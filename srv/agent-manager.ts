@@ -47,7 +47,6 @@ import {
 import {
   DagPlanInterpreter,
   InMemoryMetrics,
-  makeLlm,
   SessionManager,
   type SmartAgent,
   SmartAgentBuilder,
@@ -402,10 +401,21 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
 
     // Give tools their full k budget; cap skills at the top SKILL_RAG_K by score.
     // Input rows are score-descending from the inner store, so slicing keeps the best.
-    const capSkills = (rows: RagResult[]) => {
-      const tools = rows.filter((r) => !isSkillId(r.metadata.id)).slice(0, k);
-      const skills = rows
+    // Each collection is added to the context on its own: its tools are capped
+    // at k within that collection, never against the other one. A merged cap
+    // let a write tool that outscores every read tool (Delete* on a $TMP query)
+    // take the read tools' places. Skills are capped once, across both.
+    const capPerCollection = (collections: RagResult[][]) => {
+      const tools = collections.flatMap((rows) =>
+        rows
+          .filter((r) => !isSkillId(r.metadata.id))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, k),
+      );
+      const skills = collections
+        .flat()
         .filter((r) => isSkillId(r.metadata.id))
+        .sort((a, b) => b.score - a.score)
         .slice(0, SKILL_RAG_K);
       return [...tools, ...skills];
     };
@@ -451,7 +461,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // (e.g. a group not mapped in getToolExpositionMap) would bypass role-based
     // filtering and reach every role. Every exposed tool must carry an exposition.
     const allowed = new Set(effectiveExpositions);
-    const filtered = result.value.filter((r) => {
+    const isAllowed = (r: RagResult) => {
       // Skills are instruction TEXT, not callable tools. `exposition` gates tool
       // ACCESS; a skill cannot be invoked, so role-filtering it would only hide
       // rules while changing nothing about what the caller may do. The builder
@@ -476,7 +486,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       return (
         !!r.metadata.exposition && allowed.has(r.metadata.exposition as string)
       );
-    });
+    };
+    const filtered = result.value.filter(isAllowed);
 
     if (filtered.length < result.value.length) {
       log.debug('RAG tool search filtered by exposition', {
@@ -492,7 +503,10 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       });
     }
 
-    return { ok: true as const, value: capSkills(filtered) };
+    const perCollection = parts.map((r) =>
+      (r.ok ? r.value : []).filter(isAllowed),
+    );
+    return { ok: true as const, value: capPerCollection(perCollection) };
   }
 
   async healthCheck() {
@@ -550,7 +564,8 @@ function getToolExpositionMap(): Map<string, string> {
 // and refuses to call SAP when no request connection is present.
 // ---------------------------------------------------------------------------
 
-type AbapConnectionLike = import('@mcp-abap-adt/interfaces').IAbapConnection;
+type AbapConnectionLike =
+  import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection;
 
 interface DumpScope {
   principalHash: string;
@@ -635,6 +650,7 @@ import {
   handleGetDumpSectionCall,
   parseFormattedDumpPayload,
 } from './lib/get-dump-section';
+import { apiKeyCredential, makeHubLlm } from './lib/llm-factory';
 import { loggerAdapter } from './lib/logger';
 import { SapAiCoreEmbedder } from './lib/sap-ai-core-embedder';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
@@ -691,8 +707,8 @@ let llmOnlyHandle: SmartAgentHandle | null = null;
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
 /** Shared LLM instances (updated on model switch) */
-let sharedMainLlm: ReturnType<typeof makeLlm> | null = null;
-let sharedClassifierLlm: ReturnType<typeof makeLlm> | null = null;
+let sharedMainLlm: ReturnType<typeof makeHubLlm> | null = null;
+let sharedClassifierLlm: ReturnType<typeof makeHubLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
@@ -1002,7 +1018,7 @@ function getOrCreateEmbedder(resourceGroup?: string): {
     } else {
       // OpenAI-compatible embedder for openai/anthropic/deepseek providers
       rawEmbedder = new OpenAiEmbedder({
-        apiKey: config.llm.apiKey || '',
+        credential: apiKeyCredential(config.llm.apiKey || ''),
         baseURL: config.llm.baseUrl,
         model: embeddingModel,
       });
@@ -1034,10 +1050,10 @@ async function createToolsRagStore(
 
   const config = getAgentConfig();
   const helperLlm = trackedLlm(
-    await makeLlm(
+    await makeHubLlm(
       {
         provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
         resourceGroup: config.llm.resourceGroup,
@@ -1238,10 +1254,10 @@ async function vectorizeToolDocs(
   if (uncachedTools.length > 0 && cache) {
     const config = getAgentConfig();
     const helperLlm = trackedLlm(
-      await makeLlm(
+      await makeHubLlm(
         {
           provider: config.llm.provider,
-          apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+          apiKey: config.llm.apiKey,
           baseURL: config.llm.baseUrl,
           model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
           resourceGroup: config.llm.resourceGroup,
@@ -2067,7 +2083,7 @@ async function buildEmbeddedMcpAdapter(
   // must receive a per-request connection via connectionALS.
   const context: HandlerContext = {
     connection:
-      null as unknown as import('@mcp-abap-adt/interfaces').IAbapConnection,
+      null as unknown as import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection,
     logger: loggerAdapter,
   };
 
@@ -2175,18 +2191,18 @@ async function buildEmbeddedMcpAdapter(
           ? handler(effectiveContext, args)
           : (handler as unknown as (a: typeof args) => unknown)(args);
 
-      // No cloud-llm-hub-side timeout wrapper. Each SAP call is already bounded
-      // by the adt-clients HTTP timeout (SAP_TIMEOUT_*), and destination
-      // availability is covered by the ProbeDestination reachability check —
-      // a redundant Promise.race here only fought those legitimate limits
-      // (e.g. cutting heavy where-used scans that the ABAP layer allows).
+      // No cloud-llm-hub-side timeout wrapper, and the connector sets none on
+      // an SAP call either: the consumer bounds its own wait by closing the
+      // connection. Destination availability is covered by the ProbeDestination
+      // reachability check; a Promise.race here only cut heavy work the ABAP
+      // layer allows (e.g. where-used scans).
       //
       // Registered before it is awaited. An ADT call is asynchronous in
       // substance: the slot, and the ADT session, must outlive it even when
       // everything waiting on it has stopped.
       const result = await trackCall(Promise.resolve(toolCall));
 
-      // Most ABAP handlers never throw: `@mcp-abap-adt/lib`'s `return_error`
+      // Most ABAP handlers never throw: `@mcp-abap-adt/lib`'s error answer
       // catches the connector's tagged failure and RETURNS
       // `{ isError: true, content: [...] }` — a successful dispatch as far as
       // the `try` above is concerned, so the `catch` below and its `asOutage`
@@ -2259,18 +2275,17 @@ async function buildEmbeddedMcpAdapter(
 
 /** Create shared LLM instances (called once, reused across all agents) */
 function getOrCreateSharedLlms(config: AgentConfig): {
-  mainLlm: ReturnType<typeof makeLlm>;
-  classifierLlm: ReturnType<typeof makeLlm>;
+  mainLlm: ReturnType<typeof makeHubLlm>;
+  classifierLlm: ReturnType<typeof makeHubLlm>;
 } {
   if (!sharedMainLlm) {
     const mainModel = getCurrentModel();
-    sharedMainLlm = makeLlm(
+    sharedMainLlm = makeHubLlm(
       {
         provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         model: mainModel,
-        temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
         whenThrottled: config.llm.whenThrottled,
@@ -2281,10 +2296,10 @@ function getOrCreateSharedLlms(config: AgentConfig): {
   if (!sharedClassifierLlm) {
     const classifierModel =
       process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
-    sharedClassifierLlm = makeLlm(
+    sharedClassifierLlm = makeHubLlm(
       {
         provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         model: classifierModel,
         maxTokens: config.llm.maxTokens,
@@ -2647,13 +2662,12 @@ export async function getSmartAgent(
   // existing handles is simply a no-op when none exist yet.
   const activeModel = getCurrentModel();
   if (requestedModel && requestedModel !== activeModel) {
-    const newLlmPromise = makeLlm(
+    const newLlmPromise = makeHubLlm(
       {
         provider: config.llm.provider,
-        apiKey: config.llm.apiKey || 'sap-ai-sdk-managed',
+        apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         model: requestedModel,
-        temperature: config.llm.temperature,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
         whenThrottled: config.llm.whenThrottled,

@@ -5,7 +5,7 @@
  * with additional CSRF and TLS logging methods for compatibility
  */
 
-import type { ILogger } from '@mcp-abap-adt/interfaces';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils';
 import { defaultLogger } from '@mcp-abap-adt/logger';
 
 /**

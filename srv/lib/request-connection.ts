@@ -19,7 +19,7 @@
  */
 
 import type { SapConfig } from '@mcp-abap-adt/connection';
-import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { createConnection } from './../connections/connectionFactory';
@@ -130,7 +130,7 @@ export async function establishRequestConnection(
     });
     await conn.connect();
 
-    const connection = conn as unknown as IAbapConnection;
+    const connection: IAbapConnection = conn;
     // NOTE: do NOT bind via enterWith here — the ALS store would be lost across
     // the SmartAgent pipeline's async hops. The caller binds it for the whole
     // agent run via runWithRequestConnection(...) (als.run), so tool calls see it.

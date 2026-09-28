@@ -350,14 +350,14 @@ export function registerRagRoutes(
    * while the backend call is still out.
    */
   const leased =
-    (
+    <P extends Record<string, string>>(
       handler: (
-        req: Request,
+        req: Request<P>,
         res: Response,
         lease?: Lease,
       ) => void | Promise<void>,
     ) =>
-    async (req: Request, res: Response): Promise<void> => {
+    async (req: Request<P>, res: Response): Promise<void> => {
       const physId = (req as Request & { _physId?: string })._physId;
       const meta = physId ? registry.getCollection(physId) : null;
       if (meta?.scope !== 'session' || !meta.owner || !meta.sessionId) {
@@ -387,39 +387,42 @@ export function registerRagRoutes(
   // forWrite=true (may create via resolveByName on logical ids) for everything else.
   // canAccess is a separate guard: for user-scoped collections only the owner passes;
   // for global collections read is open but write requires MCP_Admin.
-  router.use('/rag/collections/:id', (req: Request, res: Response, next) => {
-    // PATCH /enabled must use read-mode so it never creates a new collection.
-    const isContentWrite =
-      req.method !== 'GET' &&
-      !req.path.endsWith('/query') &&
-      !req.path.endsWith('/enabled');
+  router.use(
+    '/rag/collections/:id',
+    (req: Request<{ id: string }>, res: Response, next) => {
+      // PATCH /enabled must use read-mode so it never creates a new collection.
+      const isContentWrite =
+        req.method !== 'GET' &&
+        !req.path.endsWith('/query') &&
+        !req.path.endsWith('/enabled');
 
-    const physical = resolveRouteId(
-      registry,
-      req.params.id,
-      getUserId(),
-      sessionIdOf(req),
-      isContentWrite,
-    );
+      const physical = resolveRouteId(
+        registry,
+        req.params.id,
+        getUserId(),
+        sessionIdOf(req),
+        isContentWrite,
+      );
 
-    if (!physical) {
-      error(res, 404, 'Collection not found');
-      return;
-    }
+      if (!physical) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
 
-    (req as Request & { _physId?: string })._physId = physical;
+      (req as Request & { _physId?: string })._physId = physical;
 
-    const meta = registry.getCollection(physical);
-    if (!meta) {
-      error(res, 404, 'Collection not found');
-      return;
-    }
-    const isQuery = req.path.endsWith('/query');
-    const mode: 'read' | 'write' =
-      req.method === 'GET' || isQuery ? 'read' : 'write';
-    if (!canAccess(meta, mode, res)) return;
-    next();
-  });
+      const meta = registry.getCollection(physical);
+      if (!meta) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
+      const isQuery = req.path.endsWith('/query');
+      const mode: 'read' | 'write' =
+        req.method === 'GET' || isQuery ? 'read' : 'write';
+      if (!canAccess(meta, mode, res)) return;
+      next();
+    },
+  );
 
   // GET /v1/rag/collections/:id
   router.get('/rag/collections/:id', (req: Request, res: Response) => {
@@ -600,7 +603,7 @@ export function registerRagRoutes(
   // GET /v1/rag/collections/:id/documents/:did
   router.get(
     '/rag/collections/:id/documents/:did',
-    (req: Request, res: Response) => {
+    (req: Request<{ id: string; did: string }>, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId) {
         error(res, 404, 'Collection not found');
@@ -618,7 +621,7 @@ export function registerRagRoutes(
   // PUT /v1/rag/collections/:id/documents/:did
   router.put(
     '/rag/collections/:id/documents/:did',
-    leased(async (req: Request, res: Response) => {
+    leased(async (req: Request<{ id: string; did: string }>, res: Response) => {
       try {
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
@@ -644,7 +647,7 @@ export function registerRagRoutes(
   // DELETE /v1/rag/collections/:id/documents/:did
   router.delete(
     '/rag/collections/:id/documents/:did',
-    leased(async (req: Request, res: Response) => {
+    leased(async (req: Request<{ id: string; did: string }>, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId) {
         error(res, 404, 'Collection not found');
@@ -796,33 +799,36 @@ export function registerRagRoutes(
   });
 
   // POST /v1/rag/tool/:name — dispatch a single tool call
-  router.post('/rag/tool/:name', async (req: Request, res: Response) => {
-    const name = req.params.name;
-    if (!getRagToolNames().includes(name as never)) {
-      error(res, 404, `Unknown RAG tool: ${name}`);
-      return;
-    }
-    const sid = sessionIdOf(req);
-    // rag_add may create a session collection, so a place is reserved for the
-    // caller's session before it can.
-    const lease = sid
-      ? leaseSession(getUserId(), sid, 'rag', {
-          presented: (req as Request & WithSession).sessionMinted === false,
-        })
-      : undefined;
-    if (lease && isRefusal(lease)) {
-      refuseLease(res, lease);
-      return;
-    }
-    try {
-      const result = await runWithSessionId(sid, () =>
-        dispatchRagTool(registry, name, req.body ?? {}),
-      );
-      json(res, result.ok ? 200 : 400, result);
-    } finally {
-      lease?.release();
-    }
-  });
+  router.post(
+    '/rag/tool/:name',
+    async (req: Request<{ name: string }>, res: Response) => {
+      const name = req.params.name;
+      if (!getRagToolNames().includes(name as never)) {
+        error(res, 404, `Unknown RAG tool: ${name}`);
+        return;
+      }
+      const sid = sessionIdOf(req);
+      // rag_add may create a session collection, so a place is reserved for the
+      // caller's session before it can.
+      const lease = sid
+        ? leaseSession(getUserId(), sid, 'rag', {
+            presented: (req as Request & WithSession).sessionMinted === false,
+          })
+        : undefined;
+      if (lease && isRefusal(lease)) {
+        refuseLease(res, lease);
+        return;
+      }
+      try {
+        const result = await runWithSessionId(sid, () =>
+          dispatchRagTool(registry, name, req.body ?? {}),
+        );
+        json(res, result.ok ? 200 : 400, result);
+      } finally {
+        lease?.release();
+      }
+    },
+  );
 
   log.info('RAG management routes registered', {
     prefix: '/v1/rag',

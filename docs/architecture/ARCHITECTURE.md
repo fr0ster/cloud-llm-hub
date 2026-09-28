@@ -53,7 +53,7 @@ graph LR
         ABAP[SAP ABAP System]
     end
 
-    LLM{{"makeLlm()<br/>one provider per deployment"}}
+    LLM{{"makeHubLlm()<br/>one provider per deployment"}}
 
     subgraph "LLM (LLM_AGENT_PROVIDER)"
         AICORE["SAP AI Core<br/>sap-ai-sdk — default"]
@@ -117,14 +117,14 @@ flowchart LR
 
 | Package | Role | Where used |
 |---------|------|------------|
-| **`lib`** (`^10.0.1`) | ABAP tool surface: `EmbeddableMcpServer` (the MCP server exposing all ABAP tools on the raw `/mcp/stream/http` path) **and** `HandlerExporter` (the destination-free tool corpus the SmartAgent executes in-process). | `mcp-manager.ts` (`EmbeddableMcpServer`), `agent-manager.ts` (`HandlerExporter`) |
+| **`lib`** (`^13.1.0`) | ABAP tool surface: `EmbeddableMcpServer` (the MCP server exposing all ABAP tools on the raw `/mcp/stream/http` path) **and** `HandlerExporter` (the destination-free tool corpus the SmartAgent executes in-process). | `mcp-manager.ts` (`EmbeddableMcpServer`), `agent-manager.ts` (`HandlerExporter`) |
 | **`connection`** | `AbapConnection` interface + base classes that cloud-llm-hub implements | `connections/*` |
-| **`llm-agent`** (`^24.1.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
-| **`llm-agent-libs`** (`^24.1.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
-| **`llm-agent-mcp`** (`^24.1.0`) | `McpClientAdapter` — wraps the embedded MCP client as an `IMcpClient` | `agent-manager.ts` |
+| **`llm-agent`** (`^29.0.0`) | Public interface/contract surface the code programs against — `IRag`, `IMcpClient`, `ISubAgent`, `IFinalizer`, `McpToolResult`, `ToolCallRecord`, etc. (re-exports `interfaces` + `types`) | Throughout `srv/` (type imports) |
+| **`llm-agent-libs`** (`^29.0.0`) | `SmartAgent`, `SmartAgentBuilder`, `DagPlanInterpreter`, `SmartAgentSubAgent` — the SmartAgent + RAG + DAG-coordinator **implementation** | `agent-manager.ts` |
+| **`llm-agent-mcp`** (`^29.0.0`) | `McpClientAdapter` — wraps the embedded MCP client as an `IMcpClient` | `agent-manager.ts` |
 | **`adt-clients`** (via `lib`, not declared here) | ADT HTTP clients underlying the ABAP tools | `mcp-abap-adt` (transitive) |
 | **`header-validator`** | Validates SAP auth headers for direct connections | `mcp-manager.ts` |
-| **`interfaces`** (`^11.3.0`) | Shared contracts: `ILogger`, `IAbapConnection`, `HEADER_*` constants | Throughout `srv/` |
+| **`interfaces-*`** (`adt-connection`, `auth`, `network`, `utils`) | Shared contracts: `IAbapConnection`, `ILogger`, `HEADER_*` constants — the split successors of the deprecated `interfaces` facade | Throughout `srv/` |
 | **`logger`** | Base logging implementation | `lib/logger.ts` |
 
 ### Implications for developers
@@ -132,7 +132,7 @@ flowchart LR
 - **Adding/modifying MCP tools** (e.g., new ABAP read operation) → change `mcp-abap-adt`, NOT this project
 - **Adding/modifying transport, auth, routing, BTP integration** → change this project (`srv/`)
 - **Adding new connection type** (e.g., new auth method) → implement `AbapConnection` interface in `srv/connections/`, register in `connectionFactory.ts`
-- **Changing the LLM provider** → set `LLM_AGENT_PROVIDER` (`sap-ai-sdk` default / `openai` / `anthropic` / `deepseek`) plus `LLM_AGENT_API_KEY` / `LLM_AGENT_BASE_URL` (read in `agent-config.ts`); the provider client is built by `makeLlm` from `@mcp-abap-adt/llm-agent-libs`. SAP AI Core binding specifics live in `agent-manager.ts`.
+- **Changing the LLM provider** → set `LLM_AGENT_PROVIDER` (`sap-ai-sdk` default / `openai` / `anthropic` / `deepseek`) plus `LLM_AGENT_API_KEY` / `LLM_AGENT_BASE_URL` (read in `agent-config.ts`); the provider client is built by the hub's own `makeHubLlm` (`srv/lib/llm-factory.ts`) — llm-agent 27 no longer ships `makeLlm`. SAP AI Core credentials: the `aicore`/`ai-core` binding in `VCAP_SERVICES`, else `AICORE_SERVICE_KEY` (or `AICORE_*`), turned into a credential by `serviceKeyCredential` (`@mcp-abap-adt/sap-aicore-auth`); `openai`/`anthropic`/`deepseek` use `staticApiKey(LLM_AGENT_API_KEY)`. One memoized credential per account = one 429 quota bucket.
 - **Updating `mcp-abap-adt` version** → update in `package.json`, then verify both `@mcp-abap-adt/lib` consumers still match: the `EmbeddableMcpServer` API on the raw MCP path (`mcp-manager.ts`) **and** the `HandlerExporter` tool corpus on the agent path (`agent-manager.ts` — tool listing/exec and its config-dependent tool set), run integration tests
 
 ---
@@ -191,8 +191,7 @@ cloud-llm-hub/
 │   │   ├── connectionFactory.ts  # Factory: picks CloudSdk vs Direct connection
 │   │   ├── CloudSdkAbapConnection.ts  # BTP Destination-based connection
 │   │   ├── destinationResolver.ts     # SAP Cloud SDK destination resolution
-│   │   ├── connectivityProxy.ts       # On-premise Cloud Connector support
-│   │   └── BtpOnPremDestinationConnection.ts  # On-prem connection via proxy
+│   │   └── connectivityProxy.ts       # Connectivity headers: shouldUseConnectivity / extractConnectivityContext
 │   └── lib/                      # Shared utilities + honesty-controller support
 │       ├── errorUtils.ts         # Centralized error handling
 │       ├── logger.ts / log-mask.ts    # Logger adapter wrapping @mcp-abap-adt/logger + secret masking
@@ -293,7 +292,6 @@ graph TD
         ━━━━━━━━━
         connectionFactory
         CloudSdkAbapConn
-        BtpOnPremConn
         destinationResolver
         connectivityProxy"]
         I["agent-config.ts
@@ -356,11 +354,10 @@ graph TD
 | **Honesty Reviewer** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer,step-gate,write-guardrail}.ts` | Result-based honesty guard (v6.28+). `recording-mcp-client.ts` decorates `IMcpClient` to capture each tool's `McpToolResult` per `traceId`; `reviewer-core.ts` + `notice-finalizer.ts` implement `IFinalizer`/`NoticeFinalizer` comparing response claims against captured results; `notify-policy.ts` decides notice wording; `step-reviewer.ts` provides `evaluateGated`, which `NoticeFinalizer` invokes: a deterministic check (claims vs. tool RESULTS, plus a read claimed with zero calls) and, on every step, an LLM reviewer asking only whether the response delivered what the USER asked — it is forbidden to reason about tools, since every false notice came from doing so; `write-guardrail.ts` checks the write tool's result envelope. The controller wiring itself lives in `agent-manager.ts` (`buildAgentForDestination` → `builder.withDagCoordinator({ …, finalizer: new NoticeFinalizer(recMcp, …) })`). Kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`. |
 | **Agent Config** | `agent-config.ts` | Singleton that assembles runtime config from `LLM_AGENT_*` env vars: provider/auth (`LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`, `LLM_AGENT_BASE_URL`, `LLM_AGENT_RESOURCE_GROUP`), model params (`LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`), agent behaviour (`LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_HISTORY_RECENCY_WINDOW`), and MCP wiring (`LLM_AGENT_MCP_DESTINATION`, `LLM_AGENT_MCP_ENDPOINT`). Also reads the AI Core service binding from `VCAP_SERVICES`. See §12 for per-var semantics. |
 | **Auth Service** | `auth.ts` + `.cds` | Standalone CAP OData service annotated `@path: 'auth'` (mounted at `/odata/v4/auth/`). `CheckAuth()` returns the caller's identity, `CheckRoles(required)` reports which roles they hold — a **diagnostic/introspection endpoint** clients can call directly. It is **not** in the `/mcp/*` or `/v1/*` request path — those are gated by `server.ts`'s `requireMcpRole` middleware (`user.is()`), not by this service. |
-| **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → `createAbapConnection` (direct). |
+| **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → direct connector: Basic → `AdtOnPremConnector` + `BasicAuthProvider` + `OnPremHttpTransport`; JWT → `AdtCloudConnector` + `TokenAuthProvider` + `CloudHttpTransport`; any other auth type throws. |
 | **CloudSdk Connection** | `connections/CloudSdkAbapConnection.ts` | `AbapConnection` implementation using `executeHttpRequest` from SAP Cloud SDK. Auto destination resolution, auth, proxy, CSRF token management. |
 | **Destination Resolver** | `connections/destinationResolver.ts` | Resolves BTP Destination to `SapConfig` via `getDestination()`. Handles `BasicAuthentication`, `OAuth2ClientCredentials`, `OAuth2SAMLBearerAssertion`. |
-| **Connectivity Proxy** | `connections/connectivityProxy.ts` | On-premise support: loads Connectivity service credentials, obtains tokens, builds proxy config for Cloud Connector. |
-| **BTP OnPrem Connection** | `connections/BtpOnPremDestinationConnection.ts` | Extends `OnPremAbapConnection` with BTP proxy headers (`Proxy-Authorization`, `SAP-Connectivity-SCC-Location_ID`). |
+| **Connectivity Proxy** | `connections/connectivityProxy.ts` | Reads the connectivity request headers only: `shouldUseConnectivity()` (`x-sap-connectivity-mode: onprem`) and `extractConnectivityContext()` (location ID, principal). On-prem traffic itself goes through `CloudSdkAbapConnection`. |
 | **Error Utils** | `lib/errorUtils.ts` | `logErrorSafely()`, `formatErrorMessage()`, `createErrorResponse()`. Handles AxiosError, Cloud SDK errors, and standard errors safely. |
 | **Logger** | `lib/logger.ts` | Wraps `@mcp-abap-adt/logger` with extended CSRF/TLS methods. Exports `logger` and `loggerAdapter` (ILogger interface). |
 | **Env Setup** | `env-setup.ts` | **Must be imported first.** Sets `MCP_SKIP_AUTO_START`, `MCP_SKIP_ENV_LOAD`. Loads `.env` only in local dev. |
@@ -414,7 +411,6 @@ graph TB
         cloud_sdk_conn["CloudSdkAbapConnection.ts"]
         dest_resolver["destinationResolver.ts"]
         conn_proxy["connectivityProxy.ts"]
-        btp_onprem["BtpOnPremDestinationConnection.ts"]
         conn_index["index.ts (barrel)"]
     end
 
@@ -428,7 +424,7 @@ graph TB
         semaphore_ts["semaphore.ts"]
         agent_mgr_libs["dump-buffer/dump-parser/get-dump-section,
         skills-pool/composite-skill-manager,
-        sap-ai-core-embedder, btp-destinations,
+        sap-ai-core-embedder, llm-factory, btp-destinations,
         cloud-local-tools (lib/) + srv/rag-collections.ts
         (grouped agent-manager helpers)"]
     end
@@ -438,7 +434,16 @@ graph TB
         EmbeddableMcpServer, HandlerExporter"]
         mcp_adt_conn["@mcp-abap-adt/connection"]
         mcp_adt_hv["@mcp-abap-adt/header-validator"]
-        mcp_adt_iface["@mcp-abap-adt/interfaces"]
+        mcp_adt_iface_adt["@mcp-abap-adt/interfaces-adt-connection
+        IAbapConnection, IAdtWireResponse"]
+        mcp_adt_iface_auth["@mcp-abap-adt/interfaces-auth
+        ITokenRefresher"]
+        mcp_adt_iface_net["@mcp-abap-adt/interfaces-network
+        HEADER_* constants"]
+        mcp_adt_iface_utils["@mcp-abap-adt/interfaces-utils
+        ILogger"]
+        mcp_adt_aicore_auth["@mcp-abap-adt/sap-aicore-auth
+        serviceKeyCredential"]
         mcp_adt_logger["@mcp-abap-adt/logger"]
         mcp_adt_llm_agent["@mcp-abap-adt/llm-agent
         ISubAgent, IFinalizer, IMcpClient (contracts/types)"]
@@ -486,7 +491,7 @@ graph TB
     mcp_manager --> mcp_adt_core
     mcp_manager --> mcp_adt_conn
     mcp_manager --> mcp_adt_hv
-    mcp_manager --> mcp_adt_iface
+    mcp_manager --> mcp_adt_iface_net
     mcp_manager --> mcp_sdk
     mcp_manager --> sap_cds
 
@@ -513,7 +518,7 @@ graph TB
 
     %% request-connection.ts dependencies
     request_conn --> mcp_adt_conn
-    request_conn --> mcp_adt_iface
+    request_conn --> mcp_adt_iface_adt
     request_conn --> conn_factory
     request_conn --> dest_resolver
     request_conn --> log_mask
@@ -530,6 +535,7 @@ graph TB
     agent_manager --> dest_resolver
     agent_manager --> logger_mod
     agent_manager --> agent_mgr_libs
+    agent_mgr_libs --> mcp_adt_aicore_auth
     agent_manager --> fixed_planner
     agent_manager --> notice_finalizer
     agent_manager --> recording_mcp
@@ -560,11 +566,14 @@ graph TB
     %% connectionFactory.ts dependencies
     conn_factory --> cloud_sdk_conn
     conn_factory --> mcp_adt_conn
+    conn_factory --> mcp_adt_iface_adt
+    conn_factory --> mcp_adt_iface_auth
     conn_factory --> logger_mod
 
     %% CloudSdkAbapConnection.ts dependencies
     cloud_sdk_conn --> env_setup
     cloud_sdk_conn --> mcp_adt_conn
+    cloud_sdk_conn --> mcp_adt_iface_adt
     cloud_sdk_conn --> sap_cloud_sdk
     cloud_sdk_conn --> logger_mod
     cloud_sdk_conn --> error_utils
@@ -575,18 +584,12 @@ graph TB
     dest_resolver --> sap_xsenv
     dest_resolver --> error_utils
 
-    %% connectivityProxy.ts dependencies
-    conn_proxy --> sap_xsenv
-    conn_proxy --> btp_onprem
-    conn_proxy --> mcp_adt_conn
-
-    %% BtpOnPremDestinationConnection.ts dependencies
-    btp_onprem --> mcp_adt_conn
-    btp_onprem --> logger_mod
+    %% connectivityProxy.ts: header helpers only, re-exported by the barrel
+    conn_index --> conn_proxy
 
     %% logger.ts dependencies
     logger_mod --> mcp_adt_logger
-    logger_mod --> mcp_adt_iface
+    logger_mod --> mcp_adt_iface_utils
 
     %% error_utils dependencies
     error_utils --> mcp_adt_conn
@@ -877,8 +880,9 @@ graph TB
         DIRECT_PATH --> HV[header-validator<br/>validateAuthHeaders]
         HV --> DIRECT_AUTH{Auth?}
 
-        DIRECT_AUTH -->|Basic| BASIC_CONN[createAbapConnection<br/>username/password via axios]
-        DIRECT_AUTH -->|JWT| JWT_CONN[createAbapConnection<br/>Bearer token via axios]
+        DIRECT_AUTH -->|Basic| BASIC_CONN[AdtOnPremConnector<br/>BasicAuthProvider + OnPremHttpTransport]
+        DIRECT_AUTH -->|JWT| JWT_CONN[AdtCloudConnector<br/>TokenAuthProvider + CloudHttpTransport]
+        DIRECT_AUTH -->|other| NO_CONN[throws<br/>use a BTP destination]
     end
 
     style DEST_PATH fill:#2563eb,color:#fff
@@ -903,7 +907,7 @@ classDiagram
         +reset()
         +getBaseUrl() string
         +getAuthHeaders() Record
-        +makeAdtRequest(options) IAdtResponse
+        +makeAdtRequest(options) IAdtWireResponse
     }
 
     class CloudSdkAbapConnection {
@@ -915,25 +919,21 @@ classDiagram
         -fetchCsrfToken(url)
     }
 
-    class BtpOnPremDestinationConnection {
-        -proxySettings: ConnectivityProxyConfig
-        +updateProxyAuthorization(header)
-        +updatePrincipalPropagation(token)
-        -buildProxyAgent()
+    class AdtOnPremConnector {
+        <<from @mcp-abap-adt/connection>>
+        -auth: BasicAuthProvider
+        -transport: OnPremHttpTransport
     }
 
-    class BaseAbapConnection {
+    class AdtCloudConnector {
         <<from @mcp-abap-adt/connection>>
-    }
-
-    class OnPremAbapConnection {
-        <<from @mcp-abap-adt/connection>>
+        -auth: TokenAuthProvider
+        -transport: CloudHttpTransport
     }
 
     AbapConnection <|.. CloudSdkAbapConnection
-    AbapConnection <|.. BaseAbapConnection
-    OnPremAbapConnection <|-- BtpOnPremDestinationConnection
-    BaseAbapConnection <|-- OnPremAbapConnection
+    AbapConnection <|.. AdtOnPremConnector
+    AbapConnection <|.. AdtCloudConnector
 
     class connectionFactory {
         +createConnection(options) AbapConnection
@@ -942,7 +942,8 @@ classDiagram
     }
 
     connectionFactory --> CloudSdkAbapConnection : destinationName present
-    connectionFactory --> BaseAbapConnection : direct URL
+    connectionFactory --> AdtOnPremConnector : direct URL + Basic
+    connectionFactory --> AdtCloudConnector : direct URL + JWT
 ```
 
 ---
@@ -1100,7 +1101,7 @@ graph TB
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts`, `agent-manager.ts` | BTP Destination with two roles: (1) a "warm this first" startup hint (NOT privileged; does not block startup), and (2) the **implicit default destination** `getSmartAgent()` uses when a request passes no destination (`requestedDestination \|\| config.mcp.destination`, `agent-manager.ts`). Unset → LLM-only mode at startup |
 | `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Max ms `getSmartAgent` waits for a destination to vectorize before erroring (default: 90000) |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | **Inert.** Read into `config.mcp.endpoint` and logged at startup, but no runtime path consumes it — the agent calls embedded handlers, not an MCP URL. Setting it changes nothing |
-| `LLM_AGENT_RESOURCE_GROUP` | `agent-config.ts`, `agent-manager.ts` | AI Core resource group; read into `llm.resourceGroup` (`agent-config.ts`) and passed to `makeLlm`, the embedder, and the tool-RAG store / embedding-bundle fingerprint (`agent-manager.ts`). Default: `default` |
+| `LLM_AGENT_RESOURCE_GROUP` | `agent-config.ts`, `agent-manager.ts` | AI Core resource group; read into `llm.resourceGroup` (`agent-config.ts`) and passed to `makeHubLlm`, the embedder, and the tool-RAG store / embedding-bundle fingerprint (`agent-manager.ts`). Default: `default` |
 | `LLM_AGENT_PROVIDER` | `agent-config.ts` | LLM provider (`sap-ai-sdk` \| `openai` \| `anthropic` \| `deepseek`, default: `sap-ai-sdk`) |
 | `LLM_AGENT_API_KEY` | `agent-config.ts` | API key for non-SAP LLM providers (OpenAI, Anthropic, DeepSeek) |
 | `LLM_AGENT_BASE_URL` | `agent-config.ts` | Base URL for LLM provider API (required for OpenAI-compatible endpoints) |
@@ -1139,9 +1140,13 @@ graph TB
 graph TB
     subgraph "@mcp-abap-adt ecosystem"
         CORE["@mcp-abap-adt/lib<br/>EmbeddableMcpServer (raw MCP),<br/>HandlerExporter (agent in-process)"]
-        CONN_PKG["@mcp-abap-adt/connection<br/>AbapConnection, SapConfig,<br/>createAbapConnection"]
+        CONN_PKG["@mcp-abap-adt/connection<br/>AbapConnection, SapConfig,<br/>AdtOnPremConnector, AdtCloudConnector"]
         HV_PKG["@mcp-abap-adt/header-validator<br/>validateAuthHeaders"]
-        IFACE["@mcp-abap-adt/interfaces<br/>Header constants, ILogger,<br/>IAdtResponse"]
+        IFACE_ADT["@mcp-abap-adt/interfaces-adt-connection<br/>IAbapConnection, IAdtWireResponse"]
+        IFACE_AUTH["@mcp-abap-adt/interfaces-auth<br/>ITokenRefresher"]
+        IFACE_NET["@mcp-abap-adt/interfaces-network<br/>HEADER_* constants"]
+        IFACE_UTILS["@mcp-abap-adt/interfaces-utils<br/>ILogger"]
+        AICORE_AUTH["@mcp-abap-adt/sap-aicore-auth<br/>serviceKeyCredential"]
         LOG_PKG["@mcp-abap-adt/logger<br/>defaultLogger"]
         LLM_PKG["@mcp-abap-adt/llm-agent<br/>ISubAgent, IFinalizer,<br/>IMcpClient (contracts/types)"]
         LLM_MCP_PKG["@mcp-abap-adt/llm-agent-mcp<br/>McpClientAdapter"]

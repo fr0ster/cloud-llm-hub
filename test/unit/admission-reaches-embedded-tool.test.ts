@@ -79,8 +79,8 @@ jest.mock('@mcp-abap-adt/lib/handlers', () => {
 });
 // One LLM for every role, answering by what it is offered: a call to the first
 // offered tool until a tool result is in the conversation, plain text otherwise.
-jest.mock('@mcp-abap-adt/llm-agent-libs', () => {
-  const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');
+jest.mock('../../srv/lib/llm-factory', () => {
+  const actual = jest.requireActual('../../srv/lib/llm-factory');
   const answer = (
     messages: Array<{ role: string }>,
     tools?: Array<{ name: string }>,
@@ -115,7 +115,7 @@ jest.mock('@mcp-abap-adt/llm-agent-libs', () => {
       yield answer(messages, tools);
     },
   };
-  return { ...actual, makeLlm: async () => llm };
+  return { ...actual, makeHubLlm: async () => llm };
 });
 
 process.env.LLM_AGENT_PROVIDER = 'openai';

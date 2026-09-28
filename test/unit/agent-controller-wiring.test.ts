@@ -6,7 +6,7 @@
  * their RESULTS — are captured), and the SAME instance handed to the
  * `NoticeFinalizer` so its ground truth reflects what the worker actually
  * ran. A live build needs AI Core creds this environment does not have, so
- * `SmartAgentBuilder` and `makeLlm` are mocked (same technique as
+ * `SmartAgentBuilder` and `makeHubLlm` are mocked (same technique as
  * `executor-worker.test.ts`) to capture what the build path DOES, without
  * any network/model work.
  */
@@ -60,9 +60,13 @@ jest.mock('@mcp-abap-adt/llm-agent-libs', () => {
     SmartAgentBuilder: jest
       .fn()
       .mockImplementation(() => makeChainableBuilder()),
-    makeLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
   };
 });
+
+jest.mock('../../srv/lib/llm-factory', () => ({
+  ...jest.requireActual('../../srv/lib/llm-factory'),
+  makeHubLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
+}));
 
 import { DagPlanInterpreter } from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';

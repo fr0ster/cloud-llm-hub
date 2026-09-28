@@ -9,7 +9,7 @@
  *   and concurrent traceIds never cross-contaminate.
  */
 
-import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { safeStop } from '../../srv/lib/request-connection';

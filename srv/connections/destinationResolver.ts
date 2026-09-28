@@ -196,8 +196,6 @@ async function buildSapConfigFromDestination(
     sapConfig.client = sapClient;
   }
 
-  // For on-premise connectivity (Cloud Connector), we need username/password
-  // This is handled separately in BtpOnPremDestinationConnection
   // For CloudSdkAbapConnection, executeHttpRequest gets credentials from destination automatically
 
   // For Principal Propagation, JWT token is passed to executeHttpRequest via destination options

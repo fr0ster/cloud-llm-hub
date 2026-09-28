@@ -62,8 +62,20 @@
 
 **How it works:**
 
+`createAbapConnection` is gone (removed in connection 6.0). The caller picks the connector by auth
+type — see `srv/connections/connectionFactory.ts`:
+
+- **Basic** → `AdtOnPremConnector` + `BasicAuthProvider` + `OnPremHttpTransport`
+- **JWT** → `AdtCloudConnector` + `TokenAuthProvider` + `CloudHttpTransport`
+- **anything else** → throws (use a BTP destination)
+
 ```typescript
-import { createAbapConnection, SapConfig } from '@mcp-abap-adt/connection';
+import {
+  AdtOnPremConnector,
+  BasicAuthProvider,
+  OnPremHttpTransport,
+  type SapConfig,
+} from '@mcp-abap-adt/connection';
 
 const config: SapConfig = {
   url: 'https://my-abap-system.com:443',
@@ -73,7 +85,14 @@ const config: SapConfig = {
   client: '100',
 };
 
-const connection = createAbapConnection(config);
+const wire = { client: config.client, baseUrl: config.url };
+const connection = new AdtOnPremConnector(
+  config,
+  new BasicAuthProvider(config.username ?? '', config.password ?? ''),
+  new OnPremHttpTransport(() => ({}), logger, wire),
+  logger,
+  sessionId,
+);
 ```
 
 **Technical details:**
