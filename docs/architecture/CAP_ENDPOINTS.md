@@ -295,7 +295,7 @@ For service-to-service integrations via `client_credentials`, the deployment pro
 | `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | [`calm-dump-analyzer`](../examples/calm-dump-analyzer/) (dumps, SQL, profiling) |
 | `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | Internal CI tooling (CreateUnitTest, activation) |
 
-`MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add a new entry to `grant-as-authority-to-apps` on the `MCP_Full` scope in `xs-security.json`, provision the consumer xsuaa via `mta.yaml`, and document the exception in `docs/LESSONS_LEARNED.md`.
+`MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add a new entry to `grant-as-authority-to-apps` on the `MCP_Full` scope in `xs-security.json`, provision the consumer xsuaa via `mta.yaml`.
 
 ### How the cross-app scope grant works
 

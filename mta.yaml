@@ -24,7 +24,7 @@ parameters:
   LLM_AGENT_HISTORY_RECENCY_WINDOW:
   LLM_AGENT_RAG_QUERY_K: "15"
   LLM_AGENT_PIPELINE_MODE: "default"
-  # System-to-destination mapping: "DEV.100=S4HANA_DEV,QAS.200=S4HANA_QAS"
+  # System-to-destination mapping: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"
   DESTINATION_MAPPING: ""
   # AI Core credentials: set via cf set-env (not in .mtaext — secrets!)
   # cf set-env cloud-llm-hub-srv AICORE_AUTH_URL "https://..."
