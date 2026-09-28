@@ -317,7 +317,6 @@ function checkRoutes(file, lines, routes) {
  * at it and say so.
  */
 const NAMED_THOUGH_ABSENT = new Map([
-  ['CLAUDE.md', { core: 1 }],
   ['docs/usage/GETTING_STARTED.md', { core: 1 }],
   ['docs/architecture/EXTENSION_GUIDE.md', { core: 1 }],
   [
