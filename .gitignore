@@ -50,7 +50,6 @@ sk.json
 !tsconfig.json
 !xs-security.json
 !**/xs-security.json
-!docs/examples/abap-dump-monitor/app/**/manifest.json
 !**/package.json
 !srv/tool-intents.json
 !srv/tool-embeddings.json
@@ -76,11 +75,8 @@ docs/tutorials/*.pdf
 .codex
 .claude/
 docs/deployment/*.pdf
-docs/examples/calm-dump-analyzer/mta_archives/*
 .mtaext.no_aicore
 .mtaext.staging
-docs/examples/calm-dump-analyzer/mta_archives/calm-dump-analyzer_1.0.0.mtar
-docs/tutorials/SDLC Accelerators*.pptx
 
 # Python
 __pycache__/

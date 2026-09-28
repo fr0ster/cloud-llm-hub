@@ -96,7 +96,9 @@ function transform(doc, root) {
     res.name = toStaging(res.name);
     const params = res.parameters || {};
     const cfg = params.config;
-    if (cfg?.xsappname) cfg.xsappname = toStaging(cfg.xsappname);
+    // The whole config, not only xsappname: the scopes it carries grant
+    // authority to the consumer apps by name, and staging must grant its own.
+    if (cfg) deepRename(cfg);
     for (const dep of res.requires || []) dep.name = toStaging(dep.name);
 
     // Regenerate any referenced xs-security*.json with the rename applied,

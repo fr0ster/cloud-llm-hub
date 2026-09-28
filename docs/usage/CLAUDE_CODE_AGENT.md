@@ -124,16 +124,16 @@ x-sap-destination: <DESTINATION>
 
 `<DESTINATION>` is the BTP destination name the caller must give you. Common values:
 
-- `S4HANA_DEV` — on-premise DEV via the local acme-sandbox proxy
-- `S4HANA_CLOUD` — acme-prod subaccount destination
+- `S4HANA_DEV` — an on-premise system reached through the local proxy
+- `S4HANA_CLOUD` — a destination in a cloud subaccount
 
 If the caller's prompt does not contain a destination name, do NOT guess. Reply
 with `ERROR: missing x-sap-destination — caller must specify the destination` and stop.
 
 ## Precondition — proxy must be running on the right subsystem
 
-127.0.0.1:3001 is the user's local approuter, fronting a proxy (typically
-acme-sandbox). Before invoking, the parent agent must have confirmed:
+127.0.0.1:3001 is the user's local approuter, fronting a local proxy
+(`@mcp-abap-adt/proxy`). Before invoking, the parent agent must have confirmed:
 
 1. The proxy is up — port 3001 is open.
 2. The proxy is pointing at the BTP subaccount that hosts the named destination.

@@ -1,30 +1,6 @@
 {
   "xsappname": "cloud-llm-hub-{space-guid}",
   "tenant-mode": "shared",
-  "scopes": [
-    {
-      "name": "$XSAPPNAME.MCP_Reader",
-      "description": "Read-only access to ABAP objects and search"
-    },
-    {
-      "name": "$XSAPPNAME.MCP_Analyst",
-      "description": "Read access plus system analysis tools (SQL, AST, profiling, dumps)",
-      "grant-as-authority-to-apps": [
-        "cloud-llm-hub-analyst-consumer-00000000-0000-0000-0000-000000000000!t000001"
-      ]
-    },
-    {
-      "name": "$XSAPPNAME.MCP_Developer",
-      "description": "CRUD operations via compact handlers plus read and system tools",
-      "grant-as-authority-to-apps": [
-        "cloud-llm-hub-developer-consumer-00000000-0000-0000-0000-000000000000!t000001"
-      ]
-    },
-    {
-      "name": "$XSAPPNAME.MCP_Full",
-      "description": "Full access with per-object granular CRUD handlers"
-    }
-  ],
   "role-templates": [
     {
       "name": "MCP_Reader",

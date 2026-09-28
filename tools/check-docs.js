@@ -323,13 +323,6 @@ const NAMED_THOUGH_ABSENT = new Map([
     'docs/superpowers/plans/2026-08-31-abap-cloud-session-lifecycle.md',
     { core: 1 },
   ],
-  // Lessons record what was true when they were written. Rewriting them to
-  // today's package names would destroy the evidence they exist to keep.
-  [
-    'docs/lessons/2026-06-11-update-lock-stateless-put-basis-version.md',
-    { core: 1 },
-  ],
-  ['docs/lessons/2026-06-29-where-used-ns-prefix-cld.md', { core: 1 }],
 ]);
 
 function checkScopedPackages(file, lines, installed) {

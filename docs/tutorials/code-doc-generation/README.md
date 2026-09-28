@@ -20,8 +20,8 @@ existing ABAP object
 ```
 
 A different target object yields a different `doc-task`, which yields a different plan and
-final spec. The walkthrough below uses `ZDEMO_REPORT` as the example — substitute your
-own ABAP object (your existing PROG / CLAS / FUGR) and the same flow applies.
+final spec. The walkthrough below uses `<TARGET>` for the object — substitute your own ABAP object
+(an existing PROG / CLAS / FUGR) and the same flow applies.
 
 **System:** SAP S/4HANA (on-premise) via cloud-llm-hub
 **Skill:** Upload `skills/code-doc-generation.md` to a RAG collection before starting
@@ -119,7 +119,7 @@ output format, and any constraints.
 ### Start the conversation
 
 > Use the `<your-collection>` RAG collection for all artifacts in this tutorial.
-> Target: document the ABAP development `ZDEMO_REPORT`.
+> Target: document the ABAP development `<TARGET>`.
 > Format: use `tech-spec-structure` from RAG.
 > Constraints: customer namespace is `Z*`. Document the report and its includes only —
 > do not chase external dependencies into other packages unless they are referenced in
@@ -295,7 +295,7 @@ Then:
 **Your role:** editor. **AI's role:** technical writer.
 **Input:** `doc-task` + `tech-spec-structure` + all `evidence-§N` artifacts (from RAG).
 **Output:** The final document, saved as `tech-spec` in RAG and as a file under
-`examples/<target>/tech-spec.md` (the example folder for this tutorial run).
+`<target>/tech-spec.md` in your working folder.
 **Transformation:** evidence + template shape → narrative document.
 
 ### Ask for the assembly
@@ -303,7 +303,7 @@ Then:
 > Using `tech-spec-structure` for the shape and `evidence-§1`..`evidence-§9` for the
 > content, produce the final technical specification for the target named in `doc-task`.
 > Save the result as `tech-spec` in RAG and write the file
-> `examples/ZDEMO_REPORT/tech-spec.md`. Cite every claim — line references from the
+> `<TARGET>/tech-spec.md`. Cite every claim — line references from the
 > evidence artifacts.
 
 ### Review the result
@@ -335,7 +335,7 @@ Before declaring done:
 
 ### Export
 
-The final file lives in `examples/<target>/tech-spec.md`. Commit it as the canonical
+The final file lives in `<target>/tech-spec.md`. Commit it as the canonical
 record of what this object does, signed by you (the verifier).
 
 ---
@@ -352,17 +352,3 @@ After this tutorial you know how to:
 
 The key idea: **AI is fast at reading and assembling; it is also fast at fabricating.
 The only protection is your citation discipline.** Make every row prove itself.
-
----
-
-## Example run
-
-See `examples/ZDEMO_REPORT/` for a complete run of this tutorial on a real ABAP
-report. The folder contains the four artifacts (`doc-task`, `analysis-plan`,
-`evidence-§N`, `tech-spec`) and a slide deck (`deck-simple/`) summarising the run.
-
-> **Note on system access.** `ZDEMO_REPORT` lives in system DEV. To run this
-> tutorial against DEV from cloud-llm-hub, route requests through the `acme-sandbox`
-> proxy (start it locally, point cloud-llm-hub at it, override the destination header
-> for the target system). The substantive flow of the tutorial does not depend on the
-> proxy — any reachable SAP system works.

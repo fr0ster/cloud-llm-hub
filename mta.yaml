@@ -33,9 +33,13 @@ parameters:
   # cf set-env cloud-llm-hub-srv AICORE_BASE_URL "https://api.ai..."
   # Not needed when AI Core service binding exists (VCAP_SERVICES takes priority)
   #
-  # CF landscape and approuter route host (override in .mtaext per subaccount)
-  CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
+  # CF landscape and approuter route host. CF_LANDSCAPE has no default: each
+  # deployment's .mtaext sets its own (e.g. "cfapps.eu10.hana.ondemand.com").
+  CF_LANDSCAPE:
   APPROUTER_HOST: "cloud-llm-hub"
+parameters-metadata:
+  CF_LANDSCAPE:
+    optional: false
 build-parameters:
   before-all:
     - builder: custom
@@ -62,8 +66,8 @@ modules:
       memory: 2048M
       disk-quota: 1024M
       # Explicit per-subaccount route so the srv URL reflects the subaccount
-      # (e.g. acme-subaccount-cloud-llm-hub-srv) instead of the generic
-      # CF default org-name route (acme-org...-sn-<random-guid>), which is
+      # (e.g. <subaccount>-cloud-llm-hub-srv) instead of the generic
+      # CF default org-name route (<org-name>-sn-<random-guid>), which is
       # confusing (looks like another account) and unstable across redeploys.
       # The proxy targetUrl points here, so a stable, named route matters.
       routes:
@@ -151,6 +155,25 @@ resources:
       config:
         xsappname: cloud-llm-hub-${space-guid}
         tenant-mode: shared
+        # Scopes live here, not in xs-security.json, because their cross-app
+        # grants name the consumer xsuaa apps, whose xsappname carries the space
+        # guid that only the deployment knows. xsuaa resolves the tenant suffix
+        # of $XSAPPNAME(application,<xsappname>) itself, so nothing here names a
+        # subaccount. The consumers accept the grant with
+        # $ACCEPT_GRANTED_AUTHORITIES (xs-security-*-consumer.json).
+        scopes:
+          - name: $XSAPPNAME.MCP_Reader
+            description: Read-only access to ABAP objects and search
+          - name: $XSAPPNAME.MCP_Analyst
+            description: Read access plus system analysis tools (SQL, AST, profiling, dumps)
+            grant-as-authority-to-apps:
+              - $XSAPPNAME(application,cloud-llm-hub-analyst-consumer-${space-guid})
+          - name: $XSAPPNAME.MCP_Developer
+            description: CRUD operations via compact handlers plus read and system tools
+            grant-as-authority-to-apps:
+              - $XSAPPNAME(application,cloud-llm-hub-developer-consumer-${space-guid})
+          - name: $XSAPPNAME.MCP_Full
+            description: Full access with per-object granular CRUD handlers
     requires:
       - name: app-api
   - name: cloud-llm-hub-destination

@@ -94,7 +94,7 @@ case "${HTTP_CODE}" in
     ;;
   401|403)
     echo ""
-    echo "FAIL: token rejected (HTTP ${HTTP_CODE}) — see docs/lessons/2026-04-19-xsuaa-cross-app-grants.md"
+    echo "FAIL: token rejected (HTTP ${HTTP_CODE}) — see docs/architecture/CAP_ENDPOINTS.md, "How the cross-app scope grant works""
     exit 1
     ;;
   *)

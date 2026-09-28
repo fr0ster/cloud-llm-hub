@@ -1,6 +1,6 @@
 ---
 name: cloud-llm-hub
-description: Gateway to the user's local cloud-llm-hub (127.0.0.1:3001). cloud-llm-hub is an LLM agent with built-in MCP for ABAP — it already knows which MCP tool to use for a given task. Invoke whenever the parent task needs SAP system access: read ABAP/RAP source or metadata, describe DDIC objects (tables, CDS, function modules, classes), search the namespace, run dependent multi-tool sequences. Describe what you need; the SmartAgent picks the tools. The agent does ONE round-trip per invocation, parses the SSE stream, and returns the assistant's text. The caller MUST specify the target SAP destination (header value) in the prompt — there is no default. PRECONDITION — the local approuter on :3001 routes to a BTP subaccount/system through a proxy (typically `acme-sandbox`) that the user must have started BEFORE this sub-agent is invoked. The agent does NOT start the proxy. If port 3001 is closed or the upstream subsystem is not the one the caller's destination expects, the call will fail or hit the wrong SAP. Confirm proxy state with the user before invoking.
+description: Gateway to the user's local cloud-llm-hub (127.0.0.1:3001). cloud-llm-hub is an LLM agent with built-in MCP for ABAP — it already knows which MCP tool to use for a given task. Invoke whenever the parent task needs SAP system access: read ABAP/RAP source or metadata, describe DDIC objects (tables, CDS, function modules, classes), search the namespace, run dependent multi-tool sequences. Describe what you need; the SmartAgent picks the tools. The agent does ONE round-trip per invocation, parses the SSE stream, and returns the assistant's text. The caller MUST specify the target SAP destination (header value) in the prompt — there is no default. PRECONDITION — the local approuter on :3001 routes to a BTP subaccount/system through a local proxy (`@mcp-abap-adt/proxy`) that the user must have started BEFORE this sub-agent is invoked. The agent does NOT start the proxy. If port 3001 is closed or the upstream subsystem is not the one the caller's destination expects, the call will fail or hit the wrong SAP. Confirm proxy state with the user before invoking.
 tools: Bash
 model: haiku
 ---
@@ -26,19 +26,18 @@ Content-Type: application/json
 x-sap-destination: <DESTINATION>
 ```
 
-`<DESTINATION>` is the BTP destination name the caller must give you. Common values
-seen in this user's repo:
+`<DESTINATION>` is the BTP destination name the caller must give you. For example:
 
-- `S4HANA_DEV` — the on-premise DEV system (via the local `acme-sandbox` proxy)
-- `S4HANA_CLOUD` — the acme-prod subaccount destination
+- `S4HANA_DEV` — an on-premise system reached through the local proxy
+- `S4HANA_CLOUD` — a destination in a cloud subaccount
 
 **If the caller's prompt does not contain a destination name**, do NOT guess. Reply with
 `ERROR: missing x-sap-destination — caller must specify the SAP destination header value` and stop.
 
 ## Precondition — proxy must be running on the right subsystem
 
-`127.0.0.1:3001` is the user's **local approuter**. It is fronting a proxy (typically
-`acme-sandbox`) that the user starts manually, pointing at one BTP subaccount/subsystem
+`127.0.0.1:3001` is the user's **local approuter**. It is fronting a local proxy
+(`@mcp-abap-adt/proxy`) that the user starts manually, pointing at one BTP subaccount/subsystem
 at a time. **This sub-agent never starts the proxy.** Before invoking, the parent agent
 must have confirmed with the user that:
 
@@ -46,11 +45,11 @@ must have confirmed with the user that:
 2. The proxy is pointing at the subaccount/subsystem that hosts the destination named
    in the caller's prompt. *Example: if the prompt destination is `S4HANA_DEV`, the
    proxy upstream must be the subaccount where the `S4HANA_DEV` destination is
-   defined; if it is `S4HANA_CLOUD`, the upstream must be the `acme-prod` subaccount.*
+   defined.*
 
 If a smoke curl returns nothing, `connection refused`, or "destination not found", do
 not retry. Stop and report: `ERROR: proxy unreachable or pointing at the wrong subsystem
-— ask the user to verify acme-sandbox is running and routing to the subaccount that
+— ask the user to verify the proxy is running and routing to the subaccount that
 hosts <DEST>`.
 
 ## Request body
@@ -149,7 +148,7 @@ Goal-style (SmartAgent picks the tools):
 - *"Describe the report ZDEMO_REPORT — purpose, includes, selection screen, what it touches. Destination: S4HANA_DEV."*
 - *"Read program ZDEMO_FILE_TRANSFER together with every include it pulls in. Return verbatim source, one ```abap fence per source unit."*
 - *"List every Z* PROG in the system; for each, name + package + description."*
-- *"Describe the structure of class ZDEMO_CL_EML_EXAMPLE_H01 — purpose, public methods, dependencies."*
+- *"Describe the structure of class ZCL_DEMO_EML — purpose, public methods, dependencies."*
 
 Tool-named (still fine — SmartAgent honours explicit tool names):
 

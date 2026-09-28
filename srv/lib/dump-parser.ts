@@ -1,4 +1,4 @@
-// Lifted from docs/examples/abap-dump-monitor/srv/dump-parser.ts (verbatim parseDump +
+// Lifted from the abap-dump-monitor example application's srv/dump-parser.ts (verbatim parseDump +
 // MAJOR_TITLES + private helpers), with the ParsedDump/DumpHeader/CallFrame/
 // VariableSnapshot/SourceExtract types inlined from that project's interfaces.ts, plus
 // dumpSectionIndex/dePad/getDumpSection added for the section-buffer API.

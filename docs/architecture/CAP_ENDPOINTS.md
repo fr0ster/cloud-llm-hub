@@ -292,23 +292,21 @@ For service-to-service integrations via `client_credentials`, the deployment pro
 | xsuaa instance | Default scope | Exposition tiers | Example consumer |
 |---|---|---|---|
 | `cloud-llm-hub-auth` (main) | `MCP_Reader` (via `authorities`) | `readonly + search` | Read-only monitors, health checks |
-| `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | [`calm-dump-analyzer`](../examples/calm-dump-analyzer/) (dumps, SQL, profiling) |
+| `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | Dump analysis services (dumps, SQL, profiling) |
 | `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | Internal CI tooling (CreateUnitTest, activation) |
 
-`MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add a new entry to `grant-as-authority-to-apps` on the `MCP_Full` scope in `xs-security.json`, provision the consumer xsuaa via `mta.yaml`, and document the exception in `docs/LESSONS_LEARNED.md`.
+`MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add `grant-as-authority-to-apps` to the `MCP_Full` scope in the `cloud-llm-hub-auth` resource's `config` in `mta.yaml`, and provision the consumer xsuaa there.
 
 ### How the cross-app scope grant works
 
-1. Main `xs-security.json` lists the consumer xsappnames (with `!tNNN` tenant suffix) in `grant-as-authority-to-apps` on the `MCP_Analyst` and `MCP_Developer` scopes.
-2. Each consumer `xs-security-<tier>-consumer.json` declares the provider scope in `authorities` using the form `<provider-xsappname-with-!tNNN>.<Scope>`.
+1. **The provider grants.** The `cloud-llm-hub-auth` resource in `mta.yaml` carries the scopes in its `config` (not in `xs-security.json`). `MCP_Analyst` and `MCP_Developer` name their consumer in `grant-as-authority-to-apps` as `$XSAPPNAME(application,cloud-llm-hub-<tier>-consumer-${space-guid})`. MTA fills in the space guid; xsuaa resolves the tenant suffix (`!tNNN`) of the referenced app itself.
+2. **The consumer accepts.** Each `xs-security-<tier>-consumer.json` declares `"authorities": ["$ACCEPT_GRANTED_AUTHORITIES"]` — it takes whatever the provider granted it, without naming the provider.
 3. At `client_credentials` token issuance time, xsuaa inlines the granted scope into the consumer's token. `cloud-llm-hub-srv` accepts it unchanged because `@sap/xssec` validates signature, `iss`, and `aud` within the shared subaccount trust boundary — all three are common across xsuaa instances in the same subaccount.
 
-The exact descriptor syntax (and the non-obvious `!tNNN` suffix requirement) is enforced by the working `xs-security*.json` files in this repo and the `grant-as-authority-to-apps` entries on the main `xs-security.json` scopes.
+Nothing in these descriptors names a subaccount, so a deployment needs no edits to them. `tools/make-staging-mta.js` renames the whole `config` for staging, so a staging deployment grants its own consumers, not production's.
 
-### Porting to another subaccount
+To check a deployment, fetch a `client_credentials` token for a consumer and confirm its `scope` claim holds the granted scope: `tools/verify-consumer-xsuaa.sh`.
 
-`xs-security.json`, `xs-security-analyst-consumer.json`, and `xs-security-developer-consumer.json` contain hardcoded references that are **subaccount-specific**:
-- The space-guid portion of the main xsappname (e.g. `cloud-llm-hub-00000000`)
-- The tenant suffix `!tNNN` (e.g. `!t000001`)
+### Overriding in a deployment
 
-When merging `feat/consumer-xsuaa-instances` into a different deploy branch (`deploy/acme-prod`, `deploy/customer-b`, etc.), replace these values with the target subaccount's equivalents in all three descriptor files. The `!tNNN` suffix is subaccount-wide — obtain it from a service key's `xsappname` field on the target subaccount.
+A deployment that needs different grants overrides the `config` of these resources in its `.mtaext` (a key set there replaces the same key from `mta.yaml`). Prefer that to editing the descriptor files in a fork: an edited tracked file can conflict on every upstream update.

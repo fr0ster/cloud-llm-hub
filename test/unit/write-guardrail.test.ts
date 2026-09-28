@@ -78,7 +78,9 @@ describe('claimsCompletedWrite', () => {
     ).toBe(false);
     expect(claimsCompletedWrite('Создан: DEVELOPER')).toBe(false);
     // A "Created: <date>" field label (line start + colon) must not match.
-    expect(claimsCompletedWrite('Domain ZDEMO\nCreated: 2026-07-19')).toBe(false);
+    expect(claimsCompletedWrite('Domain ZDEMO\nCreated: 2026-07-19')).toBe(
+      false,
+    );
     // Mid-sentence "created" prose is not a completed-write claim.
     expect(
       claimsCompletedWrite('The newly created object was then read back.'),

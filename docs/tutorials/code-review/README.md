@@ -8,7 +8,7 @@ Sister tutorial: [codebase-analysis](../codebase-analysis/README.md). Code-revie
 
 ## TL;DR
 
-You will review one ABAP object across four independent defect categories, aggregate findings with severity, and produce a manager-grade report. The worked example is `ZDEMO_REPORT` in package `Z001`.
+You will review one ABAP object across four independent defect categories, aggregate findings with severity, and produce a manager-grade report.
 
 Pipeline:
 
@@ -49,8 +49,7 @@ This is a private customer repository. Real names (Z* objects, package names, SM
 Upload the following skill files to a `user`-scope RAG collection in the chat UI and enable it. The chat session will pick them up automatically — no extra prompt boilerplate needed.
 
 - `skills/analyzing-an-abap-report.md` — Stage 0. Tells the model to read main + every include with the right MCP tools before any analysis.
-- Stage 1 has no skill file yet — follow the prompt in the Stage 1 section below and use
-  `examples/ZDEMO_REPORT/01-target.md` as the reference for the expected output.
+- Stage 1 has no skill file yet — follow the prompt in the Stage 1 section below.
 - `skills/security-review.md`, `skills/performance-review.md`, `skills/cleancore-review.md`, `skills/maintainability-review.md` — Stages 2–5.
 - `skills/markdown-review-output.md` — Stage 6.
 
@@ -69,11 +68,11 @@ The skills are small (frontmatter-heavy). Upload them once per tutorial run; the
 
 ## Work rhythm
 
-- Stage 0 runs **once per chat session**, in its own turn (e.g. `Read full code with every include for code review of ZDEMO_REPORT`). It must not be merged into a per-category prompt — bundling re-triggers the original failure mode.
+- Stage 0 runs **once per chat session**, in its own turn (e.g. `Read full code with every include for code review of <TARGET>`). It must not be merged into a per-category prompt — bundling re-triggers the original failure mode.
 - Stage 1 is sequential and gates everything below it. Stages 2-5 are independent — fan out, then merge.
 - Fresh chat per check (each check has its own rule set; cross-talk leaks rules). Two ways to deliver Stage 0's source to each fresh per-category chat:
   - **Chat-UI flow** — upload [analyzing-an-abap-report](skills/analyzing-an-abap-report.md) to a RAG collection once. Every fresh chat then runs Stage 0 in its own first turn (one Stage 0 call per per-category chat). The skill ensures the read happens before the per-category prompt.
-  - **Curl-batch flow** (see `examples/.../curl/run-checks.sh`) — Stage 0 fires ONCE up front and extracts the source verbatim into a local `source.txt`. Each per-category call is then stateless and inlines `source.txt` in the user message. Justified by the server-side chat-history trim policy: the assistant text of a previous turn is cut to a few hundred chars before the next turn sees it (`srv/openai-handler.ts:trimHistoryForContext`), so source can't be staged via session history in a multi-turn batch.
+  - **Curl-batch flow** — Stage 0 fires ONCE up front and extracts the source verbatim into a local `source.txt`. Each per-category call is then stateless and inlines `source.txt` in the user message. Justified by the server-side chat-history trim policy: the assistant text of a previous turn is cut to a few hundred chars before the next turn sees it (`srv/openai-handler.ts:trimHistoryForContext`), so source can't be staged via session history in a multi-turn batch.
 - Severity scale fixed at Stage 1, applied consistently across checks. CRITICAL → HIGH → MEDIUM → LOW → INFO.
 
 ## Things AI does wrong in this kind of review
@@ -93,7 +92,7 @@ Use [analyzing-an-abap-report](skills/analyzing-an-abap-report.md). One turn: `R
 
 ## Stage 1: Formalize the review target
 
-Write `01-target.md` (no skill file for this stage — use `examples/ZDEMO_REPORT/01-target.md` as the format reference). Output: target object name + type, scope (main + how deep into includes), check categories included, severity scale, available SAP tools, what's out of scope.
+Write `01-target.md` (no skill file for this stage). Output: target object name + type, scope (main + how deep into includes), check categories included, severity scale, available SAP tools, what's out of scope.
 
 Do this once. Stages 2-5 all read from this file.
 
