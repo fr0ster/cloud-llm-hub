@@ -6,6 +6,8 @@
  * - sends the caller's Basic auth, the X-SAP-Client header AND the
  *   sap-usercontext cookie for the configured client (header alone is ignored
  *   by ABAP → wrong mandant)
+ * - sends a custom `sap-client` header: the Cloud SDK otherwise adds one from
+ *   the destination's own sap-client, and ABAP honours it over the cookie
  * - passes a server-side timeout
  * - makes EXACTLY ONE executeHttpRequest call — no retry on any status
  *   (401/403 lockout safety; pointless to retry TLS/5xx for a diagnostic)
@@ -56,6 +58,7 @@ describe('CloudSdkAbapConnection.probe', () => {
     expect(opts.timeout).toBe(12_000);
     expect(opts.headers.Authorization).toMatch(/^Basic /);
     expect(opts.headers['X-SAP-Client']).toBe('600');
+    expect(opts.headers['sap-client']).toBe('600');
     expect(opts.headers.Cookie).toContain('sap-usercontext=sap-client=600');
 
     expect(r).toEqual({ httpCode: 200, rawMessage: '<discovery/>' });
