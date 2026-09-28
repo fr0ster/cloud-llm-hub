@@ -43,6 +43,12 @@ Two sibling packages are deliberately NOT dependencies of this product:
 @mcp-abap-adt/llm-agent-server (GPL-3.0-only). This product embeds the library
 halves instead.
 
+SAP packages are dependencies under SAP's own licence terms, not under the
+Apache License: @sap/cds (with @sap/cds-compiler and @sap/cds-fiori),
+@sap/xssec, @sap/xsenv and, for the approuter module, @sap/approuter. They are
+installed from the npm registry and are not redistributed in this repository;
+their use is governed by the licence each package ships.
+
 This product also bundles JSZip (app/chat/webapp/vendor/jszip.min.js),
 Copyright (c) 2009-2016 Stuart Knightley and contributors, dual-licensed under
 the MIT licence or GPLv3. The licence header is preserved in the file itself.
