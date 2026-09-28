@@ -98,3 +98,6 @@ app/router/chat/
 # Generated staging MTA descriptor (tools/make-staging-mta.js — ephemeral)
 mta.staging.generated.yaml
 xs-security*.generated.json
+
+# Assistant instructions stay local, not in the public repo
+CLAUDE.md
