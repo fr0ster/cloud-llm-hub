@@ -21,5 +21,6 @@ Each example is a standalone project that:
 
 | Example | Type | Description |
 |---------|------|-------------|
-| [calm-dump-analyzer](calm-dump-analyzer/) | BTP Service | Receives SAP Cloud ALM ABAP dump alerts, analyzes via cloud-llm-hub, returns structured diagnosis |
 | [cloud-llm-hub-agent](cloud-llm-hub-agent/) | Claude Code sub-agent | Ready-to-use `~/.claude/agents/cloud-llm-hub.md` that delegates SAP queries from a Claude Code session to the local cloud-llm-hub |
+
+Example BTP applications that use the hub — services built on the architecture above — live in a separate repository.

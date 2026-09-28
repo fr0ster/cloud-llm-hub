@@ -172,7 +172,7 @@ Full documentation is organized by purpose in the **[docs/](docs/)** directory �
 ### 📁 Additional Resources
 
 - **[📋 Configuration Templates](docs/templates/)** — ready-to-use MCP configs
-- **[💡 Examples](docs/examples/)** — integration examples (`abap-dump-monitor`, `calm-dump-analyzer`, …)
+- **[💡 Examples](docs/examples/)** — a Claude Code sub-agent for the hub; example BTP applications that use the hub live in a separate repository
 
 ## Deployment Notes
 

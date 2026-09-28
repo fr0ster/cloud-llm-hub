@@ -292,7 +292,7 @@ For service-to-service integrations via `client_credentials`, the deployment pro
 | xsuaa instance | Default scope | Exposition tiers | Example consumer |
 |---|---|---|---|
 | `cloud-llm-hub-auth` (main) | `MCP_Reader` (via `authorities`) | `readonly + search` | Read-only monitors, health checks |
-| `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | [`calm-dump-analyzer`](../examples/calm-dump-analyzer/) (dumps, SQL, profiling) |
+| `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | Dump analysis services (dumps, SQL, profiling) |
 | `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | Internal CI tooling (CreateUnitTest, activation) |
 
 `MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add `grant-as-authority-to-apps` to the `MCP_Full` scope in the `cloud-llm-hub-auth` resource's `config` in `mta.yaml`, and provision the consumer xsuaa there.
