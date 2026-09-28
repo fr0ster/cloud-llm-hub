@@ -575,6 +575,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
     if (this.config.client) {
       headers['X-SAP-Client'] = this.config.client;
+      // The Cloud SDK adds `sap-client` from the destination's own property
+      // (buildHeadersForDestination), and ABAP honours that header over the
+      // cookie. Without this, a destination with sap-client=200 sends 200
+      // alongside the caller's X-SAP-Client: 500 and the logon fails.
+      // Custom headers win over destination headers case-insensitively.
+      headers['sap-client'] = this.config.client;
     }
 
     // Add Basic auth header when credentials are provided via x-sap-login/x-sap-password override
