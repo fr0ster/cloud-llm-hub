@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Quick test script for S4HANA_TS2 destination probe
+# Quick test script for a destination probe
 # Usage: ./test-probe-s4hana.sh
 
-SERVICE_URL="${SERVICE_URL:-https://acme-org.cfapps.eu10.hana.ondemand.com}"
-DESTINATION="${1:-S4HANA_TS2}"
+SERVICE_URL="${SERVICE_URL:?SERVICE_URL is required (e.g. https://<subaccount>-cloud-llm-hub-srv.cfapps.<region>.hana.ondemand.com)}"
+DESTINATION="${1:-S4HANA_DEV}"
 
 echo "🧪 Testing destination probe for: $DESTINATION"
 echo "   Service: $SERVICE_URL"

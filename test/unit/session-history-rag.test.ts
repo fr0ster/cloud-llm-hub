@@ -38,7 +38,10 @@ describe('what a stored turn carries', () => {
   it('keeps the answer, not only the question', () => {
     // Storing the request alone would recall that a domain was asked for and
     // never what it was called — the one fact a later turn needs.
-    const text = renderTurn('зроби домен', 'Створено ZDEMO_TEST_34345, CHAR 10');
+    const text = renderTurn(
+      'зроби домен',
+      'Створено ZDEMO_TEST_34345, CHAR 10',
+    );
     expect(text).toContain('зроби домен');
     expect(text).toContain('ZDEMO_TEST_34345');
   });

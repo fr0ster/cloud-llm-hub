@@ -14,7 +14,7 @@ if [ -z "${STAGING_TOKEN:-}" ] && [ -f "$MCP_ENV" ]; then
   STAGING_TOKEN=$(grep -m1 '^XSUAA_JWT_TOKEN=' "$MCP_ENV" | cut -d= -f2-)
 fi
 
-STAGING_URL="${STAGING_URL:-https://acme-subaccount-cloud-llm-hub.cfapps.eu10.hana.ondemand.com}"
+STAGING_URL="${STAGING_URL:?STAGING_URL is required (e.g. https://<subaccount>-cloud-llm-hub.cfapps.<region>.hana.ondemand.com)}"
 SESSION_FILE="/tmp/tutorial-test-session.json"
 SAVE_FILE=""
 

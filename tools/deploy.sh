@@ -3,12 +3,12 @@
 #
 # Prerequisites:
 #   1. cf login to the correct subaccount
-#   2. cd to the worktree (.worktrees/ai-apps, .worktrees/acme-sandbox, etc.)
+#   2. cd to the deployment checkout (the branch that carries this subaccount's .mtaext)
 #   3. .env with AICORE_* secrets (if no AI Core binding in this subaccount)
 #
 # Usage:
-#   cd .worktrees/ai-apps    && ../../tools/deploy.sh
-#   cd .worktrees/ai-apps-stg && ../../tools/deploy.sh staging
+#   tools/deploy.sh            # production (.mtaext)
+#   tools/deploy.sh staging    # staging (.mtaext.staging)
 #
 # Flow: verify CF target → merge main → inject secrets → build → deploy
 
@@ -40,8 +40,8 @@ echo "=== Deploy: $BRANCH ==="
 
 # Verify CF target matches deploy branch
 APPROUTER_HOST=$(grep -oP 'APPROUTER_HOST:\s*"\K[^"]+' "$MTAEXT" 2>/dev/null || echo "")
-# Full org string (e.g. "CustomerB Inc_cloud-llm-hub-acme2"); awk '{print $2}'
-# used to grab only the first token ("CustomerB"/"ACME") and falsely warn.
+# Full org string (e.g. "Acme Inc_cloud-llm-hub-abc123"); awk '{print $2}'
+# used to grab only the first token ("Acme") and falsely warn.
 CF_ORG=$(cf target 2>&1 | grep "^org:" | sed 's/^org:[[:space:]]*//')
 
 echo ""
@@ -51,7 +51,7 @@ echo "  .mtaext host: $APPROUTER_HOST"
 
 # Check if approuter host contains a substring from the CF org
 if [ -n "$APPROUTER_HOST" ] && [ -n "$CF_ORG" ]; then
-  # Extract subaccount ID from approuter host (e.g., "acme-subaccount" from host)
+  # Extract subaccount ID from approuter host (e.g., "acme-abc123" from "acme-abc123-cloud-llm-hub")
   HOST_PREFIX=$(echo "$APPROUTER_HOST" | sed 's/-cloud-llm-hub.*//')
   if echo "$CF_ORG" | grep -qi "$HOST_PREFIX"; then
     echo "  ✓ CF target matches deploy branch"
