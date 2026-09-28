@@ -17,6 +17,7 @@ const withDagCoordinator = jest.fn();
 const withSkillManager = jest.fn();
 const withMcpClients = jest.fn();
 const withMcpFailureClassifier = jest.fn();
+const withToolCache = jest.fn();
 const buildMock = jest.fn();
 
 function makeChainableBuilder() {
@@ -35,7 +36,7 @@ function makeChainableBuilder() {
   builder.withClassification = chainable(jest.fn());
   builder.withLlmCallStrategy = chainable(jest.fn());
   builder.withToolReselection = chainable(jest.fn());
-  builder.withToolCache = chainable(jest.fn());
+  builder.withToolCache = chainable(withToolCache);
   builder.withMetrics = chainable(jest.fn());
   builder.withSessionManager = chainable(jest.fn());
   builder.withHistorySummarization = chainable(jest.fn());
@@ -127,6 +128,15 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(deps.finalizer).toBeInstanceOf(NoticeFinalizer);
 
     expect(handle).toBeDefined();
+  });
+
+  it('installs no tool-result cache on the destination agent or its worker — the MCP server owns caching', async () => {
+    await agentManager.buildAgentForDestination(
+      {} as never,
+      {} as never,
+      config,
+    );
+    expect(withToolCache).not.toHaveBeenCalled();
   });
 
   it('never calls withRequestLogger — RecordingRequestLogger is gone', async () => {

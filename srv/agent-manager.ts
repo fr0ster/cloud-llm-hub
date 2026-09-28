@@ -5,13 +5,13 @@
  * Configuration comes from environment variables (set via mta.yaml or CF CLI).
  *
  * Architecture:
- * - SmartAgentBuilder wires together: LLM, MCP, RAG, resilience, caching, metrics
+ * - SmartAgentBuilder wires together: LLM, MCP, RAG, resilience, metrics
  * - LLM: SAP AI Core via sap-ai-sdk provider
  * - MCP: Embedded EmbeddableMcpServer (in-process, no HTTP overhead)
  * - RAG: FallbackRag(VectorRag → InMemoryRag) with CircuitBreakerEmbedder
  * - RAG quality: LlmQueryExpander (synonym expansion) + LlmReranker (semantic re-scoring)
  * - Resilience: CircuitBreaker for LLM + embedder failures
- * - Caching: ToolCache for deduplication, SessionManager for token budget
+ * - No tool-result cache: the MCP server owns caching. SessionManager keeps the token budget
  * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
  */
 
@@ -40,7 +40,6 @@ import {
   NoopDocumentEnricher,
   type RagMetadata,
   type RagResult,
-  ToolCache,
   TranslatePreprocessor,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
@@ -2413,7 +2412,11 @@ async function configureDestinationAgentBuilder(
     // Without classifier, RAG query + tool selection always runs.
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withToolReselection(true)
-    .withToolCache(new ToolCache({ ttlMs: 30_000 }))
+    // No tool-result cache. The one this used to install was keyed by tool name
+    // and arguments alone and shared by every caller of the destination, so a
+    // hit handed one user another's result past assertToolAllowed and their own
+    // SAP connection — and replayed write tools. Caching belongs to the MCP
+    // server, which knows what may be cached and for whom.
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)

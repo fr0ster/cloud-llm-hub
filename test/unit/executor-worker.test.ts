@@ -17,6 +17,7 @@
 const withRequestLogger = jest.fn();
 const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
+const withToolCache = jest.fn();
 const buildMock = jest.fn();
 
 function makeChainableBuilder() {
@@ -35,7 +36,7 @@ function makeChainableBuilder() {
   builder.withClassification = chainable(jest.fn());
   builder.withLlmCallStrategy = chainable(jest.fn());
   builder.withToolReselection = chainable(jest.fn());
-  builder.withToolCache = chainable(jest.fn());
+  builder.withToolCache = chainable(withToolCache);
   builder.withMetrics = chainable(jest.fn());
   builder.withSessionManager = chainable(jest.fn());
   builder.withHistorySummarization = chainable(jest.fn());
@@ -112,6 +113,11 @@ describe('buildExecutorWorker', () => {
     // SmartAgentSubAgent stores the built agent privately; behavior-check via
     // capabilities, which SmartAgentSubAgent always sets to this fixed shape.
     expect(worker.capabilities).toEqual({ contextPolicy: 'optional' });
+  });
+
+  it('installs no tool-result cache — the MCP server owns caching', async () => {
+    await buildExecutorWorker({} as never, {} as never, config);
+    expect(withToolCache).not.toHaveBeenCalled();
   });
 
   it('never enables a coordinator — plain tool-loop, no self-recursion', async () => {
