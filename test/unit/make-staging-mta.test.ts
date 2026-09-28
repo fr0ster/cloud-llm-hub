@@ -38,6 +38,10 @@ resources:
       path: ./xs-security.json
       config:
         xsappname: cloud-llm-hub-\${space-guid}
+        scopes:
+          - name: $XSAPPNAME.MCP_Analyst
+            grant-as-authority-to-apps:
+              - $XSAPPNAME(application,cloud-llm-hub-analyst-consumer-\${space-guid})
   - name: cloud-llm-hub-analyst-consumer
     parameters:
       path: ./xs-security-analyst-consumer.json
@@ -233,5 +237,21 @@ describe('make-staging-mta', () => {
     // source file's role-collection name is unchanged.
     const src = readJson(dir, 'xs-security.json');
     expect(src['role-collections'][0].name).toBe('MCP Reader Access');
+  });
+
+  it('renames the grants the auth config carries, so staging grants its own consumers', () => {
+    const doc = run(dir);
+    const auth = doc.resources.find(
+      // biome-ignore lint/suspicious/noExplicitAny: parsed YAML is dynamic
+      (r: any) => r.name === 'cloud-llm-hub-staging-auth',
+    );
+    expect(auth.parameters.config.xsappname).toBe(
+      'cloud-llm-hub-staging-${space-guid}',
+    );
+    expect(
+      auth.parameters.config.scopes[0]['grant-as-authority-to-apps'],
+    ).toEqual([
+      '$XSAPPNAME(application,cloud-llm-hub-staging-analyst-consumer-${space-guid})',
+    ]);
   });
 });
