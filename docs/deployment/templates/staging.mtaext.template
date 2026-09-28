@@ -38,7 +38,7 @@ parameters:
 
   # IMPORTANT: Unique hostname for staging (different from production!)
   APPROUTER_HOST: "cloud-llm-hub-staging"
-  # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"
+  # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"   # required: your subaccount's CF landscape
 
 resources:
   - name: cloud-llm-hub-ai-core

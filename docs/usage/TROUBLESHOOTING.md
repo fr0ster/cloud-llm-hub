@@ -155,7 +155,7 @@ sees your SAP login/password → fail-closed `SAP_CREDENTIALS_REQUIRED`.
 - The srv route is intentionally public so the proxy can deliver `x-sap-*`
   headers directly. The approuter is for the browser/XSUAA flow only.
 - The srv route is named per subaccount (`${APPROUTER_HOST}-srv`); if you still
-  see a generic `acme-org...-sn-<guid>` route, redeploy so the named route
+  see a generic `<org-name>-sn-<guid>` route, redeploy so the named route
   is created, then update `targetUrl`.
 
 ---

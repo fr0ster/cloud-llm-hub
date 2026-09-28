@@ -12,39 +12,47 @@ Deploy and verify Cloud LLM Hub on SAP BTP.
 - [**Quick Deploy**](QUICK_DEPLOY.md) — one-command deployment
 - [**Testing After Deployment**](TESTING_AFTER_DEPLOYMENT.md) — health checks and smoke tests
 
-## Architecture
+## Architecture: one private fork per subaccount
+
+This repository holds only generic code, templates and docs — nothing tied to a
+system, subaccount or customer, and **nothing is deployed from it**. Every
+deployment lives in its own **private fork**, one fork per BTP subaccount:
 
 ```
-main                           Code, templates, docs (never deploy from here)
-├── .worktrees/                Local worktrees for deploy branches (gitignored)
-│   ├── ai-apps/               deploy/acme-prod
-│   ├── ai-apps-stg/           deploy/acme-prod-stg
-│   └── acme-sandbox/          deploy/acme-sandbox
-│
-deploy/acme-prod         .mtaext for acme-prod subaccount
-deploy/acme-prod-stg     .mtaext.staging for acme-prod staging
-deploy/acme-sandbox            .mtaext for acme-sandbox subaccount
+cloud-llm-hub (this repo, public)     code, templates, docs — never deployed
+        │  fork (clone + upstream remote)
+        ▼
+<deployment>-fork (private)
+├── main                              mirror of upstream main (release tags)
+└── deploy/<subaccount>               main + ONE commit: .mtaext, DEPLOY.md, …
 ```
+
+- The fork's `main` only tracks upstream; the deploy branch adds files on top of it.
+- Updating: fetch upstream, move the fork's `main` to the release tag, merge `main`
+  into the deploy branch (`tools/deploy.sh` does the merge), deploy.
+- A deploy branch should only **add** files. Overriding a tracked file (for example
+  an `xs-security*.json`) is possible, but then each upstream update may conflict.
 
 ### What goes where
 
 | File | Location | In git? | Purpose |
 |------|----------|---------|---------|
-| `mta.yaml` | main | Yes | MTA structure, module definitions, parameter defaults (prod identifiers) |
-| `mta.staging.generated.yaml` | worktree | No (gitignored) | Staging MTA — generated from `mta.yaml` at deploy time by `tools/make-staging-mta.js` (renames identifiers to `*-staging`); never edited or committed |
-| `xs-security*.generated.json` | worktree | No (gitignored) | Staging XSUAA descriptors — generated alongside the staging MTA with the same `*-staging` rename |
-| `.mtaext` | deploy/* branch | Yes (force-added) | Per-subaccount config: model, destination, host |
-| `.env` | worktree | No (gitignored) | Secrets: AICORE_* credentials |
-| `default-env.json` | worktree | No (gitignored) | Local dev: VCAP_SERVICES from BTP |
-| `tools/deploy.sh` | main | Yes | Deploy automation script |
-| `docs/deployment/templates/` | main | Yes | Starter .mtaext templates |
+| `mta.yaml` | upstream | Yes | MTA structure, module definitions, generic parameter defaults |
+| `mta.staging.generated.yaml` | fork checkout | No (gitignored) | Staging MTA — generated from `mta.yaml` at deploy time by `tools/make-staging-mta.js` (renames identifiers to `*-staging`); never edited or committed |
+| `xs-security*.generated.json` | fork checkout | No (gitignored) | Staging XSUAA descriptors — generated alongside the staging MTA with the same `*-staging` rename |
+| `.mtaext` / `.mtaext.staging` | fork deploy branch | Yes (force-added) | Per-subaccount config: CF landscape, host, model, destinations |
+| `DEPLOY.md` | fork deploy branch | Yes | That deployment's record: routes, endpoints, secrets needed, install log |
+| `.env` | fork checkout | No (gitignored) | Secrets: AICORE_* credentials |
+| `default-env.json` | fork checkout | No (gitignored) | Local dev: VCAP_SERVICES from BTP |
+| `tools/deploy.sh` | upstream | Yes | Deploy automation script |
+| `docs/deployment/templates/` | upstream | Yes | Starter .mtaext and DEPLOY.md templates |
 
 ### Secrets handling
 
 AI Core credentials are **never** stored in git. Two mechanisms:
 
 1. **AI Core binding** (VCAP_SERVICES) — when `cloud-llm-hub-ai-core` service exists in the subaccount. Automatic, no .env needed.
-2. **Environment variables** (.env → `cf set-env`) — when AI Core is in a different subaccount. The `.env` file in the worktree contains `AICORE_AUTH_URL`, `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, `AICORE_BASE_URL`. The deploy script injects them via `cf set-env`.
+2. **Environment variables** (.env → `cf set-env`) — when AI Core is in a different subaccount. The `.env` file in the fork checkout contains `AICORE_AUTH_URL`, `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, `AICORE_BASE_URL`. The deploy script injects them via `cf set-env`.
 
 Priority at runtime: VCAP_SERVICES binding > AICORE_SERVICE_KEY > AICORE_* env vars.
 
@@ -63,104 +71,84 @@ Choose a template that matches your LLM provider:
 
 ## Deploy workflow
 
+Run everything in the fork's checkout, on its deploy branch.
+
 ### One-command deploy
 
 ```bash
-# 1. Login to correct subaccount
+# 1. Login to the subaccount this fork belongs to
 cf target -o "<org>" -s dev
 
-# 2. Go to worktree and deploy
-cd .worktrees/acme-sandbox
-../../tools/deploy.sh
+# 2. Deploy from the deploy branch
+git switch deploy/<subaccount>
+tools/deploy.sh             # production (.mtaext)
+tools/deploy.sh staging     # staging (.mtaext.staging)
 ```
 
-The script automatically:
-- Verifies CF target matches the deploy branch (APPROUTER_HOST vs CF org)
-- Rebases deploy branch on main
-- Injects AICORE_* secrets from .env via `cf set-env` (only when no binding)
-- Builds MTA and deploys with .mtaext
-
-For staging: `../../tools/deploy.sh staging`
+The script:
+- verifies the CF target matches the deploy branch (APPROUTER_HOST vs CF org);
+- merges the fork's `main` into the deploy branch;
+- injects AICORE_* secrets from `.env` via `cf set-env` (only when there is no binding);
+- builds the MTA and deploys it with the `.mtaext`.
 
 ### Manual deploy
 
 ```bash
-cd .worktrees/ai-apps
-git rebase main
+git merge main
 npx mbt build
 cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 ```
 
-## New subaccount setup
+## New deployment: create its fork
 
-### 1. Choose template and create deploy branch
+### 1. Create the private fork
+
+Create an **empty private** repository wherever the deployment is hosted (GitHub,
+GitLab, …) — no README, no licence — then:
 
 ```bash
-# From main
-git checkout main
-
-# Create branch
-git checkout -b deploy/<subaccount-name>
-
-# Copy and edit template
-cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
-vi .mtaext   # Set APPROUTER_HOST, destinations, etc.
-
-# Commit and push
-git add -f .mtaext
-git commit -m "deploy: <subaccount-name> configuration"
-git push origin deploy/<subaccount-name>
-git checkout main
+git clone --origin upstream https://github.com/fr0ster/cloud-llm-hub.git <deployment>
+cd <deployment>
+git remote add origin <private-repo-url>
+git switch --detach <release-tag> && git switch -C main   # start from a release
+git push -u origin main
 ```
 
-### 2. Create worktree
+### 2. Add the deploy branch
 
 ```bash
-git worktree add .worktrees/<short-name> deploy/<subaccount-name>
+git switch -c deploy/<subaccount>
+cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
+vi .mtaext          # CF_LANDSCAPE (required), APPROUTER_HOST, destinations, model, …
+cp docs/deployment/templates/DEPLOY.md.template DEPLOY.md
+git add -f .mtaext DEPLOY.md
+git commit -m "deploy: <subaccount> configuration"
+git push -u origin deploy/<subaccount>
 ```
 
 ### 3. Add secrets (.env)
 
-Create `.worktrees/<short-name>/.env` with AI Core credentials (if no binding):
+Create `.env` in the fork checkout with AI Core credentials (only when there is no binding):
 
 ```
-AICORE_AUTH_URL=https://<subaccount>.authentication.eu10.hana.ondemand.com
+AICORE_AUTH_URL=https://<subaccount>.authentication.<region>.hana.ondemand.com
 AICORE_CLIENT_ID=sb-<service-key-id>
 AICORE_CLIENT_SECRET=<secret>
-AICORE_BASE_URL=https://api.ai.prod.eu-central-1.aws.ml.hana.ondemand.com
+AICORE_BASE_URL=https://api.ai.prod.<region>.aws.ml.hana.ondemand.com
 ```
 
-### 4. Deploy
+### 4. Deploy, then fill in DEPLOY.md
+
+Deploy as above, then record the actual routes (`cf apps`), endpoints, mode, provider,
+model, SAP destinations, required secrets and the installation log in `DEPLOY.md`.
+
+### Updating a deployment
 
 ```bash
-cf target -o "<org>" -s dev
-cd .worktrees/<short-name>
-../../tools/deploy.sh
+git fetch upstream --tags
+git switch main && git merge --ff-only <new-release-tag> && git push
+git switch deploy/<subaccount> && tools/deploy.sh
 ```
-
-### 5. Create DEPLOY.md (required)
-
-Each deploy branch **must** have a `DEPLOY.md` documenting:
-- Subaccount details, XSUAA subdomain
-- Routes (approuter + srv) and all endpoints
-- Mode, provider, model configuration
-- SAP destinations
-- Required secrets in `.env`
-- Branch-specific changes from main
-- Installation log (problems encountered and solutions)
-
-Copy template and fill in: `cp docs/deployment/templates/DEPLOY.md.template DEPLOY.md`
-
-After deploy, update DEPLOY.md with actual routes from `cf apps` output.
-
-## Active deploy branches
-
-| Branch | Subaccount | Mode | AI Core | Notes |
-|--------|-----------|------|---------|-------|
-| `deploy/acme-prod` | acme-subaccount | MCP + AI Core | Binding | Production |
-| `deploy/acme-prod-stg` | acme-subaccount | LLM-only | Binding | Staging, no MCP |
-| `deploy/acme-sandbox` | acme-sandbox | MCP + AI Core | Via .env | Shared AI Core |
-| `deploy/customer-b` | cloud-llm-hub-acme2 (US21) | MCP + OpenAI | Disabled | gpt-5.4-pro, CLD |
 
 ## Quick Links
 
