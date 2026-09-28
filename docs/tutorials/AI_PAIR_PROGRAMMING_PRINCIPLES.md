@@ -57,7 +57,7 @@ Pair-programming with AI is a shuttlecock game. Two players, alternating turns.
 
 Neither side plays alone. Each exchange sharpens the result. The user always serves first; the AI never takes the lead role.
 
-The four-step method above is the *rulebook* of the game. The badminton is *how* the two players run through it on every step. See [Pair Programming with AI](../articles/pair-programming-with-ai.md) for the worked-out metaphor.
+The four-step method above is the *rulebook* of the game. The badminton is *how* the two players run through it on every step.
 
 ## Properties of any process built this way
 
