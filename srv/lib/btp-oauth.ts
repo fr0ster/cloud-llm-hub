@@ -4,6 +4,8 @@
  * Extracts credentials from VCAP_SERVICES and obtains client_credentials tokens.
  */
 
+import { createHash } from 'node:crypto';
+
 interface BtpServiceCredentials {
   tokenUrl: string;
   clientId: string;
@@ -69,9 +71,16 @@ export function getServiceCredentials(
 
 /**
  * Get OAuth2 client_credentials token (cached until ~5min before expiry).
+ *
+ * The cache key covers the secret, not only the client id: `wrappedAuth` passes
+ * caller-supplied Basic credentials here, and a token obtained with one secret
+ * must never be returned to a caller presenting another. The secret is hashed
+ * so it is not kept in memory as a map key.
  */
 export async function getToken(creds: BtpServiceCredentials): Promise<string> {
-  const cacheKey = creds.clientId;
+  const cacheKey = createHash('sha256')
+    .update(`${creds.tokenUrl}\0${creds.clientId}\0${creds.clientSecret}`)
+    .digest('hex');
   const cached = tokenCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return cached.token;
