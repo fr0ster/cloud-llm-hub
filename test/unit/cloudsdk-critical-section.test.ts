@@ -85,4 +85,38 @@ describe('CloudSdkAbapConnection closeSession', () => {
     await c.closeSession();
     expect(mockExec).toHaveBeenCalledTimes(1); // wentStateful cleared after first
   });
+
+  it('waits for an open critical section before ending the session', async () => {
+    // Either LOCK was never reached (no section) or UNLOCK must happen first:
+    // the session is never cut between them.
+    const c = makeConn();
+    c.setSessionType('stateful');
+    c.beginCriticalSection();
+    let closed = false;
+    const closing = c.closeSession().then(() => {
+      closed = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(closed).toBe(false);
+    expect(mockExec).not.toHaveBeenCalled();
+
+    c.endCriticalSection();
+    await closing;
+    expect(closed).toBe(true);
+    expect(mockExec).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the outermost section when sections nest', async () => {
+    const c = makeConn();
+    c.setSessionType('stateful');
+    c.beginCriticalSection();
+    c.beginCriticalSection();
+    const closing = c.closeSession();
+    c.endCriticalSection();
+    await new Promise((r) => setImmediate(r));
+    expect(mockExec).not.toHaveBeenCalled();
+    c.endCriticalSection();
+    await closing;
+    expect(mockExec).toHaveBeenCalledTimes(1);
+  });
 });

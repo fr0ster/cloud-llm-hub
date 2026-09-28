@@ -267,6 +267,69 @@ describe('evaluateDeterministic (result-based)', () => {
   });
 });
 
+// lib 13 answers a successful write with the terse text `SUCCESS` and no
+// `status`.
+describe('evaluateDeterministic — lib 13 terse write answers', () => {
+  const lib13 = (
+    name: string,
+    args: Record<string, unknown>,
+    text: string,
+    isError?: boolean,
+  ): ToolCallRecord => ({
+    call: { id: '', name, arguments: args },
+    result: { content: [{ type: 'text', text }], isError },
+  });
+  const claim =
+    'Domain ZDEMO_D_MATNR was created and has been successfully activated.';
+
+  it("does not take SAP's OK on activate:true as activation", () => {
+    // SAP answers OK to the activation request while the activation is still
+    // running: the claim "activated" stays unverified.
+    const verdict = evaluateDeterministic(claim, [
+      lib13(
+        'CreateDomain',
+        { domain_name: 'ZDEMO_D_MATNR', activate: true },
+        'SUCCESS',
+      ),
+    ]);
+    expect(verdict.ok).toBe(false);
+    if (verdict.ok) throw new Error('unreachable');
+    expect(verdict.issues).toEqual([
+      expect.objectContaining({ claimedOp: 'activated' }),
+    ]);
+  });
+
+  it('still flags "activated" after a write told not to activate', () => {
+    const verdict = evaluateDeterministic(claim, [
+      lib13(
+        'CreateDomain',
+        { domain_name: 'ZDEMO_D_MATNR', activate: false },
+        'SUCCESS',
+      ),
+    ]);
+    expect(verdict.ok).toBe(false);
+  });
+
+  it('flags "activated" when the write asked to activate failed', () => {
+    const verdict = evaluateDeterministic(claim, [
+      lib13(
+        'CreateDomain',
+        { domain_name: 'ZDEMO_D_MATNR', activate: true },
+        '{"message":"Activation failed","origin":"refusal"}',
+        true,
+      ),
+    ]);
+    expect(verdict.ok).toBe(false);
+  });
+
+  it('reads a terse SUCCESS as a successful create', () => {
+    const verdict = evaluateDeterministic('Domain ZDEMO_D_MATNR was created.', [
+      lib13('CreateDomain', { domain_name: 'ZDEMO_D_MATNR' }, 'SUCCESS'),
+    ]);
+    expect(verdict).toEqual({ ok: true });
+  });
+});
+
 // The tool-count signal, kept as a check of its own rather than as a gate on
 // whether to ask an LLM. Nothing was called, and the response says it read the
 // system: it cannot have read what it never asked for. Conditioned on ZERO

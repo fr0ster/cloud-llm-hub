@@ -97,7 +97,7 @@ If the customer has a proprietary or non-standard LLM API, a custom provider mus
 |-------|------|--------|-----|
 | **Development** | Implement `ILlm` adapter for customer's API | 2-5 days | Developer |
 | | Implement `IEmbedder` adapter (if custom embedding API) | 1-2 days | Developer |
-| | Register provider in `makeLlm()` or inject via builder | 0.5 day | Developer |
+| | Register provider in `makeHubLlm()` (`srv/lib/llm-factory.ts`) or inject via builder | 0.5 day | Developer |
 | | Integration testing with customer's API | 1-2 days | Developer |
 | **Installation** | Full installation (same as Scenario A/B) | 2 hours - 2 days | Developer + Admins |
 | | **Total** | **1-2 weeks hands-on, 2-4 weeks wall-clock** | |

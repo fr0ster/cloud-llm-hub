@@ -20,6 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import { getSharedCorpusDocs } from '../srv/agent-manager';
+import { apiKeyCredential } from '../srv/lib/llm-factory';
 import { SapAiCoreEmbedder } from '../srv/lib/sap-ai-core-embedder';
 
 // Load default-env.json (VCAP_SERVICES) for SAP AI SDK — same as cds watch.
@@ -51,7 +52,7 @@ function makeEmbedder(): Embedder {
     });
   }
   return new OpenAiEmbedder({
-    apiKey: process.env.LLM_AGENT_API_KEY || '',
+    credential: apiKeyCredential(process.env.LLM_AGENT_API_KEY || ''),
     baseURL: BASE_URL,
     model: EMBEDDING_MODEL,
   });

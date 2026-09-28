@@ -1,14 +1,11 @@
 /**
- * Unit tests for CloudSdkAbapConnection.makeAdtRequest() timeout forwarding.
+ * CloudSdkAbapConnection.makeAdtRequest() sets no deadline.
  *
- * The SAP Cloud SDK's executeHttpRequest does NOT time out on its own, so the
- * per-request timeout MUST reach every executeHttpRequest call — otherwise a
- * hung BTP-destination request blocks the whole tool call indefinitely (the
- * agent-level Promise.race that used to backstop this was removed).
- *
- * Guarantees under test:
- * - the caller-supplied `timeout` is forwarded to the main request
- * - when the caller omits it, a bounded fallback (120 s) is used instead
+ * A timeout here is a problem the connector creates: a long ADT request means
+ * a lot of data or a loaded system, and cutting it makes the outcome
+ * unpredictable. The consumer that wants a bound closes the connection itself,
+ * so no `timeout` — not even the one the ADT client passes — reaches
+ * executeHttpRequest, inside a critical section or out of it.
  */
 
 const mockExec = jest.fn();
@@ -39,29 +36,33 @@ function lastOpts() {
 
 beforeEach(() => jest.clearAllMocks());
 
-describe('CloudSdkAbapConnection.makeAdtRequest timeout forwarding', () => {
-  it('forwards the caller-supplied timeout to executeHttpRequest', async () => {
-    mockExec.mockResolvedValue({ status: 200, data: '<ok/>', headers: {} });
-
-    await makeConn().makeAdtRequest({
+describe('CloudSdkAbapConnection.makeAdtRequest deadline', () => {
+  const send = (conn: CloudSdkAbapConnection, timeout: number | undefined) =>
+    conn.makeAdtRequest({
       url: '/sap/bc/adt/repository/informationsystem/search',
       method: 'GET',
-      timeout: 90_000,
+      timeout,
     } as never);
 
+  beforeEach(() =>
+    mockExec.mockResolvedValue({ status: 200, data: '<ok/>', headers: {} }),
+  );
+
+  it.each([
+    ['set by the caller', 90_000],
+    ['0 from the ADT client', 0],
+    ['omitted', undefined],
+  ])('sends no timeout when it is %s', async (_label, timeout) => {
+    await send(makeConn(), timeout);
     expect(mockExec).toHaveBeenCalled();
-    expect(lastOpts().timeout).toBe(90_000);
+    expect(lastOpts().timeout).toBeUndefined();
   });
 
-  it('falls back to a bounded 120 s timeout when none is supplied', async () => {
-    mockExec.mockResolvedValue({ status: 200, data: '<ok/>', headers: {} });
-
-    await makeConn().makeAdtRequest({
-      url: '/sap/bc/adt/repository/informationsystem/search',
-      method: 'GET',
-    } as never);
-
-    expect(mockExec).toHaveBeenCalled();
-    expect(lastOpts().timeout).toBe(120_000);
+  it('sends none inside a critical section either', async () => {
+    const conn = makeConn();
+    conn.beginCriticalSection();
+    await send(conn, 30_000);
+    expect(lastOpts().timeout).toBeUndefined();
+    conn.endCriticalSection();
   });
 });

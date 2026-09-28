@@ -150,7 +150,7 @@ export async function handleAnthropicMessages(
   }
 
   let requestConnection:
-    | import('@mcp-abap-adt/interfaces').IAbapConnection
+    | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
   if (destination) {

@@ -9,7 +9,7 @@ import {
   HEADER_SAP_DESTINATION,
   HEADER_SAP_LOGIN,
   HEADER_SAP_PASSWORD,
-} from '@mcp-abap-adt/interfaces';
+} from '@mcp-abap-adt/interfaces-network';
 import { EmbeddableMcpServer } from '@mcp-abap-adt/lib/embeddable';
 import { ReadVsGetDedupStrategy } from '@mcp-abap-adt/lib/handlers';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -254,7 +254,7 @@ export interface McpServerResult {
  * - Supports Principal Propagation, OAuth2, Basic auth via BTP
  *
  * **Without x-sap-destination (direct connection):**
- * - Uses createAbapConnection from @mcp-abap-adt/connection
+ * - Uses AdtOnPremConnector (Basic) or AdtCloudConnector (JWT) from @mcp-abap-adt/connection
  * - Simple JWT or Basic auth directly to SAP
  * - NO token refresh - client must send valid token each request
  *

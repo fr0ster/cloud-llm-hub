@@ -119,7 +119,7 @@ describe('the /v1 CORS preflight', () => {
     );
     handlers.bootstrap(app);
     const preflight = registered.find(
-      (r) => r.method === 'options' && r.args[0] === '/v1/*',
+      (r) => r.method === 'options' && r.args[0] === '/v1/{*path}',
     );
     if (!preflight) throw new Error('no /v1 preflight was registered');
     const headers: Record<string, string> = {};

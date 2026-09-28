@@ -24,7 +24,7 @@ import './env-setup';
 
 import { randomUUID } from 'node:crypto';
 import type { SapConfig } from '@mcp-abap-adt/connection';
-import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
@@ -436,7 +436,7 @@ async function buildConnectionForDestination(
   });
   await conn.connect();
   return {
-    connection: conn as unknown as IAbapConnection,
+    connection: conn,
     resolved,
     sapConfig,
     sapLogin,

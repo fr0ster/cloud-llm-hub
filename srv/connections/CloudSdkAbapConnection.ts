@@ -9,7 +9,7 @@ import type {
   SapConfig,
 } from '@mcp-abap-adt/connection';
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
-import type { IAdtResponse } from '@mcp-abap-adt/interfaces';
+import type { IAdtWireResponse } from '@mcp-abap-adt/interfaces-adt-connection';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import { logger } from '../lib/logger';
 
@@ -77,8 +77,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private csrfRefreshing: Promise<string> | null = null;
   /** Reference count for nested beginCriticalSection()/endCriticalSection(). */
   private criticalSectionDepth = 0;
-  /** True while a lock→modify→unlock chain must not be cut by a short timeout. */
+  /** True while a lock→modify→unlock chain runs: the session must not be cut. */
   private inCriticalSection = false;
+  /** Settles when the outermost critical section ends; closeSession waits on it. */
+  private criticalSectionEnded: Promise<void> | null = null;
+  private endCriticalSectionWait: (() => void) | null = null;
   /** True once this connection has run any stateful request — so cleanup knows
    * it must terminate the server-side ADT session (which may hold an edit-lock). */
   private wentStateful = false;
@@ -177,6 +180,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * connection we open must be closed, whatever it turned out to be used for.
    */
   async closeSession(): Promise<void> {
+    // Never between LOCK and UNLOCK: wait for the chain to finish first. The
+    // write in between is short; no deadline on the wait.
+    while (this.criticalSectionEnded) await this.criticalSectionEnded;
     // A SAP_SESSIONID the SERVER issued is a session that exists on the server
     // and is ours to give back. One we generated ourselves is only app-server
     // stickiness (see ensureGeneratedSessionCookie) and names no server session,
@@ -342,25 +348,35 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   /**
-   * Enter an uninterruptible critical section (mirrors AbstractAbapConnection).
+   * Enter an uninterruptible critical section: a lock→modify→unlock chain.
    *
-   * Core wraps every Create/Update/Delete handler in `beginCriticalSection()` …
-   * `endCriticalSection()` via optional chaining (`conn?.beginCriticalSection?.()`).
-   * This connection `implements AbapConnection` rather than extending the base, so
-   * WITHOUT these methods that wrapping is a silent no-op and a slow write on a BTP
-   * destination is cut by the short per-request timeout — which drops the stateful
-   * ADT session and orphans the lock, leaving the object locked and inactive.
-   * Implementing them here makes the upstream lock/timeout fix actually apply on the
-   * BTP-destination path. Reference-counted so nested begin/end pairs are safe.
+   * The connection must not be broken between LOCK and UNLOCK — cutting the
+   * session there orphans the lock and leaves the object locked and inactive.
+   * lib wraps its high-level Create/Update/Delete/Add/Remove handlers in
+   * `beginCriticalSection()` … `endCriticalSection()` via optional chaining
+   * (`conn?.beginCriticalSection?.()`); since lib 13 the low-level and compact
+   * write tools are not wrapped. While a section is open, closeSession() waits
+   * for it to end instead of ending the session under it. Reference-counted so
+   * nested begin/end pairs are safe.
    */
   beginCriticalSection(): void {
+    if (this.criticalSectionDepth === 0) {
+      this.criticalSectionEnded = new Promise<void>((resolve) => {
+        this.endCriticalSectionWait = resolve;
+      });
+    }
     this.criticalSectionDepth++;
     this.inCriticalSection = true;
   }
 
   endCriticalSection(): void {
     if (this.criticalSectionDepth > 0) this.criticalSectionDepth--;
-    if (this.criticalSectionDepth === 0) this.inCriticalSection = false;
+    if (this.criticalSectionDepth === 0) {
+      this.inCriticalSection = false;
+      this.endCriticalSectionWait?.();
+      this.endCriticalSectionWait = null;
+      this.criticalSectionEnded = null;
+    }
   }
 
   isInCriticalSection(): boolean {
@@ -883,7 +899,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   /**
-   * Convert Cloud SDK response to IAdtResponse format
+   * Convert Cloud SDK response to IAdtWireResponse format
    */
   // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any are standard for flexible response types
   private convertToAdtResponse<T = any, D = any>(
@@ -894,7 +910,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       headers?: Record<string, unknown>;
     },
     requestUrl: string,
-  ): IAdtResponse<T, D> {
+  ): IAdtWireResponse<T, D> {
     return {
       data: cloudSdkResponse.data as T,
       status: cloudSdkResponse.status || 200,
@@ -914,30 +930,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
   // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any match IAbapConnection interface signature
   async makeAdtRequest<T = any, D = any>(
     options: AbapRequestOptions,
-  ): Promise<IAdtResponse<T, D>> {
-    const {
-      url,
-      method,
-      timeout,
-      data,
-      params,
-      headers: optionHeaders,
-    } = options;
+  ): Promise<IAdtWireResponse<T, D>> {
+    const { url, method, data, params, headers: optionHeaders } = options;
     const normalizedMethod = method.toUpperCase();
-    // SAP Cloud SDK's executeHttpRequest does NOT time out on its own, so the
-    // per-request timeout (from the ADT client, ultimately SAP_TIMEOUT_*) MUST be
-    // forwarded here — otherwise a hung BTP-destination request blocks forever.
-    // Falls back to 120 s when the caller didn't specify one. Inside a critical
-    // section (lock→modify→unlock), raise the ceiling to SAP_TIMEOUT_CRITICAL so a
-    // slow write is not cut mid-flight — cutting it drops the stateful session and
-    // orphans the lock. Applied here, so main + both retries + reused config honour it.
-    // Mirrors @mcp-abap-adt/connection getCriticalSectionTimeout() (not re-exported
-    // from the package root): SAP_TIMEOUT_CRITICAL, default 600000 ms (10 min).
-    const criticalTimeoutMs =
-      Number(process.env.SAP_TIMEOUT_CRITICAL) || 600_000;
-    const requestTimeoutMs = this.inCriticalSection
-      ? Math.max(timeout ?? 0, criticalTimeoutMs)
-      : (timeout ?? 120_000);
+    // No deadline here, not even one the ADT client passes in `timeout`. A long
+    // ADT request means a lot of data or a loaded system, and cutting it makes
+    // the outcome unpredictable (a write cut mid-chain orphans its lock).
+    // Whoever is waiting — the consumer — closes the connection when it wants
+    // to stop; throttling announces its own wait (429 + Retry-After).
 
     // Get base URL and build full URL from endpoint
     // Connection has base URL, url parameter is endpoint (e.g., /sap/bc/adt/oo/classes/...)
@@ -1034,7 +1034,6 @@ export class CloudSdkAbapConnection implements AbapConnection {
             | 'PATCH',
           url: requestUrl,
           headers: requestHeaders,
-          timeout: requestTimeoutMs,
           httpAgent: this.getHttpAgent(),
           // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
           params: params as Record<string, any> | undefined,
@@ -1054,7 +1053,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
         | undefined;
       this.mergeSetCookies(rawSetCookie);
 
-      // Convert Cloud SDK response to IAdtResponse format
+      // Convert Cloud SDK response to IAdtWireResponse format
       return this.convertToAdtResponse<T, D>(response, requestUrl);
     } catch (error: unknown) {
       // Anomaly log (INFO): a stateful request that lost its ADT session despite
@@ -1156,7 +1155,6 @@ export class CloudSdkAbapConnection implements AbapConnection {
                 | 'PATCH',
               url: requestUrl,
               headers: retryHeaders,
-              timeout: requestTimeoutMs,
               httpAgent: this.getHttpAgent(),
               // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
               params: params as Record<string, any> | undefined,

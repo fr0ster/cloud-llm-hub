@@ -173,7 +173,7 @@ describe('the calls that dispatch are the ones that register', () => {
   );
 
   it('wraps every LLM this service constructs', () => {
-    const made = src.match(/makeLlm\(/g)?.length ?? 0;
+    const made = src.match(/makeHubLlm\(/g)?.length ?? 0;
     const wrapped = src.match(/trackedLlm\(/g)?.length ?? 0;
     expect(made).toBeGreaterThan(0);
     // Each construction site passes its result through trackedLlm: directly, or

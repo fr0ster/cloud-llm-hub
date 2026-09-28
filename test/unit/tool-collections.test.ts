@@ -121,6 +121,39 @@ describe('role-scoped tool collections', () => {
     expect(writer.stats.queries).toBe(1);
   });
 
+  it('gives each collection its own k: writer hits never crowd out reader tools', async () => {
+    // Each collection is added to the context separately. A write tool that
+    // outscores every read tool (the \$TMP case: Delete* descriptions mention
+    // \$TMP) must not take the read tools' places.
+    const reader = fakeStore();
+    const writer = fakeStore();
+    for (const id of ['GetPackageContents', 'GetPackageTree', 'ReadClass']) {
+      reader.rows.push({
+        score: 0.4,
+        metadata: { id: `tool:${id}`, exposition: 'readonly' },
+      });
+    }
+    for (const id of ['DeleteClass', 'DeleteTable', 'DeleteDomain']) {
+      writer.rows.push({
+        score: 0.9,
+        metadata: { id: `tool:${id}`, exposition: 'high' },
+      });
+    }
+    const rag = new ExpositionFilteringRag(reader as never, writer as never);
+
+    const res = await rag.query({} as never, 2, {
+      ragFilter: { exposition: ['readonly', 'search', 'system', 'high'] },
+    });
+    if (!res.ok) throw new Error('query failed');
+    const ids = res.value.map((r) => r.metadata.id);
+    expect(ids).toEqual([
+      'tool:GetPackageContents',
+      'tool:GetPackageTree',
+      'tool:DeleteClass',
+      'tool:DeleteTable',
+    ]);
+  });
+
   it('with no role at all, only the reader collection is searched', async () => {
     const reader = fakeStore();
     const writer = fakeStore();

@@ -15,8 +15,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
-import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
 import { CLOUD_LOCAL_TOOLS } from '../srv/lib/cloud-local-tools';
+import { makeHubLlm } from '../srv/lib/llm-factory';
 
 type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
@@ -88,10 +88,10 @@ async function main() {
   console.log(`Tools (incl. cloud-local): ${tools.length}`);
 
   // Create LLM for enrichment
-  const llm = await makeLlm(
+  const llm = await makeHubLlm(
     {
       provider: PROVIDER,
-      apiKey: process.env.LLM_AGENT_API_KEY || 'sap-ai-sdk-managed',
+      apiKey: process.env.LLM_AGENT_API_KEY,
       baseURL: process.env.LLM_AGENT_BASE_URL,
       model: MODEL,
       resourceGroup: process.env.LLM_AGENT_RESOURCE_GROUP || 'default',

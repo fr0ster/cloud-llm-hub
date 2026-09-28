@@ -140,6 +140,11 @@ function opSatisfied(op: WriteOp, outcomes: ToolOutcome[]): boolean {
       // returns `{success:true, activation:{activated:true}}` with NO `status`
       // field — a status-only check false-flags the create-inactive-then-activate
       // flow (object IS active, but no result carries status:'active').
+      //
+      // lib 13 answers a successful write with the terse `SUCCESS` and no
+      // `status`. A write that asked for `activate: true` is NOT proof: SAP
+      // answers OK to the activation request while the activation itself is
+      // still running, so neither the write nor lib can know it finished.
       return outcomes.some(
         (o) =>
           (o.status === 'active' && isWriteTool(o.name)) ||

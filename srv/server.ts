@@ -81,7 +81,7 @@ function isMcpRequestBody(body: unknown): body is {
  * - Supports Principal Propagation, OAuth2, Basic auth via BTP
  *
  * **Without x-sap-destination (direct connection):**
- * - Uses createAbapConnection from @mcp-abap-adt/connection
+ * - Uses AdtOnPremConnector (Basic) or AdtCloudConnector (JWT) from @mcp-abap-adt/connection
  * - Simple JWT or Basic auth directly to SAP
  * - NO token refresh - client must send valid token each request
  *
@@ -366,19 +366,16 @@ cds.on('bootstrap', (app: Application) => {
   app.use('/mcp', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
   // Request logger for debugging
-  app.use(
-    '/mcp/stream/*',
-    (req: Request, _res: Response, next: NextFunction) => {
-      const debugLog = cds.log('mcp-proxy/request-logger');
-      debugLog.info('Request received', {
-        method: req.method,
-        path: req.originalUrl,
-        userId: cds.context?.user?.id,
-        authorization: req.headers.authorization ? 'present' : 'missing',
-      });
-      next();
-    },
-  );
+  app.use('/mcp/stream', (req: Request, _res: Response, next: NextFunction) => {
+    const debugLog = cds.log('mcp-proxy/request-logger');
+    debugLog.info('Request received', {
+      method: req.method,
+      path: req.originalUrl,
+      userId: cds.context?.user?.id,
+      authorization: req.headers.authorization ? 'present' : 'missing',
+    });
+    next();
+  });
 
   // StreamableHTTP endpoint: POST only
   app.post('/mcp/stream/http', async (req: Request, res: Response) => {
@@ -499,7 +496,7 @@ cds.on('bootstrap', (app: Application) => {
   );
 
   // CORS preflight for /v1/* routes
-  app.options('/v1/*', (_req: Request, res: Response) => {
+  app.options('/v1/{*path}', (_req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader(

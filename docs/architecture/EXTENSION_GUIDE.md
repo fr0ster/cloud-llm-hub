@@ -10,7 +10,7 @@ How to extend Cloud LLM Hub with persistent RAG, domain-specific knowledge store
 ```
 SmartAgent — one cached handle PER DESTINATION (`agentHandles`, agent-manager.ts),
               built via SmartAgentBuilder
-├── LLM: makeLlm(LLM_AGENT_PROVIDER)
+├── LLM: makeHubLlm(LLM_AGENT_PROVIDER)   ← srv/lib/llm-factory.ts
 │        sap-ai-sdk (default) → SAP AI Core, or openai / anthropic / deepseek
 ├── MCP: [ABAP] — MCPClientWrapper { transport: 'embedded' } → McpClientAdapter
 │        → HandlerExporter handlers IN-PROCESS (no HTTP, no self-loop).
@@ -441,7 +441,7 @@ CAP Express (port 4004)
 └── /v1/usage                     → token usage
 
 SmartAgent
-├── LLM: makeLlm(LLM_AGENT_PROVIDER) — SAP AI Core by default,
+├── LLM: makeHubLlm(LLM_AGENT_PROVIDER) — SAP AI Core by default,
 │        or openai / anthropic / deepseek
 ├── MCP Clients:
 │   ├── ABAP → embedded handlers, in-process (no HTTP self-loop)

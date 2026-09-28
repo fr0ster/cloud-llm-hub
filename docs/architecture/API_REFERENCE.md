@@ -766,6 +766,10 @@ The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
 - **Stream-HTTP:** 2 minutes (120 seconds)
 - **Health Check:** 5 seconds
 - **Probe Destination:** 30 seconds
+- **ADT request via a destination** (`CloudSdkAbapConnection`): **none**, whatever `timeout`
+  the ADT client passes. A long request means a lot of data or a loaded system; the consumer
+  that wants a bound closes the connection itself. Session teardown (`closeSession`) never
+  cuts a lock→modify→unlock chain: it waits for the critical section to end.
 
 ---
 

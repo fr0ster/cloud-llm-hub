@@ -93,7 +93,9 @@ function jsonError(message: string, type: string): string {
  * per-request connection (LLM-only / no destination), run `fn` directly.
  */
 function withRequestConnection<T>(
-  connection: import('@mcp-abap-adt/interfaces').IAbapConnection | undefined,
+  connection:
+    | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
+    | undefined,
   dumpScope: import('./lib/principal').DumpScope | undefined,
   fn: () => Promise<T>,
   exposition?: ExpositionLevel[],
@@ -360,7 +362,9 @@ export async function handleChatCompletions(
   /** `withRequestConnection` with this caller's permissions already bound, so
    *  no call site can forget them. */
   const withRequestConnectionAuthorized = <T>(
-    connection: import('@mcp-abap-adt/interfaces').IAbapConnection | undefined,
+    connection:
+      | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
+      | undefined,
     dumpScope: import('./lib/principal').DumpScope | undefined,
     fn: () => Promise<T>,
   ): Promise<T> =>
@@ -455,7 +459,7 @@ export async function handleChatCompletions(
   const destBefore = getCurrentDestination(userId, sessionId);
   const destAfter = requestedDestination || destBefore;
   let requestConnection:
-    | import('@mcp-abap-adt/interfaces').IAbapConnection
+    | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
 

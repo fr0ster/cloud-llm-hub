@@ -14,7 +14,7 @@ How cloud-llm-hub actually reaches the SmartAgent. Read alongside
 handler (openai-handler.ts / anthropic-handler.ts / agent-mcp.ts)
   └── getSmartAgent(destination)          ← agent-manager.ts
         ├── one cached SmartAgentHandle PER DESTINATION (`agentHandles`)
-        ├── LLM from makeLlm(LLM_AGENT_PROVIDER)
+        ├── LLM from makeHubLlm(LLM_AGENT_PROVIDER)   ← srv/lib/llm-factory.ts
         └── MCPClientWrapper { transport: 'embedded' } → McpClientAdapter
               └── HandlerExporter handlers, IN-PROCESS — no HTTP, no self-loop
 ```

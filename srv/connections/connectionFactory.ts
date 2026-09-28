@@ -4,7 +4,7 @@
  *
  * This factory chooses the right connection type based on:
  * - Destination name → CloudSdkAbapConnection (BTP Destination Service)
- * - Direct URL + Basic/JWT → createAbapConnection from @mcp-abap-adt/connection
+ * - Direct URL + Basic → AdtOnPremConnector, Direct URL + JWT → AdtCloudConnector
  */
 
 import type {
@@ -12,8 +12,16 @@ import type {
   ILogger,
   SapConfig,
 } from '@mcp-abap-adt/connection';
-import { createAbapConnection } from '@mcp-abap-adt/connection';
-import type { IAbapConnection } from '@mcp-abap-adt/interfaces';
+import {
+  AdtCloudConnector,
+  AdtOnPremConnector,
+  BasicAuthProvider,
+  CloudHttpTransport,
+  OnPremHttpTransport,
+  TokenAuthProvider,
+} from '@mcp-abap-adt/connection';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import type { ITokenRefresher } from '@mcp-abap-adt/interfaces-auth';
 import { loggerAdapter } from '../lib/logger';
 import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
 
@@ -27,13 +35,13 @@ export interface ConnectionOptions {
   /**
    * BTP Destination name (optional)
    * When provided, CloudSdkAbapConnection will be used
-   * When omitted, createAbapConnection will be used (Direct Basic/JWT)
+   * When omitted, a direct connector is built (Basic → on-prem, JWT → cloud)
    */
   destinationName?: string;
 
   /**
    * Logger instance (optional)
-   * Used by base connection (createAbapConnection)
+   * Used by the direct connectors
    * CloudSdkAbapConnection uses its own logger
    */
   logger?: ILogger;
@@ -48,7 +56,7 @@ export interface ConnectionOptions {
    * Token refresher (optional)
    * Used by JWT connection for token refresh
    */
-  tokenRefresher?: import('@mcp-abap-adt/interfaces').ITokenRefresher;
+  tokenRefresher?: ITokenRefresher;
 }
 
 /**
@@ -56,7 +64,7 @@ export interface ConnectionOptions {
  *
  * Decision logic:
  * 1. If destinationName provided → CloudSdkAbapConnection (BTP Destination Service)
- * 2. Otherwise → createAbapConnection (Direct Basic/JWT via axios)
+ * 2. Otherwise → a direct connector: Basic → AdtOnPremConnector, JWT → AdtCloudConnector
  *
  * @param options - Connection configuration options
  * @returns AbapConnection instance (either CloudSdkAbapConnection or base connection)
@@ -114,13 +122,36 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
 
   // Use provided logger or default loggerAdapter from mcp-abap-adt
   const effectiveLogger = logger || loggerAdapter;
+  const wire = { client: sapConfig.client, baseUrl: sapConfig.url };
 
-  return createAbapConnection(
-    sapConfig,
-    effectiveLogger,
-    sessionId,
-    tokenRefresher,
-  );
+  // The mapping connection 1.x's factory applied (basic → on-prem session
+  // protocol, jwt → cloud), now stated here: connection 6.0 removed the factory
+  // and takes the system from the caller.
+  switch (sapConfig.authType) {
+    case 'basic':
+      return new AdtOnPremConnector(
+        sapConfig,
+        new BasicAuthProvider(
+          sapConfig.username ?? '',
+          sapConfig.password ?? '',
+        ),
+        new OnPremHttpTransport(() => ({}), effectiveLogger, wire),
+        effectiveLogger,
+        sessionId,
+      );
+    case 'jwt':
+      return new AdtCloudConnector(
+        sapConfig,
+        new TokenAuthProvider(tokenRefresher ?? sapConfig.jwtToken ?? ''),
+        new CloudHttpTransport(() => ({}), effectiveLogger, wire),
+        effectiveLogger,
+        sessionId,
+      );
+    default:
+      throw new Error(
+        `Unsupported authType "${sapConfig.authType}" for a direct connection; use a BTP destination.`,
+      );
+  }
 }
 
 /**
@@ -145,5 +176,7 @@ export function getConnectionTypeName(connection: AbapConnection): string {
   if (isCloudSdkConnection(connection)) {
     return 'CloudSdkAbapConnection (BTP Destination)';
   }
-  return 'BaseAbapConnection (Direct Basic/JWT)';
+  return connection instanceof AdtOnPremConnector
+    ? 'AdtOnPremConnector (Direct Basic)'
+    : 'AdtCloudConnector (Direct JWT)';
 }

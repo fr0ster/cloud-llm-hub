@@ -185,7 +185,7 @@ export const outageClassifier: IMcpFailureClassifier = {
 
 /** Join an MCP tool result's `content` down to plain text, whatever shape it
  *  comes in — a bare string, or the standard `[{ type: 'text', text }, ...]`
- *  array `@mcp-abap-adt/lib`'s `return_error` produces. Anything else yields
+ *  array `@mcp-abap-adt/lib`'s error answers produce. Anything else yields
  *  `''`, which `outageFromToolResult` treats as "no tag to find". */
 function extractResultText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -204,9 +204,10 @@ function extractResultText(content: unknown): string {
 }
 
 /**
- * Most ABAP handlers never throw. `@mcp-abap-adt/lib`'s `return_error` (274 of
- * 326 handlers route through it) catches the connector's error and RETURNS
- * `{ isError: true, content: [{ type: 'text', text }] }` — a successful
+ * Most ABAP handlers never throw. `@mcp-abap-adt/lib` catches the connector's
+ * error (`answer()` since lib 11, `return_error` before it) and RETURNS
+ * `{ isError: true, content: [{ type: 'text', text }] }`, the connector's
+ * message kept inside `text` — a successful
  * dispatch as far as `invokeEmbeddedTool` is concerned, so `asOutage` on a
  * thrown error never runs and the connector's `[status]` tag, still present in
  * `text`, is never read.
