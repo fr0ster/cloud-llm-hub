@@ -37,12 +37,6 @@ A real customer asked the question through one dense prompt: a baseline program,
 
 This tutorial decomposes that prompt into five staged checkpoints.
 
-## On the worked example in `examples/`
-
-The artifacts under `examples/` are from a real 2026-05-19 sFTP analysis run, with real customer object names (`Z*`, `ZDEMO_FT_*`, `ZDEMO_MD_*`, etc.) preserved. This repository is private and serves one customer; we don't carry an anonymization layer here. If you ever copy these examples to a public repo or share with a third party, anonymize first.
-
-Why keep real names: the tutorial is more credible as evidence ("we actually ran this against a real estate and got these 19 objects"), not as theory.
-
 ## Progress
 
 - [ ] Stage 1: task formalized; `task-formalization.md` reviewed.
@@ -86,7 +80,6 @@ Steps:
 
 Checkpoint: can a stranger tell when the analysis is done, what evidence is allowed, and what must not be solved yet?
 
-Example: [01-task.md](examples/01-task.md).
 
 ## Stage 2: Determine SFTP methods
 
@@ -104,7 +97,6 @@ Steps:
 
 Checkpoint: does `02-methods.md` name the methods that define the rest of the analysis, and does each method have source evidence?
 
-Example: [02-methods.md](examples/02-methods.md).
 
 ## Stage 3: Find every usage site
 
@@ -127,7 +119,6 @@ Steps:
 
 Checkpoint: can the usage map explain both what was found and why the search can be called complete within the declared scope?
 
-Example: [03-usage-map.md](examples/03-usage-map.md).
 
 ## Stage 4: Analyze usage
 
@@ -143,7 +134,6 @@ Steps:
 
 Checkpoint: can each conclusion point back to a usage site and source evidence?
 
-Example: [04-analysis.md](examples/04-analysis.md).
 
 ## Stage 5: Form results and verify goal
 
@@ -160,7 +150,6 @@ Steps:
 
 Checkpoint: does `05-result.md` answer the original question and give the migration work enough evidence to start its own process?
 
-Example: [05-result.md](examples/05-result.md).
 
 ## What this tutorial does not teach
 
