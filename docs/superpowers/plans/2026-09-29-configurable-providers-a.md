@@ -2157,9 +2157,17 @@ read back.
   - `tools/verify-consumer-xsuaa.sh` passes for both consumers;
   - one agent read request succeeds;
   - the log shows `Shared tool corpus loaded` from the committed bundle.
-  - `cf env cloud-llm-hub-staging-srv` shows the Task 10b keys with the values
-    from `.mtaext.staging`, matching what the build step printed as its
-    effective config.
+  - the `.mtaext.staging` is unchanged, so it sets none of the Task 10b keys.
+    `cf env cloud-llm-hub-staging-srv` therefore shows them empty or absent,
+    never the string `null`;
+  - the effective config agrees on both sides. The app log line
+    `Agent configuration loaded` shows `ragBackends` and `embedder`, and they
+    equal what the build step printed. Both equal the defaults derived from
+    the legacy `LLM_AGENT_RAG_TYPE`: tools, session and persistent on
+    `vector`, embedder `sap-ai-core`.
+  - The generator must print that line. Add
+    `console.log('effective config', { ragBackends: config.rag.backends, embedder: config.rag.embedder?.kind })`
+    in Task 9 right after `loadAgentConfig()`.
 
   Deploying is outward-facing, so confirm with the user first.
 - [ ] **Step 3: Full checks and the PR**
