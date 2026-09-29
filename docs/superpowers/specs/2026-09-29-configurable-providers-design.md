@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 9, after eight static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 10, after nine static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -179,6 +179,17 @@ service does not do is switch a collection's backend or embedding model while
 it runs. The catalog is
 read at startup; a collection created on one instance is seen by the others
 after their next restart.
+
+**Visibility while filling.** A collection is visible from the moment its
+record exists, and every document whose backend write is confirmed is part of
+it. There is no "filling" state and no publish step. That is today's
+behaviour of in-memory collections, which fill upload by upload.
+
+- A restore on any instance therefore shows exactly the confirmed documents.
+  During an upload, or after an upload that was cut off, that is a partial
+  collection, and it is expected.
+- A caller that needs a complete set checks the document count it expects,
+  or re-runs the upload. Uploads are idempotent per document id.
 
 **Catalog.** llm-agent's `QdrantRagProvider` keeps **exactly one record per
 collection** in a prefixed `rag_collection_catalog` collection. The provider
@@ -457,6 +468,10 @@ Qdrant on an isolated port, never 6333)
     - an instance with `CF_INSTANCE_INDEX=1` serves reads, and every mutation,
       delete of the collection included, fails with `COLLECTION_READ_ONLY`
       and writes nothing;
+  - visibility while filling: create a collection and pause a bulk upload
+    after some documents; a second registry restoring from the same Qdrant
+    lists the collection with exactly the documents confirmed so far. After
+    the upload resumes and completes, the next restore shows all of them;
   - serialization on one instance: pause a document mutation after its
     incarnation check, then start a delete and a re-create of the same
     collection. Both wait until the mutation completes, and the mutation
