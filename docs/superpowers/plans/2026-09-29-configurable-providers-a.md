@@ -2001,11 +2001,34 @@ empty value as unset. If CF sets the literal `null`, make `set()` in
 - [ ] **Step 4: Templates and docs check**
 
 Add the new non-secret parameters, commented out with their defaults, to each
-`docs/deployment/templates/*.mtaext.template`. Then run:
+`docs/deployment/templates/*.mtaext.template`, one line each:
+`  # LLM_AGENT_EMBEDDER: ""`.
+
+`check-docs` reads only active `parameters` keys, so it does not see commented
+lines. The guard for the templates is this test instead. Extend
+`test/unit/mta-config-params.test.ts`:
+
+```ts
+const NEW = [
+  'LLM_AGENT_EMBEDDER', 'LLM_AGENT_EMBEDDER_URL', 'LLM_AGENT_TOOLS_RAG_BACKEND',
+  'LLM_AGENT_SESSION_RAG_BACKEND', 'LLM_AGENT_RAG_BACKEND', 'LLM_AGENT_QDRANT_URL',
+  'LLM_AGENT_QDRANT_PREFIX', 'LLM_AGENT_DESTINATION_SOURCE',
+];
+
+it('every deployment template documents the new parameters', () => {
+  const dir = path.resolve(__dirname, '../../docs/deployment/templates');
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.mtaext.template'))) {
+    const text = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const name of NEW) {
+      expect([f, name, new RegExp(`^\\s*#?\\s*${name}:`, 'm').test(text)]).toEqual([f, name, true]);
+    }
+  }
+});
+```
 
 Run: `npx jest test/unit/mta-config-params.test.ts && node tools/check-docs.js`
-Expected: PASS and `docs:check — OK`. `check-docs` verifies that template
-parameters are declared in `mta.yaml` and referenced.
+Expected: PASS and `docs:check — OK`. `check-docs` still guards any active
+template keys, as before.
 
 - [ ] **Step 5: Commit**
 
