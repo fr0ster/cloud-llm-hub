@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 15, user decisions recorded) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 15, follows the goal document) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -33,28 +33,9 @@
   environment. It runs the full agent against a real SAP system through the
   production connection class.
 
-## 0. User decisions
-
-The binding decisions behind this spec, recorded when they were made. Every
-spec change is checked against this list, and a new decision is added here
-first.
-
-| Date | Decision |
-|---|---|
-| 2026-09-29 | Providers (LLM, embedder, RAG backend, destination source) are chosen in configuration, in environment variables, like `LLM_AGENT_PROVIDER`. |
-| 2026-09-29 | A local run is the full agent against a real SAP system, without BTP, through destinations from the environment and the production connection class. |
-| 2026-09-29 | The local default is Ollama for the LLM and the embeddings, and the local run uses Qdrant. |
-| 2026-09-29 | Keyword search was a crutch. Persistent backends (Qdrant, HANA Vector) are vector-only. |
-| 2026-09-29 | One mechanism for every store; the backend is chosen per store class. Tools and session stores default to in-memory for speed; tools may move to Qdrant if it is fast enough. |
-| 2026-09-29 | RAG is wired once at startup from the deploy configuration; changes come with a redeploy. No hot switching, no runtime plugin loading. Not to be designed until the user asks. |
-| 2026-09-29 | Collections are typically filled once and then read. This is the intended use, not an API restriction. |
-| 2026-09-29 | Concurrency belongs to the backend server. The hub adds no writer election, incarnation checks or locks. In-memory writes are exclusive (MCP init) or already locked. |
-| 2026-09-29 | Conflicting writes to one document: the last write wins. |
-| 2026-09-29 | The MCP tool corpus does not change after the build. Its vectors are built at build/deploy time, and startup only loads them. |
-| 2026-09-29 | The tool corpus has one current state, with no generations or history. The build step replaces it in place. |
-| 2026-09-29 | Gaps in our own `@mcp-abap-adt/*` packages are fixed at the source, not worked around in the hub. |
-| 2026-09-29 | The spec is frozen once approved. Changes after planning starts need the user's approval. |
-| 2026-09-29 | The hub needs neither the low-level nor the compact tool groups; the read-only / read-write role grouping stays. |
+**Goal and decisions:** [`docs/superpowers/goals/2026-09-29-configurable-providers.md`](../goals/2026-09-29-configurable-providers.md)
+is the user-owned source of this spec's goals and binding decisions. This spec
+follows it; a conflict is resolved in the goal's favour and raised with the user.
 
 ## 1. Problem
 
@@ -428,7 +409,7 @@ phase 2 ships; until then it fails fast with "not yet supported". Phase 2 adds:
 
 - **`.env.local.example`:**
   - Ollama for the LLM (`/v1`) and the embedder;
-  - Qdrant is used locally (decision in §0):
+  - Qdrant is used locally (decision in the goal document):
     - `LLM_AGENT_TOOLS_RAG_BACKEND=qdrant`;
     - `LLM_AGENT_RAG_BACKEND=qdrant` for persistent collections, once they
       land (Plan B);
