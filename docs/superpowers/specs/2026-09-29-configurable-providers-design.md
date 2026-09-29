@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 11) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 12) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -213,6 +213,11 @@ to, and concurrent requests and instances are coordinated there.
 - The in-memory stores keep the locking they already have.
 - The tool corpus is written once, at initialization, before the service
   accepts requests.
+- **Conflicting mutations of one document:** the last write wins, in the
+  order the backend applies it. There is no versioning. Concurrent editing of
+  one document is not a supported workflow, because collections are filled once
+  and then read. The in-memory map may apply two such writes in a different
+  order until the next restart, which restores the backend's state.
 
 **Mutations are backend-first.** Every document mutation (add, update, delete,
 `rag_correct`, `rag_deprecate`) writes to the backend first and checks its
