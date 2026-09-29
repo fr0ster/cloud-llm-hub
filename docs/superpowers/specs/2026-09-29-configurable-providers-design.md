@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 12) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 13, build-time tool vectors) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -102,11 +102,22 @@ variables.
 
 ## 4. Design
 
-### 4.1 One factory, synchronous
+### 4.1 One factory; stores synchronous, startup async
 
 New `srv/lib/providers.ts`. It is the only code that turns config into
-instances. It is built once at bootstrap and handed to `agent-manager` through
+instances. It is built once at startup and handed to `agent-manager` through
 `initProviders()`.
+
+**Startup is async and light.** Tool vectors are computed at build time (§4.4),
+so startup only loads. It is short enough to await:
+
+1. `prefetchEmbedderFactories([embedder kind])`, which `resolveEmbedder`
+   requires;
+2. `buildProviders(config)`;
+3. only then the collection registry, the RAG routes and the agents.
+
+Today the registry is created synchronously inside `cds.on('bootstrap')`
+(`server.ts:517`). That moves behind this async step.
 
 **Embedder** (`IEmbedder | null`):
 
@@ -300,35 +311,52 @@ embedder fingerprint is compared with the current one.
 Session collections stay in memory unless `LLM_AGENT_SESSION_RAG_BACKEND=qdrant`
 (§4.6).
 
-### 4.4 Tool corpus (review items 5, 1, 2)
+### 4.4 Tool corpus: vectors are built, not computed at startup
 
-- **In memory (default):** unchanged. It is loaded at startup from the bundle,
-  or vectorized at runtime.
-- **On `qdrant`: content-addressed generations with a completion record.**
-  - Each role's store is `tools-<role>-<fp>-<corpus>`. `<fp>` hashes the embedder
-    fingerprint; `<corpus>` hashes that role's sorted `(tool id, enriched text)`
-    pairs.
-  - **A generation is complete only when its catalog record exists.** The record
-    is written after all points are upserted AND `countPoints` equals the
-    expected count.
-  - **Startup, per role:**
-    1. Record present: use the store, with no writes and no embedding.
-    2. Record absent: upsert every point (from the bundle when its fingerprint
-       matches, else by runtime vectorization), verify the count, then write
-       the record.
+The tool corpus is fully determined by code: the embedded MCP server's tool
+sets (ABAP read-only, ABAP read-write, the RAG tools), taken from
+`HandlerExporter`, plus the committed intents (`srv/tool-intents.json`).
+Nothing about it changes after the build. Its vectors are therefore produced
+at build/deploy time, and startup only loads them.
 
-       This covers a crash mid-write: the next start finds no record and
-       writes again. Point IDs are deterministic, so re-writing is idempotent.
-  - **Parallel instances (rolling deploy, several instances):**
-    - Instances with the same corpus and embedder resolve to the same name and
-      write identical points. The record's create-if-absent makes the second
-      write a no-op.
-    - Nothing deletes another generation at startup, so an old instance keeps
-      its store while it runs.
-  - **Cleanup** is a separate, operator-run tool (`tools/rag-gc.ts`). It lists
-    generations per role together with their records, and deletes only the
-    generations the operator names, or those older than a given age. It never
-    deletes the generation the running configuration resolves to.
+**Build step** (`tools/generate-tool-embeddings.ts`, extended):
+
+- It builds the corpus from code, exactly as runtime does today.
+- It embeds it with the embedder in the target configuration.
+- It writes the result to the configured tools backend:
+  - **in-memory / vector:** a bundle file for that embedder's fingerprint. The
+    committed AI Core bundle `srv/tool-embeddings.json` stays the default one.
+  - **qdrant:** the role stores `tools-<role>-<fp>-<corpus>`, where `<fp>`
+    hashes the embedder fingerprint and `<corpus>` hashes that role's sorted
+    `(tool id, enriched text)` pairs. After all points are written and
+    `countPoints` equals the expected count, the step writes a completion
+    record in the catalog. A generation without a record is incomplete; the
+    next build run writes it again, idempotently, because point ids are
+    deterministic.
+- Locally, the `dev:local` script runs this step before starting. On BTP,
+  `tools/deploy.sh` runs it before `cf deploy`, using the fork's target
+  configuration.
+
+**Startup** loads and never embeds the corpus:
+
+- **in-memory / vector:** loads the bundle whose fingerprint and corpus match.
+- **qdrant:** opens the role stores whose completion records exist for the
+  computed names.
+- **Nothing matching** means the build step did not run for this
+  configuration. It is a deployment defect, reported as an explicit error
+  naming the build step. The agents start without tool retrieval, and SAP tool
+  requests fail with that error. There is no runtime vectorization of the tool
+  corpus any more (`vectorizeToolDocs` at startup, the background build and the
+  supplement path go).
+- **Migration note:** a deployment whose embedder is not covered by the
+  committed bundle (an `openai` embedder today) must run the build step from
+  now on.
+
+**Cleanup** of old generations stays a separate, operator-run tool
+(`tools/rag-gc.ts`). It lists generations per role together with their records,
+and deletes only the generations the operator names, or those older than a
+given age. It never deletes the generation the running configuration resolves
+to.
 
 ### 4.5 Destination source
 
@@ -386,8 +414,12 @@ phase 2 ships; until then it fails fast with "not yet supported". Phase 2 adds:
 - **`docker-compose.local.yml`:** Qdrant only (Ollama runs natively).
   - Project `cloud-llm-hub-local`, named volume.
   - Host ports **6433 / 6434**. 6333 is commonly taken by other projects' Qdrant.
-- **A `dev:local` npm script:** warns when a `default-env.json` would make the
-  run hybrid, then runs `cds watch --profile development`.
+- **A `dev:local` npm script:**
+  - warns when a `default-env.json` would make the run hybrid;
+  - runs the tool-vector build step for the local configuration (§4.4). It
+    exits early when the matching bundle or completed Qdrant generation already
+    exists;
+  - then runs `cds watch --profile development`.
 - **`docs/development/LOCAL_RUN.md`:** TL;DR, prerequisites, five steps, calling
   the agent with `x-sap-login` / `x-sap-password`, troubleshooting.
 - `README.md`, `docs/llm-agent/CONFIG_USAGE.md` and `.env.example` get the new
@@ -440,14 +472,15 @@ Qdrant on an isolated port, never 6333)
   - a record with a different embedder fingerprint restores as `incompatible`:
     export works, search refuses, and delete plus re-create plus reload makes it
     searchable again.
-- **Tools on Qdrant:**
-  - a second start makes zero embedding calls;
-  - a partial write (crash simulated before the record) is completed on the
-    next start;
-  - two registries starting concurrently on the same corpus both end with one
-    complete generation;
-  - a corpus change writes a new generation and leaves the old one;
-    `rag-gc` removes it on request.
+- **Tool vectors (build step and startup):**
+  - startup with a matching bundle or completed generation makes zero
+    embedding calls;
+  - startup without one reports the explicit build-step error and embeds
+    nothing;
+  - a build run interrupted before the completion record is completed by the
+    next build run;
+  - a corpus change makes the build write a new generation and leave the old
+    one; `rag-gc` removes it on request.
 - **Qdrant down:** explicit errors.
 
 **Speed**
