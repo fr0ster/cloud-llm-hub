@@ -99,6 +99,7 @@ rev. 13 (approved, `4766543c`).
 | `tools/probe-direct-session.ts` (create) | Task 1 session-affinity probe |
 | `tools/dev-local.js` (create) | `dev:local` npm script |
 | `tools/tool-rag-queries.json`, `tools/measure-tool-rag.ts` (create) | speed and ranking measurement |
+| `mta.yaml`, `docs/deployment/templates/*.mtaext.template` (modify) | declare the new parameters and pass them to `cloud-llm-hub-srv` |
 | `.env.local.example`, `docker-compose.local.yml` (create) | local kit |
 | `docs/development/LOCAL_RUN.md` (create), `README.md`, `docs/llm-agent/CONFIG_USAGE.md`, `.env.example`, `.gitignore`, `package.json` (modify) | docs and scripts |
 
@@ -1918,6 +1919,103 @@ git commit -m "feat(dev): local-run kit — Ollama, Qdrant, env destinations"
 
 ---
 
+### Task 10b: Carry the new settings through the MTA descriptor
+
+On BTP the app sees a `.mtaext` value only when `mta.yaml` declares the
+parameter and passes it as `${NAME}` into the `cloud-llm-hub-srv` properties,
+as it does for `LLM_AGENT_RAG_TYPE` (lines 19 and 89). Without this, the build
+step (Task 9, reading `.mtaext`) and the deployed app would see different
+configurations.
+
+**Files:**
+- Modify: `mta.yaml` (parameters block ~14-34, srv `properties` ~84-100)
+- Modify: `docs/deployment/templates/*.mtaext.template`
+- Test: `test/unit/mta-config-params.test.ts`
+
+**Interfaces:**
+- Consumes: the variable names parsed in Task 2.
+- Produces: nothing new in code.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { load } from 'js-yaml';
+
+// Non-secret settings parsed by parseRagConfig / parseDestinationConfig.
+// Secrets (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY) go through
+// .env → cf set-env (tools/deploy.sh), never through mta.yaml.
+const CARRIED = [
+  'LLM_AGENT_EMBEDDER', 'LLM_AGENT_EMBEDDING_MODEL', 'LLM_AGENT_EMBEDDER_URL',
+  'LLM_AGENT_TOOLS_RAG_BACKEND', 'LLM_AGENT_SESSION_RAG_BACKEND', 'LLM_AGENT_RAG_BACKEND',
+  'LLM_AGENT_RAG_TYPE', 'LLM_AGENT_QDRANT_URL', 'LLM_AGENT_QDRANT_PREFIX',
+  'LLM_AGENT_DESTINATION_SOURCE',
+];
+
+it('every non-secret RAG/destination setting reaches cloud-llm-hub-srv', () => {
+  const mta = load(fs.readFileSync(path.resolve(__dirname, '../../mta.yaml'), 'utf8')) as {
+    parameters: Record<string, unknown>;
+    modules: { name: string; properties?: Record<string, unknown> }[];
+  };
+  const srv = mta.modules.find((m) => m.name === 'cloud-llm-hub-srv');
+  for (const name of CARRIED) {
+    expect([name, name in mta.parameters]).toEqual([name, true]);
+    expect([name, srv?.properties?.[name]]).toEqual([name, `\${${name}}`]);
+  }
+});
+```
+
+- [ ] **Step 2: Run to confirm it fails**
+
+Run: `npx jest test/unit/mta-config-params.test.ts`
+Expected: FAIL on `LLM_AGENT_EMBEDDER`.
+
+- [ ] **Step 3: Edit `mta.yaml`**
+
+In `parameters`, after `LLM_AGENT_RAG_QUERY_K`, add:
+
+```yaml
+  # RAG providers (spec §3). Empty = today's behaviour. Secrets
+  # (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY) are NOT here:
+  # put them in the fork's .env, which tools/deploy.sh applies with cf set-env.
+  LLM_AGENT_EMBEDDER:
+  LLM_AGENT_EMBEDDER_URL:
+  LLM_AGENT_TOOLS_RAG_BACKEND:
+  LLM_AGENT_SESSION_RAG_BACKEND:
+  LLM_AGENT_RAG_BACKEND:
+  LLM_AGENT_QDRANT_URL:
+  LLM_AGENT_QDRANT_PREFIX:
+  LLM_AGENT_DESTINATION_SOURCE:
+```
+
+In the `cloud-llm-hub-srv` `properties`, after `LLM_AGENT_RAG_QUERY_K`, add one
+`NAME: ${NAME}` line for each of the eight names above.
+
+Check the empty-value behaviour before relying on it: deploy the fork's
+staging once in Task 12. Verify that `cf env cloud-llm-hub-staging-srv` shows
+these keys empty or absent, not the string `null`. `parseRagConfig` treats an
+empty value as unset. If CF sets the literal `null`, make `set()` in
+`agent-config.ts` treat `'null'` as unset too, and extend the Task 2 tests.
+
+- [ ] **Step 4: Templates and docs check**
+
+Add the new non-secret parameters, commented out with their defaults, to each
+`docs/deployment/templates/*.mtaext.template`. Then run:
+
+Run: `npx jest test/unit/mta-config-params.test.ts && node tools/check-docs.js`
+Expected: PASS and `docs:check — OK`. `check-docs` verifies that template
+parameters are declared in `mta.yaml` and referenced.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add mta.yaml docs/deployment/templates test/unit/mta-config-params.test.ts
+git commit -m "feat(mta): carry RAG provider and destination settings to the srv module"
+```
+
+---
+
 ### Task 11: Measure tool retrieval — in-memory vs Qdrant
 
 **Files:**
@@ -2059,6 +2157,9 @@ read back.
   - `tools/verify-consumer-xsuaa.sh` passes for both consumers;
   - one agent read request succeeds;
   - the log shows `Shared tool corpus loaded` from the committed bundle.
+  - `cf env cloud-llm-hub-staging-srv` shows the Task 10b keys with the values
+    from `.mtaext.staging`, matching what the build step printed as its
+    effective config.
 
   Deploying is outward-facing, so confirm with the user first.
 - [ ] **Step 3: Full checks and the PR**
