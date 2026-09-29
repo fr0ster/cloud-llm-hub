@@ -2152,7 +2152,7 @@ read back.
   - a scratch create + activate in the user's package leaves no lock, per
     SM12 or a second LOCK.
 - [ ] **Step 2: BTP regression.** Deploy the branch to a deployment fork's
-  staging (`deploy/<subaccount>`, `tools/deploy.sh staging`) with an
+  staging (`<deployment fork>`, its deploy branch, `tools/deploy.sh staging`) with an
   **unchanged** `.mtaext`. It passes when:
   - `tools/verify-consumer-xsuaa.sh` passes for both consumers;
   - one agent read request succeeds;
