@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 2, after static review) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 3, after two static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -18,7 +18,7 @@
   |---|---|
   | tool corpus | in-memory, as today |
   | session (session collections + conversation history) | in-memory, as today |
-  | persistent collections (user, role, global) | Qdrant when configured |
+  | persistent collections (scope `user`) | Qdrant when configured |
 
   Moving tools or sessions to Qdrant is a configuration change, not a code
   change.
@@ -128,9 +128,15 @@ interface RagStoreFactory {
 - `qdrant`: `new QdrantRag({ url, collectionName, embedder, credential })`.
   Its constructor is synchronous, and the collection is created on the first
   write. It is **not** wrapped in `FallbackRag`.
-- `listStores` / `deleteStore` are backend operations (Qdrant REST
-  `GET /collections`, `DELETE /collections/{name}`). They are not `IRag`
-  methods. The in-memory backends answer from their own map.
+- `listStores` / `deleteStore` / `countPoints` / `scrollStore` are backend
+  operations (Qdrant REST `GET /collections`, `DELETE /collections/{name}`,
+  `POST …/points/count`, `POST …/points/scroll`). They are not `IRag` methods.
+  The in-memory backends answer from their own map.
+- **Sync handle, async lifecycle.** `create` only builds a handle. Everything
+  that talks to the backend is async: creating a catalog record, deleting,
+  counting, scrolling, restoring. `CollectionRegistry.createCollection` /
+  `deleteCollection` become `async`; their callers (the RAG HTTP handlers) are
+  async already and are updated.
 
 **Destination source** (`DestinationSource`), §4.5.
 
@@ -154,53 +160,86 @@ uses them.
   - embedder down gives an explicit error, and the breaker's open state is
     reported.
 
-### 4.3 Persistent collections and their catalog (review item 2)
+### 4.3 Persistent collections and their catalog (review items 2, 3, 4, 6)
 
-Persistent collections use llm-agent's `QdrantRagProvider`. It keeps a catalog,
-one record per collection, in a Qdrant collection (`rag_collection_catalog`,
-prefixed). Each record carries:
+**Scope.** Only `scope: 'user'` collections become persistent, which is the
+access model the registry has today (`CollectionMeta.scope` is
+`'user' | 'session'`, `listCollections` checks the owner). Role or global
+collections would be a new access model and are out of this spec.
+
+**Catalog.** llm-agent's `QdrantRagProvider` keeps one record per collection in
+a prefixed `rag_collection_catalog` collection. Each record carries:
 
 - `storeName` and `name`;
-- the owner: `scope` = `user` | `global`, plus the owner id;
-- opaque `attributes`, where the hub keeps its own metadata: role, description,
-  enabled state, source.
+- the owner: `scope: 'user'` plus the user id;
+- `attributes`, the hub's metadata:
+  - description, enabled state, source;
+  - **`embedder`: the fingerprint of the model its vectors were written with.**
 
-`CollectionRegistry` changes as follows:
+**Lifecycle.**
 
-- **Create:** `provider.createCollection(store, { scope, owner, collectionName,
-  attributes })`. The record is written last, so a crash leaves no half
-  collection.
-- **Startup:** `provider.describeCollections()` → `openCollection(record)` for
-  each record. This rebuilds the registry's `Map`, so collections come back
-  searchable, exportable and deletable.
-- **Delete:** `provider.deleteCollection(store)` deletes the record first, then
-  the store.
-- **Orphans:** a store with the prefix but without a record (from a crash
-  between the two writes) is listed and logged at startup, never auto-deleted.
-- **Owner isolation** is unchanged. Role collections are `global` with
-  `attributes.role`; the hub's existing checks read that.
+- **Create** (async): `provider.createCollection(store, {…, attributes})`. The
+  record is written last.
+- **Delete** (async): `provider.deleteCollection(store)`. The record goes first,
+  then the store.
+- **Restore at startup** (async, the registry's `ready` promise):
+  1. `describeCollections()` lists the records.
+  2. For each record, `openCollection(record)` gives the handles.
+  3. `scrollStore` reads every point's payload (`{ text, …metadata, id }`) and
+     rebuilds the collection's `documents` map. `listDocuments`, `getDocument`,
+     the counters, export and editing therefore work exactly as today, and
+     memory use is the same as a process that wrote those documents itself.
+  4. The collection endpoints `await registry.ready` before serving, the same
+     block-until-ready pattern as destination init. Tool selection does not
+     wait for it.
+- **Orphans:** a prefixed store without a record is logged at startup, never
+  auto-deleted.
 
-Session collections stay in the registry's in-memory path unless
-`LLM_AGENT_SESSION_RAG_BACKEND=qdrant` (§4.6).
+**Embedder change (review item 4).** On restore, the record's embedder
+fingerprint is compared with the current one.
 
-### 4.4 Tool corpus (review item 5)
+- **Equal:** the collection opens normally.
+- **Different:** the collection is restored with status `incompatible`.
+  - It is listed, and its documents can be read and exported, because they come
+    from payload text.
+  - Search and writes return an explicit error naming both fingerprints.
+  - `reindex` is an explicit action on the collection (registry method plus a RAG
+    endpoint). It re-embeds the payload texts into a new store, writes the new
+    record, then deletes the old record and store. Nothing is re-indexed
+    automatically.
+
+Session collections stay in memory unless `LLM_AGENT_SESSION_RAG_BACKEND=qdrant`
+(§4.6).
+
+### 4.4 Tool corpus (review items 5, 1, 2)
 
 - **In memory (default):** unchanged. It is loaded at startup from the bundle,
   or vectorized at runtime.
-- **On `qdrant`: the stores are immutable and content-addressed.**
-  - Each role's store is named `tools-<role>-<fp>-<corpus>`, where `<fp>` is the
-    embedder fingerprint hash and `<corpus>` is a hash of that role's sorted
-    `(tool id, enriched text)` pairs.
-  - **Startup:**
-    1. Compute both names. A store that exists is used as it is, with zero
-       embedding and zero diff.
-    2. A store that is missing is written in full: from the bundle when its
-       fingerprint matches (zero embedding calls), else by runtime
-       vectorization.
-    3. Afterwards, `listStores('tools', 'tools-<role>-')` finds and deletes
-       every other generation of that role.
-  - This needs no enumeration of points and no per-record diff. A tool that
-    moves between roles changes both hashes and is handled by the same path.
+- **On `qdrant`: content-addressed generations with a completion record.**
+  - Each role's store is `tools-<role>-<fp>-<corpus>`. `<fp>` hashes the embedder
+    fingerprint; `<corpus>` hashes that role's sorted `(tool id, enriched text)`
+    pairs.
+  - **A generation is complete only when its catalog record exists.** The record
+    is written after all points are upserted AND `countPoints` equals the
+    expected count.
+  - **Startup, per role:**
+    1. Record present: use the store, with no writes and no embedding.
+    2. Record absent: upsert every point (from the bundle when its fingerprint
+       matches, else by runtime vectorization), verify the count, then write
+       the record.
+
+       This covers a crash mid-write: the next start finds no record and
+       writes again. Point IDs are deterministic, so re-writing is idempotent.
+  - **Parallel instances (rolling deploy, several instances):**
+    - Instances with the same corpus and embedder resolve to the same name and
+      write identical points. The record's create-if-absent makes the second
+      write a no-op.
+    - Nothing deletes another generation at startup, so an old instance keeps
+      its store while it runs.
+  - **Cleanup** is a separate, operator-run tool (`tools/rag-gc.ts`). It lists
+    generations per role together with their records, and deletes only the
+    generations the operator names, or those older than a given age. It never
+    deletes the generation the running configuration resolves to.
 
 ### 4.5 Destination source
 
@@ -277,15 +316,26 @@ phase 2 ships; until then it fails fast with "not yet supported". Phase 2 adds:
 - `EnvDestinationSource`.
 - Tool-store naming: a role move changes both hashes; an unchanged corpus gives
   the same name.
+- Registry lifecycle: `createCollection` / `deleteCollection` are async;
+  collection endpoints wait for `ready`.
 
 **Integration, env-gated** (skipped without `LLM_AGENT_QDRANT_URL`; a throwaway
 Qdrant on an isolated port, never 6333)
 
-- **Collections:** create → restart (new registry over the same Qdrant) →
-  search, export and delete work. An orphan store is reported.
+- **Collections:**
+  - create → restart (new registry over the same Qdrant) → list, get, export,
+    search and delete work; document counts equal those before the restart;
+  - an orphan store is reported;
+  - a record with a different embedder fingerprint restores as `incompatible`:
+    export works, search refuses, and `reindex` makes it searchable again.
 - **Tools on Qdrant:**
   - a second start makes zero embedding calls;
-  - a corpus change writes a new generation and deletes the old one.
+  - a partial write (crash simulated before the record) is completed on the
+    next start;
+  - two registries starting concurrently on the same corpus both end with one
+    complete generation;
+  - a corpus change writes a new generation and leaves the old one;
+    `rag-gc` removes it on request.
 - **Qdrant down:** explicit errors.
 
 **Speed**
@@ -322,5 +372,8 @@ Qdrant on an isolated port, never 6333)
   the numbers say otherwise.
 - **Catalog and store drift after a crash.** The record is written last and
   deleted first; orphans are reported at startup.
+- **Startup time with many persistent documents.** Restore scrolls every
+  payload. It is measured in the local acceptance; collection endpoints wait
+  for it, tool selection does not.
 - **Local model quality.** The document names a tested tool-calling model and
   calls this a development setup.
