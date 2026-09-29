@@ -181,23 +181,23 @@ interface DestinationSource {
     on a direct path, and `CloudSdkAbapConnection` must keep it rather than
     generating one. A LOCK → update → UNLOCK chain must run on one session.
 
-### 4.5 Tool-RAG ranking on Qdrant
+### 4.5 Retrieval model on persistent backends
 
-`QdrantRag` is vector-only. It lacks the keyword component
-(`vectorWeight 0.7 / keywordWeight 0.3`) and the `TranslatePreprocessor` that
-the tool corpus uses on `vector` today.
+The persistent backends (`qdrant` now, HANA Vector later) are **vector-only**.
+That is the intended retrieval model, not a gap to patch.
 
-- A hub decorator, `PreprocessedQueryRag`, applies the `queryPreprocessors` to
-  the query text before delegating. **It is built only if** the first plan task
-  confirms that `IQueryEmbedding` exposes the text.
-- **Acceptance rule:** before `qdrant` is recommended for the tool corpus
-  anywhere, its ranking is measured with the tool-RAG check (the 31-query ×
-  2-role set used for the lib 13.1 corpus) against `vector`. A pattern test is
-  no substitute for that measurement.
-  - Worse ranking stays documented; tools keep `vector` in the recommended
-    presets.
-  - Such a split then needs a separate `LLM_AGENT_TOOLS_RAG_BACKEND`, added
-    only if the measurement demands it.
+- The keyword component of today's in-process `vector` backend
+  (`keywordWeight 0.3`) was a crutch. It is not reproduced for the new
+  backends: no hybrid wrapper, no per-store backend override.
+- The `vector` backend itself stays unchanged, only so that the default
+  configuration keeps building exactly what it builds today.
+- Query translation (`TranslatePreprocessor`) is a query concern, not a
+  storage one. On a vector-only backend the embedding model must handle the
+  query language. The local preset therefore names a multilingual embedding
+  model.
+- The tool corpus on `qdrant` gets the usual tool-RAG check: load it and
+  measure the 31-query × 2-role set, as for any corpus change. The result is
+  recorded; it does not gate the backend.
 
 ## 5. Local run kit
 
@@ -228,8 +228,7 @@ the tool corpus uses on `vector` today.
   - `providers.ts`: for each configuration, which classes are built. The
     default configuration must yield exactly today's objects;
   - `EnvDestinationSource`;
-  - the restart-diff of §4.3, against an in-memory store;
-  - `PreprocessedQueryRag`, if it is built.
+  - the restart-diff of §4.3, against an in-memory store.
 - **Integration, env-gated** (skipped without `LLM_AGENT_QDRANT_URL`):
   - Qdrant store create, upsert, query, delete;
   - tool-corpus persistence: a second start makes zero embedding calls.
@@ -245,7 +244,8 @@ the tool corpus uses on `vector` today.
 
 ## 7. Risks
 
-- **Ranking regression on Qdrant.** Covered by §4.5's measurement rule.
+- **Query language on vector-only stores.** A multilingual embedding model
+  (§4.5); the tool-RAG check shows whether it holds.
 - **Session affinity on direct destinations.** Covered by the first plan task;
   the rules of `CloudSdkAbapConnection` stay untouched.
 - **Local model quality.** Small Ollama models call tools poorly. The document
