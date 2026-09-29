@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 7, after six static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 8, after seven static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -195,15 +195,33 @@ two stores and two records. Each record carries:
     under the same deterministic name therefore yields a different record.
   - **`embedder`: the fingerprint of the model its vectors were written with.**
 
+**One writing instance.** Only one instance mutates persistent collections:
+the instance with `CF_INSTANCE_INDEX=0`, or the only process in a local run.
+Mutations cover create and delete of a collection, document add, update and
+delete, `rag_correct`, `rag_deprecate`, collection update and `setEnabled`.
+
+- Every other instance using the same prefix serves persistent collections
+  read-only. A mutation there fails with an explicit `COLLECTION_READ_ONLY`
+  error that names the writing instance.
+- With a single writer there is no race between two writers: no instance can
+  delete or re-create a collection between another writer's check and write.
+- The writer is decided by the builder at startup (config reads
+  `CF_INSTANCE_INDEX`), not by the registry.
+- **Residual risk: a rolling deploy.** For a short window an old and a new
+  instance may both have index 0. The incarnation check below narrows that
+  window without closing it. Delete and re-create of a persistent collection
+  should not be done during a deploy; `LOCAL_RUN.md` and the deployment
+  README say so.
+
 **Stale handles.** A handle remembers the `incarnation` it was opened with.
 
-- **Every mutation** of a persistent collection re-reads its record first:
-  document add, update and delete, `rag_correct`, `rag_deprecate`, collection
-  update, `setEnabled`. If the record is absent or its `incarnation` differs,
-  the mutation fails with an explicit `COLLECTION_STALE` error, which tells
-  the caller to restart the instance, and nothing is written. An instance whose
-  collection was deleted and re-created elsewhere can therefore never write
-  into the new one.
+- **Every mutation** of a persistent collection, including its own delete,
+  re-reads its record first. If the record is absent or its `incarnation`
+  differs, the mutation fails with an explicit `COLLECTION_STALE` error, which
+  tells the caller to restart the instance, and nothing is written.
+- This check is a cheap guard for the rolling-deploy window, **not a
+  concurrency guarantee**. Check-then-write is not atomic, and Qdrant offers no
+  compare-and-set. The guarantee is the single writer above.
 - **Reads** skip the check. As stated above, changes made on another instance
   become visible after a restart.
 
@@ -419,9 +437,16 @@ Qdrant on an isolated port, never 6333)
     `rag_correct` and `rag_deprecate` behave as on an in-memory one;
   - update and delete with Qdrant failing: an explicit error, the map is
     unchanged, and after a restart the document is exactly as before;
-  - two instances: B deletes and re-creates a collection that A has open. A's
-    next mutation fails with `COLLECTION_STALE` and writes nothing; after
-    A's restart, A sees B's collection;
+  - single writer:
+    - an instance with `CF_INSTANCE_INDEX=1` serves reads, and every mutation,
+      delete of the collection included, fails with `COLLECTION_READ_ONLY`
+      and writes nothing;
+  - stale guard, with two writers simulated as in the deploy window:
+    - B deletes and re-creates a collection that A has open;
+    - A's next mutation fails with `COLLECTION_STALE`;
+    - after A's restart, A sees B's collection;
+    - the check-then-write race is explicitly out of scope, per the
+      single-writer rule;
   - a chat request that names a collection while restore is slow waits and
     finds it, and no duplicate is auto-created;
   - a record with a different embedder fingerprint restores as `incompatible`:
@@ -470,6 +495,9 @@ Qdrant on an isolated port, never 6333)
   it; `CloudSdkAbapConnection` rules stay untouched.
 - **Qdrant latency for tool selection.** Measured; tools stay in memory unless
   the numbers say otherwise.
+- **Two writers during a rolling deploy.** The single-writer rule holds outside
+  that window; inside it, the incarnation check narrows the window and the
+  documentation forbids collection delete/re-create during a deploy.
 - **Catalog and store drift after a crash.** The record is written last and
   deleted first; orphans are reported at startup.
 - **Startup time with many persistent documents.** Restore scrolls every
