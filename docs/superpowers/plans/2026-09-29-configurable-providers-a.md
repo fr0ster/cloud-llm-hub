@@ -2157,9 +2157,15 @@ read back.
   - `tools/verify-consumer-xsuaa.sh` passes for both consumers;
   - one agent read request succeeds;
   - the log shows `Shared tool corpus loaded` from the committed bundle.
-  - the `.mtaext.staging` is unchanged, so it sets none of the Task 10b keys.
-    `cf env cloud-llm-hub-staging-srv` therefore shows them empty or absent,
-    never the string `null`;
+  - the `.mtaext.staging` is unchanged, so it sets none of the **new** Task 10b
+    parameters: `LLM_AGENT_EMBEDDER`, `LLM_AGENT_EMBEDDER_URL`,
+    `LLM_AGENT_TOOLS_RAG_BACKEND`, `LLM_AGENT_SESSION_RAG_BACKEND`,
+    `LLM_AGENT_RAG_BACKEND`, `LLM_AGENT_QDRANT_URL`, `LLM_AGENT_QDRANT_PREFIX`
+    and `LLM_AGENT_DESTINATION_SOURCE`.
+    - `cf env cloud-llm-hub-staging-srv` shows those empty or absent, never the
+      string `null`.
+    - Keys that already existed (`LLM_AGENT_RAG_TYPE`,
+      `LLM_AGENT_EMBEDDING_MODEL`) show the values the extension sets;
   - the effective config agrees on both sides. The app log line
     `Agent configuration loaded` shows `ragBackends` and `embedder`, and they
     equal what the build step printed. Both equal the defaults derived from
