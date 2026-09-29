@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 8, after seven static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 9, after eight static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -212,6 +212,22 @@ delete, `rag_correct`, `rag_deprecate`, collection update and `setEnabled`.
   window without closing it. Delete and re-create of a persistent collection
   should not be done during a deploy; `LOCAL_RUN.md` and the deployment
   README say so.
+
+**Serialization inside the writer.** Two HTTP requests on the writing instance
+can interleave at every `await`. The single-writer rule alone does not stop
+one request from deleting and re-creating a collection while another is
+between its check and its write.
+
+- The registry therefore holds **one async mutex per collection**, keyed by
+  the owner-scoped id `userCollectionId(logicalId, userId)`.
+- The mutex map belongs to the registry, not to a handle, so delete and
+  re-create cannot replace it along with the handle.
+- **Every mutation holds that mutex** from the incarnation check below until
+  the backend operation has completed and memory is updated. Create and
+  delete of the collection take the same mutex.
+- Reads do not take it.
+- Mutations of different collections run in parallel.
+- No timeout is put on the wait (rule: no timeouts).
 
 **Stale handles.** A handle remembers the `incarnation` it was opened with.
 
@@ -441,6 +457,11 @@ Qdrant on an isolated port, never 6333)
     - an instance with `CF_INSTANCE_INDEX=1` serves reads, and every mutation,
       delete of the collection included, fails with `COLLECTION_READ_ONLY`
       and writes nothing;
+  - serialization on one instance: pause a document mutation after its
+    incarnation check, then start a delete and a re-create of the same
+    collection. Both wait until the mutation completes, and the mutation
+    writes into the store it checked. A mutation of a different collection
+    is not blocked;
   - stale guard, with two writers simulated as in the deploy window:
     - B deletes and re-creates a collection that A has open;
     - A's next mutation fails with `COLLECTION_STALE`;
