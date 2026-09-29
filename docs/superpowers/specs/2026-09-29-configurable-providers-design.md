@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 4, after three static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 5, after four static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -25,6 +25,10 @@
 - Persistent backends (Qdrant now, HANA Vector later) are vector-only by
   design. A backend failure is an explicit error, never a silent keyword
   fallback.
+- **Everything is wired once, at startup, from the deploy's configuration.** A
+  change of backend or embedding model is a redeploy. Nothing is switched,
+  re-indexed or plugged in at runtime, although the framework could load RAG as
+  a plugin.
 - A local run is one configuration: Ollama, Qdrant, destinations from the
   environment. It runs the full agent against a real SAP system through the
   production connection class.
@@ -167,21 +171,22 @@ access model the registry has today (`CollectionMeta.scope` is
 `'user' | 'session'`, `listCollections` checks the owner). Role or global
 collections would be a new access model and are out of this spec.
 
-**Catalog.** llm-agent's `QdrantRagProvider` keeps one record per collection in
-a prefixed `rag_collection_catalog` collection. Each record carries:
+**Usage model.** A persistent collection is filled once and then read. It is
+not rewritten in place and not switched while the service runs. The catalog is
+read at startup; a collection created on one instance is seen by the others
+after their next restart.
+
+**Catalog.** llm-agent's `QdrantRagProvider` keeps **exactly one record per
+collection** in a prefixed `rag_collection_catalog` collection. The record's
+key is the owner-scoped id the registry already uses:
+`userCollectionId(logicalId, userId)`. Two users' `notes` are therefore two
+records and two stores. Each record carries:
 
 - `storeName` and `name`;
 - the owner: `scope: 'user'` plus the user id;
 - `attributes`, the hub's metadata:
-  - `collectionId` (the logical id the hub exposes) and `generation` (an integer);
-  - description, enabled state, source;
+  - the logical id, description, enabled state, source;
   - **`embedder`: the fingerprint of the model its vectors were written with.**
-
-**Active version.** Several records may carry the same `collectionId` for a
-while, for example during a reindex. The active one is always the record with
-the highest `generation`. Lower generations of the same `collectionId` are
-deleted, record first and then store, only once a higher one exists. A restart
-between any two steps therefore resolves to exactly one version.
 
 **Payload format.** The point id stays `doc:<collectionId>:<docId>`, as the
 writer builds it today (`rag-collections.ts:759`). The payload explicitly
@@ -197,10 +202,15 @@ from the payload. It never derives either from the point id.
 
 **Lifecycle.**
 
-- **Create** (async): `provider.createCollection(store, {…, attributes})`. The
-  record is written last.
+- **Create** (async):
+  - `provider.createCollection(store, {…, attributes})`, with the record
+    written last;
+  - if an orphan store with the same name is left from an interrupted delete,
+    it is deleted first, so a re-created collection never inherits old
+    documents.
 - **Delete** (async): `provider.deleteCollection(store)`. The record goes first,
-  then the store.
+  then the store. A collection has only one record, so there is nothing a
+  later start could restore it from. A store left behind is an orphan.
 - **Update** (async): `updateCollection` (rename, description) and `setEnabled`
   write the record's attributes, then update memory. The installed
   `QdrantRagProvider` has no method for this. **Prerequisite: a llm-agent PR**
@@ -211,10 +221,9 @@ from the payload. It never derives either from the point id.
 - **Restore at startup** (async, the registry's `ready` promise):
   1. `describeCollections()` lists the records.
   2. For each record, `openCollection(record)` gives the handles.
-  3. `scrollStore` reads every point's payload (`{ text, …metadata, id }`) and
-     rebuilds the collection's `documents` map. `listDocuments`, `getDocument`,
-     the counters, export and editing therefore work exactly as today, and
-     memory use is the same as a process that wrote those documents itself.
+  3. `scrollStore` reads every point's payload and rebuilds the collection's
+     `documents` map. `listDocuments`, `getDocument`, the counters and export
+     therefore work exactly as today.
   4. **Every registry method that touches a persistent collection awaits
      `ready` itself** and is therefore async. Callers cannot forget the wait:
      the RAG endpoints, the chat path (`openai-handler` resolves and attaches
@@ -224,23 +233,17 @@ from the payload. It never derives either from the point id.
 - **Orphans:** a prefixed store without a record is logged at startup, never
   auto-deleted.
 
-**Embedder change (review item 4).** On restore, the record's embedder
-fingerprint is compared with the current one.
+**Embedder change.** Changing the model is a redeploy. On restore, the record's
+embedder fingerprint is compared with the current one.
 
 - **Equal:** the collection opens normally.
 - **Different:** the collection is restored with status `incompatible`.
   - It is listed, and its documents can be read and exported, because they come
     from payload text.
   - Search and writes return an explicit error naming both fingerprints.
-  - `reindex` is an explicit action on the collection (registry method plus a RAG
-    endpoint). It works in three steps:
-    1. re-embed the payload texts into a new store;
-    2. write that store's record with `generation + 1`;
-    3. delete the old record, then the old store.
-
-    A crash after step 1 leaves an orphan store, which is reported. A crash
-    after step 2 leaves two records, and the higher generation wins at
-    restore. Nothing is re-indexed automatically.
+- **Recovery** is to fill the collection again, the way it was first filled:
+  delete and re-create it, then load the documents. The export makes that
+  possible without the original sources. There is no in-place reindex.
 
 Session collections stay in memory unless `LLM_AGENT_SESSION_RAG_BACKEND=qdrant`
 (§4.6).
@@ -364,12 +367,16 @@ Qdrant on an isolated port, never 6333)
     exactly as before it;
   - create → update (rename, description, enabled) → restart keeps the
     update;
-  - reindex interrupted after each step, then restarted, ends with exactly one
-    active version;
+  - two owners with the same logical id stay independent across delete and
+    restart;
+  - delete interrupted between record and store, then restarted: the collection
+    stays gone and the store is reported as an orphan; re-creating the same
+    name starts empty;
   - a chat request that names a collection while restore is slow waits and
     finds it, and no duplicate is auto-created;
   - a record with a different embedder fingerprint restores as `incompatible`:
-    export works, search refuses, and `reindex` makes it searchable again.
+    export works, search refuses, and delete plus re-create plus reload makes it
+    searchable again.
 - **Tools on Qdrant:**
   - a second start makes zero embedding calls;
   - a partial write (crash simulated before the record) is completed on the
