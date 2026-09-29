@@ -34,6 +34,29 @@ rev. 13 (approved, `4766543c`).
   catalog, and the llm-agent `updateCollection` prerequisite.
 - Until Plan B lands, `LLM_AGENT_RAG_BACKEND=qdrant` fails fast (Task 2).
 
+## Amendments (after execution started, user-approved)
+
+Goal document: `docs/superpowers/goals/2026-09-29-configurable-providers.md`,
+owned by the user. Spec rev. 14–15 follows it. Where the task texts below
+disagree with these amendments, **the amendments win**:
+
+1. **Tool corpus has one current state; there are no generations**
+   (spec §4.4, commit d1d5a503).
+   - `toolStoreName(role)` is fixed: `tools-reader` / `tools-writer`.
+   - The catalog record carries the fingerprint and corpus hashes.
+   - The build step skips a role whose hashes match, and otherwise replaces
+     that role's store in place.
+   - Startup accepts a role store only when its record's hashes match.
+   - `tools/rag-gc.ts` and age-based cleanup are removed.
+   - This replaces the naming in Task 7, the qdrant path in Task 8, and the
+     generation, rag-gc and completion-record text in Task 9.
+2. **The local run uses Qdrant for tools.** `.env.local.example` sets
+   `LLM_AGENT_TOOLS_RAG_BACKEND=qdrant`. Persistent collections move to Qdrant
+   with Plan B; session stays in memory.
+3. **The write-visibility barrier `stores.awaitWrites` is temporary.** It is
+   removed once `@mcp-abap-adt/qdrant-rag` writes points with `wait=true`
+   (upstream PR, fixed at the source).
+
 ## Global Constraints
 
 - **No component reads these variables.** Only `srv/agent-config.ts` parses
@@ -95,7 +118,6 @@ rev. 13 (approved, `4766543c`).
 | `srv/agent-manager.ts` (modify) | `initProviders()`, drop `getOrCreateEmbedder`, load-only tool corpus |
 | `srv/server.ts` (modify) | async startup step before the registry and the RAG routes |
 | `tools/generate-tool-embeddings.ts` (modify) | build step: bundle or Qdrant generation + completion record |
-| `tools/rag-gc.ts` (create) | operator cleanup of old tool generations |
 | `tools/probe-direct-session.ts` (create) | Task 1 session-affinity probe |
 | `tools/dev-local.js` (create) | `dev:local` npm script |
 | `tools/tool-rag-queries.json`, `tools/measure-tool-rag.ts` (create) | speed and ranking measurement |
@@ -1836,8 +1858,8 @@ LLM_AGENT_EMBEDDER=ollama
 LLM_AGENT_EMBEDDING_MODEL=bge-m3
 LLM_AGENT_EMBEDDER_URL=http://localhost:11434
 
-LLM_AGENT_TOOLS_RAG_BACKEND=vector
-LLM_AGENT_SESSION_RAG_BACKEND=vector
+LLM_AGENT_TOOLS_RAG_BACKEND=qdrant
+LLM_AGENT_SESSION_RAG_BACKEND=in-memory
 LLM_AGENT_RAG_BACKEND=vector
 LLM_AGENT_QDRANT_URL=http://localhost:6433
 
@@ -1846,8 +1868,8 @@ LLM_AGENT_MCP_DESTINATION=SAP_DEV
 destinations=[{"name":"SAP_DEV","url":"https://sap.example.com:44300","proxyType":"Internet","authentication":"NoAuthentication","sapClient":"100"}]
 ```
 
-Plan B switches `LLM_AGENT_RAG_BACKEND` to `qdrant`. Task 11 decides the tools
-line.
+Plan B switches `LLM_AGENT_RAG_BACKEND` to `qdrant`. Tools are on Qdrant
+locally (goal decision); Task 11 records the in-memory vs Qdrant numbers.
 
 `docs/development/LOCAL_RUN.md` is ADHD-friendly: a TL;DR first, short chunks.
 It has these sections:
