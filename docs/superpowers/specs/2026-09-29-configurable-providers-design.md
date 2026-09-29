@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 13, build-time tool vectors) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 14, tool corpus: current state only) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -292,9 +292,8 @@ from the payload. It never derives either from the point id.
 - **Orphans:** a prefixed store without a record is logged at startup and
   **never deleted automatically**. Its absent record does not prove the delete
   was interrupted, because another instance may be between creating the store
-  and writing the record. Orphans are removed only by the operator-run
-  `tools/rag-gc.ts`, which lists them with their age and deletes only the ones
-  named or older than a given age, when no writer is active.
+  and writing the record. Orphans are removed only by an operator, directly in
+  Qdrant.
 
 **Embedder change.** Changing the model is a redeploy. On restore, the record's
 embedder fingerprint is compared with the current one.
@@ -324,15 +323,19 @@ at build/deploy time, and startup only loads them.
 - It builds the corpus from code, exactly as runtime does today.
 - It embeds it with the embedder in the target configuration.
 - It writes the result to the configured tools backend:
-  - **in-memory / vector:** a bundle file for that embedder's fingerprint. The
-    committed AI Core bundle `srv/tool-embeddings.json` stays the default one.
-  - **qdrant:** the role stores `tools-<role>-<fp>-<corpus>`, where `<fp>`
-    hashes the embedder fingerprint and `<corpus>` hashes that role's sorted
-    `(tool id, enriched text)` pairs. After all points are written and
-    `countPoints` equals the expected count, the step writes a completion
-    record in the catalog. A generation without a record is incomplete; the
-    next build run writes it again, idempotently, because point ids are
-    deterministic.
+  - **in-memory:** nothing to build (keyword search, no vectors).
+  - **vector:** a bundle file for that embedder's fingerprint. The committed AI
+    Core bundle `srv/tool-embeddings.json` stays the default one.
+  - **qdrant:** ONE store per role with a fixed name (`tools-reader`,
+    `tools-writer`, under the prefix), holding the **current** corpus only.
+    There are no generations and no history.
+    - The role's catalog record carries the embedder fingerprint hash and the
+      corpus hash (a hash of that role's sorted `(tool id, enriched text)`
+      pairs).
+    - When both hashes already match, the step skips the role.
+    - Otherwise it replaces it: delete the old store and its record, write
+      the current corpus, verify `countPoints` equals the expected count,
+      then write the record.
 - Locally, the `dev:local` script runs this step before starting. On BTP,
   `tools/deploy.sh` runs it before `cf deploy`, using the fork's target
   configuration.
@@ -340,8 +343,8 @@ at build/deploy time, and startup only loads them.
 **Startup** loads and never embeds the corpus:
 
 - **in-memory / vector:** loads the bundle whose fingerprint and corpus match.
-- **qdrant:** opens the role stores whose completion records exist for the
-  computed names.
+- **qdrant:** opens the fixed-name role stores when their records exist and
+  both hashes equal the current fingerprint and corpus.
 - **Nothing matching** means the build step did not run for this
   configuration. It is a deployment defect, reported as an explicit error
   naming the build step. The agents start without tool retrieval, and SAP tool
@@ -351,12 +354,6 @@ at build/deploy time, and startup only loads them.
 - **Migration note:** a deployment whose embedder is not covered by the
   committed bundle (an `openai` embedder today) must run the build step from
   now on.
-
-**Cleanup** of old generations stays a separate, operator-run tool
-(`tools/rag-gc.ts`). It lists generations per role together with their records,
-and deletes only the generations the operator names, or those older than a
-given age. It never deletes the generation the running configuration resolves
-to.
 
 ### 4.5 Destination source
 
@@ -417,8 +414,8 @@ phase 2 ships; until then it fails fast with "not yet supported". Phase 2 adds:
 - **A `dev:local` npm script:**
   - warns when a `default-env.json` would make the run hybrid;
   - runs the tool-vector build step for the local configuration (§4.4). It
-    exits early when the matching bundle or completed Qdrant generation already
-    exists;
+    exits early when the matching bundle or the up-to-date Qdrant role stores
+    already exist;
   - then runs `cds watch --profile development`.
 - **`docs/development/LOCAL_RUN.md`:** TL;DR, prerequisites, five steps, calling
   the agent with `x-sap-login` / `x-sap-password`, troubleshooting.
@@ -455,7 +452,7 @@ Qdrant on an isolated port, never 6333)
     restart;
   - delete interrupted between record and store, then restarted: the collection
     stays gone, and the store is reported as an orphan;
-  - re-creating that name fails with `OrphanStoreError` until `rag-gc`
+  - re-creating that name fails with `OrphanStoreError` until an operator
     removes the orphan; afterwards it starts empty;
   - two concurrent creates of the same collection: exactly one succeeds, the
     other gets an explicit duplicate/orphan error, nothing is deleted;
@@ -473,14 +470,14 @@ Qdrant on an isolated port, never 6333)
     export works, search refuses, and delete plus re-create plus reload makes it
     searchable again.
 - **Tool vectors (build step and startup):**
-  - startup with a matching bundle or completed generation makes zero
-    embedding calls;
+  - startup with a matching bundle, or with Qdrant role stores whose records
+    match, makes zero embedding calls;
   - startup without one reports the explicit build-step error and embeds
     nothing;
-  - a build run interrupted before the completion record is completed by the
-    next build run;
-  - a corpus change makes the build write a new generation and leave the old
-    one; `rag-gc` removes it on request.
+  - a build run interrupted before the record is completed by the next build
+    run;
+  - a corpus or embedder change makes the build replace the role store in
+    place; there is exactly one store per role afterwards.
 - **Qdrant down:** explicit errors.
 
 **Speed**
