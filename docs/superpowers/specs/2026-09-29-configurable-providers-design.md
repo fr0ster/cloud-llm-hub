@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 6, after five static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 7, after six static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -191,7 +191,30 @@ two stores and two records. Each record carries:
 - the owner: `scope: 'user'` plus the user id;
 - `attributes`, the hub's metadata:
   - the logical id, description, enabled state, source;
+  - **`incarnation`: a UUID generated on every create.** A delete and re-create
+    under the same deterministic name therefore yields a different record.
   - **`embedder`: the fingerprint of the model its vectors were written with.**
+
+**Stale handles.** A handle remembers the `incarnation` it was opened with.
+
+- **Every mutation** of a persistent collection re-reads its record first:
+  document add, update and delete, `rag_correct`, `rag_deprecate`, collection
+  update, `setEnabled`. If the record is absent or its `incarnation` differs,
+  the mutation fails with an explicit `COLLECTION_STALE` error, which tells
+  the caller to restart the instance, and nothing is written. An instance whose
+  collection was deleted and re-created elsewhere can therefore never write
+  into the new one.
+- **Reads** skip the check. As stated above, changes made on another instance
+  become visible after a restart.
+
+**Mutations are backend-first.** Every document mutation (add, update, delete,
+`rag_correct`, `rag_deprecate`) writes to the backend first and checks its
+`Result`. Only on success does it update the in-memory `documents` map.
+
+- On failure it returns an explicit error, and memory is untouched.
+- The API never reports a change that a restart would undo.
+- This extends §4.2's explicit-error contract from queries to writes.
+- It applies to every backend; an in-memory backend simply never fails.
 
 **Payload format.** The point id stays `doc:<collectionId>:<docId>`, as the
 writer builds it today (`rag-collections.ts:759`). The payload explicitly
@@ -394,6 +417,11 @@ Qdrant on an isolated port, never 6333)
     other gets an explicit duplicate/orphan error, nothing is deleted;
   - on a persistent collection, `updateDocument`, `deleteDocument`,
     `rag_correct` and `rag_deprecate` behave as on an in-memory one;
+  - update and delete with Qdrant failing: an explicit error, the map is
+    unchanged, and after a restart the document is exactly as before;
+  - two instances: B deletes and re-creates a collection that A has open. A's
+    next mutation fails with `COLLECTION_STALE` and writes nothing; after
+    A's restart, A sees B's collection;
   - a chat request that names a collection while restore is slow waits and
     finds it, and no duplicate is auto-created;
   - a record with a different embedder fingerprint restores as `incompatible`:
