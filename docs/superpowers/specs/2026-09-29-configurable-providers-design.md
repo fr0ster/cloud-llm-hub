@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 5, after four static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 6, after five static reviews) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -171,16 +171,21 @@ access model the registry has today (`CollectionMeta.scope` is
 `'user' | 'session'`, `listCollections` checks the owner). Role or global
 collections would be a new access model and are out of this spec.
 
-**Usage model.** A persistent collection is filled once and then read. It is
-not rewritten in place and not switched while the service runs. The catalog is
+**Usage model.** A persistent collection is typically filled once and then
+read. This is the intended use, **not an API restriction**: the existing
+document operations (`updateDocument`, `deleteDocument`, `rag_correct`,
+`rag_deprecate`) keep working as today on persistent collections. What the
+service does not do is switch a collection's backend or embedding model while
+it runs. The catalog is
 read at startup; a collection created on one instance is seen by the others
 after their next restart.
 
 **Catalog.** llm-agent's `QdrantRagProvider` keeps **exactly one record per
-collection** in a prefixed `rag_collection_catalog` collection. The record's
-key is the owner-scoped id the registry already uses:
-`userCollectionId(logicalId, userId)`. Two users' `notes` are therefore two
-records and two stores. Each record carries:
+collection** in a prefixed `rag_collection_catalog` collection. The provider
+keys records by store name, and the store name is **deterministic**:
+`<prefix>-<userCollectionId(logicalId, userId)>`, the owner-scoped id the
+registry already uses, with no random suffix. Two users' `notes` are therefore
+two stores and two records. Each record carries:
 
 - `storeName` and `name`;
 - the owner: `scope: 'user'` plus the user id;
@@ -202,15 +207,23 @@ from the payload. It never derives either from the point id.
 
 **Lifecycle.**
 
-- **Create** (async):
-  - `provider.createCollection(store, {…, attributes})`, with the record
-    written last;
-  - if an orphan store with the same name is left from an interrupted delete,
-    it is deleted first, so a re-created collection never inherits old
-    documents.
+- **Create** (async): `provider.createCollection(store, {…, attributes})`. The
+  provider serializes creation across instances by itself:
+  - the store is created with a request that fails if it exists;
+  - the record is written last, create-if-absent.
+
+  A second, concurrent create of the same collection therefore fails
+  explicitly, with `DuplicateCollectionError` (record present) or
+  `OrphanStoreError` (store present, record not yet). The hub returns that
+  error to the caller and never deletes anything in response.
 - **Delete** (async): `provider.deleteCollection(store)`. The record goes first,
   then the store. A collection has only one record, so there is nothing a
-  later start could restore it from. A store left behind is an orphan.
+  later start could restore it from.
+  - A store left behind by an interrupted delete is an orphan under the same
+    deterministic name.
+  - Until it is removed, re-creating that collection fails with
+    `OrphanStoreError`. It never starts on top of the old documents, and never
+    races the orphan's removal.
 - **Update** (async): `updateCollection` (rename, description) and `setEnabled`
   write the record's attributes, then update memory. The installed
   `QdrantRagProvider` has no method for this. **Prerequisite: a llm-agent PR**
@@ -230,8 +243,12 @@ from the payload. It never derives either from the point id.
      collections itself), the RAG tool dispatcher (which can auto-create
      collections) and presets all go through those methods. Session
      collections and SAP tool selection never wait.
-- **Orphans:** a prefixed store without a record is logged at startup, never
-  auto-deleted.
+- **Orphans:** a prefixed store without a record is logged at startup and
+  **never deleted automatically**. Its absent record does not prove the delete
+  was interrupted, because another instance may be between creating the store
+  and writing the record. Orphans are removed only by the operator-run
+  `tools/rag-gc.ts`, which lists them with their age and deletes only the ones
+  named or older than a given age, when no writer is active.
 
 **Embedder change.** Changing the model is a redeploy. On restore, the record's
 embedder fingerprint is compared with the current one.
@@ -370,8 +387,13 @@ Qdrant on an isolated port, never 6333)
   - two owners with the same logical id stay independent across delete and
     restart;
   - delete interrupted between record and store, then restarted: the collection
-    stays gone and the store is reported as an orphan; re-creating the same
-    name starts empty;
+    stays gone, and the store is reported as an orphan;
+  - re-creating that name fails with `OrphanStoreError` until `rag-gc`
+    removes the orphan; afterwards it starts empty;
+  - two concurrent creates of the same collection: exactly one succeeds, the
+    other gets an explicit duplicate/orphan error, nothing is deleted;
+  - on a persistent collection, `updateDocument`, `deleteDocument`,
+    `rag_correct` and `rag_deprecate` behave as on an in-memory one;
   - a chat request that names a collection while restore is slow waits and
     finds it, and no duplicate is auto-created;
   - a record with a different embedder fingerprint restores as `incompatible`:
