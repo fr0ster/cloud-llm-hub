@@ -3,7 +3,7 @@
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review (rev. 10, after nine static reviews) · **Date:** 2026-09-29
+**Status:** draft for review (rev. 11) · **Date:** 2026-09-29
 
 ## TL;DR
 
@@ -202,55 +202,17 @@ two stores and two records. Each record carries:
 - the owner: `scope: 'user'` plus the user id;
 - `attributes`, the hub's metadata:
   - the logical id, description, enabled state, source;
-  - **`incarnation`: a UUID generated on every create.** A delete and re-create
-    under the same deterministic name therefore yields a different record.
   - **`embedder`: the fingerprint of the model its vectors were written with.**
 
-**One writing instance.** Only one instance mutates persistent collections:
-the instance with `CF_INSTANCE_INDEX=0`, or the only process in a local run.
-Mutations cover create and delete of a collection, document add, update and
-delete, `rag_correct`, `rag_deprecate`, collection update and `setEnabled`.
+**Concurrency is the backend's.** Qdrant, HANA Vector and Postgres apply the
+writes they are sent. The hub never writes a store itself; it asks the server
+to, and concurrent requests and instances are coordinated there.
 
-- Every other instance using the same prefix serves persistent collections
-  read-only. A mutation there fails with an explicit `COLLECTION_READ_ONLY`
-  error that names the writing instance.
-- With a single writer there is no race between two writers: no instance can
-  delete or re-create a collection between another writer's check and write.
-- The writer is decided by the builder at startup (config reads
-  `CF_INSTANCE_INDEX`), not by the registry.
-- **Residual risk: a rolling deploy.** For a short window an old and a new
-  instance may both have index 0. The incarnation check below narrows that
-  window without closing it. Delete and re-create of a persistent collection
-  should not be done during a deploy; `LOCAL_RUN.md` and the deployment
-  README say so.
-
-**Serialization inside the writer.** Two HTTP requests on the writing instance
-can interleave at every `await`. The single-writer rule alone does not stop
-one request from deleting and re-creating a collection while another is
-between its check and its write.
-
-- The registry therefore holds **one async mutex per collection**, keyed by
-  the owner-scoped id `userCollectionId(logicalId, userId)`.
-- The mutex map belongs to the registry, not to a handle, so delete and
-  re-create cannot replace it along with the handle.
-- **Every mutation holds that mutex** from the incarnation check below until
-  the backend operation has completed and memory is updated. Create and
-  delete of the collection take the same mutex.
-- Reads do not take it.
-- Mutations of different collections run in parallel.
-- No timeout is put on the wait (rule: no timeouts).
-
-**Stale handles.** A handle remembers the `incarnation` it was opened with.
-
-- **Every mutation** of a persistent collection, including its own delete,
-  re-reads its record first. If the record is absent or its `incarnation`
-  differs, the mutation fails with an explicit `COLLECTION_STALE` error, which
-  tells the caller to restart the instance, and nothing is written.
-- This check is a cheap guard for the rolling-deploy window, **not a
-  concurrency guarantee**. Check-then-write is not atomic, and Qdrant offers no
-  compare-and-set. The guarantee is the single writer above.
-- **Reads** skip the check. As stated above, changes made on another instance
-  become visible after a restart.
+- The hub adds **no** cross-request or cross-instance coordination of its own:
+  no writer election, no incarnation checks, no per-collection locks.
+- The in-memory stores keep the locking they already have.
+- The tool corpus is written once, at initialization, before the service
+  accepts requests.
 
 **Mutations are backend-first.** Every document mutation (add, update, delete,
 `rag_correct`, `rag_deprecate`) writes to the backend first and checks its
@@ -464,25 +426,10 @@ Qdrant on an isolated port, never 6333)
     `rag_correct` and `rag_deprecate` behave as on an in-memory one;
   - update and delete with Qdrant failing: an explicit error, the map is
     unchanged, and after a restart the document is exactly as before;
-  - single writer:
-    - an instance with `CF_INSTANCE_INDEX=1` serves reads, and every mutation,
-      delete of the collection included, fails with `COLLECTION_READ_ONLY`
-      and writes nothing;
   - visibility while filling: create a collection and pause a bulk upload
     after some documents; a second registry restoring from the same Qdrant
     lists the collection with exactly the documents confirmed so far. After
     the upload resumes and completes, the next restore shows all of them;
-  - serialization on one instance: pause a document mutation after its
-    incarnation check, then start a delete and a re-create of the same
-    collection. Both wait until the mutation completes, and the mutation
-    writes into the store it checked. A mutation of a different collection
-    is not blocked;
-  - stale guard, with two writers simulated as in the deploy window:
-    - B deletes and re-creates a collection that A has open;
-    - A's next mutation fails with `COLLECTION_STALE`;
-    - after A's restart, A sees B's collection;
-    - the check-then-write race is explicitly out of scope, per the
-      single-writer rule;
   - a chat request that names a collection while restore is slow waits and
     finds it, and no duplicate is auto-created;
   - a record with a different embedder fingerprint restores as `incompatible`:
@@ -531,9 +478,6 @@ Qdrant on an isolated port, never 6333)
   it; `CloudSdkAbapConnection` rules stay untouched.
 - **Qdrant latency for tool selection.** Measured; tools stay in memory unless
   the numbers say otherwise.
-- **Two writers during a rolling deploy.** The single-writer rule holds outside
-  that window; inside it, the incarnation check narrows the window and the
-  documentation forbids collection delete/re-create during a deploy.
 - **Catalog and store drift after a crash.** The record is written last and
   deleted first; orphans are reported at startup.
 - **Startup time with many persistent documents.** Restore scrolls every
