@@ -1568,8 +1568,36 @@ const config = loadAgentConfig();
   Move `const config = loadAgentConfig();` below this block, and delete the
   earlier top-level `loadAgentConfig()` line.
 - Keep the uncached-tools abort, the canary and the retry helper as they are.
-- For `target === 'in-memory'`, print `tools are in-memory: no vectors to build`
-  and exit 0.
+- Decide first, with a pure exported function:
+
+```ts
+export type BuildDecision =
+  | { action: 'none'; reason: 'tools are in-memory' }
+  | { action: 'skip'; reason: string }
+  | { action: 'build-bundle'; file: string }
+  | { action: 'build-qdrant' };
+
+export function decideToolBuild(
+  config: AgentConfig,
+  fingerprint: EmbedderFingerprint | null,
+  docs: SharedCorpusDoc[],
+  readBundle: (file: string) => ToolEmbeddingBundle | null,
+): BuildDecision {
+  const target = config.rag.backends.tools;
+  if (target === 'in-memory' || !fingerprint) return { action: 'none', reason: 'tools are in-memory' };
+  if (target === 'qdrant') return { action: 'build-qdrant' }; // per-role skip via completion records below
+  const file = bundleFileFor(fingerprint);
+  const plan = planBundleLoad(readBundle(file), docs, fingerprint);
+  return plan.usable && plan.supplementNames.length === 0
+    ? { action: 'skip', reason: `${file} already matches` }
+    : { action: 'build-bundle', file };
+}
+```
+
+  `main()` acts on it:
+  - `none` / `skip`: print the reason and exit 0, with zero embedding calls;
+  - `build-bundle`: write the bundle as described below;
+  - `build-qdrant`: run the per-role Qdrant path below.
 - For `target === 'vector'`, compute vectors with
   `providers.embedding.embedder.embed` and write the bundle to
   `srv/${bundleFileFor(fingerprint)}`, with the same header as today and
@@ -1849,15 +1877,14 @@ It has these sections:
 `tools/deploy.sh`: after the CF-target check and before `[3/4] Build`, add:
 
 ```bash
-# Tool vectors are built, not computed at startup (spec §4.4).
-TOOLS_BACKEND=$(grep -oP 'LLM_AGENT_TOOLS_RAG_BACKEND:\s*"?\K[a-z-]+' "$MTAEXT" 2>/dev/null || echo "")
-if [ -n "$TOOLS_BACKEND" ] && [ "$TOOLS_BACKEND" != "in-memory" ]; then
-  echo ""
-  echo "[build] Tool vectors for $TOOLS_BACKEND..."
-  # Same extension file cf deploy uses (.mtaext or .mtaext.staging), so the
-  # build step sees the embedder and backend the app will run with.
-  npx tsx tools/generate-tool-embeddings.ts --mtaext "$MTAEXT"
-fi
+# Tool vectors are built, not computed at startup (spec §4.4). Always run the
+# build step: it resolves the effective tools backend with the app's own
+# config rules (legacy LLM_AGENT_RAG_TYPE and defaults included), and it
+# exits without work for in-memory or when matching vectors already exist.
+# Same extension file cf deploy uses (.mtaext or .mtaext.staging).
+echo ""
+echo "[build] Tool vectors..."
+npx tsx tools/generate-tool-embeddings.ts --mtaext "$MTAEXT"
 ```
 
 - [ ] **Step 4: Run the tests and the docs check**
@@ -1865,6 +1892,16 @@ fi
 Run: `npx jest test/unit/dev-local.test.ts && node tools/check-docs.js`
 Expected: PASS, and `docs:check — OK`. The new docs must name only variables
 the code now reads.
+
+Also add a unit test for `decideToolBuild`, with these cases:
+
+- **legacy `.mtaext`:** only `LLM_AGENT_RAG_TYPE: vector`, with
+  `LLM_AGENT_PROVIDER: openai`. `applyMtaext`, then `loadAgentConfig`, then the
+  decision must be `build-bundle` with a `tool-embeddings.<fp>.json` file;
+- **same config** with a reader returning a fully matching bundle: `skip`;
+- **default AI Core config** with the committed bundle
+  (`LLM_AGENT_RAG_TYPE: vector`, provider unset): `skip`;
+- **no RAG variables:** `none`.
 
 Also add a unit test for the generator's `--mtaext` loading. Extract the block
 above into an exported `applyMtaext(file: string, env: NodeJS.ProcessEnv): void`
