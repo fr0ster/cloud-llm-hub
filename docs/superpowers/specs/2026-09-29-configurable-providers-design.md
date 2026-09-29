@@ -1,257 +1,326 @@
-# Configurable providers — embedder, RAG backend, destination source
+# Configurable providers — embedder, RAG backends, destination source
 
 <!-- docs-check:proposed-env — this spec names configuration that does not exist
      yet, by design; the env-name check is skipped here. -->
 
-**Status:** draft for review · **Date:** 2026-09-29
+**Status:** draft for review (rev. 2, after static review) · **Date:** 2026-09-29
 
 ## TL;DR
 
-- The LLM provider is already chosen in configuration (`LLM_AGENT_PROVIDER`).
-  The **embedder**, the **RAG backend** and the **source of SAP destinations**
-  are not: the code hard-wires `VectorRag` / `InMemoryRag` in three places and
-  derives the embedder from the LLM provider.
-- Add three settings next to `LLM_AGENT_PROVIDER`, read in one place
-  (`agent-config.ts`), turned into instances in one place (a composition
-  module), and handed to the components that use them.
-- Qdrant becomes a real backend for every store the hub keeps (tool corpus,
-  conversation history, user collections), on BTP or anywhere else.
-- A local run is then just one configuration: Ollama for the LLM and the
-  embeddings, Qdrant for RAG, destinations from the environment. It runs the
-  full agent against a real SAP system, over the same connection class as
-  production.
+- The LLM provider is chosen in configuration; the **embedder**, the **RAG
+  backends** and the **source of SAP destinations** are not. The code
+  hard-wires `VectorRag` / `InMemoryRag` in three places and derives the
+  embedder from the LLM provider.
+- One mechanism for every store the hub keeps. The backend is chosen **per
+  store class** in configuration:
+
+  | Store class | Default |
+  |---|---|
+  | tool corpus | in-memory, as today |
+  | session (session collections + conversation history) | in-memory, as today |
+  | persistent collections (user, role, global) | Qdrant when configured |
+
+  Moving tools or sessions to Qdrant is a configuration change, not a code
+  change.
+- Persistent backends (Qdrant now, HANA Vector later) are vector-only by
+  design. A backend failure is an explicit error, never a silent keyword
+  fallback.
+- A local run is one configuration: Ollama, Qdrant, destinations from the
+  environment. It runs the full agent against a real SAP system through the
+  production connection class.
 
 ## 1. Problem
 
 | What | Today | Where |
 |---|---|---|
-| LLM | configurable: `sap-ai-sdk` / `openai` / `anthropic` / `deepseek` | `agent-config.ts:135`, `lib/llm-factory.ts` |
-| Embedder | follows the LLM provider: `sap-ai-sdk` → AI Core, anything else → OpenAI `/embeddings` at the LLM's base URL | `agent-manager.ts:995-1036` |
-| RAG backend | `LLM_AGENT_RAG_TYPE`: `in-memory`, or anything else meaning in-process `VectorRag` | `agent-manager.ts:1000, 1070-1082, 1100-1111` |
-| User collections | `CollectionRegistry` has a `RagBackend` contract and a `qdrant` placeholder nobody registers | `rag-collections.ts:60-106, 405-406` |
-| Destinations | BTP Destination Service only (OnPremise + Basic), falling back to `LLM_AGENT_MCP_DESTINATION` | `lib/btp-destinations.ts:132-160` |
+| LLM | configurable | `agent-config.ts:135`, `lib/llm-factory.ts` |
+| Embedder | follows the LLM provider | `agent-manager.ts:995-1036` |
+| RAG backend | `LLM_AGENT_RAG_TYPE`: `in-memory`, else in-process `VectorRag` | `agent-manager.ts:1000, 1070-1082, 1100-1111` |
+| Collections | `CollectionRegistry`: catalog only in a `Map`, `qdrant` a placeholder | `rag-collections.ts:60-106, 405-406` |
+| Destinations | BTP Destination Service only | `lib/btp-destinations.ts:132-160` |
 
-Consequences:
+The consequences:
 
-- Nothing the hub learns survives a restart. All vectors live in process
-  memory, and a non-AI-Core embedder re-vectorizes the whole tool corpus on
-  every start.
-- The `qdrant-rag` and `ollama-embedder` packages are dependencies but unused.
-- A local run cannot give the agent SAP tools without BTP: the agent paths only
-  know destinations, and destinations only come from BTP.
+- Nothing survives a restart.
+- `qdrant-rag` and `ollama-embedder` are dependencies that nothing uses.
+- A local run has no SAP tools without BTP.
 
 ## 2. Goals and non-goals
 
 **Goals**
 
-1. Choose the embedder, the RAG backend and the destination source in
-   configuration, independently of each other and of the LLM provider.
-2. Qdrant as a backend for all three RAG stores, with the tool corpus
-   persisted: a restart with an unchanged embedder does no embedding work.
-3. A local run of the full agent against a real SAP system, without BTP,
-   through `CloudSdkAbapConnection`, the class production uses.
-4. A local kit: an env template, a Qdrant compose file, one npm script, and a
-   document.
+1. Embedder, per-class RAG backend and destination source are chosen in
+   configuration, independently.
+2. Persistent collections live in Qdrant **with their catalog**, and come back
+   after a restart: searchable, exportable, deletable.
+3. Tool corpus and session stores can be moved to Qdrant by configuration.
+4. The full agent runs locally against a real SAP system without BTP, over
+   `CloudSdkAbapConnection`.
+5. A local kit: env template, Qdrant compose file, a `dev:local` npm script,
+   a document.
 
 **Non-goals**
 
-- HANA / pg-vector backends. The design leaves room for them (§4.2), and the
-  `poc-hana-rag` fork adds HANA later.
-- Moving collections to llm-agent's `IRagProvider` catalog model. The hub keeps
-  its own `CollectionRegistry` and owner-in-name isolation.
-- A configuration file. Configuration stays in environment variables: on BTP
-  from the fork's `.mtaext`, locally from `.env`.
-- Changing the default behaviour. With none of the new variables set, the hub
-  builds exactly what it builds today.
+- The HANA Vector backend. It comes later through the same factory, for the
+  `poc-hana-rag` fork.
+- A configuration file. Configuration stays in environment variables.
+- Changing default behaviour. With no new variable set, the hub builds exactly
+  what it builds today. A unit test enforces this.
 
 ## 3. Configuration
 
-All parsed in `srv/agent-config.ts` into typed config. No component reads
-`process.env` for these (rule: configuration belongs to the builder).
+Everything is parsed in `srv/agent-config.ts` only. No component reads these
+variables.
 
-| Variable | Values | Default (= today) |
+| Variable | Values | Default |
 |---|---|---|
 | `LLM_AGENT_EMBEDDER` | `sap-ai-core` \| `openai` \| `ollama` | `sap-ai-core` if `LLM_AGENT_PROVIDER=sap-ai-sdk`, else `openai` |
-| `LLM_AGENT_EMBEDDING_MODEL` | model name | `text-embedding-3-small` (existing variable) |
+| `LLM_AGENT_EMBEDDING_MODEL` | model | `text-embedding-3-small` (existing) |
 | `LLM_AGENT_EMBEDDER_URL` | base URL | `openai`: `LLM_AGENT_BASE_URL`; `ollama`: `http://localhost:11434` |
 | `LLM_AGENT_EMBEDDER_API_KEY` | secret | `openai`: `LLM_AGENT_API_KEY` |
-| `LLM_AGENT_RAG_BACKEND` | `in-memory` \| `vector` \| `qdrant` | derived from `LLM_AGENT_RAG_TYPE`: `in-memory` → `in-memory`, anything else → `vector` |
-| `LLM_AGENT_QDRANT_URL` | URL | none; required when the backend is `qdrant` |
-| `LLM_AGENT_QDRANT_API_KEY` | secret | none (unauthenticated Qdrant) |
-| `LLM_AGENT_QDRANT_PREFIX` | collection-name prefix | `cloud-llm-hub` |
+| `LLM_AGENT_RAG_BACKEND` | `in-memory` \| `vector` \| `qdrant` | persistent collections. Derived from `LLM_AGENT_RAG_TYPE` as today (`in-memory` → `in-memory`, else `vector`) |
+| `LLM_AGENT_TOOLS_RAG_BACKEND` | same | `in-memory` if `LLM_AGENT_RAG_TYPE=in-memory`, else `vector` (today) |
+| `LLM_AGENT_SESSION_RAG_BACKEND` | same | same as tools (today) |
+| `LLM_AGENT_QDRANT_URL` | URL | required when any class uses `qdrant` |
+| `LLM_AGENT_QDRANT_API_KEY` | secret | none |
+| `LLM_AGENT_QDRANT_PREFIX` | name prefix | `cloud-llm-hub` |
 | `LLM_AGENT_DESTINATION_SOURCE` | `btp` \| `env` | `btp` |
 
-- `LLM_AGENT_RAG_TYPE` stays accepted and is mapped as above. A value set in
-  both places must agree, or startup fails.
-- **Fail fast on shape, degrade on outage.** An unknown value, `qdrant` without
-  a URL, or `in-memory` together with an explicit embedder all throw at
-  bootstrap: that is a deployment mistake. An unreachable Qdrant or embedder at
-  runtime degrades through `FallbackRag` to keyword search, as the vector path
-  does today.
-- No timeouts are introduced. `QdrantRag` has no default timeout and we pass
-  none (rule: the consumer closes the connection).
+**Rules:**
+
+- **Fail fast on shape.** Startup throws on:
+  - an unknown value;
+  - `qdrant` without a URL;
+  - an explicit embedder when every class is `in-memory`;
+  - `LLM_AGENT_RAG_TYPE` and a class variable that contradict each other.
+- **No timeouts are introduced.** `QdrantRag` has none by default, and we pass
+  none.
 
 ## 4. Design
 
-### 4.1 Composition module
+### 4.1 One factory, synchronous
 
-New `srv/lib/providers.ts`. It is the only code that turns the typed config into
-instances. It builds three things, once, at startup:
+New `srv/lib/providers.ts`. It is the only code that turns config into
+instances. It is built once at bootstrap and handed to `agent-manager` through
+`initProviders()`.
 
-- **`embedder: IEmbedder | null`**
-  - `ollama` / `openai`: `resolveEmbedder` from `@mcp-abap-adt/llm-agent-rag`;
-  - `sap-ai-core`: the hub's own `SapAiCoreEmbedder`, passed through
-    `composeEmbedder`;
-  - every embedder is wrapped in the existing `CircuitBreakerEmbedder`;
-  - `null` for `in-memory`.
-- **`rag: RagStoreFactory`**, with
-  `create(name, opts?: { queryPreprocessors, documentEnrichers }) → Promise<IRag>`:
-  - `in-memory`: `InMemoryRag`;
-  - `vector`: `FallbackRag(VectorRag(...), InMemoryRag, breaker)`, exactly
-    today's construction;
-  - `qdrant`: `FallbackRag(makeRag({ type: 'qdrant', ... }), InMemoryRag, breaker)`.
-    The collection name is `<prefix>-<name>`, adapted to Qdrant's naming rules;
-  - the factory also exposes `deleteStore(name)` for backends whose stores are
-    physical.
-- **`destinations: DestinationSource`**, either `BtpDestinationSource` or
-  `EnvDestinationSource` (§4.4).
+**Embedder** (`IEmbedder | null`):
 
-`agent-manager.ts` gets these through an `initProviders(providers)` call from
-`server.ts` bootstrap. It stops reading config to decide what to build:
+- `ollama` / `openai`: `resolveEmbedder` (`@mcp-abap-adt/llm-agent-rag`);
+- `sap-ai-core`: the hub's `SapAiCoreEmbedder` via `composeEmbedder`;
+- every embedder is wrapped in `CircuitBreakerEmbedder`.
 
-- `getOrCreateEmbedder` is replaced by `providers.embedder`;
-- `createToolsRagStore`, `getSharedHistoryRag` and `getCollectionRegistry` ask
-  `providers.rag` for their stores;
-- `CollectionRegistry` registers the configured backend as its default through
-  its existing `registerBackend`, including `deleteStore`.
-
-`RagStoreFactory` and `DestinationSource` are hub-local contracts, because only
-the hub uses them. Nothing moves to the shared interfaces packages.
-
-### 4.2 Store names
-
-| Store | Name | Lifetime |
-|---|---|---|
-| Tool corpus, reader | `tools-reader-<fp>` | shared by every destination |
-| Tool corpus, writer | `tools-writer-<fp>` | shared by every destination |
-| History | `history-<fp>` | one store; turns keyed by owner (unchanged) |
-| User collection | `collection-<id>-<nonce>` (existing `storeNameFor`) | deleted with the collection |
-
-- `<fp>` is a short hash of the embedder fingerprint (provider, model, URL).
-  Changing the embedder therefore writes to new stores and never mixes vector
-  spaces. Stale stores are logged at startup, not deleted.
-- Owner isolation is unchanged. It lives in names and keys the hub already
-  controls.
-
-### 4.3 Tool corpus on a persistent backend
-
-`ensureSharedToolsVectorized` keeps its current decision, the bundle plan, and
-adds one step first:
-
-1. **Persistent backend, stores already hold the corpus:** per tool, compare the
-   stored point's text with the current enriched text. The IDs are
-   deterministic (`QdrantRag` derives a UUID from the key). Equal texts mean no
-   work. Only changed or missing tools are embedded and upserted, and tools no
-   longer exported are deleted. **This is the restart path.**
-2. **Otherwise:** today's logic. If the bundle's fingerprint matches the
-   embedder, it is upserted precomputed (zero embedding calls); else the corpus
-   is vectorized at runtime. On `qdrant` this happens once per embedder, not
-   once per start.
-
-### 4.4 Destination source
+**Store factory** (`RagStoreFactory`). Construction is synchronous, so the
+existing sync contracts (`RagBackendFactory`, `createRagStore`,
+`getSharedHistoryRag`) stay as they are:
 
 ```ts
-interface DestinationSource {
-  list(): Promise<SapDestination[]>;
+interface RagStoreFactory {
+  create(storeClass: 'tools' | 'session' | 'persistent', name: string,
+         opts?: VectorStoreOptions): IRag;          // sync
+  deleteStore(storeClass, name): Promise<Result<void, RagError>>;
+  listStores(storeClass, prefix: string): Promise<Result<string[], RagError>>;
 }
 ```
 
-- **`BtpDestinationSource`** is today's `fetchDestinations` plus its filter and
-  its `LLM_AGENT_MCP_DESTINATION` fallback, moved without change of behaviour.
-- **`EnvDestinationSource`** reads the Cloud SDK's own `destinations` variable,
-  a JSON array such as
-  `[{"name":"SAP_DEV","url":"https://host:44300","proxyType":"Internet","authentication":"NoAuthentication","sapClient":"100"}]`.
-  - It lists those entries.
-  - The Cloud SDK's `getDestination` / `executeHttpRequest` already read the
-    same variable, so `resolveDestinationSapConfig` and `CloudSdkAbapConnection`
-    work unchanged.
-  - SAP credentials still come per request from `x-sap-login` / `x-sap-password`,
-    through the existing Basic override. No SAP user or password is ever put in
-    the environment.
-  - `ProxyType: Internet` goes direct, with no connectivity proxy. The connection
-    code already covers Internet destinations (`request-connection.ts:10-13`).
-  - **To verify in the plan's first task:** SAP issues its own `SAP_SESSIONID`
-    on a direct path, and `CloudSdkAbapConnection` must keep it rather than
-    generating one. A LOCK → update → UNLOCK chain must run on one session.
+- `in-memory`: `new InMemoryRag()`.
+- `vector`: today's `FallbackRag(VectorRag, InMemoryRag, breaker)`, unchanged.
+- `qdrant`: `new QdrantRag({ url, collectionName, embedder, credential })`.
+  Its constructor is synchronous, and the collection is created on the first
+  write. It is **not** wrapped in `FallbackRag`.
+- `listStores` / `deleteStore` are backend operations (Qdrant REST
+  `GET /collections`, `DELETE /collections/{name}`). They are not `IRag`
+  methods. The in-memory backends answer from their own map.
 
-### 4.5 Retrieval model on persistent backends
+**Destination source** (`DestinationSource`), §4.5.
 
-The persistent backends (`qdrant` now, HANA Vector later) are **vector-only**.
-That is the intended retrieval model, not a gap to patch.
+`RagStoreFactory` and `DestinationSource` are hub-local contracts: only the hub
+uses them.
 
-- The keyword component of today's in-process `vector` backend
-  (`keywordWeight 0.3`) was a crutch. It is not reproduced for the new
-  backends: no hybrid wrapper, no per-store backend override.
-- The `vector` backend itself stays unchanged, only so that the default
-  configuration keeps building exactly what it builds today.
-- Query translation (`TranslatePreprocessor`) is a query concern, not a
-  storage one. On a vector-only backend the embedding model must handle the
-  query language. The local preset therefore names a multilingual embedding
-  model.
-- The tool corpus on `qdrant` gets the usual tool-RAG check: load it and
-  measure the 31-query × 2-role set, as for any corpus change. The result is
-  recorded; it does not gate the backend.
+### 4.2 Failure handling (review item 1)
+
+- **`vector` (today):** `FallbackRag` falls back to keyword search only while the
+  embedder breaker is open. This stays as it is.
+- **`qdrant`:** a Qdrant or embedder failure returns a `RagError`, and the
+  caller surfaces it:
+  - tool selection fails the request with an explicit message naming the
+    backend;
+  - a collection query returns the error to its caller.
+- There is no keyword copy in memory. Keyword matching was a crutch
+  (§4.7), and a copy that is populated only by writes would be
+  empty after a restart anyway.
+- **Tests:**
+  - Qdrant down gives an explicit error on each path;
+  - embedder down gives an explicit error, and the breaker's open state is
+    reported.
+
+### 4.3 Persistent collections and their catalog (review item 2)
+
+Persistent collections use llm-agent's `QdrantRagProvider`. It keeps a catalog,
+one record per collection, in a Qdrant collection (`rag_collection_catalog`,
+prefixed). Each record carries:
+
+- `storeName` and `name`;
+- the owner: `scope` = `user` | `global`, plus the owner id;
+- opaque `attributes`, where the hub keeps its own metadata: role, description,
+  enabled state, source.
+
+`CollectionRegistry` changes as follows:
+
+- **Create:** `provider.createCollection(store, { scope, owner, collectionName,
+  attributes })`. The record is written last, so a crash leaves no half
+  collection.
+- **Startup:** `provider.describeCollections()` → `openCollection(record)` for
+  each record. This rebuilds the registry's `Map`, so collections come back
+  searchable, exportable and deletable.
+- **Delete:** `provider.deleteCollection(store)` deletes the record first, then
+  the store.
+- **Orphans:** a store with the prefix but without a record (from a crash
+  between the two writes) is listed and logged at startup, never auto-deleted.
+- **Owner isolation** is unchanged. Role collections are `global` with
+  `attributes.role`; the hub's existing checks read that.
+
+Session collections stay in the registry's in-memory path unless
+`LLM_AGENT_SESSION_RAG_BACKEND=qdrant` (§4.6).
+
+### 4.4 Tool corpus (review item 5)
+
+- **In memory (default):** unchanged. It is loaded at startup from the bundle,
+  or vectorized at runtime.
+- **On `qdrant`: the stores are immutable and content-addressed.**
+  - Each role's store is named `tools-<role>-<fp>-<corpus>`, where `<fp>` is the
+    embedder fingerprint hash and `<corpus>` is a hash of that role's sorted
+    `(tool id, enriched text)` pairs.
+  - **Startup:**
+    1. Compute both names. A store that exists is used as it is, with zero
+       embedding and zero diff.
+    2. A store that is missing is written in full: from the bundle when its
+       fingerprint matches (zero embedding calls), else by runtime
+       vectorization.
+    3. Afterwards, `listStores('tools', 'tools-<role>-')` finds and deletes
+       every other generation of that role.
+  - This needs no enumeration of points and no per-record diff. A tool that
+    moves between roles changes both hashes and is handled by the same path.
+
+### 4.5 Destination source
+
+```ts
+interface DestinationSource { list(): Promise<SapDestination[]> }
+```
+
+- **`BtpDestinationSource`:** today's `fetchDestinations` together with its
+  filter and fallback, moved as it is.
+- **`EnvDestinationSource`:** lists the Cloud SDK's own `destinations` JSON.
+  - Example entry:
+    `[{"name":"SAP_DEV","url":"https://host:44300","proxyType":"Internet","authentication":"NoAuthentication","sapClient":"100"}]`.
+  - `getDestination` / `executeHttpRequest` already read that variable, so
+    `resolveDestinationSapConfig` and `CloudSdkAbapConnection` stay unchanged.
+  - SAP credentials still come per request from `x-sap-login` /
+    `x-sap-password`, never from the environment.
+- **First plan task:** verify session affinity on a direct (`Internet`) path.
+  SAP issues its own `SAP_SESSIONID` there. A LOCK → update → UNLOCK chain must
+  stay on one session, and no lock may be left behind.
+
+### 4.6 Session stores on Qdrant — phase 2 (review item 3)
+
+`LLM_AGENT_SESSION_RAG_BACKEND=qdrant` is accepted by configuration only after
+phase 2 ships; until then it fails fast with "not yet supported". Phase 2 adds:
+
+- **Conversation history.** `SessionHistoryRag` keeps its in-memory `ids` map
+  for the in-memory backend. On Qdrant it uses backend operations keyed by
+  `owner`:
+  - delete by filter (`forgetOwner`);
+  - count and trim oldest by filter (the 200-turn limit).
+
+  These are Qdrant point operations with a payload filter, exposed on
+  `RagStoreFactory` as `deleteWhere` / `trimOldest`. They are not `IRag`
+  methods.
+- **Session collections.** They use the same catalog as §4.3 with
+  `scope: 'session'`.
+- **Tests:** every operation is checked **after a restart**. `forgetOwner`
+  removes turns written by the previous process, and the limit counts them too.
+
+### 4.7 Retrieval model
+
+- Persistent backends are vector-only; that is intended.
+- Query language is the embedding model's job, so the local preset uses a
+  multilingual model.
+- Any corpus change still gets the tool-RAG check (31 queries × 2 roles). It is
+  a measurement, not a gate.
 
 ## 5. Local run kit
 
-- **`.env.local.example`**: `LLM_AGENT_PROVIDER=openai` pointing at Ollama's
-  `/v1`, `LLM_AGENT_EMBEDDER=ollama`, `LLM_AGENT_RAG_BACKEND=qdrant` with the
-  compose port, `LLM_AGENT_DESTINATION_SOURCE=env` and one sample `destinations`
-  entry (placeholder host). No credentials.
-- **`docker-compose.local.yml`**: Qdrant only (Ollama runs natively, for the
-  GPU).
-  - Compose project `cloud-llm-hub-local`, named volume, host port **6433**
-    (HTTP) and 6434 (gRPC). The default 6333 is often taken by other projects'
-    Qdrant, and sharing it would write the hub's data into theirs.
-- **A `dev:local` npm script**: checks that no `default-env.json` would silently make
-  the run hybrid (it warns and names the file), then runs
-  `cds watch --profile development`.
-- **`docs/development/LOCAL_RUN.md`**: TL;DR first. Prerequisites (Ollama plus a
-  tool-calling model and an embedding model, Docker, a SAP system reachable from
-  the machine), five steps, how to call the agent with `x-sap-login` /
-  `x-sap-password`, troubleshooting.
+- **`.env.local.example`:**
+  - Ollama for the LLM (`/v1`) and the embedder;
+  - `LLM_AGENT_RAG_BACKEND=qdrant`; tools and session in-memory;
+  - `LLM_AGENT_DESTINATION_SOURCE=env` with one placeholder destination;
+  - no credentials.
+- **`docker-compose.local.yml`:** Qdrant only (Ollama runs natively).
+  - Project `cloud-llm-hub-local`, named volume.
+  - Host ports **6433 / 6434**. 6333 is commonly taken by other projects' Qdrant.
+- **A `dev:local` npm script:** warns when a `default-env.json` would make the
+  run hybrid, then runs `cds watch --profile development`.
+- **`docs/development/LOCAL_RUN.md`:** TL;DR, prerequisites, five steps, calling
+  the agent with `x-sap-login` / `x-sap-password`, troubleshooting.
 - `README.md`, `docs/llm-agent/CONFIG_USAGE.md` and `.env.example` get the new
   variables.
 
 ## 6. Testing
 
-- **Unit:**
-  - config parsing: defaults equal today, every conflict and missing value
-    throws;
-  - `providers.ts`: for each configuration, which classes are built. The
-    default configuration must yield exactly today's objects;
-  - `EnvDestinationSource`;
-  - the restart-diff of §4.3, against an in-memory store.
-- **Integration, env-gated** (skipped without `LLM_AGENT_QDRANT_URL`):
-  - Qdrant store create, upsert, query, delete;
-  - tool-corpus persistence: a second start makes zero embedding calls.
-  - Runs against a throwaway Qdrant on an isolated port, never 6333.
-- **Live acceptance (local):**
-  - with the kit, the agent answers a read request with a real `ReadClass` on a
-    SAP system through an env destination;
-  - a restart logs no vectorization;
-  - a write chain (create + activate of a scratch object in a package we own)
-    leaves no lock behind.
-- **Regression on BTP:** the fork's staging deploy with unchanged `.mtaext` must
-  behave as today (default configuration).
+**Unit**
 
-## 7. Risks
+- Config parsing: defaults equal today; every conflict throws.
+- `providers.ts`:
+  - which classes are built per configuration;
+  - the default configuration builds today's objects.
+- Failure paths of §4.2.
+- `EnvDestinationSource`.
+- Tool-store naming: a role move changes both hashes; an unchanged corpus gives
+  the same name.
 
-- **Query language on vector-only stores.** A multilingual embedding model
-  (§4.5); the tool-RAG check shows whether it holds.
-- **Session affinity on direct destinations.** Covered by the first plan task;
-  the rules of `CloudSdkAbapConnection` stay untouched.
-- **Local model quality.** Small Ollama models call tools poorly. The document
-  names a tested model and says plainly that this is a development setup.
-- **Default drift.** Covered by the "default configuration builds today's
-  objects" unit test.
+**Integration, env-gated** (skipped without `LLM_AGENT_QDRANT_URL`; a throwaway
+Qdrant on an isolated port, never 6333)
+
+- **Collections:** create → restart (new registry over the same Qdrant) →
+  search, export and delete work. An orphan store is reported.
+- **Tools on Qdrant:**
+  - a second start makes zero embedding calls;
+  - a corpus change writes a new generation and deletes the old one.
+- **Qdrant down:** explicit errors.
+
+**Speed**
+
+- Tool-selection latency, in-memory vs Qdrant, measured locally on the full
+  corpus (p50/p95 over the 31-query set).
+- The result is recorded in the spec's follow-up, and decides whether the local
+  preset moves tools to Qdrant.
+
+**Live acceptance (local)**
+
+- A read request runs a real `ReadClass` through an env destination.
+- A persistent collection survives a restart.
+- A write chain on a scratch object in a package we own leaves no lock.
+
+**Regression**
+
+- The fork's staging deploy with unchanged `.mtaext` behaves as today.
+
+## 7. Phases
+
+1. **Configuration and factory.**
+   - Embedder and destination source; persistent collections on Qdrant with the
+     catalog; tools on Qdrant (content-addressed).
+   - The local kit; the speed measurement.
+2. **Session stores on Qdrant (§4.6).**
+3. **HANA Vector backend.** A separate spec, in the `poc-hana-rag` context.
+
+## 8. Risks
+
+- **Session affinity on direct destinations.** The first task of phase 1 checks
+  it; `CloudSdkAbapConnection` rules stay untouched.
+- **Qdrant latency for tool selection.** Measured; tools stay in memory unless
+  the numbers say otherwise.
+- **Catalog and store drift after a crash.** The record is written last and
+  deleted first; orphans are reported at startup.
+- **Local model quality.** The document names a tested tool-calling model and
+  calls this a development setup.
