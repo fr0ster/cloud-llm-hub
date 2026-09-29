@@ -1,5 +1,8 @@
 # Configurable providers — embedder, RAG backend, destination source
 
+<!-- docs-check:proposed-env — this spec names configuration that does not exist
+     yet, by design; the env-name check is skipped here. -->
+
 **Status:** draft for review · **Date:** 2026-09-29
 
 ## TL;DR
@@ -123,7 +126,7 @@ instances. It builds three things, once, at startup:
   its existing `registerBackend`, including `deleteStore`.
 
 `RagStoreFactory` and `DestinationSource` are hub-local contracts, because only
-the hub uses them. Nothing moves to `@mcp-abap-adt/interfaces`.
+the hub uses them. Nothing moves to the shared interfaces packages.
 
 ### 4.2 Store names
 
@@ -210,7 +213,7 @@ That is the intended retrieval model, not a gap to patch.
   - Compose project `cloud-llm-hub-local`, named volume, host port **6433**
     (HTTP) and 6434 (gRPC). The default 6333 is often taken by other projects'
     Qdrant, and sharing it would write the hub's data into theirs.
-- **`npm run dev:local`**: checks that no `default-env.json` would silently make
+- **A `dev:local` npm script**: checks that no `default-env.json` would silently make
   the run hybrid (it warns and names the file), then runs
   `cds watch --profile development`.
 - **`docs/development/LOCAL_RUN.md`**: TL;DR first. Prerequisites (Ollama plus a
