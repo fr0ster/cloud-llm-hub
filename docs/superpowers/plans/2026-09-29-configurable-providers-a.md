@@ -133,37 +133,56 @@ The spec's first task. It is a gate: if the chain does not stay on one session,
  *   npx tsx tools/probe-direct-session.ts
  */
 import { createConnection } from '../srv/connections';
+import type { CloudSdkAbapConnection } from '../srv/connections/CloudSdkAbapConnection';
 import { resolveDestinationSapConfig } from '../srv/connections/destinationResolver';
 
 async function main() {
   const dest = process.env.PROBE_DEST ?? '';
   const uri = process.env.PROBE_OBJECT_URI ?? '';
-  if (!dest || !uri || !process.env.PROBE_USER || !process.env.PROBE_PASSWORD) {
+  const username = process.env.PROBE_USER ?? '';
+  const password = process.env.PROBE_PASSWORD ?? '';
+  if (!dest || !uri || !username || !password) {
     throw new Error('set PROBE_DEST, PROBE_OBJECT_URI, PROBE_USER, PROBE_PASSWORD');
   }
-  const base = await resolveDestinationSapConfig(dest);
-  const conn = await createConnection({
-    ...base,
-    destinationName: dest,
-    username: process.env.PROBE_USER,
-    password: process.env.PROBE_PASSWORD,
-  });
+  const res = await resolveDestinationSapConfig(dest);
+  // createConnection is synchronous and takes credentials inside sapConfig.
+  const conn = createConnection({
+    sapConfig: { ...res.sapConfig, username, password },
+    destinationName: res.destinationName,
+  }) as CloudSdkAbapConnection;
   conn.setSessionType('stateful');
-  const lock = await conn.makeAdtRequest({
-    url: `${uri}?_action=LOCK&accessMode=MODIFY`,
-    method: 'POST',
-    headers: { Accept: 'application/vnd.sap.as+xml' },
-  });
-  const handle = /<LOCK_HANDLE>([^<]+)</.exec(String(lock.data))?.[1];
-  if (!handle) throw new Error(`LOCK returned no handle: HTTP ${lock.status}`);
-  const read = await conn.makeAdtRequest({ url: uri, method: 'GET' });
-  const unlock = await conn.makeAdtRequest({
-    url: `${uri}?_action=UNLOCK&lockHandle=${encodeURIComponent(handle)}`,
-    method: 'POST',
-  });
-  await conn.closeSession();
-  console.log(JSON.stringify({ lock: lock.status, read: read.status, unlock: unlock.status }));
-  if (unlock.status !== 200) throw new Error('UNLOCK failed: the chain left the session');
+  let handle: string | undefined;
+  const statuses: Record<string, number | string> = {};
+  try {
+    const lock = await conn.makeAdtRequest({
+      url: `${uri}?_action=LOCK&accessMode=MODIFY`,
+      method: 'POST',
+      headers: { Accept: 'application/vnd.sap.as+xml' },
+    });
+    statuses.lock = lock.status;
+    handle = /<LOCK_HANDLE>([^<]+)</.exec(String(lock.data))?.[1];
+    if (!handle) throw new Error(`LOCK returned no handle: HTTP ${lock.status}`);
+    statuses.read = (await conn.makeAdtRequest({ url: uri, method: 'GET' })).status;
+  } finally {
+    // A probe on a real system must never leave a lock: unlock whenever a
+    // handle was obtained, and close the session whatever happened.
+    try {
+      if (handle) {
+        statuses.unlock = (
+          await conn.makeAdtRequest({
+            url: `${uri}?_action=UNLOCK&lockHandle=${encodeURIComponent(handle)}`,
+            method: 'POST',
+          })
+        ).status;
+      }
+    } catch (e) {
+      statuses.unlock = `error: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      await conn.closeSession();
+      console.log(JSON.stringify(statuses));
+    }
+  }
+  if (statuses.unlock !== 200) throw new Error('UNLOCK failed: the chain left the session');
 }
 
 main().catch((e) => {
@@ -174,12 +193,14 @@ main().catch((e) => {
 
 - [ ] **Step 2: Type-check the probe**
 
-Run: `npx tsc --noEmit -p tsconfig.json && npx tsc --noEmit tools/probe-direct-session.ts --esModuleInterop --skipLibCheck`
-Expected: no errors.
-- If `createConnection`, `setSessionType` or `makeAdtRequest` has a different
-  signature, read `srv/connections/index.ts` and
-  `srv/connections/CloudSdkAbapConnection.ts`, and adapt the calls. Do not
-  change those files.
+Run: `npx tsc --noEmit tools/probe-direct-session.ts --esModuleInterop --skipLibCheck --module commonjs --target es2022`
+Expected: no errors. The signatures used are:
+- `resolveDestinationSapConfig(name): Promise<DestinationResolution>`, which
+  returns `{ destinationName, sapConfig, … }`;
+- `createConnection({ sapConfig, destinationName }): AbapConnection`,
+  synchronous;
+- `CloudSdkAbapConnection.setSessionType`, `makeAdtRequest` and
+  `closeSession`.
 
 - [ ] **Step 3: Run it against a reachable system (the user supplies creds and the object)**
 
@@ -1522,6 +1543,30 @@ const config = loadAgentConfig();
 const target = config.rag.backends.tools;           // what startup will look for
 ```
 
+- **Target configuration.** Accept `--mtaext <file>`. Before
+  `loadAgentConfig()`, load `.env` with `dotenv` (secrets such as
+  `LLM_AGENT_API_KEY`) and then the `parameters` map of the given `.mtaext`,
+  parsed with `js-yaml`, into `process.env`. Values from the `.mtaext` win,
+  because that is what the deployed app will run with:
+
+```ts
+import { load as loadYaml } from 'js-yaml';
+import { config as loadDotenv } from 'dotenv';
+
+loadDotenv();
+const mtaextArg = process.argv.indexOf('--mtaext');
+if (mtaextArg > 0) {
+  const file = process.argv[mtaextArg + 1];
+  const doc = loadYaml(fs.readFileSync(file, 'utf8')) as { parameters?: Record<string, unknown> };
+  for (const [k, v] of Object.entries(doc.parameters ?? {})) {
+    if (v !== null && v !== undefined) process.env[k] = String(v);
+  }
+}
+const config = loadAgentConfig();
+```
+
+  Move `const config = loadAgentConfig();` below this block, and delete the
+  earlier top-level `loadAgentConfig()` line.
 - Keep the uncached-tools abort, the canary and the retry helper as they are.
 - For `target === 'in-memory'`, print `tools are in-memory: no vectors to build`
   and exit 0.
@@ -1809,7 +1854,9 @@ TOOLS_BACKEND=$(grep -oP 'LLM_AGENT_TOOLS_RAG_BACKEND:\s*"?\K[a-z-]+' "$MTAEXT" 
 if [ -n "$TOOLS_BACKEND" ] && [ "$TOOLS_BACKEND" != "in-memory" ]; then
   echo ""
   echo "[build] Tool vectors for $TOOLS_BACKEND..."
-  npx tsx tools/generate-tool-embeddings.ts
+  # Same extension file cf deploy uses (.mtaext or .mtaext.staging), so the
+  # build step sees the embedder and backend the app will run with.
+  npx tsx tools/generate-tool-embeddings.ts --mtaext "$MTAEXT"
 fi
 ```
 
@@ -1818,6 +1865,12 @@ fi
 Run: `npx jest test/unit/dev-local.test.ts && node tools/check-docs.js`
 Expected: PASS, and `docs:check — OK`. The new docs must name only variables
 the code now reads.
+
+Also add a unit test for the generator's `--mtaext` loading. Extract the block
+above into an exported `applyMtaext(file: string, env: NodeJS.ProcessEnv): void`
+in `tools/generate-tool-embeddings.ts`, and assert that a temp `.mtaext` with
+`parameters: { LLM_AGENT_TOOLS_RAG_BACKEND: qdrant }` sets that key and
+overrides a pre-set value.
 
 - [ ] **Step 5: Commit**
 
