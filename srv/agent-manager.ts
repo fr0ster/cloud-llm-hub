@@ -1134,6 +1134,32 @@ type ToolDocBasicEntry = {
   text: string;
 };
 
+function toolParamNames(inputSchema: unknown): string {
+  return Object.keys(
+    (toJsonSchema(inputSchema).properties as
+      | Record<string, unknown>
+      | undefined) ?? {},
+  ).join(', ');
+}
+
+/**
+ * The base "Tool / Description / Parameters" text of one tool — the text the
+ * intent generator enriches and caches (`srv/tool-intents.json`, `text`), so
+ * the generator and runtime must build it the same way. Parameters are the
+ * input schema's PROPERTY names, read through `toJsonSchema` so a Zod raw shape
+ * and a JSON Schema give the same list.
+ */
+export function baseToolText(t: ToolDocInput): string {
+  const paramNames = toolParamNames(t.inputSchema);
+  return [
+    `Tool: ${t.name}`,
+    `Description: ${t.description}`,
+    paramNames ? `Parameters: ${paramNames}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /**
  * Assemble the FINAL tool-doc corpus text — destination-independent and
  * deterministic for CACHED tools. This is the single source of truth for the
@@ -1154,25 +1180,12 @@ export function buildToolDocs(tools: ToolDocInput[]): {
   entries: { name: string; text: string; cached: boolean }[];
   uncached: ToolDocBasicEntry[];
 } {
-  const basicEntries: ToolDocBasicEntry[] = tools.map((t) => {
-    const paramNames = Object.keys(
-      (toJsonSchema(t.inputSchema).properties as
-        | Record<string, unknown>
-        | undefined) ?? {},
-    ).join(', ');
-    return {
-      name: t.name,
-      description: t.description || '',
-      paramNames,
-      text: [
-        `Tool: ${t.name}`,
-        `Description: ${t.description}`,
-        paramNames ? `Parameters: ${paramNames}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    };
-  });
+  const basicEntries: ToolDocBasicEntry[] = tools.map((t) => ({
+    name: t.name,
+    description: t.description || '',
+    paramNames: toolParamNames(t.inputSchema),
+    text: baseToolText(t),
+  }));
 
   // Pre-generated intent cache: cached (enriched) tools are deterministic; the
   // rest are collected as uncached for the LLM enrich step downstream.
