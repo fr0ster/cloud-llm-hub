@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.37.0] - 2026-09-30
+
 ### Migration
 
 - **ABAP Unit tools changed shape (lib 15).** A client that called them by
