@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.36.0] - 2026-09-30
+
 ### Migration
 
 - **`LLM_AGENT_INCLUDE_COMPACT` and `LLM_AGENT_INCLUDE_LOW_LEVEL` are gone.**
