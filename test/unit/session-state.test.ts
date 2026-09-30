@@ -34,6 +34,9 @@ import {
   hasSessionState,
 } from '../../srv/lib/session-state';
 import { appendToSession, getSessionHistory } from '../../srv/session-store';
+import { initInMemoryProviders } from './helpers/providers';
+
+initInMemoryProviders();
 
 const SID = 'shared-id';
 

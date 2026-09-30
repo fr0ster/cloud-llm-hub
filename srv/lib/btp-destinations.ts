@@ -7,6 +7,7 @@
 
 import cds from '@sap/cds';
 import { getServiceCredentials, getToken } from './btp-oauth';
+import type { DestinationSource } from './destination-source';
 
 export interface SapDestination {
   name: string;
@@ -119,7 +120,7 @@ async function fetchDestinations(): Promise<SapDestination[]> {
 }
 
 /** Clear destination list cache — forces re-fetch from BTP on next call. */
-export function clearDestinationsCache(): void {
+function clearBtpCache(): void {
   cachedDestinations = null;
   cacheTimestamp = 0;
 }
@@ -129,7 +130,7 @@ export function clearDestinationsCache(): void {
  *
  * Falls back to the current destination from env var if API fails.
  */
-export async function getAvailableDestinations(): Promise<SapDestination[]> {
+async function listFromBtp(): Promise<SapDestination[]> {
   if (cachedDestinations && Date.now() - cacheTimestamp < CACHE_TTL_MS) {
     return cachedDestinations;
   }
@@ -158,4 +159,24 @@ export async function getAvailableDestinations(): Promise<SapDestination[]> {
     }
     return [];
   }
+}
+
+/** Destinations fetched from the BTP Destination service, cached with a 5min TTL. */
+export function btpDestinationSource(): DestinationSource {
+  return { list: listFromBtp, clearCache: clearBtpCache };
+}
+
+let source: DestinationSource | null = null;
+
+/** Called once by the builder (providers). Until then, BTP as today. */
+export function setDestinationSource(s: DestinationSource): void {
+  source = s;
+}
+
+export async function getAvailableDestinations(): Promise<SapDestination[]> {
+  return (source ?? btpDestinationSource()).list();
+}
+
+export function clearDestinationsCache(): void {
+  (source ?? btpDestinationSource()).clearCache();
 }

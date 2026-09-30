@@ -79,6 +79,12 @@ npm install
 cds watch --profile development
 ```
 
+### Run locally (no BTP)
+
+A BTP-free setup — Ollama for the LLM and embeddings, a local Qdrant for
+tool vectors, and a SAP destination from an env variable. See
+[**docs/development/LOCAL_RUN.md**](docs/development/LOCAL_RUN.md).
+
 The proxy listens on `http://localhost:4004`. Development mode enables Basic authentication with mock users (`alice`, `bob`).
 
 ## Streamable HTTP & Session Handling

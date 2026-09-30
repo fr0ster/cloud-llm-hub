@@ -33,7 +33,7 @@ Automatic discovery and management of multiple SAP ABAP systems.
 **Features:**
 
 - BTP Destination Service auto-discovery of SAP systems
-- Tool corpus vectorized **once** and shared by every destination (`sharedToolsRag`), warmed in the background
+- Tool corpus built at deploy time, loaded **once** and shared by every destination (`sharedToolsRag`), warmed in the background
 - Live destination status in UI (ready/vectorizing/pending/error)
 - Per-request destination switching via `X-SAP-Destination` header
 - Destination mapping — map a short system code to a BTP destination name for cleaner client configuration

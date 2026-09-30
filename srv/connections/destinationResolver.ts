@@ -1,6 +1,7 @@
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { Destination } from '@sap-cloud-sdk/connectivity';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
+import { formatErrorMessage, logErrorSafely } from '../lib/errorUtils';
 
 /**
  * Ensure VCAP_SERVICES is loaded from default-env.json for local development
@@ -373,54 +374,6 @@ export async function resolveDestinationSapConfig(
     log.error('Destination resolution failed', errorDetails);
 
     // Use synchronized error handling from errorUtils
-    // In development (cds watch), TypeScript files are executed directly, so use .ts extension
-    // In production (compiled), files are .js
-    // Try .ts first (development), fallback to .js (production)
-    // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
-    let logErrorSafely: any;
-    // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
-    let formatErrorMessage: any;
-
-    try {
-      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
-      let errorUtils: any;
-      try {
-        // @ts-expect-error - Dynamic import with .ts extension for development mode
-        errorUtils = await import('../lib/errorUtils.ts');
-      } catch {
-        errorUtils = await import('../lib/errorUtils.js');
-      }
-      logErrorSafely = errorUtils.logErrorSafely;
-      formatErrorMessage = errorUtils.formatErrorMessage;
-    } catch (importError) {
-      // Fallback if errorUtils cannot be imported
-      log.error('Failed to import errorUtils, using fallback error handling', {
-        error:
-          importError instanceof Error
-            ? importError.message
-            : String(importError),
-      });
-      // Fallback implementations
-      logErrorSafely = (
-        // biome-ignore lint/suspicious/noExplicitAny: Fallback logger can be any type
-        logger: any,
-        operation: string,
-        // biome-ignore lint/suspicious/noExplicitAny: Fallback error can be any type
-        err: any,
-        // biome-ignore lint/suspicious/noExplicitAny: Fallback context can be any type
-        context?: any,
-      ) => {
-        logger.error(`${operation} failed`, {
-          error: err instanceof Error ? err.message : String(err),
-          context,
-        });
-      };
-      // biome-ignore lint/suspicious/noExplicitAny: Fallback error can be any type
-      formatErrorMessage = (err: any) => {
-        return err instanceof Error ? err.message : String(err);
-      };
-    }
-
     logErrorSafely(log, 'Destination resolution', error, {
       destinationName,
     });

@@ -16,9 +16,9 @@ SmartAgent — one cached handle PER DESTINATION (`agentHandles`, agent-manager.
 │        → HandlerExporter handlers IN-PROCESS (no HTTP, no self-loop).
 │        The adapter is built over a placeholder connection; the real ABAP
 │        connection arrives per request through connectionALS.
-├── RAG: facts + feedback + state, plus a tools corpus vectorized ONCE and
-│        shared by every destination (`sharedToolsRag`).
-│        Backend per LLM_AGENT_RAG_TYPE: keyword-only `in-memory`, else vector.
+├── RAG: facts + feedback + state, plus a tools corpus loaded ONCE from the
+│        build step's output and shared by every destination (`sharedToolsRag`).
+│        Backend per class (LLM_AGENT_*_RAG_BACKEND): in-memory, vector, qdrant.
 └── Classifier + Assembler (built-in defaults)
 ```
 

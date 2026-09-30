@@ -42,6 +42,16 @@ parameters:
   # History recency window
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
+  # RAG providers (spec §3) — empty/commented = today's behaviour.
+  # LLM_AGENT_EMBEDDER: ""
+  # LLM_AGENT_EMBEDDER_URL: ""
+  # LLM_AGENT_TOOLS_RAG_BACKEND: ""
+  # LLM_AGENT_SESSION_RAG_BACKEND: ""
+  # LLM_AGENT_RAG_BACKEND: ""
+  # LLM_AGENT_QDRANT_URL: ""
+  # LLM_AGENT_QDRANT_PREFIX: ""
+  # LLM_AGENT_DESTINATION_SOURCE: ""
+
   # Approuter route host (unique subdomain for this deployment)
   APPROUTER_HOST: "cloud-llm-hub"
 

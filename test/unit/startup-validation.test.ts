@@ -29,10 +29,29 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('../../srv/agent-config', () => ({ ensureAiCoreCredentials }));
+const getAgentConfig = jest.fn(() => ({}));
+jest.mock('../../srv/agent-config', () => ({
+  ensureAiCoreCredentials,
+  getAgentConfig,
+}));
+const order: string[] = [];
+// Set by a test to make the provider startup reject.
+const providersFailure: { error?: Error } = {};
+jest.mock('../../srv/lib/providers', () => ({
+  startProviders: async () => {
+    order.push('startProviders');
+    if (providersFailure.error) throw providersFailure.error;
+    return {};
+  },
+}));
 jest.mock('../../srv/agent-manager', () => ({
+  initProviders: () => order.push('initProviders'),
+  isProvidersReady: () => order.includes('initProviders'),
   // Initialisation fails here, as it does when AI Core is not reachable yet.
-  initSmartAgents: () => Promise.reject(new Error('AI Core not reachable')),
+  initSmartAgents: () => {
+    order.push('initSmartAgents');
+    return Promise.reject(new Error('AI Core not reachable'));
+  },
   getCollectionRegistry: () => ({
     sweepExpiredSessions: () => {},
   }),
@@ -40,7 +59,9 @@ jest.mock('../../srv/agent-manager', () => ({
 jest.mock('../../srv/agent-mcp', () => ({}));
 jest.mock('../../srv/anthropic-handler', () => ({}));
 jest.mock('../../srv/openai-handler', () => ({}));
-jest.mock('../../srv/rag-handler', () => ({ registerRagRoutes: () => {} }));
+jest.mock('../../srv/rag-handler', () => ({
+  registerRagRoutes: () => order.push('registerRagRoutes'),
+}));
 jest.mock('../../srv/mcp-manager', () => ({}));
 jest.mock('../../srv/lib/basic-to-bearer', () => ({
   createBasicToBearerMiddleware: () => () => {},
@@ -80,6 +101,7 @@ describe("server.ts's bootstrap listener", () => {
     );
     expect(calls).toEqual([]);
     expect(ensureAiCoreCredentials).not.toHaveBeenCalled();
+    expect(getAgentConfig).not.toHaveBeenCalled();
   });
 });
 
@@ -140,6 +162,51 @@ describe('the /v1 CORS preflight', () => {
   });
 });
 
+describe('the /v1/rag gate', () => {
+  it('answers 503 on /v1/rag/* until the providers are built, then passes', () => {
+    order.length = 0;
+    const uses: unknown[][] = [];
+    const app = new Proxy(
+      {},
+      {
+        get:
+          (_t, method: string) =>
+          (...args: unknown[]) => {
+            if (method === 'use') uses.push(args);
+          },
+      },
+    );
+    handlers.bootstrap(app);
+    const probe = (path: string) => {
+      const out = { status: 0, next: false };
+      for (const [mount, fn] of uses) {
+        if (mount !== '/v1' || typeof fn !== 'function' || fn.length !== 3)
+          continue;
+        const res = {
+          status: (code: number) => {
+            out.status = code;
+            return res;
+          },
+          json: () => res,
+        };
+        try {
+          fn({ path, headers: {} }, res, () => {
+            out.next = true;
+          });
+        } catch {
+          // express.json and the router are not the gate; skip them.
+        }
+        if (out.status) return out;
+      }
+      return out;
+    };
+    expect(probe('/rag/collections').status).toBe(503);
+    expect(probe('/chat/completions').status).toBe(0);
+    order.push('initProviders');
+    expect(probe('/rag/collections').status).toBe(0);
+  });
+});
+
 describe("server.ts's served listener", () => {
   it('starts both session sweeps even when initialisation fails', async () => {
     // Started inside the success path, neither sweep ever ran on an instance
@@ -163,5 +230,68 @@ describe("server.ts's served listener", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  /** Runs `served` with timers stubbed and `process.exit` recorded. */
+  async function runServed(): Promise<number[]> {
+    order.length = 0;
+    const exits: number[] = [];
+    const timers = jest
+      .spyOn(global, 'setInterval')
+      .mockImplementation((() => ({
+        unref: () => undefined,
+      })) as unknown as typeof setInterval);
+    const exit = jest.spyOn(process, 'exit').mockImplementation(((
+      code?: number,
+    ) => {
+      exits.push(code ?? 0);
+    }) as unknown as typeof process.exit);
+    try {
+      handlers.served();
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    } finally {
+      timers.mockRestore();
+      exit.mockRestore();
+    }
+    return exits;
+  }
+
+  it('builds the providers, then the RAG routes, then warms the agents', async () => {
+    // The mocked initSmartAgents rejects: an agent warm-up failure can be an
+    // outage, so it is logged and retried, never a reason to exit.
+    const exits = await runServed();
+    expect(order).toEqual([
+      'startProviders',
+      'initProviders',
+      'registerRagRoutes',
+      'initSmartAgents',
+    ]);
+    expect(exits).toEqual([]);
+  });
+
+  it('exits non-zero when the providers cannot be built, and warms nothing', async () => {
+    providersFailure.error = new Error('embedder package not installed');
+    try {
+      const exits = await runServed();
+      expect(exits).toEqual([1]);
+      expect(order).toEqual(['startProviders']);
+    } finally {
+      providersFailure.error = undefined;
+    }
+  });
+});
+
+describe("server.ts's bootstrap listener, configuration", () => {
+  it('reads the agent configuration before it registers a route', () => {
+    getAgentConfig.mockImplementationOnce(() => {
+      throw new Error('LLM_AGENT_RAG_TYPE: unknown value');
+    });
+    const calls: string[] = [];
+    const app = new Proxy(
+      {},
+      { get: (_t, method: string) => () => calls.push(method) },
+    );
+    expect(() => handlers.bootstrap(app)).toThrow(/LLM_AGENT_RAG_TYPE/);
+    expect(calls).toEqual([]);
   });
 });

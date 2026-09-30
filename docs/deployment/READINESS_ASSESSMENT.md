@@ -53,21 +53,25 @@ Use this file to turn the returned answers into three outputs:
 | 2.9 | Tight rate limits | Concurrent users (5.5) may exceed them | Sanity-check: one agent request can trigger several LLM calls plus tool iterations |
 | 2.10 | Model mandated | May conflict with what is actually deployed (2.2) | Verify the mandated model is available on the chosen provider before promising it |
 
-> **Note for Scenario B — embeddings, not just chat.** The embedder is derived from the chat
-> provider: for anything other than SAP AI Core the code builds an OpenAI-style embedder against the
-> *same* `LLM_AGENT_BASE_URL` and `LLM_AGENT_API_KEY` as the chat model. There is no separate
-> endpoint or key for embeddings, so the provider must serve OpenAI-compatible `/embeddings` itself.
+> **Note for Scenario B — embeddings, not just chat.**
 >
-> - **Provider serves `/embeddings`** (OpenAI, Azure OpenAI, most Ollama and vLLM setups): vector
->   RAG works. The committed bundle (`srv/tool-embeddings.json`) is generated for the SAP AI Core
->   embedder, so it will not match by fingerprint and the tool corpus is vectorized once at runtime
->   instead — once, not per destination, but the first start after deploy is slower.
-> - **Native Anthropic or DeepSeek**: no OpenAI-compatible `/embeddings` endpoint, and pointing the
->   embedder elsewhere is not configurable today. Set `LLM_AGENT_RAG_TYPE: "in-memory"` explicitly.
->   Leaving it on vector does not fail loudly — every embedding call errors until the circuit breaker
->   trips and RAG degrades to keyword-only anyway, just after a burst of failures and a slower start.
->   Tool selection is keyword-only either way; say so when scoping, and mention it as a reason to
->   prefer an OpenAI-compatible provider or SAP AI Core.
+> - **TL;DR:** vector or `qdrant` RAG needs an embedder, and the tool vectors
+>   for it are **built at deploy time**, not at startup.
+> - **Default embedder:** for anything other than SAP AI Core it is OpenAI-style,
+>   against the chat model's `LLM_AGENT_BASE_URL` and `LLM_AGENT_API_KEY`.
+>   `LLM_AGENT_EMBEDDER`, `LLM_AGENT_EMBEDDER_URL` and `LLM_AGENT_EMBEDDER_API_KEY`
+>   point it elsewhere (including `ollama`).
+> - **Build step required:** the committed bundle (`srv/tool-embeddings.json`)
+>   covers only the SAP AI Core embedder. Any other embedder needs
+>   `tools/generate-tool-embeddings.ts` run for the target configuration —
+>   `tools/deploy.sh` does it. Without it, every SAP request answers `503`
+>   (`ToolCorpusMissingError`). See the
+>   [migration note](../contributors/TOOL_CORPUS.md#migration).
+> - **Native Anthropic or DeepSeek with no embedder elsewhere:** there is no
+>   OpenAI-compatible `/embeddings` endpoint to use. Either point the embedder at
+>   one (`LLM_AGENT_EMBEDDER_URL`, or `LLM_AGENT_EMBEDDER=ollama`) or set
+>   `LLM_AGENT_RAG_TYPE: "in-memory"` — tool selection is then keyword-only; say
+>   so when scoping.
 
 ---
 

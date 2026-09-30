@@ -53,6 +53,10 @@ sk.json
 !**/package.json
 !srv/tool-intents.json
 !srv/tool-embeddings.json
+!tools/tool-rag-queries.json
+# Per-fingerprint bundles the build step writes for non-default embedders
+# (tools/generate-tool-embeddings.ts): built per deployment, never committed.
+srv/tool-embeddings.*.json
 
 # Submodules (exclude from this branch, keep folder for other branches)
 submodules/llm-agent/

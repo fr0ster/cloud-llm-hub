@@ -59,6 +59,7 @@
   "scripts": {
     "start": "cds-serve",
     "start:log": "bash tools/start-debug.sh",
+    "dev:local": "node tools/dev-local.js",
     "test": "node test/test-cap-from-yaml.js --config test/integration.yaml",
     "test:unit": "jest",
     "test:unit:watch": "jest --watch",

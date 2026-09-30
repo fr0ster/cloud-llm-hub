@@ -45,7 +45,7 @@ const agent = await getSmartAgent(destination);
 ```
 
 `getSmartAgent` waits, bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`
-(default 90 s), for that destination to finish vectorizing rather than failing
+(default 90 s), for that destination to finish initializing rather than failing
 fast. After the timeout an explicit-destination request throws a retryable 503.
 
 Tool calls must run inside the per-request connection scope — see

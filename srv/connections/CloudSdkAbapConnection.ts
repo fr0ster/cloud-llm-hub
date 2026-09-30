@@ -11,7 +11,9 @@ import type {
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
 import type { IAdtWireResponse } from '@mcp-abap-adt/interfaces-adt-connection';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import { logErrorSafely } from '../lib/errorUtils';
 import { logger } from '../lib/logger';
+import { classifyProbe } from '../lib/probe-classifier';
 
 /**
  * Mirror the `[status]` outage tag onto a response body the same way it is
@@ -871,14 +873,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           rawMessage,
         );
       if (looksTunnelRelated && error instanceof Error) {
-        let classifier: typeof import('../lib/probe-classifier');
-        try {
-          // @ts-expect-error — .ts extension for cds-watch dev mode
-          classifier = await import('../lib/probe-classifier.ts');
-        } catch {
-          classifier = await import('../lib/probe-classifier.js');
-        }
-        const { status, hint } = classifier.classifyProbe(
+        const { status, hint } = classifyProbe(
           httpCode,
           rawMessage,
           'OnPremise',
@@ -1093,18 +1088,6 @@ export class CloudSdkAbapConnection implements AbapConnection {
         }
       }
       // Use synchronized error handling from errorUtils
-      // In development (cds watch), TypeScript files are executed directly, so use .ts extension
-      // In production (compiled), files are .js
-      // Try .ts first (development), fallback to .js (production)
-      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
-      let errorUtils: any;
-      try {
-        // @ts-expect-error - Dynamic import with .ts extension for development mode
-        errorUtils = await import('../lib/errorUtils.ts');
-      } catch {
-        errorUtils = await import('../lib/errorUtils.js');
-      }
-      const { logErrorSafely } = errorUtils;
       logErrorSafely(logger, 'ADT request', error, {
         url: requestUrl,
         method: normalizedMethod,

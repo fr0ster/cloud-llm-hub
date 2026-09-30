@@ -299,7 +299,7 @@ name for AI Core.
 
 **Solution:**
 - Verify `LLM_AGENT_MCP_DESTINATION` is set on the app: `cf env cloud-llm-hub-srv | grep MCP_DESTINATION`
-- Give that destination time to initialize — vectorization is bounded by
+- Give that destination time to initialize — the wait is bounded by
   `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (90 s by default) and `mcpConnected` stays
   false until an agent handle exists
 - Confirm the destination itself resolves: `curl "$BASE_URL/odata/v4/mcp-proxy/ProbeDestination?destination=<name>"`

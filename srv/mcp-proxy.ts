@@ -1,8 +1,12 @@
 import cds, { type Request, type Service } from '@sap/cds';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import { runActiveDestinationProbe } from './lib/active-probe';
+import { getAvailableDestinations } from './lib/btp-destinations';
+import { logErrorSafely } from './lib/errorUtils';
 import { gatekeeperSnapshot } from './lib/gatekeeper-metrics';
 import { maskLoginForLog } from './lib/log-mask';
+import { classifyProbe } from './lib/probe-classifier';
 
 interface ProxyInvocation {
   toolId: string;
@@ -206,17 +210,6 @@ export default async function registerMcpProxyHandlers(
       // biome-ignore lint/suspicious/noExplicitAny: Error type from executeHttpRequest is not fully typed
     } catch (error: any) {
       // Use synchronized error handling from errorUtils
-      // In development (cds watch), TypeScript files are executed directly, so use .ts extension
-      // In production (compiled), files are .js
-      // Try .ts first (development), fallback to .js (production)
-      // biome-ignore lint/suspicious/noExplicitAny: Dynamic import result type is not fully typed
-      let errorUtils: any;
-      try {
-        errorUtils = await import('./lib/errorUtils');
-      } catch {
-        errorUtils = await import('./lib/errorUtils.js');
-      }
-      const { logErrorSafely } = errorUtils;
       logErrorSafely(log, 'Destination probe', error, {
         destination: destinationName,
       });
@@ -226,8 +219,6 @@ export default async function registerMcpProxyHandlers(
 
   // List all SAP destinations with reachability status
   srv.on('ListDestinations', async (_req: Request) => {
-    const { getAvailableDestinations } = await import('./lib/btp-destinations');
-
     const destinations = await getAvailableDestinations();
     const now = new Date().toISOString();
 
@@ -325,16 +316,11 @@ export default async function registerMcpProxyHandlers(
     return results;
   });
 
-  // Classifier lives in srv/lib/probe-classifier.ts so it's shared with
-  // the OpenAI / Anthropic handlers (issue #83 + #85 follow-up).
-  const { classifyProbe } = await import('./lib/probe-classifier');
-
   // Independent destination diagnostic probe (#85). Surfaces raw
   // connectivity-proxy errors and classifies them so operators don't have
   // to cf-ssh and curl by hand to tell apart "SCC offline" from
   // "wrong location id" etc.
   srv.on('DiagnoseDestinations', async (_req: Request) => {
-    const { getAvailableDestinations } = await import('./lib/btp-destinations');
     const destinations = await getAvailableDestinations();
     const now = new Date().toISOString();
 
@@ -431,7 +417,6 @@ export default async function registerMcpProxyHandlers(
   // connection from x-sap-login/x-sap-password/x-sap-client and reports a single
   // classified DestinationDiagnostic.
   srv.on('ProbeActiveDestination', async (req: Request) => {
-    const { runActiveDestinationProbe } = await import('./lib/active-probe');
     // CAP Request wraps the express request; x-sap-* headers live there.
     const httpReq =
       (

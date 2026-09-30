@@ -39,6 +39,7 @@ import {
 } from './agent-manager';
 import { createConnection } from './connections/connectionFactory';
 import { resolveDestinationSapConfig } from './connections/destinationResolver';
+import { getAvailableDestinations } from './lib/btp-destinations';
 import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
 import {
@@ -477,9 +478,6 @@ export async function createAgentMcpServerForRequest(
       inputSchema: {},
     },
     async () => {
-      const { getAvailableDestinations } = await import(
-        './lib/btp-destinations'
-      );
       const dests = await getAvailableDestinations();
       const list = dests.map((d) => ({
         name: d.name,

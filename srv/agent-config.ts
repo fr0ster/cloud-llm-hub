@@ -40,6 +40,37 @@ export type RagType = 'in-memory' | 'ollama';
 
 export type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
+export type EmbedderKind = 'sap-ai-core' | 'openai' | 'ollama';
+export type RagBackendKind = 'in-memory' | 'vector' | 'qdrant';
+export type RagStoreClass = 'tools' | 'session' | 'persistent';
+export interface EmbedderConfig {
+  kind: EmbedderKind;
+  model: string;
+  url?: string;
+  apiKey?: string;
+  resourceGroup?: string;
+}
+export interface QdrantConfig {
+  url: string;
+  apiKey?: string;
+  prefix: string;
+}
+export interface RagConfig {
+  embedder: EmbedderConfig | null;
+  backends: Record<RagStoreClass, RagBackendKind>;
+  qdrant?: QdrantConfig;
+}
+export interface EnvDestination {
+  name: string;
+  url: string;
+  proxyType: string;
+  authentication: string;
+  sapClient?: string;
+}
+export type DestinationConfig =
+  | { source: 'btp' }
+  | { source: 'env'; destinations: EnvDestination[] };
+
 export interface AgentConfig {
   /**
    * LLM Configuration
@@ -113,6 +144,204 @@ export interface AgentConfig {
     /** Number of tools selected by RAG per query (default: 5) */
     ragQueryK: number;
   };
+
+  /** Embedder + per-class RAG backend selection. */
+  rag: RagConfig;
+
+  /** Where SAP destinations come from: the BTP Destination service, or env-provided. */
+  destinations: DestinationConfig;
+}
+
+const BACKENDS: readonly RagBackendKind[] = ['in-memory', 'vector', 'qdrant'];
+const EMBEDDERS: readonly EmbedderKind[] = ['sap-ai-core', 'openai', 'ollama'];
+const CLASS_VARS: Record<RagStoreClass, string> = {
+  tools: 'LLM_AGENT_TOOLS_RAG_BACKEND',
+  session: 'LLM_AGENT_SESSION_RAG_BACKEND',
+  persistent: 'LLM_AGENT_RAG_BACKEND',
+};
+const DEFAULT_EMBEDDING_MODEL = 'text-embedding-3-small';
+
+function set(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const v = env[name];
+  return v === undefined || v.trim() === '' ? undefined : v.trim();
+}
+
+/**
+ * Parse the embedder and per-class RAG backend selection from the environment.
+ *
+ * Per-class variables (`LLM_AGENT_TOOLS_RAG_BACKEND`, `LLM_AGENT_SESSION_RAG_BACKEND`,
+ * `LLM_AGENT_RAG_BACKEND`) override the legacy `LLM_AGENT_RAG_TYPE` default for that
+ * class. Mixing `LLM_AGENT_RAG_TYPE=in-memory` with a per-class override that is not
+ * `in-memory` is rejected as contradictory. An embedder is only required — and only
+ * accepted — when at least one class is not `in-memory`.
+ */
+export function parseRagConfig(
+  env: NodeJS.ProcessEnv,
+  llm: {
+    provider: LlmProvider;
+    apiKey?: string;
+    baseUrl?: string;
+    resourceGroup?: string;
+  },
+): RagConfig {
+  const ragType = set(env, 'LLM_AGENT_RAG_TYPE');
+  const legacy: RagBackendKind =
+    !ragType || ragType === 'in-memory' ? 'in-memory' : 'vector';
+  const backends = {} as Record<RagStoreClass, RagBackendKind>;
+  for (const cls of Object.keys(CLASS_VARS) as RagStoreClass[]) {
+    const name = CLASS_VARS[cls];
+    const raw = set(env, name);
+    if (raw !== undefined && !BACKENDS.includes(raw as RagBackendKind)) {
+      throw new Error(
+        `Invalid ${name}: expected one of ${BACKENDS.join(', ')}, got ${JSON.stringify(raw)}`,
+      );
+    }
+    if (raw !== undefined && ragType === 'in-memory' && raw !== 'in-memory') {
+      throw new Error(
+        `LLM_AGENT_RAG_TYPE=in-memory and ${name}=${raw} contradict each other`,
+      );
+    }
+    backends[cls] = (raw as RagBackendKind | undefined) ?? legacy;
+  }
+  if (backends.session === 'qdrant') {
+    throw new Error(
+      'LLM_AGENT_SESSION_RAG_BACKEND=qdrant is not yet supported (spec phase 2)',
+    );
+  }
+  if (backends.persistent === 'qdrant') {
+    throw new Error(
+      'LLM_AGENT_RAG_BACKEND=qdrant is not yet supported: it arrives with Plan B (persistent collections)',
+    );
+  }
+
+  const needsEmbedder = Object.values(backends).some((b) => b !== 'in-memory');
+  const kindRaw = set(env, 'LLM_AGENT_EMBEDDER');
+  if (!needsEmbedder) {
+    if (kindRaw !== undefined) {
+      throw new Error(
+        'LLM_AGENT_EMBEDDER is set, but every RAG class is in-memory, so nothing would use it',
+      );
+    }
+    return { embedder: null, backends };
+  }
+  if (kindRaw !== undefined && !EMBEDDERS.includes(kindRaw as EmbedderKind)) {
+    throw new Error(
+      `Invalid LLM_AGENT_EMBEDDER: expected one of ${EMBEDDERS.join(', ')}, got ${JSON.stringify(kindRaw)}`,
+    );
+  }
+  const kind =
+    (kindRaw as EmbedderKind | undefined) ??
+    (llm.provider === 'sap-ai-sdk' ? 'sap-ai-core' : 'openai');
+  const model = set(env, 'LLM_AGENT_EMBEDDING_MODEL');
+  let embedder: EmbedderConfig;
+  if (kind === 'sap-ai-core') {
+    embedder = {
+      kind,
+      model: model ?? DEFAULT_EMBEDDING_MODEL,
+      resourceGroup: llm.resourceGroup,
+    };
+  } else if (kind === 'openai') {
+    embedder = {
+      kind,
+      model: model ?? DEFAULT_EMBEDDING_MODEL,
+      url: set(env, 'LLM_AGENT_EMBEDDER_URL') ?? llm.baseUrl,
+      apiKey: set(env, 'LLM_AGENT_EMBEDDER_API_KEY') ?? llm.apiKey,
+    };
+  } else {
+    if (!model)
+      throw new Error(
+        'LLM_AGENT_EMBEDDER=ollama needs LLM_AGENT_EMBEDDING_MODEL (no default model)',
+      );
+    embedder = {
+      kind,
+      model,
+      url: set(env, 'LLM_AGENT_EMBEDDER_URL') ?? 'http://localhost:11434',
+    };
+  }
+  // Drop undefined keys so configs compare structurally.
+  for (const k of Object.keys(embedder) as (keyof EmbedderConfig)[]) {
+    if (embedder[k] === undefined) delete embedder[k];
+  }
+
+  const rag: RagConfig = { embedder, backends };
+  if (Object.values(backends).includes('qdrant')) {
+    const url = set(env, 'LLM_AGENT_QDRANT_URL');
+    if (!url)
+      throw new Error(
+        'A RAG class uses qdrant, but LLM_AGENT_QDRANT_URL is not set',
+      );
+    const apiKey = set(env, 'LLM_AGENT_QDRANT_API_KEY');
+    rag.qdrant = {
+      // Paths are appended as `${url}/collections`; a trailing slash would double it.
+      url: url.replace(/\/+$/, ''),
+      prefix: set(env, 'LLM_AGENT_QDRANT_PREFIX') ?? 'cloud-llm-hub',
+      ...(apiKey ? { apiKey } : {}),
+    };
+  }
+  return rag;
+}
+
+function pick(
+  o: Record<string, unknown>,
+  ...keys: string[]
+): string | undefined {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === 'string' && v !== '') return v;
+  }
+  return undefined;
+}
+
+/**
+ * Parse where SAP destinations come from: the BTP Destination service (default),
+ * or the Cloud SDK `destinations` env var (`LLM_AGENT_DESTINATION_SOURCE=env`) —
+ * used off-platform, where no Destination service is reachable.
+ */
+export function parseDestinationConfig(
+  env: NodeJS.ProcessEnv,
+): DestinationConfig {
+  const source = set(env, 'LLM_AGENT_DESTINATION_SOURCE') ?? 'btp';
+  if (source === 'btp') return { source };
+  if (source !== 'env') {
+    throw new Error(
+      `Invalid LLM_AGENT_DESTINATION_SOURCE: expected btp or env, got ${JSON.stringify(source)}`,
+    );
+  }
+  const raw = set(env, 'destinations');
+  if (!raw)
+    throw new Error(
+      'LLM_AGENT_DESTINATION_SOURCE=env needs the Cloud SDK `destinations` variable',
+    );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(
+      `The \`destinations\` variable is not valid JSON: ${(e as Error).message}`,
+    );
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error(
+      'The `destinations` variable must be a JSON array with at least one destination',
+    );
+  }
+  const destinations = parsed.map((d, i): EnvDestination => {
+    const o = (d ?? {}) as Record<string, unknown>;
+    const name = pick(o, 'name', 'Name');
+    const url = pick(o, 'url', 'URL');
+    if (!name || !url)
+      throw new Error(`destinations[${i}] needs a name and a url`);
+    const sapClient = pick(o, 'sapClient', 'sap-client');
+    return {
+      name,
+      url,
+      proxyType: pick(o, 'proxyType', 'ProxyType') ?? 'Internet',
+      authentication:
+        pick(o, 'authentication', 'Authentication') ?? 'NoAuthentication',
+      ...(sapClient ? { sapClient } : {}),
+    };
+  });
+  return { source: 'env', destinations };
 }
 
 /**
@@ -162,6 +391,14 @@ export function loadAgentConfig(): AgentConfig {
   const apiKey = process.env.LLM_AGENT_API_KEY || '';
   const baseUrl = process.env.LLM_AGENT_BASE_URL || '';
 
+  const rag = parseRagConfig(process.env, {
+    provider,
+    apiKey: apiKey || undefined,
+    baseUrl: baseUrl || undefined,
+    resourceGroup,
+  });
+  const destinations = parseDestinationConfig(process.env);
+
   // MCP Configuration (optional — empty = LLM-only mode without MCP tools)
   const mcpDestination = process.env.LLM_AGENT_MCP_DESTINATION || '';
 
@@ -210,6 +447,8 @@ export function loadAgentConfig(): AgentConfig {
       historyRecencyWindow,
       ragQueryK,
     },
+    rag,
+    destinations,
   };
 
   log.info('Agent configuration loaded', {
@@ -231,6 +470,9 @@ export function loadAgentConfig(): AgentConfig {
     ragType: config.agent.ragType,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
     gatekeeper: describeGatekeeperConfig(gatekeeper),
+    ragBackends: config.rag.backends,
+    embedder: config.rag.embedder?.kind,
+    destinationSource: config.destinations.source,
   });
 
   return config;

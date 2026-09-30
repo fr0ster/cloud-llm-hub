@@ -22,6 +22,7 @@ jest.mock(
 );
 jest.mock('../../srv/agent-manager', () => ({
   getSharedHistoryRag: () => undefined,
+  isProvidersReady: () => true,
 }));
 
 import { turnOwner } from '../../srv/lib/session-history-rag';

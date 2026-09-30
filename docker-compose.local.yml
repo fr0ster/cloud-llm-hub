@@ -1,0 +1,13 @@
+# Local Qdrant for cloud-llm-hub (spec §5). Ports 6433/6434, not 6333:
+# 6333 is commonly taken by other projects' Qdrant.
+name: cloud-llm-hub-local
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    ports:
+      - '6433:6333'
+      - '6434:6334'
+    volumes:
+      - qdrant-data:/qdrant/storage
+volumes:
+  qdrant-data:

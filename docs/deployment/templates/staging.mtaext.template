@@ -36,6 +36,16 @@ parameters:
   # Handler sets
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
+  # RAG providers (spec §3) — empty/commented = today's behaviour.
+  # LLM_AGENT_EMBEDDER: ""
+  # LLM_AGENT_EMBEDDER_URL: ""
+  # LLM_AGENT_TOOLS_RAG_BACKEND: ""
+  # LLM_AGENT_SESSION_RAG_BACKEND: ""
+  # LLM_AGENT_RAG_BACKEND: ""
+  # LLM_AGENT_QDRANT_URL: ""
+  # LLM_AGENT_QDRANT_PREFIX: ""
+  # LLM_AGENT_DESTINATION_SOURCE: ""
+
   # IMPORTANT: Unique hostname for staging (different from production!)
   APPROUTER_HOST: "cloud-llm-hub-staging"
   # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"   # required: your subaccount's CF landscape

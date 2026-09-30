@@ -17,11 +17,13 @@ import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
 
-import { ensureAiCoreCredentials } from './agent-config';
+import { ensureAiCoreCredentials, getAgentConfig } from './agent-config';
 import {
   getCollectionRegistry,
   getDestinationMappings,
+  initProviders,
   initSmartAgents,
+  isProvidersReady,
   refreshDestinations,
   resolveSystemDestination,
 } from './agent-manager';
@@ -40,6 +42,7 @@ import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
 import { needsSapConnection } from './lib/mcp-request';
+import { startProviders } from './lib/providers';
 import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
@@ -49,6 +52,13 @@ import {
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
 import { sessionIdOf } from './session-id';
+
+/**
+ * RAG collection management routes (/v1/rag/*). Mounted in `bootstrap`, filled
+ * once the async provider startup has finished (spec §4.1); until then it is
+ * empty and a gate in front of it answers 503 for those paths.
+ */
+const ragRouter = express.Router();
 
 /**
  * Type guard for MCP request body
@@ -254,6 +264,9 @@ cds.on('bootstrap', (app: Application) => {
   // "will retry on first request", and the service came up answering 500.
   gatekeeperConfig();
   ensureAiCoreCredentials();
+  // Configuration shape errors stop the server here, before it listens. The
+  // instances are built from it later, in `served`.
+  getAgentConfig();
 
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Registering /mcp endpoints');
@@ -512,9 +525,15 @@ cds.on('bootstrap', (app: Application) => {
   // Parse JSON body for /v1/* routes
   app.use('/v1', express.json({ limit: '10mb' }));
 
-  // RAG collection management routes (/v1/rag/*)
-  const ragRouter = express.Router();
-  registerRagRoutes(ragRouter, getCollectionRegistry());
+  // RAG collection management routes (/v1/rag/*): registered into `ragRouter`
+  // once the providers are ready; until then those paths answer 503.
+  app.use('/v1', (req: Request, res: Response, next: NextFunction) => {
+    if (!isProvidersReady() && req.path.startsWith('/rag')) {
+      res.status(503).json({ error: { message: 'RAG not ready yet' } });
+      return;
+    }
+    next();
+  });
   app.use('/v1', ragRouter);
 
   // POST /v1/chat/completions — main chat (streaming + non-streaming)
@@ -631,10 +650,13 @@ cds.on('served', () => {
   // is an uncaught exception, and CAP would shut the process down on it.
   // Hourly: expired session collections, skipping any session with an
   // operation still running against it — the next pass collects those.
+  // The registry exists only once the providers are built; until then there
+  // is no session collection to sweep.
   setInterval(
-    guardedTask('Session collection sweep', log, () =>
-      getCollectionRegistry().sweepExpiredSessions(maySweepSession),
-    ),
+    guardedTask('Session collection sweep', log, () => {
+      if (isProvidersReady())
+        getCollectionRegistry().sweepExpiredSessions(maySweepSession);
+    }),
     60 * 60 * 1000,
   ).unref();
   // Every five minutes, beside the history sweep: a session whose turns have
@@ -644,20 +666,47 @@ cds.on('served', () => {
     5 * 60 * 1000,
   ).unref();
   log.info(
-    'Pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
+    'Starting providers, then pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
-  initSmartAgents()
-    .then(() => {
-      log.info('SmartAgents initialized and ready');
+  // Providers first (short: embedder prefetch + instances), then the registry
+  // and its routes, then the long agent warm-up. Nothing before this point
+  // builds an embedder, a store or a registry.
+  //
+  // Two failure classes, handled apart. A provider failure is a deployment or
+  // configuration mistake (a missing embedder package, a constructor refusing
+  // its settings), never an outage: the process exits non-zero so the platform
+  // reports it instead of a healthy instance answering 503 forever. An agent
+  // warm-up failure can be an outage (AI Core, a destination) and is retried.
+  startProviders(getAgentConfig())
+    .then((p) => {
+      initProviders(p);
+      registerRagRoutes(ragRouter, getCollectionRegistry());
+      log.info('Providers ready');
     })
-    .catch((err) => {
-      log.warn(
-        'SmartAgent initialization failed, will retry on first request',
-        {
+    .then(
+      () =>
+        initSmartAgents().then(
+          () => {
+            log.info('SmartAgents initialized and ready');
+          },
+          (err) => {
+            log.warn(
+              'SmartAgent initialization failed, will retry on first request',
+              { error: err instanceof Error ? err.message : String(err) },
+            );
+          },
+        ),
+      (err) => {
+        log.error('Provider startup failed, exiting', {
           error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    });
+        });
+        // Not cds.shutdown(): it closes the server without an exit code (the
+        // force-exit that follows is process.exit() with 0), and before
+        // `cds serve` has listened it is still the library default, which
+        // exits 0 too. A failed start must end non-zero.
+        process.exit(1);
+      },
+    );
 });
 
 // Only shutdown ends an admitted session.

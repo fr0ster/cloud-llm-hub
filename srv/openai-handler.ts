@@ -30,6 +30,7 @@ import {
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
+  isProvidersReady,
   retryAfterForDestination,
   runWithRequestConnection,
   setSessionDestination,
@@ -45,6 +46,7 @@ import {
 } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
+import { classifyProbe } from './lib/probe-classifier';
 import { establishRequestConnection, safeStop } from './lib/request-connection';
 import {
   resolveRequestSystem,
@@ -266,8 +268,8 @@ export async function handleChatCompletions(
 ): Promise<void> {
   const log = cds.log('openai-handler');
 
-  // Block requests when agent is not available
-  if (!isAgentReady()) {
+  // Block requests until the providers are built and the agent is available
+  if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
     res.status(503).json({
       error: {
@@ -558,11 +560,9 @@ export async function handleChatCompletions(
         hint: '',
       };
       try {
-        const { classifyProbe } = await import('./lib/probe-classifier');
         // Pull the cached destination state through the public listing so
         // we don't widen agent-manager's surface; status carries the
         // last-known raw error if any.
-        const { getDestinationStates } = await import('./agent-manager');
         const states = getDestinationStates();
         const state = states.find((s) => s.name === errObj.destination);
         classified = classifyProbe(
@@ -1384,10 +1384,10 @@ export async function handleModels(
         mode: config.agent.mode,
         max_iterations: config.agent.maxIterations,
         rag_type: config.agent.ragType,
+        rag_backends: config.rag.backends,
         mcp_destination: config.mcp.destination,
         classifier_model: getCurrentClassifierModel(),
-        embedding_model:
-          process.env.LLM_AGENT_EMBEDDING_MODEL || 'text-embedding-3-small',
+        embedding_model: config.rag.embedder?.model ?? null,
       },
     }),
   );

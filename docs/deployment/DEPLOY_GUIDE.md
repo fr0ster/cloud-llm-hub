@@ -103,7 +103,7 @@ After deployment, Cloud LLM Hub automatically discovers SAP ABAP destinations fr
 ### How It Works
 
 1. Startup does **not** block on any destination — the app is ready immediately. `LLM_AGENT_MCP_DESTINATION` is only an optional "warm this first" hint (no longer privileged).
-2. All SAP ABAP destinations are discovered automatically and vectorized in the background (equally). A request to a not-yet-ready destination waits up to `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (default 90s) then is served, instead of erroring.
+2. All SAP ABAP destinations are discovered automatically and initialized in the background (equally). The tool vectors are not computed here: `tools/deploy.sh` builds them before `mbt build`. A request to a not-yet-ready destination waits up to `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (default 90s) then is served, instead of erroring.
 3. The UI shows all destinations with live status indicators
 
 ### Discovery Heuristic

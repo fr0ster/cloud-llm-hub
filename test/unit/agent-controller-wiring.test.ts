@@ -78,6 +78,7 @@ import * as agentManager from '../../srv/agent-manager';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
 import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
+import { startProviders } from '../../srv/lib/providers';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 
@@ -98,9 +99,22 @@ const config: AgentConfig = {
     ragType: 'in-memory',
     ragQueryK: 5,
   },
+  rag: {
+    embedder: null,
+    backends: {
+      tools: 'in-memory',
+      session: 'in-memory',
+      persistent: 'in-memory',
+    },
+  },
+  destinations: { source: 'btp' },
 };
 
 describe('buildAgentForDestination — DAG coordinator wiring', () => {
+  beforeAll(async () => {
+    agentManager.initProviders(await startProviders(config));
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     // First build() call is the executor worker (buildExecutorWorker), the

@@ -4,6 +4,64 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+The embedder, the RAG backend of each store class and the source of SAP
+destinations are chosen in configuration, like the LLM provider already was,
+and the whole agent runs locally against a real SAP system without BTP.
+
+### Migration
+
+- **Tool vectors are built at deploy time and only loaded at startup.**
+  Nothing changes for a deployment on SAP AI Core embeddings: the committed
+  `srv/tool-embeddings.json` covers it. A deployment whose embedder that bundle
+  does not cover (for example an `openai` embedder) used to vectorize the tool
+  corpus at startup; it now needs the build step, and `tools/deploy.sh` runs it
+  (`npx tsx tools/generate-tool-embeddings.ts --mtaext <file>`) before
+  `mbt build`. Without it, every destination answers 503 with
+  `ToolCorpusMissingError` naming the step.
+- **Deployments that share one Qdrant** must set distinct
+  `LLM_AGENT_QDRANT_PREFIX` values.
+- No `.mtaext` needs a change: every new parameter defaults to "not set",
+  which is today's behaviour.
+
+### Added
+
+- **Configurable providers** (`docs/llm-agent/CONFIG_USAGE.md`):
+  - `LLM_AGENT_EMBEDDER` = `sap-ai-core` | `openai` | `ollama`, with
+    `LLM_AGENT_EMBEDDER_URL` and the secret `LLM_AGENT_EMBEDDER_API_KEY`;
+  - one backend per store class: `LLM_AGENT_TOOLS_RAG_BACKEND`,
+    `LLM_AGENT_SESSION_RAG_BACKEND`, `LLM_AGENT_RAG_BACKEND` (persistent), each
+    `in-memory` | `vector` | `qdrant`; unset, they follow `LLM_AGENT_RAG_TYPE`
+    as before;
+  - `LLM_AGENT_QDRANT_URL`, `LLM_AGENT_QDRANT_PREFIX` and the secret
+    `LLM_AGENT_QDRANT_API_KEY`;
+  - `LLM_AGENT_DESTINATION_SOURCE` = `btp` (default) | `env`, which reads the
+    Cloud SDK `destinations` variable instead of the BTP destination service.
+  - Qdrant is vector-only: no keyword fallback. On the tools class it does not
+    translate queries; it relies on a multilingual embedder.
+  - Session on `qdrant`, and persistent collections on `qdrant`, are refused
+    for now; the persistent case arrives with the next plan.
+- **Tools on Qdrant.** The build step writes one store per role
+  (`<prefix>-tools-reader` / `-writer`) and a record of the embedder
+  fingerprint and corpus hash; a rebuild replaces them in place, and the
+  process never writes to them at runtime. Skills stay per process.
+- **Local run** (`docs/development/LOCAL_RUN.md`): `npm run dev:local` with
+  Ollama and Qdrant (`docker-compose.local.yml`, ports 6433/6434),
+  `.env.local.example`, destinations from the environment.
+- **`tools/measure-tool-rag.ts`** measures tool retrieval per backend. On
+  Ollama `bge-m3`, 62 queries, no query translation: `vector` 47/62 hits,
+  p95 83 ms; `qdrant` 48/62, p95 80 ms. Thirteen of the misses are by design
+  (a reader cannot see writer tools).
+- **`/v1/models`** reports the configured embedding model (null when there is
+  none) and `rag_backends`.
+
+### Fixed
+
+- **`cds watch` could not start** (`ERR_MODULE_NOT_FOUND`): relative dynamic
+  `import()` bypassed the TypeScript loader it uses. They are static imports
+  now, and a unit test keeps new ones out.
+- **An unreachable Qdrant is reported as an error result**, never thrown, by
+  every store-factory operation.
+
 ### Changed
 
 - **Licence is Apache-2.0** (was MIT, which was a mistake rather than a

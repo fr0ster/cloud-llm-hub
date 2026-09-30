@@ -69,7 +69,8 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 }));
 
 import type { AgentConfig } from '../../srv/agent-config';
-import { buildExecutorWorker } from '../../srv/agent-manager';
+import { buildExecutorWorker, initProviders } from '../../srv/agent-manager';
+import { startProviders } from '../../srv/lib/providers';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 
 const config: AgentConfig = {
@@ -89,9 +90,22 @@ const config: AgentConfig = {
     ragType: 'in-memory',
     ragQueryK: 5,
   },
+  rag: {
+    embedder: null,
+    backends: {
+      tools: 'in-memory',
+      session: 'in-memory',
+      persistent: 'in-memory',
+    },
+  },
+  destinations: { source: 'btp' },
 };
 
 describe('buildExecutorWorker', () => {
+  beforeAll(async () => {
+    initProviders(await startProviders(config));
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });

@@ -359,8 +359,8 @@ cd test
 
 1. **First request for a destination:** the agent is built and its tool corpus is
    ready — `getSmartAgent` waits, bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`
-   (90 s), rather than failing fast. The tool corpus itself is vectorized once
-   and shared by every destination
+   (90 s), rather than failing fast. The tool corpus itself is loaded once from
+   the build step's output and shared by every destination
 2. **Subsequent requests:** the agent handle is reused from `agentHandles` for
    the process lifetime. The **ABAP connection is not** — it is created per
    request from that request's `x-sap-*` headers and passed through

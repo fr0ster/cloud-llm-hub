@@ -1,6 +1,7 @@
 import {
   forgetSessionDestination,
   getCollectionRegistry,
+  isProvidersReady,
 } from '../agent-manager';
 import { clearSession, hasSessionHistory } from '../session-store';
 
@@ -20,7 +21,10 @@ import { clearSession, hasSessionHistory } from '../session-store';
 export function deleteSessionState(userId: string, sessionId: string): void {
   clearSession(sessionId, userId);
   forgetSessionDestination(userId, sessionId);
-  getCollectionRegistry().deleteSessionCollections(userId, sessionId);
+  // Before startup has built the providers there is no registry, and so no
+  // session collection to remove.
+  if (isProvidersReady())
+    getCollectionRegistry().deleteSessionCollections(userId, sessionId);
 }
 
 /**
@@ -31,6 +35,7 @@ export function deleteSessionState(userId: string, sessionId: string): void {
 export function hasSessionState(userId: string, sessionId: string): boolean {
   return (
     hasSessionHistory(sessionId, userId) ||
-    getCollectionRegistry().hasSessionCollections(userId, sessionId)
+    (isProvidersReady() &&
+      getCollectionRegistry().hasSessionCollections(userId, sessionId))
   );
 }

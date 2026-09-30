@@ -326,10 +326,10 @@ Cloud LLM Hub includes a built-in chat webapp at `/chat/webapp/index.html` with:
 
 - **Model selector** — switch between LLM models (Claude, GPT, DeepSeek) at runtime
 - **Destination selector** — switch between discovered SAP systems with live status:
-  - **✓ ready** — destination vectorized, tools available
-  - **⏳ vectorizing** — tool embeddings being created
-  - **• pending** — queued for vectorization
-  - **✗ error** — vectorization failed
+  - **✓ ready** — destination initialized, tools available
+  - **⏳ vectorizing** — destination initializing (the status keeps its historical name; tool vectors are built at deploy, not here)
+  - **• pending** — queued for initialization
+  - **✗ error** — initialization failed
 
 ### OpenAI-Compatible API
 

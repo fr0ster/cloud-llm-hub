@@ -30,6 +30,16 @@ parameters:
   LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
+  # RAG providers (spec §3) — empty/commented = today's behaviour.
+  # LLM_AGENT_EMBEDDER: ""
+  # LLM_AGENT_EMBEDDER_URL: ""
+  # LLM_AGENT_TOOLS_RAG_BACKEND: ""
+  # LLM_AGENT_SESSION_RAG_BACKEND: ""
+  # LLM_AGENT_RAG_BACKEND: ""
+  # LLM_AGENT_QDRANT_URL: ""
+  # LLM_AGENT_QDRANT_PREFIX: ""
+  # LLM_AGENT_DESTINATION_SOURCE: ""
+
   # Approuter route host (unique for parallel deploy)
   APPROUTER_HOST: "cloud-llm-hub-llm"
 

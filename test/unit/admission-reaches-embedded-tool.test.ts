@@ -127,6 +127,9 @@ process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '1';
 
 const manager =
   require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+(
+  require('./helpers/providers') as typeof import('./helpers/providers')
+).initInMemoryProviders();
 const gatekeeper =
   require('../../srv/lib/gatekeeper') as typeof import('../../srv/lib/gatekeeper');
 const { runWithRequestSystem } =

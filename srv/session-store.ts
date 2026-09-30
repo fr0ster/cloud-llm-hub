@@ -10,7 +10,7 @@
  */
 
 import type { Message } from '@mcp-abap-adt/llm-agent';
-import { getSharedHistoryRag } from './agent-manager';
+import { getSharedHistoryRag, isProvidersReady } from './agent-manager';
 import { turnOwner } from './lib/session-history-rag';
 
 /** Max messages kept in server session (before SmartAgent's own summarization) */
@@ -94,7 +94,9 @@ export function clearSession(sessionId: string, userId: string): void {
   sessionStore.delete(sessionStoreKey(sessionId, userId));
   // The recall store holds the same conversation in another shape. Clearing one
   // and leaving the other would let a cleared session keep answering from turns
-  // the user believes they deleted.
+  // the user believes they deleted. Before startup has built the providers
+  // there is no recall store, so nothing to forget there.
+  if (!isProvidersReady()) return;
   void getSharedHistoryRag()
     ?.forgetOwner(turnOwner(userId, sessionId))
     .catch(() => {});

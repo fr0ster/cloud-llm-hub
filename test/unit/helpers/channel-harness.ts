@@ -126,8 +126,30 @@ export function agentManagerMock() {
     '../../../srv/rag-collections',
   );
   const registry = new CollectionRegistry();
+  const { createRagStoreFactory } = jest.requireActual(
+    '../../../srv/lib/rag-store-factory',
+  );
+  // What server startup builds with the default configuration. Not taken from
+  // ./providers: that module imports agent-manager, which this object mocks.
+  const providers = {
+    embedding: null,
+    stores: createRagStoreFactory(
+      {
+        embedder: null,
+        backends: {
+          tools: 'in-memory',
+          session: 'in-memory',
+          persistent: 'in-memory',
+        },
+      },
+      null,
+    ),
+    destinations: { list: async () => [], clearCache: () => {} },
+  };
   return {
     isAgentReady: () => true,
+    isProvidersReady: () => true,
+    getProviders: () => providers,
     getSmartAgent: async () => {
       harness.events.push('getSmartAgent');
       await harness.agentGate;

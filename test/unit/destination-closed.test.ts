@@ -52,7 +52,13 @@ jest.mock('../../srv/lib/cloud-local-tools', () => ({
 
 const load = () => {
   jest.resetModules();
-  return require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+  const m =
+    require('../../srv/agent-manager') as typeof import('../../srv/agent-manager');
+  // Fresh module registry: the providers go into this copy of agent-manager.
+  (
+    require('./helpers/providers') as typeof import('./helpers/providers')
+  ).initInMemoryProviders();
+  return m;
 };
 
 let current: ReturnType<typeof load> | undefined;

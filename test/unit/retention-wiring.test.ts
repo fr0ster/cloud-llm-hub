@@ -34,6 +34,7 @@ import {
   resetCollectionRemovalFailuresForTest,
 } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
+import { initInMemoryProviders } from './helpers/providers';
 import {
   findRoute,
   makeMockRouter,
@@ -83,6 +84,7 @@ function unclearableBackend() {
   return () => new UnclearableRag();
 }
 
+initInMemoryProviders();
 const registry = manager.getCollectionRegistry();
 const { router, routes } = makeMockRouter();
 

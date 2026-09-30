@@ -106,6 +106,15 @@ else
   echo "  No .env — skipping secret injection"
 fi
 
+# Tool vectors are built, not computed at startup (spec §4.4). Always run the
+# build step: it resolves the effective tools backend with the app's own
+# config rules (legacy LLM_AGENT_RAG_TYPE and defaults included), and it
+# exits without work for in-memory or when matching vectors already exist.
+# Same extension file cf deploy uses (.mtaext or .mtaext.staging).
+echo ""
+echo "[build] Tool vectors..."
+npx tsx tools/generate-tool-embeddings.ts --mtaext "$MTAEXT"
+
 # Build
 echo ""
 echo "[3/4] Build..."

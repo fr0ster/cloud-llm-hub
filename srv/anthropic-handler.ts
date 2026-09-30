@@ -27,6 +27,7 @@ import {
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
+  isProvidersReady,
   retryAfterForDestination,
   runWithRequestConnection,
 } from './agent-manager';
@@ -71,8 +72,8 @@ export async function handleAnthropicMessages(
 ): Promise<void> {
   const log = cds.log('anthropic-handler');
 
-  // Block requests when agent is not available
-  if (!isAgentReady()) {
+  // Block requests until the providers are built and the agent is available
+  if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
     const status = aiCoreAvailable ? 503 : 503;
     res.status(status).json({

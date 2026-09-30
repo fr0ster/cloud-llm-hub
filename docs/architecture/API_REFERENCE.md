@@ -169,7 +169,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 - `200 OK` - Chat response
 - `401 Unauthorized` - Missing or invalid authentication
-- `503 Service Unavailable` - SmartAgent is initializing (MCP connect + tool vectorization)
+- `503 Service Unavailable` - SmartAgent is initializing (MCP connect + tool corpus load), or the tool corpus was not built (`ToolCorpusMissingError` — run the build step)
 
 **Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the reviewer finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
