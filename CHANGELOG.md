@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.35.0] - 2026-09-30
+
 The embedder, the RAG backend of each store class and the source of SAP
 destinations are chosen in configuration, like the LLM provider already was,
 and the whole agent runs locally against a real SAP system without BTP.
