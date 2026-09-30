@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
+import { baseToolText } from '../srv/agent-manager';
 import { CLOUD_LOCAL_TOOLS } from '../srv/lib/cloud-local-tools';
 import { makeHubLlm } from '../srv/lib/llm-factory';
 
@@ -54,14 +55,11 @@ async function main() {
   // Build tool texts (same format as vectorizeTools)
   const tools = entries.map((e) => {
     const def = e.toolDefinition;
-    const paramNames = Object.keys(def.inputSchema ?? {}).join(', ');
-    const text = [
-      `Tool: ${def.name}`,
-      `Description: ${def.description}`,
-      paramNames ? `Parameters: ${paramNames}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const text = baseToolText({
+      name: def.name as string,
+      description: def.description as string,
+      inputSchema: def.inputSchema,
+    });
     return { name: def.name as string, text };
   });
 
@@ -71,18 +69,7 @@ async function main() {
   // Cloud-local inputSchema is already JSON Schema, so read `.properties` directly.
   for (const cl of CLOUD_LOCAL_TOOLS) {
     if (tools.some((t) => t.name === cl.name)) continue;
-    const props =
-      (cl.inputSchema as { properties?: Record<string, unknown> } | undefined)
-        ?.properties ?? {};
-    const paramNames = Object.keys(props).join(', ');
-    const text = [
-      `Tool: ${cl.name}`,
-      `Description: ${cl.description}`,
-      paramNames ? `Parameters: ${paramNames}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-    tools.push({ name: cl.name, text });
+    tools.push({ name: cl.name, text: baseToolText(cl) });
   }
   console.log(`Tools (incl. cloud-local): ${tools.length}`);
 
