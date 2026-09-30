@@ -41,3 +41,5 @@ run cannot give the agent SAP tools without BTP.
 | 2026-09-29 | Gaps in our own `@mcp-abap-adt/*` packages are fixed at the source, not worked around in the hub. |
 | 2026-09-29 | The spec is frozen once approved. Changes after planning starts need the user's approval. |
 | 2026-09-29 | The hub needs neither the low-level nor the compact tool groups; the read-only / read-write role grouping stays. |
+| 2026-09-30 | The deployment decides which embedding model is used; the hub hard-wires none. The retrieval scoring mode (`hybrid` / `cosine`), the query prefix (embedder role) and translating the query to English before the search are configuration. |
+| 2026-09-30 | Tool-retrieval quality comes from the tool descriptions in `@mcp-abap-adt/lib`, not from hub settings. |
