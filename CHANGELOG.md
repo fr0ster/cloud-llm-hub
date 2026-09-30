@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Migration
+
+- **ABAP Unit tools changed shape (lib 15).** A client that called them by
+  name must adapt:
+  - `CreateUnitTest` now **writes** a class's tests (`class_name`,
+    `test_class_source`); it no longer starts a run.
+  - `RunUnitTest` takes `class_name` and answers the result.
+  - `GetUnitTest`, `GetUnitTestStatus`, `GetCdsUnitTest`,
+    `GetCdsUnitTestStatus` and `GetCdsUnitTestResult` are gone. Read the
+    `Run*` answer; for a run that outlasted the wait, call
+    `GetUnitTestResult` with its `run_id`.
+
+### Changed
+
+- **Dependencies:** `@mcp-abap-adt/lib` 14.1 → 15.0. One copy of each
+  `@mcp-abap-adt/interfaces-*` package stays in the tree.
+- **ABAP Unit tools, one per test carrier (lib 15).** New:
+  `CreateProgramUnitTest`, `UpdateProgramUnitTest`, `RunProgramUnitTest`
+  (reports); `CreateFunctionGroupUnitTest`, `UpdateFunctionGroupUnitTest`,
+  `RunFunctionGroupUnitTest`, `RunFunctionModuleUnitTest` (function groups);
+  `RunCdsUnitTest` (CDS views). `CreateCdsUnitTest` now also writes the
+  tests. All of them are tagged `high` and reach the Developer role only —
+  as did the unit-test tools they replace. Tools served: 234 → 237.
+- **Eleven tool descriptions say only what the tool does (lib 15)**, among
+  them `GetWhereUsed`, `RuntimeListFeeds`, `AddTransportObject` and the
+  `…LocalTestClass` tools. The tool corpus (`srv/tool-intents.json`,
+  `srv/tool-embeddings.json`) is regenerated for the new set.
+
+### Fixed
+
+- **Intent texts listed JSON-Schema keywords as parameters.** The intent
+  generator read the schema's own keys, so most cached intents said
+  "Parameters: type, properties, required" and retrieval embedded that
+  noise. The generator and the runtime now build the text with one function,
+  which lists the tool's parameter names; a test guards the committed corpus.
+
 ## [6.36.0] - 2026-09-30
 
 ### Migration
