@@ -110,8 +110,8 @@
   {
     "q": "Run unit tests of class ZCL_DEMO",
     "expect": ["RunUnitTest"],
-    "relevant": ["RunUnitTest", "CreateUnitTest", "GetUnitTest", "GetUnitTestResult", "GetUnitTestStatus"],
-    "required": [["RunUnitTest", "CreateUnitTest"]]
+    "relevant": ["RunUnitTest", "GetUnitTestResult"],
+    "required": [["RunUnitTest"]]
   },
   {
     "q": "Check syntax of program ZREP_DEMO",
@@ -268,8 +268,8 @@
     "q": "Run the unit tests of ZCL_DEMO and show me the results",
     "multi": true,
     "expect": ["RunUnitTest"],
-    "relevant": ["RunUnitTest", "CreateUnitTest", "GetUnitTest", "GetUnitTestResult", "GetUnitTestStatus"],
-    "required": [["RunUnitTest", "CreateUnitTest"], ["GetUnitTest", "GetUnitTestResult"]]
+    "relevant": ["RunUnitTest", "GetUnitTestResult"],
+    "required": [["RunUnitTest"]]
   },
   {
     "q": "Знайди програми за маскою ZREP* і покажи код першої",
@@ -337,5 +337,78 @@
     "expect": ["ReadTable", "GetTable"],
     "relevant": ["ReadTable", "GetTable", "GetTypeInfo", "GetTableContents", "GetSqlQuery"],
     "required": [["ReadTable", "GetTable"], ["GetTableContents", "GetSqlQuery"]]
+  },
+  {
+    "q": "Write ABAP Unit tests for CDS view ZI_DEMO_ORDER",
+    "expect": ["CreateCdsUnitTest"],
+    "relevant": ["CreateCdsUnitTest", "UpdateCdsUnitTest"],
+    "required": [["CreateCdsUnitTest"]]
+  },
+  {
+    "q": "Run the unit tests of CDS view ZI_DEMO_ORDER",
+    "expect": ["RunCdsUnitTest"],
+    "relevant": ["RunCdsUnitTest", "GetUnitTestResult"],
+    "required": [["RunCdsUnitTest"]]
+  },
+  {
+    "q": "Replace the test methods of the CDS view test class ZCL_DEMO_ORDER_CDS_TEST",
+    "expect": ["UpdateCdsUnitTest"],
+    "relevant": ["UpdateCdsUnitTest", "UpdateUnitTest", "UpdateLocalTestClass"],
+    "required": [["UpdateCdsUnitTest"]]
+  },
+  {
+    "q": "Add unit tests to report ZREP_DEMO",
+    "expect": ["CreateProgramUnitTest"],
+    "relevant": ["CreateProgramUnitTest", "UpdateProgramUnitTest"],
+    "required": [["CreateProgramUnitTest", "UpdateProgramUnitTest"]]
+  },
+  {
+    "q": "Run the ABAP Unit tests of program ZREP_DEMO",
+    "expect": ["RunProgramUnitTest"],
+    "relevant": ["RunProgramUnitTest", "GetUnitTestResult"],
+    "required": [["RunProgramUnitTest"]]
+  },
+  {
+    "q": "Create unit tests for function group ZDEMO_FG",
+    "expect": ["CreateFunctionGroupUnitTest"],
+    "relevant": ["CreateFunctionGroupUnitTest", "UpdateFunctionGroupUnitTest"],
+    "required": [["CreateFunctionGroupUnitTest"]]
+  },
+  {
+    "q": "Update the unit tests of function group ZDEMO_FG",
+    "expect": ["UpdateFunctionGroupUnitTest"],
+    "relevant": ["UpdateFunctionGroupUnitTest"],
+    "required": [["UpdateFunctionGroupUnitTest"]]
+  },
+  {
+    "q": "Run the unit tests of function module Z_DEMO_CALC",
+    "expect": ["RunFunctionModuleUnitTest"],
+    "relevant": ["RunFunctionModuleUnitTest", "RunFunctionGroupUnitTest", "GetUnitTestResult"],
+    "required": [["RunFunctionModuleUnitTest"]]
+  },
+  {
+    "q": "Run all unit tests in function group ZDEMO_FG",
+    "expect": ["RunFunctionGroupUnitTest"],
+    "relevant": ["RunFunctionGroupUnitTest", "GetUnitTestResult"],
+    "required": [["RunFunctionGroupUnitTest"]]
+  },
+  {
+    "q": "The unit test run was still going; fetch its result by the run id",
+    "expect": ["GetUnitTestResult"],
+    "relevant": ["GetUnitTestResult"],
+    "required": [["GetUnitTestResult"]]
+  },
+  {
+    "q": "Delete the unit tests of class ZCL_DEMO but keep the class",
+    "expect": ["DeleteUnitTest"],
+    "relevant": ["DeleteUnitTest", "DeleteLocalTestClass"],
+    "required": [["DeleteUnitTest", "DeleteLocalTestClass"]]
+  },
+  {
+    "q": "Write unit tests for report ZREP_DEMO and run them",
+    "multi": true,
+    "expect": ["CreateProgramUnitTest"],
+    "relevant": ["CreateProgramUnitTest", "UpdateProgramUnitTest", "RunProgramUnitTest", "GetUnitTestResult"],
+    "required": [["CreateProgramUnitTest", "UpdateProgramUnitTest"], ["RunProgramUnitTest"]]
   }
 ]
