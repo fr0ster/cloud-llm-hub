@@ -5,7 +5,11 @@
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  type IQueryEmbedder,
+  type IRetrievalEmbedder,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
+import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
   composeEmbedder,
   prefetchEmbedderFactories,
@@ -32,7 +36,13 @@ export interface EmbedderFingerprint {
 }
 
 export interface Embedding {
+  /** The provider behind the circuit breaker; wrappers go on this one. */
   embedder: CircuitBreakerEmbedder;
+  /**
+   * `embedder` in both retrieval roles — what a store takes. Every embedder the
+   * hub builds is symmetric (one model embeds stored and search text alike).
+   */
+  retrieval: IRetrievalEmbedder;
   breaker: CircuitBreaker;
   fingerprint: EmbedderFingerprint;
 }
@@ -88,11 +98,22 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     failureThreshold: 30,
     recoveryWindowMs: 60_000,
   });
+  const embedder = new CircuitBreakerEmbedder(raw, breaker);
   return {
-    embedder: new CircuitBreakerEmbedder(raw, breaker),
+    embedder,
+    retrieval: symmetricEmbedder(embedder),
     breaker,
     fingerprint: embedderFingerprint(cfg),
   };
+}
+
+/**
+ * The agent's search embedder. Since llm-agent 30 the builder no longer meters
+ * embedding usage itself; `wrapEmbedder` on the provider underneath keeps the
+ * per-request `embedding` usage entries the agent logged before.
+ */
+export function agentQueryEmbedder(e: Embedding): IQueryEmbedder {
+  return symmetricEmbedder(wrapEmbedder(e.embedder));
 }
 
 export interface Providers {

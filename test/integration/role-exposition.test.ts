@@ -13,7 +13,7 @@ const SAP_JWT_TOKEN = process.env.SAP_JWT_TOKEN;
 const USERS = {
   alice: {
     roles: ['MCP_Full', 'MCP_Developer', 'MCP_Analyst', 'MCP_Reader'],
-    expectedGroups: ['readonly', 'search', 'system', 'high', 'compact'],
+    expectedGroups: ['readonly', 'search', 'system', 'high'],
   },
   bob: {
     roles: ['MCP_Developer', 'MCP_Analyst', 'MCP_Reader'],
@@ -159,19 +159,11 @@ describeIfConfigured('Role-based exposition (integration)', () => {
         });
       }
 
-      if (config.roles.includes('MCP_Full')) {
-        it('should include compact handler tools', () => {
-          const hasCompact = toolNames.some((t) => t.startsWith('Handler'));
-          expect(hasCompact).toBe(true);
-        });
-      }
-
-      if (!config.roles.includes('MCP_Full')) {
-        it('should NOT include compact handler tools', () => {
-          const compactTools = toolNames.filter((t) => t.startsWith('Handler'));
-          expect(compactTools).toEqual([]);
-        });
-      }
+      // The hub serves no compact facade tool, to any role.
+      it('should NOT include compact handler tools', () => {
+        const compactTools = toolNames.filter((t) => t.startsWith('Handler'));
+        expect(compactTools).toEqual([]);
+      });
 
       it('should always include read and search tools', () => {
         const hasRead = toolNames.some((t) => t.startsWith('Read'));

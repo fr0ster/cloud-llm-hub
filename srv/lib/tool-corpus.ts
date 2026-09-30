@@ -30,11 +30,7 @@ export type SharedCorpusDoc = {
  * from the boundary the execution check actually enforces.
  */
 export function collectionFor(exposition: string | undefined): ToolRole {
-  return exposition === 'high' ||
-    exposition === 'compact' ||
-    exposition === 'low'
-    ? 'writer'
-    : 'reader';
+  return exposition === 'high' ? 'writer' : 'reader';
 }
 
 /** The fingerprint of the committed, build-time AI Core embedding bundle. */

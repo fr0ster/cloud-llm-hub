@@ -5,6 +5,7 @@ import {
   InMemoryRag,
   QueryEmbedding,
   RagError,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../../srv/agent-config';
@@ -225,15 +226,17 @@ describe('RagStoreFactory', () => {
       failureThreshold: 30,
       recoveryWindowMs: 60_000,
     });
+    const embedder = new CircuitBreakerEmbedder(brokenEmbedder, breaker);
     const brokenEmbedding = {
-      embedder: new CircuitBreakerEmbedder(brokenEmbedder, breaker),
+      embedder,
+      retrieval: symmetricEmbedder(embedder),
       breaker,
       fingerprint: { provider: 'ollama', embeddingModel: 'bge-m3' },
     };
     const f = createRagStoreFactory(q, brokenEmbedding);
     const store = f.create('tools', 'tools-reader-a');
     const result = await store.query(
-      new QueryEmbedding('x', brokenEmbedding.embedder),
+      new QueryEmbedding('x', brokenEmbedding.retrieval),
       5,
     );
     expect(result.ok).toBe(false);

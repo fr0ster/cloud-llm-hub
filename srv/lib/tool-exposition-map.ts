@@ -12,9 +12,7 @@
  */
 
 import {
-  CompactHandlersGroup,
   HighLevelHandlersGroup,
-  LowLevelHandlersGroup,
   ReadOnlyHandlersGroup,
   SearchHandlersGroup,
   SystemHandlersGroup,
@@ -43,8 +41,6 @@ export const HANDLER_GROUPS: readonly ExpositionLevel[] = [
   'high',
   'search',
   'system',
-  'compact',
-  'low',
 ] as const;
 
 /**
@@ -68,8 +64,6 @@ export function buildToolExpositionMap(
     { name: 'high', group: new HighLevelHandlersGroup(ctx) },
     { name: 'search', group: new SearchHandlersGroup(ctx) },
     { name: 'system', group: new SystemHandlersGroup(ctx) },
-    { name: 'compact', group: new CompactHandlersGroup(ctx) },
-    { name: 'low', group: new LowLevelHandlersGroup(ctx) },
   ];
 
   const map = new Map<string, ExpositionLevel>();

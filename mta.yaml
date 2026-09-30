@@ -189,7 +189,7 @@ resources:
             grant-as-authority-to-apps:
               - $XSAPPNAME(application,cloud-llm-hub-analyst-consumer-${space-guid})
           - name: $XSAPPNAME.MCP_Developer
-            description: CRUD operations via compact handlers plus read and system tools
+            description: CRUD operations via the high-level tools plus read and system tools
             grant-as-authority-to-apps:
               - $XSAPPNAME(application,cloud-llm-hub-developer-consumer-${space-guid})
           - name: $XSAPPNAME.MCP_Full

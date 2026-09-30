@@ -19,7 +19,7 @@
     },
     {
       "name": "MCP_Developer",
-      "description": "MCP developer - compact CRUD, read, search, system tools",
+      "description": "MCP developer - high-level CRUD, read, search, system tools",
       "scope-references": [
         "$XSAPPNAME.MCP_Reader",
         "$XSAPPNAME.MCP_Analyst",
@@ -54,7 +54,7 @@
     },
     {
       "name": "MCP Developer Access",
-      "description": "Develop ABAP objects via MCP with compact CRUD.",
+      "description": "Develop ABAP objects via MCP with high-level CRUD.",
       "role-template-references": [
         "$XSAPPNAME.MCP_Developer"
       ]

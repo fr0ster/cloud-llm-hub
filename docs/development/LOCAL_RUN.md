@@ -52,8 +52,8 @@ npm run dev:local
    | `LLM_AGENT_MCP_DESTINATION` | `LLM_AGENT_MCP_DESTINATION=SAP_DEV` |
    | `X-SAP-Destination` request header | `X-SAP-Destination: SAP_DEV` |
 
-   Nothing cross-checks them — a mismatch only shows up as a request error
-   (see Troubleshooting).
+   Nothing cross-checks them at startup — a mismatch shows up as a request
+   error naming the destination and the ones that exist (see Troubleshooting).
 
    **Sharing one Qdrant** with another local kit or deployment? Give each its
    own `LLM_AGENT_QDRANT_PREFIX` (default `cloud-llm-hub`), e.g.
@@ -174,11 +174,10 @@ unreachable at init); once it is ready, it changes nothing.
   from a previous run) already holds it. `docker compose -f
   docker-compose.local.yml down` first, or stop whatever else is bound to
   6433/6434.
-- **`DESTINATION_RESOLUTION_FAILED` … `Could not find service binding of
-  type 'destination'`** — the name in `X-SAP-Destination` (or
-  `LLM_AGENT_MCP_DESTINATION`) is not in your `destinations` JSON, so the
-  hub fell through to the BTP Destination service, which a local run does
-  not have. Make the three names match (step 1).
+- **`DESTINATION_RESOLUTION_FAILED` … `destination X is not in the
+  destinations variable (known: …)`** — the name in `X-SAP-Destination` (or
+  `LLM_AGENT_MCP_DESTINATION`) is not in your `destinations` JSON. The
+  message lists the names that are. Make the three names match (step 1).
 - **`SAP_CREDENTIALS_REQUIRED` on a plain chat** — a default destination is
   set. Send `x-sap-login` / `x-sap-password`, or run LLM-only (see
   [Chat without SAP](#chat-without-sap-llm-only)).

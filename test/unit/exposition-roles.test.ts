@@ -4,6 +4,7 @@ import {
   SYSTEM_TOOLS_THAT_WRITE,
 } from '../../srv/lib/exposition';
 import { assertToolAllowed } from '../../srv/lib/tool-authorization';
+import { buildToolExpositionMap } from '../../srv/lib/tool-exposition-map';
 
 // The boundary is EFFECT, not the upstream group: Reader gets everything that
 // changes nothing, Developer adds everything that changes something. The
@@ -38,15 +39,17 @@ describe('the boundary, exercised through the execution check', () => {
 
   it('refuses a reader the write groups', () => {
     expect(() => assertToolAllowed('CreateDomain', 'high', reader)).toThrow();
-    expect(() =>
-      assertToolAllowed('HandlerDelete', 'compact', reader),
-    ).toThrow();
   });
 
-  it('refuses EVERYONE the low-level write API', () => {
+  it('refuses EVERYONE a low-level tool: it is in no group', () => {
+    const map = buildToolExpositionMap();
     for (const level of [reader, developer, full]) {
       expect(() =>
-        assertToolAllowed('DeletePackageLow', 'low', level),
+        assertToolAllowed(
+          'DeletePackageLow',
+          map.get('DeletePackageLow'),
+          level,
+        ),
       ).toThrow();
     }
   });

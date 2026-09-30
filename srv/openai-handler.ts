@@ -742,7 +742,12 @@ export async function handleChatCompletions(
       if (injected.length > 0) {
         const mergedStores = { ...originalRagStores };
         for (const [key, store] of Object.entries(dynamicStores)) {
-          mergedStores[key] = new ExpositionFilteringRag(store);
+          mergedStores[key] = new ExpositionFilteringRag(
+            store,
+            undefined,
+            undefined,
+            getAgentConfig().agent.skillRagK,
+          );
         }
         deps.ragStores = mergedStores;
         log.info('Dynamic RAG collections injected', {
@@ -783,10 +788,12 @@ export async function handleChatCompletions(
         for (const colId of resolvedCollectionIds) {
           const store = registry.getRagStore(colId);
           if (!store) continue;
-          const result = await new ExpositionFilteringRag(store).query(
-            embedding,
-            3,
-          );
+          const result = await new ExpositionFilteringRag(
+            store,
+            undefined,
+            undefined,
+            getAgentConfig().agent.skillRagK,
+          ).query(embedding, 3);
           if (result.ok) {
             for (const r of result.value) {
               log.info('RAG search result', {
@@ -1358,7 +1365,7 @@ export async function handleModels(
     owned_by: string;
   }[];
   try {
-    models = await getAvailableModels();
+    models = await getAvailableModels(config.llm);
   } catch (err) {
     log.warn('Failed to fetch AI Core models, returning active model only', {
       error: err instanceof Error ? err.message : String(err),

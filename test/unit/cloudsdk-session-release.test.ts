@@ -4,6 +4,7 @@ jest.mock('@sap-cloud-sdk/http-client', () => ({
 
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import { CloudSdkAbapConnection } from '../../srv/connections/CloudSdkAbapConnection';
+import { logger } from '../../srv/lib/logger';
 
 const mockExec = executeHttpRequest as jest.Mock;
 
@@ -235,5 +236,95 @@ describe('CloudSdkAbapConnection — platform session (ICF logoff)', () => {
     await c.closeSession();
     await c.closeSession();
     expect(logoffCalls()).toHaveLength(1);
+  });
+
+  // Measured 2026-09-30 on a direct destination through a logging proxy: the
+  // ADT stateless release already ended the session, so the logoff that
+  // followed answered 400 "Session Timed Out or Not Found — Session no longer
+  // exists". The session IS gone; a warning there trains readers to skip the
+  // real one.
+  describe('after the ADT release', () => {
+    const LOGOFF_WARNING = 'ICF logoff (session release) failed';
+    const sessionGone = Object.assign(
+      new Error('Request failed with status code 400'),
+      {
+        response: {
+          status: 400,
+          data: '400 Session Timed Out or Not Found — Session no longer exists',
+        },
+      },
+    );
+
+    /** A server session that went stateful, so both release steps run. */
+    function respondsWith(release: 'ok' | 'fails', logoff: Error) {
+      mockExec.mockImplementation(
+        async (
+          _dest: unknown,
+          opts: { url?: string; headers?: Record<string, string> },
+        ) => {
+          const url = String(opts?.url ?? '');
+          if (url.includes('/sap/public/bc/icf/logoff')) throw logoff;
+          if (
+            release === 'fails' &&
+            opts?.headers?.['x-sap-adt-sessiontype'] === 'stateless'
+          ) {
+            throw new Error('connect ECONNREFUSED');
+          }
+          return {
+            status: 200,
+            data: '',
+            headers: {
+              'set-cookie': [
+                'sap-XSRF_DEV_100=abc; path=/',
+                'SAP_SESSIONID_DEV_100=SERVER_ISSUED; path=/',
+              ],
+            },
+          };
+        },
+      );
+    }
+
+    async function closeStateful(): Promise<void> {
+      const c = makeConn();
+      await get(c);
+      c.setSessionType('stateful');
+      await c.closeSession();
+    }
+
+    let warn: jest.SpyInstance;
+    beforeEach(() => {
+      warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => warn.mockRestore());
+
+    const warnedAboutLogoff = () =>
+      warn.mock.calls.some(([m]) => m === LOGOFF_WARNING);
+
+    it('does not warn when the logoff finds the session the release ended', async () => {
+      respondsWith('ok', sessionGone);
+      await closeStateful();
+      expect(statefulReleaseCalls()).toHaveLength(1);
+      expect(logoffCalls()).toHaveLength(1);
+      expect(warnedAboutLogoff()).toBe(false);
+    });
+
+    it('still logs off, and warns, when the release did not succeed', async () => {
+      respondsWith('fails', sessionGone);
+      await closeStateful();
+      expect(statefulReleaseCalls()).toHaveLength(1);
+      expect(logoffCalls()).toHaveLength(1);
+      expect(warnedAboutLogoff()).toBe(true);
+    });
+
+    it('still warns about any other logoff failure after a release', async () => {
+      respondsWith(
+        'ok',
+        Object.assign(new Error('Request failed with status code 500'), {
+          response: { status: 500, data: 'internal error' },
+        }),
+      );
+      await closeStateful();
+      expect(warnedAboutLogoff()).toBe(true);
+    });
   });
 });

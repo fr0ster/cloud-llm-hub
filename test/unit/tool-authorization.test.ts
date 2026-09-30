@@ -52,11 +52,11 @@ describe('assertToolAllowed', () => {
     ).not.toThrow();
   });
 
-  it('grants the low-level write API to nobody, not even MCP_Full', () => {
-    // 87 of the 116 `low` tools create, update, delete or lock. Nothing needs
-    // them today, so no role carries the level.
+  it('grants a low-level tool to nobody, not even MCP_Full', () => {
+    // The hub serves no low-level tool, so none carries a group; a tool with
+    // no group is refused to every role.
     for (const roles of [reader, developer, full]) {
-      expect(() => assertToolAllowed('AdtRequest', 'low', roles)).toThrow(
+      expect(() => assertToolAllowed('AdtRequest', undefined, roles)).toThrow(
         ToolAuthorizationError,
       );
     }

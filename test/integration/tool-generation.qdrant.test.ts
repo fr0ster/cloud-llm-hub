@@ -112,7 +112,7 @@ d('tool-corpus build step on Qdrant', () => {
     if (!q) throw new Error('expected a Qdrant config');
     const r = await toolCatalogProvider(
       q,
-      embedding().embedder,
+      embedding().retrieval,
     ).describeCollections();
     if (!r.ok) throw r.error;
     return new Map(r.value.records.map((x) => [x.storeName, x.attributes]));

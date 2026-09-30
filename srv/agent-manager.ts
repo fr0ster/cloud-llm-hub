@@ -62,7 +62,11 @@ import {
   outageFromToolResult,
 } from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
-import type { EmbedderFingerprint, Providers } from './lib/providers';
+import {
+  agentQueryEmbedder,
+  type EmbedderFingerprint,
+  type Providers,
+} from './lib/providers';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
@@ -139,12 +143,9 @@ function getToolIntentCache(): typeof toolIntentCache {
 // are searched together and compete for the same top-K, so without a cap a
 // RAP prompt (all 18 skills are RAP-adjacent) fills most of the top-K with skills and
 // starves tool selection — observed live: 12 of 15 slots were skills. We give tools
-// their full k and limit skills to the top-N by score. Env-tunable
-// (`LLM_AGENT_SKILL_RAG_K`, default 3); 0 disables skill injection.
-const SKILL_RAG_K = (() => {
-  const parsed = Number(process.env.LLM_AGENT_SKILL_RAG_K);
-  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 3;
-})();
+// their full k and limit skills to the top-N by score. The agent passes
+// `config.agent.skillRagK` (`LLM_AGENT_SKILL_RAG_K`); 0 disables skill injection.
+export const DEFAULT_SKILL_RAG_K = 3;
 
 const isSkillId = (id: unknown): boolean =>
   typeof id === 'string' && id.startsWith('skill:');
@@ -172,6 +173,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private inner: IRag,
     private writerStore?: IRag,
     private skillStore?: IRag,
+    private readonly skillRagK: number = DEFAULT_SKILL_RAG_K,
   ) {}
 
   /** The store a given exposition's entries live in. */
@@ -209,7 +211,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     if (!id) throw new Error('metadata.id is required for upsert');
     // Route here too: any id-carrying upsert (skills, callers outside the
     // corpus load) must land in the collection its exposition belongs to —
-    // writing everything to `inner` would put high/compact tools in the reader
+    // writing everything to `inner` would put high tools in the reader
     // collection.
     const target = this.storeForEntry(
       id,
@@ -417,7 +419,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
             .sort((a, b) => b.score - a.score),
         };
 
-    // Give tools their full k budget; cap skills at the top SKILL_RAG_K by score.
+    // Give tools their full k budget; cap skills at the top skillRagK by score.
     // Input rows are score-descending from the inner store, so slicing keeps the best.
     // Each collection is added to the context on its own: its tools are capped
     // at k within that collection, never against the other one. A merged cap
@@ -434,7 +436,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         .flat()
         .filter((r) => isSkillId(r.metadata.id))
         .sort((a, b) => b.score - a.score)
-        .slice(0, SKILL_RAG_K);
+        .slice(0, this.skillRagK);
       return [...tools, ...skills];
     };
 
@@ -541,7 +543,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
 // Tool → exposition group mapping
 // ---------------------------------------------------------------------------
 // Each tool belongs to exactly one exposition group (readonly, high, search,
-// system, compact). Built once at startup from handler group instances.
+// system). Built once at startup from handler group instances.
 // Used to tag tools in RAG metadata for role-based filtering.
 // ---------------------------------------------------------------------------
 
@@ -566,9 +568,6 @@ function getToolExpositionMap(): Map<string, string> {
       .length,
     system: [...toolExpositionMap.values()].filter((v) => v === 'system')
       .length,
-    compact: [...toolExpositionMap.values()].filter((v) => v === 'compact')
-      .length,
-    low: [...toolExpositionMap.values()].filter((v) => v === 'low').length,
   });
 
   return toolExpositionMap;
@@ -738,7 +737,7 @@ export function getCurrentModel(): string {
 }
 
 export function getCurrentClassifierModel(): string {
-  return process.env.LLM_AGENT_CLASSIFIER_MODEL || getAgentConfig().llm.model;
+  return getAgentConfig().llm.classifierModel;
 }
 
 /** Shared metrics instance (survives agent rebuilds) */
@@ -812,16 +811,13 @@ const destinationInits = new Map<string, Promise<DestinationState>>();
 
 const systemDestinationMap = new Map<string, string>();
 
-/** Parse DESTINATION_MAPPING env var at startup */
+/** Load the configured DESTINATION_MAPPING at startup */
 function initDestinationMapping(): void {
-  const raw = process.env.DESTINATION_MAPPING || '';
-  if (!raw) return;
   const log = cds.log('agent-manager');
-  for (const pair of raw.split(',')) {
-    const [system, dest] = pair.split('=').map((s) => s.trim());
-    if (system && dest) {
-      systemDestinationMap.set(system, dest);
-    }
+  for (const [system, dest] of Object.entries(
+    getAgentConfig().mcp.systemDestinations,
+  )) {
+    systemDestinationMap.set(system, dest);
   }
   if (systemDestinationMap.size > 0) {
     log.info('Destination mapping loaded', {
@@ -1019,7 +1015,7 @@ export function getCollectionRegistry(): CollectionRegistry {
   if (!collectionRegistryInstance) {
     const { embedding: e, stores } = getProviders();
     collectionRegistryInstance = new CollectionRegistry({
-      embedder: e?.embedder ?? null,
+      embedder: e?.retrieval ?? null,
       breaker: e?.breaker ?? null,
       // LLM_AGENT_RAG_BACKEND, not "vector whenever an embedder exists":
       // another class's embedder must not move persistent collections.
@@ -1027,6 +1023,23 @@ export function getCollectionRegistry(): CollectionRegistry {
     });
   }
   return collectionRegistryInstance;
+}
+
+/**
+ * A tools store with the configured skill cap. Every tool store the agent
+ * builds goes through here, so the cap is read from the config in one place.
+ */
+function toolsStore(
+  inner: IRag,
+  writer?: IRag,
+  skills?: IRag,
+): ExpositionFilteringRag {
+  return new ExpositionFilteringRag(
+    inner,
+    writer,
+    skills,
+    getAgentConfig().agent.skillRagK,
+  );
 }
 
 /** Create a tools RAG store (one per destination), wrapped to ignore ragFilter */
@@ -1038,11 +1051,11 @@ async function createToolsRagStore(
     // Two stores here too. In-memory is the DEFAULT rag type, not a rare
     // compatibility path — leaving it single-store would mean the isolation
     // this class exists for does not apply in the common configuration.
-    return new ExpositionFilteringRag(new InMemoryRag(), new InMemoryRag());
+    return toolsStore(new InMemoryRag(), new InMemoryRag());
   }
   if (!translateQueries) {
     const plain = () => stores.create('tools', 'unused');
-    return new ExpositionFilteringRag(plain(), plain());
+    return toolsStore(plain(), plain());
   }
 
   const config = getAgentConfig();
@@ -1052,7 +1065,7 @@ async function createToolsRagStore(
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
-        model: process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model,
+        model: config.llm.classifierModel,
         resourceGroup: config.llm.resourceGroup,
         whenThrottled: config.llm.whenThrottled,
       },
@@ -1071,7 +1084,7 @@ async function createToolsRagStore(
       queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
     });
 
-  return new ExpositionFilteringRag(makeBackend(), makeBackend());
+  return toolsStore(makeBackend(), makeBackend());
 }
 
 /**
@@ -1224,21 +1237,17 @@ export function buildToolDocs(tools: ToolDocInput[]): {
  * tool list (`listToolDefsFromExporter`) and the callable MCP adapter
  * (`buildEmbeddedMcpAdapter`) so they never diverge.
  *
- * The COMPACT group exposes generic low-level handlers (`HandlerCreate`,
- * `HandlerActivate`, `HandlerLock`, `HandlerTransportCreate`, …) ALONGSIDE the
- * high-level named tools (`CreatePackage`, `CreateClass`, …). Exposing both lets
- * the agent pick a generic low-level handler for a "create" when it should use
- * the high-level tool. So compact/low-level are now OPT-IN via env, OFF by
- * default — enable explicitly at deploy only:
- *   LLM_AGENT_INCLUDE_COMPACT=true    (generic compact/low-level handlers)
- *   LLM_AGENT_INCLUDE_LOW_LEVEL=true  (the low handler group)
+ * The hub serves the read-only and high-level tools, plus search and system.
+ * It has no use for the low-level API: it duplicates the high-level tools at a
+ * finer grain, and exposing both lets the agent pick a low-level step for a
+ * "create" the high-level tool does whole. (The compact facade left
+ * `@mcp-abap-adt/lib` in 14.0.0 and is not served either.)
  */
-export function getHandlerExporterConfig(env: NodeJS.ProcessEnv = process.env) {
+export function getHandlerExporterConfig() {
   return {
     includeReadOnly: true,
     includeHighLevel: true,
-    includeLowLevel: env.LLM_AGENT_INCLUDE_LOW_LEVEL === 'true',
-    includeCompact: env.LLM_AGENT_INCLUDE_COMPACT === 'true',
+    includeLowLevel: false,
     includeSystem: true,
     includeSearch: true,
     logger: loggerAdapter,
@@ -1450,10 +1459,7 @@ export async function loadToolCorpus(
   const backend = p.stores.backendOf('tools');
 
   if (backend === 'in-memory' || !p.embedding) {
-    const store = new ExpositionFilteringRag(
-      new InMemoryRag(),
-      new InMemoryRag(),
-    );
+    const store = toolsStore(new InMemoryRag(), new InMemoryRag());
     const w = store.writer();
     if (!w) throw new Error('Tool corpus store is not writable (in-memory)');
     let count = 0;
@@ -1490,7 +1496,7 @@ export async function loadToolCorpus(
     if (problems.length) throw new ToolCorpusMissingError(problems.join('; '));
     // Skills go to a per-process side store: the role stores are the build
     // step's and take no runtime writes (see ExpositionFilteringRag).
-    const store = new ExpositionFilteringRag(
+    const store = toolsStore(
       p.stores.create('tools', names.reader),
       p.stores.create('tools', names.writer),
       p.stores.createLocal(),
@@ -1724,10 +1730,7 @@ async function initBackgroundDestinations(): Promise<void> {
       if (!destinationStates.has(dest.name)) {
         destinationStates.set(dest.name, {
           mcpAdapter: null,
-          toolsRag: new ExpositionFilteringRag(
-            new InMemoryRag(),
-            new InMemoryRag(),
-          ),
+          toolsRag: toolsStore(new InMemoryRag(), new InMemoryRag()),
           toolCount: 0,
           status: 'pending',
           proxyType: dest.proxyType,
@@ -1904,10 +1907,7 @@ export function closeDestination(name: string, reason: string): void {
     // a different bug.
     destinationStates.set(name, {
       mcpAdapter: null,
-      toolsRag: new ExpositionFilteringRag(
-        new InMemoryRag(),
-        new InMemoryRag(),
-      ),
+      toolsRag: toolsStore(new InMemoryRag(), new InMemoryRag()),
       toolCount: 0,
       status: 'unreachable',
       error: reason,
@@ -2010,7 +2010,6 @@ async function buildEmbeddedMcpAdapter(
 
   // Load ALL tool handlers — role-based filtering happens at RAG query time
   // via ExpositionFilteringRag (post-filter by exposition metadata).
-  // Low-level handlers excluded: they duplicate high-level with finer granularity.
   const exporter = new HandlerExporter(getHandlerExporterConfig());
 
   const entries = exporter.getHandlerEntries();
@@ -2230,8 +2229,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
     ).then(trackedLlm);
   }
   if (!sharedClassifierLlm) {
-    const classifierModel =
-      process.env.LLM_AGENT_CLASSIFIER_MODEL || config.llm.model;
+    const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(
       {
         provider: config.llm.provider,
@@ -2342,7 +2340,7 @@ async function configureDestinationAgentBuilder(
 
   // Share embedder across all RAG queries
   const e = getProviders().embedding;
-  if (e) builder.withEmbedder(e.embedder);
+  if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
   builder
     .withClassification(false) // Disable classifier — treat all input as action.
@@ -2565,7 +2563,7 @@ async function buildLlmOnlyAgent(
     .withClientAdapter(new ClineClientAdapter());
 
   const e = getProviders().embedding;
-  if (e) builder.withEmbedder(e.embedder);
+  if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
   const handle = await builder.build();
   log.info('LLM-only agent built (no MCP tools)');
@@ -2635,8 +2633,7 @@ export async function getSmartAgent(
   // --- Destination lookup (no hot-swap — each dest has its own agent) ---
   const destName = requestedDestination || config.mcp.destination;
   const isExplicit = !!requestedDestination;
-  const allowFallback =
-    process.env.LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK === 'true';
+  const allowFallback = config.agent.allowLlmOnlyFallback;
 
   // Ready → serve immediately.
   let handle = agentHandles.get(destName);

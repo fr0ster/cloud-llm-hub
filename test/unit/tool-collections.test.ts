@@ -53,8 +53,6 @@ describe('role-scoped tool collections', () => {
     expect(collectionFor('search')).toBe('reader');
     expect(collectionFor('system')).toBe('reader');
     expect(collectionFor('high')).toBe('writer');
-    expect(collectionFor('compact')).toBe('writer');
-    expect(collectionFor('low')).toBe('writer');
     // An unclassified tool must not land in the reader collection by accident…
     // it lands there, but the post-filter still drops it for lacking a tag.
     expect(collectionFor(undefined)).toBe('reader');
@@ -191,7 +189,7 @@ describe('role-scoped tool collections', () => {
       // No ragFilter at all — exactly what the second selection passes.
       () => rag.query({} as never, 10, {}),
       undefined,
-      ['readonly', 'search', 'system', 'high', 'compact'],
+      ['readonly', 'search', 'system', 'high'],
     );
     if (!res.ok) throw new Error('query failed');
     expect(writer.stats.queries).toBe(1);

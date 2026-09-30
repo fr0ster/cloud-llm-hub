@@ -31,7 +31,11 @@ it('persistent collections use the configured persistent backend', () => {
   initProviders({
     embedding,
     stores: createRagStoreFactory(rag, embedding),
-    destinations: { list: async () => [], clearCache: () => {} },
+    destinations: {
+      list: async () => [],
+      clearCache: () => {},
+      refuse: () => null,
+    },
   });
   const meta = getCollectionRegistry().createCollection({
     id: 'notes',

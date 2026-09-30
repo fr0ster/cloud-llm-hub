@@ -28,11 +28,11 @@ change anything in the system?
 
 | Level | What it reaches | Tools your role allows |
 |-------|-----------------|---------|
-| **Reader** | everything that changes nothing — reading objects and source, search, and system diagnostics (structure, where-used, dumps, profiler data, `GetSqlQuery`) | up to **64** |
-| **Developer** | Reader, plus the high-level and compact tools that change things — create / update / delete / activate, and running ABAP | up to **247** |
+| **Reader** | everything that changes nothing — reading objects and source, search, and system diagnostics (structure, where-used, dumps, profiler data, `GetSqlQuery`) | up to **67** |
+| **Developer** | Reader, plus the high-level tools that change things — create / update / delete / activate, and running ABAP | up to **234** |
 
-Of the 363 tools in total, the remaining **116** are the low-level API
-(`*Low`) and are reachable by **nobody** — see the last note below.
+The hub serves **234** tools in total. It serves neither the upstream low-level
+group (the `*Low` write API) nor the compact facade (`Handler*`) — see the last note below.
 
 **"Up to", because your role is not the only filter.** These are the counts your
 role permits. The server then drops any tool that does not apply to the system
@@ -71,8 +71,9 @@ Two consequences worth knowing:
   `RuntimeRunProgram` sit in the upstream `system` group with the diagnostics,
   but executing arbitrary code can change anything, so they are grouped with
   the write tools.
-- **The low-level API (`*Low`) is granted to nobody.** 87 of its 116 tools
-  create, update, delete or lock; nothing needs them today.
+- **The low-level group and the compact facade (`Handler*`) are not
+  served.** The high-level tools do the same work whole; a client that asks
+  for one of these by name is refused.
 
 ### The role decides what may RUN, not just what is offered
 

@@ -105,6 +105,42 @@ describe('ExpositionFilteringRag — skill K cap (LLM_AGENT_SKILL_RAG_K, default
     expect(ids).not.toContain('skill:s5'); // lowest dropped
   });
 
+  it('takes the cap it is given (config.agent.skillRagK)', async () => {
+    const one = new ExpositionFilteringRag(
+      innerWith(many) as any,
+      undefined,
+      undefined,
+      1,
+    );
+    const r1 = await one.query({} as never, 10, {
+      ragFilter: { exposition: ['high'] },
+    });
+    if (!r1.ok) throw new Error('query failed');
+    expect(
+      count(
+        r1.value.map((r) => r.metadata.id),
+        'skill:',
+      ),
+    ).toBe(1);
+
+    const none = new ExpositionFilteringRag(
+      innerWith(many) as any,
+      undefined,
+      undefined,
+      0,
+    );
+    const r0 = await none.query({} as never, 10, {
+      ragFilter: { exposition: ['high'] },
+    });
+    if (!r0.ok) throw new Error('query failed');
+    expect(
+      count(
+        r0.value.map((r) => r.metadata.id),
+        'skill:',
+      ),
+    ).toBe(0);
+  });
+
   it('caps skills when no role filter reaches it, and drops write tools', async () => {
     const rag = new ExpositionFilteringRag(innerWith(many) as any);
     const res = await rag.query({} as never, 10, {});

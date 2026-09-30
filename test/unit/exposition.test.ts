@@ -11,7 +11,7 @@ import {
 // already assigned a role collection loses access.
 describe('resolveExposition', () => {
   const READER = ['readonly', 'search', 'system'];
-  const DEVELOPER = [...READER, 'high', 'compact'];
+  const DEVELOPER = [...READER, 'high'];
 
   const sorted = (v: string[]) => [...v].sort();
 
@@ -40,15 +40,12 @@ describe('resolveExposition', () => {
     expect(new Set(result).size).toBe(result.length);
   });
 
-  // `low` is the low-level write API — 87 of its 116 tools create, update,
-  // delete or lock. Nothing needs it today, so no role carries it. It stays a
-  // known level so a tool tagged `low` is classified, and therefore refused,
-  // rather than unclassified.
-  it('grants `low` to no role', () => {
-    for (const role of MCP_ROLES) {
-      expect(resolveExposition([role])).not.toContain('low');
-    }
-    expect(resolveExposition([...MCP_ROLES])).not.toContain('low');
+  // The hub serves neither the low-level API nor the compact facade; no role
+  // carries a level for them.
+  it('grants neither `low` nor `compact` to any role', () => {
+    const all: string[] = resolveExposition([...MCP_ROLES]);
+    expect(all).not.toContain('low');
+    expect(all).not.toContain('compact');
   });
 });
 

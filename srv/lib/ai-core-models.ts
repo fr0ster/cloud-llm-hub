@@ -7,7 +7,14 @@
  */
 
 import cds from '@sap/cds';
+import type { AgentConfig } from '../agent-config';
 import { getServiceCredentials, getToken } from './btp-oauth';
+
+/** The LLM settings the model list depends on, handed in by the caller. */
+export type ModelListConfig = Pick<
+  AgentConfig['llm'],
+  'provider' | 'model' | 'apiKey' | 'baseUrl' | 'resourceGroup'
+>;
 
 interface AiCoreModelEntry {
   id: string;
@@ -47,12 +54,12 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 /**
  * Fetch RUNNING deployments from AI Core and filter to LLM models.
  */
-async function fetchModels(): Promise<AiCoreModelEntry[]> {
+async function fetchModels(llm: ModelListConfig): Promise<AiCoreModelEntry[]> {
   const log = cds.log('ai-core-models');
   const creds = getServiceCredentials('aicore', 'ai-core');
   const token = await getToken(creds);
 
-  const resourceGroup = process.env.LLM_AGENT_RESOURCE_GROUP || 'default';
+  const resourceGroup = llm.resourceGroup || 'default';
   const response = await fetch(
     `${creds.uri}/v2/lm/deployments?status=RUNNING`,
     {
@@ -108,20 +115,18 @@ async function fetchModels(): Promise<AiCoreModelEntry[]> {
 
 /**
  * Fetch models from OpenAI-compatible API (openai, anthropic, deepseek providers).
- * Uses LLM_AGENT_BASE_URL + LLM_AGENT_API_KEY to call GET /models.
+ * Uses the configured base URL + API key to call GET /models.
  */
-async function fetchOpenAiModels(): Promise<AiCoreModelEntry[]> {
+async function fetchOpenAiModels(
+  llm: ModelListConfig,
+): Promise<AiCoreModelEntry[]> {
   const log = cds.log('ai-core-models');
-  const apiKey = process.env.LLM_AGENT_API_KEY;
-  const baseUrl = process.env.LLM_AGENT_BASE_URL || 'https://api.openai.com/v1';
-  const provider = process.env.LLM_AGENT_PROVIDER || 'openai';
+  const { apiKey, provider, model } = llm;
+  const baseUrl = llm.baseUrl || 'https://api.openai.com/v1';
 
   if (!apiKey) {
     log.warn('No LLM_AGENT_API_KEY — returning active model only');
-    const model = process.env.LLM_AGENT_MODEL;
-    return model
-      ? [{ id: model, object: 'model', created: 0, owned_by: provider }]
-      : [];
+    return [{ id: model, object: 'model', created: 0, owned_by: provider }];
   }
 
   try {
@@ -157,24 +162,24 @@ async function fetchOpenAiModels(): Promise<AiCoreModelEntry[]> {
     log.warn('Failed to fetch provider models, returning active model only', {
       error: err instanceof Error ? err.message : String(err),
     });
-    const model = process.env.LLM_AGENT_MODEL;
-    return model
-      ? [{ id: model, object: 'model', created: 0, owned_by: provider }]
-      : [];
+    return [{ id: model, object: 'model', created: 0, owned_by: provider }];
   }
 }
 
 /**
  * Get available LLM models (cached with 5min TTL).
  */
-export async function getAvailableModels(): Promise<AiCoreModelEntry[]> {
+export async function getAvailableModels(
+  llm: ModelListConfig,
+): Promise<AiCoreModelEntry[]> {
   if (cachedModels && Date.now() - cacheTimestamp < CACHE_TTL_MS) {
     return cachedModels;
   }
 
-  const provider = process.env.LLM_AGENT_PROVIDER || 'sap-ai-sdk';
   cachedModels =
-    provider === 'sap-ai-sdk' ? await fetchModels() : await fetchOpenAiModels();
+    llm.provider === 'sap-ai-sdk'
+      ? await fetchModels(llm)
+      : await fetchOpenAiModels(llm);
   cacheTimestamp = Date.now();
   return cachedModels;
 }

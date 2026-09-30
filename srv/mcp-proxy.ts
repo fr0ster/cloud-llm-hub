@@ -2,7 +2,10 @@ import cds, { type Request, type Service } from '@sap/cds';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import { runActiveDestinationProbe } from './lib/active-probe';
-import { getAvailableDestinations } from './lib/btp-destinations';
+import {
+  getAvailableDestinations,
+  refuseDestination,
+} from './lib/btp-destinations';
 import { logErrorSafely } from './lib/errorUtils';
 import { gatekeeperSnapshot } from './lib/gatekeeper-metrics';
 import { maskLoginForLog } from './lib/log-mask';
@@ -81,6 +84,11 @@ export default async function registerMcpProxyHandlers(
     });
 
     try {
+      // A name the configured source does not hold is refused in its own terms,
+      // not with the BTP Destination service's error.
+      const refusal = refuseDestination(destinationName);
+      if (refusal) throw new Error(refusal);
+
       // Get destination metadata first (for proxyType, authentication, etc.)
       const destinationConfig = await getDestination({ destinationName });
       if (!destinationConfig) {

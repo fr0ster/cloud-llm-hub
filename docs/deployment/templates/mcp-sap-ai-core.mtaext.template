@@ -34,8 +34,6 @@ parameters:
   LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
 
 
-  # Handler sets to expose (readonly, high, low, compact, search, system)
-
   # History recency window (only last N messages sent to LLM, older via RAG)
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 

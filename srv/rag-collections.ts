@@ -18,12 +18,12 @@ import {
   type CircuitBreaker,
   FallbackRag,
   filterActive,
-  type IEmbedder,
   InMemoryRag,
   type IQueryEmbedding,
   type IRag,
   type IRagBackendWriter,
   type IRagEditor,
+  type IRetrievalEmbedder,
   type RagError,
   type Result,
   VectorRag,
@@ -83,7 +83,7 @@ export type RagBackendType =
 export type RagBackendFactory = (ctx: {
   /** This collection's own store; unique per collection created. */
   store: string;
-  embedder: IEmbedder | null;
+  embedder: IRetrievalEmbedder | null;
   breaker: CircuitBreaker | null;
 }) => IRag;
 
@@ -412,13 +412,13 @@ export class CollectionRegistry {
     Object.entries(builtInBackends),
   );
   private defaultBackend: RagBackendType;
-  private embedder: IEmbedder | null;
+  private embedder: IRetrievalEmbedder | null;
   private breaker: CircuitBreaker | null;
   private log = cds.log('rag-collections');
   private enabledByUser: Map<string, Map<string, boolean>> = new Map();
 
   constructor(opts?: {
-    embedder?: IEmbedder | null;
+    embedder?: IRetrievalEmbedder | null;
     breaker?: CircuitBreaker | null;
     /** Default backend for new collections (default: "vector" if embedder provided, else "in-memory") */
     defaultBackend?: RagBackendType;

@@ -1,10 +1,10 @@
 import {
   FallbackRag,
   type IDocumentEnricher,
-  type IEmbedder,
   InMemoryRag,
   type IQueryPreprocessor,
   type IRag,
+  type IRetrievalEmbedder,
   NoopDocumentEnricher,
   RagError,
   type Result,
@@ -70,7 +70,7 @@ export interface RagStoreFactory {
  */
 export function toolCatalogProvider(
   q: QdrantConfig,
-  embedder: IEmbedder,
+  embedder: IRetrievalEmbedder,
 ): QdrantRagProvider {
   return new QdrantRagProvider({
     name: 'hub-tools',
@@ -128,7 +128,7 @@ export function createRagStoreFactory(
 
   const vectorStore = (e: Embedding, opts?: VectorStoreOptions): IRag =>
     new FallbackRag(
-      new VectorRag(e.embedder, {
+      new VectorRag(e.retrieval, {
         vectorWeight: 0.7,
         keywordWeight: 0.3,
         queryPreprocessors: opts?.queryPreprocessors,
@@ -161,7 +161,7 @@ export function createRagStoreFactory(
       return new QdrantRag({
         url: q.url,
         collectionName: qName(name),
-        embedder: embedding.embedder,
+        embedder: embedding.retrieval,
         ...(q.apiKey ? { credential: apiKeyCredential(q.apiKey) } : {}),
       });
     },
@@ -193,8 +193,8 @@ export function createRagStoreFactory(
       );
       return r.ok ? { ok: true, value: r.value.result.count } : r;
     },
-    // Temporary: @mcp-abap-adt/qdrant-rag 29 writes points without
-    // `wait=true`, so Qdrant acknowledges a point before applying it and a
+    // Temporary: @mcp-abap-adt/qdrant-rag (29, still in 30.0.0) writes points
+    // without `wait=true`, so Qdrant acknowledges a point before applying it and a
     // count right after the last write can miss it (seen: 65 of 66). An update
     // that deletes nothing, sent with `wait=true`, is queued behind those
     // writes and returns once they are applied. Remove once the upstream write
@@ -228,7 +228,7 @@ export function createRagStoreFactory(
         return { ok: true, value: new Map() };
       const r = await toolCatalogProvider(
         qdrant,
-        embedding.embedder,
+        embedding.retrieval,
       ).describeCollections();
       if (!r.ok)
         return err(

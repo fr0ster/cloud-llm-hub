@@ -45,7 +45,6 @@ async function main() {
     includeReadOnly: true,
     includeHighLevel: true,
     includeLowLevel: false,
-    includeCompact: true,
     includeSystem: true,
     includeSearch: true,
   });

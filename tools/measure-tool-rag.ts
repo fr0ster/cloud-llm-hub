@@ -63,7 +63,7 @@ async function main() {
       const exposition = resolveExposition([role]);
       const t0 = performance.now();
       const r = await store.query(
-        new QueryEmbedding(q, p.embedding.embedder),
+        new QueryEmbedding(q, p.embedding.retrieval),
         K,
         {
           ragFilter: { exposition },

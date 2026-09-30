@@ -1,6 +1,7 @@
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { Destination } from '@sap-cloud-sdk/connectivity';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
+import { refuseDestination } from '../lib/btp-destinations';
 import { formatErrorMessage, logErrorSafely } from '../lib/errorUtils';
 
 /**
@@ -251,6 +252,12 @@ export async function resolveDestinationSapConfig(
       hasVcapServices: !!process.env.VCAP_SERVICES,
       isLocal: !process.env.VCAP_APPLICATION,
     });
+
+    // A name the configured source does not hold is refused in its own terms:
+    // the Cloud SDK would fall back to the BTP Destination service and answer
+    // with that service's error instead.
+    const refusal = refuseDestination(destinationName);
+    if (refusal) throw new Error(refusal);
 
     // First, get destination without JWT to check authentication type
     // Destination credentials are stored in destination itself, not in user JWT

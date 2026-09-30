@@ -2,13 +2,7 @@
  * MCP exposition level types and role-based resolution.
  */
 
-export type ExpositionLevel =
-  | 'readonly'
-  | 'search'
-  | 'system'
-  | 'compact'
-  | 'high'
-  | 'low';
+export type ExpositionLevel = 'readonly' | 'search' | 'system' | 'high';
 
 /**
  * Every MCP role, in one place.
@@ -109,13 +103,11 @@ export const SYSTEM_TOOLS_THAT_WRITE: Readonly<
  *
  * - **Reader** — everything that changes nothing: `readonly`, `search` and
  *   `system` (minus {@link SYSTEM_TOOLS_THAT_WRITE}, re-tagged to `high`).
- * - **Developer** — Reader plus everything that changes something: `high` and
- *   `compact`.
+ * - **Developer** — Reader plus everything that changes something: `high`.
  *
- * `low` is granted to NOBODY. It is the low-level write API — 87 of its 116
- * tools create, update, delete or lock — and nothing needs it today. It stays
- * in {@link ExpositionLevel} so a tool carrying it is classified (and therefore
- * refused) rather than unclassified.
+ * The low-level API and the compact facade are not levels here: the hub serves
+ * neither. A tool of theirs is in no group, and a tool in no group is refused
+ * to everyone (`assertToolAllowed` fails closed on an unclassified tool).
  *
  * The four XSUAA roles map onto the two levels rather than being removed, so
  * nobody already assigned a collection loses access:
@@ -128,7 +120,7 @@ export const SYSTEM_TOOLS_THAT_WRITE: Readonly<
  * | MCP_Full      | Developer |
  *
  * Note this widens Reader (it now reaches `system` diagnostics such as dumps
- * and `GetSqlQuery`) and narrows MCP_Full (it no longer reaches `low`).
+ * and `GetSqlQuery`).
  *
  * Roles are additive — the union of whatever the caller holds.
  */
@@ -143,7 +135,7 @@ export function resolveExposition(userRoles: string[]): ExpositionLevel[] {
 
   // Developer: everything that changes something.
   if (roles.has('MCP_Developer') || roles.has('MCP_Full')) {
-    exposition.push('high', 'compact');
+    exposition.push('high');
   }
 
   return exposition;

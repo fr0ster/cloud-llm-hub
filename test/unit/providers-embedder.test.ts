@@ -1,5 +1,10 @@
-import { CircuitBreakerEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
+  CircuitBreaker,
+  CircuitBreakerEmbedder,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  agentQueryEmbedder,
   buildEmbedding,
   embedderFingerprint,
   prefetchEmbedder,
@@ -78,5 +83,58 @@ describe('embedder from configuration', () => {
     const e = buildEmbedding(cfg);
     expect(e?.embedder).toBeInstanceOf(CircuitBreakerEmbedder);
     expect(e?.fingerprint).toEqual(embedderFingerprint(cfg));
+  });
+});
+
+// llm-agent 30 split the embedder into roles and stopped metering embedding
+// usage inside the builder; these hold the hub's side of that contract.
+describe('embedder roles (llm-agent 30)', () => {
+  const stub = () => {
+    const embed = jest.fn(async () => ({
+      vector: [1, 2],
+      usage: { promptTokens: 3, totalTokens: 3 },
+    }));
+    const breaker = new CircuitBreaker({
+      failureThreshold: 30,
+      recoveryWindowMs: 60_000,
+    });
+    const embedder = new CircuitBreakerEmbedder({ embed }, breaker);
+    return {
+      embed,
+      embedding: {
+        embedder,
+        retrieval: symmetricEmbedder(embedder),
+        breaker,
+        fingerprint: { provider: 'ollama', embeddingModel: 'bge-m3' },
+      },
+    };
+  };
+
+  it('gives the built embedder both retrieval roles over the same provider', async () => {
+    await prefetchEmbedder({
+      kind: 'ollama',
+      model: 'bge-m3',
+      url: 'http://localhost:11434',
+    });
+    const e = buildEmbedding({
+      kind: 'ollama',
+      model: 'bge-m3',
+      url: 'http://localhost:11434',
+    });
+    expect(typeof e?.retrieval.embedDocument).toBe('function');
+    expect(typeof e?.retrieval.embedQuery).toBe('function');
+  });
+
+  it("meters the agent's query embeddings in the request log", async () => {
+    const { embed, embedding } = stub();
+    const logLlmCall = jest.fn();
+    const r = await agentQueryEmbedder(embedding).embedQuery('find a class', {
+      requestLogger: { logLlmCall } as never,
+    });
+    expect(r.vector).toEqual([1, 2]);
+    expect(embed).toHaveBeenCalledTimes(1);
+    expect(logLlmCall).toHaveBeenCalledWith(
+      expect.objectContaining({ component: 'embedding', totalTokens: 3 }),
+    );
   });
 });

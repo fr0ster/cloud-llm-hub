@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Migration
+
+- **`LLM_AGENT_INCLUDE_COMPACT` and `LLM_AGENT_INCLUDE_LOW_LEVEL` are gone.**
+  A deployment that still sets either starts as before: the variable is
+  ignored, and the agent serves the tools it served with both unset (the
+  default). A deployment that set `LLM_AGENT_INCLUDE_COMPACT=true` loses the
+  22 `Handler*` tools; the high-level tools do the same work. Nothing needs to
+  change in an `.mtaext`, though the line can be dropped.
+
+### Added
+
+- **`GetServiceBindingPreviewUrl`** (lib 14.1): the browser preview URL of a
+  published service binding. It reads only, so it is tagged `system` and
+  reaches the Reader role.
+
+### Changed
+
+- **Dependencies:** the `@mcp-abap-adt/llm-agent` family 29 → 30,
+  `@mcp-abap-adt/lib` 13.1 → 14.1, `@modelcontextprotocol/sdk` 1.30 → 1.31.
+  One copy of each `@mcp-abap-adt/interfaces-*` package stays in the tree;
+  `interfaces-auth` stays on 2.1 because `lib` 14 and `llm-agent` 30 still
+  require 2.x.
+- **Configuration is read in one place.** `LLM_AGENT_CLASSIFIER_MODEL`,
+  `LLM_AGENT_SKILL_RAG_K`, `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK` and
+  `DESTINATION_MAPPING` are parsed by `agent-config.ts` at startup and handed
+  to the agent; the model list (`GET /v1/models`) takes the LLM settings from
+  the config too. Same variables, same defaults. One visible difference: with
+  a non-AI-Core provider and no API key, `/v1/models` now lists the model the
+  agent actually uses (the config's default when `LLM_AGENT_MODEL` is unset)
+  instead of an empty list.
+- **Embedders have two roles (llm-agent 30).** Stores take the embedder as an
+  `IRetrievalEmbedder` and the agent as an `IQueryEmbedder`; every hub embedder
+  is symmetric, so both roles run the same model as before. The agent's query
+  embeddings are still metered in the request log (`wrapEmbedder`, which the
+  builder no longer applies itself).
+
+### Removed
+
+- **The low-level and compact tool groups.** The hub serves the read-only,
+  high-level, search and system tools and nothing else: the opt-ins
+  `LLM_AGENT_INCLUDE_COMPACT` / `LLM_AGENT_INCLUDE_LOW_LEVEL` are removed, and
+  so are the `compact` and `low` exposition levels. MCP_Developer / MCP_Full
+  no longer reach the compact `Handler*` tools on `/mcp/stream/http` (lib 14
+  moved them out of `@mcp-abap-adt/lib`). A low-level tool asked for by name
+  is in no group and is refused to every role, as before.
+
+### Fixed
+
+- **No `ICF logoff (session release) failed` warning for a session the ADT
+  release already ended.** On some systems the ADT stateless release also ends
+  the platform session, and the logoff that follows answers
+  `400 Session no longer exists`. After a successful release that answer is
+  now logged at debug; without one it is still a warning, and the logoff still
+  runs either way.
+- **A destination name missing from `destinations` is reported as such.**
+  With `LLM_AGENT_DESTINATION_SOURCE=env`, an unknown name ended in the Cloud
+  SDK's BTP fallback error, `Could not find service binding of type
+  'destination'`. It now reads ``destination <name> is not in the `destinations` variable
+  (known: …)``, before the SDK is asked.
+
 ## [6.35.0] - 2026-09-30
 
 The embedder, the RAG backend of each store class and the source of SAP

@@ -163,7 +163,8 @@ async function listFromBtp(): Promise<SapDestination[]> {
 
 /** Destinations fetched from the BTP Destination service, cached with a 5min TTL. */
 export function btpDestinationSource(): DestinationSource {
-  return { list: listFromBtp, clearCache: clearBtpCache };
+  // The service is the authority on which names exist; nothing to check first.
+  return { list: listFromBtp, clearCache: clearBtpCache, refuse: () => null };
 }
 
 let source: DestinationSource | null = null;
@@ -175,6 +176,11 @@ export function setDestinationSource(s: DestinationSource): void {
 
 export async function getAvailableDestinations(): Promise<SapDestination[]> {
   return (source ?? btpDestinationSource()).list();
+}
+
+/** Why the configured source cannot serve `name`, or null. See {@link DestinationSource.refuse}. */
+export function refuseDestination(name: string): string | null {
+  return (source ?? btpDestinationSource()).refuse(name);
 }
 
 export function clearDestinationsCache(): void {

@@ -335,6 +335,13 @@ what the connection is actually holding — not by any notion of system type:
 | the chain went stateful, or we minted an id | `GET /sap/bc/adt/compatibility/graph` with `x-sap-adt-sessiontype: stateless` — ends ADT stateful mode, releasing an edit-lock |
 | the jar holds a **server-issued** `SAP_SESSIONID` | `GET /sap/public/bc/icf/logoff` with that cookie — gives the ABAP session back |
 
+**When both run, the logoff can find the session already gone.** On some systems the ADT
+stateless release also ends the platform session; the logoff then answers `400 Session Timed Out
+or Not Found — Session no longer exists` (measured 2026-09-30 on a direct destination). After a
+**successful** release that 400 is logged at debug — the session is gone, which is the goal.
+Without a successful release it stays a warning. The logoff is still always sent: on other
+systems (the on-premise leak) the release did not give the session back and the logoff did.
+
 > **Known gap: the ABAP Cloud session lifecycle is not implemented.**
 >
 > Cloud (`ProxyType: Internet`) destinations are a **supported** scenario, not a future one:

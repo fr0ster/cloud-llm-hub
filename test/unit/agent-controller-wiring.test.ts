@@ -86,18 +86,21 @@ const config: AgentConfig = {
   llm: {
     provider: 'openai',
     model: 'gpt-4o-mini',
+    classifierModel: 'gpt-4o-mini',
     temperature: 0.7,
     maxTokens: 2000,
     apiKey: 'test-key',
     baseUrl: 'http://localhost',
     whenThrottled: new WaitIfShortEnough(20_000),
   },
-  mcp: { destination: 'TEST_DEST' },
+  mcp: { destination: 'TEST_DEST', systemDestinations: {} },
   agent: {
     mode: 'smart',
     maxIterations: 10,
     ragType: 'in-memory',
     ragQueryK: 5,
+    skillRagK: 3,
+    allowLlmOnlyFallback: false,
   },
   rag: {
     embedder: null,

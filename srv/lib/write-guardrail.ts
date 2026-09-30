@@ -16,10 +16,7 @@
 
 const EXEC_MARKER = /\[SmartAgent: Executing ([A-Za-z0-9_]+)\.\.\.\]/g;
 
-// Also matches the compact-mode handler names (HandlerCreate/Update/Delete/
-// Activate, exposed when LLM_AGENT_INCLUDE_COMPACT=true) — else a real write via
-// HandlerCreate would be falsely bannered as "no write tool".
-const WRITE_TOOL = /^(?:Handler)?(?:Create|Update|Delete|Activate)/i;
+const WRITE_TOOL = /^(?:Create|Update|Delete|Activate)/i;
 
 // Completed-write assertions. Passive forms need a completion cue (has been /
 // was / successfully); active/first-person forms are matched directly. All

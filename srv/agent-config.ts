@@ -82,6 +82,12 @@ export interface AgentConfig {
     /** Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet') */
     model: string;
 
+    /**
+     * Model for the helper calls (classification, query translation):
+     * `LLM_AGENT_CLASSIFIER_MODEL`, else {@link model}.
+     */
+    classifierModel: string;
+
     /** Temperature (0.0 - 2.0) */
     temperature: number;
 
@@ -123,6 +129,12 @@ export interface AgentConfig {
      * If not provided, will be constructed from request (for BTP) or use localhost
      */
     endpoint?: string;
+
+    /**
+     * SAP system code → destination name (`DEV.100` → `S4HANA_DEV`), from
+     * `DESTINATION_MAPPING` = `DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS`.
+     */
+    systemDestinations: Record<string, string>;
   };
 
   /**
@@ -143,6 +155,19 @@ export interface AgentConfig {
 
     /** Number of tools selected by RAG per query (default: 5) */
     ragQueryK: number;
+
+    /**
+     * Most `skill:*` entries one RAG query may surface (`LLM_AGENT_SKILL_RAG_K`,
+     * default 3; 0 disables skills). Skills and tools compete for one top-K.
+     */
+    skillRagK: number;
+
+    /**
+     * `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true`: a request that names no
+     * destination may fall back to the LLM-only agent when the default one
+     * is not ready.
+     */
+    allowLlmOnlyFallback: boolean;
   };
 
   /** Embedder + per-class RAG backend selection. */
@@ -279,6 +304,24 @@ export function parseRagConfig(
     };
   }
   return rag;
+}
+
+/** `LLM_AGENT_SKILL_RAG_K`: a finite number, truncated and floored at 0; else 3. */
+export function parseSkillRagK(env: NodeJS.ProcessEnv): number {
+  const parsed = Number(env.LLM_AGENT_SKILL_RAG_K);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 3;
+}
+
+/** `DESTINATION_MAPPING` = `DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS`; malformed pairs are skipped. */
+export function parseDestinationMapping(
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  for (const pair of (env.DESTINATION_MAPPING || '').split(',')) {
+    const [system, dest] = pair.split('=').map((s) => s.trim());
+    if (system && dest) mapping[system] = dest;
+  }
+  return mapping;
 }
 
 function pick(
@@ -429,6 +472,7 @@ export function loadAgentConfig(): AgentConfig {
     llm: {
       provider,
       model,
+      classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL || model,
       temperature,
       maxTokens,
       apiKey: apiKey || undefined,
@@ -439,6 +483,7 @@ export function loadAgentConfig(): AgentConfig {
     mcp: {
       destination: mcpDestination,
       endpoint: mcpEndpoint,
+      systemDestinations: parseDestinationMapping(process.env),
     },
     agent: {
       mode,
@@ -446,6 +491,9 @@ export function loadAgentConfig(): AgentConfig {
       ragType,
       historyRecencyWindow,
       ragQueryK,
+      skillRagK: parseSkillRagK(process.env),
+      allowLlmOnlyFallback:
+        process.env.LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK === 'true',
     },
     rag,
     destinations,

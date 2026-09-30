@@ -28,15 +28,8 @@ describe('hasWriteTool', () => {
     expect(hasWriteTool(['DeleteTable'])).toBe(true);
     expect(hasWriteTool(['UpdateClass'])).toBe(true);
   });
-  it('detects compact-mode Handler* write handlers', () => {
-    expect(hasWriteTool(['HandlerCreate'])).toBe(true);
-    expect(hasWriteTool(['HandlerUpdate'])).toBe(true);
-    expect(hasWriteTool(['HandlerDelete'])).toBe(true);
-    expect(hasWriteTool(['HandlerActivate'])).toBe(true);
-  });
   it('is false for read-only tool sets', () => {
     expect(hasWriteTool(['ReadDomain', 'GetTableContents'])).toBe(false);
-    expect(hasWriteTool(['HandlerGet', 'HandlerRead'])).toBe(false);
     expect(hasWriteTool([])).toBe(false);
   });
 });
@@ -146,10 +139,6 @@ describe('isWriteTool', () => {
     expect(isWriteTool('UpdateClass')).toBe(true);
     expect(isWriteTool('DeleteTable')).toBe(true);
     expect(isWriteTool('ActivateObjects')).toBe(true);
-  });
-  it('detects compact-mode Handler* write handlers', () => {
-    expect(isWriteTool('HandlerCreate')).toBe(true);
-    expect(isWriteTool('HandlerActivate')).toBe(true);
   });
   it('is false for read-only tool names', () => {
     expect(isWriteTool('ReadDomain')).toBe(false);

@@ -202,11 +202,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // Built WITHOUT minting: getCookieHeader() would generate a session id
       // here, at the very moment we are handing one back.
       const cookie = this.cookieHeader();
-      if (wasStateful || this.generatedSapSessionId) {
-        await this.endAdtStatefulSession(baseUrl, cookie);
-      }
+      const released =
+        (wasStateful || this.generatedSapSessionId !== null) &&
+        (await this.endAdtStatefulSession(baseUrl, cookie));
       if (serverSession) {
-        await this.icfLogoff(baseUrl, cookie);
+        await this.icfLogoff(baseUrl, cookie, released);
       }
     } catch (err) {
       // Never let session cleanup break the request flow.
@@ -242,11 +242,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * gives the platform session back — see {@link icfLogoff}.
    *
    * Best-effort: never throws, so a failure here cannot skip the logoff.
+   * Answers whether the server acknowledged the release.
    */
   private async endAdtStatefulSession(
     baseUrl: string,
     cookie: string | null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await executeHttpRequest(
         { destinationName: this.destinationName },
@@ -267,10 +268,12 @@ export class CloudSdkAbapConnection implements AbapConnection {
       logger.debug('ADT session closed', {
         sessionId: this.sessionId?.substring(0, 8),
       });
+      return true;
     } catch (err) {
       logger.warn('ADT stateful session release failed', {
         error: String(err),
       });
+      return false;
     }
   }
 
@@ -291,11 +294,20 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * The response's cookies are deliberately NOT adopted — a teardown must not
    * feed the session identity of a connection on its way out.
    *
+   * It still runs after a successful ADT release ({@link endAdtStatefulSession}):
+   * that release ends the ADT stateful session, and whether it also ends the
+   * platform session differs by system — on one it did (measured 2026-09-30),
+   * and the on-premise leak above was cured by the logoff, not by ADT. So the
+   * logoff is always sent; what changes is how its answer is read.
+   *
    * Best-effort: never throws, and says nothing about what the server then did.
+   *
+   * @param releasedByAdt  The ADT release just before this succeeded.
    */
   private async icfLogoff(
     baseUrl: string,
     cookie: string | null,
+    releasedByAdt: boolean,
   ): Promise<void> {
     try {
       await executeHttpRequest(
@@ -338,6 +350,22 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // noise. SM05 remains the ground truth; if sessions ever do accumulate,
       // this line is where to look first.
       const text = String(err);
+      // 400 right after a successful ADT release means the release already
+      // ended the platform session: ICF answers a logoff for a session it no
+      // longer has with 400 "Session Timed Out or Not Found — Session no longer
+      // exists". Measured 2026-09-30 on a direct destination through a logging
+      // proxy. The session is gone, which is what the logoff was for. Without a
+      // successful release a 400 stays a warning — nothing else explains why
+      // the session would already be gone.
+      const status = (err as { response?: { status?: number } })?.response
+        ?.status;
+      if (releasedByAdt && status === 400) {
+        logger.debug('Session already ended by the ADT release', {
+          sessionId: this.sessionId?.substring(0, 8),
+          status,
+        });
+        return;
+      }
       if (/socket hang up|ECONNRESET|EPIPE/i.test(text)) {
         logger.debug('Session release closed the connection, as expected', {
           sessionId: this.sessionId?.substring(0, 8),

@@ -9,6 +9,7 @@ import {
   buildToolExpositionMap,
   HANDLER_GROUPS,
 } from '../../srv/lib/tool-exposition-map';
+import { lowLevelOnlyTools } from './helpers/low-level-tools';
 
 const SNAPSHOT = join(__dirname, '..', 'fixtures', 'tool-exposition.json');
 const REGENERATE = 'npx tsx tools/generate-tool-exposition.ts';
@@ -79,23 +80,23 @@ describe('what each level actually reaches', () => {
       .map(([tool]) => tool);
   };
 
-  it('never lets a reader reach a tool tagged high, compact or low', () => {
+  it('never lets a reader reach a tool tagged high', () => {
     const readerTools = new Set(reachable(['MCP_Reader']));
     const forbidden = [...live.entries()]
-      .filter(([, l]) => l === 'high' || l === 'compact' || l === 'low')
+      .filter(([, l]) => l === 'high')
       .filter(([tool]) => readerTools.has(tool))
       .map(([tool]) => tool);
     expect(forbidden).toEqual([]);
   });
 
-  it('grants the low-level write API to nobody', () => {
-    const lowTools = [...live.entries()]
-      .filter(([, l]) => l === 'low')
-      .map(([tool]) => tool);
-    expect(lowTools.length).toBeGreaterThan(0); // the level is still populated
-    for (const roles of [['MCP_Reader'], ['MCP_Developer'], ['MCP_Full']]) {
-      const reached = new Set(reachable(roles));
-      expect(lowTools.filter((t) => reached.has(t))).toEqual([]);
-    }
+  // The hub serves neither the low-level API nor the compact facade, so no
+  // tool of theirs is in the map — and a tool not in the map is refused to
+  // everyone (assertToolAllowed fails closed on an unclassified tool).
+  it('classifies no low-level or compact tool', () => {
+    const lowOnly = new Set(lowLevelOnlyTools());
+    const stray = [...live.keys()].filter(
+      (t) => lowOnly.has(t) || /^Handler[A-Z]/.test(t),
+    );
+    expect(stray).toEqual([]);
   });
 });

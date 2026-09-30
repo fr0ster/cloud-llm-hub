@@ -233,9 +233,9 @@ export async function buildQdrantStores(
   const q = config.rag.qdrant;
   if (!q) throw new Error('tools are on qdrant but no Qdrant is configured');
   if (!p.embedding) throw new Error('no embedder configured');
-  const { embedder, fingerprint: fp } = p.embedding;
+  const { embedder, retrieval, fingerprint: fp } = p.embedding;
   const roles = corpusByRole(docs);
-  const provider = toolCatalogProvider(q, embedder);
+  const provider = toolCatalogProvider(q, retrieval);
   const described = await provider.describeCollections();
   if (!described.ok)
     throw new Error(
