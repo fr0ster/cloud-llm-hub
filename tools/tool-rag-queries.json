@@ -1,33 +1,341 @@
 [
-  { "q": "Які пакети в $TMP маємо?", "expect": ["GetPackageContents", "GetPackageTree"] },
-  { "q": "List all objects in package $TMP", "expect": ["GetPackageContents", "GetPackageTree"] },
-  { "q": "Покажи дерево пакета ZDEMO_LAB", "expect": ["GetPackageTree", "GetPackageContents"] },
-  { "q": "Show me the source code of class ZCL_DEMO", "expect": ["ReadClass", "GetClass"] },
-  { "q": "Покажи код програми ZREP_DEMO", "expect": ["ReadProgram", "GetProgram"] },
-  { "q": "What fields does table MARA have?", "expect": ["ReadTable", "GetTable"] },
-  { "q": "Show the first 10 rows of table T001", "expect": ["GetTableContents"] },
-  { "q": "Read the CDS view I_PRODUCT", "expect": ["ReadView", "GetView", "ReadDdl", "GetDdl"] },
-  { "q": "Show the behavior definition of ZI_TRAVEL", "expect": ["ReadBehaviorDefinition", "GetBehaviorDefinition"] },
-  { "q": "Покажи функціональний модуль BAPI_USER_GET_DETAIL", "expect": ["ReadFunctionModule", "GetFunctionModule"] },
-  { "q": "Find all classes whose name starts with Z", "expect": ["SearchObject"] },
-  { "q": "Знайди об'єкти за маскою Z*", "expect": ["SearchObject"] },
-  { "q": "Find source code that contains SELECT * in packages Z*", "expect": ["SearchSource"] },
-  { "q": "Where is class ZCL_DEMO used?", "expect": ["GetWhereUsed"] },
-  { "q": "Покажи короткі дампи за сьогодні", "expect": ["RuntimeListFeeds", "RuntimeListDumps"] },
-  { "q": "Show ST22 runtime errors for user DEVELOPER", "expect": ["RuntimeListFeeds", "RuntimeListDumps"] },
-  { "q": "Run the class ZCL_DEMO and show its output", "expect": ["RuntimeRunClass"] },
-  { "q": "Run ATC checks on package ZDEMO_LAB", "expect": ["RunATC"] },
-  { "q": "Run unit tests of class ZCL_DEMO", "expect": ["RunUnitTest"] },
-  { "q": "Check syntax of program ZREP_DEMO", "expect": ["CheckProgram"] },
-  { "q": "Які об'єкти в транспорті DEVK900001?", "expect": ["ReadTransportObjects", "GetTransport"] },
-  { "q": "List my open transport requests", "expect": ["ListTransports"] },
-  { "q": "Create a transport request for package ZDEMO_LAB", "expect": ["CreateTransport"] },
-  { "q": "Add class ZCL_DEMO to transport DEVK900001", "expect": ["AddTransportObject"] },
-  { "q": "Create class ZCL_DEMO in package $TMP", "expect": ["CreateClass"] },
-  { "q": "Створи домен ZDEMO_D_TEST у пакеті $TMP", "expect": ["CreateDomain"] },
-  { "q": "Create a CDS view ZI_DEMO in $TMP", "expect": ["CreateDdl", "CreateView"] },
-  { "q": "Update the source code of program ZREP_DEMO", "expect": ["UpdateProgram"] },
-  { "q": "Activate class ZCL_DEMO", "expect": ["ActivateClass", "ActivateObjects"] },
-  { "q": "Delete class ZCL_DEMO", "expect": ["DeleteClass"] },
-  { "q": "Видали таблицю ZDEMO_T_TEST з $TMP", "expect": ["DeleteTable"] }
+  {
+    "q": "Які пакети в $TMP маємо?",
+    "expect": ["GetPackageContents", "GetPackageTree"],
+    "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"],
+    "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]
+  },
+  {
+    "q": "List all objects in package $TMP",
+    "expect": ["GetPackageContents", "GetPackageTree"],
+    "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"],
+    "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]
+  },
+  {
+    "q": "Покажи дерево пакета ZDEMO_LAB",
+    "expect": ["GetPackageTree", "GetPackageContents"],
+    "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"],
+    "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]
+  },
+  {
+    "q": "Show me the source code of class ZCL_DEMO",
+    "expect": ["ReadClass", "GetClass"],
+    "relevant": ["ReadClass", "GetClass"],
+    "required": [["ReadClass", "GetClass"]]
+  },
+  {
+    "q": "Покажи код програми ZREP_DEMO",
+    "expect": ["ReadProgram", "GetProgram"],
+    "relevant": ["ReadProgram", "GetProgram"],
+    "required": [["ReadProgram", "GetProgram"]]
+  },
+  {
+    "q": "What fields does table MARA have?",
+    "expect": ["ReadTable", "GetTable"],
+    "relevant": ["ReadTable", "GetTable", "GetTypeInfo"],
+    "required": [["ReadTable", "GetTable"]]
+  },
+  {
+    "q": "Show the first 10 rows of table T001",
+    "expect": ["GetTableContents"],
+    "relevant": ["GetTableContents", "GetSqlQuery"],
+    "required": [["GetTableContents", "GetSqlQuery"]]
+  },
+  {
+    "q": "Read the CDS view I_PRODUCT",
+    "expect": ["ReadView", "GetView", "ReadDdl", "GetDdl"],
+    "relevant": ["ReadDdl", "GetDdl"],
+    "required": [["ReadDdl", "GetDdl"]]
+  },
+  {
+    "q": "Show the behavior definition of ZI_TRAVEL",
+    "expect": ["ReadBehaviorDefinition", "GetBehaviorDefinition"],
+    "relevant": ["ReadBehaviorDefinition", "GetBehaviorDefinition"],
+    "required": [["ReadBehaviorDefinition", "GetBehaviorDefinition"]]
+  },
+  {
+    "q": "Покажи функціональний модуль BAPI_USER_GET_DETAIL",
+    "expect": ["ReadFunctionModule", "GetFunctionModule"],
+    "relevant": ["ReadFunctionModule", "GetFunctionModule"],
+    "required": [["ReadFunctionModule", "GetFunctionModule"]]
+  },
+  {
+    "q": "Find all classes whose name starts with Z",
+    "expect": ["SearchObject"],
+    "relevant": ["SearchObject"],
+    "required": [["SearchObject"]]
+  },
+  {
+    "q": "Знайди об'єкти за маскою Z*",
+    "expect": ["SearchObject"],
+    "relevant": ["SearchObject"],
+    "required": [["SearchObject"]]
+  },
+  {
+    "q": "Find source code that contains SELECT * in packages Z*",
+    "expect": ["SearchSource"],
+    "relevant": ["SearchSource"],
+    "required": [["SearchSource"]]
+  },
+  {
+    "q": "Where is class ZCL_DEMO used?",
+    "expect": ["GetWhereUsed"],
+    "relevant": ["GetWhereUsed"],
+    "required": [["GetWhereUsed"]]
+  },
+  {
+    "q": "Покажи короткі дампи за сьогодні",
+    "expect": ["RuntimeListFeeds", "RuntimeListDumps"],
+    "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"],
+    "required": [["RuntimeListFeeds"]]
+  },
+  {
+    "q": "Show ST22 runtime errors for user DEVELOPER",
+    "expect": ["RuntimeListFeeds", "RuntimeListDumps"],
+    "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"],
+    "required": [["RuntimeListFeeds"]]
+  },
+  {
+    "q": "Run the class ZCL_DEMO and show its output",
+    "expect": ["RuntimeRunClass"],
+    "relevant": ["RuntimeRunClass"],
+    "required": [["RuntimeRunClass"]]
+  },
+  {
+    "q": "Run ATC checks on package ZDEMO_LAB",
+    "expect": ["RunATC"],
+    "relevant": ["RunATC", "GetATCFindings", "GetATCRunStatus"],
+    "required": [["RunATC"]]
+  },
+  {
+    "q": "Run unit tests of class ZCL_DEMO",
+    "expect": ["RunUnitTest"],
+    "relevant": ["RunUnitTest", "CreateUnitTest", "GetUnitTest", "GetUnitTestResult", "GetUnitTestStatus"],
+    "required": [["RunUnitTest", "CreateUnitTest"]]
+  },
+  {
+    "q": "Check syntax of program ZREP_DEMO",
+    "expect": ["CheckProgram"],
+    "relevant": ["CheckProgram"],
+    "required": [["CheckProgram"]]
+  },
+  {
+    "q": "Які об'єкти в транспорті DEVK900001?",
+    "expect": ["ReadTransportObjects", "GetTransport"],
+    "relevant": ["ReadTransportObjects", "GetTransport"],
+    "required": [["ReadTransportObjects", "GetTransport"]]
+  },
+  {
+    "q": "List my open transport requests",
+    "expect": ["ListTransports"],
+    "relevant": ["ListTransports"],
+    "required": [["ListTransports"]]
+  },
+  {
+    "q": "Create a transport request for package ZDEMO_LAB",
+    "expect": ["CreateTransport"],
+    "relevant": ["CreateTransport"],
+    "required": [["CreateTransport"]]
+  },
+  {
+    "q": "Add class ZCL_DEMO to transport DEVK900001",
+    "expect": ["AddTransportObject"],
+    "relevant": ["AddTransportObject"],
+    "required": [["AddTransportObject"]]
+  },
+  {
+    "q": "Create class ZCL_DEMO in package $TMP",
+    "expect": ["CreateClass"],
+    "relevant": ["CreateClass"],
+    "required": [["CreateClass"]]
+  },
+  {
+    "q": "Створи домен ZDEMO_D_TEST у пакеті $TMP",
+    "expect": ["CreateDomain"],
+    "relevant": ["CreateDomain"],
+    "required": [["CreateDomain"]]
+  },
+  {
+    "q": "Create a CDS view ZI_DEMO in $TMP",
+    "expect": ["CreateDdl", "CreateView"],
+    "relevant": ["CreateDdl", "UpdateDdl"],
+    "required": [["CreateDdl"]]
+  },
+  {
+    "q": "Update the source code of program ZREP_DEMO",
+    "expect": ["UpdateProgram"],
+    "relevant": ["UpdateProgram", "ReadProgram", "GetProgram"],
+    "required": [["UpdateProgram"]]
+  },
+  {
+    "q": "Activate class ZCL_DEMO",
+    "expect": ["ActivateClass", "ActivateObjects"],
+    "relevant": ["ActivateClass", "ActivateObjects"],
+    "required": [["ActivateClass", "ActivateObjects"]]
+  },
+  {
+    "q": "Delete class ZCL_DEMO",
+    "expect": ["DeleteClass"],
+    "relevant": ["DeleteClass"],
+    "required": [["DeleteClass"]]
+  },
+  {
+    "q": "Видали таблицю ZDEMO_T_TEST з $TMP",
+    "expect": ["DeleteTable"],
+    "relevant": ["DeleteTable"],
+    "required": [["DeleteTable"]]
+  },
+  {
+    "q": "Створи клас ZCL_DEMO_X у $TMP, додай метод і активуй",
+    "multi": true,
+    "expect": ["CreateClass"],
+    "relevant": ["CreateClass", "UpdateClass", "ActivateClass", "ActivateObjects"],
+    "required": [["CreateClass"], ["UpdateClass"], ["ActivateClass", "ActivateObjects"]]
+  },
+  {
+    "q": "Create a CDS view ZI_DEMO_ITEM and a service binding for it",
+    "multi": true,
+    "expect": ["CreateDdl"],
+    "relevant": [
+      "CreateDdl",
+      "UpdateDdl",
+      "ActivateDdl",
+      "CreateServiceDefinition",
+      "UpdateServiceDefinition",
+      "ActivateServiceDefinition",
+      "CreateServiceBinding",
+      "ListServiceBindingTypes",
+      "ActivateServiceBinding",
+      "ActivateObjects"
+    ],
+    "required": [["CreateDdl"], ["CreateServiceDefinition"], ["CreateServiceBinding"]]
+  },
+  {
+    "q": "Find where-used of table ZDEMO_T_ORDER and show the source of the users",
+    "multi": true,
+    "expect": ["GetWhereUsed"],
+    "relevant": [
+      "GetWhereUsed",
+      "ReadClass",
+      "GetClass",
+      "ReadProgram",
+      "GetProgram",
+      "GetInclude",
+      "ReadFunctionModule",
+      "GetFunctionModule"
+    ],
+    "required": [
+      ["GetWhereUsed"],
+      ["ReadClass", "GetClass", "ReadProgram", "GetProgram", "GetInclude", "ReadFunctionModule", "GetFunctionModule"]
+    ]
+  },
+  {
+    "q": "Прочитай останній дамп і відкрий програму, в якій він стався",
+    "multi": true,
+    "expect": ["RuntimeListFeeds"],
+    "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection", "ReadProgram", "GetProgram", "GetInclude"],
+    "required": [["RuntimeListFeeds"], ["RuntimeGetDumpById", "GetDumpSection"], ["ReadProgram", "GetProgram", "GetInclude"]]
+  },
+  {
+    "q": "Create table ZDEMO_T_ORDER in $TMP and activate it",
+    "multi": true,
+    "expect": ["CreateTable"],
+    "relevant": ["CreateTable", "UpdateTable", "ActivateTable", "ActivateObjects"],
+    "required": [["CreateTable"], ["ActivateTable", "ActivateObjects"]]
+  },
+  {
+    "q": "Read class ZCL_DEMO, add a method to it and activate the class",
+    "multi": true,
+    "expect": ["UpdateClass"],
+    "relevant": ["ReadClass", "GetClass", "UpdateClass", "CheckClass", "ActivateClass", "ActivateObjects"],
+    "required": [["ReadClass", "GetClass"], ["UpdateClass"], ["ActivateClass", "ActivateObjects"]]
+  },
+  {
+    "q": "Створи транспорт для пакета ZDEMO_LAB і додай туди клас ZCL_DEMO",
+    "multi": true,
+    "expect": ["CreateTransport"],
+    "relevant": ["CreateTransport", "CreateTransportTask", "AddTransportObject", "ReadTransportObjects"],
+    "required": [["CreateTransport"], ["AddTransportObject"]]
+  },
+  {
+    "q": "Run ATC on class ZCL_DEMO and show the findings",
+    "multi": true,
+    "expect": ["RunATC"],
+    "relevant": ["RunATC", "GetATCFindings", "GetATCRunStatus"],
+    "required": [["RunATC"], ["GetATCFindings"]]
+  },
+  {
+    "q": "Run the unit tests of ZCL_DEMO and show me the results",
+    "multi": true,
+    "expect": ["RunUnitTest"],
+    "relevant": ["RunUnitTest", "CreateUnitTest", "GetUnitTest", "GetUnitTestResult", "GetUnitTestStatus"],
+    "required": [["RunUnitTest", "CreateUnitTest"], ["GetUnitTest", "GetUnitTestResult"]]
+  },
+  {
+    "q": "Знайди програми за маскою ZREP* і покажи код першої",
+    "multi": true,
+    "expect": ["SearchObject"],
+    "relevant": ["SearchObject", "ReadProgram", "GetProgram"],
+    "required": [["SearchObject"], ["ReadProgram", "GetProgram"]]
+  },
+  {
+    "q": "Create domain ZDEMO_D_STATUS and data element ZDEMO_E_STATUS based on it, then activate both",
+    "multi": true,
+    "expect": ["CreateDomain"],
+    "relevant": [
+      "CreateDomain",
+      "UpdateDomain",
+      "ActivateDomain",
+      "CreateDataElement",
+      "UpdateDataElement",
+      "ActivateDataElement",
+      "ActivateObjects"
+    ],
+    "required": [
+      ["CreateDomain"],
+      ["CreateDataElement"],
+      ["ActivateDomain", "ActivateObjects"],
+      ["ActivateDataElement", "ActivateObjects"]
+    ]
+  },
+  {
+    "q": "Покажи версії класу ZCL_DEMO і порівняй дві останні",
+    "multi": true,
+    "expect": ["GetClassVersions", "GetObjectVersions"],
+    "relevant": [
+      "GetClassVersions",
+      "GetObjectVersions",
+      "GetClassVersionSource",
+      "GetObjectVersionSource",
+      "GetClassVersionDiff",
+      "GetObjectVersionDiff"
+    ],
+    "required": [["GetClassVersions", "GetObjectVersions"], ["GetClassVersionDiff", "GetObjectVersionDiff"]]
+  },
+  {
+    "q": "Create a behavior definition for ZI_DEMO_TRAVEL with its implementation class, then activate",
+    "multi": true,
+    "expect": ["CreateBehaviorDefinition"],
+    "relevant": [
+      "CreateBehaviorDefinition",
+      "UpdateBehaviorDefinition",
+      "ActivateBehaviorDefinition",
+      "CreateBehaviorImplementation",
+      "UpdateBehaviorImplementation",
+      "ActivateClass",
+      "ActivateObjects"
+    ],
+    "required": [
+      ["CreateBehaviorDefinition"],
+      ["CreateBehaviorImplementation"],
+      ["ActivateBehaviorDefinition", "ActivateObjects"]
+    ]
+  },
+  {
+    "q": "Покажи поля таблиці ZDEMO_T_ORDER і перші 20 записів",
+    "multi": true,
+    "expect": ["ReadTable", "GetTable"],
+    "relevant": ["ReadTable", "GetTable", "GetTypeInfo", "GetTableContents", "GetSqlQuery"],
+    "required": [["ReadTable", "GetTable"], ["GetTableContents", "GetSqlQuery"]]
+  }
 ]
