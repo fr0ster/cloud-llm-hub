@@ -206,8 +206,10 @@ export async function establishRequestConnection(
  *
  * A CloudSdkAbapConnection ends its session with `closeSession()` then
  * `reset()`. A direct connector (`x-sap-url`) has neither: it ends its session
- * with `disconnect()`, which sends the logoff — without it the session, and a
- * lock it kept, would live until SAP's own timeout.
+ * with `endSession()`, which waits for an open critical section and then sends
+ * the logoff (`disconnect()`) — without it the session, and a lock it kept,
+ * would live until SAP's own timeout. Both paths wait for LOCK..UNLOCK, so
+ * calling this from a client-abort listener never cuts a write chain.
  *
  * Idempotent and NEVER throws — each step is independently try/catch-guarded,
  * so a throwing `closeSession` does not skip `reset()`, and calling this twice
@@ -216,7 +218,8 @@ export async function establishRequestConnection(
 export async function safeStop(connection?: IAbapConnection): Promise<void> {
   if (connection && isDirectConnector(connection)) {
     try {
-      await connection.disconnect();
+      // Waits for an open LOCK..UNLOCK section first, then logs off.
+      await connection.endSession();
     } catch {
       // Swallow — best-effort teardown must never throw into the caller's finally.
     }

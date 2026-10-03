@@ -18,7 +18,6 @@ import type {
   SapConfig,
 } from '@mcp-abap-adt/connection';
 import {
-  AdtCloudConnector,
   AdtOnPremConnector,
   CloudHttpTransport,
   OnPremHttpTransport,
@@ -27,6 +26,7 @@ import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { loggerAdapter } from '../lib/logger';
 import type { SystemType } from '../lib/system-type';
 import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
+import { HubCloudConnector, HubOnPremConnector } from './directConnectors';
 
 interface CommonConnectionOptions {
   /**
@@ -143,16 +143,17 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
 
   // Taking the connector class is how @mcp-abap-adt/connection is told which
   // system it dials (its session protocol and logoff): the declared kind
-  // picks it, never the credential.
+  // picks it, never the credential. The Hub* subclasses add one guarantee:
+  // their teardown (`endSession`) waits for an open critical section.
   return options.systemType === 'cloud'
-    ? new AdtCloudConnector(
+    ? new HubCloudConnector(
         sapConfig,
         credential,
         new CloudHttpTransport(() => ({}), effectiveLogger, wire),
         effectiveLogger,
         sessionId,
       )
-    : new AdtOnPremConnector(
+    : new HubOnPremConnector(
         sapConfig,
         credential,
         new OnPremHttpTransport(() => ({}), effectiveLogger, wire),
@@ -174,16 +175,16 @@ export function isCloudSdkConnection(
 }
 
 /**
- * Whether the connection is one of the direct connectors from
- * `@mcp-abap-adt/connection` (an `x-sap-url` request). Those end their session
- * with `disconnect()`, which sends the logoff; they have no `closeSession`.
+ * Whether the connection is one of the hub's direct connectors (an `x-sap-url`
+ * request). Those end their session with `endSession()` — the logoff, sent
+ * only after any open critical section has ended; they have no `closeSession`.
  */
 export function isDirectConnector(
   connection: IAbapConnection,
-): connection is AdtOnPremConnector | AdtCloudConnector {
+): connection is HubOnPremConnector | HubCloudConnector {
   return (
-    connection instanceof AdtOnPremConnector ||
-    connection instanceof AdtCloudConnector
+    connection instanceof HubOnPremConnector ||
+    connection instanceof HubCloudConnector
   );
 }
 

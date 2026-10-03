@@ -329,42 +329,12 @@ export async function createMCPServerForRequest(
       useConnectivity,
     });
 
-    // Create NEW connection for this request: a destination's
-    // CloudSdkAbapConnection, or the direct connector for the declared kind.
-    const connection = destination
-      ? createConnection({
-          sapConfig,
-          destinationName: destination.destinationName,
-        })
-      : createConnection({ sapConfig, systemType });
-    try {
-      // Only when this request actually reaches SAP. EmbeddableMcpServer's
-      // constructor merely stores the connection (its handler registry is built
-      // from a null-connection context), and the wrapper lambdas call
-      // getConnection() lazily — so an unconnected connection is safe to inject
-      // and costs nothing on the ABAP side.
-      if (establish) await connection.connect();
-    } catch (connectErr) {
-      const error = new Error(
-        `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
-          connectErr instanceof Error ? connectErr.message : String(connectErr)
-        }`,
-      ) as Error & { statusCode?: number; code?: string };
-      error.statusCode = 401;
-      error.code = 'SAP_CREDENTIALS_FAILED';
-      throw error;
-    }
-
-    log.debug('Connection created', {
-      connectionType: connection.constructor.name,
-      destinationName: destination?.destinationName,
-      authType: sapConfig.authType,
-    });
-
-    // Resolve exposition from CAP auth (cds.context.user). `describeCaller`
-    // reports WHO as well as WHAT, because the two are routinely confused: a
-    // technical token runs as `system` with the client's own scopes, so a human
-    // holding every role collection can still arrive here as reader-only.
+    // Resolve exposition from CAP auth (cds.context.user) — before any
+    // connection is built, so a refused caller costs no SAP session.
+    // `describeCaller` reports WHO as well as WHAT, because the two are
+    // routinely confused: a technical token runs as `system` with the client's
+    // own scopes, so a human holding every role collection can still arrive
+    // here as reader-only.
     const caller = describeCaller(cds.context?.user);
     const exposition = caller.exposition;
 
@@ -378,67 +348,108 @@ export async function createMCPServerForRequest(
 
     log.info('Resolved MCP exposition for caller', caller);
 
-    // Create NEW EmbeddableMcpServer with injected connection. The DECLARED
-    // kind (never the proxy type) decides which tools are exposed (e.g. the
-    // onprem-only CreateProgram) and, in lib 16, whether a create asks the
-    // system for its responsible (cloud) or takes the login (onprem) — per
-    // instance, without mutating the global SAP_SYSTEM_TYPE env var.
-    const mcpServer = new EmbeddableMcpServer({
-      connection,
-      logger: loggerAdapter,
-      exposition,
-      systemType,
-      readOnlyDedupStrategy: new ReadVsGetDedupStrategy(),
-    });
-
-    // Create NEW transport for this request
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // Stateless mode
-      enableJsonResponse: true,
-      allowedOrigins: undefined,
-      allowedHosts: undefined,
-      enableDnsRebindingProtection: false,
-    });
-
-    // Connect transport to MCP server
-    await mcpServer.connect(transport);
-
-    log.info('MCP server created for request', {
-      connectionType: connection.constructor.name,
-      hasDestination: !!destination?.destinationName,
-    });
-
-    // Cleanup function - MUST be called after request completes
-    const cleanup = async () => {
+    // Create NEW connection for this request: a destination's
+    // CloudSdkAbapConnection, or the direct connector for the declared kind.
+    const connection = destination
+      ? createConnection({
+          sapConfig,
+          destinationName: destination.destinationName,
+        })
+      : createConnection({ sapConfig, systemType });
+    // From here on every exit path that does not hand the connection to the
+    // caller (whose cleanup ends it) ends the session itself.
+    try {
       try {
-        await transport.close();
-      } catch (err) {
-        log.warn('Failed to close transport during cleanup', {
-          error: err instanceof Error ? err.message : String(err),
-        });
+        // Only when this request actually reaches SAP. EmbeddableMcpServer's
+        // constructor merely stores the connection (its handler registry is built
+        // from a null-connection context), and the wrapper lambdas call
+        // getConnection() lazily — so an unconnected connection is safe to inject
+        // and costs nothing on the ABAP side.
+        if (establish) await connection.connect();
+      } catch (connectErr) {
+        const error = new Error(
+          `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
+            connectErr instanceof Error
+              ? connectErr.message
+              : String(connectErr)
+          }`,
+        ) as Error & { statusCode?: number; code?: string };
+        error.statusCode = 401;
+        error.code = 'SAP_CREDENTIALS_FAILED';
+        throw error;
       }
-      // End the server-side ADT session (releases a left-open edit-lock):
-      // closeSession + reset for a destination connection, disconnect (the
-      // logoff) for a direct connector. Never throws.
+
+      log.debug('Connection created', {
+        connectionType: connection.constructor.name,
+        destinationName: destination?.destinationName,
+        authType: sapConfig.authType,
+      });
+
+      // Create NEW EmbeddableMcpServer with injected connection. The DECLARED
+      // kind (never the proxy type) decides which tools are exposed (e.g. the
+      // onprem-only CreateProgram) and, in lib 16, whether a create asks the
+      // system for its responsible (cloud) or takes the login (onprem) — per
+      // instance, without mutating the global SAP_SYSTEM_TYPE env var.
+      const mcpServer = new EmbeddableMcpServer({
+        connection,
+        logger: loggerAdapter,
+        exposition,
+        systemType,
+        readOnlyDedupStrategy: new ReadVsGetDedupStrategy(),
+      });
+
+      // Create NEW transport for this request
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // Stateless mode
+        enableJsonResponse: true,
+        allowedOrigins: undefined,
+        allowedHosts: undefined,
+        enableDnsRebindingProtection: false,
+      });
+
+      // Connect transport to MCP server
+      await mcpServer.connect(transport);
+
+      log.info('MCP server created for request', {
+        connectionType: connection.constructor.name,
+        hasDestination: !!destination?.destinationName,
+      });
+
+      // Cleanup function - MUST be called after request completes
+      const cleanup = async () => {
+        try {
+          await transport.close();
+        } catch (err) {
+          log.warn('Failed to close transport during cleanup', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        // End the server-side ADT session (releases a left-open edit-lock):
+        // closeSession + reset for a destination connection, disconnect (the
+        // logoff) for a direct connector. Never throws.
+        await safeStop(connection);
+      };
+
+      const handle = (
+        httpReq: IncomingMessage,
+        res: ServerResponse,
+        body: unknown,
+      ): Promise<void> =>
+        runWithRequestSystem(resolveRequestSystem(httpReq.headers), () =>
+          transport.handleRequest(httpReq, res, body),
+        );
+
+      return {
+        server: mcpServer,
+        connection,
+        transport,
+        handle,
+        cleanup,
+      };
+    } catch (setupErr) {
       await safeStop(connection);
-    };
-
-    const handle = (
-      httpReq: IncomingMessage,
-      res: ServerResponse,
-      body: unknown,
-    ): Promise<void> =>
-      runWithRequestSystem(resolveRequestSystem(httpReq.headers), () =>
-        transport.handleRequest(httpReq, res, body),
-      );
-
-    return {
-      server: mcpServer,
-      connection,
-      transport,
-      handle,
-      cleanup,
-    };
+      throw setupErr;
+    }
     // biome-ignore lint/suspicious/noExplicitAny: Error type from MCP server creation is not fully typed
   } catch (err: any) {
     // biome-ignore lint/suspicious/noExplicitAny: Context can contain any values
