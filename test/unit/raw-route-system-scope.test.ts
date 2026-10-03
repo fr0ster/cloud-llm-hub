@@ -50,6 +50,23 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 
 type Sent = { method: string; url: string; data?: unknown };
 const wire: Sent[] = [];
+/**
+ * When set, every POST waits here until `expected` POSTs are in flight, so
+ * concurrent requests are provably inside their scopes at the same time.
+ */
+const overlap = {
+  expected: 0,
+  arrived: 0,
+  release: (() => {}) as () => void,
+  all: Promise.resolve() as Promise<void>,
+  arm(n: number) {
+    overlap.expected = n;
+    overlap.arrived = 0;
+    overlap.all = new Promise<void>((r) => {
+      overlap.release = r;
+    });
+  },
+};
 
 jest.mock('../../srv/connections/connectionFactory', () => {
   const actual = jest.requireActual('../../srv/connections/connectionFactory');
@@ -66,6 +83,11 @@ jest.mock('../../srv/connections/connectionFactory', () => {
         data?: unknown;
       }) => {
         wire.push({ method: o.method, url: o.url, data: o.data });
+        if (overlap.expected > 0 && o.method === 'POST') {
+          overlap.arrived += 1;
+          if (overlap.arrived === overlap.expected) overlap.release();
+          await overlap.all;
+        }
         return { status: 201, statusText: 'Created', headers: {}, data: '' };
       },
     }),
@@ -135,6 +157,23 @@ describe('raw /mcp/stream/http create — the request system scope', () => {
     const post = wire.find((s) => s.method === 'POST');
     expect(post).toBeDefined();
     expect(String(post?.data)).toContain('adtcore:responsible="DEVELOPER"');
+  });
+
+  it('two concurrent requests each create with their own uppercased login', async () => {
+    overlap.arm(2);
+    try {
+      await Promise.all([
+        createClass({ 'x-sap-login': 'alice' }),
+        createClass({ 'x-sap-login': 'bob' }),
+      ]);
+    } finally {
+      overlap.expected = 0;
+    }
+    const responsibles = wire
+      .filter((s) => s.method === 'POST')
+      .map((s) => /adtcore:responsible="([^"]*)"/.exec(String(s.data))?.[1])
+      .sort();
+    expect(responsibles).toEqual(['ALICE', 'BOB']);
   });
 
   it('x-sap-responsible overrides the login', async () => {

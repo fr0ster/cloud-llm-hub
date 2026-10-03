@@ -103,6 +103,17 @@ describe('agent-config — env destinations', () => {
     }
   });
 
+  it('reads the field case-insensitively, like the request-time resolver', () => {
+    const lower = { ...entries[1], sap_system_type: 'cloud' };
+    const cfg = parseDestinationConfig(env([lower]));
+    expect(cfg).toMatchObject({ destinations: [{ systemType: 'cloud' }] });
+    expect(() =>
+      parseDestinationConfig(
+        env([{ ...entries[1], Sap_System_Type: 'bogus' }]),
+      ),
+    ).toThrow(/field SAP_SYSTEM_TYPE must be one of/);
+  });
+
   it('stops the start on an unknown value', () => {
     expect(() => parseDestinationConfig(env([entries[2]]))).toThrow(
       /destinations\[0\] \(BAD_SYS\) field SAP_SYSTEM_TYPE must be one of/,
