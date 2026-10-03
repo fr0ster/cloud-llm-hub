@@ -1,9 +1,9 @@
 # Template: Cloud deployment with ABAP Destination service
 settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
 mcpConnection:
-  endpoint: https://<your-approuter-host>/mcp/stream/sse
+  endpoint: https://<your-approuter-host>/mcp/stream/http
   definition:
-    type: sse
+    type: stream
     description: Cloud MCP → ABAP via Destination service
   auth:
     type: bearer

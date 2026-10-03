@@ -78,6 +78,13 @@ What a consumer on the old contract must do:
   so every direct-basic configuration it produced was refused ("Basic
   authentication requires x-sap-login and x-sap-password headers"). A stale
   `x-sap-username` is removed on the next run.
+- **`tools/update-cline-connection.js` templates point at Stream-HTTP.** The
+  `direct-basic` and `cloud-destination` templates (and their copies in
+  `docs/templates/mcp-config/`) used `/mcp/stream/sse` with `type: sse`, an
+  endpoint the hub does not serve; they now use `/mcp/stream/http` with
+  `type: stream` (Cline `streamableHttp`), like the other two. The
+  `direct-jwt` default type is `stream` instead of the placeholder
+  `stream | sse`. Regenerate a playbook made from those templates.
 - **Raw MCP route setup ends what it opened.** A caller with no MCP role is
   refused before a connection is built; a setup failure after `connect()`
   ends the session. A refused

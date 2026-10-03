@@ -5,7 +5,6 @@ mcpConnection:
   definition:
     type: stream
     description: Cloud MCP → ABAP via direct URL
-    # Switch to "sse" when the MCP endpoint provides Server-Sent Events; remove the auth block below in that case
   auth:
     type: bearer
     token:
@@ -13,12 +12,12 @@ mcpConnection:
         type: service | file
         name: mcpXsuaa # Service name for cf service-key; drop jsonPath if you read from a file
         jsonPath: access_token # Token field inside the service key JSON; remove for file source
-    # Delete this entire auth block when definition.type is "sse"
 abapConnection:
   mode: direct
   direct:
     url: https://my.sap.system.example.com
     client: 100
+    systemType: cloud    # x-sap-system-type: an ABAP Cloud system (declared by this template)
   auth:
     type: jwt
     token:

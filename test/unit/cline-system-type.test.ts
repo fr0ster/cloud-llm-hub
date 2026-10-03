@@ -111,3 +111,30 @@ describe('applySapConfigToHeaders — header names the hub reads', () => {
     expect(h['x-sap-jwt-token']).toBe('t');
   });
 });
+
+describe('templates point at an endpoint the hub serves', () => {
+  // srv/server.ts registers Stream-HTTP only; /mcp/stream/sse is disabled.
+  const SERVED = ['/mcp/stream/http', '/mcp/agent/stream/http'];
+  const tools = tool as unknown as {
+    TEMPLATE_ENDPOINT_SUFFIX: Record<string, string>;
+    convertDefinitionToClineConnection: (definition: object) => {
+      url?: string;
+      type?: string;
+    };
+  };
+
+  it.each(Object.keys(tool.TEMPLATE_RENDERERS))('%s', (template) => {
+    expect(SERVED).toContain(tools.TEMPLATE_ENDPOINT_SUFFIX[template]);
+    const raw = yaml.load(tool.TEMPLATE_RENDERERS[template]()) as {
+      mcpConnection: { endpoint: string; definition: object };
+    };
+    expect(SERVED).toContain(
+      new URL(raw.mcpConnection.endpoint.replace(/<[^>]+>/, 'host')).pathname,
+    );
+    const cline = tools.convertDefinitionToClineConnection({
+      ...raw.mcpConnection.definition,
+      endpoint: raw.mcpConnection.endpoint,
+    });
+    expect(cline.type).toBe('streamableHttp');
+  });
+});

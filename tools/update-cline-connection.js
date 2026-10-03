@@ -780,10 +780,12 @@ const TEMPLATE_RENDERERS = {
 };
 
 const TEMPLATE_ENDPOINT_SUFFIX = {
-  'direct-basic': '/mcp/stream/sse',
+  // The hub serves Stream-HTTP only (`/mcp/stream/http`); its SSE endpoint is
+  // disabled, so no template points there.
+  'direct-basic': '/mcp/stream/http',
   'direct-jwt': '/mcp/stream/http',
   'cloud-internet': '/mcp/stream/http',
-  'cloud-destination': '/mcp/stream/sse',
+  'cloud-destination': '/mcp/stream/http',
 };
 
 const DEFAULT_ABAP_CLIENT = '210';
@@ -954,7 +956,7 @@ function determineTokenAlias({
 
 function renderDirectBasicTemplate(options = {}) {
   const endpoint =
-    options.mcpEndpoint || 'http://localhost:4004/mcp/stream/sse';
+    options.mcpEndpoint || 'http://localhost:4004/mcp/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
@@ -966,7 +968,7 @@ settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/
 ${cfBlock}${serviceKeysSection}mcpConnection:
 ${connectionNameLine}  endpoint: ${endpoint}
   definition:
-    type: sse
+    type: stream
     description: Direct SAP via basic auth
   auth:
     type: basic
@@ -1007,7 +1009,7 @@ function renderDirectJwtTemplate(options = {}) {
   const connectionNameLine = options.connectionName
     ? `  name: ${options.connectionName}\n`
     : '';
-  const connectionType = options.mcpType || 'stream | sse';
+  const connectionType = options.mcpType || 'stream';
   const connectionDescription = options.mcpDescription || 'Direct SAP via JWT';
   const desiredAuthType = options.mcpAuthType
     ? String(options.mcpAuthType).toLowerCase()
@@ -1169,7 +1171,7 @@ function renderCloudDestinationTemplate(options = {}) {
     ? `  name: ${options.connectionName}\n`
     : '';
   const endpoint =
-    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/sse';
+    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/http';
   const mcpAlias = options.mcpTokenAlias || 'mcpXsuaa';
   const destinationName = options.destinationName || 'SAP_CLOUD_DEST';
   const mcpTokenBlock = mcpAlias
@@ -1189,7 +1191,7 @@ settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/
 ${cfBlock}${serviceKeysSection}mcpConnection:
 ${connectionNameLine}  endpoint: ${endpoint}
   definition:
-    type: sse
+    type: stream
     description: Cloud MCP → ABAP via Destination service
   auth:
     type: bearer
@@ -1578,7 +1580,8 @@ Options:
                         Register an additional service key JSON file for template auto-fill
   --mcp-app <name>       Resolve MCP endpoint via cf env <name> when printing a template
   --mcp-endpoint <url>   Override the MCP endpoint in template output
-  --mcp-type <type>      Override the MCP transport/type (e.g. streamableHttp | sse)
+  --mcp-type <type>      Override the MCP transport/type (default streamableHttp; the hub
+                        serves no SSE endpoint)
   --mcp-description <text>
                         Override the MCP connection description in templates
   --mcp-auth-type <type> Set MCP auth block (basic | header | bearer | jwt | none)
@@ -3361,5 +3364,7 @@ module.exports = {
   applyMcpAuth,
   applyDestinationHeaders,
   buildConnectionConfigFromNewSchema,
+  convertDefinitionToClineConnection,
   TEMPLATE_RENDERERS,
+  TEMPLATE_ENDPOINT_SUFFIX,
 };
