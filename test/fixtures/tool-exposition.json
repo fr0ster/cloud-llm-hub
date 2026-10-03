@@ -3,12 +3,12 @@
   "totals": {
     "tools": 237,
     "byLevel": {
-      "high": 170,
+      "high": 169,
       "system": 27,
-      "readonly": 36,
+      "readonly": 37,
       "search": 4
     },
-    "reachableByReader": 67,
+    "reachableByReader": 68,
     "reachableByDeveloper": 237
   },
   "tools": {
@@ -173,7 +173,7 @@
     "GetTransaction": "system",
     "GetTransport": "readonly",
     "GetTypeInfo": "system",
-    "GetUnitTestResult": "high",
+    "GetUnitTestResult": "readonly",
     "GetVirtualFoldersLow": "system",
     "GetWhereUsed": "system",
     "ListFunctionGroupIncludes": "readonly",

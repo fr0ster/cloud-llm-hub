@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- **`@mcp-abap-adt/lib` 15.1.0.**
+  - `GetUnitTestResult` is now also in lib's read-only group, so a reader can
+    fetch an ABAP Unit run result. A caller holding both groups gets it once,
+    from `high`. In the hub's tool corpus it moves from the writer to the reader
+    collection: a reader reaches 68 tools instead of 67.
+  - `RuntimeListFeeds` and `RuntimeGetDumpById` describe the new dump filters
+    and SAP's paging. `ReadPackage` / `GetPackage` lost the `connection_config`
+    parameter.
+  - The tool corpus is regenerated: 4 intents re-enriched, AI Core bundle at
+    core 15.1.0. Tool retrieval on AI Core 3-small (hybrid) is unchanged overall
+    (required-recall K5 0.852, K10 0.901). One more dump query is found:
+    "read the last dump and open the program".
+
 - **Minor dependency updates:** `@modelcontextprotocol/sdk` 1.32, `dotenv` 18.0.5,
   `@mcp-abap-adt/interfaces-{adt-connection,network,utils}` patch releases,
   `@biomejs/biome` 2.5.15 (dev).
