@@ -4,9 +4,14 @@
  *
  * This factory chooses the right connection type based on:
  * - Destination name → CloudSdkAbapConnection (BTP Destination Service)
- * - Direct URL + Basic → AdtOnPremConnector, Direct URL + JWT → AdtCloudConnector
+ * - Direct URL → the connector for the DECLARED system kind (`x-sap-system-type`,
+ *   default on-premise): cloud → AdtCloudConnector, otherwise AdtOnPremConnector
  */
 
+import {
+  BasicAuthProvider,
+  TokenAuthProvider,
+} from '@mcp-abap-adt/auth-providers';
 import type {
   AbapConnection,
   ILogger,
@@ -15,29 +20,20 @@ import type {
 import {
   AdtCloudConnector,
   AdtOnPremConnector,
-  BasicAuthProvider,
   CloudHttpTransport,
   OnPremHttpTransport,
-  TokenAuthProvider,
 } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
-import type { ITokenRefresher } from '@mcp-abap-adt/interfaces-auth';
 import { loggerAdapter } from '../lib/logger';
+import type { SystemType } from '../lib/system-type';
 import { CloudSdkAbapConnection } from './CloudSdkAbapConnection';
 
-export interface ConnectionOptions {
+interface CommonConnectionOptions {
   /**
    * SAP configuration (URL, auth type, credentials)
    * Required for both connection types
    */
   sapConfig: SapConfig;
-
-  /**
-   * BTP Destination name (optional)
-   * When provided, CloudSdkAbapConnection will be used
-   * When omitted, a direct connector is built (Basic → on-prem, JWT → cloud)
-   */
-  destinationName?: string;
 
   /**
    * Logger instance (optional)
@@ -51,23 +47,40 @@ export interface ConnectionOptions {
    * Used by base connection for session management
    */
   sessionId?: string;
-
-  /**
-   * Token refresher (optional)
-   * Used by JWT connection for token refresh
-   */
-  tokenRefresher?: ITokenRefresher;
 }
+
+/**
+ * A BTP destination (→ CloudSdkAbapConnection), or a direct connection that
+ * states the system it dials (→ the connector for that kind). The kind comes
+ * from `resolveSystemType` (`lib/system-type.ts`) and is required for a direct
+ * connection: the connector class IS the declaration, so it is never guessed
+ * from the authentication.
+ */
+export type ConnectionOptions =
+  | (CommonConnectionOptions & {
+      /** BTP Destination name → CloudSdkAbapConnection. */
+      destinationName: string;
+      systemType?: never;
+    })
+  | (CommonConnectionOptions & {
+      destinationName?: undefined;
+      /** `cloud` → AdtCloudConnector; `onprem` / `legacy` → AdtOnPremConnector. */
+      systemType: SystemType;
+    });
 
 /**
  * Factory for creating the correct connection type
  *
  * Decision logic:
  * 1. If destinationName provided → CloudSdkAbapConnection (BTP Destination Service)
- * 2. Otherwise → a direct connector: Basic → AdtOnPremConnector, JWT → AdtCloudConnector
+ * 2. Otherwise → a direct connector for the declared kind: `cloud` →
+ *    AdtCloudConnector, `onprem` / `legacy` → AdtOnPremConnector. The
+ *    credential follows the auth type and decides nothing else: Basic →
+ *    BasicAuthProvider, JWT → a fixed TokenAuthProvider (the hub holds no
+ *    refresher; a client sends a valid token on every request).
  *
  * @param options - Connection configuration options
- * @returns AbapConnection instance (either CloudSdkAbapConnection or base connection)
+ * @returns AbapConnection instance (either CloudSdkAbapConnection or a direct connector)
  *
  * @example
  * // BTP Destination connection
@@ -77,81 +90,75 @@ export interface ConnectionOptions {
  * });
  *
  * @example
- * // Direct Basic auth connection
+ * // Direct Basic auth connection to an on-premise system
  * const connection = createConnection({
  *   sapConfig: {
  *     url: 'https://my-abap.com:443',
  *     authType: 'basic',
  *     username: 'USER',
  *     password: 'PASS'
- *   }
- * });
- *
- * @example
- * // Direct JWT connection with session
- * const connection = createConnection({
- *   sapConfig: {
- *     url: 'https://my-abap.com:443',
- *     authType: 'jwt',
- *     jwtToken: 'eyJhbGci...'
  *   },
- *   sessionId: 'my-session-123',
- *   sessionStorage: mySessionStorage
+ *   systemType: 'onprem'
  * });
  */
 export function createConnection(options: ConnectionOptions): AbapConnection {
-  const { sapConfig, destinationName, logger, sessionId, tokenRefresher } =
-    options;
+  const { sapConfig, logger, sessionId } = options;
 
   // Priority 1: Destination-based connection (BTP Cloud)
-  if (destinationName) {
+  if (options.destinationName) {
     // Use CloudSdkAbapConnection for BTP Destination Service
     // This handles:
     // - Destination resolution via BTP Destination Service
     // - Multiple authentication types (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
     // - Cloud Connector for On-Premise systems
     // - Token management via BTP (automatic, not refresh token - handled by BTP infrastructure)
-    return new CloudSdkAbapConnection(sapConfig, destinationName, sessionId);
+    return new CloudSdkAbapConnection(
+      sapConfig,
+      options.destinationName,
+      sessionId,
+    );
   }
 
   // Priority 2: Direct connection (Basic/JWT via axios)
-  // This handles:
-  // - Direct HTTP connections to ABAP systems
-  // - Basic authentication (username/password)
-  // - JWT authentication (direct token)
-
   // Use provided logger or default loggerAdapter from mcp-abap-adt
   const effectiveLogger = logger || loggerAdapter;
   const wire = { client: sapConfig.client, baseUrl: sapConfig.url };
 
-  // The mapping connection 1.x's factory applied (basic → on-prem session
-  // protocol, jwt → cloud), now stated here: connection 6.0 removed the factory
-  // and takes the system from the caller.
+  let credential: BasicAuthProvider | TokenAuthProvider;
   switch (sapConfig.authType) {
     case 'basic':
-      return new AdtOnPremConnector(
-        sapConfig,
-        new BasicAuthProvider(
-          sapConfig.username ?? '',
-          sapConfig.password ?? '',
-        ),
-        new OnPremHttpTransport(() => ({}), effectiveLogger, wire),
-        effectiveLogger,
-        sessionId,
+      credential = new BasicAuthProvider(
+        sapConfig.username ?? '',
+        sapConfig.password ?? '',
       );
+      break;
     case 'jwt':
-      return new AdtCloudConnector(
-        sapConfig,
-        new TokenAuthProvider(tokenRefresher ?? sapConfig.jwtToken ?? ''),
-        new CloudHttpTransport(() => ({}), effectiveLogger, wire),
-        effectiveLogger,
-        sessionId,
-      );
+      credential = TokenAuthProvider.fixed(sapConfig.jwtToken ?? '');
+      break;
     default:
       throw new Error(
         `Unsupported authType "${sapConfig.authType}" for a direct connection; use a BTP destination.`,
       );
   }
+
+  // Taking the connector class is how @mcp-abap-adt/connection is told which
+  // system it dials (its session protocol and logoff): the declared kind
+  // picks it, never the credential.
+  return options.systemType === 'cloud'
+    ? new AdtCloudConnector(
+        sapConfig,
+        credential,
+        new CloudHttpTransport(() => ({}), effectiveLogger, wire),
+        effectiveLogger,
+        sessionId,
+      )
+    : new AdtOnPremConnector(
+        sapConfig,
+        credential,
+        new OnPremHttpTransport(() => ({}), effectiveLogger, wire),
+        effectiveLogger,
+        sessionId,
+      );
 }
 
 /**
@@ -167,6 +174,20 @@ export function isCloudSdkConnection(
 }
 
 /**
+ * Whether the connection is one of the direct connectors from
+ * `@mcp-abap-adt/connection` (an `x-sap-url` request). Those end their session
+ * with `disconnect()`, which sends the logoff; they have no `closeSession`.
+ */
+export function isDirectConnector(
+  connection: IAbapConnection,
+): connection is AdtOnPremConnector | AdtCloudConnector {
+  return (
+    connection instanceof AdtOnPremConnector ||
+    connection instanceof AdtCloudConnector
+  );
+}
+
+/**
  * Get connection type name for logging/debugging
  *
  * @param connection - Connection instance
@@ -177,6 +198,6 @@ export function getConnectionTypeName(connection: AbapConnection): string {
     return 'CloudSdkAbapConnection (BTP Destination)';
   }
   return connection instanceof AdtOnPremConnector
-    ? 'AdtOnPremConnector (Direct Basic)'
-    : 'AdtCloudConnector (Direct JWT)';
+    ? 'AdtOnPremConnector (Direct, on-premise)'
+    : 'AdtCloudConnector (Direct, ABAP Cloud)';
 }

@@ -173,9 +173,10 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
       }
     });
 
-    // Handle HTTP request through transport
+    // Handle HTTP request through transport, inside this request's system
+    // scope (responsible / login / master system) like the agent channels.
     try {
-      await result.transport.handleRequest(req, res, body);
+      await result.handle(req, res, body);
     } catch (transportError: unknown) {
       const errorObj = transportError as {
         message?: string;

@@ -57,6 +57,7 @@ import {
   runWithRequestSystem,
 } from './lib/request-system-context';
 import { Semaphore } from './lib/semaphore';
+import { resolveSystemType } from './lib/system-type';
 import {
   destinationClosedText,
   executeStepDoorRefusal,
@@ -399,7 +400,7 @@ interface BuiltConnection {
   usedBasicOverride: boolean;
 }
 
-async function buildConnectionForDestination(
+export async function buildConnectionForDestination(
   req: Request,
   destination: string,
 ): Promise<BuiltConnection> {
@@ -411,6 +412,10 @@ async function buildConnectionForDestination(
     destination,
     req.headers.authorization?.replace('Bearer ', ''),
   );
+
+  // The declared kind, by the one rule (`lib/system-type.ts`): an unknown
+  // value is refused before any connection is built.
+  resolveSystemType(req.headers, resolved.systemType);
 
   const requiresUserCredentials =
     (resolved.proxyType ?? '').toLowerCase() === 'onpremise' ||

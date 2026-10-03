@@ -22,10 +22,14 @@ import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
-import { createConnection } from './../connections/connectionFactory';
+import {
+  createConnection,
+  isDirectConnector,
+} from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
 import { maskLoginForLog } from './log-mask';
 import { computeDumpScope, type DumpScope } from './principal';
+import { resolveSystemType } from './system-type';
 
 export type CredentialError = Error & {
   statusCode?: number;
@@ -94,6 +98,10 @@ export async function establishRequestConnection(
       req.headers.authorization?.replace('Bearer ', ''),
     );
 
+    // The declared kind, by the one rule (`system-type.ts`). An unknown value
+    // is refused with a 400 before any connection is built.
+    const systemType = resolveSystemType(req.headers, resolved.systemType);
+
     // On-premise (Cloud Connector) and NoAuthentication destinations must run
     // under the caller's own ABAP user — never a destination service user.
     const requiresUserCredentials =
@@ -137,6 +145,7 @@ export async function establishRequestConnection(
 
     log.info('Per-request SAP connection established', {
       destination,
+      systemType,
       auth: usedBasicOverride ? 'user-basic' : sapConfig.authType,
       username: usedBasicOverride
         ? maskLoginForLog(sapLogin)
@@ -195,11 +204,24 @@ export async function establishRequestConnection(
  * (releases any edit-lock a mutating tool left open — the "currently
  * editing"/inactive-object symptom), then clears local state.
  *
+ * A CloudSdkAbapConnection ends its session with `closeSession()` then
+ * `reset()`. A direct connector (`x-sap-url`) has neither: it ends its session
+ * with `disconnect()`, which sends the logoff — without it the session, and a
+ * lock it kept, would live until SAP's own timeout.
+ *
  * Idempotent and NEVER throws — each step is independently try/catch-guarded,
  * so a throwing `closeSession` does not skip `reset()`, and calling this twice
  * (e.g. once from a `req.on('close')` listener and once from the handler's own
  * `finally`) is always safe. */
 export async function safeStop(connection?: IAbapConnection): Promise<void> {
+  if (connection && isDirectConnector(connection)) {
+    try {
+      await connection.disconnect();
+    } catch {
+      // Swallow — best-effort teardown must never throw into the caller's finally.
+    }
+    return;
+  }
   try {
     await (
       connection as { closeSession?: () => Promise<void> } | undefined

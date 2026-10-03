@@ -3,6 +3,11 @@ import type { Destination } from '@sap-cloud-sdk/connectivity';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import { refuseDestination } from '../lib/btp-destinations';
 import { formatErrorMessage, logErrorSafely } from '../lib/errorUtils';
+import {
+  DESTINATION_SYSTEM_TYPE_PROPERTY,
+  parseSystemType,
+  type SystemType,
+} from '../lib/system-type';
 
 /**
  * Ensure VCAP_SERVICES is loaded from default-env.json for local development
@@ -86,6 +91,12 @@ export interface DestinationResolution {
   tokenExpiresAt?: number;
   /** Destination auth user (e.g. MCPDEV01 for BasicAuthentication) */
   username?: string;
+  /**
+   * The kind of system the destination declares in its `SAP_SYSTEM_TYPE`
+   * property, or `undefined` when it declares none. Never derived from the
+   * proxy type — see `lib/system-type.ts`.
+   */
+  systemType?: SystemType;
 }
 
 /**
@@ -160,6 +171,11 @@ async function buildSapConfigFromDestination(
     destination,
     'CloudConnectorLocationId',
   );
+  // Declared or nothing: an unknown value stops the resolution here.
+  const systemType = parseSystemType(
+    getCaseInsensitive(destination, DESTINATION_SYSTEM_TYPE_PROPERTY),
+    `Destination "${destinationName}" property ${DESTINATION_SYSTEM_TYPE_PROPERTY}`,
+  );
 
   if (!authentication) {
     throw new Error(
@@ -224,6 +240,7 @@ async function buildSapConfigFromDestination(
     authenticationType: authentication,
     username: destinationUser,
     tokenExpiresAt,
+    systemType,
   };
 }
 

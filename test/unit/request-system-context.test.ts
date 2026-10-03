@@ -37,20 +37,22 @@ afterEach(() => {
 });
 
 describe('the values come from the request headers', () => {
-  it('x-sap-responsible wins over x-sap-login, and both values are uppercased', () => {
+  it('x-sap-responsible is the stated responsible, x-sap-login the login — both uppercased', () => {
     expect(
       resolveRequestSystem({
         'x-sap-responsible': 'bob',
         'x-sap-login': 'alice',
         'x-sap-master-system': 'dev',
       }),
-    ).toEqual({ responsible: 'BOB', masterSystem: 'DEV' });
+    ).toEqual({ responsible: 'BOB', login: 'ALICE', masterSystem: 'DEV' });
   });
 
-  it('falls back to x-sap-login, trimmed', () => {
-    expect(
-      resolveRequestSystem({ 'x-sap-login': '  developer ' }).responsible,
-    ).toBe('DEVELOPER');
+  it('x-sap-login alone is the login, trimmed and uppercased; nothing is stated', () => {
+    expect(resolveRequestSystem({ 'x-sap-login': '  developer ' })).toEqual({
+      responsible: undefined,
+      login: 'DEVELOPER',
+      masterSystem: undefined,
+    });
   });
 
   it('a missing or blank value stays undefined', () => {
@@ -62,6 +64,7 @@ describe('the values come from the request headers', () => {
     expect(r.masterSystem).toBeUndefined();
     expect(resolveRequestSystem({})).toEqual({
       responsible: undefined,
+      login: undefined,
       masterSystem: undefined,
     });
   });
@@ -107,6 +110,35 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
 
     const none = await runWithRequestSystem({}, getSystemInformation);
     expect(none).toBeNull();
+  });
+
+  it('the login is the responsible when none is stated (lib 16, on-premise)', async () => {
+    const seen = await runWithRequestSystem(
+      resolveRequestSystem({ 'x-sap-login': 'developer' }),
+      getSystemInformation,
+    );
+    // The observable responsible on-premise stays the UPPERCASED login.
+    expect(seen?.userName).toBe('DEVELOPER');
+  });
+
+  it('x-sap-responsible overrides the login', async () => {
+    const seen = await runWithRequestSystem(
+      resolveRequestSystem({
+        'x-sap-login': 'developer',
+        'x-sap-responsible': 'owner',
+      }),
+      getSystemInformation,
+    );
+    expect(seen?.userName).toBe('OWNER');
+  });
+
+  it('a stated process responsible never stands in for a request with only a login', async () => {
+    setSystemContext({ responsible: 'PROCESS' });
+    const seen = await runWithRequestSystem(
+      resolveRequestSystem({ 'x-sap-login': 'developer' }),
+      getSystemInformation,
+    );
+    expect(seen?.userName).toBe('DEVELOPER');
   });
 
   it('outside a run, lib sees the process values', async () => {
