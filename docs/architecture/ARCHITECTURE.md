@@ -928,14 +928,14 @@ classDiagram
         <<from @mcp-abap-adt/connection>>
         +credential: BasicAuthProvider | TokenAuthProvider
         -transport: OnPremHttpTransport
-        +disconnect()
+        +endSession() waits for LOCK..UNLOCK, then disconnect()
     }
 
     class AdtCloudConnector {
         <<from @mcp-abap-adt/connection>>
         +credential: BasicAuthProvider | TokenAuthProvider
         -transport: CloudHttpTransport
-        +disconnect()
+        +endSession() waits for LOCK..UNLOCK, then disconnect()
     }
 
     AbapConnection <|.. CloudSdkAbapConnection

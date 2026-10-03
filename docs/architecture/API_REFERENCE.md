@@ -543,7 +543,7 @@ curl -X POST \
 - OR `X-SAP-Login: <username>` and `X-SAP-Password: <password>` (for Basic)
 - `X-SAP-System-Type: onprem|cloud|legacy` (optional, default `onprem`) — picks the connector. A direct connection to ABAP Cloud must send `cloud`.
 
-**Description:** Direct connection to SAP system without Destination service. The session is logged off when the request ends.
+**Description:** Direct connection to SAP system without Destination service. The session is logged off when the request ends — after any open LOCK..UNLOCK chain has finished, also when the client disconnects.
 
 **Use Cases:**
 

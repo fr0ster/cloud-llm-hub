@@ -23,9 +23,17 @@ What a consumer on the old contract must do:
   `SAP_SYSTEM_TYPE=cloud` (or callers send `x-sap-system-type: cloud`).
   Otherwise the cloud-only tools are hidden and the system's own user is not
   looked up as the responsible.
+- **Conversely, an undeclared Internet destination is now on-premise** on the
+  raw MCP route: it lists the on-premise-only tools (e.g. `CreateProgram`)
+  that it hid before, and a create's responsible is the login. Every
+  undeclared ABAP Cloud system must declare `SAP_SYSTEM_TYPE=cloud`.
 - **Direct (`x-sap-url`) connections are on-premise unless declared.** A JWT
   no longer makes one cloud: a direct connection to ABAP Cloud must send
   `x-sap-system-type: cloud`, which also picks the cloud connector.
+  `tools/update-cline-connection.js` declares it: the `direct-jwt` and
+  `cloud-internet` templates now carry `systemType: cloud` (`direct-basic`
+  carries `onprem`); regenerate a playbook made from them, or add the key. In
+  CLI mode pass `--sap-system-type` or set `SAP_SYSTEM_TYPE` in `.env`.
 - **An unknown `x-sap-system-type` is refused** (`400 INVALID_SYSTEM_TYPE`; a
   tool error on `execute_step`). An unknown `SAP_SYSTEM_TYPE` destination
   property fails that destination (`502`); in a `destinations` env entry it
@@ -60,8 +68,14 @@ What a consumer on the old contract must do:
   `x-sap-login` and `x-sap-master-system`. Without this every create on it
   would be refused under lib 16.
 - **Direct (`x-sap-url`) connections are logged off.** The direct connectors
-  have no `closeSession`; the cleanup now calls their `disconnect()`, so their
-  session — and a lock it kept — no longer lives until SAP's timeout. A refused
+  have no `closeSession`; the cleanup now ends their session (`endSession()`),
+  so it — and a lock it kept — no longer lives until SAP's timeout. The
+  logoff waits for an open LOCK..UNLOCK chain: a client abort never cuts a
+  write chain (connection 10's `disconnect()` alone would refuse the chain's
+  UNLOCK).
+- **Raw MCP route setup ends what it opened.** A caller with no MCP role is
+  refused before a connection is built; a setup failure after `connect()`
+  ends the session. A refused
   Basic logon is one request and an `AuthRefusedError` (connection 10).
 
 ## [6.38.0] - 2026-10-03

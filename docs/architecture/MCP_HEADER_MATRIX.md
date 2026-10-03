@@ -67,15 +67,19 @@ The sections below list the minimum YAML keys and the headers they populate for 
 - `sap.auth.token` → `X-SAP-JWT-Token`.
 - `mcp.auth.token` → `Authorization: Bearer <token>`.
 - `sap-abap-file`/`mcp-xsuaa-file` — use only when local copies of the service keys are needed.
-- **`X-SAP-System-Type: cloud`** — required for an ABAP Cloud system: a direct connection is
-  on-premise unless declared (the token does not make it cloud). Add it in the YAML `headers`
-  block; the script does not set it.
+- `sap.systemType: cloud` → **`X-SAP-System-Type: cloud`** — required for an ABAP Cloud system:
+  a direct connection is on-premise unless declared (the token does not make it cloud). The
+  `direct-jwt` and `cloud-internet` templates declare `systemType: cloud`; `direct-basic` declares
+  `onprem`. In CLI mode the value comes from `--sap-system-type` or `SAP_SYSTEM_TYPE` in `.env`;
+  without one the header is not sent (the hub's default, `onprem`).
 
 Additional headers (tracing, custom flags, and so on) are injected only via the `headers` block in YAML.
 
 ## Optional Headers (every scenario)
 
-The hub reads these on every channel. None is set by the script; add them in the YAML `headers` block.
+The hub reads these on every channel. The script sets `x-sap-system-type` for a direct connection
+from `abapConnection.direct.systemType` (see above); add the others — or a system type for a
+destination — in the YAML `headers` block.
 
 | Header | Values | Effect |
 |---|---|---|

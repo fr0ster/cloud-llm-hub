@@ -78,7 +78,11 @@ there):
   every request
 - **anything else** → throws (use a BTP destination)
 
-When the request ends, `safeStop` calls the connector's `disconnect()`, which sends the logoff. A
+When the request ends — or the client aborts — `safeStop` calls the connector's `endSession()`
+(`srv/connections/directConnectors.ts`): it **waits for an open critical section**
+(LOCK..UNLOCK) to end, then calls `disconnect()`, which sends the logoff. connection 10's
+`disconnect()` alone shuts admission at once and would refuse a chain's UNLOCK; a client disconnect
+must never cut a write chain. `CloudSdkAbapConnection.closeSession()` waits the same way. A
 refused Basic logon is one request and an `AuthRefusedError` (connection 10 no longer retries a
 401 during establishment).
 
