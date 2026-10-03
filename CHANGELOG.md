@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Minor dependency updates:** `@modelcontextprotocol/sdk` 1.32, `dotenv` 18.0.5,
+  `@mcp-abap-adt/interfaces-{adt-connection,network,utils}` patch releases,
+  `@biomejs/biome` 2.5.15 (dev).
+
+### Removed
+
+- **`@mcp-abap-adt/auth-broker` is no longer a declared dependency.** Nothing in
+  this repository imports it; `@mcp-abap-adt/lib` keeps its own copy, so the
+  runtime tree and `NOTICE` are unchanged.
+
 ## [6.37.0] - 2026-09-30
 
 ### Migration
