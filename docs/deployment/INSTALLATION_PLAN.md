@@ -163,6 +163,7 @@ In BTP Cockpit → Subaccount → Destinations, manually create the destination:
    - **URL**: `https://<sap-host>:<port>`
    - **Authentication**: BasicAuthentication or PrincipalPropagation
    - **ProxyType**: OnPremise (via Cloud Connector) or Internet
+   - **Additional property `SAP_SYSTEM_TYPE`** (optional): `onprem` (default), `cloud` or `legacy`. Set `cloud` for an ABAP Cloud system (SAP BTP ABAP environment) — the hub never derives it from ProxyType. An unknown value makes the destination fail to resolve.
 
 2. For on-premise systems — ensure Cloud Connector is configured:
    - Virtual host mapped to the SAP system

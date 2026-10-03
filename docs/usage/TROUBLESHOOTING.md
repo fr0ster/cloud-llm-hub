@@ -183,6 +183,30 @@ destination's `sap-client` **or** the per-request `x-sap-client` header.
 
 ---
 
+### Problem: A create fails with `system_context_missing`
+
+**TL;DR:** the hub found no responsible person for the new object, so nothing
+was sent to SAP. Send `x-sap-login` (your own SAP user) or `x-sap-responsible`.
+
+- The responsible is `x-sap-responsible`, else the uppercased `x-sap-login`.
+- On a system declared `cloud` (raw MCP route), it is the user the system
+  reports; the error then says the system could not be reached — retry later.
+- No POST and no LOCK were sent, so no object or lock was left behind.
+
+---
+
+### Problem: `INVALID_SYSTEM_TYPE` (400)
+
+**TL;DR:** `x-sap-system-type` (or the destination's `SAP_SYSTEM_TYPE`
+property) holds a value other than `onprem`, `cloud` or `legacy`.
+
+- Fix the header, or drop it — the default is `onprem`.
+- A bad destination property fails that destination's resolution (`502`),
+  naming the destination and the property. Fix it in the BTP cockpit, or in
+  the `destinations` entry for a local run.
+
+---
+
 ### Problem: 403 Forbidden
 
 **Symptoms:**

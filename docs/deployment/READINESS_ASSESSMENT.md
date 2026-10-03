@@ -102,7 +102,7 @@ for answers to 3.2 and 3.3 in the very first conversation.
 |---|--------|---------------|--------|
 | 4.1 | No system in scope yet | We can still deploy — UI and LLM work, MCP tools do not | Useful for an early demo. Set `LLM_AGENT_MCP_DESTINATION` later and redeploy |
 | 4.2 | On-premise | Cloud Connector is on the critical path | Confirm 4.3; add 2–4 hours, more if the Cloud Connector team is a separate organization |
-| 4.2 | SAP BTP ABAP environment | Simplest case — no Cloud Connector needed | Direct destination, Internet proxy type |
+| 4.2 | SAP BTP ABAP environment | Simplest case — no Cloud Connector needed | Direct destination, Internet proxy type, additional property `SAP_SYSTEM_TYPE=cloud` (the hub never derives the system type from the proxy type) |
 | 4.3 | Cloud Connector not registered for this subaccount | **Blocker for on-premise access.** Registration is per subaccount — an existing Cloud Connector for another subaccount does not count | Cloud Connector admin registers it; also needs access control for `/sap/bc/adt/**` |
 | 4.4 | ICF service not activated | **Blocker** — no ADT, no tools | Basis activates `/sap/bc/adt` in SICF. That is the only endpoint the runtime uses. Usually fast once the right person is asked |
 | 4.5 | No technical user | Blocker until created | Add 1–4 hours; in regulated environments this can require a formal request |

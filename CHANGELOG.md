@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Migration
+
+What a consumer on the old contract must do:
+
+- **A create needs a responsible person, or it is refused.** `@mcp-abap-adt/lib`
+  16 answers `"error": "system_context_missing"` and sends nothing (no POST, no
+  LOCK). Before, the create went out without `adtcore:responsible` and SAP used
+  the logon user. The responsible is `x-sap-responsible`, else the uppercased
+  `x-sap-login` — so a caller with per-user credentials needs no change. A
+  caller on a destination with its own credentials and no `x-sap-login` must
+  now send `x-sap-responsible`.
+- **The system type is no longer guessed from the destination's proxy type.**
+  An `Internet` destination used to count as ABAP Cloud on the raw MCP route.
+  Now the type is declared — `x-sap-system-type`, else the destination's
+  `SAP_SYSTEM_TYPE` property — or it is `onprem`. An Internet destination that
+  points at an **ABAP Cloud** system must add the destination property
+  `SAP_SYSTEM_TYPE=cloud` (or callers send `x-sap-system-type: cloud`).
+  Otherwise the cloud-only tools are hidden and the system's own user is not
+  looked up as the responsible.
+- **Direct (`x-sap-url`) connections are on-premise unless declared.** A JWT
+  no longer makes one cloud: a direct connection to ABAP Cloud must send
+  `x-sap-system-type: cloud`, which also picks the cloud connector.
+- **An unknown `x-sap-system-type` is refused** (`400 INVALID_SYSTEM_TYPE`; a
+  tool error on `execute_step`). An unknown `SAP_SYSTEM_TYPE` destination
+  property fails that destination (`502`); in a `destinations` env entry it
+  stops the start.
+- **Embedders of `createConnection`** (`srv/connections/connectionFactory.ts`):
+  a direct connection now takes a required `systemType`; the unused
+  `tokenRefresher` option is gone.
+
+### Changed
+
+- **`@mcp-abap-adt/lib` 16.0.0, `@mcp-abap-adt/connection` 10.0.3.** The
+  credential providers moved to `@mcp-abap-adt/auth-providers` 5 (now a
+  declared dependency): Basic → `BasicAuthProvider`, JWT →
+  `TokenAuthProvider.fixed`. `@mcp-abap-adt/interfaces-auth` is no longer
+  declared — nothing here imports it (lib's family uses 3.x, llm-agent 30 keeps
+  2.x as its own). The tool definitions are unchanged; the tool corpus is not
+  regenerated.
+- **Responsible person, in lib 16's terms.** `x-sap-responsible` is the stated
+  responsible; the uppercased `x-sap-login` is passed as lib's `login`, which
+  lib uses when none is stated on a system that is not `cloud`. On-premise the
+  created object's responsible is unchanged: the uppercased login.
+- **System type is declared, never inferred** (`srv/lib/system-type.ts`, one
+  rule for every channel): `x-sap-system-type` → destination property
+  `SAP_SYSTEM_TYPE` → `onprem`. On the raw MCP route it picks the exposed tools,
+  the responsible lookup and the direct connector. The SAP client keeps the
+  same precedence: `x-sap-client` over the destination's `sap-client`.
+
+### Fixed
+
+- **The raw MCP route (`/mcp/stream/http`) now runs inside the request's system
+  scope**, like the agent channels: it honours `x-sap-responsible`,
+  `x-sap-login` and `x-sap-master-system`. Without this every create on it
+  would be refused under lib 16.
+- **Direct (`x-sap-url`) connections are logged off.** The direct connectors
+  have no `closeSession`; the cleanup now calls their `disconnect()`, so their
+  session — and a lock it kept — no longer lives until SAP's timeout. A refused
+  Basic logon is one request and an `AuthRefusedError` (connection 10).
+
 ## [6.38.0] - 2026-10-03
 
 ### Changed
