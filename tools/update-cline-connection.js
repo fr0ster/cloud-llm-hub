@@ -438,6 +438,8 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
       );
     }
     setHeaderValue(headers, 'x-sap-jwt-token', token, updatedKeys);
+    setHeaderValue(headers, 'x-sap-login', undefined, updatedKeys);
+    // Older versions of this script wrote the login here; the hub never read it.
     setHeaderValue(headers, 'x-sap-username', undefined, updatedKeys);
     setHeaderValue(headers, 'x-sap-password', undefined, updatedKeys);
     return { updated: updatedKeys, jwt: { value: token, source: tokenSource } };
@@ -451,7 +453,10 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
     );
   }
 
-  setHeaderValue(headers, 'x-sap-username', username, updatedKeys);
+  // `x-sap-login` is the header the hub and header-validator read
+  // (HEADER_SAP_LOGIN); the `x-sap-username` older versions wrote is removed.
+  setHeaderValue(headers, 'x-sap-login', username, updatedKeys);
+  setHeaderValue(headers, 'x-sap-username', undefined, updatedKeys);
   setHeaderValue(headers, 'x-sap-password', password, updatedKeys);
   setHeaderValue(headers, 'x-sap-jwt-token', undefined, updatedKeys);
 
@@ -2691,7 +2696,8 @@ function removeSapDirectHeaders(headers, updated) {
     'x-sap-client',
     'x-sap-auth-type',
     'x-sap-jwt-token',
-    'x-sap-username',
+    'x-sap-login',
+    'x-sap-username', // legacy name older versions wrote
     'x-sap-password',
   ].forEach((key) => {
     setHeaderValue(headers, key, undefined, updated);

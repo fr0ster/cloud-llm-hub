@@ -73,6 +73,11 @@ What a consumer on the old contract must do:
   logoff waits for an open LOCK..UNLOCK chain: a client abort never cuts a
   write chain (connection 10's `disconnect()` alone would refuse the chain's
   UNLOCK).
+- **`tools/update-cline-connection.js` writes `x-sap-login` for Basic auth.**
+  It wrote `x-sap-username`, which neither the hub nor header-validator reads,
+  so every direct-basic configuration it produced was refused ("Basic
+  authentication requires x-sap-login and x-sap-password headers"). A stale
+  `x-sap-username` is removed on the next run.
 - **Raw MCP route setup ends what it opened.** A caller with no MCP role is
   refused before a connection is built; a setup failure after `connect()`
   ends the session. A refused

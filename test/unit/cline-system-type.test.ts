@@ -67,3 +67,47 @@ describe('templates declare the system type', () => {
     expect(systemTypeOf('cloud-destination')).toBeUndefined();
   });
 });
+
+describe('applySapConfigToHeaders — header names the hub reads', () => {
+  const basic = {
+    SAP_URL: 'https://abap.example.invalid',
+    SAP_CLIENT: '100',
+    SAP_AUTH_TYPE: 'basic',
+    SAP_USERNAME: 'developer',
+    SAP_PASSWORD: 'secret',
+  };
+
+  it('basic auth writes x-sap-login (not x-sap-username) and passes header-validator', () => {
+    const { validateAuthHeaders } = jest.requireActual(
+      '@mcp-abap-adt/header-validator',
+    ) as typeof import('@mcp-abap-adt/header-validator');
+    const h: Record<string, string> = { 'x-sap-username': 'stale' };
+    tool.applySapConfigToHeaders(h, basic, {});
+    expect(h).toEqual({
+      'x-sap-url': 'https://abap.example.invalid',
+      'x-sap-client': '100',
+      'x-sap-auth-type': 'basic',
+      'x-sap-login': 'developer',
+      'x-sap-password': 'secret',
+    });
+    const v = validateAuthHeaders(h);
+    expect(v.errors).toEqual([]);
+    expect(v.config).toMatchObject({
+      authType: 'basic',
+      username: 'developer',
+    });
+  });
+
+  it('jwt clears the basic credentials, the legacy name included', () => {
+    const h: Record<string, string> = {
+      'x-sap-login': 'developer',
+      'x-sap-username': 'stale',
+      'x-sap-password': 'secret',
+    };
+    tool.applySapConfigToHeaders(h, jwt, {});
+    expect(h['x-sap-login']).toBeUndefined();
+    expect(h['x-sap-username']).toBeUndefined();
+    expect(h['x-sap-password']).toBeUndefined();
+    expect(h['x-sap-jwt-token']).toBe('t');
+  });
+});
