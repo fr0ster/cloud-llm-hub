@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [6.38.0] - 2026-10-03
+
 ### Changed
 
 - **`@mcp-abap-adt/lib` 15.1.0.**
