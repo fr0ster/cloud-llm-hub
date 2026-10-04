@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-10-04
+
 ### Migration
 
 What a consumer on the old contract must do:
