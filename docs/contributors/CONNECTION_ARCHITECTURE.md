@@ -82,7 +82,10 @@ When the request ends — or the client aborts — `safeStop` calls the connecto
 (`srv/connections/directConnectors.ts`): it **waits for an open critical section**
 (LOCK..UNLOCK) to end, then calls `disconnect()`, which sends the logoff. connection 10's
 `disconnect()` alone shuts admission at once and would refuse a chain's UNLOCK; a client disconnect
-must never cut a write chain. `CloudSdkAbapConnection.closeSession()` waits the same way. A
+must never cut a write chain. `endSession()` starts the teardown in the same synchronous step as
+its last "no section open" check, so no section can open in between.
+`CloudSdkAbapConnection.closeSession()` waits the same way; the teardown calls its `close()`, which
+also refuses any later request outside an open section, so nothing reopens a session after it. A
 refused Basic logon is one request and an `AuthRefusedError` (connection 10 no longer retries a
 401 during establishment).
 

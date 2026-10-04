@@ -90,6 +90,20 @@ What a consumer on the old contract must do:
   connection each sent its own logoff (about 100 ms extra per request).
   `CloudSdkAbapConnection.closeSession()` is now single-flight and the raw
   route's cleanup runs once. It still waits for an open LOCK..UNLOCK.
+- **Nothing reopens a session after the teardown.** An early client abort
+  ran the destination connection's close before the handler reached SAP; the
+  handler then minted a fresh session that no cleanup closed.
+  `CloudSdkAbapConnection.close()` (called by the teardown) now refuses new
+  requests, except those of a LOCK..UNLOCK section still open, which the
+  close waits for. A direct connector's teardown starts in the same step as
+  its last "no section open" check, so no section can open in between.
+- **`getSmartAgent`'s bounded wait clears its timer.** After an init that
+  finished in time the timer ran on for the rest of
+  `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (90 s by default).
+- **`tools/update-cline-connection.js` drops `x-sap-system-type` when it
+  switches a connection to a destination**: the header outranks the
+  destination's own `SAP_SYSTEM_TYPE`. Pass `--sap-system-type` (CLI) or the
+  YAML `headers` block to keep one.
 - **Raw MCP route error bodies name their status.** A refused request read
   `Internal Server Error: …` whatever its status; it now reads
   `Bad Request: …`, `Unauthorized: …` and so on.
