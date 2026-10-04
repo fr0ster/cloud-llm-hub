@@ -85,6 +85,14 @@ What a consumer on the old contract must do:
   `type: stream` (Cline `streamableHttp`), like the other two. The
   `direct-jwt` default type is `stream` instead of the placeholder
   `stream | sse`. Regenerate a playbook made from those templates.
+- **One ICF logoff per request.** A request's teardown runs from both the
+  client's `close` listener and the handler's `finally`; on a destination
+  connection each sent its own logoff (about 100 ms extra per request).
+  `CloudSdkAbapConnection.closeSession()` is now single-flight and the raw
+  route's cleanup runs once. It still waits for an open LOCK..UNLOCK.
+- **Raw MCP route error bodies name their status.** A refused request read
+  `Internal Server Error: …` whatever its status; it now reads
+  `Bad Request: …`, `Unauthorized: …` and so on.
 - **Raw MCP route setup ends what it opened.** A caller with no MCP role is
   refused before a connection is built; a setup failure after `connect()`
   ends the session. A refused

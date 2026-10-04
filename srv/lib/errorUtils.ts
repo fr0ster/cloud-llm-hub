@@ -7,6 +7,7 @@
  * Based on logErrorSafely from @fr0ster/mcp-abap-adt/src/lib/utils.ts
  */
 
+import { STATUS_CODES } from 'node:http';
 import type { ILogger } from '@mcp-abap-adt/connection';
 
 /**
@@ -218,4 +219,13 @@ export function createErrorResponse(
       },
     ],
   };
+}
+
+/**
+ * The plain-text body of an HTTP error: the status's own reason phrase, then
+ * the message — `400 Bad Request: …`, `401 Unauthorized: …`. The reason always
+ * matches the status, so a refused request never reads "Internal Server Error".
+ */
+export function httpErrorText(statusCode: number, message: string): string {
+  return `${STATUS_CODES[statusCode] ?? 'Error'}: ${message}`;
 }

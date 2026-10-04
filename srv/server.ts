@@ -30,7 +30,11 @@ import {
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
-import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
+import {
+  formatErrorMessage,
+  httpErrorText,
+  logErrorSafely,
+} from './lib/errorUtils';
 import {
   deleteSession,
   forgetEmptySessions,
@@ -223,7 +227,7 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
       };
       const statusCode = err?.response?.status || err?.statusCode || 500;
       const userMessage = formatErrorMessage(error);
-      res.writeHead(statusCode).end(`Internal Server Error: ${userMessage}`);
+      res.writeHead(statusCode).end(httpErrorText(statusCode, userMessage));
     } else {
       res.end();
     }
