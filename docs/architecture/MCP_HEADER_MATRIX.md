@@ -67,8 +67,27 @@ The sections below list the minimum YAML keys and the headers they populate for 
 - `sap.auth.token` → `X-SAP-JWT-Token`.
 - `mcp.auth.token` → `Authorization: Bearer <token>`.
 - `sap-abap-file`/`mcp-xsuaa-file` — use only when local copies of the service keys are needed.
+- `sap.systemType: cloud` → **`X-SAP-System-Type: cloud`** — required for an ABAP Cloud system:
+  a direct connection is on-premise unless declared (the token does not make it cloud). The
+  `direct-jwt` and `cloud-internet` templates declare `systemType: cloud`; `direct-basic` declares
+  `onprem`. In CLI mode the value comes from `--sap-system-type` or `SAP_SYSTEM_TYPE` in `.env`;
+  without one the header is not sent (the hub's default, `onprem`).
 
 Additional headers (tracing, custom flags, and so on) are injected only via the `headers` block in YAML.
+
+## Optional Headers (every scenario)
+
+The hub reads these on every channel. The script sets `x-sap-system-type` for a direct connection
+from `abapConnection.direct.systemType` (see above); add the others — or a system type for a
+destination — in the YAML `headers` block.
+
+| Header | Values | Effect |
+|---|---|---|
+| `x-sap-system-type` | `onprem` \| `cloud` \| `legacy` | The system kind. Overrides the destination's `SAP_SYSTEM_TYPE` property; default `onprem`. Never inferred from the URL, proxy type or auth. Unknown value → `400 INVALID_SYSTEM_TYPE`. |
+| `x-sap-responsible` | SAP user ID | Responsible person of created objects. Overrides the login (`x-sap-login`, uppercased), which is the responsible otherwise. |
+| `x-sap-master-system` | System ID | Master system of created objects. Left out when not sent (on-premise). |
+
+A create that finds no responsible is refused with `system_context_missing`, and nothing is sent to SAP.
 
 ## Direct SAP (JWT)
 

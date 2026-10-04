@@ -27,7 +27,7 @@ parameters:
   LLM_AGENT_RAG_TYPE: "vector"
   # LLM_AGENT_RESOURCE_GROUP: "default"
 
-  # Classifier model (cheaper model for classification, reranking, query expansion)
+  # Classifier model (cheaper model for classification and tool-query translation)
   LLM_AGENT_CLASSIFIER_MODEL: "gpt-4.1-mini"
 
   # Embedding model for RAG semantic search

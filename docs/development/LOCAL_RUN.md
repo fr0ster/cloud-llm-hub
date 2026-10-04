@@ -55,6 +55,19 @@ npm run dev:local
    Nothing cross-checks them at startup — a mismatch shows up as a request
    error naming the destination and the ones that exist (see Troubleshooting).
 
+   **System type.** The hub never guesses whether the system is on-premise or
+   ABAP Cloud — not from `proxyType`, not from the URL. A `destinations` entry
+   may declare it in a `SAP_SYSTEM_TYPE` field (`onprem`, `cloud` or
+   `legacy`); without it the system is `onprem`. A local SAP system reached
+   through a tunnel needs nothing. For an ABAP Cloud system add it:
+
+   ```text
+   destinations=[{"name":"SAP_DEV","url":"https://<host>","proxyType":"Internet","authentication":"NoAuthentication","SAP_SYSTEM_TYPE":"cloud"}]
+   ```
+
+   An unknown value stops the start, naming the entry. A request can still
+   override it with the `x-sap-system-type` header.
+
    **Sharing one Qdrant** with another local kit or deployment? Give each its
    own `LLM_AGENT_QDRANT_PREFIX` (default `cloud-llm-hub`), e.g.
    `LLM_AGENT_QDRANT_PREFIX=cloud-llm-hub-mine`. Collections are named after
@@ -117,6 +130,10 @@ curl http://localhost:4004/v1/chat/completions \
 password) — see `cds watch --profile development` auth. `x-sap-login` /
 `x-sap-password` are the caller's own SAP credentials, sent per request; the
 hub never holds a default SAP user.
+
+Objects you create are attributed to the uppercased `x-sap-login`. Send
+`x-sap-responsible` to name another SAP user. A create with no responsible is
+refused with `system_context_missing` before anything reaches SAP.
 
 ## Chat without SAP (LLM-only)
 

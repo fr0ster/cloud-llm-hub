@@ -49,6 +49,9 @@ function parseArgs(argv) {
       case '--sap-auth-type':
         options.sapAuthType = argv[++i];
         break;
+      case '--sap-system-type':
+        options.sapSystemType = argv[++i];
+        break;
       case '--sap-username':
         options.sapUsername = argv[++i];
         break;
@@ -150,6 +153,9 @@ Options:
 
   SAP backend authentication (MCP proxy ➜ ABAP):
       --sap-auth-type <type>     jwt | basic (defaults to .env or jwt)
+      --sap-system-type <type>   onprem | cloud | legacy → x-sap-system-type
+                                 (defaults to SAP_SYSTEM_TYPE in .env; unset =
+                                 the hub's default, onprem — never inferred)
       --sap-username <value>     SAP username for basic auth
       --sap-password <value>     SAP password for basic auth
       --sap-token <value>        SAP JWT token (alias: --token)
@@ -386,11 +392,27 @@ function setHeaderValue(headers, key, value, updated) {
   }
 }
 
+const SAP_SYSTEM_TYPES = ['onprem', 'cloud', 'legacy'];
+
 function applySapConfigToHeaders(headers, sapConfig, overrides) {
   const updatedKeys = [];
 
   setHeaderValue(headers, 'x-sap-url', sapConfig.SAP_URL, updatedKeys);
   setHeaderValue(headers, 'x-sap-client', sapConfig.SAP_CLIENT, updatedKeys);
+
+  // The system type is DECLARED (flag, .env SAP_SYSTEM_TYPE, or the YAML
+  // template's systemType) — never inferred from the auth type. Unset leaves
+  // the hub's default, onprem.
+  const systemTypeSource = overrides.systemType ?? sapConfig.SAP_SYSTEM_TYPE;
+  const systemType = systemTypeSource
+    ? String(systemTypeSource).trim().toLowerCase()
+    : undefined;
+  if (systemType !== undefined && !SAP_SYSTEM_TYPES.includes(systemType)) {
+    throw new Error(
+      `Unsupported SAP system type "${systemTypeSource}". Use ${SAP_SYSTEM_TYPES.join(', ')}.`,
+    );
+  }
+  setHeaderValue(headers, 'x-sap-system-type', systemType, updatedKeys);
 
   const authTypeSource =
     overrides.authType ??
@@ -416,6 +438,8 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
       );
     }
     setHeaderValue(headers, 'x-sap-jwt-token', token, updatedKeys);
+    setHeaderValue(headers, 'x-sap-login', undefined, updatedKeys);
+    // Older versions of this script wrote the login here; the hub never read it.
     setHeaderValue(headers, 'x-sap-username', undefined, updatedKeys);
     setHeaderValue(headers, 'x-sap-password', undefined, updatedKeys);
     return { updated: updatedKeys, jwt: { value: token, source: tokenSource } };
@@ -429,7 +453,10 @@ function applySapConfigToHeaders(headers, sapConfig, overrides) {
     );
   }
 
-  setHeaderValue(headers, 'x-sap-username', username, updatedKeys);
+  // `x-sap-login` is the header the hub and header-validator read
+  // (HEADER_SAP_LOGIN); the `x-sap-username` older versions wrote is removed.
+  setHeaderValue(headers, 'x-sap-login', username, updatedKeys);
+  setHeaderValue(headers, 'x-sap-username', undefined, updatedKeys);
   setHeaderValue(headers, 'x-sap-password', password, updatedKeys);
   setHeaderValue(headers, 'x-sap-jwt-token', undefined, updatedKeys);
 
@@ -657,10 +684,25 @@ async function main() {
       connectivityLocationId: options.connectivityLocationId,
     });
     updatedHeaders.push(...destinationUpdated);
+    // A destination states its own type (SAP_SYSTEM_TYPE); the header, which
+    // outranks it, is kept only when asked for with --sap-system-type.
+    const systemType = options.sapSystemType?.trim().toLowerCase();
+    if (systemType && !SAP_SYSTEM_TYPES.includes(systemType)) {
+      throw new Error(
+        `Unsupported SAP system type "${options.sapSystemType}". Use ${SAP_SYSTEM_TYPES.join(', ')}.`,
+      );
+    }
+    setHeaderValue(
+      connection.headers,
+      'x-sap-system-type',
+      systemType || undefined,
+      updatedHeaders,
+    );
   } else if (updateSap) {
     const result = applySapConfigToHeaders(connection.headers, sapConfig, {
       token: options.sapToken,
       authType: options.sapAuthType,
+      systemType: options.sapSystemType,
       username: options.sapUsername,
       password: options.sapPassword,
     });
@@ -752,10 +794,12 @@ const TEMPLATE_RENDERERS = {
 };
 
 const TEMPLATE_ENDPOINT_SUFFIX = {
-  'direct-basic': '/mcp/stream/sse',
+  // The hub serves Stream-HTTP only (`/mcp/stream/http`); its SSE endpoint is
+  // disabled, so no template points there.
+  'direct-basic': '/mcp/stream/http',
   'direct-jwt': '/mcp/stream/http',
   'cloud-internet': '/mcp/stream/http',
-  'cloud-destination': '/mcp/stream/sse',
+  'cloud-destination': '/mcp/stream/http',
 };
 
 const DEFAULT_ABAP_CLIENT = '210';
@@ -926,7 +970,7 @@ function determineTokenAlias({
 
 function renderDirectBasicTemplate(options = {}) {
   const endpoint =
-    options.mcpEndpoint || 'http://localhost:4004/mcp/stream/sse';
+    options.mcpEndpoint || 'http://localhost:4004/mcp/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
@@ -938,7 +982,7 @@ settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/
 ${cfBlock}${serviceKeysSection}mcpConnection:
 ${connectionNameLine}  endpoint: ${endpoint}
   definition:
-    type: sse
+    type: stream
     description: Direct SAP via basic auth
   auth:
     type: basic
@@ -955,6 +999,7 @@ abapConnection:
   direct:
     url: ${abapUrl}
     client: 200
+    systemType: onprem   # x-sap-system-type: declared, never inferred
   auth:
     type: basic
     username:
@@ -978,7 +1023,7 @@ function renderDirectJwtTemplate(options = {}) {
   const connectionNameLine = options.connectionName
     ? `  name: ${options.connectionName}\n`
     : '';
-  const connectionType = options.mcpType || 'stream | sse';
+  const connectionType = options.mcpType || 'stream';
   const connectionDescription = options.mcpDescription || 'Direct SAP via JWT';
   const desiredAuthType = options.mcpAuthType
     ? String(options.mcpAuthType).toLowerCase()
@@ -1065,6 +1110,7 @@ abapConnection:
   direct:
     url: ${abapUrl}
     client: ${abapClient}
+    systemType: cloud    # x-sap-system-type: an ABAP Cloud system (declared by this template)
   auth:
     type: jwt
     token:
@@ -1124,6 +1170,7 @@ abapConnection:
   direct:
     url: ${abapUrl}
     client: ${abapClient}
+    systemType: cloud    # x-sap-system-type: an ABAP Cloud system (declared by this template)
   auth:
     type: jwt
     token:
@@ -1138,7 +1185,7 @@ function renderCloudDestinationTemplate(options = {}) {
     ? `  name: ${options.connectionName}\n`
     : '';
   const endpoint =
-    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/sse';
+    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/http';
   const mcpAlias = options.mcpTokenAlias || 'mcpXsuaa';
   const destinationName = options.destinationName || 'SAP_CLOUD_DEST';
   const mcpTokenBlock = mcpAlias
@@ -1158,7 +1205,7 @@ settingsPath: ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/
 ${cfBlock}${serviceKeysSection}mcpConnection:
 ${connectionNameLine}  endpoint: ${endpoint}
   definition:
-    type: sse
+    type: stream
     description: Cloud MCP → ABAP via Destination service
   auth:
     type: bearer
@@ -1290,6 +1337,12 @@ function buildConnectionConfigFromNewSchema(rawConfig, connectionName) {
     direct.client !== undefined ? direct.client : abap.client;
   if (directClient !== undefined) {
     sap.client = directClient;
+  }
+
+  const directSystemType =
+    direct.systemType !== undefined ? direct.systemType : abap.systemType;
+  if (directSystemType !== undefined) {
+    sap.systemType = directSystemType;
   }
 
   const directLanguage =
@@ -1541,7 +1594,8 @@ Options:
                         Register an additional service key JSON file for template auto-fill
   --mcp-app <name>       Resolve MCP endpoint via cf env <name> when printing a template
   --mcp-endpoint <url>   Override the MCP endpoint in template output
-  --mcp-type <type>      Override the MCP transport/type (e.g. streamableHttp | sse)
+  --mcp-type <type>      Override the MCP transport/type (default streamableHttp; the hub
+                        serves no SSE endpoint)
   --mcp-description <text>
                         Override the MCP connection description in templates
   --mcp-auth-type <type> Set MCP auth block (basic | header | bearer | jwt | none)
@@ -2659,8 +2713,13 @@ function removeSapDirectHeaders(headers, updated) {
     'x-sap-client',
     'x-sap-auth-type',
     'x-sap-jwt-token',
-    'x-sap-username',
+    'x-sap-login',
+    'x-sap-username', // legacy name older versions wrote
     'x-sap-password',
+    // A direct connection's declaration. Left on a destination connection it
+    // would outrank the destination's own SAP_SYSTEM_TYPE property; a type
+    // meant for the destination goes in the YAML `headers` block.
+    'x-sap-system-type',
   ].forEach((key) => {
     setHeaderValue(headers, key, undefined, updated);
   });
@@ -2811,6 +2870,11 @@ async function buildSapDirectConfig(sapConfig, context, options) {
   env.SAP_AUTH_TYPE = sapConfig.auth?.type
     ? String(sapConfig.auth.type).toLowerCase()
     : 'jwt';
+  if (sapConfig.systemType !== undefined) {
+    env.SAP_SYSTEM_TYPE = await resolveString(sapConfig.systemType, context, {
+      name: `${options.connection}.sap.systemType`,
+    });
+  }
 
   const overrides = {
     authType: env.SAP_AUTH_TYPE,
@@ -3317,4 +3381,9 @@ module.exports = {
   applySapConfigToHeaders,
   applyMcpAuth,
   applyDestinationHeaders,
+  buildConnectionConfigFromNewSchema,
+  convertDefinitionToClineConnection,
+  removeSapDirectHeaders,
+  TEMPLATE_RENDERERS,
+  TEMPLATE_ENDPOINT_SUFFIX,
 };

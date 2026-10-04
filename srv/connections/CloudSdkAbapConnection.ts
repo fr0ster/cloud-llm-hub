@@ -181,7 +181,24 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * so a connection built only to read or probe still costs one session. Every
    * connection we open must be closed, whatever it turned out to be used for.
    */
-  async closeSession(): Promise<void> {
+  closeSession(): Promise<void> {
+    // Single-flight. A request's teardown runs from BOTH the client's `close`
+    // listener and the handler's own `finally`, usually at once. Each call
+    // read the server-issued session before the other had dropped it, so each
+    // sent its own ICF logoff — two per request. A call made while a close is
+    // in flight joins it; a call made after it finds no session left.
+    if (!this.closing) {
+      this.closing = this.closeSessionOnce().finally(() => {
+        this.closing = null;
+      });
+    }
+    return this.closing;
+  }
+
+  /** The in-flight {@link closeSession}, joined by concurrent callers. */
+  private closing: Promise<void> | null = null;
+
+  private async closeSessionOnce(): Promise<void> {
     // Never between LOCK and UNLOCK: wait for the chain to finish first. The
     // write in between is short; no deadline on the wait.
     while (this.criticalSectionEnded) await this.criticalSectionEnded;
@@ -413,7 +430,33 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return this.inCriticalSection;
   }
 
+  /**
+   * End this connection for good: no request opens a session on it again.
+   *
+   * The request's teardown calls it (`safeStop`). Without it, an early client
+   * abort — after the teardown started, before the handler reached SAP — let
+   * the handler mint a fresh session that no later cleanup would close (the
+   * teardown runs once). A request already inside its critical section is
+   * not refused: the close waits for that section, as before.
+   */
+  close(): Promise<void> {
+    this.closed = true;
+    return this.closeSession();
+  }
+
+  private closed = false;
+
+  /** Refuse a request after {@link close}, unless it belongs to an open section. */
+  private refuseIfClosed(): void {
+    if (this.closed && !this.inCriticalSection) {
+      throw new Error(
+        `Connection to destination "${this.destinationName}" is closed: the request's teardown ended its ADT session, and nothing reopens it.`,
+      );
+    }
+  }
+
   async connect(): Promise<void> {
+    this.refuseIfClosed();
     // Pre-fetch CSRF token so the first POST doesn't need to fetch lazily.
     // Optional — refreshCsrf handles on-demand fetch if token is missing.
     await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
@@ -435,6 +478,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * @returns httpCode and a trimmed backend body/error snippet (rawMessage)
    */
   async probe(path: string): Promise<{ httpCode: number; rawMessage: string }> {
+    this.refuseIfClosed();
     const baseUrl = await this.getBaseUrl();
     this.enforceClientCookie();
     const cookie = this.getCookieHeader();
@@ -960,6 +1004,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
   async makeAdtRequest<T = any, D = any>(
     options: AbapRequestOptions,
   ): Promise<IAdtWireResponse<T, D>> {
+    this.refuseIfClosed();
     const { url, method, data, params, headers: optionHeaders } = options;
     const normalizedMethod = method.toUpperCase();
     // No deadline here, not even one the ADT client passes in `timeout`. A long

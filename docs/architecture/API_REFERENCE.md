@@ -470,12 +470,47 @@ from its own `x-sap-*` headers, so there is nothing to reset.
 
 **Credential Override:** For any destination type, you can override authentication by providing `X-SAP-Login` and `X-SAP-Password` headers. This is useful for testing or when destination-configured credentials need to be replaced.
 
-**Responsible person and master system:** ABAP objects are created with a responsible person and a master system, set per request and seen only by that request's run.
+### Responsible person and master system
 
-- `X-SAP-Responsible` (optional) - SAP user ID named as responsible; defaults to `X-SAP-Login`. Uppercased.
-- `X-SAP-Master-System` (optional) - master system (system ID) of created objects. Uppercased.
+**TL;DR:** a created object's responsible person is your uppercased `X-SAP-Login`. Send `X-SAP-Responsible` only to name someone else. A create that finds no responsible is refused before anything is sent.
 
-`/v1/chat/completions`, `/v1/messages` and `execute_step` read both headers and scope the values to the run. On an ABAP Cloud destination a missing responsible person or master system is filled from the system itself when a tool runs (`@mcp-abap-adt/lib` 10.2.0); on-premise a missing one stays unset.
+The values are set per request and seen only by that request's run — on every channel: `/mcp/stream/http`, `/v1/chat/completions`, `/v1/messages` and `execute_step`.
+
+| Header | Role | Notes |
+|---|---|---|
+| `X-SAP-Responsible` | Stated responsible — an explicit override | Optional. Uppercased. Wins over the login. |
+| `X-SAP-Login` | The login — the responsible when none is stated | Uppercased. Not used on a system declared `cloud` (see below). |
+| `X-SAP-Master-System` | Master system (system ID) of created objects | Optional. Uppercased. Left out of the request when not known. |
+
+**How the responsible is found** (`@mcp-abap-adt/lib` 16):
+
+1. `X-SAP-Responsible`, when sent;
+2. else, on a system that is not `cloud`: the uppercased `X-SAP-Login`;
+3. else, on a system declared `cloud` (raw MCP route only): the user and system ID the system reports at `/sap/bc/adt/core/http/systeminformation`.
+
+**No responsible → refused.** The tool answers `isError` with `"error": "system_context_missing"`. Nothing is sent to SAP: no POST, no LOCK, so no lock can be left behind. With per-user credentials (`X-SAP-Login` / `X-SAP-Password`) on a system that is not `cloud` this does not happen. The one exception is a message class: it is created with the system's own default responsible and is never refused.
+
+### System type
+
+**TL;DR:** the hub never guesses whether a system is on-premise or ABAP Cloud. It is declared, else `onprem`.
+
+The kind is the first of:
+
+1. the `X-SAP-System-Type` request header;
+2. the destination's `SAP_SYSTEM_TYPE` property — a BTP destination's additional property, or a field of a Cloud SDK `destinations` entry (see [LOCAL_RUN.md](../development/LOCAL_RUN.md));
+3. `onprem`.
+
+Values: `onprem`, `cloud`, `legacy` (an older on-premise system). Case-insensitive.
+
+- **An unknown value is refused**, never defaulted: `400` with `INVALID_SYSTEM_TYPE` on `/mcp/stream/http` and `/v1/*`, a tool error on `execute_step`. An unknown destination property fails that destination's resolution (`502`, naming the destination and the property).
+- **Nothing else decides it** — not the destination's `ProxyType`, not the authentication, not `X-SAP-URL`.
+
+What the kind changes:
+
+- **Raw MCP route:** which tools are listed (on-premise-only tools such as `CreateProgram`), how a missing responsible is found (above), and — for a direct `X-SAP-URL` connection — the connector: `cloud` → `AdtCloudConnector`, otherwise `AdtOnPremConnector`.
+- **Agent channels** (`/v1/*`, `execute_step`): the value is checked and logged. The embedded tool handlers run every destination as on-premise, so the login is the responsible there.
+
+The SAP client follows the same precedence: `X-SAP-Client` overrides the destination's `sap-client`.
 
 **Example (standard destination):**
 
@@ -506,8 +541,9 @@ curl -X POST \
 - `X-SAP-Auth-Type: jwt|basic` (required)
 - `X-SAP-JWT-Token: <token>` (for JWT)
 - OR `X-SAP-Login: <username>` and `X-SAP-Password: <password>` (for Basic)
+- `X-SAP-System-Type: onprem|cloud|legacy` (optional, default `onprem`) — picks the connector. A direct connection to ABAP Cloud must send `cloud`.
 
-**Description:** Direct connection to SAP system without Destination service.
+**Description:** Direct connection to SAP system without Destination service. The session is logged off when the request ends — after any open LOCK..UNLOCK chain has finished, also when the client disconnects.
 
 **Use Cases:**
 
@@ -521,6 +557,7 @@ curl -X POST \
 curl -H "Authorization: Basic YWxpY2U6" \
      -H "X-SAP-URL: https://sap.example.com" \
      -H "X-SAP-Client: 200" \
+     -H "X-SAP-System-Type: cloud" \
      -H "X-SAP-Auth-Type: jwt" \
      -H "X-SAP-JWT-Token: <sap-jwt-token>" \
      http://localhost:4004/mcp/stream/http
@@ -561,6 +598,7 @@ All endpoints return errors in the following format:
 | `FORBIDDEN`           | 403    | Insufficient permissions          |
 | `NOT_FOUND`           | 404    | Resource not found                |
 | `BAD_REQUEST`         | 400    | Invalid request parameters        |
+| `INVALID_SYSTEM_TYPE` | 400    | `X-SAP-System-Type` is not `onprem`, `cloud` or `legacy` |
 | `INTERNAL_ERROR`      | 500    | Internal server error             |
 | `BAD_GATEWAY`         | 502    | MCP server connection failed      |
 | `SERVICE_UNAVAILABLE` | 503    | Service temporarily unavailable   |

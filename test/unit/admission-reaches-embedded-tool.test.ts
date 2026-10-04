@@ -154,78 +154,83 @@ afterAll(async () => {
 
 describe('an admitted pipeline built by getSmartAgent', () => {
   it('registers its embedded tool call, runs it in the request scope, and drain waits for it', async () => {
-    // `getSmartAgent` races the destination's initialisation against a bounded
-    // wait whose timer it never clears. Unref'd for this call only, so the
-    // timer cannot keep Jest running for the rest of that wait.
+    // llm-agent-libs' tool loop (`executeToolBatchWithHeartbeat`,
+    // tool-loop-core.js) races each tool batch against a `heartbeatMs` (5 s)
+    // timer and never clears the loser, so it would keep Jest's worker alive
+    // after the suite ("A worker process has failed to exit gracefully"). That
+    // timer lives outside this repository; it is unref'd for this test only,
+    // which changes nothing about its behaviour.
     const realSetTimeout = global.setTimeout;
     const unrefTimers = jest
       .spyOn(global, 'setTimeout')
       .mockImplementation(((...args: Parameters<typeof setTimeout>) =>
         realSetTimeout(...args).unref()) as typeof setTimeout);
-    const handle = await manager
-      .getSmartAgent(undefined, 'DEST')
-      .finally(() => unrefTimers.mockRestore());
+    try {
+      const handle = await manager.getSmartAgent(undefined, 'DEST');
 
-    const admission = await gatekeeper.admitPipeline('alice', 's-1');
-    if (!('admitted' in admission)) throw new Error('not admitted');
-    const session = admission.admitted;
+      const admission = await gatekeeper.admitPipeline('alice', 's-1');
+      if (!('admitted' in admission)) throw new Error('not admitted');
+      const session = admission.admitted;
 
-    // Every group, so authorization is not what decides this test.
-    const exposition = [...HANDLER_GROUPS];
-    const connection = { closeSession: async () => {}, reset: () => {} };
-    mockTool.hold();
+      // Every group, so authorization is not what decides this test.
+      const exposition = [...HANDLER_GROUPS];
+      const connection = { closeSession: async () => {}, reset: () => {} };
+      mockTool.hold();
 
-    const running = session.run(() =>
-      manager.runWithRequestConnection(
-        connection as never,
-        // The same nesting the channels use: the request scope inside the
-        // connection scope, inside the admission.
-        () =>
-          runWithRequestSystem(
-            { responsible: 'ALICE', masterSystem: 'DEV' },
-            () =>
-              handle.agent.process(
-                [
+      const running = session.run(() =>
+        manager.runWithRequestConnection(
+          connection as never,
+          // The same nesting the channels use: the request scope inside the
+          // connection scope, inside the admission.
+          () =>
+            runWithRequestSystem(
+              { responsible: 'ALICE', masterSystem: 'DEV' },
+              () =>
+                handle.agent.process(
+                  [
+                    {
+                      role: 'user',
+                      content: 'Read the source of class ZCL_FAKE',
+                    },
+                  ],
                   {
-                    role: 'user',
-                    content: 'Read the source of class ZCL_FAKE',
-                  },
-                ],
-                {
-                  sessionId: 's-1',
-                  trace: { traceId: 'trace-1' },
-                  ragFilter: { exposition },
-                  signal: session.signal,
-                } as never,
-              ),
-          ),
-        undefined,
-        exposition,
-      ),
-    );
+                    sessionId: 's-1',
+                    trace: { traceId: 'trace-1' },
+                    ragFilter: { exposition },
+                    signal: session.signal,
+                  } as never,
+                ),
+            ),
+          undefined,
+          exposition,
+        ),
+      );
 
-    // The real chain — coordinator, executor worker, MCP adapter,
-    // invokeEmbeddedTool — reached the embedded handler.
-    expect(await until(() => mockTool.calls.length > 0)).toBe(true);
-    // And lib saw this request's responsible person and master system there,
-    // not the process-wide context.
-    expect(await until(() => mockTool.seen.length > 0)).toBe(true);
-    expect(mockTool.seen[0]).toEqual({ systemID: 'DEV', userName: 'ALICE' });
+      // The real chain — coordinator, executor worker, MCP adapter,
+      // invokeEmbeddedTool — reached the embedded handler.
+      expect(await until(() => mockTool.calls.length > 0)).toBe(true);
+      // And lib saw this request's responsible person and master system there,
+      // not the process-wide context.
+      expect(await until(() => mockTool.seen.length > 0)).toBe(true);
+      expect(mockTool.seen[0]).toEqual({ systemID: 'DEV', userName: 'ALICE' });
 
-    let drained = false;
-    const drain = session.drain().then(() => {
-      drained = true;
-    });
-    await tick();
-    await tick();
-    // Registered: the write is still out, so teardown must not go on to safeStop.
-    expect(drained).toBe(false);
+      let drained = false;
+      const drain = session.drain().then(() => {
+        drained = true;
+      });
+      await tick();
+      await tick();
+      // Registered: the write is still out, so teardown must not go on to safeStop.
+      expect(drained).toBe(false);
 
-    mockTool.release();
-    const result = await running;
-    await drain;
-    expect(drained).toBe(true);
-    expect(result.ok).toBe(true);
-    session.release();
+      mockTool.release();
+      const result = await running;
+      await drain;
+      expect(drained).toBe(true);
+      expect(result.ok).toBe(true);
+      session.release();
+    } finally {
+      unrefTimers.mockRestore();
+    }
   }, 60_000);
 });

@@ -20,6 +20,7 @@ abapConnection:
   direct:
     url: https://my.sap.system.example.com
     client: 100
+    systemType: cloud    # x-sap-system-type: an ABAP Cloud system (declared by this template)
   auth:
     type: jwt
     token:

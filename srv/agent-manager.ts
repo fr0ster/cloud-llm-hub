@@ -9,7 +9,9 @@
  * - LLM: SAP AI Core via sap-ai-sdk provider
  * - MCP: Embedded EmbeddableMcpServer (in-process, no HTTP overhead)
  * - RAG: FallbackRag(VectorRag → InMemoryRag) with CircuitBreakerEmbedder
- * - RAG quality: LlmQueryExpander (synonym expansion) + LlmReranker (semantic re-scoring)
+ * - RAG query: the tools store translates a query to English first
+ *   (TranslatePreprocessor on the classifier-model LLM); no query expander and
+ *   no reranker are wired — retrieval is the store's own vector top-K
  * - Resilience: CircuitBreaker for LLM + embedder failures
  * - No tool-result cache: the MCP server owns caching. SessionManager keeps the token budget
  * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
@@ -2677,11 +2679,21 @@ export async function getSmartAgent(
       status: destinationStates.get(destName)?.status ?? 'unknown',
       waitMs,
     });
-    await Promise.race([
-      // Swallow init errors here; the state re-read below decides the outcome.
-      ensureDestinationInit(destName).catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, waitMs)),
-    ]);
+    // The bound's timer is cleared once the race is decided: left running it
+    // held the process (and Jest's workers) for the rest of `waitMs`, 90 s by
+    // default, after every init that finished in time.
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        // Swallow init errors here; the state re-read below decides the outcome.
+        ensureDestinationInit(destName).catch(() => undefined),
+        new Promise((resolve) => {
+          bound = setTimeout(resolve, waitMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(bound);
+    }
     handle = agentHandles.get(destName);
     if (handle) {
       return handle;

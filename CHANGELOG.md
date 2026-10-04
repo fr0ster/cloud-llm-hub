@@ -4,6 +4,114 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Migration
+
+What a consumer on the old contract must do:
+
+- **A create needs a responsible person, or it is refused.** `@mcp-abap-adt/lib`
+  16 answers `"error": "system_context_missing"` and sends nothing (no POST, no
+  LOCK). Before, the create went out without `adtcore:responsible` and SAP used
+  the logon user. The responsible is `x-sap-responsible`, else the uppercased
+  `x-sap-login` — so a caller with per-user credentials needs no change. A
+  caller on a destination with its own credentials and no `x-sap-login` must
+  now send `x-sap-responsible`.
+- **The system type is no longer guessed from the destination's proxy type.**
+  An `Internet` destination used to count as ABAP Cloud on the raw MCP route.
+  Now the type is declared — `x-sap-system-type`, else the destination's
+  `SAP_SYSTEM_TYPE` property — or it is `onprem`. An Internet destination that
+  points at an **ABAP Cloud** system must add the destination property
+  `SAP_SYSTEM_TYPE=cloud` (or callers send `x-sap-system-type: cloud`).
+  Otherwise the cloud-only tools are hidden and the system's own user is not
+  looked up as the responsible.
+- **Conversely, an undeclared Internet destination is now on-premise** on the
+  raw MCP route: it lists the on-premise-only tools (e.g. `CreateProgram`)
+  that it hid before, and a create's responsible is the login. Every
+  undeclared ABAP Cloud system must declare `SAP_SYSTEM_TYPE=cloud`.
+- **Direct (`x-sap-url`) connections are on-premise unless declared.** A JWT
+  no longer makes one cloud: a direct connection to ABAP Cloud must send
+  `x-sap-system-type: cloud`, which also picks the cloud connector.
+  `tools/update-cline-connection.js` declares it: the `direct-jwt` and
+  `cloud-internet` templates now carry `systemType: cloud` (`direct-basic`
+  carries `onprem`); regenerate a playbook made from them, or add the key. In
+  CLI mode pass `--sap-system-type` or set `SAP_SYSTEM_TYPE` in `.env`.
+- **An unknown `x-sap-system-type` is refused** (`400 INVALID_SYSTEM_TYPE`; a
+  tool error on `execute_step`). An unknown `SAP_SYSTEM_TYPE` destination
+  property fails that destination (`502`); in a `destinations` env entry it
+  stops the start.
+- **Embedders of `createConnection`** (`srv/connections/connectionFactory.ts`):
+  a direct connection now takes a required `systemType`; the unused
+  `tokenRefresher` option is gone.
+
+### Changed
+
+- **`@mcp-abap-adt/lib` 16.0.0, `@mcp-abap-adt/connection` 10.0.3.** The
+  credential providers moved to `@mcp-abap-adt/auth-providers` 5 (now a
+  declared dependency): Basic → `BasicAuthProvider`, JWT →
+  `TokenAuthProvider.fixed`. `@mcp-abap-adt/interfaces-auth` is no longer
+  declared — nothing here imports it (lib's family uses 3.x, llm-agent 30 keeps
+  2.x as its own). The tool definitions are unchanged; the tool corpus is not
+  regenerated.
+- **Responsible person, in lib 16's terms.** `x-sap-responsible` is the stated
+  responsible; the uppercased `x-sap-login` is passed as lib's `login`, which
+  lib uses when none is stated on a system that is not `cloud`. On-premise the
+  created object's responsible is unchanged: the uppercased login.
+- **System type is declared, never inferred** (`srv/lib/system-type.ts`, one
+  rule for every channel): `x-sap-system-type` → destination property
+  `SAP_SYSTEM_TYPE` → `onprem`. On the raw MCP route it picks the exposed tools,
+  the responsible lookup and the direct connector. The SAP client keeps the
+  same precedence: `x-sap-client` over the destination's `sap-client`.
+
+### Fixed
+
+- **The raw MCP route (`/mcp/stream/http`) now runs inside the request's system
+  scope**, like the agent channels: it honours `x-sap-responsible`,
+  `x-sap-login` and `x-sap-master-system`. Without this every create on it
+  would be refused under lib 16.
+- **Direct (`x-sap-url`) connections are logged off.** The direct connectors
+  have no `closeSession`; the cleanup now ends their session (`endSession()`),
+  so it — and a lock it kept — no longer lives until SAP's timeout. The
+  logoff waits for an open LOCK..UNLOCK chain: a client abort never cuts a
+  write chain (connection 10's `disconnect()` alone would refuse the chain's
+  UNLOCK).
+- **`tools/update-cline-connection.js` writes `x-sap-login` for Basic auth.**
+  It wrote `x-sap-username`, which neither the hub nor header-validator reads,
+  so every direct-basic configuration it produced was refused ("Basic
+  authentication requires x-sap-login and x-sap-password headers"). A stale
+  `x-sap-username` is removed on the next run.
+- **`tools/update-cline-connection.js` templates point at Stream-HTTP.** The
+  `direct-basic` and `cloud-destination` templates (and their copies in
+  `docs/templates/mcp-config/`) used `/mcp/stream/sse` with `type: sse`, an
+  endpoint the hub does not serve; they now use `/mcp/stream/http` with
+  `type: stream` (Cline `streamableHttp`), like the other two. The
+  `direct-jwt` default type is `stream` instead of the placeholder
+  `stream | sse`. Regenerate a playbook made from those templates.
+- **One ICF logoff per request.** A request's teardown runs from both the
+  client's `close` listener and the handler's `finally`; on a destination
+  connection each sent its own logoff (about 100 ms extra per request).
+  `CloudSdkAbapConnection.closeSession()` is now single-flight and the raw
+  route's cleanup runs once. It still waits for an open LOCK..UNLOCK.
+- **Nothing reopens a session after the teardown.** An early client abort
+  ran the destination connection's close before the handler reached SAP; the
+  handler then minted a fresh session that no cleanup closed.
+  `CloudSdkAbapConnection.close()` (called by the teardown) now refuses new
+  requests, except those of a LOCK..UNLOCK section still open, which the
+  close waits for. A direct connector's teardown starts in the same step as
+  its last "no section open" check, so no section can open in between.
+- **`getSmartAgent`'s bounded wait clears its timer.** After an init that
+  finished in time the timer ran on for the rest of
+  `LLM_AGENT_DESTINATION_INIT_WAIT_MS` (90 s by default).
+- **`tools/update-cline-connection.js` drops `x-sap-system-type` when it
+  switches a connection to a destination**: the header outranks the
+  destination's own `SAP_SYSTEM_TYPE`. Pass `--sap-system-type` (CLI) or the
+  YAML `headers` block to keep one.
+- **Raw MCP route error bodies name their status.** A refused request read
+  `Internal Server Error: …` whatever its status; it now reads
+  `Bad Request: …`, `Unauthorized: …` and so on.
+- **Raw MCP route setup ends what it opened.** A caller with no MCP role is
+  refused before a connection is built; a setup failure after `connect()`
+  ends the session. A refused
+  Basic logon is one request and an `AuthRefusedError` (connection 10).
+
 ## [6.38.0] - 2026-10-03
 
 ### Changed

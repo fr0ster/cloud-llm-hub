@@ -30,7 +30,11 @@ import {
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
-import { formatErrorMessage, logErrorSafely } from './lib/errorUtils';
+import {
+  formatErrorMessage,
+  httpErrorText,
+  logErrorSafely,
+} from './lib/errorUtils';
 import {
   deleteSession,
   forgetEmptySessions,
@@ -98,7 +102,10 @@ function isMcpRequestBody(body: unknown): body is {
  * @param req - HTTP request
  * @param res - HTTP response
  */
-async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
+export async function handleStreamHTTP(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const log = cds.log('mcp-proxy/stream-http');
   let body: unknown = null;
   let cleanup: (() => Promise<void>) | null = null;
@@ -173,9 +180,10 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
       }
     });
 
-    // Handle HTTP request through transport
+    // Handle HTTP request through transport, inside this request's system
+    // scope (responsible / login / master system) like the agent channels.
     try {
-      await result.transport.handleRequest(req, res, body);
+      await result.handle(req, res, body);
     } catch (transportError: unknown) {
       const errorObj = transportError as {
         message?: string;
@@ -222,7 +230,7 @@ async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
       };
       const statusCode = err?.response?.status || err?.statusCode || 500;
       const userMessage = formatErrorMessage(error);
-      res.writeHead(statusCode).end(`Internal Server Error: ${userMessage}`);
+      res.writeHead(statusCode).end(httpErrorText(statusCode, userMessage));
     } else {
       res.end();
     }

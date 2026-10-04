@@ -48,6 +48,8 @@ defaultHeaders:
   x-sap-client: "<client>"                   # optional, e.g. 100
   x-sap-login: "${SAP_LOGIN}"
   x-sap-password: "${SAP_PASSWORD}"
+  # x-sap-responsible: "<SAP user>"         # optional: created objects' responsible
+                                            # (default: your x-sap-login, uppercased)
 
 browser: "system"          # open the OAuth login in your default browser — leave as-is
 browserAuthPort: 7778      # local port for the OAuth redirect — see "Good to know"

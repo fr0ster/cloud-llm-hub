@@ -62,17 +62,37 @@
 
 **How it works:**
 
-`createAbapConnection` is gone (removed in connection 6.0). The caller picks the connector by auth
-type — see `srv/connections/connectionFactory.ts`:
+`createAbapConnection` is gone (removed in connection 6.0). Taking the connector class is how
+`@mcp-abap-adt/connection` is told which system it dials, so the hub picks it from the DECLARED
+system type (`x-sap-system-type`, default `onprem` — `srv/lib/system-type.ts`), never from the
+credential — see `srv/connections/connectionFactory.ts`:
 
-- **Basic** → `AdtOnPremConnector` + `BasicAuthProvider` + `OnPremHttpTransport`
-- **JWT** → `AdtCloudConnector` + `TokenAuthProvider` + `CloudHttpTransport`
+- **`onprem` / `legacy`** → `AdtOnPremConnector` + `OnPremHttpTransport`
+- **`cloud`** → `AdtCloudConnector` + `CloudHttpTransport`
+
+The credential comes from `@mcp-abap-adt/auth-providers` 5 (connection 10 moved the providers
+there):
+
+- **Basic** → `BasicAuthProvider`
+- **JWT** → `TokenAuthProvider.fixed(token)` — no refresher; the client sends a valid token on
+  every request
 - **anything else** → throws (use a BTP destination)
 
+When the request ends — or the client aborts — `safeStop` calls the connector's `endSession()`
+(`srv/connections/directConnectors.ts`): it **waits for an open critical section**
+(LOCK..UNLOCK) to end, then calls `disconnect()`, which sends the logoff. connection 10's
+`disconnect()` alone shuts admission at once and would refuse a chain's UNLOCK; a client disconnect
+must never cut a write chain. `endSession()` starts the teardown in the same synchronous step as
+its last "no section open" check, so no section can open in between.
+`CloudSdkAbapConnection.closeSession()` waits the same way; the teardown calls its `close()`, which
+also refuses any later request outside an open section, so nothing reopens a session after it. A
+refused Basic logon is one request and an `AuthRefusedError` (connection 10 no longer retries a
+401 during establishment).
+
 ```typescript
+import { BasicAuthProvider } from '@mcp-abap-adt/auth-providers';
 import {
   AdtOnPremConnector,
-  BasicAuthProvider,
   OnPremHttpTransport,
   type SapConfig,
 } from '@mcp-abap-adt/connection';
@@ -357,9 +377,11 @@ systems (the on-premise leak) the release did not give the session back and the 
 > nothing for a lock to be bound to and nothing to release. Reads are unaffected; mutating chains
 > are the exposure. This is a present gap in a supported configuration, not a risk to plan for.
 
-`systemType` in `mcp-manager.ts` **is** derived automatically, from `destination.proxyType` — but
-it selects which *tools* to expose (on-prem-only tools such as `CreateProgram`), and has nothing to
-do with how a session is released.
+`systemType` in `mcp-manager.ts` is **declared, never derived**: the `x-sap-system-type` header,
+else the destination's `SAP_SYSTEM_TYPE` property, else `onprem` (`srv/lib/system-type.ts`). It
+selects which *tools* to expose (on-prem-only tools such as `CreateProgram`) and, in lib 16, whether
+a create asks the system for its responsible (`cloud`). For a destination connection it has nothing
+to do with how a session is released.
 
 **Only ever log off while holding the session cookie.** The session limit is per USER and the pool
 is shared with that user's SAP GUI logons, so a connector that tidied up sessions it did not open

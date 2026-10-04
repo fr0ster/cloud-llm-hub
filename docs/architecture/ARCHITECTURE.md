@@ -354,7 +354,8 @@ graph TD
 | **Honesty Reviewer** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer,step-gate,write-guardrail}.ts` | Result-based honesty guard (v6.28+). `recording-mcp-client.ts` decorates `IMcpClient` to capture each tool's `McpToolResult` per `traceId`; `reviewer-core.ts` + `notice-finalizer.ts` implement `IFinalizer`/`NoticeFinalizer` comparing response claims against captured results; `notify-policy.ts` decides notice wording; `step-reviewer.ts` provides `evaluateGated`, which `NoticeFinalizer` invokes: a deterministic check (claims vs. tool RESULTS, plus a read claimed with zero calls) and, on every step, an LLM reviewer asking only whether the response delivered what the USER asked — it is forbidden to reason about tools, since every false notice came from doing so; `write-guardrail.ts` checks the write tool's result envelope. The controller wiring itself lives in `agent-manager.ts` (`buildAgentForDestination` → `builder.withDagCoordinator({ …, finalizer: new NoticeFinalizer(recMcp, …) })`). Kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`. |
 | **Agent Config** | `agent-config.ts` | Singleton that assembles runtime config from `LLM_AGENT_*` env vars: provider/auth (`LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`, `LLM_AGENT_BASE_URL`, `LLM_AGENT_RESOURCE_GROUP`), model params (`LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`), agent behaviour (`LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_HISTORY_RECENCY_WINDOW`), and MCP wiring (`LLM_AGENT_MCP_DESTINATION`, `LLM_AGENT_MCP_ENDPOINT`). Also reads the AI Core service binding from `VCAP_SERVICES`. See §12 for per-var semantics. |
 | **Auth Service** | `auth.ts` + `.cds` | Standalone CAP OData service annotated `@path: 'auth'` (mounted at `/odata/v4/auth/`). `CheckAuth()` returns the caller's identity, `CheckRoles(required)` reports which roles they hold — a **diagnostic/introspection endpoint** clients can call directly. It is **not** in the `/mcp/*` or `/v1/*` request path — those are gated by `server.ts`'s `requireMcpRole` middleware (`user.is()`), not by this service. |
-| **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → direct connector: Basic → `AdtOnPremConnector` + `BasicAuthProvider` + `OnPremHttpTransport`; JWT → `AdtCloudConnector` + `TokenAuthProvider` + `CloudHttpTransport`; any other auth type throws. |
+| **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → the direct connector for the DECLARED system type (`lib/system-type.ts`, default `onprem`): `cloud` → `AdtCloudConnector` + `CloudHttpTransport`, otherwise `AdtOnPremConnector` + `OnPremHttpTransport`. The credential follows the auth type, from `@mcp-abap-adt/auth-providers`: Basic → `BasicAuthProvider`, JWT → `TokenAuthProvider.fixed`; any other auth type throws. |
+| **System Type** | `lib/system-type.ts` | The one rule for the system kind, used by every channel: `x-sap-system-type` header → destination property `SAP_SYSTEM_TYPE` → `onprem`. Unknown values are refused (`INVALID_SYSTEM_TYPE`, 400). Never inferred from `ProxyType`, auth or URL. |
 | **CloudSdk Connection** | `connections/CloudSdkAbapConnection.ts` | `AbapConnection` implementation using `executeHttpRequest` from SAP Cloud SDK. Auto destination resolution, auth, proxy, CSRF token management. |
 | **Destination Resolver** | `connections/destinationResolver.ts` | Resolves BTP Destination to `SapConfig` via `getDestination()`. Handles `BasicAuthentication`, `OAuth2ClientCredentials`, `OAuth2SAMLBearerAssertion`. |
 | **Connectivity Proxy** | `connections/connectivityProxy.ts` | Reads the connectivity request headers only: `shouldUseConnectivity()` (`x-sap-connectivity-mode: onprem`) and `extractConnectivityContext()` (location ID, principal). On-prem traffic itself goes through `CloudSdkAbapConnection`. |
@@ -436,8 +437,8 @@ graph TB
         mcp_adt_hv["@mcp-abap-adt/header-validator"]
         mcp_adt_iface_adt["@mcp-abap-adt/interfaces-adt-connection
         IAbapConnection, IAdtWireResponse"]
-        mcp_adt_iface_auth["@mcp-abap-adt/interfaces-auth
-        ITokenRefresher"]
+        mcp_adt_auth_providers["@mcp-abap-adt/auth-providers
+        BasicAuthProvider, TokenAuthProvider"]
         mcp_adt_iface_net["@mcp-abap-adt/interfaces-network
         HEADER_* constants"]
         mcp_adt_iface_utils["@mcp-abap-adt/interfaces-utils
@@ -567,7 +568,7 @@ graph TB
     conn_factory --> cloud_sdk_conn
     conn_factory --> mcp_adt_conn
     conn_factory --> mcp_adt_iface_adt
-    conn_factory --> mcp_adt_iface_auth
+    conn_factory --> mcp_adt_auth_providers
     conn_factory --> logger_mod
 
     %% CloudSdkAbapConnection.ts dependencies
@@ -878,11 +879,15 @@ graph TB
 
     subgraph "Direct Path"
         DIRECT_PATH --> HV[header-validator<br/>validateAuthHeaders]
-        HV --> DIRECT_AUTH{Auth?}
+        HV --> DIRECT_KIND{x-sap-system-type?<br/>default onprem}
 
-        DIRECT_AUTH -->|Basic| BASIC_CONN[AdtOnPremConnector<br/>BasicAuthProvider + OnPremHttpTransport]
-        DIRECT_AUTH -->|JWT| JWT_CONN[AdtCloudConnector<br/>TokenAuthProvider + CloudHttpTransport]
-        DIRECT_AUTH -->|other| NO_CONN[throws<br/>use a BTP destination]
+        DIRECT_KIND -->|onprem / legacy| BASIC_CONN[AdtOnPremConnector<br/>OnPremHttpTransport]
+        DIRECT_KIND -->|cloud| JWT_CONN[AdtCloudConnector<br/>CloudHttpTransport]
+        BASIC_CONN --> CRED{Auth?}
+        JWT_CONN --> CRED
+        CRED -->|Basic| BASIC_CRED[BasicAuthProvider]
+        CRED -->|JWT| JWT_CRED[TokenAuthProvider.fixed]
+        CRED -->|other| NO_CONN[throws<br/>use a BTP destination]
     end
 
     style DEST_PATH fill:#2563eb,color:#fff
@@ -921,14 +926,16 @@ classDiagram
 
     class AdtOnPremConnector {
         <<from @mcp-abap-adt/connection>>
-        -auth: BasicAuthProvider
+        +credential: BasicAuthProvider | TokenAuthProvider
         -transport: OnPremHttpTransport
+        +endSession() waits for LOCK..UNLOCK, then disconnect()
     }
 
     class AdtCloudConnector {
         <<from @mcp-abap-adt/connection>>
-        -auth: TokenAuthProvider
+        +credential: BasicAuthProvider | TokenAuthProvider
         -transport: CloudHttpTransport
+        +endSession() waits for LOCK..UNLOCK, then disconnect()
     }
 
     AbapConnection <|.. CloudSdkAbapConnection
@@ -1077,9 +1084,9 @@ graph TB
     VCAP -->|destination credentials| DR2
     DEF_ENV -->|VCAP_SERVICES mock| DR2
     DOT_ENV -->|LLM keys| ES
-    HEADERS -->|X-SAP-Destination<br/>X-SAP-URL, Authorization| MM2
-    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client, x-sap-responsible,<br/>x-sap-master-system| RC
-    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>x-sap-responsible, x-sap-master-system,<br/>Authorization| AM
+    HEADERS -->|X-SAP-Destination<br/>X-SAP-URL, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client, x-sap-system-type,<br/>x-sap-responsible, x-sap-master-system| MM2
+    HEADERS -->|x-sap-destination, Authorization,<br/>x-sap-login, x-sap-password,<br/>x-sap-client, x-sap-system-type,<br/>x-sap-responsible, x-sap-master-system| RC
+    HEADERS -->|x-sap-destination, x-sap-login,<br/>x-sap-password, x-sap-client,<br/>x-sap-system-type, x-sap-responsible,<br/>x-sap-master-system, Authorization| AM
     RC -->|resolveDestinationSapConfig| DR2
     MM2 -->|resolveDestinationSapConfig| DR2
     AM -->|resolveDestinationSapConfig| DR2
@@ -1127,8 +1134,11 @@ graph TB
 | `Authorization` | Bearer JWT or Basic auth for XSUAA |
 | `X-SAP-Destination` | BTP Destination name → triggers CloudSdkAbapConnection |
 | `X-SAP-URL` | Direct SAP system URL (no destination) |
-| `X-SAP-Client` | SAP client number |
-| `X-SAP-Login` / `X-SAP-Password` | Override destination auth with Basic |
+| `X-SAP-Client` | SAP client number; overrides the destination's `sap-client` |
+| `X-SAP-Login` / `X-SAP-Password` | Override destination auth with Basic; the uppercased login is the created objects' responsible (lib 16 `login`) |
+| `X-SAP-Responsible` | Stated responsible person; overrides the login |
+| `X-SAP-Master-System` | Master system of created objects |
+| `X-SAP-System-Type` | `onprem` \| `cloud` \| `legacy`; overrides the destination's `SAP_SYSTEM_TYPE`; default `onprem`; unknown → 400 |
 | `X-SAP-Connectivity-Mode` | `onprem` to route through Cloud Connector |
 | `X-SAP-Connectivity-Location-ID` | Cloud Connector location ID |
 | `X-Rag-Collections` | Comma-separated RAG collection names to include in agent context |
@@ -1144,7 +1154,7 @@ graph TB
         CONN_PKG["@mcp-abap-adt/connection<br/>AbapConnection, SapConfig,<br/>AdtOnPremConnector, AdtCloudConnector"]
         HV_PKG["@mcp-abap-adt/header-validator<br/>validateAuthHeaders"]
         IFACE_ADT["@mcp-abap-adt/interfaces-adt-connection<br/>IAbapConnection, IAdtWireResponse"]
-        IFACE_AUTH["@mcp-abap-adt/interfaces-auth<br/>ITokenRefresher"]
+        AUTH_PROVIDERS["@mcp-abap-adt/auth-providers<br/>BasicAuthProvider, TokenAuthProvider"]
         IFACE_NET["@mcp-abap-adt/interfaces-network<br/>HEADER_* constants"]
         IFACE_UTILS["@mcp-abap-adt/interfaces-utils<br/>ILogger"]
         AICORE_AUTH["@mcp-abap-adt/sap-aicore-auth<br/>serviceKeyCredential"]
@@ -1429,7 +1439,12 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
   admitted later.
 - **Responsible person and master system.** Resolved per request once admitted
   and delivered through lib's `RequestContext`, so each run sees only its own
-  (`srv/lib/request-system-context.ts`), from the caller's `x-sap-*` headers.
+  (`srv/lib/request-system-context.ts`), from the caller's `x-sap-*` headers:
+  `x-sap-responsible` is the stated responsible, the uppercased `x-sap-login` is
+  lib 16's `login` (the responsible when none is stated). The raw MCP route
+  enters the same scope around the transport (`McpServerResult.handle` in
+  `mcp-manager.ts`). A create with no responsible is refused by lib
+  (`system_context_missing`) before any request.
 - **Closed destinations.** Every channel refuses a closed destination before
   attempting a connection to it.
 - **Startup.** The `LLM_GATEKEEPER_*` variables are validated in `bootstrap`; a

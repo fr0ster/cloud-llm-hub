@@ -23,8 +23,8 @@ LGPL-3.0-only
   @mcp-abap-adt/auth-broker       and auth-providers, auth-stores
   @mcp-abap-adt/header-validator
   @mcp-abap-adt/interfaces-adt    and interfaces-adt-connection, interfaces-auth,
-                                  interfaces-auth-sap, interfaces-network,
-                                  interfaces-utils
+                                  interfaces-auth-broker, interfaces-auth-sap,
+                                  interfaces-network, interfaces-utils
 
 GPL-3.0-only, development only
 

@@ -31,6 +31,11 @@ import {
   gatekeeperConfig,
 } from './lib/gatekeeper-config';
 import {
+  DESTINATION_SYSTEM_TYPE_PROPERTY,
+  parseSystemType,
+  type SystemType,
+} from './lib/system-type';
+import {
   DEFAULT_MAX_THROTTLE_WAIT_MS,
   WaitIfShortEnough,
 } from './lib/throttle-strategy';
@@ -66,6 +71,8 @@ export interface EnvDestination {
   proxyType: string;
   authentication: string;
   sapClient?: string;
+  /** The entry's `SAP_SYSTEM_TYPE` field; the request edge reads it back from the Cloud SDK. */
+  systemType?: SystemType;
 }
 export type DestinationConfig =
   | { source: 'btp' }
@@ -324,6 +331,23 @@ export function parseDestinationMapping(
   return mapping;
 }
 
+/**
+ * A field by name, matched case-insensitively and stringified — the lookup the
+ * request-time resolver applies to the same entry (`getCaseInsensitive` in
+ * `destinationResolver.ts`), so a value that would be refused per request is
+ * refused here, at startup.
+ */
+function pickAnyCase(
+  o: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const wanted = key.toLowerCase();
+  const hit =
+    key in o ? key : Object.keys(o).find((k) => k.toLowerCase() === wanted);
+  const v = hit === undefined ? undefined : o[hit];
+  return v === undefined || v === null ? undefined : String(v);
+}
+
 function pick(
   o: Record<string, unknown>,
   ...keys: string[]
@@ -375,6 +399,11 @@ export function parseDestinationConfig(
     if (!name || !url)
       throw new Error(`destinations[${i}] needs a name and a url`);
     const sapClient = pick(o, 'sapClient', 'sap-client');
+    // Checked here so a typo stops the start, not the first request.
+    const systemType = parseSystemType(
+      pickAnyCase(o, DESTINATION_SYSTEM_TYPE_PROPERTY),
+      `destinations[${i}] (${name}) field ${DESTINATION_SYSTEM_TYPE_PROPERTY}`,
+    );
     return {
       name,
       url,
@@ -382,6 +411,7 @@ export function parseDestinationConfig(
       authentication:
         pick(o, 'authentication', 'Authentication') ?? 'NoAuthentication',
       ...(sapClient ? { sapClient } : {}),
+      ...(systemType ? { systemType } : {}),
     };
   });
   return { source: 'env', destinations };

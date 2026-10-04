@@ -93,6 +93,7 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - An **OpenAI-compatible chat endpoint** (`POST /v1/chat/completions`) and an **Anthropic Messages API endpoint** (`POST /v1/messages`) are also available. The Anthropic endpoint enables Claude CLI connections via the `ANTHROPIC_BASE_URL` environment variable — it translates the Anthropic message format through the SmartAgent pipeline and streams back Anthropic-compatible SSE events.
 - Embedded MCP servers are created per request in `srv/mcp-manager.ts` (no server instance cache).
 - The transport is **stateless** (`sessionIdGenerator: undefined` in `srv/mcp-manager.ts`): no `Mcp-Session-Id` is issued and none is expected. Every request carries its own `x-sap-*` headers and gets its own server instance, so there is no session to re-initialize.
+- **System type is declared, never guessed:** `x-sap-system-type` (`onprem` | `cloud` | `legacy`), else the destination's `SAP_SYSTEM_TYPE` property, else `onprem`. **Created objects** are attributed to `x-sap-responsible`, else the uppercased `x-sap-login`; a create with neither is refused (`system_context_missing`) before anything reaches SAP. See [SAP Connection Headers](docs/architecture/API_REFERENCE.md#system-type).
 - Detailed connection and session examples are documented in [`docs/usage/MCP_CONNECTION.md`](docs/usage/MCP_CONNECTION.md) and the [`Stream-HTTP` API reference](docs/architecture/API_REFERENCE.md#12-stream-http).
 
 ## Destination Diagnostics
