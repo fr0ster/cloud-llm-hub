@@ -181,7 +181,24 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * so a connection built only to read or probe still costs one session. Every
    * connection we open must be closed, whatever it turned out to be used for.
    */
-  async closeSession(): Promise<void> {
+  closeSession(): Promise<void> {
+    // Single-flight. A request's teardown runs from BOTH the client's `close`
+    // listener and the handler's own `finally`, usually at once. Each call
+    // read the server-issued session before the other had dropped it, so each
+    // sent its own ICF logoff — two per request. A call made while a close is
+    // in flight joins it; a call made after it finds no session left.
+    if (!this.closing) {
+      this.closing = this.closeSessionOnce().finally(() => {
+        this.closing = null;
+      });
+    }
+    return this.closing;
+  }
+
+  /** The in-flight {@link closeSession}, joined by concurrent callers. */
+  private closing: Promise<void> | null = null;
+
+  private async closeSessionOnce(): Promise<void> {
     // Never between LOCK and UNLOCK: wait for the chain to finish first. The
     // write in between is short; no deadline on the wait.
     while (this.criticalSectionEnded) await this.criticalSectionEnded;

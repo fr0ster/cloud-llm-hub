@@ -416,7 +416,14 @@ export async function createMCPServerForRequest(
       });
 
       // Cleanup function - MUST be called after request completes
-      const cleanup = async () => {
+      // Once per request: the server calls it from the response's `close`
+      // listener AND from its `finally`; both get the same teardown.
+      let cleaning: Promise<void> | null = null;
+      const cleanup = (): Promise<void> => {
+        cleaning ??= teardown();
+        return cleaning;
+      };
+      const teardown = async () => {
         try {
           await transport.close();
         } catch (err) {
@@ -425,8 +432,8 @@ export async function createMCPServerForRequest(
           });
         }
         // End the server-side ADT session (releases a left-open edit-lock):
-        // closeSession + reset for a destination connection, disconnect (the
-        // logoff) for a direct connector. Never throws.
+        // closeSession + reset for a destination connection, endSession (the
+        // logoff, after any LOCK..UNLOCK) for a direct connector. Never throws.
         await safeStop(connection);
       };
 
