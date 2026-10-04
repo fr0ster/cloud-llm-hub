@@ -2679,11 +2679,21 @@ export async function getSmartAgent(
       status: destinationStates.get(destName)?.status ?? 'unknown',
       waitMs,
     });
-    await Promise.race([
-      // Swallow init errors here; the state re-read below decides the outcome.
-      ensureDestinationInit(destName).catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, waitMs)),
-    ]);
+    // The bound's timer is cleared once the race is decided: left running it
+    // held the process (and Jest's workers) for the rest of `waitMs`, 90 s by
+    // default, after every init that finished in time.
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        // Swallow init errors here; the state re-read below decides the outcome.
+        ensureDestinationInit(destName).catch(() => undefined),
+        new Promise((resolve) => {
+          bound = setTimeout(resolve, waitMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(bound);
+    }
     handle = agentHandles.get(destName);
     if (handle) {
       return handle;
