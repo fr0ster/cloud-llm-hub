@@ -9,7 +9,9 @@
  * - LLM: SAP AI Core via sap-ai-sdk provider
  * - MCP: Embedded EmbeddableMcpServer (in-process, no HTTP overhead)
  * - RAG: FallbackRag(VectorRag → InMemoryRag) with CircuitBreakerEmbedder
- * - RAG quality: LlmQueryExpander (synonym expansion) + LlmReranker (semantic re-scoring)
+ * - RAG query: the tools store translates a query to English first
+ *   (TranslatePreprocessor on the classifier-model LLM); no query expander and
+ *   no reranker are wired — retrieval is the store's own vector top-K
  * - Resilience: CircuitBreaker for LLM + embedder failures
  * - No tool-result cache: the MCP server owns caching. SessionManager keeps the token budget
  * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
