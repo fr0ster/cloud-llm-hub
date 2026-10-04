@@ -53,10 +53,26 @@ class CriticalSectionGate {
     }
   }
 
-  /** Waits until no section is open — including one opened while waiting. */
-  async settled(): Promise<void> {
-    while (this.ended) await this.ended;
+  /** Resolves when the section open now ends; null when none is open. */
+  get openSection(): Promise<void> | null {
+    return this.ended;
   }
+}
+
+/**
+ * Wait until no section is open, then start the teardown IN THE SAME
+ * synchronous step as the last check: `disconnect()` closes admission at its
+ * call, so no handler can open a section between "none open" and "teardown
+ * started". A section opened while we wait is waited for too.
+ */
+async function endAfterSections(
+  gate: CriticalSectionGate,
+  teardown: () => Promise<void>,
+): Promise<void> {
+  for (let open = gate.openSection; open; open = gate.openSection) {
+    await open;
+  }
+  return teardown();
 }
 
 export class HubOnPremConnector extends AdtOnPremConnector<
@@ -66,19 +82,23 @@ export class HubOnPremConnector extends AdtOnPremConnector<
   private readonly gate = new CriticalSectionGate();
 
   override beginCriticalSection(): void {
-    this.gate.enter();
     super.beginCriticalSection();
+    this.gate.enter();
   }
 
   override endCriticalSection(): void {
-    super.endCriticalSection();
-    this.gate.leave();
+    try {
+      super.endCriticalSection();
+    } finally {
+      // Released whatever the base does: a gate left closed would hold the
+      // teardown forever.
+      this.gate.leave();
+    }
   }
 
   /** Log the session off — after any open critical section has ended. */
   async endSession(): Promise<void> {
-    await this.gate.settled();
-    await this.disconnect();
+    await endAfterSections(this.gate, () => this.disconnect());
   }
 }
 
@@ -89,18 +109,22 @@ export class HubCloudConnector extends AdtCloudConnector<
   private readonly gate = new CriticalSectionGate();
 
   override beginCriticalSection(): void {
-    this.gate.enter();
     super.beginCriticalSection();
+    this.gate.enter();
   }
 
   override endCriticalSection(): void {
-    super.endCriticalSection();
-    this.gate.leave();
+    try {
+      super.endCriticalSection();
+    } finally {
+      // Released whatever the base does: a gate left closed would hold the
+      // teardown forever.
+      this.gate.leave();
+    }
   }
 
   /** Log the session off — after any open critical section has ended. */
   async endSession(): Promise<void> {
-    await this.gate.settled();
-    await this.disconnect();
+    await endAfterSections(this.gate, () => this.disconnect());
   }
 }

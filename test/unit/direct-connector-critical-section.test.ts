@@ -52,11 +52,27 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));
 });
 
+/**
+ * Connections this suite opened. connection 10 dispatches its logoff without
+ * awaiting it, so each one's goodbye is awaited after the test — otherwise a
+ * logoff still in flight outlives the suite and holds Jest's worker.
+ */
+const opened: Array<{ flushGoodbye(): Promise<unknown> }> = [];
+function track<T extends { flushGoodbye(): Promise<unknown> }>(c: T): T {
+  opened.push(c);
+  return c;
+}
+
 beforeEach(() => {
   seen.length = 0;
+});
+
+afterEach(async () => {
+  for (const c of opened.splice(0)) await c.flushGoodbye();
 });
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -80,6 +96,7 @@ describe('direct connector teardown during a critical section', () => {
       sapConfig: sapConfig(),
       systemType: 'onprem',
     });
+    if (conn instanceof HubOnPremConnector) track(conn);
     expect(conn).toBeInstanceOf(HubOnPremConnector);
     if (!(conn instanceof HubOnPremConnector)) return;
     await conn.connect();
@@ -108,11 +125,63 @@ describe('direct connector teardown during a critical section', () => {
     expect(logoffAt).toBeGreaterThan(unlockAt);
   });
 
+  it('a section opened while the teardown waits is waited for too', async () => {
+    const conn = createConnection({
+      sapConfig: sapConfig(),
+      systemType: 'onprem',
+    });
+    if (conn instanceof HubOnPremConnector) track(conn);
+    if (!(conn instanceof HubOnPremConnector))
+      throw new Error('not a hub connector');
+    await conn.connect();
+    conn.beginCriticalSection();
+    const stop = safeStop(conn);
+    await tick();
+
+    // The first chain ends and the next one starts before the teardown resumes.
+    conn.endCriticalSection();
+    conn.beginCriticalSection();
+    await tick();
+    expect(seen.some(isLogoff)).toBe(false);
+    const r = await conn.makeAdtRequest(unlock);
+    expect(r.status).toBe(200);
+
+    conn.endCriticalSection();
+    await stop;
+    await tick();
+    expect(seen.some(isLogoff)).toBe(true);
+  });
+
+  it('endCriticalSection releases the gate even when the base throws', async () => {
+    const conn = createConnection({
+      sapConfig: sapConfig(),
+      systemType: 'onprem',
+    });
+    if (conn instanceof HubOnPremConnector) track(conn);
+    if (!(conn instanceof HubOnPremConnector))
+      throw new Error('not a hub connector');
+    const disconnect = jest
+      .spyOn(AdtOnPremConnector.prototype, 'disconnect')
+      .mockResolvedValue(undefined);
+    const base = jest
+      .spyOn(AdtOnPremConnector.prototype, 'endCriticalSection')
+      .mockImplementation(() => {
+        throw new Error('base failed');
+      });
+    conn.beginCriticalSection();
+    expect(() => conn.endCriticalSection()).toThrow('base failed');
+    await conn.endSession(); // would hang if the gate were left closed
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    base.mockRestore();
+    disconnect.mockRestore();
+  });
+
   it('with no critical section open, teardown logs off at once', async () => {
     const conn = createConnection({
       sapConfig: sapConfig(),
       systemType: 'onprem',
     });
+    if (conn instanceof HubOnPremConnector) track(conn);
     await conn.connect();
     await safeStop(conn);
     await tick();
@@ -122,19 +191,22 @@ describe('direct connector teardown during a critical section', () => {
   it('control: the base connector’s disconnect() alone refuses the chain’s next request', async () => {
     // Why the hub's connectors exist: without the wait, the UNLOCK is refused.
     const cfg = sapConfig();
-    const conn = new AdtOnPremConnector(
-      cfg,
-      new BasicAuthProvider('U', 'P'),
-      new OnPremHttpTransport(() => ({}), null, {
-        client: cfg.client,
-        baseUrl: url,
-      }),
-      null,
+    const conn = track(
+      new AdtOnPremConnector(
+        cfg,
+        new BasicAuthProvider('U', 'P'),
+        new OnPremHttpTransport(() => ({}), null, {
+          client: cfg.client,
+          baseUrl: url,
+        }),
+        null,
+      ),
     );
     await conn.connect();
     conn.beginCriticalSection();
-    void conn.disconnect();
+    const disconnected = conn.disconnect();
     await expect(conn.makeAdtRequest(unlock)).rejects.toBeDefined();
     conn.endCriticalSection();
+    await disconnected;
   });
 });
