@@ -102,7 +102,10 @@ function isMcpRequestBody(body: unknown): body is {
  * @param req - HTTP request
  * @param res - HTTP response
  */
-async function handleStreamHTTP(req: Request, res: Response): Promise<void> {
+export async function handleStreamHTTP(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const log = cds.log('mcp-proxy/stream-http');
   let body: unknown = null;
   let cleanup: (() => Promise<void>) | null = null;
