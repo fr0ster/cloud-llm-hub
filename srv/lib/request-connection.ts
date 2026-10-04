@@ -226,9 +226,12 @@ export async function safeStop(connection?: IAbapConnection): Promise<void> {
     return;
   }
   try {
-    await (
-      connection as { closeSession?: () => Promise<void> } | undefined
-    )?.closeSession?.();
+    // `close()` (CloudSdkAbapConnection) also stops the connection from ever
+    // opening a session again; a connection without it gets `closeSession()`.
+    const c = connection as
+      | { close?: () => Promise<void>; closeSession?: () => Promise<void> }
+      | undefined;
+    await (c?.close ? c.close() : c?.closeSession?.());
   } catch {
     // Swallow — best-effort teardown must never throw into the caller's finally.
   }

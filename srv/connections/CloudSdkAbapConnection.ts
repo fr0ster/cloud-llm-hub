@@ -430,7 +430,33 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return this.inCriticalSection;
   }
 
+  /**
+   * End this connection for good: no request opens a session on it again.
+   *
+   * The request's teardown calls it (`safeStop`). Without it, an early client
+   * abort — after the teardown started, before the handler reached SAP — let
+   * the handler mint a fresh session that no later cleanup would close (the
+   * teardown runs once). A request already inside its critical section is
+   * not refused: the close waits for that section, as before.
+   */
+  close(): Promise<void> {
+    this.closed = true;
+    return this.closeSession();
+  }
+
+  private closed = false;
+
+  /** Refuse a request after {@link close}, unless it belongs to an open section. */
+  private refuseIfClosed(): void {
+    if (this.closed && !this.inCriticalSection) {
+      throw new Error(
+        `Connection to destination "${this.destinationName}" is closed: the request's teardown ended its ADT session, and nothing reopens it.`,
+      );
+    }
+  }
+
   async connect(): Promise<void> {
+    this.refuseIfClosed();
     // Pre-fetch CSRF token so the first POST doesn't need to fetch lazily.
     // Optional — refreshCsrf handles on-demand fetch if token is missing.
     await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
@@ -452,6 +478,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * @returns httpCode and a trimmed backend body/error snippet (rawMessage)
    */
   async probe(path: string): Promise<{ httpCode: number; rawMessage: string }> {
+    this.refuseIfClosed();
     const baseUrl = await this.getBaseUrl();
     this.enforceClientCookie();
     const cookie = this.getCookieHeader();
@@ -977,6 +1004,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
   async makeAdtRequest<T = any, D = any>(
     options: AbapRequestOptions,
   ): Promise<IAdtWireResponse<T, D>> {
+    this.refuseIfClosed();
     const { url, method, data, params, headers: optionHeaders } = options;
     const normalizedMethod = method.toUpperCase();
     // No deadline here, not even one the ADT client passes in `timeout`. A long
