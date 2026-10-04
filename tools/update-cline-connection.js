@@ -684,6 +684,20 @@ async function main() {
       connectivityLocationId: options.connectivityLocationId,
     });
     updatedHeaders.push(...destinationUpdated);
+    // A destination states its own type (SAP_SYSTEM_TYPE); the header, which
+    // outranks it, is kept only when asked for with --sap-system-type.
+    const systemType = options.sapSystemType?.trim().toLowerCase();
+    if (systemType && !SAP_SYSTEM_TYPES.includes(systemType)) {
+      throw new Error(
+        `Unsupported SAP system type "${options.sapSystemType}". Use ${SAP_SYSTEM_TYPES.join(', ')}.`,
+      );
+    }
+    setHeaderValue(
+      connection.headers,
+      'x-sap-system-type',
+      systemType || undefined,
+      updatedHeaders,
+    );
   } else if (updateSap) {
     const result = applySapConfigToHeaders(connection.headers, sapConfig, {
       token: options.sapToken,
@@ -2702,6 +2716,10 @@ function removeSapDirectHeaders(headers, updated) {
     'x-sap-login',
     'x-sap-username', // legacy name older versions wrote
     'x-sap-password',
+    // A direct connection's declaration. Left on a destination connection it
+    // would outrank the destination's own SAP_SYSTEM_TYPE property; a type
+    // meant for the destination goes in the YAML `headers` block.
+    'x-sap-system-type',
   ].forEach((key) => {
     setHeaderValue(headers, key, undefined, updated);
   });
@@ -3365,6 +3383,7 @@ module.exports = {
   applyDestinationHeaders,
   buildConnectionConfigFromNewSchema,
   convertDefinitionToClineConnection,
+  removeSapDirectHeaders,
   TEMPLATE_RENDERERS,
   TEMPLATE_ENDPOINT_SUFFIX,
 };

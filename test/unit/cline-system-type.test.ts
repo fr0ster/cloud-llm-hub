@@ -138,3 +138,21 @@ describe('templates point at an endpoint the hub serves', () => {
     expect(cline.type).toBe('streamableHttp');
   });
 });
+
+describe('switching to a destination drops the direct system type', () => {
+  it('removeSapDirectHeaders removes x-sap-system-type with the direct headers', () => {
+    const t = tool as unknown as {
+      removeSapDirectHeaders: (h: Record<string, string>, u: string[]) => void;
+    };
+    const h: Record<string, string> = {
+      'x-sap-url': 'https://abap.example.invalid',
+      'x-sap-system-type': 'cloud',
+      'x-sap-login': 'developer',
+      Authorization: 'Bearer x',
+    };
+    const updated: string[] = [];
+    t.removeSapDirectHeaders(h, updated);
+    expect(h).toEqual({ Authorization: 'Bearer x' });
+    expect(updated).toContain('x-sap-system-type');
+  });
+});
