@@ -11,7 +11,7 @@
 
 import cds, { type Request, type Service } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
-import { getDestinationStates, getSmartAgent } from './agent-manager';
+import { getSmartAgent, isWaitingForDestinations } from './agent-manager';
 
 /**
  * Register CAP service handlers
@@ -67,10 +67,8 @@ export default async function registerAgentServiceHandlers(
       if (healthResult.ok) {
         const v = healthResult.value;
         const mcpConnected = v.mcp.length > 0 && v.mcp.every((m) => m.ok);
-        // LLM-only mode with no destination in the subaccount: the LLM answers,
-        // but the hub is not ready for SAP work — it waits for destinations.
-        const waiting =
-          !config.mcp.destination && getDestinationStates().length === 0;
+        // The LLM answers, but the hub is not ready for SAP work yet.
+        const waiting = isWaitingForDestinations();
 
         return {
           status: !v.llm

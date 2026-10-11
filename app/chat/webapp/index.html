@@ -456,7 +456,7 @@
             if (diag) diag.style.display = 'none';
             chatWindow.innerHTML = '<div class="message"><b>> SYSTEM:</b> No SAP destinations are configured in this subaccount — waiting for destinations. '
                 + 'Until then answers come from SAP AI Core only, without access to SAP systems. '
-                + 'For full functionality (ABAP tools), add at least one SAP destination (OnPremise, BasicAuthentication) to the subaccount.</div>';
+                + 'For full functionality (ABAP tools), add an HTTP(S) destination to the ABAP system through the Cloud Connector (ProxyType OnPremise) in the subaccount — it is picked up automatically.</div>';
             chatWindow.scrollTop = chatWindow.scrollHeight;
             try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
         }

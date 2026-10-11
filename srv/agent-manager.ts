@@ -917,6 +917,14 @@ export function forgetSessionDestination(
   lastDestinationBySession.delete(destinationKey(userId, sessionId));
 }
 
+/**
+ * LLM-only mode with no destination in the subaccount yet: the LLM answers,
+ * but nothing SAP-side (MCP tools) works until a destination appears.
+ */
+export function isWaitingForDestinations(): boolean {
+  return !getAgentConfig().mcp.destination && destinationStates.size === 0;
+}
+
 /** Get all destination states for API/UI consumption */
 export function getDestinationStates(): Array<{
   name: string;

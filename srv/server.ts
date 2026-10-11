@@ -13,6 +13,10 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before any submodule imports
 import './env-setup';
 
+import {
+  HEADER_SAP_DESTINATION,
+  HEADER_SAP_URL,
+} from '@mcp-abap-adt/interfaces-network';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
@@ -30,6 +34,7 @@ import {
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
+import { getAvailableDestinations } from './lib/btp-destinations';
 import {
   formatErrorMessage,
   httpErrorText,
@@ -45,6 +50,11 @@ import {
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
+import {
+  jsonRpcError,
+  mcpDestinationFailureMessage,
+  mcpDestinationRefusal,
+} from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
 import { startProviders } from './lib/providers';
 import { sessionMiddleware } from './lib/session-middleware';
@@ -230,7 +240,25 @@ export async function handleStreamHTTP(
       };
       const statusCode = err?.response?.status || err?.statusCode || 500;
       const userMessage = formatErrorMessage(error);
-      res.writeHead(statusCode).end(httpErrorText(statusCode, userMessage));
+      const destination = (
+        req.headers[HEADER_SAP_DESTINATION] as string | undefined
+      )?.trim();
+      if (destination) {
+        // The destination failed while the call ran: say which and what to check.
+        res
+          .writeHead(statusCode, { 'Content-Type': 'application/json' })
+          .end(
+            JSON.stringify(
+              jsonRpcError(
+                isMcpRequestBody(body) ? body.id : null,
+                mcpDestinationFailureMessage(destination, userMessage),
+                { reason: 'destination_failed', destination },
+              ),
+            ),
+          );
+      } else {
+        res.writeHead(statusCode).end(httpErrorText(statusCode, userMessage));
+      }
     } else {
       res.end();
     }
@@ -397,6 +425,41 @@ cds.on('bootstrap', (app: Application) => {
     });
     next();
   });
+
+  // Destination guard: an MCP call that cannot reach SAP (no destination in the
+  // subaccount, or the named one does not exist) is answered with what to
+  // configure — the MCP server is never built for it.
+  const mcpDestinationGuard = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const requested = (
+        req.headers[HEADER_SAP_DESTINATION] as string | undefined
+      )?.trim();
+      const direct = !!req.headers[HEADER_SAP_URL];
+      const available = direct
+        ? []
+        : (await getAvailableDestinations()).map((d) => d.name);
+      const refusal = mcpDestinationRefusal(requested, direct, available);
+      if (!refusal) return next();
+      log.info('MCP call refused by the destination guard', {
+        reason: refusal.reason,
+        destination: requested ?? null,
+      });
+      res.status(503).json(
+        jsonRpcError(null, refusal.message, {
+          reason: refusal.reason,
+          destination: requested ?? null,
+        }),
+      );
+    } catch (err) {
+      next(err);
+    }
+  };
+  app.post('/mcp/stream/http', mcpDestinationGuard);
+  app.post('/mcp/agent/stream/http', mcpDestinationGuard);
 
   // StreamableHTTP endpoint: POST only
   app.post('/mcp/stream/http', async (req: Request, res: Response) => {
