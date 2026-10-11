@@ -18,5 +18,5 @@ AWS, GCP), against SAP ECC / S/4HANA systems in the customer's private landscape
 | Entry point | approuter | reverse proxy (Nginx) |
 | Identity | XSUAA, trusted IdPs | Keycloak (OIDC/SAML, SCIM provisioning) |
 | ABAP connectivity | Cloud Connector, BTP destinations | VPN gateway / SSH tunnel, service discovery |
-| Vector store | in-memory, Qdrant | vector database container |
+| Vector store | in-memory, Qdrant, SAP HANA | vector database container |
 | LLM | SAP AI Core, OpenAI-compatible providers | client AI provider, Ollama, external API |
