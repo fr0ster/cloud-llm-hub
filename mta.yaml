@@ -47,6 +47,10 @@ parameters:
   #
   # CF landscape and approuter route host. CF_LANDSCAPE has no default: each
   # deployment's .mtaext sets its own (e.g. "cfapps.eu10.hana.ondemand.com").
+  # APPROUTER_HOST must be "<subaccount subdomain>-cloud-llm-hub": the approuter
+  # takes the xsuaa tenant from its host (TENANT_HOST_PATTERN below). The bare
+  # default sends the login to the generic SAP zone — a password page that knows
+  # neither the subaccount's users nor its trusted IdPs. tools/deploy.sh checks.
   CF_LANDSCAPE:
   APPROUTER_HOST: "cloud-llm-hub"
 parameters-metadata:

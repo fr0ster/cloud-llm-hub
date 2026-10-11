@@ -49,6 +49,26 @@ echo "CF target:"
 cf target 2>&1 | grep -E "org:|space:|user:" | sed 's/^/  /'
 echo "  .mtaext host: $APPROUTER_HOST"
 
+# The approuter takes the xsuaa tenant — the subaccount subdomain — from its
+# own host (TENANT_HOST_PATTERN in mta.yaml): <subdomain>-<approuter app>.
+# Any other host sends the login to the generic SAP zone: a password page that
+# knows neither the subaccount's users nor its trusted IdPs.
+APPROUTER_APP="cloud-llm-hub"
+[ "$STAGING" = "staging" ] && APPROUTER_APP="cloud-llm-hub-staging"
+EFFECTIVE_HOST="${APPROUTER_HOST:-$APPROUTER_APP}"
+if [[ "$EFFECTIVE_HOST" != ?*-"$APPROUTER_APP" ]]; then
+  echo "Error: APPROUTER_HOST '$EFFECTIVE_HOST' must be <subaccount subdomain>-$APPROUTER_APP"
+  echo "  (set it in $MTAEXT; the subdomain is in the cockpit, subaccount overview)"
+  exit 1
+fi
+# Once deployed, the approuter's xsuaa binding names the subdomain.
+ZONE=$(cf env "$APPROUTER_APP" 2>/dev/null | grep -oE '"identityzone": *"[^"]+"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)
+if [ -n "$ZONE" ] && [ "$EFFECTIVE_HOST" != "$ZONE-$APPROUTER_APP" ]; then
+  echo "Error: APPROUTER_HOST '$EFFECTIVE_HOST' does not match the subaccount subdomain '$ZONE'"
+  echo "  Expected: $ZONE-$APPROUTER_APP"
+  exit 1
+fi
+
 # Check if approuter host contains a substring from the CF org
 if [ -n "$APPROUTER_HOST" ] && [ -n "$CF_ORG" ]; then
   # Extract subaccount ID from approuter host (e.g., "acme-abc123" from "acme-abc123-cloud-llm-hub")

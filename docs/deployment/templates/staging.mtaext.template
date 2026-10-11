@@ -46,8 +46,9 @@ parameters:
   # LLM_AGENT_QDRANT_PREFIX: ""
   # LLM_AGENT_DESTINATION_SOURCE: ""
 
-  # IMPORTANT: Unique hostname for staging (different from production!)
-  APPROUTER_HOST: "cloud-llm-hub-staging"
+  # Staging host: <subaccount subdomain>-cloud-llm-hub-staging (the approuter
+  # takes the xsuaa tenant from it; tools/deploy.sh checks)
+  APPROUTER_HOST: "<subaccount-subdomain>-cloud-llm-hub-staging"
   # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"   # required: your subaccount's CF landscape
 
 resources:

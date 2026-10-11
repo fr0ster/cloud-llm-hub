@@ -40,8 +40,9 @@ parameters:
   # LLM_AGENT_QDRANT_PREFIX: ""
   # LLM_AGENT_DESTINATION_SOURCE: ""
 
-  # Approuter route host (unique for parallel deploy)
-  APPROUTER_HOST: "cloud-llm-hub-llm"
+  # Approuter route host: <subaccount subdomain>-cloud-llm-hub (the approuter
+  # takes the xsuaa tenant from it; tools/deploy.sh checks)
+  APPROUTER_HOST: "<subaccount-subdomain>-cloud-llm-hub"
 
 resources:
   - name: cloud-llm-hub-ai-core
