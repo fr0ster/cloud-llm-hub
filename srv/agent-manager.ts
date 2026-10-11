@@ -2564,6 +2564,7 @@ async function buildLlmOnlyAgent(
       system: [
         'You are a helpful AI assistant. No MCP tools are available — SAP system destinations are not configured or unreachable.',
         'Answer questions using your knowledge. If the user asks to perform SAP operations, explain that SAP connectivity is not available.',
+        'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.',
         "Respond in the user's language. Code and object names always in English.",
       ].join('\n'),
     },
@@ -2772,6 +2773,7 @@ export async function initSmartAgents(): Promise<void> {
     });
     llmOnlyHandle = await buildLlmOnlyAgent(config);
     initializationDone = true;
+    watchForDestinations();
     return;
   }
 
@@ -2786,10 +2788,17 @@ export async function initSmartAgents(): Promise<void> {
     warmFirst: destName,
   });
 
-  // Background: build the shared tool corpus ONCE (fire-and-forget — readiness
-  // does not wait on it; getSmartAgent/initDestination await it on the request
-  // path via the bounded wait). Then warm ALL SAP destinations (the configured
-  // one first as a non-privileged hint). Non-blocking — never gates readiness.
+  startDestinationWarmup();
+}
+
+/**
+ * Background: build the shared tool corpus ONCE (fire-and-forget — readiness
+ * does not wait on it; getSmartAgent/initDestination await it on the request
+ * path via the bounded wait). Then warm ALL SAP destinations (the configured
+ * one first as a non-privileged hint). Non-blocking — never gates readiness.
+ */
+function startDestinationWarmup(): void {
+  const log = cds.log('agent-manager');
   ensureSharedToolsVectorized().catch((err) => {
     // A missing corpus is a deployment defect, not a transient: say so loudly.
     // The process keeps running, but no destination ever becomes ready: every
@@ -2807,6 +2816,44 @@ export async function initSmartAgents(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   });
+}
+
+/**
+ * LLM-only mode waits for SAP destinations: poll the BTP Destination service
+ * and, once the subaccount has one, switch to the working mode — load the tool
+ * corpus and warm the destinations exactly as a normal start does. The UI sees
+ * them in /v1/models and opens the login gate. Interval:
+ * LLM_AGENT_DESTINATION_WATCH_MS (default 60 s).
+ */
+function watchForDestinations(): void {
+  const log = cds.log('agent-manager');
+  const intervalMs =
+    Number(process.env.LLM_AGENT_DESTINATION_WATCH_MS) > 0
+      ? Number(process.env.LLM_AGENT_DESTINATION_WATCH_MS)
+      : 60_000;
+  log.info('Waiting for SAP destinations', { intervalMs });
+  let checking = false;
+  const timer = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      clearDestinationsCache();
+      const found = await getAvailableDestinations();
+      if (found.length === 0) return;
+      clearInterval(timer);
+      log.info('SAP destinations appeared — switching to working mode', {
+        destinations: found.map((d) => d.name),
+      });
+      startDestinationWarmup();
+    } catch (err) {
+      log.warn('Destination watch failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      checking = false;
+    }
+  }, intervalMs);
+  timer.unref();
 }
 
 /**

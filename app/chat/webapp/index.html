@@ -39,6 +39,7 @@
         .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
         .status-ready { color: #00ff00; }
         .status-error { color: #ff5555; }
+        .status-waiting { color: #ffaa33; }
         .status-streaming { color: #00bfff; animation: blink 1s infinite; }
 
         #llm-model-select, #dest-select, .aux-model-select {
@@ -341,6 +342,9 @@
         // logout page reload.
         let sapCredsClient = '';
         let loginGateDone = false;
+        // No MCP destination configured and none in the subaccount: chat goes to
+        // the LLM only, and the status says the hub is waiting for destinations.
+        let llmOnlyMode = false;
 
         // ---------------------------------------------------------------
         // Login gate — after sign-in the whole chat is locked until the user
@@ -440,6 +444,38 @@
             // WITHOUT blocking entry: gate is already unlocked above; the probe
             // owns all its own errors and only updates the SAP status indicator.
             void runActiveProbe();
+        }
+
+        function enterLlmOnlyMode() {
+            loginGateDone = true;
+            hideLoginGate();
+            unlockInput('login-gate');
+            const sap = document.getElementById('sap-status');
+            if (sap) { sap.textContent = 'NO DESTINATIONS'; sap.style.color = '#ffaa33'; }
+            const diag = document.getElementById('dest-diag');
+            if (diag) diag.style.display = 'none';
+            chatWindow.innerHTML = '<div class="message"><b>> SYSTEM:</b> No SAP destinations are configured in this subaccount — waiting for destinations. '
+                + 'Until then answers come from SAP AI Core only, without access to SAP systems. '
+                + 'For full functionality (ABAP tools), add at least one SAP destination (OnPremise, BasicAuthentication) to the subaccount.</div>';
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
+        }
+
+        // Destinations appeared while waiting: switch to the working mode — the
+        // login gate opens and its options enable as each destination gets ready.
+        function leaveLlmOnlyMode() {
+            llmOnlyMode = false;
+            loginGateDone = false;
+            setIdleStatus();
+            const sap = document.getElementById('sap-status');
+            if (sap) { sap.textContent = '—'; sap.style.color = '#888'; }
+            const diag = document.getElementById('dest-diag');
+            if (diag) diag.style.display = '';
+            chatWindow.innerHTML += '<div class="message"><b>> SYSTEM:</b> SAP destinations are available — connect to one to use the full functionality.</div>';
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            lockInput('login-gate');
+            populateGateDestinations();
+            showLoginGate();
         }
 
         function getSapCredHeaders() {
@@ -867,6 +903,13 @@
             statusText.className = cls;
         }
 
+        // Idle status after bootstrap / a finished request. In LLM-only mode the
+        // hub is not READY for SAP work — it waits for destinations to appear.
+        function setIdleStatus() {
+            if (llmOnlyMode) setStatus('NO DESTINATIONS — WAITING FOR DESTINATIONS', 'status-waiting');
+            else setStatus('READY', 'status-ready');
+        }
+
         const inputLockReasons = new Set();
         function lockInput(reason) { inputLockReasons.add(reason); applyInputLock(); }
         function unlockInput(reason) { inputLockReasons.delete(reason); applyInputLock(); }
@@ -1038,8 +1081,17 @@
                     }
 
                     ready = true;
-                    setStatus('READY', 'status-ready');
                     unlockInput('bootstrap');
+                    // LLM-only mode: no MCP destination configured and none in the
+                    // subaccount. There is nothing to pick in the login gate, so skip
+                    // it, say so honestly in the status, and chat with the LLM only.
+                    llmOnlyMode = !meta.mcp_destination && destinations.length === 0;
+                    setIdleStatus();
+                    if (llmOnlyMode) {
+                        if (!loginGateDone) enterLlmOnlyMode();
+                        userInput.focus();
+                        return;
+                    }
                     // Now that the agent is ready, show the login gate (destination +
                     // SAP credentials). The chat stays locked under 'login-gate'
                     // until the user connects. Skip if already connected this session.
@@ -1067,6 +1119,7 @@
                 const activeDest = data._active_destination || '';
                 if (destinations.length > 0) {
                     renderDestinations(destinations, activeDest);
+                    if (llmOnlyMode) leaveLlmOnlyMode();
                 }
             } catch (e) { /* ignore */ }
         }, 15000);
@@ -1650,7 +1703,7 @@
                 return;
             }
 
-            setStatus('READY', 'status-ready');
+            setIdleStatus();
             unlockInput('chat-pending');
             userInput.focus();
             chatWindow.scrollTop = chatWindow.scrollHeight;
