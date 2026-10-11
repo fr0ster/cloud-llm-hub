@@ -2,8 +2,9 @@
 
 How a hub user, logged on through the subaccount's IdP (e.g. SAP Cloud Identity
 Services with users provisioned into ABAP by Identity Provisioning), reaches an
-on-premise ABAP system as **their own ABAP user**, without a password. Status:
-analysis — the hub does not support it yet (see [Hub changes](#hub-changes)).
+on-premise ABAP system as **their own ABAP user**, without a password, through
+an SAP BTP destination with principal propagation. Status: design — the hub does
+not support it yet (see [Changes to the existing code](#changes-to-the-existing-code)).
 
 ## Which transport
 
@@ -26,26 +27,135 @@ Sources (SAP-docs/btp-connectivity):
 `RfcTransport` stays useful where the hub has direct network access to the
 system (local / VPC runs), not through Cloud Connector from CF.
 
-## Flow (HTTPS)
+## Architecture
 
-1. The user logs on to the approuter through the subaccount IdP (XSUAA trusts IAS).
-2. The approuter forwards the user's XSUAA token to srv (`forwardAuthToken: true`).
-3. srv calls the destination with the user's JWT; the Cloud SDK sends
-   `SAP-Connectivity-Authentication: Bearer <user JWT>` to the Connectivity proxy.
-4. Cloud Connector validates the token against the synchronized subaccount trust,
-   issues a short-lived X.509 certificate for the user (subject from the subject
-   pattern) and calls the ABAP ICM over mTLS with its system certificate.
-5. ICM trusts the Cloud Connector as a reverse proxy; ABAP maps the certificate
-   subject to the user (rule-based CERTRULE, or EXTID_DN).
+```
+LLM Client / UI
+  │  OAuth login → user JWT
+  │  Bearer token
+  ▼
+cloud-llm-hub — SAP BTP Cloud Foundry
+  │  CAP + XSUAA authentication
+  ▼
+Agent / MCP tool execution
+  │  UserContext: JWT + tenant + destination
+  ▼
+mcp-abap-adt library
+  │  ADT operations, CSRF, cookies, sessions
+  ▼
+CloudSdkAbapConnection
+  │  SAP Cloud SDK HTTP client
+  │  destination + user JWT
+  ▼
+Destination Service + Connectivity Service
+  ▼
+SAP Cloud Connector
+  │  HTTPS mapping + principal propagation
+  │  X.509 user certificate
+  ▼
+On-premise ABAP
+     ICM → /sap/bc/adt/*
+     certificate mapping → ABAP user
+```
 
-## Checklist
+## Sequence of one ADT request
+
+1. The user authenticates to cloud-llm-hub through XSUAA.
+2. CAP validates the JWT and builds the user context.
+3. The agent calls a tool from mcp-abap-adt.
+4. `CloudSdkAbapConnection` runs `executeHttpRequest()` with the `destinationName`
+   and this user's JWT.
+5. The SAP Cloud SDK fetches the destination and the Connectivity proxy settings.
+6. The Connectivity service and Cloud Connector perform the principal propagation
+   (the SDK sends `SAP-Connectivity-Authentication: Bearer <user JWT>`; Cloud
+   Connector issues a short-lived X.509 certificate for the user).
+7. ABAP maps the X.509 identity to a user and checks that user's authorizations.
+8. The HTTP response returns along the same route.
+
+## Changes to the existing code
+
+| Component | What to do |
+|-----------|------------|
+| `srv/lib/btp-destinations.ts` | Allow `PrincipalPropagation` in the filter (`isSapAbapDestination` passes only `BasicAuthentication` today) |
+| `srv/connections/destinationResolver.ts` | Handle `PrincipalPropagation` (the JWT path exists only for `OAuth2SAMLBearerAssertion`) |
+| `srv/connections/CloudSdkAbapConnection.ts` | Pass the user's JWT in the destination options |
+| Agent execution context | Keep the user JWT for the whole run |
+| `srv/mcp-proxy.ts` | Pass the JWT in probe requests |
+| ABAP transport | Keep CSRF, cookies, ETag and session handling |
+
+Target call:
+
+```ts
+const response = await executeHttpRequest(
+  {
+    destinationName: 'ABAP_ADT',
+    jwt: userJwt,
+  },
+  {
+    method: 'GET',
+    url: '/sap/bc/adt/discovery',
+    headers: {
+      Accept: 'application/atomsvc+xml',
+    },
+  },
+);
+```
+
+### Architecture decision: Basic and PrincipalPropagation side by side
+
+Principal propagation is not the only way to connect. The hub supports both
+`BasicAuthentication` and `PrincipalPropagation` through the same
+`CloudSdkAbapConnection`. Existing destinations keep working, and systems with
+SSO are added one by one.
+
+### Where the user JWT comes from (checked in the code)
+
+The concern: if the agent runs asynchronously or under a technical
+`client_credentials` token, principal propagation cannot determine the end ABAP
+user.
+
+- **Chat UI and OpenAI / Anthropic endpoints** — the approuter forwards the user's
+  XSUAA token (`forwardAuthToken: true`); the per-request ABAP connection is built
+  inside the HTTP request from `req.headers.authorization`
+  (`srv/lib/request-connection.ts`, `srv/agent-mcp.ts`) and kept in an
+  `AsyncLocalStorage` scope (`srv/agent-manager.ts`) for the agent run. The user
+  JWT is available — provided nothing outlives the request.
+- **Service clients (`sb-…` Basic auth)** — `srv/lib/basic-to-bearer.ts` exchanges
+  them for an XSUAA **client_credentials** token. It carries no user, so it
+  **cannot be propagated**. These callers need a Basic destination or the
+  `x-sap-login` / `x-sap-password` override.
+- **Today an OnPremise destination always requires `x-sap-login` /
+  `x-sap-password`** (`requiresUserCredentials` in `request-connection.ts` and
+  `agent-mcp.ts`). For a `PrincipalPropagation` destination that check must not
+  apply, and the Basic override must not replace the JWT.
+- Long agent runs: the JWT must stay valid for the whole run (XSUAA access token
+  lifetime); anything detached from the request (background jobs, warm-up,
+  tool vectorization) has no user and must not call a PrincipalPropagation
+  destination on a user's behalf.
+
+## What SAP Basis provides
+
+```properties
+# BTP destination
+Name=ABAP_ADT
+Type=HTTP
+ProxyType=OnPremise
+Authentication=PrincipalPropagation
+URL=https://<virtual-host>:<virtual-port>
+sap-client=100
+```
+
+> Note: for `ProxyType=OnPremise` SAP's examples use `http://<virtual-host>:<virtual-port>`:
+> the cloud leg runs in the Cloud Connector tunnel, and Cloud Connector → ABAP is
+> HTTPS by the system mapping's protocol. Use whichever scheme matches the
+> virtual host's mapping.
+
+Cloud Connector must allow `/sap/bc/adt/*`, and ABAP must trust the principal
+propagation certificates and map them to the right users. Detailed checklist:
 
 ### BTP subaccount
 - [ ] Trust to the IAS tenant (OpenID Connect) for business users — active.
-- [ ] Destination, `ProxyType=OnPremise`, `Authentication=PrincipalPropagation`,
-      `URL=http://<virtual host>:<virtual port>` (the cloud leg runs in the
-      tunnel; CC → ABAP is HTTPS by the mapping's protocol), `sap-client=<client>`,
-      `CloudConnectorLocationId` if the connector has one.
+- [ ] The destination above; `CloudConnectorLocationId` if the connector has one.
 
 ### Cloud Connector (2.13 or newer)
 - [ ] **HTTPS system mapping** to the ABAP ICM: Back-end Type *ABAP System*,
@@ -72,22 +182,7 @@ system (local / VPC runs), not through Cloud Connector from CF.
       `login/certificate_mapping_rulebased=1`, or explicit `EXTID_DN` entries.
 - [ ] The provisioned ABAP users have ADT authorizations (`S_ADT_RES`, `S_DEVELOP`, …).
 
-## Hub changes
-
-Code is in the hub, not in `@mcp-abap-adt/lib`: srv owns the connection
-(`srv/connections/CloudSdkAbapConnection.ts`, Cloud SDK `executeHttpRequest`).
-
-- `srv/lib/btp-destinations.ts` — accept `Authentication=PrincipalPropagation`
-  (today only `BasicAuthentication` passes `isSapAbapDestination`).
-- `srv/connections/CloudSdkAbapConnection.ts` — pass the user's JWT:
-  `executeHttpRequest({ destinationName, jwt }, …)`; no Basic override for these
-  destinations.
-- `srv/connections/destinationResolver.ts` — treat `PrincipalPropagation` like the
-  JWT path it already has for `OAuth2SAMLBearerAssertion`.
-- Chat UI login gate — no SAP login/password for a destination that does not
-  require credentials (`requiresCredentials` already exists in the metadata).
-- API clients (OpenAI/Anthropic/MCP endpoints) — the caller's XSUAA token is the
-  principal; a token without a user (client credentials) cannot be propagated.
+## Not needed for this flow
 
 `@mcp-abap-adt/auth-providers` 6 (`OidcTokenExchangeProvider`, SAML2 bearer
 exchange) is only needed for an exchange-based flow (e.g.
