@@ -69,8 +69,7 @@ The consequences:
 
 **Non-goals**
 
-- The HANA Vector backend. It comes later through the same factory, for the
-  `poc-hana-rag` fork.
+- The HANA Vector backend. It comes later through the same factory.
 - A configuration file. Configuration stays in environment variables.
 - Changing default behaviour. With no new variable set, the hub builds exactly
   what it builds today. A unit test enforces this.
@@ -513,7 +512,7 @@ Qdrant on an isolated port, never 6333)
    - The local kit; the speed measurement.
    - Depends on the llm-agent `updateCollection` release (§4.3).
 2. **Session stores on Qdrant (§4.6).**
-3. **HANA Vector backend.** A separate spec, in the `poc-hana-rag` context.
+3. **HANA Vector backend.** A separate spec.
 
 ## 8. Risks
 
