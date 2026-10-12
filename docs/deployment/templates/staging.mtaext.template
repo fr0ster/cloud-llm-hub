@@ -1,18 +1,23 @@
 # Staging Deployment — parallel instance with separate URL
 # Use case: Test new versions alongside production, separate hostname
-# Note: Change the ID to avoid conflicts with production deployment
 #
 # Usage:
-#   cp docs/deployment/templates/staging.mtaext.template .mtaext
-#   # Edit values below (especially ID and APPROUTER_HOST)
-#   npx mbt build && cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
+#   cp docs/deployment/templates/staging.mtaext.template .mtaext.staging
+#   # Edit values below (especially APPROUTER_HOST)
+#   tools/deploy.sh staging
+#
+# deploy.sh builds from the generated staging descriptor
+# (tools/make-staging-mta.js → mta.staging.generated.yaml, MTA ID
+# cloud-llm-hub-staging), never from mta.yaml directly: it renames every
+# identifier to *-staging, TENANT_HOST_PATTERN included, so the approuter
+# takes the xsuaa tenant from a <subdomain>-cloud-llm-hub-staging host.
 #
 # This creates a separate app with its own URL:
 #   https://<APPROUTER_HOST>.<CF_LANDSCAPE>/
 
 _schema-version: '3.3.0'
-ID: cloud-llm-hub-staging                            # Different ID = parallel deploy
-extends: cloud-llm-hub
+ID: cloud-llm-hub-staging-deploy
+extends: cloud-llm-hub-staging                       # the generated staging MTA
 version: 1.0.0
 
 parameters:
