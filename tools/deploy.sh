@@ -5,6 +5,7 @@
 #   1. cf login to the correct subaccount
 #   2. cd to the deployment checkout (the branch that carries this subaccount's .mtaext)
 #   3. .env with AICORE_* secrets (if no AI Core binding in this subaccount)
+#   4. Tools: node, cf with the multiapps plugin (cf deploy), GNU make (mbt build)
 #
 # Usage:
 #   tools/deploy.sh            # production (.mtaext)
@@ -37,6 +38,19 @@ fi
 
 BRANCH=$(git branch --show-current)
 echo "=== Deploy: $BRANCH ==="
+
+# Tools the deploy needs — fail now, not halfway through.
+# Captured first: `cf plugins | grep -q` can fail under pipefail when grep
+# closes the pipe early (SIGPIPE on cf).
+CF_PLUGINS=$(cf plugins 2>/dev/null || true)
+if [[ "$CF_PLUGINS" != *multiapps* ]]; then
+  echo "Error: 'cf deploy' needs the multiapps CF CLI plugin: cf install-plugin multiapps -f"
+  exit 1
+fi
+if ! command -v make >/dev/null 2>&1; then
+  echo "Error: 'mbt build' needs GNU make on PATH (Windows: winget install ezwinports.make)"
+  exit 1
+fi
 
 # Verify CF target matches deploy branch
 APPROUTER_HOST=$(grep -oP 'APPROUTER_HOST:\s*"\K[^"]+' "$MTAEXT" 2>/dev/null || echo "")
@@ -95,33 +109,19 @@ echo "[1/4] Merge main..."
 git merge --no-edit main
 
 # Inject secrets from .env BEFORE deploy
-# Secrets not in mta.yaml properties — cf set-env values persist through deploy
+# Secrets not in mta.yaml properties — cf set-env values persist through deploy.
+# On the first deploy the app does not exist yet: set them after the deploy
+# and restart, or the app starts without them.
 echo ""
 echo "[2/4] Secrets..."
+SECRETS_AFTER_DEPLOY=""
 if [ -f .env ]; then
-  SRV_APP_RESOLVED="$SRV_APP"
-  python3 - "$SRV_APP_RESOLVED" << 'PYEOF'
-import subprocess, sys
-
-srv = sys.argv[1]
-env = {}
-with open('.env') as f:
-    for line in f:
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            k, v = line.split('=', 1)
-            env[k.strip()] = v.strip()
-
-if not env:
-    print('  No vars in .env')
-    sys.exit(0)
-
-for k, v in env.items():
-    r = subprocess.run(['cf', 'set-env', srv, k, v], capture_output=True, text=True)
-    status = 'OK' if r.returncode == 0 else 'FAIL'
-    display = v[:8] + '...' if len(v) > 12 else v
-    print(f'  {k}={display} : {status}')
-PYEOF
+  if cf app "$SRV_APP" --guid >/dev/null 2>&1; then
+    node tools/set-env-from-dotenv.js "$SRV_APP" .env || echo "  WARNING: some variables were not set"
+  else
+    echo "  $SRV_APP does not exist yet — secrets go in after the deploy"
+    SECRETS_AFTER_DEPLOY=1
+  fi
 else
   echo "  No .env — skipping secret injection"
 fi
@@ -138,13 +138,34 @@ npx tsx tools/generate-tool-embeddings.ts --mtaext "$MTAEXT"
 # Build
 echo ""
 echo "[3/4] Build..."
-npx mbt build $MTA_FLAG 2>&1 | tail -3
+# Run mbt from a copy outside node_modules: mta.yaml's before-all deletes
+# node_modules and runs npm ci, and Windows cannot delete the running mbt.exe
+# (EPERM) — make then reports only "pre_build Error 1".
+MBT_SRC=""
+for f in node_modules/mbt/unpacked_bin/mbt node_modules/mbt/unpacked_bin/mbt.exe; do
+  if [ -f "$f" ]; then MBT_SRC="$f"; break; fi
+done
+if [ -z "$MBT_SRC" ]; then
+  echo "Error: mbt binary not found under node_modules/mbt — run npm install"
+  exit 1
+fi
+MBT_DIR=$(mktemp -d)
+trap 'rm -rf "$MBT_DIR"' EXIT
+cp "$MBT_SRC" "$MBT_DIR/"
+"$MBT_DIR/$(basename "$MBT_SRC")" build $MTA_FLAG 2>&1 | tail -3
 
 # Deploy (app restarts automatically — no separate restart needed)
 MTAR=$(ls -t mta_archives/*.mtar 2>/dev/null | head -1)
 echo ""
 echo "[4/4] Deploy $MTAR..."
 cf deploy "$MTAR" -e "$MTAEXT"
+
+if [ -n "$SECRETS_AFTER_DEPLOY" ]; then
+  echo ""
+  echo "[4/4] Secrets for the new app, then restart..."
+  node tools/set-env-from-dotenv.js "$SRV_APP" .env || echo "  WARNING: some variables were not set"
+  cf restart "$SRV_APP"
+fi
 
 echo ""
 echo "=== Done: $BRANCH ==="

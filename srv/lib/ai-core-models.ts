@@ -104,6 +104,21 @@ async function fetchModels(llm: ModelListConfig): Promise<AiCoreModelEntry[]> {
   // Sort alphabetically
   models.sort((a, b) => a.id.localeCompare(b.id));
 
+  // An orchestration-only tenant has no per-model deployments: the models are
+  // reached through the orchestration deployment, so answer the configured
+  // one — an empty list leaves the chat UI waiting forever.
+  if (models.length === 0 && llm.model) {
+    log.info('No per-model deployments — answering the configured model', {
+      model: llm.model,
+    });
+    models.push({
+      id: llm.model,
+      object: 'model',
+      created: 0,
+      owned_by: 'sap-ai-core',
+    });
+  }
+
   log.info('Fetched AI Core models', {
     total: data.resources.length,
     llmModels: models.length,

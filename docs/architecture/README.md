@@ -10,6 +10,7 @@ System architecture, APIs, and technical specifications.
 - [**Features**](FEATURES.md) — capabilities and feature matrix
 - [**Extension Guide**](EXTENSION_GUIDE.md) — adding new tools, agents, connections
 - [**MCP Header Matrix**](MCP_HEADER_MATRIX.md) — MCP protocol header specifications
+- [**Concepts**](concepts/README.md) — planned deployment designs (client-agnostic, outside BTP)
 
 ## Quick Links
 
