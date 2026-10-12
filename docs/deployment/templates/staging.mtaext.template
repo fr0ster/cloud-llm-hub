@@ -57,5 +57,5 @@ parameters:
   # CF_LANDSCAPE: "cfapps.eu10.hana.ondemand.com"   # required: your subaccount's CF landscape
 
 resources:
-  - name: cloud-llm-hub-ai-core
+  - name: cloud-llm-hub-staging-ai-core               # renamed by the generator
     active: true
