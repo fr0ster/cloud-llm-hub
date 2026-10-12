@@ -719,8 +719,11 @@ const agentHandles = new Map<string, SmartAgentHandle>();
 /** Set to true after initSmartAgents() completes, regardless of destination success */
 let initializationDone = false;
 
-/** Fallback agent without MCP tools — used when no destinations are available */
+/** Agent without MCP tools — used while the subaccount has no destination */
 let llmOnlyHandle: SmartAgentHandle | null = null;
+/** Agent without MCP tools — the escape-hatch fallback for an existing but
+ * unreachable destination (LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK) */
+let llmOnlyFallbackHandle: SmartAgentHandle | null = null;
 
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
@@ -2546,10 +2549,14 @@ export function withConversationHistory(agent: SmartAgent): SmartAgent {
 
 /**
  * Build a SmartAgent without MCP tools — LLM-only mode.
- * Used as fallback when no SAP destinations are available.
+ *
+ * @param why - `waiting`: the subaccount has no SAP destination yet;
+ * `unreachable`: one exists but cannot be reached (the escape-hatch fallback).
+ * The two need different remedies, so the prompt tells them apart.
  */
 async function buildLlmOnlyAgent(
   config: AgentConfig,
+  why: 'waiting' | 'unreachable',
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
@@ -2570,9 +2577,13 @@ async function buildLlmOnlyAgent(
     },
     prompts: {
       system: [
-        'You are a helpful AI assistant. No MCP tools are available — SAP system destinations are not configured or unreachable.',
+        why === 'waiting'
+          ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
+          : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
         'Answer questions using your knowledge. If the user asks to perform SAP operations, explain that SAP connectivity is not available.',
-        'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.',
+        why === 'waiting'
+          ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
+          : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
         "Respond in the user's language. Code and object names always in English.",
       ].join('\n'),
     },
@@ -2669,7 +2680,7 @@ export async function getSmartAgent(
   // for). This is not the "explicit destination not ready" case.
   if (!destName) {
     if (!llmOnlyHandle) {
-      llmOnlyHandle = await buildLlmOnlyAgent(config);
+      llmOnlyHandle = await buildLlmOnlyAgent(config, 'waiting');
     }
     return llmOnlyHandle;
   }
@@ -2753,10 +2764,10 @@ export async function getSmartAgent(
     destination: destName,
     status,
   });
-  if (!llmOnlyHandle) {
-    llmOnlyHandle = await buildLlmOnlyAgent(config);
+  if (!llmOnlyFallbackHandle) {
+    llmOnlyFallbackHandle = await buildLlmOnlyAgent(config, 'unreachable');
   }
-  return llmOnlyHandle;
+  return llmOnlyFallbackHandle;
 }
 
 /**
@@ -2779,7 +2790,7 @@ export async function initSmartAgents(): Promise<void> {
       model: getCurrentModel(),
       mode: config.agent.mode,
     });
-    llmOnlyHandle = await buildLlmOnlyAgent(config);
+    llmOnlyHandle = await buildLlmOnlyAgent(config, 'waiting');
     initializationDone = true;
     watchForDestinations();
     return;
