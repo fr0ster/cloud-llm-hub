@@ -11,7 +11,7 @@
 
 import cds, { type Request, type Service } from '@sap/cds';
 import { type AgentConfig, getAgentConfig } from './agent-config';
-import { getSmartAgent } from './agent-manager';
+import { getSmartAgent, isWaitingForDestinations } from './agent-manager';
 
 /**
  * Register CAP service handlers
@@ -67,9 +67,15 @@ export default async function registerAgentServiceHandlers(
       if (healthResult.ok) {
         const v = healthResult.value;
         const mcpConnected = v.mcp.length > 0 && v.mcp.every((m) => m.ok);
+        // The LLM answers, but the hub is not ready for SAP work yet.
+        const waiting = isWaitingForDestinations();
 
         return {
-          status: v.llm ? 'READY' : 'NOT_READY',
+          status: !v.llm
+            ? 'NOT_READY'
+            : waiting
+              ? 'WAITING_FOR_DESTINATIONS'
+              : 'READY',
           agentReady: v.llm,
           mcpConnected,
           llmProvider: 'SAP Core AI',

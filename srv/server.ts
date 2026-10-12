@@ -13,6 +13,10 @@
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before any submodule imports
 import './env-setup';
 
+import {
+  HEADER_SAP_DESTINATION,
+  HEADER_SAP_URL,
+} from '@mcp-abap-adt/interfaces-network';
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
@@ -30,6 +34,7 @@ import {
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
+import { getAvailableDestinations } from './lib/btp-destinations';
 import {
   formatErrorMessage,
   httpErrorText,
@@ -45,6 +50,13 @@ import {
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
+import {
+  agentStepCalls,
+  jsonRpcError,
+  jsonRpcErrorFor,
+  mcpDestinationFailureMessage,
+  mcpDestinationRefusal,
+} from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
 import { startProviders } from './lib/providers';
 import { sessionMiddleware } from './lib/session-middleware';
@@ -73,6 +85,44 @@ function isMcpRequestBody(body: unknown): body is {
   id?: string | number;
 } {
   return body !== null && typeof body === 'object' && !Array.isArray(body);
+}
+
+/**
+ * Destination guard: a SAP-backed MCP call that names no destination, in a
+ * subaccount that has none, is answered with what to configure — the MCP
+ * server is never built for it. Calls that need no SAP pass.
+ *
+ * @returns true when the call was refused (the response is sent)
+ */
+async function refuseWithoutDestination(
+  req: Request,
+  res: Response,
+  body: unknown,
+  needsSap: boolean,
+  named: boolean,
+): Promise<boolean> {
+  if (!needsSap) return false;
+  const direct = !!req.headers[HEADER_SAP_URL];
+  const available =
+    direct || named
+      ? []
+      : (await getAvailableDestinations()).map((d) => d.name);
+  const refusal = mcpDestinationRefusal(named, direct, available);
+  if (!refusal) return false;
+  cds.log('mcp-proxy').info('MCP call refused by the destination guard', {
+    reason: refusal.reason,
+  });
+  const error = jsonRpcErrorFor(body, refusal.message, {
+    reason: refusal.reason,
+  });
+  if (error) {
+    res
+      .writeHead(503, { 'Content-Type': 'application/json' })
+      .end(JSON.stringify(error));
+  } else {
+    res.writeHead(202).end();
+  }
+  return true;
 }
 
 /**
@@ -159,6 +209,12 @@ export async function handleStreamHTTP(
     // Create NEW MCP server for this request (per-request architecture).
     // The ABAP connection is opened only when the message actually reaches SAP.
     const establish = needsSapConnection(body);
+    const named = !!(
+      req.headers[HEADER_SAP_DESTINATION] as string | undefined
+    )?.trim();
+    if (await refuseWithoutDestination(req, res, body, establish, named)) {
+      return;
+    }
     const result = await createMCPServerForRequest(req, { establish });
     cleanup = result.cleanup;
     if (!establish) {
@@ -230,7 +286,25 @@ export async function handleStreamHTTP(
       };
       const statusCode = err?.response?.status || err?.statusCode || 500;
       const userMessage = formatErrorMessage(error);
-      res.writeHead(statusCode).end(httpErrorText(statusCode, userMessage));
+      const destination = (
+        req.headers[HEADER_SAP_DESTINATION] as string | undefined
+      )?.trim();
+      if (destination) {
+        // The destination failed while the call ran: say which and what to check.
+        res
+          .writeHead(statusCode, { 'Content-Type': 'application/json' })
+          .end(
+            JSON.stringify(
+              jsonRpcError(
+                isMcpRequestBody(body) ? body.id : null,
+                mcpDestinationFailureMessage(destination, userMessage),
+                { reason: 'destination_failed', destination },
+              ),
+            ),
+          );
+      } else {
+        res.writeHead(statusCode).end(httpErrorText(statusCode, userMessage));
+      }
     } else {
       res.end();
     }
@@ -451,6 +525,18 @@ cds.on('bootstrap', (app: Application) => {
         } catch {
           body = s || null;
         }
+      }
+
+      // Only execute_step reaches SAP; it names its system by argument or
+      // by the connection's default X-SAP-Destination header.
+      const steps = agentStepCalls(body);
+      const named =
+        steps.allNamed ||
+        !!(req.headers[HEADER_SAP_DESTINATION] as string | undefined)?.trim();
+      if (
+        await refuseWithoutDestination(req, res, body, steps.runsStep, named)
+      ) {
+        return;
       }
 
       const result = await createAgentMcpServerForRequest(req);

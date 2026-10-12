@@ -719,8 +719,11 @@ const agentHandles = new Map<string, SmartAgentHandle>();
 /** Set to true after initSmartAgents() completes, regardless of destination success */
 let initializationDone = false;
 
-/** Fallback agent without MCP tools — used when no destinations are available */
+/** Agent without MCP tools — used while the subaccount has no destination */
 let llmOnlyHandle: SmartAgentHandle | null = null;
+/** Agent without MCP tools — the escape-hatch fallback for an existing but
+ * unreachable destination (LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK) */
+let llmOnlyFallbackHandle: SmartAgentHandle | null = null;
 
 /** Runtime model overrides (null = use config/env default) */
 let currentModel: string | null = null;
@@ -915,6 +918,14 @@ export function forgetSessionDestination(
   sessionId: string,
 ): void {
   lastDestinationBySession.delete(destinationKey(userId, sessionId));
+}
+
+/**
+ * LLM-only mode with no destination in the subaccount yet: the LLM answers,
+ * but nothing SAP-side (MCP tools) works until a destination appears.
+ */
+export function isWaitingForDestinations(): boolean {
+  return !getAgentConfig().mcp.destination && destinationStates.size === 0;
 }
 
 /** Get all destination states for API/UI consumption */
@@ -2538,10 +2549,14 @@ export function withConversationHistory(agent: SmartAgent): SmartAgent {
 
 /**
  * Build a SmartAgent without MCP tools — LLM-only mode.
- * Used as fallback when no SAP destinations are available.
+ *
+ * @param why - `waiting`: the subaccount has no SAP destination yet;
+ * `unreachable`: one exists but cannot be reached (the escape-hatch fallback).
+ * The two need different remedies, so the prompt tells them apart.
  */
 async function buildLlmOnlyAgent(
   config: AgentConfig,
+  why: 'waiting' | 'unreachable',
 ): Promise<SmartAgentHandle> {
   const log = cds.log('agent-manager');
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
@@ -2562,8 +2577,13 @@ async function buildLlmOnlyAgent(
     },
     prompts: {
       system: [
-        'You are a helpful AI assistant. No MCP tools are available — SAP system destinations are not configured or unreachable.',
+        why === 'waiting'
+          ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
+          : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
         'Answer questions using your knowledge. If the user asks to perform SAP operations, explain that SAP connectivity is not available.',
+        why === 'waiting'
+          ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
+          : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
         "Respond in the user's language. Code and object names always in English.",
       ].join('\n'),
     },
@@ -2660,7 +2680,7 @@ export async function getSmartAgent(
   // for). This is not the "explicit destination not ready" case.
   if (!destName) {
     if (!llmOnlyHandle) {
-      llmOnlyHandle = await buildLlmOnlyAgent(config);
+      llmOnlyHandle = await buildLlmOnlyAgent(config, 'waiting');
     }
     return llmOnlyHandle;
   }
@@ -2744,10 +2764,10 @@ export async function getSmartAgent(
     destination: destName,
     status,
   });
-  if (!llmOnlyHandle) {
-    llmOnlyHandle = await buildLlmOnlyAgent(config);
+  if (!llmOnlyFallbackHandle) {
+    llmOnlyFallbackHandle = await buildLlmOnlyAgent(config, 'unreachable');
   }
-  return llmOnlyHandle;
+  return llmOnlyFallbackHandle;
 }
 
 /**
@@ -2770,8 +2790,9 @@ export async function initSmartAgents(): Promise<void> {
       model: getCurrentModel(),
       mode: config.agent.mode,
     });
-    llmOnlyHandle = await buildLlmOnlyAgent(config);
+    llmOnlyHandle = await buildLlmOnlyAgent(config, 'waiting');
     initializationDone = true;
+    watchForDestinations();
     return;
   }
 
@@ -2786,10 +2807,17 @@ export async function initSmartAgents(): Promise<void> {
     warmFirst: destName,
   });
 
-  // Background: build the shared tool corpus ONCE (fire-and-forget — readiness
-  // does not wait on it; getSmartAgent/initDestination await it on the request
-  // path via the bounded wait). Then warm ALL SAP destinations (the configured
-  // one first as a non-privileged hint). Non-blocking — never gates readiness.
+  startDestinationWarmup();
+}
+
+/**
+ * Background: build the shared tool corpus ONCE (fire-and-forget — readiness
+ * does not wait on it; getSmartAgent/initDestination await it on the request
+ * path via the bounded wait). Then warm ALL SAP destinations (the configured
+ * one first as a non-privileged hint). Non-blocking — never gates readiness.
+ */
+function startDestinationWarmup(): void {
+  const log = cds.log('agent-manager');
   ensureSharedToolsVectorized().catch((err) => {
     // A missing corpus is a deployment defect, not a transient: say so loudly.
     // The process keeps running, but no destination ever becomes ready: every
@@ -2807,6 +2835,44 @@ export async function initSmartAgents(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   });
+}
+
+/**
+ * LLM-only mode waits for SAP destinations: poll the BTP Destination service
+ * and, once the subaccount has one, switch to the working mode — load the tool
+ * corpus and warm the destinations exactly as a normal start does. The UI sees
+ * them in /v1/models and opens the login gate. Interval:
+ * LLM_AGENT_DESTINATION_WATCH_MS (default 60 s).
+ */
+function watchForDestinations(): void {
+  const log = cds.log('agent-manager');
+  const intervalMs =
+    Number(process.env.LLM_AGENT_DESTINATION_WATCH_MS) > 0
+      ? Number(process.env.LLM_AGENT_DESTINATION_WATCH_MS)
+      : 60_000;
+  log.info('Waiting for SAP destinations', { intervalMs });
+  let checking = false;
+  const timer = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      clearDestinationsCache();
+      const found = await getAvailableDestinations();
+      if (found.length === 0) return;
+      clearInterval(timer);
+      log.info('SAP destinations appeared — switching to working mode', {
+        destinations: found.map((d) => d.name),
+      });
+      startDestinationWarmup();
+    } catch (err) {
+      log.warn('Destination watch failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      checking = false;
+    }
+  }, intervalMs);
+  timer.unref();
 }
 
 /**
