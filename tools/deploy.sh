@@ -53,7 +53,14 @@ if ! command -v make >/dev/null 2>&1; then
 fi
 
 # Verify CF target matches deploy branch
-APPROUTER_HOST=$(grep -oP 'APPROUTER_HOST:\s*"\K[^"]+' "$MTAEXT" 2>/dev/null || echo "")
+# Parsed as YAML: the host may be unquoted or single-quoted.
+if ! APPROUTER_HOST=$(node -e '
+  const doc = require("js-yaml").load(require("node:fs").readFileSync(process.argv[1], "utf8")) || {};
+  process.stdout.write(String((doc.parameters || {}).APPROUTER_HOST ?? ""));
+' "$MTAEXT"); then
+  echo "Error: cannot read parameters.APPROUTER_HOST from $MTAEXT"
+  exit 1
+fi
 # Full org string (e.g. "Acme Inc_cloud-llm-hub-abc123"); awk '{print $2}'
 # used to grab only the first token ("Acme") and falsely warn.
 CF_ORG=$(cf target 2>&1 | grep "^org:" | sed 's/^org:[[:space:]]*//')
