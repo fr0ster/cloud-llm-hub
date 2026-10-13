@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [7.1.0] - 2026-10-13
+
+### Migration
+
+- **`tools/deploy.sh` checks the approuter host.** `APPROUTER_HOST` in
+  `.mtaext` must be `<subaccount subdomain>-cloud-llm-hub`
+  (`…-cloud-llm-hub-staging` for staging): the approuter takes the xsuaa
+  tenant from its host (`TENANT_HOST_PATTERN`), and any other host sends the
+  login to the generic SAP zone — a password page without the subaccount's
+  users or trusted IdPs. The deploy now stops on a host without the prefix
+  and, once deployed, on a prefix that is not the subaccount's subdomain.
+  Rename the host in `.mtaext` (the subdomain is in the cockpit, subaccount
+  overview); the old route is unmapped by the deploy.
+- **The staging template deploys through `tools/deploy.sh staging`.** It
+  extends the generated `cloud-llm-hub-staging` descriptor and names
+  `cloud-llm-hub-staging-ai-core`, like the existing staging deployments.
+
+### Added
+
+- **LLM-only mode waits for SAP destinations and switches on its own (#7).**
+  With no destination configured and none in the subaccount, the hub answers
+  from the LLM and polls the Destination service
+  (`LLM_AGENT_DESTINATION_WATCH_MS`, default 60 s). Once a destination
+  exists it loads the tool corpus and warms destinations as a normal start
+  does — no restart. `Health()` reports `WAITING_FOR_DESTINATIONS`; the chat
+  UI skips the login gate while there is nothing to pick and says it is
+  waiting.
+- **MCP destination guard (#7).** A SAP-backed MCP call that names no
+  destination, in a subaccount without one, is answered with a JSON-RPC
+  error (its own request id) saying to configure an HTTP(S) destination
+  through the Cloud Connector; the MCP server is never built for it. The
+  handshake, `tools/list` and, on the planner surface, everything but
+  `execute_step` still work. A named destination is left to destination
+  resolution; if it fails, the error names it and what to check instead of
+  a bare `Internal Server Error`.
+
+### Fixed
+
+- **Model list on an orchestration-only AI Core (#9).** A tenant with no
+  per-model deployments got an empty `/v1/models`, and the chat UI stayed on
+  "CONNECTING...". The configured model is listed instead.
+- **`tools/deploy.sh` on Windows, unchanged on Unix (#10).**
+  - Secrets go through node (`tools/set-env-from-dotenv.js`) instead of
+    `python3`, often the Microsoft Store stub on Windows; only names and
+    status are printed.
+  - On the first deploy the secrets are set after `cf deploy`, then the app
+    restarts (they used to fail because the app did not exist yet).
+  - `mbt` runs from a temporary copy, since `before-all` deletes
+    `node_modules` and Windows cannot delete the running `mbt.exe`.
+  - Preflight checks for the multiapps CF plugin and GNU make.
+- **The LLM-only fallback for an unreachable destination**
+  (`LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK`) says to check the destination's
+  connectivity, not to add one (#7).
+
+### Changed
+
+- **Docs:** client-agnostic deployment concept, planned (#12); the
+  configurable-providers spec no longer names a deployment fork (#13).
+
 ## [7.0.0] - 2026-10-04
 
 ### Migration
