@@ -31,6 +31,7 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 const mockConnect = jest.fn();
 const mockCreateConnection = jest.fn((_opts: Record<string, unknown>) => ({
   connect: mockConnect,
+  makeAdtRequest: async () => ({ data: { userName: 'PROPAGATED' } }),
 }));
 jest.mock('../../srv/connections/connectionFactory', () => ({
   createConnection: (opts: Record<string, unknown>) =>
@@ -206,3 +207,39 @@ describe('establishRequestConnection', () => {
     expect(result.connection).toBeUndefined();
   });
 });
+
+test.each([false, true])(
+  'PP uses JWT without credentials and ignores basic override (%s)',
+  async (override) => {
+    mockResolve.mockResolvedValue({
+      destinationName: 'PP',
+      proxyType: 'OnPremise',
+      authenticationType: 'PrincipalPropagation',
+      sapConfig: {
+        url: 'http://virtual:443',
+        authType: 'jwt',
+        jwtToken: 'user-jwt',
+      },
+    });
+    const res = makeRes();
+    const result = await establishRequestConnection(
+      makeReq({
+        authorization: 'Bearer user-jwt',
+        ...(override
+          ? { 'x-sap-login': 'USER', 'x-sap-password': 'secret' }
+          : {}),
+      }),
+      res as unknown as Response,
+      'PP',
+    );
+    expect(result.handled).toBe(false);
+    expect(mockCreateConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sapConfig: expect.objectContaining({
+          authType: 'jwt',
+          jwtToken: 'user-jwt',
+        }),
+      }),
+    );
+  },
+);

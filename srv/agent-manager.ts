@@ -70,6 +70,7 @@ import {
   type Providers,
 } from './lib/providers';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
+import { requestSystemContextResolver } from './lib/request-system-context';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
 import {
@@ -782,7 +783,8 @@ export interface DestinationState {
 
 /**
  * Whether a destination requires the caller's own SAP credentials.
- * On-premise (Cloud Connector) and NoAuthentication destinations do; cloud
+ * On-premise basic and NoAuthentication destinations do; principal propagation
+ * authenticates the user with a JWT instead. Cloud
  * destinations with their own auth (JWT via OAuth2*) do not. Mirrors the
  * fail-closed rule in srv/lib/request-connection.ts.
  */
@@ -791,7 +793,8 @@ export function destinationRequiresCredentials(
   authentication?: string,
 ): boolean {
   return (
-    (proxyType ?? '').toLowerCase() === 'onpremise' ||
+    ((proxyType ?? '').toLowerCase() === 'onpremise' &&
+      authentication !== 'PrincipalPropagation') ||
     authentication === 'NoAuthentication'
   );
 }
@@ -1271,6 +1274,7 @@ export function buildToolDocs(tools: ToolDocInput[]): {
  */
 export function getHandlerExporterConfig() {
   return {
+    systemContextResolver: requestSystemContextResolver,
     includeReadOnly: true,
     includeHighLevel: true,
     includeLowLevel: false,
@@ -2030,7 +2034,9 @@ async function buildEmbeddedMcpAdapter(
   // Resolve destination metadata for proxy type/system type only. Do not probe
   // or connect here: on-premise destinations must not use a destination service
   // user at startup. Real ABAP credentials are supplied per request.
-  await resolveDestinationSapConfig(destinationName);
+  await resolveDestinationSapConfig(destinationName, undefined, {
+    metadataOnly: true,
+  });
 
   setSystemContext({});
 

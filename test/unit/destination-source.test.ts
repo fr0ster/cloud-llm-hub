@@ -32,6 +32,7 @@ describe('DestinationSource', () => {
       {
         name: 'SAP_DEV',
         url: 'https://sap.example.com:44300',
+        sapClient: '100',
         proxyType: 'Internet',
         authentication: 'NoAuthentication',
       },

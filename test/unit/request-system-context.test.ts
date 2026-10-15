@@ -1,3 +1,9 @@
+import { getSystemInformation as lookup } from '@mcp-abap-adt/adt-clients/core';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import {
+  defaultSystemContextResolver,
+  withResolvedSystemContext,
+} from '@mcp-abap-adt/lib/request-context';
 /**
  * The SAP responsible person and master system, scoped to one request.
  *
@@ -16,6 +22,7 @@ import {
   setSystemContext,
 } from '@mcp-abap-adt/lib/utils';
 import {
+  requestSystemContextResolver,
   resolveRequestSystem,
   runWithRequestSystem,
 } from '../../srv/lib/request-system-context';
@@ -157,5 +164,97 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
       async () => getRequestContext(),
     );
     expect(scope).toMatchObject({ responsible: 'ALICE', masterLanguage: 'EN' });
+  });
+});
+
+jest.mock('@mcp-abap-adt/adt-clients/core', () => ({
+  getSystemInformation: jest.fn(),
+}));
+jest.mock('@mcp-abap-adt/lib/request-context', () => ({
+  ...jest.requireActual('@mcp-abap-adt/lib/request-context'),
+  defaultSystemContextResolver: jest.fn(),
+}));
+describe('lazy resolver', () => {
+  const connection = () => ({}) as IAbapConnection;
+  beforeEach(() => {
+    jest
+      .mocked(defaultSystemContextResolver)
+      .mockReset()
+      .mockResolvedValue(null);
+    jest.mocked(lookup).mockReset();
+  });
+  it('resolves on-premise user and master system', async () => {
+    jest
+      .mocked(lookup)
+      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+    await expect(requestSystemContextResolver(connection())).resolves.toEqual({
+      responsible: 'USER',
+      masterSystem: 'DEV',
+    });
+  });
+  it.each([null, {}])('returns null for missing user (%s)', async (info) => {
+    jest.mocked(lookup).mockResolvedValue(info as never);
+    await expect(
+      requestSystemContextResolver(connection()),
+    ).resolves.toBeNull();
+  });
+  it('falls back on on-premise errors', async () => {
+    jest.mocked(lookup).mockRejectedValue(new Error('private body'));
+    await expect(
+      requestSystemContextResolver(connection()),
+    ).resolves.toBeNull();
+  });
+  it.each([{}, { responsible: 'CLOUD' }])(
+    'delegates cloud answer (%s)',
+    async (answer) => {
+      jest.mocked(defaultSystemContextResolver).mockResolvedValue(answer);
+      await expect(requestSystemContextResolver(connection())).resolves.toEqual(
+        answer,
+      );
+      expect(lookup).not.toHaveBeenCalled();
+    },
+  );
+  it('propagates cloud failures', async () => {
+    jest
+      .mocked(defaultSystemContextResolver)
+      .mockRejectedValue(new Error('failed'));
+    await expect(requestSystemContextResolver(connection())).rejects.toThrow(
+      'failed',
+    );
+    expect(lookup).not.toHaveBeenCalled();
+  });
+  it('lib keeps explicit responsible and memoizes lazily', async () => {
+    const conn = connection();
+    jest
+      .mocked(lookup)
+      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+    await runWithRequestSystem(
+      { responsible: 'STATED', login: 'HINT' },
+      async () => {
+        expect(lookup).not.toHaveBeenCalled();
+        for (let i = 0; i < 2; i++) {
+          const info = await withResolvedSystemContext(
+            conn,
+            getSystemInformation,
+            requestSystemContextResolver,
+          );
+          expect(info?.userName).toBe('STATED');
+        }
+      },
+    );
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])('lib applies user then login (%s)', async (found) => {
+    jest
+      .mocked(lookup)
+      .mockResolvedValue(found ? { userName: 'USER', systemID: 'DEV' } : null);
+    const info = await runWithRequestSystem({ login: 'HINT' }, () =>
+      withResolvedSystemContext(
+        connection(),
+        getSystemInformation,
+        requestSystemContextResolver,
+      ),
+    );
+    expect(info?.userName).toBe(found ? 'USER' : 'HINT');
   });
 });

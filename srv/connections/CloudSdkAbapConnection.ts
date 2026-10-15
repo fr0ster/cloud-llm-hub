@@ -266,22 +266,19 @@ export class CloudSdkAbapConnection implements AbapConnection {
     cookie: string | null,
   ): Promise<boolean> {
     try {
-      await executeHttpRequest(
-        { destinationName: this.destinationName },
-        {
-          method: 'GET',
-          url: `${baseUrl}/sap/bc/adt/compatibility/graph`,
-          timeout: 12_000,
-          httpAgent: this.getHttpAgent(),
-          headers: {
-            ...(await this.getAuthHeaders()),
-            'sap-adt-connection-id': this.sessionId,
-            // Explicit stateless ends the stateful session for this connection-id.
-            'x-sap-adt-sessiontype': 'stateless',
-            ...(cookie ? { Cookie: cookie } : {}),
-          },
+      await executeHttpRequest(await this.sdkDestination(), {
+        method: 'GET',
+        url: `${baseUrl}/sap/bc/adt/compatibility/graph`,
+        timeout: 12_000,
+        httpAgent: this.getHttpAgent(),
+        headers: {
+          ...(await this.getAuthHeaders()),
+          'sap-adt-connection-id': this.sessionId,
+          // Explicit stateless ends the stateful session for this connection-id.
+          'x-sap-adt-sessiontype': 'stateless',
+          ...(cookie ? { Cookie: cookie } : {}),
         },
-      );
+      });
       logger.debug('ADT session closed', {
         sessionId: this.sessionId?.substring(0, 8),
       });
@@ -327,19 +324,16 @@ export class CloudSdkAbapConnection implements AbapConnection {
     releasedByAdt: boolean,
   ): Promise<void> {
     try {
-      await executeHttpRequest(
-        { destinationName: this.destinationName },
-        {
-          method: 'GET',
-          url: `${baseUrl}/sap/public/bc/icf/logoff`,
-          timeout: 12_000,
-          httpAgent: this.getHttpAgent(),
-          headers: {
-            ...(await this.getAuthHeaders()),
-            ...(cookie ? { Cookie: cookie } : {}),
-          },
+      await executeHttpRequest(await this.sdkDestination(), {
+        method: 'GET',
+        url: `${baseUrl}/sap/public/bc/icf/logoff`,
+        timeout: 12_000,
+        httpAgent: this.getHttpAgent(),
+        headers: {
+          ...(await this.getAuthHeaders()),
+          ...(cookie ? { Cookie: cookie } : {}),
         },
-      );
+      });
       logger.debug('Told the server the session is finished', {
         sessionId: this.sessionId?.substring(0, 8),
       });
@@ -494,21 +488,18 @@ export class CloudSdkAbapConnection implements AbapConnection {
       return '';
     };
     try {
-      const response = await executeHttpRequest(
-        { destinationName: this.destinationName },
-        {
-          method: 'GET',
-          url: `${baseUrl}${path}`,
-          // Server-side timeout: the browser AbortController only stops the UI
-          // wait, not this Cloud SDK request.
-          timeout: 12_000,
-          httpAgent: this.getHttpAgent(),
-          headers: {
-            ...(await this.getAuthHeaders()),
-            ...(cookie ? { Cookie: cookie } : {}),
-          },
+      const response = await executeHttpRequest(await this.sdkDestination(), {
+        method: 'GET',
+        url: `${baseUrl}${path}`,
+        // Server-side timeout: the browser AbortController only stops the UI
+        // wait, not this Cloud SDK request.
+        timeout: 12_000,
+        httpAgent: this.getHttpAgent(),
+        headers: {
+          ...(await this.getAuthHeaders()),
+          ...(cookie ? { Cookie: cookie } : {}),
         },
-      );
+      });
       // Keep the session cookie this answered with. The probe is an
       // authenticated call, so the server may open a session for it — and a
       // session whose cookie we discarded can never be given back, because
@@ -785,31 +776,28 @@ export class CloudSdkAbapConnection implements AbapConnection {
         // own, so a hung CSRF request on a POST/PUT tool would otherwise block
         // the whole call indefinitely. Uses SAP_TIMEOUT_CSRF (default 15 s).
         const csrfTimeoutMs = Number(process.env.SAP_TIMEOUT_CSRF) || 15_000;
-        const response = await executeHttpRequest(
-          { destinationName: this.destinationName },
-          {
-            method: 'GET',
-            url: csrfUrl,
-            timeout: csrfTimeoutMs,
-            httpAgent: this.getHttpAgent(),
-            headers: {
-              ...(await this.getAuthHeaders()),
-              ...CSRF_CONFIG.REQUIRED_HEADERS,
-              // Send OUR client-generated stateful-session id on the discovery
-              // fetch too. This is the request where SAP establishes the HTTP
-              // session and sets the app-server-affinity cookie
-              // (SAP_SESSIONID_<sid>_<client>). Without the connection-id here,
-              // SAP established that session under a DIFFERENT context than the
-              // lock chain (which does send it), so the app-server pin did not
-              // carry — the first stateful request (LOCK) scattered and the
-              // GET/UNLOCK 400'd "Session not found" (cold-start orphaned lock).
-              // Binding the discovery to the same connection-id lets the whole
-              // lock→update→unlock chain resume one session on one app-server.
-              'sap-adt-connection-id': this.sessionId,
-              ...(csrfCookie ? { Cookie: csrfCookie } : {}),
-            },
+        const response = await executeHttpRequest(await this.sdkDestination(), {
+          method: 'GET',
+          url: csrfUrl,
+          timeout: csrfTimeoutMs,
+          httpAgent: this.getHttpAgent(),
+          headers: {
+            ...(await this.getAuthHeaders()),
+            ...CSRF_CONFIG.REQUIRED_HEADERS,
+            // Send OUR client-generated stateful-session id on the discovery
+            // fetch too. This is the request where SAP establishes the HTTP
+            // session and sets the app-server-affinity cookie
+            // (SAP_SESSIONID_<sid>_<client>). Without the connection-id here,
+            // SAP established that session under a DIFFERENT context than the
+            // lock chain (which does send it), so the app-server pin did not
+            // carry — the first stateful request (LOCK) scattered and the
+            // GET/UNLOCK 400'd "Session not found" (cold-start orphaned lock).
+            // Binding the discovery to the same connection-id lets the whole
+            // lock→update→unlock chain resume one session on one app-server.
+            'sap-adt-connection-id': this.sessionId,
+            ...(csrfCookie ? { Cookie: csrfCookie } : {}),
           },
-        );
+        });
 
         // Convert Cloud SDK response to Axios-like format
         const token = response.headers?.['x-csrf-token'] as string | undefined;
@@ -905,6 +893,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
     throw new Error(
       CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, 'Unexpected failure'),
     );
+  }
+
+  private async sdkDestination() {
+    return {
+      destinationName: this.destinationName,
+      ...(this.config.jwtToken ? { jwt: this.config.jwtToken } : {}),
+    };
   }
 
   /**
@@ -1097,27 +1092,19 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // - Authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
       // - Proxy configuration
       // - Token refresh
-      const response = await executeHttpRequest(
-        { destinationName: this.destinationName },
-        {
-          method: normalizedMethod as
-            | 'GET'
-            | 'POST'
-            | 'PUT'
-            | 'DELETE'
-            | 'PATCH',
-          url: requestUrl,
-          headers: requestHeaders,
-          httpAgent: this.getHttpAgent(),
-          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
-          params: params as Record<string, any> | undefined,
-          // Keep original data type (string for XML, object for JSON).
-          // Casting string→Record causes axios to serialize as JSON,
-          // ignoring Content-Type and triggering 415 on ADT endpoints.
-          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
-          data: data as any,
-        },
-      );
+      const response = await executeHttpRequest(await this.sdkDestination(), {
+        method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+        url: requestUrl,
+        headers: requestHeaders,
+        httpAgent: this.getHttpAgent(),
+        // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
+        params: params as Record<string, any> | undefined,
+        // Keep original data type (string for XML, object for JSON).
+        // Casting string→Record causes axios to serialize as JSON,
+        // ignoring Content-Type and triggering 415 on ADT endpoints.
+        // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
+        data: data as any,
+      });
 
       // Capture cookies from response to maintain session affinity
       // Critical for stateful sessions: lock → update → unlock → activate chain
@@ -1207,7 +1194,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
           }
 
           const retryResponse = await executeHttpRequest(
-            { destinationName: this.destinationName },
+            await this.sdkDestination(),
             {
               method: normalizedMethod as
                 | 'GET'

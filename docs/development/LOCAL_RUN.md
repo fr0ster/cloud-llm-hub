@@ -131,7 +131,7 @@ password) — see `cds watch --profile development` auth. `x-sap-login` /
 `x-sap-password` are the caller's own SAP credentials, sent per request; the
 hub never holds a default SAP user.
 
-Objects you create are attributed to the uppercased `x-sap-login`. Send
+Objects you create are attributed to the connected SAP user from systeminformation, falling back to uppercased `x-sap-login` if unavailable. Send
 `x-sap-responsible` to name another SAP user. A create with no responsible is
 refused with `system_context_missing` before anything reaches SAP.
 

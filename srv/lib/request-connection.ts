@@ -1,10 +1,14 @@
+import {
+  bindSystemIdentity,
+  resolveSystemIdentity,
+} from './system-identity-cache';
 /**
  * Per-request SAP connection establishment — shared by every channel that runs
  * ABAP tools on the user's behalf (`/v1/chat/completions`, `/v1/messages`, and
  * any future endpoint).
  *
  * Policy (fail-closed — no default destination service user is ever used):
- * - **On-premise destinations** (ProxyType=OnPremise) and **NoAuthentication**
+ * - **On-premise basic destinations** (ProxyType=OnPremise) and **NoAuthentication**
  *   destinations REQUIRE the caller's own ABAP `x-sap-login` / `x-sap-password`.
  *   Missing → 401 SAP_CREDENTIALS_REQUIRED, no connection is built.
  * - **Cloud destinations** (Internet proxy, http) use the destination's
@@ -14,8 +18,7 @@
  * - Either way the connection is `connect()`-validated before the request runs,
  *   so a bad/expired credential fails here with 401 instead of mid-pipeline.
  *
- * Principal-propagation refinement is deliberately left for a follow-up — for now
- * the resolved destination JWT is passed through unchanged for cloud destinations.
+ * PrincipalPropagation uses the authenticated user's JWT instead of SAP credentials.
  */
 
 import type { SapConfig } from '@mcp-abap-adt/connection';
@@ -90,14 +93,25 @@ export async function establishRequestConnection(
   // does NOT authenticate as that login. Declared before the try so BOTH the
   // success and the failure logs (and the auth config + dump principal) key off
   // this single effective-auth flag rather than the raw x-sap-login header.
-  const usedBasicOverride = !!(sapLogin && sapPassword);
+  let usedBasicOverride = !!(sapLogin && sapPassword);
 
   try {
     const resolved = await resolveDestinationSapConfig(
       destination,
-      req.headers.authorization?.replace('Bearer ', ''),
+      req.headers.authorization?.replace(/^Bearer\s+/i, ''),
     );
 
+    if (
+      resolved.authenticationType === 'PrincipalPropagation' &&
+      (sapLogin || sapPassword)
+    ) {
+      log.debug(
+        'Ignoring x-sap-login/x-sap-password because the destination uses principal propagation',
+      );
+    }
+    usedBasicOverride =
+      resolved.authenticationType !== 'PrincipalPropagation' &&
+      usedBasicOverride;
     // The declared kind, by the one rule (`system-type.ts`). An unknown value
     // is refused with a 400 before any connection is built.
     const systemType = resolveSystemType(req.headers, resolved.systemType);
@@ -105,7 +119,8 @@ export async function establishRequestConnection(
     // On-premise (Cloud Connector) and NoAuthentication destinations must run
     // under the caller's own ABAP user — never a destination service user.
     const requiresUserCredentials =
-      (resolved.proxyType ?? '').toLowerCase() === 'onpremise' ||
+      ((resolved.proxyType ?? '').toLowerCase() === 'onpremise' &&
+        resolved.authenticationType !== 'PrincipalPropagation') ||
       resolved.authenticationType === 'NoAuthentication';
 
     if (requiresUserCredentials && (!sapLogin || !sapPassword)) {
@@ -137,6 +152,13 @@ export async function establishRequestConnection(
       destinationName: resolved.destinationName,
     });
     await conn.connect();
+    bindSystemIdentity(conn, {
+      sapConfig,
+      destinationName: resolved.destinationName,
+      authenticationType: resolved.authenticationType,
+      jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
+    });
+    await resolveSystemIdentity(conn, systemType === 'cloud');
 
     const connection: IAbapConnection = conn;
     // NOTE: do NOT bind via enterWith here — the ALS store would be lost across

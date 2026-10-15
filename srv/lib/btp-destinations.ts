@@ -2,7 +2,7 @@
  * BTP Destinations — fetches and caches SAP system destinations.
  *
  * Uses BTP Destination Service REST API to list subaccount destinations,
- * filters to SAP-compatible systems (OnPremise + BasicAuth with SAP URLs).
+ * filters to SAP-compatible systems (OnPremise + BasicAuth / PrincipalPropagation).
  */
 
 import cds from '@sap/cds';
@@ -14,6 +14,9 @@ export interface SapDestination {
   url: string;
   authentication: string;
   proxyType: string;
+  cloudConnectorLocationId?: string;
+  sapClient?: string;
+  systemType?: string;
 }
 
 interface RawDestination {
@@ -29,7 +32,7 @@ interface RawDestination {
  * Heuristic: is this destination likely a SAP ABAP system usable for MCP?
  *
  * Criteria:
- * - OnPremise proxy (Cloud Connector) with BasicAuthentication
+ * - OnPremise proxy (Cloud Connector) with BasicAuthentication or PrincipalPropagation
  * - URL contains SAP-typical patterns (/sap/, known SAP ports)
  * - Excludes OData-only, AI, and non-ABAP destinations
  */
@@ -46,8 +49,9 @@ function isSapAbapDestination(d: RawDestination): boolean {
   const auth = d.Authentication || '';
   const proxy = d.ProxyType || '';
 
-  // Must be BasicAuthentication (MCP ADT requires it)
-  if (auth !== 'BasicAuthentication') return false;
+  // Both authentication modes support ADT through the Cloud Connector.
+  if (auth !== 'BasicAuthentication' && auth !== 'PrincipalPropagation')
+    return false;
 
   // Must be OnPremise (Cloud Connector to SAP system)
   if (proxy !== 'OnPremise') return false;
@@ -95,6 +99,11 @@ async function fetchDestinations(): Promise<SapDestination[]> {
       url: d.URL,
       authentication: d.Authentication,
       proxyType: d.ProxyType,
+      ...(d.CloudConnectorLocationId
+        ? { cloudConnectorLocationId: String(d.CloudConnectorLocationId) }
+        : {}),
+      ...(d['sap-client'] ? { sapClient: String(d['sap-client']) } : {}),
+      ...(d.SAP_SYSTEM_TYPE ? { systemType: String(d.SAP_SYSTEM_TYPE) } : {}),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 

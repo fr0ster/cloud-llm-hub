@@ -472,23 +472,9 @@ from its own `x-sap-*` headers, so there is nothing to reset.
 
 ### Responsible person and master system
 
-**TL;DR:** a created object's responsible person is your uppercased `X-SAP-Login`. Send `X-SAP-Responsible` only to name someone else. A create that finds no responsible is refused before anything is sent.
+For every system type, an explicit `x-sap-responsible` wins, followed by the logged-on SAP user from `/sap/bc/adt/core/http/systeminformation`, then uppercased `x-sap-login` if the endpoint has no user or is unavailable. The endpoint exists on ABAP Cloud and newer on-premise releases. Under principal propagation, `x-sap-login` is only a responsible hint, never an authentication credential. With no user, creates are refused with `system_context_missing`; send `x-sap-responsible` with an SAP user ID.
 
-The values are set per request and seen only by that request's run — on every channel: `/mcp/stream/http`, `/v1/chat/completions`, `/v1/messages` and `execute_step`.
-
-| Header | Role | Notes |
-|---|---|---|
-| `X-SAP-Responsible` | Stated responsible — an explicit override | Optional. Uppercased. Wins over the login. |
-| `X-SAP-Login` | The login — the responsible when none is stated | Uppercased. Not used on a system declared `cloud` (see below). |
-| `X-SAP-Master-System` | Master system (system ID) of created objects | Optional. Uppercased. Left out of the request when not known. |
-
-**How the responsible is found** (`@mcp-abap-adt/lib` 16):
-
-1. `X-SAP-Responsible`, when sent;
-2. else, on a system that is not `cloud`: the uppercased `X-SAP-Login`;
-3. else, on a system declared `cloud` (raw MCP route only): the user and system ID the system reports at `/sap/bc/adt/core/http/systeminformation`.
-
-**No responsible → refused.** The tool answers `isError` with `"error": "system_context_missing"`. Nothing is sent to SAP: no POST, no LOCK, so no lock can be left behind. With per-user credentials (`X-SAP-Login` / `X-SAP-Password`) on a system that is not `cloud` this does not happen. The one exception is a message class: it is created with the system's own default responsible and is never refused.
+Values are scoped to each request on all channels. `X-SAP-Master-System` overrides the system ID returned by the same probe; unknown master systems are omitted. The public ADT helper runs after a successful SAP connect using that same connection, once per authenticated session. A process-local LRU cache (1000 entries) includes unavailable answers and is keyed by destination or direct URL, SAP client, and authenticated principal. Principal-propagation entries expire at JWT `exp`; other entries default to eight hours, configurable through `SYSTEM_IDENTITY_CACHE_TTL_MS`. Transient errors are not cached. Control requests do not query SAP. Explicit responsible headers take precedence over cached identity. On-premise lookup failures fall back to headers; cloud failures retain retryable failure behavior. Creates without a responsible are refused before mutation.
 
 ### System type
 
@@ -507,8 +493,8 @@ Values: `onprem`, `cloud`, `legacy` (an older on-premise system). Case-insensiti
 
 What the kind changes:
 
-- **Raw MCP route:** which tools are listed (on-premise-only tools such as `CreateProgram`), how a missing responsible is found (above), and — for a direct `X-SAP-URL` connection — the connector: `cloud` → `AdtCloudConnector`, otherwise `AdtOnPremConnector`.
-- **Agent channels** (`/v1/*`, `execute_step`): the value is checked and logged. The embedded tool handlers run every destination as on-premise, so the login is the responsible there.
+- **Raw MCP route:** which tools are listed (on-premise-only tools such as `CreateProgram`), — for a direct `X-SAP-URL` connection — the connector: `cloud` → `AdtCloudConnector`, otherwise `AdtOnPremConnector`.
+- **Agent channels** (`/v1/*`, `execute_step`): the value is checked and logged. Responsible resolution follows the same order on every channel.
 
 The SAP client follows the same precedence: `X-SAP-Client` overrides the destination's `sap-client`.
 

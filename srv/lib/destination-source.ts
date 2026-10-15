@@ -22,11 +22,13 @@ export class EnvDestinationSource implements DestinationSource {
   constructor(private readonly destinations: EnvDestination[]) {}
   async list(): Promise<SapDestination[]> {
     return this.destinations.map(
-      ({ name, url, proxyType, authentication }) => ({
+      ({ name, url, proxyType, authentication, sapClient, systemType }) => ({
         name,
         url,
         proxyType,
         authentication,
+        ...(sapClient ? { sapClient } : {}),
+        ...(systemType ? { systemType } : {}),
       }),
     );
   }

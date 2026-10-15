@@ -3,10 +3,9 @@
  *
  * The kind decides two things: which direct connector the hub builds
  * (`AdtCloudConnector` for `cloud`, `AdtOnPremConnector` otherwise — taking the
- * class is how `@mcp-abap-adt/connection` is told the system), and what
- * `@mcp-abap-adt/lib` 16 does about a responsible person (`cloud`: asks the
- * system's `systeminformation`; otherwise: the stated responsible, else the
- * login).
+ * class is how `@mcp-abap-adt/connection` is told the system). Responsible
+ * resolution uses systeminformation for every kind via the shared resolver,
+ * after an explicit responsible header and before the login fallback.
  *
  * The one rule, used by every channel:
  *   1. the request's `x-sap-system-type` header;

@@ -84,7 +84,7 @@ destination — in the YAML `headers` block.
 | Header | Values | Effect |
 |---|---|---|
 | `x-sap-system-type` | `onprem` \| `cloud` \| `legacy` | The system kind. Overrides the destination's `SAP_SYSTEM_TYPE` property; default `onprem`. Never inferred from the URL, proxy type or auth. Unknown value → `400 INVALID_SYSTEM_TYPE`. |
-| `x-sap-responsible` | SAP user ID | Responsible person of created objects. Overrides the login (`x-sap-login`, uppercased), which is the responsible otherwise. |
+| `x-sap-responsible` | SAP user ID | Responsible person of created objects. Overrides the connected SAP user from systeminformation, then the uppercased `x-sap-login` fallback. |
 | `x-sap-master-system` | System ID | Master system of created objects. Left out when not sent (on-premise). |
 
 A create that finds no responsible is refused with `system_context_missing`, and nothing is sent to SAP.

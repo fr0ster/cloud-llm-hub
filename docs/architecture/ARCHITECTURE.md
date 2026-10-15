@@ -1135,8 +1135,8 @@ graph TB
 | `X-SAP-Destination` | BTP Destination name → triggers CloudSdkAbapConnection |
 | `X-SAP-URL` | Direct SAP system URL (no destination) |
 | `X-SAP-Client` | SAP client number; overrides the destination's `sap-client` |
-| `X-SAP-Login` / `X-SAP-Password` | Override destination auth with Basic; the uppercased login is the created objects' responsible (lib 16 `login`) |
-| `X-SAP-Responsible` | Stated responsible person; overrides the login |
+| `X-SAP-Login` / `X-SAP-Password` | Override destination auth with Basic; the uppercased login is the responsible fallback when systeminformation is unavailable |
+| `X-SAP-Responsible` | Stated responsible person; overrides lookup and login |
 | `X-SAP-Master-System` | Master system of created objects |
 | `X-SAP-System-Type` | `onprem` \| `cloud` \| `legacy`; overrides the destination's `SAP_SYSTEM_TYPE`; default `onprem`; unknown → 400 |
 | `X-SAP-Connectivity-Mode` | `onprem` to route through Cloud Connector |
@@ -1440,8 +1440,8 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
 - **Responsible person and master system.** Resolved per request once admitted
   and delivered through lib's `RequestContext`, so each run sees only its own
   (`srv/lib/request-system-context.ts`), from the caller's `x-sap-*` headers:
-  `x-sap-responsible` is the stated responsible, the uppercased `x-sap-login` is
-  lib 16's `login` (the responsible when none is stated). The raw MCP route
+  `x-sap-responsible` overrides the connected user from systeminformation;
+  uppercased `x-sap-login` is the fallback on every system type, including PP. The raw MCP route
   enters the same scope around the transport (`McpServerResult.handle` in
   `mcp-manager.ts`). A create with no responsible is refused by lib
   (`system_context_missing`) before any request.

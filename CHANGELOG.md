@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve creates' responsible on every system type from an explicit responsible header, then the connected SAP user via systeminformation, then uppercased login. Resolve once per authenticated session after connecting, with a bounded process-level identity cache shared across requests. Cache unavailable endpoints; retry transient failures. PP entries expire at JWT exp, other entries after eight hours (configurable with SYSTEM_IDENTITY_CACHE_TTL_MS). Cloud retains lib's default behavior.
+
+### Added
+
+- **On-premise principal propagation.** `PrincipalPropagation` destinations use
+  the logged-in user JWT through Cloud Connector, without SAP login/password
+  headers, which PP ignores. Tool warm-up needs no user connection. Creates
+  resolve the propagated SAP user through the public ADT systeminformation helper;
+  explicit basic overrides remain supported for non-PP destinations.
+
 ## [7.1.0] - 2026-10-13
 
 ### Migration
