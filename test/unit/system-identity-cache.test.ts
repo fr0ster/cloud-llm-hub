@@ -16,7 +16,7 @@ const input = (user: string) => ({
   destinationName: 'SAP',
   authenticationType: 'PrincipalPropagation',
   jwt: token(user),
-  sapConfig: { url: 'https://sap', client: '100', authType: 'basic' as const },
+  sapConfig: { url: 'https://sap', client: '100', authType: 'jwt' as const },
 });
 const connection = (user: string) => {
   const conn = {} as IAbapConnection;
@@ -176,8 +176,42 @@ it('keys NoAuthentication basic sessions by login', () => {
     systemIdentitySession({
       ...input('unused'),
       authenticationType: 'NoAuthentication',
-      sapConfig: { ...input('unused').sapConfig, username },
+      sapConfig: { ...input('unused').sapConfig, authType: 'basic', username },
     });
   expect(session('alice')?.key).toBe(session(' ALICE ')?.key);
   expect(session('alice')?.key).not.toBe(session('bob')?.key);
 });
+
+it.each(
+  userDependentAuthenticationTypes.filter(
+    (type) => type !== 'PrincipalPropagation',
+  ),
+)(
+  'keys effective basic overrides by login for %s',
+  async (authenticationType) => {
+    const connect = (username: string) => {
+      const conn = {} as IAbapConnection;
+      bindSystemIdentity(conn, {
+        ...input('same-jwt-user'),
+        destinationName: `override-${authenticationType}`,
+        authenticationType,
+        sapConfig: { url: 'https://sap', authType: 'basic', username },
+      });
+      return conn;
+    };
+    jest
+      .mocked(getSystemInformation)
+      .mockResolvedValueOnce({ userName: 'ALICE' })
+      .mockResolvedValueOnce({ userName: 'BOB' });
+    expect(await resolveSystemIdentity(connect('alice'))).toEqual({
+      responsible: 'ALICE',
+    });
+    expect(await resolveSystemIdentity(connect('bob'))).toEqual({
+      responsible: 'BOB',
+    });
+    expect(await resolveSystemIdentity(connect(' ALICE '))).toEqual({
+      responsible: 'ALICE',
+    });
+    expect(getSystemInformation).toHaveBeenCalledTimes(2);
+  },
+);

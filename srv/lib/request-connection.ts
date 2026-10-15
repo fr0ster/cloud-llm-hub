@@ -1,6 +1,6 @@
 import {
   bindSystemIdentity,
-  resolveSystemIdentity,
+  warmSystemIdentity,
 } from './system-identity-cache';
 /**
  * Per-request SAP connection establishment — shared by every channel that runs
@@ -158,7 +158,7 @@ export async function establishRequestConnection(
       authenticationType: resolved.authenticationType,
       jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
     });
-    await resolveSystemIdentity(conn, systemType === 'cloud');
+    await warmSystemIdentity(conn);
 
     const connection: IAbapConnection = conn;
     // NOTE: do NOT bind via enterWith here — the ALS store would be lost across

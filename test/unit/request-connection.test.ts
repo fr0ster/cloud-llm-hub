@@ -243,3 +243,42 @@ test.each([false, true])(
     );
   },
 );
+
+test.each(['cloud', 'onprem'])(
+  'identity failure at connect does not reject a %s request and can be retried',
+  async (systemType) => {
+    const { requestSystemContextResolver } = await import(
+      '../../srv/lib/request-system-context'
+    );
+    const makeAdtRequest = jest
+      .fn()
+      .mockRejectedValueOnce(new TypeError('private backend details'))
+      .mockResolvedValue({ data: { userName: 'RETRIED', systemID: 'DEV' } });
+    mockCreateConnection.mockReturnValueOnce({
+      connect: mockConnect,
+      makeAdtRequest,
+    });
+    mockResolve.mockResolvedValue({
+      destinationName: `retry-${systemType}`,
+      sapConfig: { url: 'https://retry', authType: 'jwt', jwtToken: 'tok' },
+      proxyType: 'Internet',
+      authenticationType: 'OAuth2ClientCredentials',
+      systemType,
+    });
+    const res = makeRes();
+    const result = await establishRequestConnection(
+      makeReq({ 'x-sap-responsible': 'EXPLICIT' }),
+      res as unknown as Response,
+      `retry-${systemType}`,
+    );
+    expect(result.handled).toBe(false);
+    expect(res.writeHead).not.toHaveBeenCalled();
+    expect(result.connection).toBeDefined();
+    if (!result.connection) throw new Error('Expected connection');
+    expect(await requestSystemContextResolver(result.connection)).toEqual({
+      responsible: 'RETRIED',
+      masterSystem: 'DEV',
+    });
+    expect(makeAdtRequest).toHaveBeenCalledTimes(2);
+  },
+);

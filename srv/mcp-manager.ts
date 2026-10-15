@@ -1,6 +1,6 @@
 import {
   bindSystemIdentity,
-  resolveSystemIdentity,
+  warmSystemIdentity,
 } from './lib/system-identity-cache';
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import './env-setup';
@@ -381,7 +381,7 @@ export async function createMCPServerForRequest(
             authenticationType: destination?.authenticationType,
             jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
           });
-          await resolveSystemIdentity(connection, systemType === 'cloud');
+          await warmSystemIdentity(connection);
         }
       } catch (connectErr) {
         const error = new Error(

@@ -1,6 +1,7 @@
 import { getSystemInformation } from '@mcp-abap-adt/adt-clients/core';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import cds from '@sap/cds';
 import type { AuthenticationType } from '@sap-cloud-sdk/connectivity';
 
 export type SystemIdentity = {
@@ -68,11 +69,13 @@ export function systemIdentitySession(input: {
       ? configured
       : 8 * 60 * 60 * 1000);
   let principal: unknown = 'destination-auth';
-  if (
+  if (sapConfig.authType === 'basic') {
+    principal = ['basic', sapConfig.username?.trim().toUpperCase()];
+  } else if (
     userDependentAuthenticationTypes.has(
       authenticationType as AuthenticationType,
     ) ||
-    (!destinationName && sapConfig.authType !== 'basic')
+    !destinationName
   ) {
     try {
       const claims = JSON.parse(
@@ -89,8 +92,6 @@ export function systemIdentitySession(input: {
     } catch {
       return undefined;
     }
-  } else if (sapConfig.authType === 'basic') {
-    principal = ['basic', sapConfig.username?.trim().toUpperCase()];
   }
   return {
     key: JSON.stringify([
@@ -154,5 +155,19 @@ export async function resolveSystemIdentity(
     return await result;
   } finally {
     if (session) pending.delete(session.key);
+  }
+}
+
+/** Connect-time warmup must never prevent tools from running. */
+export async function warmSystemIdentity(
+  connection: IAbapConnection,
+): Promise<void> {
+  try {
+    // Propagate every lookup error here so none is cached and all are logged.
+    await resolveSystemIdentity(connection, true);
+  } catch (error) {
+    cds.log('system-identity').warn('System identity lookup failed', {
+      error: error instanceof Error ? error.name : typeof error,
+    });
   }
 }

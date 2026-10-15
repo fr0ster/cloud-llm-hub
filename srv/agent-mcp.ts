@@ -1,6 +1,6 @@
 import {
   bindSystemIdentity,
-  resolveSystemIdentity,
+  warmSystemIdentity,
 } from './lib/system-identity-cache';
 /**
  * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes two
@@ -470,7 +470,7 @@ export async function buildConnectionForDestination(
     authenticationType: resolved.authenticationType,
     jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
   });
-  await resolveSystemIdentity(conn, systemType === 'cloud');
+  await warmSystemIdentity(conn);
   return {
     connection: conn,
     resolved,
