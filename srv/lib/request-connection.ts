@@ -158,7 +158,7 @@ export async function establishRequestConnection(
       authenticationType: resolved.authenticationType,
       jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
     });
-    await warmSystemIdentity(conn);
+    await warmSystemIdentity(conn, systemType);
 
     const connection: IAbapConnection = conn;
     // NOTE: do NOT bind via enterWith here — the ALS store would be lost across

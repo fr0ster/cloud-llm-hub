@@ -470,7 +470,7 @@ export async function buildConnectionForDestination(
     authenticationType: resolved.authenticationType,
     jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
   });
-  await warmSystemIdentity(conn);
+  await warmSystemIdentity(conn, systemType);
   return {
     connection: conn,
     resolved,

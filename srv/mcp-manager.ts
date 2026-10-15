@@ -381,7 +381,7 @@ export async function createMCPServerForRequest(
             authenticationType: destination?.authenticationType,
             jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
           });
-          await warmSystemIdentity(connection);
+          await warmSystemIdentity(connection, systemType);
         }
       } catch (connectErr) {
         const error = new Error(

@@ -3,6 +3,7 @@ import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
 import type { AuthenticationType } from '@sap-cloud-sdk/connectivity';
+import type { SystemType } from './system-type';
 
 export type SystemIdentity = {
   responsible: string;
@@ -143,7 +144,10 @@ export async function resolveSystemIdentity(
         response?: { status?: number };
       };
       const status = err.response?.status ?? err.statusCode ?? err.status;
-      if (status !== 404 && status !== 405) return null;
+      if (status !== 404 && status !== 405) {
+        warnSystemIdentityFailure(error);
+        return null;
+      }
       value = null;
     }
     if (session) systemIdentityCache.set(session.key, value, session.expiresAt);
@@ -158,16 +162,20 @@ export async function resolveSystemIdentity(
   }
 }
 
+function warnSystemIdentityFailure(error: unknown): void {
+  cds.log('system-identity').warn('System identity lookup failed', {
+    error: error instanceof Error ? error.name : typeof error,
+  });
+}
+
 /** Connect-time warmup must never prevent tools from running. */
 export async function warmSystemIdentity(
   connection: IAbapConnection,
+  systemType: SystemType,
 ): Promise<void> {
   try {
-    // Propagate every lookup error here so none is cached and all are logged.
-    await resolveSystemIdentity(connection, true);
+    await resolveSystemIdentity(connection, systemType === 'cloud');
   } catch (error) {
-    cds.log('system-identity').warn('System identity lookup failed', {
-      error: error instanceof Error ? error.name : typeof error,
-    });
+    warnSystemIdentityFailure(error);
   }
 }

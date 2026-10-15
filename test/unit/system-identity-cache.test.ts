@@ -1,10 +1,12 @@
 import { getSystemInformation } from '@mcp-abap-adt/adt-clients/core';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import cds from '@sap/cds';
 import {
   bindSystemIdentity,
   resolveSystemIdentity,
   SystemIdentityCache,
   systemIdentitySession,
+  warmSystemIdentity,
 } from '../../srv/lib/system-identity-cache';
 
 jest.mock('@mcp-abap-adt/adt-clients/core', () => ({
@@ -213,5 +215,65 @@ it.each(
       responsible: 'ALICE',
     });
     expect(getSystemInformation).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each(['onprem', 'legacy'] as const)(
+  'caches unavailable endpoints during %s warm-up without warnings',
+  async (systemType) => {
+    const warn = jest
+      .spyOn(cds.log('system-identity'), 'warn')
+      .mockImplementation();
+    try {
+      for (const status of [404, 405]) {
+        jest
+          .mocked(getSystemInformation)
+          .mockClear()
+          .mockRejectedValue({ response: { status } });
+        const user = `warm-${systemType}-${status}`;
+        await warmSystemIdentity(connection(user), systemType);
+        await warmSystemIdentity(connection(user), systemType);
+        expect(getSystemInformation).toHaveBeenCalledTimes(1);
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  },
+);
+
+it.each([
+  ['onprem', 500],
+  ['legacy', 500],
+  ['cloud', 404],
+  ['cloud', 405],
+  ['cloud', 500],
+] as const)(
+  'retries %s warm-up failure %s and warns by class once per failure',
+  async (systemType, status) => {
+    const warn = jest
+      .spyOn(cds.log('system-identity'), 'warn')
+      .mockImplementation();
+    const error = Object.assign(new TypeError('sensitive details'), {
+      response: { status },
+    });
+    jest.mocked(getSystemInformation).mockRejectedValue(error);
+    try {
+      const user = `warm-transient-${systemType}-${status}`;
+      await expect(
+        warmSystemIdentity(connection(user), systemType),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      await expect(
+        warmSystemIdentity(connection(user), systemType),
+      ).resolves.toBeUndefined();
+      expect(getSystemInformation).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls).toEqual([
+        ['System identity lookup failed', { error: 'TypeError' }],
+        ['System identity lookup failed', { error: 'TypeError' }],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   },
 );
