@@ -1,12 +1,10 @@
 /**
  * Active-destination probe: test whether the CALLER's own SAP identity
- * (x-sap-login / x-sap-password / x-sap-client) can reach a single destination.
+ * (SAP credentials or forwarded user JWT, plus client) can reach a destination.
  *
- * Unlike the all-destinations DiagnoseDestinations probe — which uses each
- * destination's OWN stored credentials — this builds the connection from the
- * caller's headers, so it answers "does MY session work". It deliberately
- * requires both credential headers and never falls back to the destination's
- * (possibly technical) auth, so it can never silently probe the wrong identity.
+ * Uses the same authentication policy as chat: caller credentials when required,
+ * forwarded JWT for user-dependent auth, otherwise destination-managed auth.
+ * Complete caller credentials override destination-managed auth with Basic.
  *
  * Kept as a standalone, dependency-light function (like establishRequestConnection)
  * so it can be unit-tested with mocked resolver + connection.
@@ -15,6 +13,10 @@
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import { createConnection } from '../connections/connectionFactory';
 import { resolveDestinationSapConfig } from '../connections/destinationResolver';
+import {
+  destinationRequiresCredentials,
+  userDependentAuthenticationTypes,
+} from './destination-authentication';
 import { classifyProbe, type ProbeStatus } from './probe-classifier';
 
 /** A 400-class error the CAP handler maps to an HTTP 400. */
@@ -64,21 +66,33 @@ export async function runActiveDestinationProbe(
   if (!destination) {
     throw new ActiveProbeBadRequest('Header "X-SAP-Destination" is required.');
   }
-  // Caller-identity guarantee: require the user's own credentials; never fall
-  // back to the destination's stored (possibly technical) auth.
-  if (!login || !password) {
+  const resolved = await resolveDestinationSapConfig(destination, headers.jwt);
+  const principalPropagation =
+    resolved.authenticationType === 'PrincipalPropagation';
+
+  const userDependent = userDependentAuthenticationTypes.has(
+    resolved.authenticationType ?? '',
+  );
+  const usedBasicOverride = !userDependent && !!(login && password);
+  if (
+    destinationRequiresCredentials(
+      resolved.proxyType,
+      resolved.authenticationType,
+    ) &&
+    (!login || !password)
+  ) {
     throw new ActiveProbeBadRequest(
       'Both x-sap-login and x-sap-password are required to probe under your SAP identity.',
     );
   }
 
-  const resolved = await resolveDestinationSapConfig(destination, headers.jwt);
-
   const sapConfig: SapConfig = { ...resolved.sapConfig };
-  sapConfig.authType = 'basic';
-  sapConfig.username = login;
-  sapConfig.password = password;
-  sapConfig.jwtToken = undefined;
+  if (usedBasicOverride) {
+    sapConfig.authType = 'basic';
+    sapConfig.username = login;
+    sapConfig.password = password;
+    delete sapConfig.jwtToken;
+  }
   if (client) sapConfig.client = client;
 
   const proxyType = resolved.proxyType ?? 'Internet';
@@ -107,12 +121,17 @@ export async function runActiveDestinationProbe(
   }
   const latencyMs = now() - t0;
 
-  const { status, hint } = classifyProbe(
+  const { status, hint: classifiedHint } = classifyProbe(
     httpCode,
     rawMessage,
     proxyType,
-    'caller',
+    usedBasicOverride || userDependent ? 'caller' : 'destination',
   );
+
+  const hint =
+    principalPropagation && status === 'backend_auth_failed'
+      ? 'Single sign-on failed. Reload and sign in again; if it persists, check the principal propagation mapping in Cloud Connector and SAP.'
+      : classifiedHint;
 
   return {
     name: destination,

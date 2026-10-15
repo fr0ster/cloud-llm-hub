@@ -30,6 +30,10 @@ import {
   isDirectConnector,
 } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
+import {
+  destinationRequiresCredentials,
+  userDependentAuthenticationTypes,
+} from './destination-authentication';
 import { maskLoginForLog } from './log-mask';
 import { bearerToken, computeDumpScope, type DumpScope } from './principal';
 import { resolveSystemType } from './system-type';
@@ -102,26 +106,27 @@ export async function establishRequestConnection(
     );
 
     if (
-      resolved.authenticationType === 'PrincipalPropagation' &&
+      userDependentAuthenticationTypes.has(resolved.authenticationType ?? '') &&
       (sapLogin || sapPassword)
     ) {
       log.debug(
-        'Ignoring x-sap-login/x-sap-password because the destination uses principal propagation',
+        'Ignoring x-sap-login/x-sap-password because the destination uses user-dependent authentication',
       );
     }
     usedBasicOverride =
-      resolved.authenticationType !== 'PrincipalPropagation' &&
-      usedBasicOverride;
+      !userDependentAuthenticationTypes.has(
+        resolved.authenticationType ?? '',
+      ) && usedBasicOverride;
     // The declared kind, by the one rule (`system-type.ts`). An unknown value
     // is refused with a 400 before any connection is built.
     const systemType = resolveSystemType(req.headers, resolved.systemType);
 
     // On-premise (Cloud Connector) and NoAuthentication destinations must run
     // under the caller's own ABAP user — never a destination service user.
-    const requiresUserCredentials =
-      ((resolved.proxyType ?? '').toLowerCase() === 'onpremise' &&
-        resolved.authenticationType !== 'PrincipalPropagation') ||
-      resolved.authenticationType === 'NoAuthentication';
+    const requiresUserCredentials = destinationRequiresCredentials(
+      resolved.proxyType,
+      resolved.authenticationType,
+    );
 
     if (requiresUserCredentials && (!sapLogin || !sapPassword)) {
       throw credentialError(

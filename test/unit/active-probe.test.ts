@@ -65,6 +65,54 @@ describe('runActiveDestinationProbe', () => {
     expect(mockCreateConnection).not.toHaveBeenCalled();
   });
 
+  it('rejects OnPremise Basic without credentials', async () => {
+    mockResolve.mockResolvedValue({
+      sapConfig: { url: 'http://sap.example.com', authType: 'basic' },
+      proxyType: 'OnPremise',
+      authenticationType: 'BasicAuthentication',
+      destinationName: 'S4HANA_QAS',
+    });
+    await expect(
+      runActiveDestinationProbe({ destination: 'S4HANA_QAS' }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockCreateConnection).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { login: 'partial' }, { login: 'user', password: 'secret' }])(
+    'uses Internet OAuth2 destination auth unless complete credentials override: %j',
+    async (credentials) => {
+      const sapConfig = {
+        url: 'https://sap.example.com',
+        authType: 'jwt',
+        jwtToken: 'technical-token',
+      };
+      mockResolve.mockResolvedValue({
+        sapConfig,
+        proxyType: 'Internet',
+        authenticationType: 'OAuth2ClientCredentials',
+        destinationName: 'CLOUD',
+      });
+      const result = await runActiveDestinationProbe({
+        destination: 'CLOUD',
+        ...credentials,
+      });
+      expect(mockCreateConnection).toHaveBeenCalledWith({
+        destinationName: 'CLOUD',
+        sapConfig:
+          'password' in credentials
+            ? {
+                url: sapConfig.url,
+                authType: 'basic',
+                username: 'user',
+                password: 'secret',
+              }
+            : sapConfig,
+      });
+      expect(mockProbe).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('ok');
+    },
+  );
+
   it("applies the caller's Basic auth + client to the connection config", async () => {
     await runActiveDestinationProbe(creds);
     const opts = mockCreateConnection.mock.calls[0][0] as {
@@ -78,6 +126,56 @@ describe('runActiveDestinationProbe', () => {
     expect(opts.sapConfig.password).toBe('secret');
     expect(opts.sapConfig.client).toBe('600');
     expect(opts.sapConfig.jwtToken).toBeUndefined();
+  });
+
+  it.each([
+    ['PrincipalPropagation', {}],
+    ['PrincipalPropagation', { login: 'ignored', password: 'ignored' }],
+    ['OAuth2UserTokenExchange', { login: 'ignored', password: 'ignored' }],
+  ])(
+    'preserves %s and client with credentials %j',
+    async (authenticationType, credentials) => {
+      const sapConfig = {
+        url: 'http://sap.example.com:44300',
+        authType: 'jwt',
+        jwtToken: 'user-jwt',
+      };
+      mockResolve.mockResolvedValue({
+        sapConfig,
+        authenticationType,
+        proxyType: 'OnPremise',
+        destinationName: 'S4HANA_QAS',
+      });
+      const result = await runActiveDestinationProbe({
+        destination: 'S4HANA_QAS',
+        jwt: 'user-jwt',
+        client: '600',
+        ...credentials,
+      });
+      expect(mockResolve).toHaveBeenCalledWith('S4HANA_QAS', 'user-jwt');
+      expect(mockCreateConnection).toHaveBeenCalledWith({
+        destinationName: 'S4HANA_QAS',
+        sapConfig: { ...sapConfig, client: '600' },
+      });
+      expect(sapConfig).not.toHaveProperty('client');
+      expect(result.status).toBe('ok');
+    },
+  );
+
+  it('propagates the missing-user-token error without creating a connection', async () => {
+    mockResolve.mockRejectedValue(
+      Object.assign(new Error('User token required'), {
+        statusCode: 401,
+        code: 'SAP_USER_TOKEN_REQUIRED',
+      }),
+    );
+    await expect(
+      runActiveDestinationProbe({ destination: 'S4HANA_QAS' }),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      code: 'SAP_USER_TOKEN_REQUIRED',
+    });
+    expect(mockCreateConnection).not.toHaveBeenCalled();
   });
 
   it('probes exactly once and returns ok for a 2xx', async () => {
