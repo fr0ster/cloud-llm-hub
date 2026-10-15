@@ -321,7 +321,7 @@
         let conversationHistory = [];
         let ready = false;
         let connectedDestination = '';
-        // Destination metadata from the server (name → { requiresCredentials, proxyType }).
+        // Destination metadata from the server (name → { requiresCredentials, proxyType, authentication }).
         const destinationMeta = {};
         // Latest destination list from the server, used to populate the login gate.
         let gateDestinations = [];
@@ -398,17 +398,24 @@
             updateGateAuthentication();
         }
 
-        function destinationUsesSso(dest) {
+        function destinationUsesConfiguredAuth(dest) {
             return destinationMeta[dest]?.requiresCredentials === false;
         }
 
         function updateGateAuthentication() {
-            const sso = destinationUsesSso(document.getElementById('gate-dest').value);
+            const sso = destinationUsesConfiguredAuth(document.getElementById('gate-dest').value);
             document.getElementById('gate-login-field').style.display = sso ? 'none' : '';
             document.getElementById('gate-password-field').style.display = sso ? 'none' : '';
             document.getElementById('sap-login').disabled = sso;
             document.getElementById('sap-password').disabled = sso;
-            document.getElementById('gate-sso-note').style.display = sso ? 'block' : 'none';
+            const note = document.getElementById('gate-sso-note');
+            const authentication = destinationMeta[document.getElementById('gate-dest').value]?.authentication;
+            note.textContent = authentication === 'PrincipalPropagation'
+                ? 'Signed in through single sign-on: this destination uses your platform login (principal propagation).'
+                : ['SAMLAssertion', 'OAuth2SAMLBearerAssertion', 'OAuth2UserTokenExchange', 'OAuth2JWTBearer'].includes(authentication)
+                    ? 'This destination authenticates using your platform login.'
+                    : 'This destination authenticates with its own configured credentials.';
+            note.style.display = sso ? 'block' : 'none';
             document.getElementById('gate-error').style.display = 'none';
         }
 
@@ -428,7 +435,7 @@
             const err = document.getElementById('gate-error');
             const fail = (msg) => { err.textContent = msg; err.style.display = 'block'; };
             if (!dest) return fail('Choose a destination.');
-            const sso = destinationUsesSso(dest);
+            const sso = destinationUsesConfiguredAuth(dest);
             if (!sso && (!login || !password)) return fail('Enter SAP login and password.');
             // SAP client is optional; when given it must be exactly 3 digits (000-999).
             if (client && !/^\d{3}$/.test(client)) return fail('SAP client must be 3 digits, e.g. 100.');
@@ -466,7 +473,7 @@
             hideLoginGate();
             unlockInput('login-gate');
             const clientNote = client ? ` (client ${escapeHtml(client)})` : '';
-            const identityNote = sso ? 'via single sign-on' : `as ${escapeHtml(login)}`;
+            const identityNote = sso ? 'using configured authentication' : `as ${escapeHtml(login)}`;
             chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Connected to ${escapeHtml(dest)}${clientNote} ${identityNote}.</div>`;
             chatWindow.scrollTop = chatWindow.scrollHeight;
             try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
@@ -511,7 +518,7 @@
 
         function getSapCredHeaders() {
             const h = {};
-            if (!destinationUsesSso(getSelectedDestination() || connectedDestination) && sapCredsLogin && sapCredsPassword) {
+            if (!destinationUsesConfiguredAuth(getSelectedDestination() || connectedDestination) && sapCredsLogin && sapCredsPassword) {
                 h['X-SAP-Login'] = sapCredsLogin;
                 h['X-SAP-Password'] = sapCredsPassword;
             }
@@ -1388,6 +1395,7 @@
                 destinationMeta[d.name] = {
                     requiresCredentials: d.requiresCredentials,
                     proxyType: d.proxyType,
+                    authentication: d.authentication,
                 };
             }
             // The hidden select still backs request code (X-SAP-Destination).
@@ -1526,7 +1534,7 @@
                             // Credentials rejected/expired mid-session: re-open the
                             // login gate so the user can re-enter destination + creds.
                             if (errJson.error.type === 'SAP_USER_TOKEN_REQUIRED' ||
-                                (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED' && destinationUsesSso(getSelectedDestination() || connectedDestination))) {
+                                (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED' && destinationUsesConfiguredAuth(getSelectedDestination() || connectedDestination))) {
                                 throw new Error(platformSessionExpired());
                             }
                             if (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED') {

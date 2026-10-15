@@ -56,6 +56,10 @@ import cds from '@sap/cds';
 import { z } from 'zod';
 import { type AgentConfig, getAgentConfig } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
+import { destinationRequiresCredentials } from './lib/destination-authentication';
+
+export { destinationRequiresCredentials } from './lib/destination-authentication';
+
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
 import {
@@ -773,30 +777,13 @@ export interface DestinationState {
    * login/password on connect. Cloud destinations (JWT) are false.
    */
   requiresCredentials?: boolean;
+  authentication?: string;
   /**
    * When the background retry loop will next look at this destination, as an
    * epoch millisecond timestamp. Set only while `status === 'unreachable'`
    * and a retry is armed; `undefined` when nothing is scheduled.
    */
   nextProbeAt?: number;
-}
-
-/**
- * Whether a destination requires the caller's own SAP credentials.
- * On-premise basic and NoAuthentication destinations do; principal propagation
- * authenticates the user with a JWT instead. Cloud
- * destinations with their own auth (JWT via OAuth2*) do not. Mirrors the
- * fail-closed rule in srv/lib/request-connection.ts.
- */
-export function destinationRequiresCredentials(
-  proxyType?: string,
-  authentication?: string,
-): boolean {
-  return (
-    ((proxyType ?? '').toLowerCase() === 'onpremise' &&
-      authentication !== 'PrincipalPropagation') ||
-    authentication === 'NoAuthentication'
-  );
 }
 
 /** Map of destination name → pre-built state */
@@ -939,6 +926,7 @@ export function getDestinationStates(): Array<{
   error?: string;
   proxyType?: string;
   requiresCredentials?: boolean;
+  authentication?: string;
 }> {
   return [...destinationStates.entries()].map(([name, state]) => ({
     name,
@@ -947,6 +935,7 @@ export function getDestinationStates(): Array<{
     error: state.error,
     proxyType: state.proxyType,
     requiresCredentials: state.requiresCredentials,
+    authentication: state.authentication,
   }));
 }
 
@@ -1634,6 +1623,7 @@ async function initDestination(
   // already set by the pre-populate pass.
   const prev = destinationStates.get(destinationName);
   let proxyType = prev?.proxyType;
+  let authentication = prev?.authentication;
   let requiresCredentials = prev?.requiresCredentials;
   if (proxyType === undefined) {
     try {
@@ -1642,6 +1632,7 @@ async function initDestination(
       );
       if (meta) {
         proxyType = meta.proxyType;
+        authentication = meta.authentication;
         requiresCredentials = destinationRequiresCredentials(
           meta.proxyType,
           meta.authentication,
@@ -1663,6 +1654,7 @@ async function initDestination(
     toolCount: sharedToolCount,
     status: 'vectorizing',
     proxyType,
+    authentication,
     requiresCredentials,
   };
   destinationStates.set(destinationName, state);
@@ -1764,6 +1756,7 @@ async function initBackgroundDestinations(): Promise<void> {
           toolCount: 0,
           status: 'pending',
           proxyType: dest.proxyType,
+          authentication: dest.authentication,
           requiresCredentials: destinationRequiresCredentials(
             dest.proxyType,
             dest.authentication,

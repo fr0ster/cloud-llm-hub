@@ -2,11 +2,9 @@
  * Active-destination probe: test whether the CALLER's own SAP identity
  * (SAP credentials or forwarded user JWT, plus client) can reach a destination.
  *
- * Unlike the all-destinations DiagnoseDestinations probe — which uses each
- * destination's OWN stored credentials — this builds the connection from the
- * caller's headers or forwarded JWT, so it answers "does MY session work".
- * Principal propagation preserves the resolved user-token auth; other
- * destinations require both credential headers, never stored technical auth.
+ * Uses the same authentication policy as chat: caller credentials when required,
+ * forwarded JWT for user-dependent auth, otherwise destination-managed auth.
+ * Complete caller credentials override destination-managed auth with Basic.
  *
  * Kept as a standalone, dependency-light function (like establishRequestConnection)
  * so it can be unit-tested with mocked resolver + connection.
@@ -15,6 +13,10 @@
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import { createConnection } from '../connections/connectionFactory';
 import { resolveDestinationSapConfig } from '../connections/destinationResolver';
+import {
+  destinationRequiresCredentials,
+  userDependentAuthenticationTypes,
+} from './destination-authentication';
 import { classifyProbe, type ProbeStatus } from './probe-classifier';
 
 /** A 400-class error the CAP handler maps to an HTTP 400. */
@@ -68,20 +70,28 @@ export async function runActiveDestinationProbe(
   const principalPropagation =
     resolved.authenticationType === 'PrincipalPropagation';
 
-  // Non-PP caller-identity guarantee: require SAP credentials; never fall
-  // back to the destination's stored (possibly technical) auth.
-  if (!principalPropagation && (!login || !password)) {
+  const userDependent = userDependentAuthenticationTypes.has(
+    resolved.authenticationType ?? '',
+  );
+  const usedBasicOverride = !userDependent && !!(login && password);
+  if (
+    destinationRequiresCredentials(
+      resolved.proxyType,
+      resolved.authenticationType,
+    ) &&
+    (!login || !password)
+  ) {
     throw new ActiveProbeBadRequest(
       'Both x-sap-login and x-sap-password are required to probe under your SAP identity.',
     );
   }
 
   const sapConfig: SapConfig = { ...resolved.sapConfig };
-  if (!principalPropagation) {
+  if (usedBasicOverride) {
     sapConfig.authType = 'basic';
     sapConfig.username = login;
     sapConfig.password = password;
-    sapConfig.jwtToken = undefined;
+    delete sapConfig.jwtToken;
   }
   if (client) sapConfig.client = client;
 
@@ -115,7 +125,7 @@ export async function runActiveDestinationProbe(
     httpCode,
     rawMessage,
     proxyType,
-    'caller',
+    usedBasicOverride || userDependent ? 'caller' : 'destination',
   );
 
   const hint =

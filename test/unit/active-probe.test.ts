@@ -65,6 +65,54 @@ describe('runActiveDestinationProbe', () => {
     expect(mockCreateConnection).not.toHaveBeenCalled();
   });
 
+  it('rejects OnPremise Basic without credentials', async () => {
+    mockResolve.mockResolvedValue({
+      sapConfig: { url: 'http://sap.example.com', authType: 'basic' },
+      proxyType: 'OnPremise',
+      authenticationType: 'BasicAuthentication',
+      destinationName: 'S4HANA_QAS',
+    });
+    await expect(
+      runActiveDestinationProbe({ destination: 'S4HANA_QAS' }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockCreateConnection).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { login: 'partial' }, { login: 'user', password: 'secret' }])(
+    'uses Internet OAuth2 destination auth unless complete credentials override: %j',
+    async (credentials) => {
+      const sapConfig = {
+        url: 'https://sap.example.com',
+        authType: 'jwt',
+        jwtToken: 'technical-token',
+      };
+      mockResolve.mockResolvedValue({
+        sapConfig,
+        proxyType: 'Internet',
+        authenticationType: 'OAuth2ClientCredentials',
+        destinationName: 'CLOUD',
+      });
+      const result = await runActiveDestinationProbe({
+        destination: 'CLOUD',
+        ...credentials,
+      });
+      expect(mockCreateConnection).toHaveBeenCalledWith({
+        destinationName: 'CLOUD',
+        sapConfig:
+          'password' in credentials
+            ? {
+                url: sapConfig.url,
+                authType: 'basic',
+                username: 'user',
+                password: 'secret',
+              }
+            : sapConfig,
+      });
+      expect(mockProbe).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('ok');
+    },
+  );
+
   it("applies the caller's Basic auth + client to the connection config", async () => {
     await runActiveDestinationProbe(creds);
     const opts = mockCreateConnection.mock.calls[0][0] as {
@@ -80,9 +128,13 @@ describe('runActiveDestinationProbe', () => {
     expect(opts.sapConfig.jwtToken).toBeUndefined();
   });
 
-  it.each([{}, { login: 'ignored', password: 'ignored' }])(
-    'preserves principal propagation and client with credentials %j',
-    async (credentials) => {
+  it.each([
+    ['PrincipalPropagation', {}],
+    ['PrincipalPropagation', { login: 'ignored', password: 'ignored' }],
+    ['OAuth2UserTokenExchange', { login: 'ignored', password: 'ignored' }],
+  ])(
+    'preserves %s and client with credentials %j',
+    async (authenticationType, credentials) => {
       const sapConfig = {
         url: 'http://sap.example.com:44300',
         authType: 'jwt',
@@ -90,7 +142,7 @@ describe('runActiveDestinationProbe', () => {
       };
       mockResolve.mockResolvedValue({
         sapConfig,
-        authenticationType: 'PrincipalPropagation',
+        authenticationType,
         proxyType: 'OnPremise',
         destinationName: 'S4HANA_QAS',
       });
