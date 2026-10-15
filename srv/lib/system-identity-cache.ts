@@ -6,7 +6,7 @@ import type { AuthenticationType } from '@sap-cloud-sdk/connectivity';
 import type { SystemType } from './system-type';
 
 export type SystemIdentity = {
-  responsible: string;
+  responsible?: string;
   masterSystem?: string;
 } | null;
 interface SessionKey {
@@ -42,7 +42,10 @@ export class SystemIdentityCache {
 }
 
 export const systemIdentityCache = new SystemIdentityCache();
-const sessions = new WeakMap<IAbapConnection, SessionKey>();
+const sessions = new WeakMap<
+  IAbapConnection,
+  { session?: SessionKey; systemType: SystemType }
+>();
 const pending = new Map<string, Promise<SystemIdentity>>();
 
 // User exchange flows in the Cloud SDK, plus principal propagation.
@@ -106,25 +109,30 @@ export function systemIdentitySession(input: {
 
 export function bindSystemIdentity(
   connection: IAbapConnection,
-  input: Parameters<typeof systemIdentitySession>[0],
+  input: Parameters<typeof systemIdentitySession>[0] & {
+    systemType?: SystemType;
+  },
 ): void {
   const session = systemIdentitySession(input);
-  if (session) sessions.set(connection, session);
+  const systemType = input.systemType ?? 'onprem';
+  // Keep differently declared kinds out of each other's cache and pending lookup.
+  if (session) session.key = JSON.stringify([systemType, session.key]);
+  sessions.set(connection, { session, systemType });
 }
 
 export function cachedSystemIdentity(
   connection: IAbapConnection,
 ): SystemIdentity | undefined {
-  const session = sessions.get(connection);
+  const session = sessions.get(connection)?.session;
   return session ? systemIdentityCache.get(session.key) : undefined;
 }
 
 /** Uses the already connected session. Transient failures remain retryable. */
 export async function resolveSystemIdentity(
   connection: IAbapConnection,
-  cloud = false,
+  cloud = sessions.get(connection)?.systemType === 'cloud',
 ): Promise<SystemIdentity> {
-  const session = sessions.get(connection);
+  const session = sessions.get(connection)?.session;
   const cached = cachedSystemIdentity(connection);
   if (cached !== undefined) return cached;
   const existing = session && pending.get(session.key);
@@ -135,7 +143,9 @@ export async function resolveSystemIdentity(
       const info = await getSystemInformation(connection);
       value = info?.userName
         ? { responsible: info.userName, masterSystem: info.systemID }
-        : null;
+        : cloud
+          ? {}
+          : null;
     } catch (error) {
       if (cloud) throw error;
       const err = error as {

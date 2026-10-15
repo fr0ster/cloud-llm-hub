@@ -465,6 +465,7 @@ export async function buildConnectionForDestination(
   });
   await conn.connect();
   bindSystemIdentity(conn, {
+    systemType,
     sapConfig,
     destinationName: resolved.destinationName,
     authenticationType: resolved.authenticationType,

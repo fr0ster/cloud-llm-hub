@@ -1,7 +1,6 @@
 /** Request headers are scoped here; identity is shared across the authenticated session. */
 
 import {
-  defaultSystemContextResolver,
   type RequestContext,
   runWithRequestContext,
   type SystemContextResolver,
@@ -18,9 +17,6 @@ export const requestSystemContextResolver: SystemContextResolver = async (
 ) => {
   const cached = cachedSystemIdentity(connection);
   if (cached !== undefined) return cached;
-  // Preserve the public default's cloud semantics and failure behavior.
-  const cloud = await defaultSystemContextResolver(connection);
-  if (cloud !== null) return cloud;
   return resolveSystemIdentity(connection);
 };
 

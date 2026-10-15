@@ -374,6 +374,7 @@ export async function createMCPServerForRequest(
         if (establish) {
           await connection.connect();
           bindSystemIdentity(connection, {
+            systemType,
             sapConfig,
             destinationName: destination?.destinationName,
             authenticationType: destination?.authenticationType,
