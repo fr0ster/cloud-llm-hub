@@ -3,7 +3,7 @@ import { getSystemInformation } from '@mcp-abap-adt/adt-clients/core';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
-import type { AuthenticationType } from '@sap-cloud-sdk/connectivity';
+import { userDependentAuthenticationTypes } from './destination-authentication';
 import type { SystemType } from './system-type';
 
 export type SystemIdentity = {
@@ -49,16 +49,6 @@ const sessions = new WeakMap<
 >();
 const pending = new Map<string, Promise<SystemIdentity>>();
 
-// User exchange flows in the Cloud SDK, plus principal propagation.
-const userDependentAuthenticationTypes: ReadonlySet<AuthenticationType> =
-  new Set([
-    'PrincipalPropagation',
-    'SAMLAssertion',
-    'OAuth2SAMLBearerAssertion',
-    'OAuth2UserTokenExchange',
-    'OAuth2JWTBearer',
-  ]);
-
 /** Hash credentials; decode JWT payloads only for expiry. Never retain tokens. */
 export function systemIdentitySession(input: {
   sapConfig: SapConfig;
@@ -103,9 +93,7 @@ export function systemIdentitySession(input: {
     principal = `basic:${login}`;
   } else if (
     sapConfig.authType === 'jwt' &&
-    userDependentAuthenticationTypes.has(
-      authenticationType as AuthenticationType,
-    )
+    userDependentAuthenticationTypes.has(authenticationType ?? '')
   ) {
     userToken = sapConfig.jwtToken;
     // The forwarded token must be the one supplied to the SDK destination fetch.

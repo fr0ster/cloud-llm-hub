@@ -5,6 +5,7 @@ import {
   getAvailableDestinations,
   refuseDestination,
 } from '../lib/btp-destinations';
+import { userDependentAuthenticationTypes } from '../lib/destination-authentication';
 import { formatErrorMessage, logErrorSafely } from '../lib/errorUtils';
 import {
   DESTINATION_SYSTEM_TYPE_PROPERTY,
@@ -237,20 +238,14 @@ async function buildSapConfigFromDestination(
 
   // For Principal Propagation, JWT token is passed to executeHttpRequest via destination options
   // Keep the user token for every SDK destination fetch, including CSRF and retries.
-  if (
-    (authentication === 'OAuth2SAMLBearerAssertion' ||
-      authentication === 'PrincipalPropagation') &&
-    jwtToken
-  ) {
+  if (userDependentAuthenticationTypes.has(authentication ?? '') && jwtToken) {
     sapConfig.jwtToken = jwtToken;
   }
 
   // Token expiration is handled by SAP Cloud SDK internally for OAuth2ClientCredentials
   // For Principal Propagation, use conservative expiration
   const tokenExpiresAt =
-    (authentication === 'OAuth2SAMLBearerAssertion' ||
-      authentication === 'PrincipalPropagation') &&
-    jwtToken
+    userDependentAuthenticationTypes.has(authentication ?? '') && jwtToken
       ? Date.now() + 45 * 60 * 1000 // 45 minutes
       : undefined;
 
@@ -329,11 +324,18 @@ export async function resolveDestinationSapConfig(
       return resolved;
     }
 
-    // The SDK needs the user token while fetching user-dependent destinations.
-    const destination = await getDestination({
-      destinationName,
-      ...(jwtToken ? { jwt: jwtToken } : {}),
-    });
+    // Preserve provider-tenant selection for technical authentication.
+    let destination = await getDestination({ destinationName });
+    const initialAuthentication =
+      destination?.authentication ||
+      (destination && getCaseInsensitive(destination, 'Authentication'));
+    if (
+      initialAuthentication &&
+      userDependentAuthenticationTypes.has(initialAuthentication) &&
+      jwtToken
+    ) {
+      destination = await getDestination({ destinationName, jwt: jwtToken });
+    }
 
     if (!destination) {
       log.error('Destination not found', { destinationName });
@@ -354,8 +356,7 @@ export async function resolveDestinationSapConfig(
     // Only pass JWT token if destination requires Principal Propagation
     // For BasicAuthentication and OAuth2ClientCredentials, destination has its own credentials
     if (
-      (authentication === 'OAuth2SAMLBearerAssertion' ||
-        authentication === 'PrincipalPropagation') &&
+      userDependentAuthenticationTypes.has(authentication ?? '') &&
       jwtToken
     ) {
       log.debug('Using user-dependent destination authentication', {

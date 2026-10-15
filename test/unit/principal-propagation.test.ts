@@ -3,6 +3,9 @@ jest.mock('@sap/cds', () => {
   const log = () => ({ info() {}, warn() {}, debug() {}, error() {} });
   return { __esModule: true, default: { log }, log };
 });
+jest.mock('@sap-cloud-sdk/http-client', () => ({
+  executeHttpRequest: jest.fn(),
+}));
 jest.mock('@sap-cloud-sdk/connectivity', () => ({ getDestination: jest.fn() }));
 jest.mock('../../srv/lib/btp-oauth', () => ({
   getServiceCredentials: () => ({ uri: 'https://destination.invalid' }),
@@ -10,7 +13,9 @@ jest.mock('../../srv/lib/btp-oauth', () => ({
 }));
 
 import { getDestination } from '@sap-cloud-sdk/connectivity';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import type { Request } from 'express';
+import { CloudSdkAbapConnection } from '../../srv/connections/CloudSdkAbapConnection';
 import { resolveDestinationSapConfig } from '../../srv/connections/destinationResolver';
 import {
   btpDestinationSource,
@@ -44,7 +49,11 @@ test('resolves PP with user JWT and forwards jwt to SDK', async () => {
     authType: 'jwt',
     jwtToken: 'user-jwt',
   });
-  expect(sdkGet).toHaveBeenCalledWith({
+  expect(sdkGet.mock.calls).toEqual([
+    [{ destinationName: 'PP' }],
+    [{ destinationName: 'PP', jwt: 'user-jwt' }],
+  ]);
+  await expectRequestDestination(resolved.sapConfig, {
     destinationName: 'PP',
     jwt: 'user-jwt',
   });
@@ -102,3 +111,33 @@ test('extractSapContext forwards a lowercase bearer token for PP', async () => {
     jwt: 'user-jwt',
   });
 });
+
+async function expectRequestDestination(
+  config: ConstructorParameters<typeof CloudSdkAbapConnection>[0],
+  expected: { destinationName: string; jwt?: string },
+) {
+  const execute = jest.mocked(executeHttpRequest);
+  execute
+    .mockReset()
+    .mockResolvedValue({ data: '', status: 200, headers: {}, request: {} });
+  const connection = new CloudSdkAbapConnection(config, 'PP');
+  await connection.makeAdtRequest({
+    url: '/sap/bc/adt/discovery',
+    method: 'GET',
+    timeout: 0,
+  });
+  expect(execute).toHaveBeenCalledWith(expected, expect.any(Object));
+}
+
+test.each(['BasicAuthentication', 'OAuth2ClientCredentials'] as const)(
+  '%s ignores user JWT for resolution and HTTP requests',
+  async (authentication) => {
+    sdkGet.mockResolvedValue({ ...destination, authentication });
+    const resolved = await resolveDestinationSapConfig('PP', 'user-jwt');
+    expect(sdkGet.mock.calls).toEqual([[{ destinationName: 'PP' }]]);
+    expect(resolved.sapConfig.jwtToken).toBeUndefined();
+    await expectRequestDestination(resolved.sapConfig, {
+      destinationName: 'PP',
+    });
+  },
+);
