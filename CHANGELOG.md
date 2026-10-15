@@ -4,9 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [7.2.1] - 2026-10-15
+
 ### Fixed
 
-- Chat WebUI principal propagation uses platform single sign-on without asking for or sending SAP credentials. The active destination probe preserves the forwarded user JWT, and expired platform sessions prompt a reload/sign-in.
+- **Chat UI with principal-propagation destinations (#18).** The login gate
+  always demanded SAP login and password. For a destination that needs no
+  user credentials it now hides them (the SAP client stays): a
+  PrincipalPropagation destination uses the platform sign-in, a destination
+  with its own configured auth uses that. No `x-sap-login` /
+  `x-sap-password` is sent for them. An expired platform session
+  (`401 SAP_USER_TOKEN_REQUIRED`) asks to reload and sign in again.
+- **DIAG / active probe** follows the same credential policy as chat
+  requests (one rule in `lib/destination-authentication.ts`): it resolves a
+  principal-propagation destination with the forwarded JWT and no longer
+  demands credentials for destination-managed auth.
 
 ## [7.2.0] - 2026-10-15
 
