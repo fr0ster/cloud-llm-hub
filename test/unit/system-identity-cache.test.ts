@@ -277,3 +277,58 @@ it.each([
     }
   },
 );
+
+it.each(['basic', 'jwt'] as const)(
+  'scopes %s identities to the resolved system and shares equivalent URLs',
+  async (authType) => {
+    const connect = (url: string) => {
+      const conn = {} as IAbapConnection;
+      bindSystemIdentity(conn, {
+        destinationName: `system-scope-${authType}`,
+        authenticationType:
+          authType === 'basic'
+            ? 'BasicAuthentication'
+            : 'OAuth2ClientCredentials',
+        sapConfig: { url, authType, username: 'TECH', client: '100' },
+      });
+      return conn;
+    };
+    jest
+      .mocked(getSystemInformation)
+      .mockResolvedValueOnce({ userName: 'FIRST', systemID: 'ONE' })
+      .mockResolvedValueOnce({ userName: 'SECOND', systemID: 'TWO' });
+    expect(
+      await resolveSystemIdentity(connect('HTTPS://FIRST.sap:443/')),
+    ).toEqual({
+      responsible: 'FIRST',
+      masterSystem: 'ONE',
+    });
+    expect(await resolveSystemIdentity(connect('https://second.sap'))).toEqual({
+      responsible: 'SECOND',
+      masterSystem: 'TWO',
+    });
+    expect(await resolveSystemIdentity(connect('https://first.sap'))).toEqual({
+      responsible: 'FIRST',
+      masterSystem: 'ONE',
+    });
+    expect(getSystemInformation).toHaveBeenCalledTimes(2);
+  },
+);
+
+it('normalizes system URLs without retaining secrets and keeps system routing paths', () => {
+  const session = (url: string) =>
+    systemIdentitySession({
+      destinationName: 'url-normalization',
+      authenticationType: 'OAuth2ClientCredentials',
+      sapConfig: { url, authType: 'jwt' },
+    });
+  const key = session(
+    'HTTPS://user:secret@SAP:8443/system/?token=secret#secret',
+  )?.key;
+  expect(key).toBeDefined();
+  expect(key).toBe(session('https://sap:8443/system')?.key);
+  expect(key).not.toContain('secret');
+  expect(key).not.toBe(session('https://sap:8443/other')?.key);
+  expect(key).not.toBe(session('https://sap:9443/system')?.key);
+  expect(session('invalid')).toBeUndefined();
+});

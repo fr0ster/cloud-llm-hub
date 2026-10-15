@@ -66,6 +66,16 @@ export function systemIdentitySession(input: {
   jwt?: string;
 }): SessionKey | undefined {
   const { sapConfig, destinationName, authenticationType, jwt } = input;
+  let systemUrl: string;
+  try {
+    const url = new URL(sapConfig.url);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+    // Preserve the base path: the SDK appends requests to it, so it can route
+    // to a distinct system. Never retain URL credentials, query, or fragment.
+    systemUrl = `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return undefined;
+  }
   const configured = Number(process.env.SYSTEM_IDENTITY_CACHE_TTL_MS);
   let expiresAt =
     Date.now() +
@@ -99,7 +109,8 @@ export function systemIdentitySession(input: {
   }
   return {
     key: JSON.stringify([
-      destinationName || sapConfig.url,
+      destinationName ?? '',
+      systemUrl,
       sapConfig.client ?? '',
       principal,
     ]),
