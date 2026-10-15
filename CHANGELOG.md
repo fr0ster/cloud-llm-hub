@@ -4,17 +4,42 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
-### Fixed
+## [7.2.0] - 2026-10-15
 
-- Resolve creates' responsible on every system type from an explicit responsible header, then the connected SAP user via systeminformation, then uppercased login. Resolve once per authenticated session after connecting, with a bounded process-level identity cache shared across requests. Cache unavailable endpoints; retry transient failures. PP entries expire at JWT exp, other entries after eight hours (configurable with SYSTEM_IDENTITY_CACHE_TTL_MS). Cloud retains lib's default behavior.
+### Migration
+
+- **The responsible person is looked up on every system type.** Before, only a
+  connection declared `cloud` asked the system (ADT `systeminformation`); an
+  on-premise connection used `x-sap-login`. Now the order is, for every system:
+  `x-sap-responsible` → the logged-on SAP user from `systeminformation`
+  (ABAP Cloud and newer on-premise releases) → the uppercased `x-sap-login`
+  (older on-premise releases without the endpoint). With basic auth the
+  logged-on user is the login, so nothing changes there.
 
 ### Added
 
-- **On-premise principal propagation.** `PrincipalPropagation` destinations use
-  the logged-in user JWT through Cloud Connector, without SAP login/password
-  headers, which PP ignores. Tool warm-up needs no user connection. Creates
-  resolve the propagated SAP user through the public ADT systeminformation helper;
-  explicit basic overrides remain supported for non-PP destinations.
+- **On-premise principal propagation (#16).** Destinations with
+  `Authentication: PrincipalPropagation` (ProxyType OnPremise, through the
+  Cloud Connector) are discovered and run as the logged-in user: the user's
+  JWT reaches every Cloud SDK request (CSRF, retries, probes, teardown).
+  `x-sap-login` / `x-sap-password` are ignored for them; other destinations
+  keep the basic override. Without a user token the request fails with
+  `401 SAP_USER_TOKEN_REQUIRED`. Startup and tool warm-up read destination
+  metadata only — no logon without a user. See
+  `docs/usage/principal-propagation.md`.
+- **Responsible and master system resolved once per session.** Looked up right
+  after connect and cached across requests (bounded, process-local). The key is
+  the system URL, client, destination and the credential that authenticates to
+  SAP — a SHA-256 of the JWT, the basic login, or the destination for technical
+  auth. JWT entries expire at the token's `exp`, others after 8 h
+  (`SYSTEM_IDENTITY_CACHE_TTL_MS`). "Endpoint not available" is cached,
+  transient failures are retried; the lookup never fails a request.
+
+### Fixed
+
+- **Bearer tokens are accepted in any case** (`bearer`, `BEARER`) on every
+  channel.
+- **JWT previews are no longer logged.**
 
 ## [7.1.0] - 2026-10-13
 
