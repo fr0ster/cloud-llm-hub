@@ -3,6 +3,7 @@ import type { Destination } from '@sap-cloud-sdk/connectivity';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
 import {
   getAvailableDestinations,
+  getDestinationMetadata,
   refuseDestination,
 } from '../lib/btp-destinations';
 import { userDependentAuthenticationTypes } from '../lib/destination-authentication';
@@ -299,15 +300,32 @@ export async function resolveDestinationSapConfig(
 
     // Metadata discovery must not trigger the SDK's user-dependent proxy setup.
     // It also lets missing-token requests fail with our actionable 401.
-    const metadata = (!jwtToken ? await getAvailableDestinations() : []).find(
-      (entry) => entry.name === destinationName,
+    const authenticationMetadata =
+      await getDestinationMetadata(destinationName);
+    const userDependent = userDependentAuthenticationTypes.has(
+      authenticationMetadata?.authentication ?? '',
     );
-    if (metadata?.authentication === 'PrincipalPropagation' && !jwtToken) {
+    if (userDependent && !jwtToken && !options.metadataOnly) {
+      throw Object.assign(
+        new Error(
+          `Destination "${destinationName}" uses ${authenticationMetadata?.authentication === 'PrincipalPropagation' ? 'principal propagation' : authenticationMetadata?.authentication} and requires a logged-in user token.`,
+        ),
+        { statusCode: 401, code: 'SAP_USER_TOKEN_REQUIRED' },
+      );
+    }
+    const metadata =
+      userDependent && !jwtToken && options.metadataOnly
+        ? (await getAvailableDestinations()).find(
+            (entry) => entry.name === destinationName,
+          )
+        : undefined;
+    if (metadata) {
       const destination: Destination = {
         name: destinationName,
         url: metadata.url,
-        authentication: 'PrincipalPropagation',
-        proxyType: 'OnPremise',
+        authentication:
+          metadata.authentication as Destination['authentication'],
+        proxyType: metadata.proxyType as Destination['proxyType'],
         cloudConnectorLocationId: metadata.cloudConnectorLocationId,
         originalProperties: {
           CloudConnectorLocationId: metadata.cloudConnectorLocationId,
@@ -325,17 +343,10 @@ export async function resolveDestinationSapConfig(
     }
 
     // Preserve provider-tenant selection for technical authentication.
-    let destination = await getDestination({ destinationName });
-    const initialAuthentication =
-      destination?.authentication ||
-      (destination && getCaseInsensitive(destination, 'Authentication'));
-    if (
-      initialAuthentication &&
-      userDependentAuthenticationTypes.has(initialAuthentication) &&
-      jwtToken
-    ) {
-      destination = await getDestination({ destinationName, jwt: jwtToken });
-    }
+    const destination = await getDestination({
+      destinationName,
+      ...(userDependent && jwtToken ? { jwt: jwtToken } : {}),
+    });
 
     if (!destination) {
       log.error('Destination not found', { destinationName });

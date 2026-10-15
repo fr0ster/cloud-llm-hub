@@ -7,7 +7,10 @@
 
 import cds from '@sap/cds';
 import { getServiceCredentials, getToken } from './btp-oauth';
-import type { DestinationSource } from './destination-source';
+import type {
+  DestinationMetadata,
+  DestinationSource,
+} from './destination-source';
 
 export interface SapDestination {
   name: string;
@@ -69,6 +72,7 @@ function isSapAbapDestination(d: RawDestination): boolean {
 }
 
 let cachedDestinations: SapDestination[] | null = null;
+let cachedMetadata = new Map<string, DestinationMetadata>();
 let cacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -125,12 +129,19 @@ async function fetchDestinations(): Promise<SapDestination[]> {
     names: destinations.map((d) => d.name),
   });
 
+  cachedMetadata = new Map(
+    raw.map((d) => [
+      d.Name,
+      { authentication: d.Authentication, proxyType: d.ProxyType },
+    ]),
+  );
   return destinations;
 }
 
 /** Clear destination list cache — forces re-fetch from BTP on next call. */
 function clearBtpCache(): void {
   cachedDestinations = null;
+  cachedMetadata.clear();
   cacheTimestamp = 0;
 }
 
@@ -173,7 +184,17 @@ async function listFromBtp(): Promise<SapDestination[]> {
 /** Destinations fetched from the BTP Destination service, cached with a 5min TTL. */
 export function btpDestinationSource(): DestinationSource {
   // The service is the authority on which names exist; nothing to check first.
-  return { list: listFromBtp, clearCache: clearBtpCache, refuse: () => null };
+  return {
+    list: listFromBtp,
+    async metadata(name) {
+      await listFromBtp();
+      return cachedDestinations && Date.now() - cacheTimestamp < CACHE_TTL_MS
+        ? cachedMetadata.get(name)
+        : undefined;
+    },
+    clearCache: clearBtpCache,
+    refuse: () => null,
+  };
 }
 
 let source: DestinationSource | null = null;
@@ -181,6 +202,12 @@ let source: DestinationSource | null = null;
 /** Called once by the builder (providers). Until then, BTP as today. */
 export function setDestinationSource(s: DestinationSource): void {
   source = s;
+}
+
+export async function getDestinationMetadata(
+  name: string,
+): Promise<DestinationMetadata | undefined> {
+  return (source ?? btpDestinationSource()).metadata(name);
 }
 
 export async function getAvailableDestinations(): Promise<SapDestination[]> {

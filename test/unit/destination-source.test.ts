@@ -58,4 +58,23 @@ describe('DestinationSource', () => {
     ]);
     clearDestinationsCache();
   });
+
+  it('env source returns authentication metadata or undefined for unknown names', async () => {
+    const src = createDestinationSource({
+      source: 'env',
+      destinations: [
+        {
+          name: 'PP',
+          url: 'http://virtual',
+          proxyType: 'OnPremise',
+          authentication: 'PrincipalPropagation',
+        },
+      ],
+    });
+    expect(await src.metadata('PP')).toEqual({
+      authentication: 'PrincipalPropagation',
+      proxyType: 'OnPremise',
+    });
+    expect(await src.metadata('unknown')).toBeUndefined();
+  });
 });

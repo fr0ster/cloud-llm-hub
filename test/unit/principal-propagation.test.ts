@@ -32,9 +32,14 @@ const destination = {
 const sdkGet = jest.mocked(getDestination);
 const savedFetch = global.fetch;
 beforeEach(() => {
-  sdkGet.mockReset().mockResolvedValue(destination);
+  sdkGet.mockReset().mockImplementation(async (options) => {
+    if (!options.jwt)
+      throw new Error('PrincipalPropagation requires a user JWT');
+    return destination;
+  });
   setDestinationSource({
     list: async () => [destination],
+    metadata: async () => destination,
     clearCache() {},
     refuse: () => null,
   });
@@ -50,7 +55,6 @@ test('resolves PP with user JWT and forwards jwt to SDK', async () => {
     jwtToken: 'user-jwt',
   });
   expect(sdkGet.mock.calls).toEqual([
-    [{ destinationName: 'PP' }],
     [{ destinationName: 'PP', jwt: 'user-jwt' }],
   ]);
   await expectRequestDestination(resolved.sapConfig, {
@@ -95,9 +99,23 @@ test('discovery retains PP and existing exclusion filters', async () => {
   });
   const source = btpDestinationSource();
   source.clearCache();
+  expect(await source.metadata('ODATA')).toEqual({
+    authentication: 'PrincipalPropagation',
+    proxyType: 'OnPremise',
+  });
+  expect(await source.metadata('unknown')).toBeUndefined();
   expect(await source.list()).toEqual([
     { ...destination, cloudConnectorLocationId: 'site' },
   ]);
+  setDestinationSource(source);
+  for (const name of ['PP', 'ODATA']) {
+    sdkGet.mockClear();
+    await resolveDestinationSapConfig(name, 'user-jwt');
+    expect(sdkGet.mock.calls).toEqual([
+      [{ destinationName: name, jwt: 'user-jwt' }],
+    ]);
+  }
+  expect(global.fetch).toHaveBeenCalledTimes(1);
 });
 
 test('extractSapContext forwards a lowercase bearer token for PP', async () => {
@@ -132,6 +150,12 @@ async function expectRequestDestination(
 test.each(['BasicAuthentication', 'OAuth2ClientCredentials'] as const)(
   '%s ignores user JWT for resolution and HTTP requests',
   async (authentication) => {
+    setDestinationSource({
+      list: async () => [{ ...destination, authentication }],
+      metadata: async () => ({ authentication, proxyType: 'OnPremise' }),
+      clearCache() {},
+      refuse: () => null,
+    });
     sdkGet.mockResolvedValue({ ...destination, authentication });
     const resolved = await resolveDestinationSapConfig('PP', 'user-jwt');
     expect(sdkGet.mock.calls).toEqual([[{ destinationName: 'PP' }]]);
@@ -141,3 +165,18 @@ test.each(['BasicAuthentication', 'OAuth2ClientCredentials'] as const)(
     });
   },
 );
+
+test('unknown metadata preserves tokenless SDK resolution', async () => {
+  setDestinationSource({
+    list: async () => [],
+    metadata: async () => undefined,
+    clearCache() {},
+    refuse: () => null,
+  });
+  sdkGet.mockResolvedValue({
+    ...destination,
+    authentication: 'BasicAuthentication',
+  });
+  await resolveDestinationSapConfig('UNKNOWN', 'user-jwt');
+  expect(sdkGet.mock.calls).toEqual([[{ destinationName: 'UNKNOWN' }]]);
+});

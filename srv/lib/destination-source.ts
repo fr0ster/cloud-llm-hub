@@ -1,7 +1,14 @@
 import type { DestinationConfig, EnvDestination } from '../agent-config';
 import { btpDestinationSource, type SapDestination } from './btp-destinations';
 
+export interface DestinationMetadata {
+  authentication: string;
+  proxyType: string;
+}
+
 export interface DestinationSource {
+  /** Authentication metadata without secrets; undefined for unknown names. */
+  metadata(name: string): Promise<DestinationMetadata | undefined>;
   list(): Promise<SapDestination[]>;
   clearCache(): void;
   /**
@@ -31,6 +38,15 @@ export class EnvDestinationSource implements DestinationSource {
         ...(systemType ? { systemType } : {}),
       }),
     );
+  }
+  async metadata(name: string): Promise<DestinationMetadata | undefined> {
+    const destination = this.destinations.find((entry) => entry.name === name);
+    return destination
+      ? {
+          authentication: destination.authentication,
+          proxyType: destination.proxyType,
+        }
+      : undefined;
   }
   clearCache(): void {}
   /**
