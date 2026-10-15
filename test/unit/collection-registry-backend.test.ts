@@ -32,6 +32,7 @@ it('persistent collections use the configured persistent backend', () => {
     embedding,
     stores: createRagStoreFactory(rag, embedding),
     destinations: {
+      metadata: async () => undefined,
       list: async () => [],
       clearCache: () => {},
       refuse: () => null,

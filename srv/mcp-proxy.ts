@@ -9,6 +9,7 @@ import {
 import { logErrorSafely } from './lib/errorUtils';
 import { gatekeeperSnapshot } from './lib/gatekeeper-metrics';
 import { maskLoginForLog } from './lib/log-mask';
+import { bearerToken } from './lib/principal';
 import { classifyProbe } from './lib/probe-classifier';
 
 interface ProxyInvocation {
@@ -444,7 +445,7 @@ export default async function registerMcpProxyHandlers(
       login: headers['x-sap-login'],
       password: headers['x-sap-password'],
       client: headers['x-sap-client'],
-      jwt: headers.authorization?.replace('Bearer ', ''),
+      jwt: bearerToken(headers.authorization),
     });
 
     log.info('ProbeActiveDestination completed', {

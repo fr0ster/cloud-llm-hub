@@ -68,6 +68,8 @@ const overlap = {
   },
 };
 
+let systemUser: string | undefined;
+
 jest.mock('../../srv/connections/connectionFactory', () => {
   const actual = jest.requireActual('../../srv/connections/connectionFactory');
   return {
@@ -83,6 +85,10 @@ jest.mock('../../srv/connections/connectionFactory', () => {
         data?: unknown;
       }) => {
         wire.push({ method: o.method, url: o.url, data: o.data });
+        if (o.url.endsWith('/systeminformation')) {
+          if (!systemUser) throw { response: { status: 404 } };
+          return { status: 200, headers: {}, data: { userName: systemUser } };
+        }
         if (overlap.expected > 0 && o.method === 'POST') {
           overlap.arrived += 1;
           if (overlap.arrived === overlap.expected) overlap.release();
@@ -124,6 +130,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   wire.length = 0;
+  systemUser = undefined;
 });
 
 async function createClass(headers: Record<string, string>) {
@@ -159,6 +166,21 @@ describe('raw /mcp/stream/http create — the request system scope', () => {
     expect(String(post?.data)).toContain('adtcore:responsible="DEVELOPER"');
   });
 
+  it.each(['onprem', 'cloud'])(
+    'uses the systeminformation user for a create on %s',
+    async (systemType) => {
+      systemUser = 'CONNECTED';
+      const r = await createClass({
+        'x-sap-login': 'hint',
+        'x-sap-system-type': systemType,
+      });
+      expect(r.text).not.toContain('system_context_missing');
+      expect(String(wire.find((s) => s.method === 'POST')?.data)).toContain(
+        'adtcore:responsible="CONNECTED"',
+      );
+    },
+  );
+
   it('two concurrent requests each create with their own uppercased login', async () => {
     overlap.arm(2);
     try {
@@ -185,12 +207,18 @@ describe('raw /mcp/stream/http create — the request system scope', () => {
     expect(String(post?.data)).toContain('adtcore:responsible="OWNER"');
   });
 
-  it('a create with no responsible is refused, and nothing reaches the wire', async () => {
+  it('a create with no responsible is refused before any mutation', async () => {
     const r = await createClass({ 'x-sap-destination': 'DEST_SVC' });
     expect(r.text).toContain('system_context_missing');
     expect(wire.filter((s) => s.method === 'POST')).toHaveLength(0);
     expect(wire.some((s) => /_action=LOCK/.test(s.url))).toBe(false);
-    expect(wire).toHaveLength(0);
+    expect(r.text).toContain('x-sap-responsible');
+    expect(wire).toEqual([
+      expect.objectContaining({
+        method: 'GET',
+        url: '/sap/bc/adt/core/http/systeminformation',
+      }),
+    ]);
   });
 
   it('an unknown x-sap-system-type is refused with a 400', async () => {

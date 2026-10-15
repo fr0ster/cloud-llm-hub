@@ -11,6 +11,11 @@
 
 import { createHash } from 'node:crypto';
 
+/* Extract a user token only from a Bearer authorization scheme. */
+export function bearerToken(authorizationHeader?: string): string | undefined {
+  return authorizationHeader?.match(/^Bearer\s+(\S+)\s*$/i)?.[1];
+}
+
 export interface PrincipalHashInput {
   cdsUserId: string;
   authMode: string;

@@ -87,3 +87,17 @@ describe('CloudSdkAbapConnection.probe', () => {
     expect(r.rawMessage).toContain('certificate_expired');
   });
 });
+
+test('PP forwards the JWT in SDK destination options without a Bearer backend header', async () => {
+  mockExec.mockResolvedValue({ status: 200, data: '<discovery/>' });
+  const conn = new CloudSdkAbapConnection(
+    { url: 'http://virtual:443', authType: 'jwt', jwtToken: 'user-jwt' },
+    'PP',
+  );
+  await conn.probe('/sap/bc/adt/discovery');
+  expect(mockExec.mock.calls[0][0]).toEqual({
+    destinationName: 'PP',
+    jwt: 'user-jwt',
+  });
+  expect(mockExec.mock.calls[0][1].headers.Authorization).toBeUndefined();
+});

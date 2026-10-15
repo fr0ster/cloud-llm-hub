@@ -1,3 +1,7 @@
+import {
+  bindSystemIdentity,
+  warmSystemIdentity,
+} from './lib/system-identity-cache';
 /**
  * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes two
  * tools for an external planner (e.g. Claude Code):
@@ -50,7 +54,7 @@ import {
 } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
-import { computeDumpScope } from './lib/principal';
+import { bearerToken, computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import {
   resolveRequestSystem,
@@ -410,9 +414,19 @@ export async function buildConnectionForDestination(
 
   const resolved = await resolveDestinationSapConfig(
     destination,
-    req.headers.authorization?.replace('Bearer ', ''),
+    bearerToken(req.headers.authorization),
   );
 
+  if (
+    resolved.authenticationType === 'PrincipalPropagation' &&
+    (sapLogin || sapPassword)
+  ) {
+    cds
+      .log('agent-mcp')
+      .debug(
+        'Ignoring x-sap-login/x-sap-password because the destination uses principal propagation',
+      );
+  }
   // The declared kind, by the one rule (`lib/system-type.ts`): an unknown
   // value is refused before any connection is built. Logged like the other
   // channels; lib 16's HandlerExporter takes no per-destination kind, so the
@@ -424,7 +438,8 @@ export async function buildConnectionForDestination(
   });
 
   const requiresUserCredentials =
-    (resolved.proxyType ?? '').toLowerCase() === 'onpremise' ||
+    ((resolved.proxyType ?? '').toLowerCase() === 'onpremise' &&
+      resolved.authenticationType !== 'PrincipalPropagation') ||
     resolved.authenticationType === 'NoAuthentication';
   if (requiresUserCredentials && (!sapLogin || !sapPassword)) {
     throw new Error(
@@ -432,7 +447,9 @@ export async function buildConnectionForDestination(
     );
   }
 
-  const usedBasicOverride = !!(sapLogin && sapPassword);
+  const usedBasicOverride =
+    resolved.authenticationType !== 'PrincipalPropagation' &&
+    !!(sapLogin && sapPassword);
   const sapConfig: SapConfig = { ...resolved.sapConfig };
   if (usedBasicOverride) {
     sapConfig.authType = 'basic';
@@ -447,6 +464,14 @@ export async function buildConnectionForDestination(
     destinationName: resolved.destinationName,
   });
   await conn.connect();
+  bindSystemIdentity(conn, {
+    systemType,
+    sapConfig,
+    destinationName: resolved.destinationName,
+    authenticationType: resolved.authenticationType,
+    jwt: bearerToken(req.headers.authorization),
+  });
+  await warmSystemIdentity(conn, systemType);
   return {
     connection: conn,
     resolved,

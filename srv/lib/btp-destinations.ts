@@ -2,18 +2,24 @@
  * BTP Destinations — fetches and caches SAP system destinations.
  *
  * Uses BTP Destination Service REST API to list subaccount destinations,
- * filters to SAP-compatible systems (OnPremise + BasicAuth with SAP URLs).
+ * filters to SAP-compatible systems (OnPremise + BasicAuth / PrincipalPropagation).
  */
 
 import cds from '@sap/cds';
 import { getServiceCredentials, getToken } from './btp-oauth';
-import type { DestinationSource } from './destination-source';
+import type {
+  DestinationMetadata,
+  DestinationSource,
+} from './destination-source';
 
 export interface SapDestination {
   name: string;
   url: string;
   authentication: string;
   proxyType: string;
+  cloudConnectorLocationId?: string;
+  sapClient?: string;
+  systemType?: string;
 }
 
 interface RawDestination {
@@ -29,7 +35,7 @@ interface RawDestination {
  * Heuristic: is this destination likely a SAP ABAP system usable for MCP?
  *
  * Criteria:
- * - OnPremise proxy (Cloud Connector) with BasicAuthentication
+ * - OnPremise proxy (Cloud Connector) with BasicAuthentication or PrincipalPropagation
  * - URL contains SAP-typical patterns (/sap/, known SAP ports)
  * - Excludes OData-only, AI, and non-ABAP destinations
  */
@@ -46,8 +52,9 @@ function isSapAbapDestination(d: RawDestination): boolean {
   const auth = d.Authentication || '';
   const proxy = d.ProxyType || '';
 
-  // Must be BasicAuthentication (MCP ADT requires it)
-  if (auth !== 'BasicAuthentication') return false;
+  // Both authentication modes support ADT through the Cloud Connector.
+  if (auth !== 'BasicAuthentication' && auth !== 'PrincipalPropagation')
+    return false;
 
   // Must be OnPremise (Cloud Connector to SAP system)
   if (proxy !== 'OnPremise') return false;
@@ -65,6 +72,7 @@ function isSapAbapDestination(d: RawDestination): boolean {
 }
 
 let cachedDestinations: SapDestination[] | null = null;
+let cachedMetadata = new Map<string, DestinationMetadata>();
 let cacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -95,6 +103,11 @@ async function fetchDestinations(): Promise<SapDestination[]> {
       url: d.URL,
       authentication: d.Authentication,
       proxyType: d.ProxyType,
+      ...(d.CloudConnectorLocationId
+        ? { cloudConnectorLocationId: String(d.CloudConnectorLocationId) }
+        : {}),
+      ...(d['sap-client'] ? { sapClient: String(d['sap-client']) } : {}),
+      ...(d.SAP_SYSTEM_TYPE ? { systemType: String(d.SAP_SYSTEM_TYPE) } : {}),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -116,12 +129,19 @@ async function fetchDestinations(): Promise<SapDestination[]> {
     names: destinations.map((d) => d.name),
   });
 
+  cachedMetadata = new Map(
+    raw.map((d) => [
+      d.Name,
+      { authentication: d.Authentication, proxyType: d.ProxyType },
+    ]),
+  );
   return destinations;
 }
 
 /** Clear destination list cache — forces re-fetch from BTP on next call. */
 function clearBtpCache(): void {
   cachedDestinations = null;
+  cachedMetadata.clear();
   cacheTimestamp = 0;
 }
 
@@ -164,7 +184,17 @@ async function listFromBtp(): Promise<SapDestination[]> {
 /** Destinations fetched from the BTP Destination service, cached with a 5min TTL. */
 export function btpDestinationSource(): DestinationSource {
   // The service is the authority on which names exist; nothing to check first.
-  return { list: listFromBtp, clearCache: clearBtpCache, refuse: () => null };
+  return {
+    list: listFromBtp,
+    async metadata(name) {
+      await listFromBtp();
+      return cachedDestinations && Date.now() - cacheTimestamp < CACHE_TTL_MS
+        ? cachedMetadata.get(name)
+        : undefined;
+    },
+    clearCache: clearBtpCache,
+    refuse: () => null,
+  };
 }
 
 let source: DestinationSource | null = null;
@@ -172,6 +202,12 @@ let source: DestinationSource | null = null;
 /** Called once by the builder (providers). Until then, BTP as today. */
 export function setDestinationSource(s: DestinationSource): void {
   source = s;
+}
+
+export async function getDestinationMetadata(
+  name: string,
+): Promise<DestinationMetadata | undefined> {
+  return (source ?? btpDestinationSource()).metadata(name);
 }
 
 export async function getAvailableDestinations(): Promise<SapDestination[]> {

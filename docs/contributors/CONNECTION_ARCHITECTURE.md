@@ -379,8 +379,8 @@ systems (the on-premise leak) the release did not give the session back and the 
 
 `systemType` in `mcp-manager.ts` is **declared, never derived**: the `x-sap-system-type` header,
 else the destination's `SAP_SYSTEM_TYPE` property, else `onprem` (`srv/lib/system-type.ts`). It
-selects which *tools* to expose (on-prem-only tools such as `CreateProgram`) and, in lib 16, whether
-a create asks the system for its responsible (`cloud`). For a destination connection it has nothing
+selects which *tools* to expose (on-prem-only tools such as `CreateProgram`).
+Responsible resolution uses systeminformation on every system type, after an explicit responsible header and before the login fallback. For a destination connection it has nothing
 to do with how a session is released.
 
 **Only ever log off while holding the session cookie.** The session limit is per USER and the pool

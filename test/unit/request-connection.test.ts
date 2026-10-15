@@ -31,6 +31,7 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 const mockConnect = jest.fn();
 const mockCreateConnection = jest.fn((_opts: Record<string, unknown>) => ({
   connect: mockConnect,
+  makeAdtRequest: async () => ({ data: { userName: 'PROPAGATED' } }),
 }));
 jest.mock('../../srv/connections/connectionFactory', () => ({
   createConnection: (opts: Record<string, unknown>) =>
@@ -206,3 +207,78 @@ describe('establishRequestConnection', () => {
     expect(result.connection).toBeUndefined();
   });
 });
+
+test.each([false, true])(
+  'PP uses JWT without credentials and ignores basic override (%s)',
+  async (override) => {
+    mockResolve.mockResolvedValue({
+      destinationName: 'PP',
+      proxyType: 'OnPremise',
+      authenticationType: 'PrincipalPropagation',
+      sapConfig: {
+        url: 'http://virtual:443',
+        authType: 'jwt',
+        jwtToken: 'user-jwt',
+      },
+    });
+    const res = makeRes();
+    const result = await establishRequestConnection(
+      makeReq({
+        authorization: 'Bearer user-jwt',
+        ...(override
+          ? { 'x-sap-login': 'USER', 'x-sap-password': 'secret' }
+          : {}),
+      }),
+      res as unknown as Response,
+      'PP',
+    );
+    expect(result.handled).toBe(false);
+    expect(mockCreateConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sapConfig: expect.objectContaining({
+          authType: 'jwt',
+          jwtToken: 'user-jwt',
+        }),
+      }),
+    );
+  },
+);
+
+test.each(['cloud', 'onprem'])(
+  'identity failure at connect does not reject a %s request and can be retried',
+  async (systemType) => {
+    const { requestSystemContextResolver } = await import(
+      '../../srv/lib/request-system-context'
+    );
+    const makeAdtRequest = jest
+      .fn()
+      .mockRejectedValueOnce(new TypeError('private backend details'))
+      .mockResolvedValue({ data: { userName: 'RETRIED', systemID: 'DEV' } });
+    mockCreateConnection.mockReturnValueOnce({
+      connect: mockConnect,
+      makeAdtRequest,
+    });
+    mockResolve.mockResolvedValue({
+      destinationName: `retry-${systemType}`,
+      sapConfig: { url: 'https://retry', authType: 'jwt', jwtToken: 'tok' },
+      proxyType: 'Internet',
+      authenticationType: 'OAuth2ClientCredentials',
+      systemType,
+    });
+    const res = makeRes();
+    const result = await establishRequestConnection(
+      makeReq({ 'x-sap-responsible': 'EXPLICIT' }),
+      res as unknown as Response,
+      `retry-${systemType}`,
+    );
+    expect(result.handled).toBe(false);
+    expect(res.writeHead).not.toHaveBeenCalled();
+    expect(result.connection).toBeDefined();
+    if (!result.connection) throw new Error('Expected connection');
+    expect(await requestSystemContextResolver(result.connection)).toEqual({
+      responsible: 'RETRIED',
+      masterSystem: 'DEV',
+    });
+    expect(makeAdtRequest).toHaveBeenCalledTimes(2);
+  },
+);

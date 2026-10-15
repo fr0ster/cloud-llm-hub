@@ -32,6 +32,7 @@ describe('DestinationSource', () => {
       {
         name: 'SAP_DEV',
         url: 'https://sap.example.com:44300',
+        sapClient: '100',
         proxyType: 'Internet',
         authentication: 'NoAuthentication',
       },
@@ -56,5 +57,24 @@ describe('DestinationSource', () => {
       'SAP_QAS',
     ]);
     clearDestinationsCache();
+  });
+
+  it('env source returns authentication metadata or undefined for unknown names', async () => {
+    const src = createDestinationSource({
+      source: 'env',
+      destinations: [
+        {
+          name: 'PP',
+          url: 'http://virtual',
+          proxyType: 'OnPremise',
+          authentication: 'PrincipalPropagation',
+        },
+      ],
+    });
+    expect(await src.metadata('PP')).toEqual({
+      authentication: 'PrincipalPropagation',
+      proxyType: 'OnPremise',
+    });
+    expect(await src.metadata('unknown')).toBeUndefined();
   });
 });

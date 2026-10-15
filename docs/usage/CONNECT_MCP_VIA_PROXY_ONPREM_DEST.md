@@ -154,3 +154,5 @@ The editor config stays minimal — the proxy adds the auth and SAP headers.
   `targetUrl`; re-run `npm run get:key` and restart.
 - `SAP_CREDENTIALS_REQUIRED` / 401 from SAP → check the `.env` login/password and
   that `x-sap-destination` is a real destination. See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
+For user JWT authentication through Cloud Connector, see [Principal propagation](principal-propagation.md). PP destinations do not require `x-sap-login` / `x-sap-password`; creates use the connected SAP user, falling back to `x-sap-responsible` (explicit override) or uppercased `x-sap-login` when the endpoint is unavailable.

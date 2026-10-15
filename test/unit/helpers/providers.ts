@@ -26,6 +26,7 @@ export function initInMemoryProviders(): void {
     embedding: null,
     stores: createRagStoreFactory(IN_MEMORY_RAG, null),
     destinations: {
+      metadata: async () => undefined,
       list: async () => [],
       clearCache: () => {},
       refuse: () => null,

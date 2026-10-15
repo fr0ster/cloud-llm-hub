@@ -54,3 +54,9 @@ describe('destinationRequiresCredentials', () => {
     expect(destinationRequiresCredentials(undefined, undefined)).toBe(false);
   });
 });
+
+test('on-premise PP needs no login/password prompt', () => {
+  expect(
+    destinationRequiresCredentials('OnPremise', 'PrincipalPropagation'),
+  ).toBe(false);
+});

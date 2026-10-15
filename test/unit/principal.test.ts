@@ -280,3 +280,20 @@ describe('computeDumpScope', () => {
     );
   });
 });
+
+test('PP dump scope uses authenticated CAP identity without a SAP login or JWT contents', () => {
+  const input = {
+    cdsUserId: 'alice',
+    usedBasicOverride: false,
+    destinationAuthType: 'jwt',
+    destinationName: 'PP',
+  };
+  const alice = computeDumpScope(input);
+  expect(alice?.principalHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(
+    computeDumpScope({ ...input, cdsUserId: 'bob' })?.principalHash,
+  ).not.toBe(alice?.principalHash);
+  expect(
+    computeDumpScope({ ...input, cdsUserId: 'anonymous' }),
+  ).toBeUndefined();
+});

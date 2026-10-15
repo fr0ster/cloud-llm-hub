@@ -41,6 +41,7 @@ jest.mock('../../srv/lib/request-system-context', () =>
   require('./helpers/channel-harness').requestSystemMock(),
 );
 jest.mock('../../srv/lib/principal', () => ({
+  ...jest.requireActual('../../srv/lib/principal'),
   computeDumpScope: () => undefined,
 }));
 // The SDK's server, reduced to what the test needs from it: the callback

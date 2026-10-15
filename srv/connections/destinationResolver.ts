@@ -1,7 +1,12 @@
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { Destination } from '@sap-cloud-sdk/connectivity';
 import { getDestination } from '@sap-cloud-sdk/connectivity';
-import { refuseDestination } from '../lib/btp-destinations';
+import {
+  getAvailableDestinations,
+  getDestinationMetadata,
+  refuseDestination,
+} from '../lib/btp-destinations';
+import { userDependentAuthenticationTypes } from '../lib/destination-authentication';
 import { formatErrorMessage, logErrorSafely } from '../lib/errorUtils';
 import {
   DESTINATION_SYSTEM_TYPE_PROPERTY,
@@ -116,7 +121,11 @@ function getCaseInsensitive(
   // Try case-insensitive match
   const lowerKey = key.toLowerCase();
   for (const [entryKey, value] of Object.entries(config)) {
-    if (entryKey.toLowerCase() === lowerKey) {
+    if (
+      entryKey.toLowerCase() === lowerKey &&
+      value !== undefined &&
+      value !== null
+    ) {
       return String(value);
     }
   }
@@ -145,13 +154,14 @@ function getCaseInsensitive(
  * For CloudSdkAbapConnection: returns minimal SapConfig (URL, authType, client)
  * because executeHttpRequest handles all authentication automatically via destination.
  *
- * For on-premise connectivity: returns full SapConfig with username/password
- * because Cloud Connector needs explicit credentials.
+ * On-premise basic credentials are supplied by the caller; principal
+ * propagation uses the user JWT for SDK destination and proxy authentication.
  */
 async function buildSapConfigFromDestination(
   destinationName: string,
   destination: Destination,
   jwtToken?: string,
+  allowMissingUserToken = false,
 ): Promise<DestinationResolution> {
   const rawUrl = destination.url || getCaseInsensitive(destination, 'URL');
   if (!rawUrl) {
@@ -189,6 +199,17 @@ async function buildSapConfigFromDestination(
     case 'BasicAuthentication':
       authType = 'basic';
       break;
+    case 'PrincipalPropagation':
+      if (!jwtToken && !allowMissingUserToken) {
+        throw Object.assign(
+          new Error(
+            `Destination "${destinationName}" uses principal propagation and requires a logged-in user token.`,
+          ),
+          { statusCode: 401, code: 'SAP_USER_TOKEN_REQUIRED' },
+        );
+      }
+      authType = 'jwt';
+      break;
     case 'OAuth2ClientCredentials':
     case 'OAuth2SAMLBearerAssertion':
       authType = 'jwt';
@@ -217,15 +238,15 @@ async function buildSapConfigFromDestination(
   // For CloudSdkAbapConnection, executeHttpRequest gets credentials from destination automatically
 
   // For Principal Propagation, JWT token is passed to executeHttpRequest via destination options
-  // We store it in SapConfig only for backward compatibility and logging
-  if (authentication === 'OAuth2SAMLBearerAssertion' && jwtToken) {
+  // Keep the user token for every SDK destination fetch, including CSRF and retries.
+  if (userDependentAuthenticationTypes.has(authentication ?? '') && jwtToken) {
     sapConfig.jwtToken = jwtToken;
   }
 
   // Token expiration is handled by SAP Cloud SDK internally for OAuth2ClientCredentials
   // For Principal Propagation, use conservative expiration
   const tokenExpiresAt =
-    authentication === 'OAuth2SAMLBearerAssertion' && jwtToken
+    userDependentAuthenticationTypes.has(authentication ?? '') && jwtToken
       ? Date.now() + 45 * 60 * 1000 // 45 minutes
       : undefined;
 
@@ -249,11 +270,12 @@ async function buildSapConfigFromDestination(
  * This replaces the low-level implementation with SAP's recommended approach
  *
  * @param destinationName - Name of the destination to resolve
- * @param jwtToken - Optional JWT token for Principal Propagation (only for OAuth2SAMLBearerAssertion)
+ * @param jwtToken - Optional user JWT for PrincipalPropagation / OAuth2SAMLBearerAssertion
  */
 export async function resolveDestinationSapConfig(
   destinationName: string,
   jwtToken?: string,
+  options: { metadataOnly?: boolean } = {},
 ): Promise<DestinationResolution> {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const log = require('@sap/cds').log('destination-resolver');
@@ -276,9 +298,73 @@ export async function resolveDestinationSapConfig(
     const refusal = refuseDestination(destinationName);
     if (refusal) throw new Error(refusal);
 
-    // First, get destination without JWT to check authentication type
-    // Destination credentials are stored in destination itself, not in user JWT
-    const destination = await getDestination({ destinationName });
+    // Metadata discovery must not trigger the SDK's user-dependent proxy setup.
+    // It also lets missing-token requests fail with our actionable 401.
+    const authenticationMetadata = await getDestinationMetadata(
+      destinationName,
+    ).catch(() => undefined);
+    const userDependent = userDependentAuthenticationTypes.has(
+      authenticationMetadata?.authentication ?? '',
+    );
+    if (userDependent && !jwtToken && !options.metadataOnly) {
+      throw Object.assign(
+        new Error(
+          `Destination "${destinationName}" uses ${authenticationMetadata?.authentication === 'PrincipalPropagation' ? 'principal propagation' : authenticationMetadata?.authentication} and requires a logged-in user token.`,
+        ),
+        { statusCode: 401, code: 'SAP_USER_TOKEN_REQUIRED' },
+      );
+    }
+    const metadata =
+      userDependent && !jwtToken && options.metadataOnly
+        ? (await getAvailableDestinations()).find(
+            (entry) => entry.name === destinationName,
+          )
+        : undefined;
+    if (metadata) {
+      const destination: Destination = {
+        name: destinationName,
+        url: metadata.url,
+        authentication:
+          metadata.authentication as Destination['authentication'],
+        proxyType: metadata.proxyType as Destination['proxyType'],
+        cloudConnectorLocationId: metadata.cloudConnectorLocationId,
+        originalProperties: {
+          CloudConnectorLocationId: metadata.cloudConnectorLocationId,
+          'sap-client': metadata.sapClient,
+          SAP_SYSTEM_TYPE: metadata.systemType,
+        },
+      };
+      const resolved = await buildSapConfigFromDestination(
+        destinationName,
+        destination,
+        undefined,
+        options.metadataOnly,
+      );
+      return resolved;
+    }
+
+    // Preserve provider-tenant selection for technical authentication.
+    const destinationOptions = {
+      destinationName,
+      ...(userDependent && jwtToken && !options.metadataOnly
+        ? { jwt: jwtToken }
+        : {}),
+    };
+    const destination = await getDestination(destinationOptions).catch(
+      (error: unknown) => {
+        // The SDK throws a plain Error (no code/subclass). Match its exact
+        // diagnostic, including the authentication type, through SDK causes.
+        if (
+          !authenticationMetadata &&
+          jwtToken &&
+          !options.metadataOnly &&
+          isSdkUserTokenMissing(error)
+        ) {
+          return getDestination({ destinationName, jwt: jwtToken });
+        }
+        throw error;
+      },
+    );
 
     if (!destination) {
       log.error('Destination not found', { destinationName });
@@ -298,14 +384,14 @@ export async function resolveDestinationSapConfig(
 
     // Only pass JWT token if destination requires Principal Propagation
     // For BasicAuthentication and OAuth2ClientCredentials, destination has its own credentials
-    if (authentication === 'OAuth2SAMLBearerAssertion' && jwtToken) {
-      log.debug(
-        'Using Principal Propagation (OAuth2SAMLBearerAssertion) with user JWT',
-        {
-          destinationName,
-          jwtTokenLength: jwtToken.length,
-        },
-      );
+    if (
+      userDependentAuthenticationTypes.has(authentication ?? '') &&
+      jwtToken
+    ) {
+      log.debug('Using user-dependent destination authentication', {
+        destinationName,
+        jwtTokenLength: jwtToken.length,
+      });
     } else if (authentication === 'OAuth2SAMLBearerAssertion' && !jwtToken) {
       log.warn(
         'Destination requires Principal Propagation but no JWT token provided',
@@ -324,11 +410,13 @@ export async function resolveDestinationSapConfig(
       );
     }
 
-    return buildSapConfigFromDestination(
+    const resolved = await buildSapConfigFromDestination(
       destinationName,
       destination,
       jwtToken,
+      options.metadataOnly,
     );
+    return resolved;
   } catch (error: unknown) {
     // Log detailed error information for debugging
     const errorDetails: Record<string, unknown> = {
@@ -407,7 +495,8 @@ export async function resolveDestinationSapConfig(
     const destinationError = new Error(
       `Failed to resolve destination "${destinationName}": ${message}`,
     ) as Error & { statusCode?: number; code?: string };
-    destinationError.statusCode = 502; // Bad Gateway
+    destinationError.statusCode =
+      (error as { statusCode?: number }).statusCode ?? 502; // Bad Gateway
     const errorObj = error as { code?: string };
     destinationError.code =
       error instanceof Error && errorObj.code
@@ -424,4 +513,25 @@ export async function resolveDestinationSapConfig(
 export function clearDestinationServiceCache(): void {
   // SAP Cloud SDK handles caching internally
   // This function is kept for backward compatibility
+}
+
+/** SDK destination-from-service.js throwUserTokenMissing has no typed signal. */
+function isSdkUserTokenMissing(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const pending: unknown[] = [error];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    for (const authentication of userDependentAuthenticationTypes) {
+      if (
+        current.message ===
+        `No user token (JWT) has been provided. This is strictly necessary for '${authentication}'.`
+      )
+        return true;
+    }
+    const causes = current as Error & { cause?: unknown; rootCause?: unknown };
+    pending.push(causes.cause, causes.rootCause);
+  }
+  return false;
 }

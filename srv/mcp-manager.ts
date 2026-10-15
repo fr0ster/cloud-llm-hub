@@ -1,3 +1,8 @@
+import { bearerToken } from './lib/principal';
+import {
+  bindSystemIdentity,
+  warmSystemIdentity,
+} from './lib/system-identity-cache';
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import './env-setup';
 
@@ -31,6 +36,7 @@ import { maskLoginForLog } from './lib/log-mask';
 import { loggerAdapter } from './lib/logger';
 import { safeStop } from './lib/request-connection';
 import {
+  requestSystemContextResolver,
   resolveRequestSystem,
   runWithRequestSystem,
 } from './lib/request-system-context';
@@ -48,17 +54,7 @@ function summarizeJwt(token?: string): { preview: string; length: number } {
   if (!token) {
     return { preview: 'none', length: 0 };
   }
-  const length = token.length;
-  if (length <= 40) {
-    return {
-      preview: `${token.substring(0, Math.min(20, length))}...`,
-      length,
-    };
-  }
-  return {
-    preview: `${token.substring(0, 20)}...${token.substring(length - 20)}`,
-    length,
-  };
+  return { preview: '[redacted]', length: token.length };
 }
 
 /**
@@ -89,10 +85,7 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
     const authHeader = req.headers[HEADER_AUTHORIZATION.toLowerCase()] as
       | string
       | undefined;
-    const jwtToken =
-      typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
-        ? authHeader.substring(7)
-        : undefined;
+    const jwtToken = bearerToken(authHeader);
 
     // Check for x-sap-login / x-sap-password for destination with Basic override
     const sapLogin = (
@@ -106,13 +99,22 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
       destinationName,
       jwtToken,
     );
+    if (
+      resolved.authenticationType === 'PrincipalPropagation' &&
+      (sapLogin || sapPassword)
+    ) {
+      log.debug(
+        'Ignoring x-sap-login/x-sap-password because the destination uses principal propagation',
+      );
+    }
     const sapConfig: SapConfig = { ...resolved.sapConfig };
     // Declared: x-sap-system-type, else the destination's SAP_SYSTEM_TYPE,
     // else onprem. An unknown value is refused here with a 400.
     const systemType = resolveSystemType(req.headers, resolved.systemType);
 
     const destinationRequiresUserCredentials =
-      (resolved.proxyType ?? '').toLowerCase() === 'onpremise' ||
+      ((resolved.proxyType ?? '').toLowerCase() === 'onpremise' &&
+        resolved.authenticationType !== 'PrincipalPropagation') ||
       resolved.authenticationType === 'NoAuthentication';
 
     if (destinationRequiresUserCredentials && (!sapLogin || !sapPassword)) {
@@ -126,7 +128,11 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
     }
 
     // Override with Basic auth from headers if provided
-    if (sapLogin && sapPassword) {
+    if (
+      resolved.authenticationType !== 'PrincipalPropagation' &&
+      sapLogin &&
+      sapPassword
+    ) {
       sapConfig.authType = 'basic';
       sapConfig.username = sapLogin;
       sapConfig.password = sapPassword;
@@ -365,7 +371,17 @@ export async function createMCPServerForRequest(
         // from a null-connection context), and the wrapper lambdas call
         // getConnection() lazily — so an unconnected connection is safe to inject
         // and costs nothing on the ABAP side.
-        if (establish) await connection.connect();
+        if (establish) {
+          await connection.connect();
+          bindSystemIdentity(connection, {
+            systemType,
+            sapConfig,
+            destinationName: destination?.destinationName,
+            authenticationType: destination?.authenticationType,
+            jwt: bearerToken(req.headers.authorization),
+          });
+          await warmSystemIdentity(connection, systemType);
+        }
       } catch (connectErr) {
         const error = new Error(
           `SAP connection failed for destination "${destination?.destinationName ?? 'none'}": ${
@@ -395,6 +411,7 @@ export async function createMCPServerForRequest(
         logger: loggerAdapter,
         exposition,
         systemType,
+        systemContextResolver: requestSystemContextResolver,
         readOnlyDedupStrategy: new ReadVsGetDedupStrategy(),
       });
 

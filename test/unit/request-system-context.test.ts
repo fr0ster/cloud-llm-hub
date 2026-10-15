@@ -1,3 +1,6 @@
+import { getSystemInformation as lookup } from '@mcp-abap-adt/adt-clients/core';
+import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import { withResolvedSystemContext } from '@mcp-abap-adt/lib/request-context';
 /**
  * The SAP responsible person and master system, scoped to one request.
  *
@@ -16,9 +19,15 @@ import {
   setSystemContext,
 } from '@mcp-abap-adt/lib/utils';
 import {
+  requestSystemContextResolver,
   resolveRequestSystem,
   runWithRequestSystem,
 } from '../../srv/lib/request-system-context';
+
+import {
+  bindSystemIdentity,
+  warmSystemIdentity,
+} from '../../srv/lib/system-identity-cache';
 
 function deferred() {
   let resolve!: () => void;
@@ -157,5 +166,187 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
       async () => getRequestContext(),
     );
     expect(scope).toMatchObject({ responsible: 'ALICE', masterLanguage: 'EN' });
+  });
+});
+
+jest.mock('@mcp-abap-adt/adt-clients/core', () => ({
+  getSystemInformation: jest.fn(),
+}));
+describe('lazy resolver', () => {
+  const connection = () => ({}) as IAbapConnection;
+  beforeEach(() => {
+    jest.mocked(lookup).mockReset();
+  });
+  it('resolves on-premise user and master system', async () => {
+    jest
+      .mocked(lookup)
+      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+    await expect(requestSystemContextResolver(connection())).resolves.toEqual({
+      responsible: 'USER',
+      masterSystem: 'DEV',
+    });
+  });
+  it.each([null, {}])('returns null for missing user (%s)', async (info) => {
+    jest.mocked(lookup).mockResolvedValue(info as never);
+    await expect(
+      requestSystemContextResolver(connection()),
+    ).resolves.toBeNull();
+  });
+  it('falls back on on-premise errors', async () => {
+    jest.mocked(lookup).mockRejectedValue(new Error('private body'));
+    await expect(
+      requestSystemContextResolver(connection()),
+    ).resolves.toBeNull();
+  });
+  let sessionId = 0;
+  const declaredConnection = (systemType: 'cloud' | 'onprem') => {
+    const conn = connection();
+    bindSystemIdentity(conn, {
+      systemType,
+      sapConfig: {
+        url: `https://sap/${sessionId++}`,
+        authType: 'basic',
+        username: 'USER',
+      },
+    });
+    return conn;
+  };
+  it.each(['cloud', 'onprem'] as const)(
+    'keeps a systemID-only %s identity and applies request precedence',
+    async (systemType) => {
+      const conn = declaredConnection(systemType);
+      jest.mocked(lookup).mockResolvedValue({ systemID: 'DEV' });
+      await warmSystemIdentity(conn, systemType);
+      expect(await requestSystemContextResolver(conn)).toEqual({
+        masterSystem: 'DEV',
+      });
+      for (const responsible of [undefined, 'owner']) {
+        const info = await runWithRequestSystem(
+          resolveRequestSystem({
+            'x-sap-login': 'alice',
+            'x-sap-responsible': responsible,
+          }),
+          () =>
+            withResolvedSystemContext(
+              conn,
+              getSystemInformation,
+              requestSystemContextResolver,
+            ),
+        );
+        expect(info?.systemID).toBe('DEV');
+        expect(info?.userName).toBe(
+          responsible ? 'OWNER' : systemType === 'cloud' ? undefined : 'ALICE',
+        );
+      }
+      expect(lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each(['cloud', 'onprem'] as const)(
+    'keeps a userName-only %s identity',
+    async (systemType) => {
+      const conn = declaredConnection(systemType);
+      jest.mocked(lookup).mockResolvedValue({ userName: 'USER' });
+      await expect(requestSystemContextResolver(conn)).resolves.toEqual({
+        responsible: 'USER',
+      });
+    },
+  );
+  it.each([404, 405, 500])(
+    'retries declared cloud warm-up and resolver failures (%s)',
+    async (status) => {
+      const conn = declaredConnection('cloud');
+      const error = Object.assign(new Error('lookup failed'), { status });
+      jest.mocked(lookup).mockRejectedValue(error);
+      await warmSystemIdentity(conn, 'cloud');
+      await expect(requestSystemContextResolver(conn)).rejects.toBe(error);
+      const info = await runWithRequestSystem({ login: 'HINT' }, () =>
+        withResolvedSystemContext(
+          conn,
+          getSystemInformation,
+          requestSystemContextResolver,
+        ),
+      );
+      expect(info?.userName).toBeUndefined();
+      expect(lookup).toHaveBeenCalledTimes(3);
+    },
+  );
+  it.each(['cloud', 'onprem'] as const)(
+    'applies declared %s semantics to an empty lookup',
+    async (systemType) => {
+      const conn = declaredConnection(systemType);
+      jest.mocked(lookup).mockResolvedValue(null as never);
+      expect(await requestSystemContextResolver(conn)).toEqual(
+        systemType === 'cloud' ? {} : null,
+      );
+      const info = await runWithRequestSystem({ login: 'HINT' }, () =>
+        withResolvedSystemContext(
+          conn,
+          getSystemInformation,
+          requestSystemContextResolver,
+        ),
+      );
+      expect(info?.userName).toBe(systemType === 'cloud' ? undefined : 'HINT');
+    },
+  );
+  it('keeps declared on-premise fallback after warm-up and resolver failures', async () => {
+    const conn = declaredConnection('onprem');
+    jest.mocked(lookup).mockRejectedValue(new Error('lookup failed'));
+    await warmSystemIdentity(conn, 'onprem');
+    const info = await runWithRequestSystem({ login: 'HINT' }, () =>
+      withResolvedSystemContext(
+        conn,
+        getSystemInformation,
+        requestSystemContextResolver,
+      ),
+    );
+    expect(info?.userName).toBe('HINT');
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+  it('retains cloud kind when a session cannot be cached', async () => {
+    const conn = connection();
+    bindSystemIdentity(conn, {
+      systemType: 'cloud',
+      sapConfig: { url: 'https://sap', authType: 'jwt' },
+    });
+    jest.mocked(lookup).mockRejectedValue(new Error('lookup failed'));
+    await expect(requestSystemContextResolver(conn)).rejects.toThrow(
+      'lookup failed',
+    );
+    jest.mocked(lookup).mockResolvedValue(null as never);
+    await expect(requestSystemContextResolver(conn)).resolves.toEqual({});
+  });
+  it('lib keeps explicit responsible and memoizes lazily', async () => {
+    const conn = connection();
+    jest
+      .mocked(lookup)
+      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+    await runWithRequestSystem(
+      { responsible: 'STATED', login: 'HINT' },
+      async () => {
+        expect(lookup).not.toHaveBeenCalled();
+        for (let i = 0; i < 2; i++) {
+          const info = await withResolvedSystemContext(
+            conn,
+            getSystemInformation,
+            requestSystemContextResolver,
+          );
+          expect(info?.userName).toBe('STATED');
+        }
+      },
+    );
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])('lib applies user then login (%s)', async (found) => {
+    jest
+      .mocked(lookup)
+      .mockResolvedValue(found ? { userName: 'USER', systemID: 'DEV' } : null);
+    const info = await runWithRequestSystem({ login: 'HINT' }, () =>
+      withResolvedSystemContext(
+        connection(),
+        getSystemInformation,
+        requestSystemContextResolver,
+      ),
+    );
+    expect(info?.userName).toBe(found ? 'USER' : 'HINT');
   });
 });
