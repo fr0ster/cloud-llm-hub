@@ -73,7 +73,7 @@ export function systemIdentitySession(input: {
     (configured > 0 && Number.isFinite(configured)
       ? configured
       : 8 * 60 * 60 * 1000);
-  // Key by normalized URL, SAP client, and the credential authenticating to SAP:
+  // Key by normalized URL, SAP client, destination route, and SAP credential:
   // JWT hash, uppercase basic login, or technical destination name; ambiguous -> no cache.
   let principal: string | undefined;
   let userToken: string | undefined;
@@ -125,7 +125,12 @@ export function systemIdentitySession(input: {
     }
   }
   return {
-    key: JSON.stringify([systemUrl, sapConfig.client ?? '', principal]),
+    key: JSON.stringify([
+      systemUrl,
+      sapConfig.client ?? '',
+      destinationName ?? '',
+      principal,
+    ]),
     expiresAt,
   };
 }

@@ -431,7 +431,7 @@ it('uses destination technical Basic identity when no override is sent', () => {
   );
 });
 
-it('separates refreshed tokens for the same user and shares identical credentials across destinations', () => {
+it('separates refreshed tokens and destination routes for identical credentials', () => {
   const original = input('same-user');
   const refreshed = `${original.jwt}-refreshed`;
   const session = systemIdentitySession(original);
@@ -439,7 +439,7 @@ it('separates refreshed tokens for the same user and shares identical credential
   expect(session?.key).not.toContain(original.jwt);
   expect(
     systemIdentitySession({ ...original, destinationName: 'another' })?.key,
-  ).toBe(session?.key);
+  ).not.toBe(session?.key);
   expect(
     systemIdentitySession({
       ...original,
@@ -547,4 +547,26 @@ it('leaves unsupported and ambiguous credentials uncached', () => {
     },
   ];
   for (const row of rows) expect(systemIdentitySession(row)).toBeUndefined();
+});
+
+it('separates destination routes with the same URL, client and JWT', async () => {
+  jest
+    .mocked(getSystemInformation)
+    .mockResolvedValueOnce({ userName: 'USER', systemID: 'SITE_A' })
+    .mockResolvedValueOnce({ userName: 'USER', systemID: 'SITE_B' });
+  const connect = (destinationName: string) => {
+    const conn = {} as IAbapConnection;
+    bindSystemIdentity(conn, { ...input('routing'), destinationName });
+    return conn;
+  };
+  expect(await resolveSystemIdentity(connect('LOCATION_A'))).toMatchObject({
+    masterSystem: 'SITE_A',
+  });
+  expect(await resolveSystemIdentity(connect('LOCATION_B'))).toMatchObject({
+    masterSystem: 'SITE_B',
+  });
+  expect(await resolveSystemIdentity(connect('LOCATION_A'))).toMatchObject({
+    masterSystem: 'SITE_A',
+  });
+  expect(getSystemInformation).toHaveBeenCalledTimes(2);
 });

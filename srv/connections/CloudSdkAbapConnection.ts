@@ -896,6 +896,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
   }
 
   private async sdkDestination() {
+    // Resolution retains a JWT only for user-dependent authentication, including
+    // destinations discovered by the SDK fallback. Use it on every fetch (also
+    // CSRF/retries); technical destinations keep tokenless provider behaviour.
     return {
       destinationName: this.destinationName,
       ...(this.config.jwtToken ? { jwt: this.config.jwtToken } : {}),

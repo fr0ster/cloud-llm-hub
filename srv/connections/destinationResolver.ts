@@ -300,8 +300,9 @@ export async function resolveDestinationSapConfig(
 
     // Metadata discovery must not trigger the SDK's user-dependent proxy setup.
     // It also lets missing-token requests fail with our actionable 401.
-    const authenticationMetadata =
-      await getDestinationMetadata(destinationName);
+    const authenticationMetadata = await getDestinationMetadata(
+      destinationName,
+    ).catch(() => undefined);
     const userDependent = userDependentAuthenticationTypes.has(
       authenticationMetadata?.authentication ?? '',
     );
@@ -343,10 +344,27 @@ export async function resolveDestinationSapConfig(
     }
 
     // Preserve provider-tenant selection for technical authentication.
-    const destination = await getDestination({
+    const destinationOptions = {
       destinationName,
-      ...(userDependent && jwtToken ? { jwt: jwtToken } : {}),
-    });
+      ...(userDependent && jwtToken && !options.metadataOnly
+        ? { jwt: jwtToken }
+        : {}),
+    };
+    const destination = await getDestination(destinationOptions).catch(
+      (error: unknown) => {
+        // The SDK throws a plain Error (no code/subclass). Match its exact
+        // diagnostic, including the authentication type, through SDK causes.
+        if (
+          !authenticationMetadata &&
+          jwtToken &&
+          !options.metadataOnly &&
+          isSdkUserTokenMissing(error)
+        ) {
+          return getDestination({ destinationName, jwt: jwtToken });
+        }
+        throw error;
+      },
+    );
 
     if (!destination) {
       log.error('Destination not found', { destinationName });
@@ -495,4 +513,25 @@ export async function resolveDestinationSapConfig(
 export function clearDestinationServiceCache(): void {
   // SAP Cloud SDK handles caching internally
   // This function is kept for backward compatibility
+}
+
+/** SDK destination-from-service.js throwUserTokenMissing has no typed signal. */
+function isSdkUserTokenMissing(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const pending: unknown[] = [error];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    for (const authentication of userDependentAuthenticationTypes) {
+      if (
+        current.message ===
+        `No user token (JWT) has been provided. This is strictly necessary for '${authentication}'.`
+      )
+        return true;
+    }
+    const causes = current as Error & { cause?: unknown; rootCause?: unknown };
+    pending.push(causes.cause, causes.rootCause);
+  }
+  return false;
 }

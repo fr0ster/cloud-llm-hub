@@ -34,7 +34,9 @@ const savedFetch = global.fetch;
 beforeEach(() => {
   sdkGet.mockReset().mockImplementation(async (options) => {
     if (!options.jwt)
-      throw new Error('PrincipalPropagation requires a user JWT');
+      throw new Error(
+        "No user token (JWT) has been provided. This is strictly necessary for 'PrincipalPropagation'.",
+      );
     return destination;
   });
   setDestinationSource({
@@ -147,7 +149,11 @@ async function expectRequestDestination(
   expect(execute).toHaveBeenCalledWith(expected, expect.any(Object));
 }
 
-test.each(['BasicAuthentication', 'OAuth2ClientCredentials'] as const)(
+test.each([
+  'BasicAuthentication',
+  'OAuth2ClientCredentials',
+  'NoAuthentication',
+] as const)(
   '%s ignores user JWT for resolution and HTTP requests',
   async (authentication) => {
     setDestinationSource({
@@ -179,4 +185,111 @@ test('unknown metadata preserves tokenless SDK resolution', async () => {
   });
   await resolveDestinationSapConfig('UNKNOWN', 'user-jwt');
   expect(sdkGet.mock.calls).toEqual([[{ destinationName: 'UNKNOWN' }]]);
+});
+
+test.each(['absent', 'failed'])(
+  '%s metadata still resolves instance PP and forwards JWT on requests',
+  async (mode) => {
+    setDestinationSource({
+      list: async () => [],
+      metadata: async () => {
+        if (mode === 'failed') throw new Error('discovery unavailable');
+        return undefined;
+      },
+      clearCache() {},
+      refuse: () => null,
+    });
+    const resolved = await resolveDestinationSapConfig('PP', 'user-jwt');
+    expect(sdkGet.mock.calls).toEqual([
+      [{ destinationName: 'PP' }],
+      [{ destinationName: 'PP', jwt: 'user-jwt' }],
+    ]);
+    await expectRequestDestination(resolved.sapConfig, {
+      destinationName: 'PP',
+      jwt: 'user-jwt',
+    });
+  },
+);
+
+test('does not retry unrelated SDK failures with a user token', async () => {
+  setDestinationSource({
+    list: async () => [],
+    metadata: async () => undefined,
+    clearCache() {},
+    refuse: () => null,
+  });
+  sdkGet.mockRejectedValue(new Error('service unavailable'));
+  await expect(resolveDestinationSapConfig('PP', 'user-jwt')).rejects.toThrow(
+    'service unavailable',
+  );
+  expect(sdkGet).toHaveBeenCalledTimes(1);
+});
+
+test.each(['absent', 'failed'])(
+  'technical auth keeps provider lookup and tokenless requests with %s metadata',
+  async (mode) => {
+    setDestinationSource({
+      list: async () => [],
+      metadata: async () => {
+        if (mode === 'failed') throw new Error('discovery unavailable');
+        return undefined;
+      },
+      clearCache() {},
+      refuse: () => null,
+    });
+    for (const authentication of [
+      'BasicAuthentication',
+      'OAuth2ClientCredentials',
+      'NoAuthentication',
+    ] as const) {
+      sdkGet.mockReset().mockResolvedValue({
+        ...destination,
+        authentication,
+        originalProperties: { tokenServiceURLType: 'Common' },
+      });
+      const resolved = await resolveDestinationSapConfig(
+        'PP',
+        'subscriber-jwt',
+      );
+      expect(sdkGet.mock.calls).toEqual([[{ destinationName: 'PP' }]]);
+      expect(resolved.sapConfig.jwtToken).toBeUndefined();
+      await expectRequestDestination(resolved.sapConfig, {
+        destinationName: 'PP',
+      });
+    }
+  },
+);
+
+test('recognizes wrapped SDK missing-token errors and retries only once', async () => {
+  setDestinationSource({
+    list: async () => [],
+    metadata: async () => undefined,
+    clearCache() {},
+    refuse: () => null,
+  });
+  const missing = new Error(
+    "No user token (JWT) has been provided. This is strictly necessary for 'PrincipalPropagation'.",
+  );
+  const wrapped = Object.assign(new Error('Failed to load destination.'), {
+    cause: missing,
+  });
+  sdkGet.mockRejectedValue(wrapped);
+  await expect(resolveDestinationSapConfig('PP', 'user-jwt')).rejects.toThrow();
+  expect(sdkGet.mock.calls).toEqual([
+    [{ destinationName: 'PP' }],
+    [{ destinationName: 'PP', jwt: 'user-jwt' }],
+  ]);
+});
+
+test('metadata-only lookup never retries with an available user JWT', async () => {
+  setDestinationSource({
+    list: async () => [],
+    metadata: async () => undefined,
+    clearCache() {},
+    refuse: () => null,
+  });
+  await expect(
+    resolveDestinationSapConfig('PP', 'user-jwt', { metadataOnly: true }),
+  ).rejects.toThrow();
+  expect(sdkGet.mock.calls).toEqual([[{ destinationName: 'PP' }]]);
 });
