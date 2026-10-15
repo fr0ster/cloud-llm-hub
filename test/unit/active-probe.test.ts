@@ -80,6 +80,52 @@ describe('runActiveDestinationProbe', () => {
     expect(opts.sapConfig.jwtToken).toBeUndefined();
   });
 
+  it.each([{}, { login: 'ignored', password: 'ignored' }])(
+    'preserves principal propagation and client with credentials %j',
+    async (credentials) => {
+      const sapConfig = {
+        url: 'http://sap.example.com:44300',
+        authType: 'jwt',
+        jwtToken: 'user-jwt',
+      };
+      mockResolve.mockResolvedValue({
+        sapConfig,
+        authenticationType: 'PrincipalPropagation',
+        proxyType: 'OnPremise',
+        destinationName: 'S4HANA_QAS',
+      });
+      const result = await runActiveDestinationProbe({
+        destination: 'S4HANA_QAS',
+        jwt: 'user-jwt',
+        client: '600',
+        ...credentials,
+      });
+      expect(mockResolve).toHaveBeenCalledWith('S4HANA_QAS', 'user-jwt');
+      expect(mockCreateConnection).toHaveBeenCalledWith({
+        destinationName: 'S4HANA_QAS',
+        sapConfig: { ...sapConfig, client: '600' },
+      });
+      expect(sapConfig).not.toHaveProperty('client');
+      expect(result.status).toBe('ok');
+    },
+  );
+
+  it('propagates the missing-user-token error without creating a connection', async () => {
+    mockResolve.mockRejectedValue(
+      Object.assign(new Error('User token required'), {
+        statusCode: 401,
+        code: 'SAP_USER_TOKEN_REQUIRED',
+      }),
+    );
+    await expect(
+      runActiveDestinationProbe({ destination: 'S4HANA_QAS' }),
+    ).rejects.toMatchObject({
+      statusCode: 401,
+      code: 'SAP_USER_TOKEN_REQUIRED',
+    });
+    expect(mockCreateConnection).not.toHaveBeenCalled();
+  });
+
   it('probes exactly once and returns ok for a 2xx', async () => {
     const r = await runActiveDestinationProbe(creds);
     expect(mockProbe).toHaveBeenCalledTimes(1);

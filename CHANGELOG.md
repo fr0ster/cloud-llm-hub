@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat WebUI principal propagation uses platform single sign-on without asking for or sending SAP credentials. The active destination probe preserves the forwarded user JWT, and expired platform sessions prompt a reload/sign-in.
+
 ## [7.2.0] - 2026-10-15
 
 ### Migration

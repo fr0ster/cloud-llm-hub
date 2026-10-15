@@ -75,7 +75,7 @@
         <div class="system-bar">
             <span>LLM: <select id="llm-model-select" disabled><option value="">...</option></select></span>
             <span>MODE: <span id="agent-mode">...</span></span>
-            <span>DEST: <span id="dest-info" title="Active SAP destination (chosen at login)">none</span><select id="dest-select" disabled style="display:none"><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="display:none" disabled>&#x21bb;</button><button id="dest-diag" onclick="runActiveProbeAndShow()" title="Test THIS destination under your SAP login/password/client" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
+            <span>DEST: <span id="dest-info" title="Active SAP destination (chosen at login)">none</span><select id="dest-select" disabled style="display:none"><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="display:none" disabled>&#x21bb;</button><button id="dest-diag" onclick="runActiveProbeAndShow()" title="Test this destination under your SAP identity and client" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
             <span>SAP: <span id="sap-status" title="Connectivity of the active destination under your SAP identity" style="color:#888">—</span></span>
             <span><button id="help-btn" type="button" onclick="openHelp()" title="Help" aria-haspopup="dialog" style="padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">HELP</button></span>
@@ -266,21 +266,21 @@
         </div>
 
         <!-- Login gate: blocks the whole UI after sign-in until the user picks a
-             destination and enters SAP login/password. Destination is fixed for
+             destination and supplies SAP credentials when required. Destination is fixed for
              the session — to switch, log out and back in. -->
         <div id="login-gate-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.85);align-items:center;justify-content:center">
           <form id="login-gate-form" onsubmit="submitLoginGate(); return false;" style="background:#0a0a0a;border:1px solid #333;padding:20px;border-radius:6px;width:360px;max-width:90vw">
             <div style="color:#ffcc00;font-size:14px;font-weight:bold;margin-bottom:4px">CONNECT TO SAP</div>
-            <div style="font-size:11px;color:#888;margin-bottom:14px">Choose a destination and enter your ABAP user. Required before using the chat. To change the destination later, log out and back in.</div>
+            <div style="font-size:11px;color:#888;margin-bottom:14px">Choose a destination and connect with your SAP identity. Required before using the chat. To change the destination later, log out and back in.</div>
             <div style="margin-bottom:8px">
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">Destination:</label>
-              <select id="gate-dest" style="width:100%;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px"><option value="">loading...</option></select>
+              <select id="gate-dest" onchange="updateGateAuthentication()" style="width:100%;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px"><option value="">loading...</option></select>
             </div>
-            <div style="margin-bottom:8px">
+            <div id="gate-login-field" style="margin-bottom:8px">
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Login:</label>
               <input id="sap-login" name="username" autocomplete="username" placeholder="SAP username" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
             </div>
-            <div style="margin-bottom:12px">
+            <div id="gate-password-field" style="margin-bottom:12px">
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Password:</label>
               <input id="sap-password" name="password" type="password" autocomplete="current-password" placeholder="SAP password" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
             </div>
@@ -288,6 +288,7 @@
               <label style="color:#888;font-size:12px;display:block;margin-bottom:3px">SAP Client (optional):</label>
               <input id="sap-client" inputmode="numeric" maxlength="3" placeholder="e.g. 100 — blank = destination default" style="width:100%;box-sizing:border-box;background:#1a1a1a;color:#00ff00;border:1px solid #333;padding:5px 8px;font-family:'Courier New',monospace;font-size:12px;border-radius:3px">
             </div>
+            <div id="gate-sso-note" style="display:none;color:#888;font-size:11px;margin-bottom:12px">Signed in through single sign-on: this destination uses your platform login (principal propagation).</div>
             <div id="gate-error" style="display:none;color:#ff5555;font-size:11px;margin-bottom:8px"></div>
             <button type="submit" id="gate-submit" style="width:100%;font-size:12px;padding:6px 12px">CONNECT</button>
           </form>
@@ -348,7 +349,7 @@
 
         // ---------------------------------------------------------------
         // Login gate — after sign-in the whole chat is locked until the user
-        // picks a destination and enters SAP login/password. The destination is
+        // picks a destination and supplies credentials when required. The destination is
         // fixed for the session; to switch, log out and back in.
         // ---------------------------------------------------------------
         function showLoginGate() {
@@ -372,6 +373,7 @@
                 opt.value = '';
                 opt.textContent = 'loading...';
                 sel.appendChild(opt);
+                updateGateAuthentication();
                 return;
             }
             // Show EVERY destination so the user sees the full list, but only
@@ -393,6 +395,29 @@
                 if (d.name === prev && d.status === 'ready') opt.selected = true;
                 sel.appendChild(opt);
             }
+            updateGateAuthentication();
+        }
+
+        function destinationUsesSso(dest) {
+            return destinationMeta[dest]?.requiresCredentials === false;
+        }
+
+        function updateGateAuthentication() {
+            const sso = destinationUsesSso(document.getElementById('gate-dest').value);
+            document.getElementById('gate-login-field').style.display = sso ? 'none' : '';
+            document.getElementById('gate-password-field').style.display = sso ? 'none' : '';
+            document.getElementById('sap-login').disabled = sso;
+            document.getElementById('sap-password').disabled = sso;
+            document.getElementById('gate-sso-note').style.display = sso ? 'block' : 'none';
+            document.getElementById('gate-error').style.display = 'none';
+        }
+
+        function platformSessionExpired() {
+            sapCredsLogin = '';
+            sapCredsPassword = '';
+            hideLoginGate();
+            lockInput('login-gate');
+            return 'Your platform session has expired. Reload the page and sign in again.';
         }
 
         function submitLoginGate() {
@@ -403,13 +428,18 @@
             const err = document.getElementById('gate-error');
             const fail = (msg) => { err.textContent = msg; err.style.display = 'block'; };
             if (!dest) return fail('Choose a destination.');
-            if (!login || !password) return fail('Enter SAP login and password.');
+            const sso = destinationUsesSso(dest);
+            if (!sso && (!login || !password)) return fail('Enter SAP login and password.');
             // SAP client is optional; when given it must be exactly 3 digits (000-999).
             if (client && !/^\d{3}$/.test(client)) return fail('SAP client must be 3 digits, e.g. 100.');
             err.style.display = 'none';
 
-            sapCredsLogin = login;
-            sapCredsPassword = password;
+            sapCredsLogin = sso ? '' : login;
+            sapCredsPassword = sso ? '' : password;
+            if (sso) {
+                document.getElementById('sap-login').value = '';
+                document.getElementById('sap-password').value = '';
+            }
             sapCredsClient = client;
             connectedDestination = dest;
             if (destSelect) {
@@ -425,7 +455,7 @@
             // cancels the real form submit (return false) and hides itself
             // immediately, so the browser's save heuristic never fires on its own
             // — trigger it explicitly via the Credential Management API.
-            if (window.PasswordCredential) {
+            if (!sso && window.PasswordCredential) {
                 try {
                     navigator.credentials.store(
                         new PasswordCredential({ id: login, password: password, name: dest })
@@ -436,11 +466,12 @@
             hideLoginGate();
             unlockInput('login-gate');
             const clientNote = client ? ` (client ${escapeHtml(client)})` : '';
-            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Connected to ${escapeHtml(dest)}${clientNote} as ${escapeHtml(login)}.</div>`;
+            const identityNote = sso ? 'via single sign-on' : `as ${escapeHtml(login)}`;
+            chatWindow.innerHTML = `<div class="message"><b>> SYSTEM:</b> Connected to ${escapeHtml(dest)}${clientNote} ${identityNote}.</div>`;
             chatWindow.scrollTop = chatWindow.scrollHeight;
             try { refreshActiveCollections(); } catch (e) { /* non-fatal */ }
             userInput.focus();
-            // Validate the entered creds + client against the active destination
+            // Validate the SAP identity + client against the active destination
             // WITHOUT blocking entry: gate is already unlocked above; the probe
             // owns all its own errors and only updates the SAP status indicator.
             void runActiveProbe();
@@ -479,12 +510,13 @@
         }
 
         function getSapCredHeaders() {
-            if (sapCredsLogin && sapCredsPassword) {
-                const h = { 'X-SAP-Login': sapCredsLogin, 'X-SAP-Password': sapCredsPassword };
-                if (sapCredsClient) h['X-SAP-Client'] = sapCredsClient;
-                return h;
+            const h = {};
+            if (!destinationUsesSso(getSelectedDestination() || connectedDestination) && sapCredsLogin && sapCredsPassword) {
+                h['X-SAP-Login'] = sapCredsLogin;
+                h['X-SAP-Password'] = sapCredsPassword;
             }
-            return {};
+            if (sapCredsClient) h['X-SAP-Client'] = sapCredsClient;
+            return h;
         }
 
         // ---------------------------------------------------------------
@@ -1141,7 +1173,7 @@
         };
 
         // Probe the ACTIVE destination under the caller's own SAP identity
-        // (login/password/client). Updates the #sap-status indicator with a
+        // (SAP credentials or platform login, plus client). Updates #sap-status with a
         // terminal OK/ERROR/CHECKING and returns the DestinationDiagnostic on a
         // 2xx response, or null on any non-2xx / transport / parse failure.
         // Fully defensive — never throws to the caller, so it can be fired
@@ -1159,7 +1191,15 @@
                     headers: { Accept: 'application/json', 'X-SAP-Destination': dest, ...getSapCredHeaders() },
                     signal: controller.signal,
                 });
-                if (!resp.ok) { setSap('ERROR ' + resp.status, '#ff5555'); return null; }
+                if (!resp.ok) {
+                    const error = await resp.json().catch(() => ({}));
+                    if (resp.status === 401 && (error.error?.type === 'SAP_USER_TOKEN_REQUIRED' || error.error?.code === 'SAP_USER_TOKEN_REQUIRED')) {
+                        const message = platformSessionExpired();
+                        chatWindow.innerHTML += `<div class="message"><b>> SYSTEM:</b> ${message}</div>`;
+                        setSap('SIGN IN AGAIN', '#ff5555');
+                    } else { setSap('ERROR ' + resp.status, '#ff5555'); }
+                    return null;
+                }
                 const d = await resp.json();
                 if (d && d.status === 'ok') { setSap('OK', '#00ff00'); }
                 else { setSap('ERROR' + (d && d.status ? ' ' + d.status : ''), '#ff5555'); }
@@ -1346,7 +1386,7 @@
             gateDestinations = destinations;
             for (const d of destinations) {
                 destinationMeta[d.name] = {
-                    requiresCredentials: !!d.requiresCredentials,
+                    requiresCredentials: d.requiresCredentials,
                     proxyType: d.proxyType,
                 };
             }
@@ -1485,6 +1525,10 @@
                         if (errJson.error && errJson.error.message) {
                             // Credentials rejected/expired mid-session: re-open the
                             // login gate so the user can re-enter destination + creds.
+                            if (errJson.error.type === 'SAP_USER_TOKEN_REQUIRED' ||
+                                (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED' && destinationUsesSso(getSelectedDestination() || connectedDestination))) {
+                                throw new Error(platformSessionExpired());
+                            }
                             if (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED') {
                                 loginGateDone = false;
                                 lockInput('login-gate');
