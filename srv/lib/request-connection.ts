@@ -31,7 +31,7 @@ import {
 } from './../connections/connectionFactory';
 import { resolveDestinationSapConfig } from './../connections/destinationResolver';
 import { maskLoginForLog } from './log-mask';
-import { computeDumpScope, type DumpScope } from './principal';
+import { bearerToken, computeDumpScope, type DumpScope } from './principal';
 import { resolveSystemType } from './system-type';
 
 export type CredentialError = Error & {
@@ -98,7 +98,7 @@ export async function establishRequestConnection(
   try {
     const resolved = await resolveDestinationSapConfig(
       destination,
-      req.headers.authorization?.replace(/^Bearer\s+/i, ''),
+      bearerToken(req.headers.authorization),
     );
 
     if (
@@ -156,7 +156,7 @@ export async function establishRequestConnection(
       sapConfig,
       destinationName: resolved.destinationName,
       authenticationType: resolved.authenticationType,
-      jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
+      jwt: bearerToken(req.headers.authorization),
     });
     await warmSystemIdentity(conn, systemType);
 

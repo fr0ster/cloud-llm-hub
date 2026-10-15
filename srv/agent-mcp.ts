@@ -54,7 +54,7 @@ import {
 } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { describeCause, isOutageError } from './lib/mcp-outage';
-import { computeDumpScope } from './lib/principal';
+import { bearerToken, computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import {
   resolveRequestSystem,
@@ -414,7 +414,7 @@ export async function buildConnectionForDestination(
 
   const resolved = await resolveDestinationSapConfig(
     destination,
-    req.headers.authorization?.replace(/^Bearer\s+/i, ''),
+    bearerToken(req.headers.authorization),
   );
 
   if (
@@ -468,7 +468,7 @@ export async function buildConnectionForDestination(
     sapConfig,
     destinationName: resolved.destinationName,
     authenticationType: resolved.authenticationType,
-    jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
+    jwt: bearerToken(req.headers.authorization),
   });
   await warmSystemIdentity(conn, systemType);
   return {

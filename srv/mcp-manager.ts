@@ -1,3 +1,4 @@
+import { bearerToken } from './lib/principal';
 import {
   bindSystemIdentity,
   warmSystemIdentity,
@@ -84,10 +85,7 @@ export async function extractSapContext(req: Request): Promise<SapContext> {
     const authHeader = req.headers[HEADER_AUTHORIZATION.toLowerCase()] as
       | string
       | undefined;
-    const jwtToken =
-      typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
-        ? authHeader.substring(7)
-        : undefined;
+    const jwtToken = bearerToken(authHeader);
 
     // Check for x-sap-login / x-sap-password for destination with Basic override
     const sapLogin = (
@@ -379,7 +377,7 @@ export async function createMCPServerForRequest(
             sapConfig,
             destinationName: destination?.destinationName,
             authenticationType: destination?.authenticationType,
-            jwt: req.headers.authorization?.replace(/^Bearer\s+/i, ''),
+            jwt: bearerToken(req.headers.authorization),
           });
           await warmSystemIdentity(connection, systemType);
         }

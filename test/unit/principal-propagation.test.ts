@@ -1,3 +1,4 @@
+jest.mock('../../srv/env-setup', () => ({}));
 jest.mock('@sap/cds', () => {
   const log = () => ({ info() {}, warn() {}, debug() {}, error() {} });
   return { __esModule: true, default: { log }, log };
@@ -9,11 +10,13 @@ jest.mock('../../srv/lib/btp-oauth', () => ({
 }));
 
 import { getDestination } from '@sap-cloud-sdk/connectivity';
+import type { Request } from 'express';
 import { resolveDestinationSapConfig } from '../../srv/connections/destinationResolver';
 import {
   btpDestinationSource,
   setDestinationSource,
 } from '../../srv/lib/btp-destinations';
+import { extractSapContext } from '../../srv/mcp-manager';
 
 const destination = {
   name: 'PP',
@@ -86,4 +89,16 @@ test('discovery retains PP and existing exclusion filters', async () => {
   expect(await source.list()).toEqual([
     { ...destination, cloudConnectorLocationId: 'site' },
   ]);
+});
+
+test('extractSapContext forwards a lowercase bearer token for PP', async () => {
+  const context = await extractSapContext({
+    headers: { 'x-sap-destination': 'PP', authorization: 'bearer user-jwt' },
+  } as unknown as Request);
+  expect(context.destination?.authenticationType).toBe('PrincipalPropagation');
+  expect(context.sapConfig.jwtToken).toBe('user-jwt');
+  expect(sdkGet).toHaveBeenCalledWith({
+    destinationName: 'PP',
+    jwt: 'user-jwt',
+  });
 });
