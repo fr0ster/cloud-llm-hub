@@ -211,6 +211,46 @@ describe('lazy resolver', () => {
     });
     return conn;
   };
+  it.each(['cloud', 'onprem'] as const)(
+    'keeps a systemID-only %s identity and applies request precedence',
+    async (systemType) => {
+      const conn = declaredConnection(systemType);
+      jest.mocked(lookup).mockResolvedValue({ systemID: 'DEV' });
+      await warmSystemIdentity(conn, systemType);
+      expect(await requestSystemContextResolver(conn)).toEqual({
+        masterSystem: 'DEV',
+      });
+      for (const responsible of [undefined, 'owner']) {
+        const info = await runWithRequestSystem(
+          resolveRequestSystem({
+            'x-sap-login': 'alice',
+            'x-sap-responsible': responsible,
+          }),
+          () =>
+            withResolvedSystemContext(
+              conn,
+              getSystemInformation,
+              requestSystemContextResolver,
+            ),
+        );
+        expect(info?.systemID).toBe('DEV');
+        expect(info?.userName).toBe(
+          responsible ? 'OWNER' : systemType === 'cloud' ? undefined : 'ALICE',
+        );
+      }
+      expect(lookup).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each(['cloud', 'onprem'] as const)(
+    'keeps a userName-only %s identity',
+    async (systemType) => {
+      const conn = declaredConnection(systemType);
+      jest.mocked(lookup).mockResolvedValue({ userName: 'USER' });
+      await expect(requestSystemContextResolver(conn)).resolves.toEqual({
+        responsible: 'USER',
+      });
+    },
+  );
   it.each([404, 405, 500])(
     'retries declared cloud warm-up and resolver failures (%s)',
     async (status) => {

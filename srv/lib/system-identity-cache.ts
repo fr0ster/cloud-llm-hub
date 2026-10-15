@@ -6,6 +6,7 @@ import cds from '@sap/cds';
 import { userDependentAuthenticationTypes } from './destination-authentication';
 import type { SystemType } from './system-type';
 
+/** Endpoint fields are independent; request login fallbacks never enter the cache. */
 export type SystemIdentity = {
   responsible?: string;
   masterSystem?: string;
@@ -155,10 +156,14 @@ export function cachedSystemIdentity(
   return session ? systemIdentityCache.get(session.key) : undefined;
 }
 
+export function isCloudSystemIdentity(connection: IAbapConnection): boolean {
+  return sessions.get(connection)?.systemType === 'cloud';
+}
+
 /** Uses the already connected session. Transient failures remain retryable. */
 export async function resolveSystemIdentity(
   connection: IAbapConnection,
-  cloud = sessions.get(connection)?.systemType === 'cloud',
+  cloud = isCloudSystemIdentity(connection),
 ): Promise<SystemIdentity> {
   const session = sessions.get(connection)?.session;
   const cached = cachedSystemIdentity(connection);
@@ -169,11 +174,15 @@ export async function resolveSystemIdentity(
     let value: SystemIdentity;
     try {
       const info = await getSystemInformation(connection);
-      value = info?.userName
-        ? { responsible: info.userName, masterSystem: info.systemID }
-        : cloud
-          ? {}
-          : null;
+      value =
+        info?.userName || info?.systemID
+          ? {
+              ...(info.userName ? { responsible: info.userName } : {}),
+              ...(info.systemID ? { masterSystem: info.systemID } : {}),
+            }
+          : cloud
+            ? {}
+            : null;
     } catch (error) {
       if (cloud) throw error;
       const err = error as {

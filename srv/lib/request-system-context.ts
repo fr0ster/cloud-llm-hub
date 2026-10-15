@@ -1,6 +1,7 @@
 /** Request headers are scoped here; identity is shared across the authenticated session. */
 
 import {
+  getRequestContext,
   type RequestContext,
   runWithRequestContext,
   type SystemContextResolver,
@@ -8,6 +9,7 @@ import {
 import { getSystemContext } from '@mcp-abap-adt/lib/utils';
 import {
   cachedSystemIdentity,
+  isCloudSystemIdentity,
   resolveSystemIdentity,
 } from './system-identity-cache';
 
@@ -16,8 +18,16 @@ export const requestSystemContextResolver: SystemContextResolver = async (
   connection,
 ) => {
   const cached = cachedSystemIdentity(connection);
-  if (cached !== undefined) return cached;
-  return resolveSystemIdentity(connection);
+  const identity =
+    cached !== undefined ? cached : await resolveSystemIdentity(connection);
+  if (identity && !identity.responsible && !isCloudSystemIdentity(connection)) {
+    // lib clears login for every non-null answer, even a master-system-only one.
+    return {
+      ...identity,
+      responsible: getRequestContext()?.login?.toUpperCase(),
+    };
+  }
+  return identity;
 };
 
 /** What lib uses for ADT creates and for the default transport user. */
