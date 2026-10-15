@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { getSystemInformation } from '@mcp-abap-adt/adt-clients/core';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
@@ -58,7 +59,7 @@ const userDependentAuthenticationTypes: ReadonlySet<AuthenticationType> =
     'OAuth2JWTBearer',
   ]);
 
-/** Decode only: the platform has already authenticated the token. Never retain it. */
+/** Hash credentials; decode JWT payloads only for expiry. Never retain tokens. */
 export function systemIdentitySession(input: {
   sapConfig: SapConfig;
   destinationName?: string;
@@ -82,38 +83,61 @@ export function systemIdentitySession(input: {
     (configured > 0 && Number.isFinite(configured)
       ? configured
       : 8 * 60 * 60 * 1000);
-  let principal: unknown = 'destination-auth';
-  if (sapConfig.authType === 'basic') {
-    principal = ['basic', sapConfig.username?.trim().toUpperCase()];
+  // Key by normalized URL, SAP client, and the credential authenticating to SAP:
+  // JWT hash, uppercase basic login, or technical destination name; ambiguous -> no cache.
+  let principal: string | undefined;
+  let userToken: string | undefined;
+  const login = sapConfig.username?.trim().toUpperCase();
+  if (!destinationName) {
+    if (sapConfig.authType === 'basic' && login) {
+      principal = `basic:${login}`;
+    } else if (sapConfig.authType === 'jwt') {
+      userToken = sapConfig.jwtToken;
+    } else {
+      return undefined;
+    }
+  } else if (sapConfig.username || sapConfig.password) {
+    // CloudSdkAbapConnection sends Basic only when BOTH credentials exist.
+    if (sapConfig.authType !== 'basic' || !login || !sapConfig.password)
+      return undefined;
+    principal = `basic:${login}`;
   } else if (
+    sapConfig.authType === 'jwt' &&
     userDependentAuthenticationTypes.has(
       authenticationType as AuthenticationType,
-    ) ||
-    !destinationName
+    )
   ) {
+    userToken = sapConfig.jwtToken;
+    // The forwarded token must be the one supplied to the SDK destination fetch.
+    if (jwt && jwt !== userToken) return undefined;
+  } else if (
+    (authenticationType === 'OAuth2ClientCredentials' &&
+      sapConfig.authType === 'jwt') ||
+    (authenticationType === 'BasicAuthentication' &&
+      sapConfig.authType === 'basic')
+  ) {
+    principal = `dest:${destinationName}`;
+  } else {
+    return undefined;
+  }
+  if (principal === undefined) {
+    if (!userToken) return undefined;
+    principal = `jwt:${createHash('sha256').update(userToken).digest('hex')}`;
     try {
-      const claims = JSON.parse(
-        Buffer.from(
-          (jwt ?? sapConfig.jwtToken ?? '').split('.')[1],
-          'base64url',
-        ).toString('utf8'),
+      const payload = JSON.parse(
+        Buffer.from(userToken.split('.')[1], 'base64url').toString('utf8'),
       );
-      const user = claims.user_uuid || claims.user_name || claims.sub;
-      if (typeof user !== 'string' || !user || !Number.isFinite(claims.exp))
-        return undefined;
-      principal = ['jwt', user, claims.zid ?? '', claims.origin ?? ''];
-      expiresAt = claims.exp * 1000;
+      if (
+        typeof payload?.exp === 'number' &&
+        Number.isFinite(payload.exp * 1000)
+      )
+        expiresAt = payload.exp * 1000;
     } catch {
-      return undefined;
+      // Opaque or undecodable tokens use the configured TTL.
     }
   }
   return {
-    key: JSON.stringify([
-      destinationName ?? '',
-      systemUrl,
-      sapConfig.client ?? '',
-      principal,
-    ]),
+    key: JSON.stringify([systemUrl, sapConfig.client ?? '', principal]),
     expiresAt,
   };
 }
