@@ -152,9 +152,11 @@ doubling to 5 min). Switching the app to an `http` health check on `/health` wou
 loop, killing the instance that is about to recover. `mta.yaml` sets no `health-check-type`; do not add one.
 
 **6. Dimension and other embedders.** The shipped tables are `REAL_VECTOR(1536)`, matching
-`text-embedding-3-small`. Another embedder needs regenerated DDL; the hub then stops at startup with
-`SHARED_LAYOUT_NOT_DEPLOYED` instead of running on a mismatched table. The startup log line
-`Persistent collections` shows the dimension in force. Behaviour and error codes are in
+`text-embedding-3-small`. Another embedder needs regenerated DDL. Nothing stops the hub at startup over a
+mismatch: the library checks the tables lazily, per store. Tables of another dimension make the collections
+restore as `unavailable`, and writes are refused with `SHARED_LAYOUT_NOT_DEPLOYED`; an embedder of another
+width makes every write and search fail with `INVALID_VECTOR`. There is no fallback to memory. The startup
+log line `Persistent collections` shows the configured dimension. Behaviour and error codes are in
 [CONFIG_USAGE.md](../llm-agent/CONFIG_USAGE.md#persistent-rag-collections).
 
 **Postgres.** `LLM_AGENT_RAG_BACKEND: "pg-vector"` with `LLM_AGENT_PG_URL` (and optionally

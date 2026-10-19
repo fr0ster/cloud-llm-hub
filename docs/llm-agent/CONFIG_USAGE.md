@@ -45,10 +45,10 @@ are a different mechanism and do apply per request.
 | `LLM_AGENT_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for user and session collections. `qdrant`, `hana-vector` and `pg-vector` persist them (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_QDRANT_URL` | — | Required when any RAG class above is `qdrant` |
 | `LLM_AGENT_QDRANT_API_KEY` | — | Secret — set with `cf set-env`, never in `.mtaext` |
-| `LLM_AGENT_QDRANT_PREFIX` | `cloud-llm-hub` | Prefix for Qdrant collection names. Deployments sharing one Qdrant must each use a distinct prefix |
+| `LLM_AGENT_QDRANT_PREFIX` | `cloud-llm-hub` | Prefix for Qdrant collection names. Deployments sharing one Qdrant must each use a distinct prefix. With persistence on `qdrant` it also prefixes each collection's store (`<prefix>_c_<sha40>`) and the history store (`<prefix>_h_history`); letters, digits, `_`, `-`, `.`, at most 200 characters, else the hub refuses to start |
 | `LLM_AGENT_HANA_SERVICE` | the first `hana` binding | Name of the `hana` service binding in `VCAP_SERVICES` that `hana-vector` connects through. Credentials come from the binding, never from a variable |
 | `LLM_AGENT_PG_URL` | — | Required when any RAG class is `pg-vector`. Address only (`postgres://host:port/db`) |
-| `LLM_AGENT_PG_USER`, `LLM_AGENT_PG_PASSWORD` | — | `pg-vector` credentials. Secrets: set in `.env` (applied with `cf set-env`), never in `.mtaext`. A user without a password sends no credential, and `pg` then falls back to `PGUSER` / `PGPASSWORD` / trust authentication |
+| `LLM_AGENT_PG_USER`, `LLM_AGENT_PG_PASSWORD` | — | `pg-vector` credentials. Secrets: set in `.env` (applied with `cf set-env`), never in `.mtaext`. A user without a password sends no credential at all: `LLM_AGENT_PG_USER` is then ignored, and `pg` falls back to `PGUSER` / `PGPASSWORD` / trust authentication. Set both or neither |
 | `LLM_AGENT_PG_SCHEMA` | the library default | Schema holding the shared tables for `pg-vector` |
 | `LLM_AGENT_DESTINATION_SOURCE` | `btp` | `btp` (Destination service) \| `env` (the Cloud SDK `destinations` variable — off-platform, where no Destination service is reachable) |
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
@@ -72,26 +72,28 @@ With `LLM_AGENT_RAG_BACKEND` set to `hana-vector`, `pg-vector` or `qdrant`, user
 
 Design: [persistent RAG collections spec](../superpowers/specs/2026-10-19-persistent-rag-collections-design.md). Deployment of the HANA container: [DEPLOY_GUIDE.md](../deployment/DEPLOY_GUIDE.md#persistent-rag-on-hana).
 
-**Vector dimension.** On HANA and Postgres it is fixed at 1536: the shipped HDI tables declare `REAL_VECTOR(1536)`, which matches `text-embedding-3-small`. An embedder with another dimension needs regenerated DDL; until then the hub fails loudly at startup (the library reports `SHARED_LAYOUT_NOT_DEPLOYED`) rather than falling back to memory. The startup log line `Persistent collections` shows the effective dimension (`1536`, or `from the embedder` on Qdrant).
+**Vector dimension.** On HANA and Postgres the hub configures 1536: the shipped HDI tables declare `REAL_VECTOR(1536)`, which matches `text-embedding-3-small`. The library checks the tables lazily, on each store's first operation, not at hub startup, and the hub does not stop over it: tables of another dimension make every collection restore as `unavailable` and writes are refused with `SHARED_LAYOUT_NOT_DEPLOYED`. An embedder of another width passes that check (the tables are 1536 wide) and every write and search then fails with `INVALID_VECTOR` (502 on writes). There is no fallback to memory in either case; another embedder needs regenerated DDL. The startup log line `Persistent collections` shows the configured dimension (`1536`, or `from the embedder` on Qdrant).
 
-**One backend.** When `LLM_AGENT_RAG_BACKEND` is a persistent kind, every new user or session collection uses it. A request `backend` naming anything else is refused with 400, and `GET /rag/backends` lists only that backend. Presets (`preset: true`) stay in process memory, together with their enabled flag.
+**One backend.** When `LLM_AGENT_RAG_BACKEND` is a persistent kind, every new user or session collection uses it. A request `backend` naming anything else is refused with 400, and `GET /rag/backends` lists only that backend. Presets (`preset: true`) stay in process memory, together with their enabled flag. A write to a preset (documents, enabled, rename, delete) while the restore is not ready waits for it, because a restored collection under the same id replaces the preset: the write lands on what the restore leaves under that id, or is refused with 503.
 
 **Backend first.** Add, update, delete, `rag_correct`, `rag_deprecate`, rename, description and enabled writes go to the database first; memory changes only after it succeeded. A failure is an explicit error and leaves memory untouched, so no response reports a change a restart would undo.
 
 | Status | Cause |
 |--------|-------|
 | 409 | Duplicate name, an orphan store under that name, a collection being deleted, or a collection restored as `incompatible` |
-| 503 | Backend unavailable, collections not restored yet (a request waits up to 30 s for the restore), or a collection restored as `unavailable` |
-| 502 | Any other backend failure |
+| 503 | Collections not restored yet: the restore failed, or is still running after the 30 s a request waits for it ("restore still in progress"); or a collection restored as `unavailable` |
+| 502 | Any backend failure on an operation, an unreachable backend included |
 | 400 | `backend` in the request differs from the configured persistent kind |
 
 **Restore at startup.** Collections are read back from the catalog before the registry serves persistent operations. Only records the hub wrote (`writtenBy: cloud-llm-hub`) are opened; others are left alone. If the whole restore fails, `GET /health` answers 503 and a background retry runs after 30 s, doubling up to 5 min, each attempt logged. `/health` answers 200 `{"status":"UP"}` once restored, and also whenever persistence is off. One collection failing to open or scan is restored as `unavailable` (the others work). A collection written with a different embedder is restored as `incompatible`: it can be listed, read and exported, while search and writes name both embedder fingerprints in the error. A chat turn that names an incompatible or unavailable collection is refused (409 / 503) before anything streams.
+
+While the restore has failed (or is still running past the wait), presets stay usable: `GET /rag/collections` and `POST /rag/presets/ensure` answer 200 with the presets only and `collectionsUnavailable` naming the cause, and a chat whose `rag_collections` are all presets goes on; a chat naming any other collection gets 503. Removing a session in that time (logout, clear chat, eviction) is recorded, and the restore then deletes that session's collections instead of bringing them back.
 
 **Documents.** The metadata keys `id`, `namespace`, `collectionId`, `docId`, `createdAt` and `_createdAtMs` belong to the hub; the hub's values win over the same keys supplied by a client.
 
 **Session collections** persist too and expire after the session TTL (`RAG_SESSION_TTL_MS`, default 24 h). The hourly sweep removes expired ones from memory and from the catalog.
 
-**Session history** with a persistent `LLM_AGENT_SESSION_RAG_BACKEND` is stored in the store `h_history`, created on first use. Forgetting a session deletes its turns by `userId` and `sessionId`; each owner is capped at 200 turns (the oldest are deleted). After a failed open the hub waits 30 s before trying again and logs one warning per window.
+**Session history** with a persistent `LLM_AGENT_SESSION_RAG_BACKEND` is stored in the store `h_history` (`<prefix>_h_history` on Qdrant), created on first use. Recall is scoped to the asking conversation by `userId` and `sessionId`. Forgetting a session deletes its turns by `userId` and `sessionId`; each owner is capped at 200 turns (the oldest are deleted). After a failed open the hub waits 30 s before trying again and logs one warning per window.
 
 **Not logged:** stores or rows with no catalog record (orphans) are not reported at startup, because the library has no listing for them and the hub does not issue SQL itself. A creation under an orphan's name is refused with 409. An upstream request is in [BACKLOG.md](../rfcs/BACKLOG.md).
 

@@ -16,6 +16,7 @@
 
 ## Session / History
 
+- [ ] **History recall on the vector path returns nothing (main-repo fix)** — the pipeline filters by namespace, turns carry none. The chat's `ragFilter` has `namespace: ${userId}:${destination}` (plus `exposition`, and the `history` stage adds `sessionId`); every store drops a record whose `metadata.namespace` differs, and `vector`-path turns carry only `owner` (no namespace, no sessionId). The persistent path is fixed (`SessionHistoryRag.query` filters by the owner's `userId`/`sessionId`); on `vector` the same replacement, or no `ragFilter` relying on `mine()`, changes behaviour with persistence off, so it ships separately with a CHANGELOG "Fixed" line.
 - [ ] **Session-scoped RAG cleanup on CLR** — `IRag.clear()` for session history store when user clicks CLR.
 - [ ] **Explicit "remember" command** — user says "запам'ятай це" → save to user-scoped facts store. Not auto-upsert from classifier.
 

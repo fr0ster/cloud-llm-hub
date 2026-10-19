@@ -32,11 +32,19 @@ All notable changes to this project will be documented in this file. The format 
 - **Backend-first writes.** With a persistent backend, add, update, delete,
   rename, enable and `rag_correct` / `rag_deprecate` write the database first
   and change memory only on success. Errors are explicit: 409 duplicate, orphan,
-  being deleted or incompatible; 503 backend or collections unavailable (a
-  request waits up to 30 s for a running restore); 502 other backend failures.
+  being deleted or incompatible; 503 while collections are not restored (a
+  request waits up to 30 s for a running restore) or a collection restored
+  `unavailable`; 502 for any backend failure, an unreachable backend included.
+  A write to a preset waits for a running restore too.
 - **One backend per deployment.** With a persistent kind configured, a request
   `backend` naming another is refused with 400 and `GET /rag/backends` lists
   only the configured one. Presets stay in memory.
+- **Presets while the restore has failed.** The collection list and
+  `presets/ensure` answer with the presets and `collectionsUnavailable`, and a
+  chat naming only presets goes on. A session removed meanwhile has its
+  collections deleted by the restore instead of brought back.
+- **Qdrant prefix.** On `qdrant`, persistent stores and the history store
+  carry `LLM_AGENT_QDRANT_PREFIX` (`<prefix>_c_<sha40>`, `<prefix>_h_history`).
 - **Chat refuses a degraded collection.** A turn naming a collection restored as
   `incompatible` (embedder changed) or `unavailable` is refused (409 / 503)
   before streaming instead of silently skipping it.
