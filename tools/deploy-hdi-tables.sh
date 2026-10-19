@@ -37,8 +37,19 @@ fi
 
 # Work in a temp copy so the repository stays clean.
 WORK="$(mktemp -d)"
-cleanup() { rm -rf "$WORK"; }
+pushed=0   # set right before cf push: from then on the app may hold a binding
+cleanup() {
+  local rc=$?
+  if [ "$pushed" = 1 ]; then
+    echo "Removing the throwaway app on exit..." >&2
+    delete_app || true
+  fi
+  rm -rf "$WORK"
+  exit "$rc"
+}
+# Signals go through the EXIT trap, so an interrupt still removes the app.
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 cp "$TEMPLATE/package.json" "$TEMPLATE/manifest.yml" "$WORK/"
 mkdir -p "$WORK/src"
 for f in "${FILES[@]}"; do
@@ -50,6 +61,12 @@ for f in "${FILES[@]}"; do
 done
 
 delete_app() {
+  pushed=0
+  # Nothing to delete when the push never created the app.
+  if [ "$DRY_RUN" = 0 ] && ! cf app "$APP" >/dev/null 2>&1; then
+    echo "$APP does not exist, nothing to delete."
+    return 0
+  fi
   # An unbind can still be in progress right after the deployer stops: retry.
   local i
   for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -62,6 +79,8 @@ delete_app() {
 }
 
 RESULT=1
+pushed=1
+if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] would delete app on exit (also on Ctrl-C/SIGTERM)"; fi
 if (cd "$WORK" && run cf push -f manifest.yml --var "app_name=$APP" --var "hdi_service=$SERVICE"); then
   waited=0
   while [ "$waited" -lt "$POLL_TIMEOUT" ]; do

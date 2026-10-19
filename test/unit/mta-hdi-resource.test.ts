@@ -2,12 +2,23 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { load } from 'js-yaml';
 
+interface Named {
+  name: string;
+  [key: string]: unknown;
+}
+interface Mta {
+  resources: Named[];
+  modules: (Named & { requires?: Named[] })[];
+}
+
 const mta = load(
   fs.readFileSync(path.join(__dirname, '..', '..', 'mta.yaml'), 'utf8'),
-) as any;
+) as Mta;
 
 describe('mta.yaml optional HDI resource (persistent RAG on HANA)', () => {
-  const hdi = mta.resources.find((r: any) => r.name === 'cloud-llm-hub-hdi');
+  const hdi = mta.resources.find(
+    (r) => r.name === 'cloud-llm-hub-hdi',
+  ) as Named;
 
   it('declares the HDI container resource', () => {
     expect(hdi).toBeDefined();
@@ -24,16 +35,16 @@ describe('mta.yaml optional HDI resource (persistent RAG on HANA)', () => {
   });
 
   it('is required by srv as optional, so an inactive resource cannot break the deploy', () => {
-    const srv = mta.modules.find((m: any) => m.name === 'cloud-llm-hub-srv');
-    const dep = srv.requires.find((r: any) => r.name === 'cloud-llm-hub-hdi');
+    const srv = mta.modules.find((m) => m.name === 'cloud-llm-hub-srv');
+    const dep = srv?.requires?.find((r) => r.name === 'cloud-llm-hub-hdi');
     expect(dep).toEqual({ name: 'cloud-llm-hub-hdi', optional: true });
   });
 
   it('the srv module does not request it with a binding group or parameters', () => {
     // a plain optional requires: the app reads the binding from VCAP_SERVICES
     const names = mta.modules
-      .filter((m: any) => m.name !== 'cloud-llm-hub-srv')
-      .flatMap((m: any) => (m.requires ?? []).map((r: any) => r.name));
+      .filter((m) => m.name !== 'cloud-llm-hub-srv')
+      .flatMap((m) => (m.requires ?? []).map((r) => r.name));
     expect(names).not.toContain('cloud-llm-hub-hdi');
   });
 });
