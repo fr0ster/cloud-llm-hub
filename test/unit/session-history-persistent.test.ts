@@ -21,7 +21,12 @@ jest.mock('../../srv/request-session', () => ({
 }));
 
 import {
+  DuplicateCollectionError,
+  type IRag,
+  type IRagProvider,
+  OrphanStoreError,
   type RagCollectionRecord,
+  RagError,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -31,6 +36,8 @@ import {
 } from '@mcp-abap-adt/pg-vector-rag';
 import {
   createCollectionPersistence,
+  ensureHistoryStore,
+  HISTORY_OPEN_COOL_DOWN_MS,
   HISTORY_STORE,
   PersistentHistoryStore,
   WRITTEN_BY,
@@ -127,13 +134,22 @@ function steppingClock(start = Date.parse('2026-10-20T10:00:00.000Z')) {
 
 function history(
   owner: () => string | undefined,
-  opts: { cap?: number; warnings?: unknown[] } = {},
+  opts: {
+    cap?: number;
+    warnings?: unknown[];
+    provider?: PgVectorRagProvider;
+    clock?: () => number;
+  } = {},
 ): SessionHistoryRag {
   const log = {
     warn: (m: string, d?: unknown) => opts.warnings?.push({ m, d }),
   };
   return new SessionHistoryRag(
-    new PersistentHistoryStore(newProvider(), log),
+    new PersistentHistoryStore(
+      opts.provider ?? newProvider(),
+      log,
+      opts.clock ? { now: opts.clock } : {},
+    ),
     owner,
     opts.cap,
     { log, now: steppingClock() },
@@ -216,15 +232,17 @@ describe('the h_history catalog record', () => {
     ).toHaveLength(1);
   });
 
-  it('a backend that is down: the turn fails quietly, and the next use opens the store', async () => {
+  it('a backend that is down: the turn fails quietly; after the cool-down the next use opens the store', async () => {
     const warnings: unknown[] = [];
-    const rag = history(() => ALICE, { warnings });
+    let now = 1_000_000;
+    const rag = history(() => ALICE, { warnings, clock: () => now });
     down = true;
     expect(
       await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' }),
     ).toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
     down = false;
+    now += HISTORY_OPEN_COOL_DOWN_MS;
     expect(
       await rag.recordTurn({
         owner: ALICE,
@@ -236,7 +254,255 @@ describe('the h_history catalog record', () => {
   });
 });
 
+describe('a failed open is kept for a cool-down', () => {
+  it('N calls in the window: one open attempt, one warning; after it, a new attempt', async () => {
+    const warnings: unknown[] = [];
+    let now = 5_000_000;
+    const provider = newProvider();
+    let attempts = 0;
+    const create = provider.createCollection.bind(provider);
+    provider.createCollection = async (name, opts) => {
+      attempts++;
+      return create(name, opts);
+    };
+    const rag = history(() => ALICE, {
+      warnings,
+      provider,
+      clock: () => now,
+    });
+    down = true;
+    for (let i = 0; i < 5; i++) {
+      expect(
+        await rag.recordTurn({
+          owner: ALICE,
+          userText: 'q',
+          assistantText: 'a',
+        }),
+      ).toBe(false);
+      expect((await rag.query(new TextOnlyEmbedding('q'), 5)).ok).toBe(false);
+      now += 1000;
+    }
+    expect(attempts).toBe(1);
+    expect(warnings).toHaveLength(1);
+
+    // Still down after the window: one new attempt, one new warning.
+    now += HISTORY_OPEN_COOL_DOWN_MS;
+    await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
+    await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
+    expect(attempts).toBe(2);
+    expect(warnings).toHaveLength(2);
+
+    // Back up, after the next window: the store opens and the turn is kept.
+    down = false;
+    now += HISTORY_OPEN_COOL_DOWN_MS;
+    expect(
+      await rag.recordTurn({
+        owner: ALICE,
+        userText: 'q',
+        assistantText: 'a ZDEMO_BACK',
+      }),
+    ).toBe(true);
+    expect(attempts).toBe(3);
+    expect(await recall(rag, 'ZDEMO_BACK')).toHaveLength(1);
+  });
+});
+
+describe('ensureHistoryStore: create, then adopt, then open', () => {
+  const rag = { tag: 'store' } as unknown as IRag;
+  type Call = { adopt: boolean };
+  type Created = Awaited<ReturnType<IRagProvider['createCollection']>>;
+
+  /** A provider double: `create` decides each createCollection outcome. */
+  function fakeProvider(
+    create: (adopt: boolean) => Created,
+    extra: Partial<IRagProvider> = {},
+  ): { provider: IRagProvider; calls: Call[] } {
+    const calls: Call[] = [];
+    const provider: IRagProvider = {
+      name: 'fake',
+      kind: 'fake',
+      editable: true,
+      supportedScopes: ['global'],
+      createCollection: async (_name, opts) => {
+        const adopt = opts.adoptExisting === true;
+        calls.push({ adopt });
+        return create(adopt);
+      },
+      ...extra,
+    };
+    return { provider, calls };
+  }
+  const handles: Created = {
+    ok: true,
+    value: { rag, editor: {} as never },
+  };
+
+  it('Qdrant-like (adopt of a missing collection would fail): a plain create, adopt never asked', async () => {
+    const { provider, calls } = fakeProvider((adopt) =>
+      adopt
+        ? {
+            ok: false,
+            error: new RagError(
+              "Qdrant collection 'h_history' does not exist; adoptExisting takes over an existing store and creates nothing",
+              'RAG_CREATE_ERROR',
+            ),
+          }
+        : handles,
+    );
+    const r = await ensureHistoryStore(provider);
+    expect(r.ok && r.value).toBe(rag);
+    expect(calls).toEqual([{ adopt: false }]);
+  });
+
+  it('a store without a record (OrphanStoreError): adopted', async () => {
+    const { provider, calls } = fakeProvider((adopt) =>
+      adopt
+        ? handles
+        : { ok: false, error: new OrphanStoreError(HISTORY_STORE, 'orphan') },
+    );
+    const r = await ensureHistoryStore(provider);
+    expect(r.ok && r.value).toBe(rag);
+    expect(calls).toEqual([{ adopt: false }, { adopt: true }]);
+  });
+
+  it('any other failure: one attempt, the error returned', async () => {
+    const { provider, calls } = fakeProvider(() => ({
+      ok: false,
+      error: new RagError('connect ECONNREFUSED', 'RAG_CREATE_ERROR'),
+    }));
+    const r = await ensureHistoryStore(provider);
+    expect(!r.ok && r.error.message).toBe('connect ECONNREFUSED');
+    expect(calls).toEqual([{ adopt: false }]);
+  });
+
+  it('a record already there (Duplicate): the existing record is opened', async () => {
+    const record: RagCollectionRecord = {
+      storeName: HISTORY_STORE,
+      name: HISTORY_STORE,
+      scope: 'global',
+      attributes: { writtenBy: WRITTEN_BY },
+    };
+    const opened: string[] = [];
+    const { provider, calls } = fakeProvider(
+      () => ({
+        ok: false,
+        error: new DuplicateCollectionError(HISTORY_STORE, 'taken'),
+      }),
+      {
+        describeCollections: async () => ({
+          ok: true,
+          value: { records: [record], rejected: [] },
+        }),
+        openCollection: async (rec) => {
+          opened.push(rec.storeName);
+          return handles;
+        },
+      },
+    );
+    const r = await ensureHistoryStore(provider);
+    expect(r.ok && r.value).toBe(rag);
+    expect(calls).toEqual([{ adopt: false }]);
+    expect(opened).toEqual([HISTORY_STORE]);
+  });
+
+  it('pg shared layout: rows without a record are an orphan, then adopted', async () => {
+    await history(() => ALICE).recordTurn({
+      owner: ALICE,
+      userText: 'q',
+      assistantText: 'a',
+    });
+    await real.query(
+      `DELETE FROM "${pgl.schema}"."rag_collections" WHERE "store_name" = $1`,
+      [HISTORY_STORE],
+    );
+    const p = newProvider();
+    const outcomes: string[] = [];
+    const create = p.createCollection.bind(p);
+    p.createCollection = async (name, opts) => {
+      const r = await create(name, opts);
+      outcomes.push(
+        `${opts.adoptExisting ? 'adopt' : 'create'}:${r.ok ? 'ok' : r.error.constructor.name}`,
+      );
+      return r;
+    };
+    expect((await ensureHistoryStore(p)).ok).toBe(true);
+    expect(outcomes).toEqual(['create:OrphanStoreError', 'adopt:ok']);
+  });
+});
+
+describe('a foreign h_history record', () => {
+  it.each([
+    ['another writtenBy', { writtenBy: 'another-tool' }],
+    ['no writtenBy', { note: 'x' }],
+  ])('(%s) is refused and left untouched', async (_label, attributes) => {
+    const p = newProvider();
+    const made = await p.createCollection(HISTORY_STORE, {
+      scope: 'global',
+      collectionName: 'theirs',
+      attributes,
+    });
+    expect(made.ok).toBe(true);
+    const before = await records(p);
+
+    const warnings: unknown[] = [];
+    const rag = history(() => ALICE, { warnings });
+    expect(
+      await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' }),
+    ).toBe(false);
+    expect(JSON.stringify(warnings)).toContain('was not written by');
+    expect(await records(newProvider())).toEqual(before);
+    expect(await historyRows()).toEqual([]);
+  });
+});
+
 describe('persistent recall', () => {
+  it('with the production option shape { ragFilter: { sessionId } }', async () => {
+    const aliceOther = turnOwner('alice@example.com', 's-other');
+    const writer = history(() => ALICE);
+    await writer.recordTurn({
+      owner: ALICE,
+      userText: 'kangaroo fence',
+      assistantText: 'ZDEMO_THIS_SESSION',
+    });
+    await writer.recordTurn({
+      owner: aliceOther,
+      userText: 'kangaroo fence',
+      assistantText: 'ZDEMO_OTHER_SESSION',
+    });
+    const r = await history(() => ALICE).query(
+      new TextOnlyEmbedding('kangaroo fence'),
+      10,
+      { ragFilter: { sessionId: 's-1' } },
+    );
+    if (!r.ok) throw r.error;
+    const texts = r.value.map((x) => x.text);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('ZDEMO_THIS_SESSION');
+  });
+
+  it('two turns of one owner in the same millisecond are both stored', async () => {
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    try {
+      const rag = history(() => ALICE);
+      for (const n of ['ZDEMO_FIRST', 'ZDEMO_SECOND'])
+        expect(
+          await rag.recordTurn({
+            owner: ALICE,
+            userText: 'q',
+            assistantText: n,
+          }),
+        ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = await historyRows();
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.id.startsWith(`turn:${ALICE}:1700000000000:`)).toBe(true);
+      expect(r.id).toMatch(/:[0-9a-f]{8}$/);
+    }
+  });
+
   it('works across a restart: a new SessionHistoryRag over a new provider', async () => {
     const before = history(() => ALICE);
     await before.recordTurn({
@@ -350,6 +616,34 @@ describe('the cap', () => {
       'turn:new',
       'turn:old1',
     ]);
+  });
+
+  it('a failing delete is logged and does not break the turn', async () => {
+    const warnings: unknown[] = [];
+    const log = { warn: (m: string, d?: unknown) => warnings.push({ m, d }) };
+    const store = new PersistentHistoryStore(newProvider(), log);
+    const realWriter = store.writer.bind(store);
+    store.writer = () => ({
+      ...realWriter(),
+      deleteByIdRaw: async () => {
+        throw new Error('delete refused');
+      },
+    });
+    const rag = new SessionHistoryRag(store, () => ALICE, 1, {
+      log,
+      now: steppingClock(),
+    });
+    for (let i = 0; i < 2; i++)
+      expect(
+        await rag.recordTurn({
+          owner: ALICE,
+          userText: `q${i}`,
+          assistantText: `a${i}`,
+        }),
+      ).toBe(true);
+    expect(JSON.stringify(warnings)).toContain('delete failed');
+    // The delete never happened: both turns are still there.
+    expect(await historyRows()).toHaveLength(2);
   });
 
   it('defaults to 200', () => {

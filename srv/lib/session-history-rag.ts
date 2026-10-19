@@ -17,11 +17,13 @@
  * one fact worth keeping. It costs context, and that is the deliberate trade.
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   type CallOptions,
   type IQueryEmbedding,
   type IRag,
   type IRagBackendWriter,
+  type IRagScanner,
   isRagFilteredDeleter,
   isRagScanner,
   type RagError,
@@ -137,16 +139,6 @@ export class SessionHistoryRag implements IRag {
     return this.maxTurnsPerOwner;
   }
 
-  /**
-   * A store that can enumerate a conversation's turns (a persistent one) is
-   * the source of truth for them: the cap is applied from a scan, and turns
-   * carry the userId/sessionId/createdAt the scan filters and sorts on. Then
-   * `ids` is only a cache. Any other store keeps today's in-process path.
-   */
-  private get scans(): boolean {
-    return isRagScanner(this.inner);
-  }
-
   private warn(message: string, err: unknown): void {
     this.options.log?.warn(message, {
       error: err instanceof Error ? err.message : String(err),
@@ -241,8 +233,20 @@ export class SessionHistoryRag implements IRag {
   }): Promise<boolean> {
     const writer = this.writer();
     if (!writer) return false;
-    const id = input.id ?? `turn:${input.owner}:${Date.now()}`;
-    const key = this.scans ? parseTurnOwner(input.owner) : undefined;
+    // A store that can enumerate a conversation's turns (a persistent one) is
+    // the source of truth for them: the cap is applied from a scan, and turns
+    // carry the userId/sessionId/createdAt the scan filters and sorts on. Then
+    // `ids` is only a cache. Any other store keeps today's in-process path.
+    const scanner = isRagScanner(this.inner) ? this.inner : undefined;
+    const key = scanner ? parseTurnOwner(input.owner) : undefined;
+    // Persistent turns get a random suffix: two turns of one conversation in
+    // the same millisecond must not overwrite each other in a store that
+    // keeps them. The in-process id format is unchanged.
+    const id =
+      input.id ??
+      (key
+        ? `turn:${input.owner}:${Date.now()}:${randomUUID().slice(0, 8)}`
+        : `turn:${input.owner}:${Date.now()}`);
     try {
       const res = await writer.upsertRaw(
         id,
@@ -256,8 +260,8 @@ export class SessionHistoryRag implements IRag {
           : { owner: input.owner },
       );
       if (!res.ok) return false;
-      if (key) {
-        await this.capFromStore(input.owner, key, id);
+      if (key && scanner) {
+        await this.capFromStore(scanner, input.owner, key, id);
         return true;
       }
       const ids = this.ids.get(input.owner) ?? [];
@@ -282,6 +286,7 @@ export class SessionHistoryRag implements IRag {
    * stored and answered — the next turn's pass catches up.
    */
   private async capFromStore(
+    scanner: IRagScanner,
     owner: string,
     filter: RagScanFilter,
     justWritten: string,
@@ -289,12 +294,11 @@ export class SessionHistoryRag implements IRag {
     const cached = this.ids.get(owner) ?? [];
     if (!cached.includes(justWritten)) cached.push(justWritten);
     this.ids.set(owner, cached);
-    if (!isRagScanner(this.inner)) return;
     const turns: { id: string; createdAt: string }[] = [];
     try {
       let cursor: string | undefined;
       do {
-        const page = await this.inner.scan(
+        const page = await scanner.scan(
           cursor === undefined ? { filter } : { filter, cursor },
         );
         if (!page.ok) {

@@ -858,17 +858,18 @@ export async function ensureHistoryStore(
   provider: IRagProvider,
 ): Promise<Result<IRag, RagError>> {
   return guarded(async (): Promise<Result<IRag, RagError>> => {
-    // adoptExisting: on the shared layout this writes the record whether or
-    // not rows exist. Qdrant's adopt requires the collection to exist, so a
-    // refused adopt is followed by a plain create.
+    // A plain create first; adopt only a store that exists without a record
+    // (OrphanStoreError, from every provider). One attempt per real failure,
+    // and Qdrant's adopt — which needs the collection to exist — is never
+    // asked to create one.
     let created = await provider.createCollection(
       HISTORY_STORE,
-      historyRecordOptions(true),
+      historyRecordOptions(false),
     );
-    if (!created.ok && !(created.error instanceof DuplicateCollectionError))
+    if (!created.ok && created.error instanceof OrphanStoreError)
       created = await provider.createCollection(
         HISTORY_STORE,
-        historyRecordOptions(false),
+        historyRecordOptions(true),
       );
     if (created.ok) return { ok: true, value: created.value.rag };
     if (!(created.error instanceof DuplicateCollectionError)) return created;
@@ -897,6 +898,9 @@ export async function ensureHistoryStore(
   });
 }
 
+/** How long a failed open of the history store is served before a retry. */
+export const HISTORY_OPEN_COOL_DOWN_MS = 30_000;
+
 export interface HistoryLog {
   warn(message: string, data?: unknown): void;
 }
@@ -904,25 +908,45 @@ export interface HistoryLog {
 /**
  * The history store as one IRag that is usable at once: the store is opened
  * through the provider on first use (ensureHistoryStore), and an open that
- * fails is retried on the next call, never memoised. Scan and filtered
+ * fails is retried after a cool-down, never memoised for good. Scan and filtered
  * delete pass through to the opened store.
  */
 export class PersistentHistoryStore
   implements IRag, IRagScanner, IRagFilteredDeleter
 {
   private opening?: Promise<Result<IRag, RagError>>;
+  /** The last failed open and when it failed; served during the cool-down. */
+  private failed?: { at: number; result: Result<IRag, RagError> };
+  private readonly now: () => number;
+  private readonly coolDownMs: number;
 
   constructor(
     private readonly provider: IRagProvider,
     private readonly log?: HistoryLog,
-  ) {}
+    opts: { now?: () => number; coolDownMs?: number } = {},
+  ) {
+    this.now = opts.now ?? Date.now;
+    this.coolDownMs = opts.coolDownMs ?? HISTORY_OPEN_COOL_DOWN_MS;
+  }
 
+  /**
+   * The opened store. A failed open is kept for the cool-down: calls inside
+   * it get that failure at once (no connect; history is skipped for the turn)
+   * and log nothing, so an outage costs one attempt and one warning per
+   * window, not per request. The first call after the window tries again.
+   */
   private store(): Promise<Result<IRag, RagError>> {
+    if (this.failed && this.now() - this.failed.at < this.coolDownMs)
+      return Promise.resolve(this.failed.result);
     if (!this.opening) {
       const run = ensureHistoryStore(this.provider).then((r) => {
-        if (!r.ok) {
+        if (r.ok) {
+          this.failed = undefined;
+        } else {
+          this.failed = { at: this.now(), result: r };
           this.log?.warn('Session history store could not be opened', {
             error: r.error.message,
+            retryInMs: this.coolDownMs,
           });
           if (this.opening === run) this.opening = undefined;
         }
