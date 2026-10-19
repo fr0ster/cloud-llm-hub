@@ -46,7 +46,12 @@ export type RagType = 'in-memory' | 'ollama';
 export type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
 export type EmbedderKind = 'sap-ai-core' | 'openai' | 'ollama';
-export type RagBackendKind = 'in-memory' | 'vector' | 'qdrant';
+export type RagBackendKind =
+  | 'in-memory'
+  | 'vector'
+  | 'qdrant'
+  | 'hana-vector'
+  | 'pg-vector';
 export type RagStoreClass = 'tools' | 'session' | 'persistent';
 export interface EmbedderConfig {
   kind: EmbedderKind;
@@ -60,10 +65,22 @@ export interface QdrantConfig {
   apiKey?: string;
   prefix: string;
 }
+export interface HanaRagConfig {
+  /** Name of the bound HDI service instance; unset = the library's default lookup. */
+  serviceName?: string;
+}
+export interface PgRagConfig {
+  url: string;
+  user?: string;
+  password?: string;
+  schema?: string;
+}
 export interface RagConfig {
   embedder: EmbedderConfig | null;
   backends: Record<RagStoreClass, RagBackendKind>;
   qdrant?: QdrantConfig;
+  hana?: HanaRagConfig;
+  pg?: PgRagConfig;
 }
 export interface EnvDestination {
   name: string;
@@ -184,7 +201,13 @@ export interface AgentConfig {
   destinations: DestinationConfig;
 }
 
-const BACKENDS: readonly RagBackendKind[] = ['in-memory', 'vector', 'qdrant'];
+const BACKENDS: readonly RagBackendKind[] = [
+  'in-memory',
+  'vector',
+  'qdrant',
+  'hana-vector',
+  'pg-vector',
+];
 const EMBEDDERS: readonly EmbedderKind[] = ['sap-ai-core', 'openai', 'ollama'];
 const CLASS_VARS: Record<RagStoreClass, string> = {
   tools: 'LLM_AGENT_TOOLS_RAG_BACKEND',
@@ -235,14 +258,9 @@ export function parseRagConfig(
     }
     backends[cls] = (raw as RagBackendKind | undefined) ?? legacy;
   }
-  if (backends.session === 'qdrant') {
+  if (backends.tools === 'hana-vector' || backends.tools === 'pg-vector') {
     throw new Error(
-      'LLM_AGENT_SESSION_RAG_BACKEND=qdrant is not yet supported (spec phase 2)',
-    );
-  }
-  if (backends.persistent === 'qdrant') {
-    throw new Error(
-      'LLM_AGENT_RAG_BACKEND=qdrant is not yet supported: it arrives with Plan B (persistent collections)',
+      `${CLASS_VARS.tools}=${backends.tools} is not supported yet: the tool corpus on HANA/Postgres is a later project; use in-memory, vector or qdrant`,
     );
   }
 
@@ -308,6 +326,26 @@ export function parseRagConfig(
       url: url.replace(/\/+$/, ''),
       prefix: set(env, 'LLM_AGENT_QDRANT_PREFIX') ?? 'cloud-llm-hub',
       ...(apiKey ? { apiKey } : {}),
+    };
+  }
+  if (Object.values(backends).includes('hana-vector')) {
+    const serviceName = set(env, 'LLM_AGENT_HANA_SERVICE');
+    rag.hana = serviceName ? { serviceName } : {};
+  }
+  if (Object.values(backends).includes('pg-vector')) {
+    const url = set(env, 'LLM_AGENT_PG_URL');
+    if (!url)
+      throw new Error(
+        'A RAG class uses pg-vector, but LLM_AGENT_PG_URL is not set',
+      );
+    const user = set(env, 'LLM_AGENT_PG_USER');
+    const password = set(env, 'LLM_AGENT_PG_PASSWORD');
+    const schema = set(env, 'LLM_AGENT_PG_SCHEMA');
+    rag.pg = {
+      url,
+      ...(user ? { user } : {}),
+      ...(password ? { password } : {}),
+      ...(schema ? { schema } : {}),
     };
   }
   return rag;

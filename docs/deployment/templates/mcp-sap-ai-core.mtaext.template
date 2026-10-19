@@ -48,6 +48,9 @@ parameters:
   # LLM_AGENT_RAG_BACKEND: ""
   # LLM_AGENT_QDRANT_URL: ""
   # LLM_AGENT_QDRANT_PREFIX: ""
+  # LLM_AGENT_HANA_SERVICE: ""
+  # LLM_AGENT_PG_URL: ""
+  # LLM_AGENT_PG_SCHEMA: ""
   # LLM_AGENT_DESTINATION_SOURCE: ""
 
   # Approuter route host: <subaccount subdomain>-cloud-llm-hub (the approuter

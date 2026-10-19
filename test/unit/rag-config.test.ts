@@ -81,6 +81,50 @@ describe('parseRagConfig', () => {
     ).toBe('http://localhost:6433');
   });
 
+  it('persistent=hana-vector parses; HANA service name is optional', () => {
+    const env = { LLM_AGENT_RAG_BACKEND: 'hana-vector' };
+    expect(parseRagConfig(env, llmSap).backends.persistent).toBe('hana-vector');
+    expect(parseRagConfig(env, llmSap).hana).toEqual({});
+    expect(
+      parseRagConfig({ ...env, LLM_AGENT_HANA_SERVICE: 'my-hdi' }, llmSap).hana,
+    ).toEqual({ serviceName: 'my-hdi' });
+    expect(parseRagConfig(env, llmSap).pg).toBeUndefined();
+  });
+
+  it('session=pg-vector with a URL parses', () => {
+    const rag = parseRagConfig(
+      {
+        LLM_AGENT_SESSION_RAG_BACKEND: 'pg-vector',
+        LLM_AGENT_PG_URL: 'postgres://h/db',
+        LLM_AGENT_PG_USER: 'u',
+        LLM_AGENT_PG_PASSWORD: 'p',
+        LLM_AGENT_PG_SCHEMA: 's',
+      },
+      llmSap,
+    );
+    expect(rag.backends.session).toBe('pg-vector');
+    expect(rag.pg).toEqual({
+      url: 'postgres://h/db',
+      user: 'u',
+      password: 'p',
+      schema: 's',
+    });
+  });
+
+  it('session=qdrant and persistent=qdrant parse when the qdrant URL is set', () => {
+    const rag = parseRagConfig(
+      {
+        LLM_AGENT_SESSION_RAG_BACKEND: 'qdrant',
+        LLM_AGENT_RAG_BACKEND: 'qdrant',
+        LLM_AGENT_QDRANT_URL: 'http://q',
+      },
+      llmSap,
+    );
+    expect(rag.backends.session).toBe('qdrant');
+    expect(rag.backends.persistent).toBe('qdrant');
+    expect(rag.qdrant?.url).toBe('http://q');
+  });
+
   it.each([
     [{ LLM_AGENT_TOOLS_RAG_BACKEND: 'hana' }, /LLM_AGENT_TOOLS_RAG_BACKEND/],
     [
@@ -95,17 +139,11 @@ describe('parseRagConfig', () => {
       },
       /contradict/,
     ],
-    [
-      {
-        LLM_AGENT_SESSION_RAG_BACKEND: 'qdrant',
-        LLM_AGENT_QDRANT_URL: 'http://q',
-      },
-      /not yet supported/,
-    ],
-    [
-      { LLM_AGENT_RAG_BACKEND: 'qdrant', LLM_AGENT_QDRANT_URL: 'http://q' },
-      /Plan B|not yet supported/,
-    ],
+    [{ LLM_AGENT_SESSION_RAG_BACKEND: 'pg-vector' }, /LLM_AGENT_PG_URL/],
+    [{ LLM_AGENT_TOOLS_RAG_BACKEND: 'hana-vector' }, /later project/],
+    [{ LLM_AGENT_TOOLS_RAG_BACKEND: 'pg-vector' }, /later project/],
+    [{ LLM_AGENT_SESSION_RAG_BACKEND: 'qdrant' }, /LLM_AGENT_QDRANT_URL/],
+    [{ LLM_AGENT_RAG_BACKEND: 'qdrant' }, /LLM_AGENT_QDRANT_URL/],
   ])('rejects %j', (env, msg) => {
     expect(() => parseRagConfig(env, llmSap)).toThrow(msg);
   });

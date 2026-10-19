@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import { load } from 'js-yaml';
 
 // Non-secret settings parsed by parseRagConfig / parseDestinationConfig.
-// Secrets (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY) go through
+// Secrets (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY, LLM_AGENT_PG_USER,
+// LLM_AGENT_PG_PASSWORD) go through
 // .env → cf set-env (tools/deploy.sh), never through mta.yaml.
 const CARRIED = [
   'LLM_AGENT_EMBEDDER',
@@ -15,6 +16,9 @@ const CARRIED = [
   'LLM_AGENT_RAG_TYPE',
   'LLM_AGENT_QDRANT_URL',
   'LLM_AGENT_QDRANT_PREFIX',
+  'LLM_AGENT_HANA_SERVICE',
+  'LLM_AGENT_PG_URL',
+  'LLM_AGENT_PG_SCHEMA',
   'LLM_AGENT_DESTINATION_SOURCE',
 ];
 
@@ -40,6 +44,9 @@ const NEW = [
   'LLM_AGENT_RAG_BACKEND',
   'LLM_AGENT_QDRANT_URL',
   'LLM_AGENT_QDRANT_PREFIX',
+  'LLM_AGENT_HANA_SERVICE',
+  'LLM_AGENT_PG_URL',
+  'LLM_AGENT_PG_SCHEMA',
   'LLM_AGENT_DESTINATION_SOURCE',
 ];
 
