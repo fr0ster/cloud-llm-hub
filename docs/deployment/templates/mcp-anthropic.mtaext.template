@@ -66,8 +66,9 @@ resources:
 
   # Persistent RAG on HANA (optional): activate the HDI resource and point it at an
   # existing HDI container that holds the RAG tables (tools/deploy-hdi-tables.sh).
-  # To use it, uncomment these four lines (they continue the `resources:` list above).
+  # The resource type is fixed in mta.yaml (existing service); only `active` and
+  # `service-name` are set here. To use it, uncomment these lines (they continue the
+  # `resources:` list above) and put your container's service instance name.
   # - name: cloud-llm-hub-hdi
   #   active: true
-  #   type: org.cloudfoundry.existing-service
-  #   parameters: { service-name: hdi-llm }
+  #   parameters: { service-name: "hdi-llm" }

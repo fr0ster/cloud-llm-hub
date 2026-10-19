@@ -102,7 +102,8 @@ User and session RAG collections (and session history) can live in SAP HANA Clou
 `hana-vector` provider. This is opt-in: with no HANA settings the hub behaves as before.
 
 **1. Service.** An HDI container (`hana` service, plan `hdi-shared`) on your HANA Cloud instance. Create
-it once, for example `cf create-service hana hdi-shared hdi-llm`, or let the MTA create it (step 3).
+it once, for example `cf create-service hana hdi-shared hdi-llm`. The MTA binds this existing container
+(step 3); it does not create one.
 
 **2. Tables.** The shared layout needs two tables, `RAG_DOCUMENTS` and `RAG_COLLECTIONS`, shipped as
 `.hdbtable` files by `@mcp-abap-adt/hana-vector-rag`. Deploy them into the container:
@@ -118,21 +119,28 @@ The script pushes a throwaway `@sap/hdi-deploy` app bound to the container, wait
 `Deployment to container ... done` in its logs, then deletes the app (retrying while an unbind is in
 progress). It exits non-zero on failure. The vector column is fixed at `REAL_VECTOR(1536)`.
 
-**3. `.mtaext`.** `mta.yaml` declares the resource `cloud-llm-hub-hdi` as inactive, so nothing changes by
-default. Every template in `docs/deployment/templates/` carries a commented block that activates it and
-points it at the container from step 2:
+**3. `.mtaext`.** `mta.yaml` declares the resource `cloud-llm-hub-hdi` as an inactive, optional
+`org.cloudfoundry.existing-service` with a placeholder `service-name`, so nothing changes by default. An
+extension descriptor cannot change a resource type, so the `.mtaext` only switches the resource on and
+names the container from step 2. Every template in `docs/deployment/templates/` carries this block
+commented out:
 
 ```yaml
 resources:
   - name: cloud-llm-hub-hdi
     active: true
-    type: org.cloudfoundry.existing-service
-    parameters: { service-name: hdi-llm }
+    parameters: { service-name: "hdi-llm" }
 ```
 
 Then set the backend parameters in the same `.mtaext` (`LLM_AGENT_RAG_BACKEND: "hana-vector"`,
 `LLM_AGENT_SESSION_RAG_BACKEND: "hana-vector"`, `LLM_AGENT_HANA_SERVICE: "hdi-llm"`). Remove `active: true`
-from the block to turn the resource off again.
+from the block to turn the resource off again. Staging (`cloud-llm-hub-staging-hdi`) must use a container
+of its own: with a shared catalog it would restore and serve production's collections and history.
+
+If you want the MTA to **create** the container instead of binding an existing one, that is a change to
+`mta.yaml` itself, not to `.mtaext`: set the resource's `type: com.sap.xs.hdi-container` with
+`parameters: { service: hana, service-plan: hdi-shared }`, then deploy the tables (step 2) into the
+container the MTA created.
 
 **4. Secrets.** The embedder key (`LLM_AGENT_EMBEDDER_API_KEY`) is not an MTA parameter: put it in the
 fork's `.env`, which `tools/deploy.sh` applies with `cf set-env`. HANA credentials come from the service

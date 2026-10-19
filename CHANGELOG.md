@@ -17,8 +17,10 @@ All notable changes to this project will be documented in this file. The format 
   secrets for `.env`, never `.mtaext`. Nothing changes for a deployment that
   sets none of this.
 - **Optional HDI resource and table deployment.** `mta.yaml` declares
-  `cloud-llm-hub-hdi`, inactive until an `.mtaext` activates it (every template
-  carries the block); `tools/deploy-hdi-tables.sh` deploys the shared tables
+  `cloud-llm-hub-hdi` as an existing HDI container (`existing-service`),
+  inactive until an `.mtaext` sets `active: true` and its `service-name` (every
+  template carries the block; staging needs a container of its own);
+  `tools/deploy-hdi-tables.sh` deploys the shared tables
   into the container. The vector column is fixed at `REAL_VECTOR(1536)`
   (`text-embedding-3-small`).
 - **`/health` reflects the restore.** 503 with the cause until persistent

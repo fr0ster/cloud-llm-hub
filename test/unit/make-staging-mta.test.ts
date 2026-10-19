@@ -53,9 +53,11 @@ resources:
     parameters:
       service: aicore
   - name: cloud-llm-hub-hdi
+    type: org.cloudfoundry.existing-service
     active: false
+    optional: true
     parameters:
-      service: hana
+      service-name: "<your-hdi-service>"
 `;
 
 const PROD_XS_AUTH = JSON.stringify(
@@ -145,6 +147,9 @@ describe('make-staging-mta', () => {
     const hdi = doc.resources.find((r: any) => r.name.endsWith('-hdi'));
     expect(hdi.name).toBe('cloud-llm-hub-staging-hdi');
     expect(hdi.active).toBe(false);
+    // the type and the placeholder service name pass through unchanged
+    expect(hdi.type).toBe('org.cloudfoundry.existing-service');
+    expect(hdi.parameters).toEqual({ 'service-name': '<your-hdi-service>' });
     expect(doc.modules[0].requires).toContainEqual({
       name: 'cloud-llm-hub-staging-hdi',
       optional: true,

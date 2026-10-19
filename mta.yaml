@@ -248,14 +248,15 @@ resources:
     parameters:
       service: aicore
       service-plan: extended
-  # Optional HDI container for persistent RAG collections (hana-vector). Inactive by
-  # default: a deployment that wants it activates it in its .mtaext, either as is
-  # (new container) or as org.cloudfoundry.existing-service pointing at a container
-  # that already holds the shared RAG tables (see tools/deploy-hdi-tables.sh).
+  # Optional HDI container for persistent RAG collections (hana-vector): an EXISTING
+  # container that already holds the shared RAG tables (see tools/deploy-hdi-tables.sh).
+  # Inactive by default. A deployment activates it in its .mtaext with `active: true`
+  # and its own `parameters.service-name` (an extension descriptor cannot change a
+  # resource type). To have the MTA CREATE the container instead, edit this file:
+  # type com.sap.xs.hdi-container with parameters { service: hana, service-plan: hdi-shared }.
   - name: cloud-llm-hub-hdi
-    type: com.sap.xs.hdi-container
+    type: org.cloudfoundry.existing-service
     active: false
     optional: true
     parameters:
-      service: hana
-      service-plan: hdi-shared
+      service-name: "<your-hdi-service>"
