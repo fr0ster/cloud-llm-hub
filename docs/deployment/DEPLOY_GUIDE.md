@@ -96,6 +96,51 @@ modules:
 - `.mtaext` - Your config (NOT committed, in .gitignore)
 - `mta.yaml` - MTA descriptor (committed to Git)
 
+## Persistent RAG on HANA
+
+User and session RAG collections (and session history) can live in SAP HANA Cloud through the
+`hana-vector` provider. This is opt-in: with no HANA settings the hub behaves as before.
+
+**1. Service.** An HDI container (`hana` service, plan `hdi-shared`) on your HANA Cloud instance. Create
+it once, for example `cf create-service hana hdi-shared hdi-llm`, or let the MTA create it (step 3).
+
+**2. Tables.** The shared layout needs two tables, `RAG_DOCUMENTS` and `RAG_COLLECTIONS`, shipped as
+`.hdbtable` files by `@mcp-abap-adt/hana-vector-rag`. Deploy them into the container:
+
+```bash
+npm ci
+cf login ...                              # target the space that holds the container
+tools/deploy-hdi-tables.sh hdi-llm        # service name, default hdi-llm
+tools/deploy-hdi-tables.sh --dry-run      # print the steps without calling cf
+```
+
+The script pushes a throwaway `@sap/hdi-deploy` app bound to the container, waits up to 5 minutes for
+`Deployment to container ... done` in its logs, then deletes the app (retrying while an unbind is in
+progress). It exits non-zero on failure. The vector column is fixed at `REAL_VECTOR(1536)`.
+
+**3. `.mtaext`.** `mta.yaml` declares the resource `cloud-llm-hub-hdi` as inactive, so nothing changes by
+default. Every template in `docs/deployment/templates/` carries a commented block that activates it and
+points it at the container from step 2:
+
+```yaml
+resources:
+  - name: cloud-llm-hub-hdi
+    active: true
+    type: org.cloudfoundry.existing-service
+    parameters: { service-name: hdi-llm }
+```
+
+Then set the backend parameters in the same `.mtaext` (`LLM_AGENT_RAG_BACKEND: "hana-vector"`,
+`LLM_AGENT_SESSION_RAG_BACKEND: "hana-vector"`, `LLM_AGENT_HANA_SERVICE: "hdi-llm"`). Remove `active: true`
+from the block to turn the resource off again.
+
+**4. Secrets.** The embedder key (`LLM_AGENT_EMBEDDER_API_KEY`) is not an MTA parameter: put it in the
+fork's `.env`, which `tools/deploy.sh` applies with `cf set-env`. HANA credentials come from the service
+binding (`VCAP_SERVICES`), not from `.env`.
+
+HANA is reachable only from Cloud Foundry, so there is no local run against it; use PGlite, Qdrant or
+the in-memory providers for local work.
+
 ## Multi-Destination Support (v2.2+)
 
 After deployment, Cloud LLM Hub automatically discovers SAP ABAP destinations from BTP Destination Service.

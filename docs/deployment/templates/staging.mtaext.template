@@ -62,3 +62,11 @@ parameters:
 resources:
   - name: cloud-llm-hub-staging-ai-core               # renamed by the generator
     active: true
+
+  # Persistent RAG on HANA (optional): activate the HDI resource and point it at an
+  # existing HDI container that holds the RAG tables (tools/deploy-hdi-tables.sh).
+  # To use it, uncomment these four lines (they continue the `resources:` list above).
+  # - name: cloud-llm-hub-staging-hdi
+  #   active: true
+  #   type: org.cloudfoundry.existing-service
+  #   parameters: { service-name: hdi-llm }

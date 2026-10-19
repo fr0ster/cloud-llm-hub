@@ -146,6 +146,12 @@ modules:
       - name: cloud-llm-hub-destination
       - name: cloud-llm-hub-connectivity
       - name: cloud-llm-hub-ai-core
+      # Persistent RAG on HANA (docs/deployment/DEPLOY_GUIDE.md). The resource is
+      # inactive unless an .mtaext activates it. `optional: true` keeps the module
+      # deployable while the resource is inactive, without relying on mbt/the
+      # deploy service to drop the requires entry of an inactive resource.
+      - name: cloud-llm-hub-hdi
+        optional: true
   - name: cloud-llm-hub
     type: approuter.nodejs
     path: app/router
@@ -242,3 +248,14 @@ resources:
     parameters:
       service: aicore
       service-plan: extended
+  # Optional HDI container for persistent RAG collections (hana-vector). Inactive by
+  # default: a deployment that wants it activates it in its .mtaext, either as is
+  # (new container) or as org.cloudfoundry.existing-service pointing at a container
+  # that already holds the shared RAG tables (see tools/deploy-hdi-tables.sh).
+  - name: cloud-llm-hub-hdi
+    type: com.sap.xs.hdi-container
+    active: false
+    optional: true
+    parameters:
+      service: hana
+      service-plan: hdi-shared
