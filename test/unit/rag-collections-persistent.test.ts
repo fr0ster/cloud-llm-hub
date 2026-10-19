@@ -578,6 +578,9 @@ describe('presets are not persisted', () => {
     );
     expect(rows.rows[0].n).toBe(0);
 
+    // A write to a preset waits for the restore (a restored collection under
+    // its id would replace it): restore first, then take the backend down.
+    await reg.ready;
     down = true; // the enabled flag never reaches the backend
     await reg.setEnabled('alice', id, true);
     down = false;
@@ -1390,7 +1393,9 @@ describe('restore at startup (Task 7)', () => {
     expect(h.status).toBe(503);
     expect(JSON.stringify(h.body)).toMatch(/ECONNREFUSED/);
 
-    // Persistent operations are refused explicitly meanwhile: 503 with the cause.
+    // Persistent operations are refused explicitly meanwhile: 503 with the
+    // cause. The listing serves the presets (none here) and reports the
+    // persistent collections unavailable.
     const { router, routes } = makeMockRouter();
     registerRagRoutes(router, reg);
     const list = makeRes();
@@ -1398,8 +1403,12 @@ describe('restore at startup (Task 7)', () => {
       makeReq({}),
       list.res,
     );
-    expect(list._status).toBe(503);
-    expect(JSON.stringify(list._body)).toMatch(/collections unavailable/);
+    expect(list._status).toBe(200);
+    expect(list._body).toMatchObject({ collections: [] });
+    expect(
+      (list._body as { collectionsUnavailable?: string })
+        .collectionsUnavailable,
+    ).toMatch(/collections unavailable/);
     const create = makeRes();
     await findRoute(routes, 'POST', '/rag/collections').handler(
       makeReq({ body: { id: 'n2', displayName: 'n2' } }),
@@ -1679,5 +1688,243 @@ describe('Task 7 fix round 1', () => {
       expect(err).toBeInstanceOf(CollectionBackendError);
       expect((err as CollectionBackendError).httpStatus).toBe(status);
     }
+  });
+});
+
+describe('final review fixes', () => {
+  const presetLoader = (pack: string) => [
+    { id: `${pack}-doc`, text: `preset text for ${pack}` },
+  ];
+
+  /** A new process over the same database, NOT restored yet. */
+  async function unrestored(): Promise<CollectionRegistry> {
+    await restartBackend();
+    return newRegistry(provider);
+  }
+
+  /** The record of `id` is gone from the catalog (a delete out in the background). */
+  async function recordGone(id: string): Promise<boolean> {
+    for (let i = 0; i < 200; i++) {
+      if (!(await recordOf(id))) return true;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return false;
+  }
+
+  describe('F3: a write to a preset id during a pending restore', () => {
+    it('waits for the restore and lands on the restored collection under that id', async () => {
+      // Before the restart: alice's own persistent collection under the id a
+      // preset would take.
+      const id = presetCollectionId('rap-skills', 'alice');
+      await reg.createCollection({
+        id,
+        logicalId: 'rap-skills',
+        displayName: 'mine',
+        description: '',
+        scope: 'user',
+        owner: 'alice',
+      });
+      const r = await unrestored();
+      // The preset is seeded while nothing is restored (never waits).
+      const release = holdBackend();
+      await ensurePresets(r, 'alice', presetLoader);
+      expect((await r.getCollection(id))?.preset).toBe(true);
+      const restoring = r.ready;
+
+      let settled = false;
+      const write = r
+        .addDocument(id, { id: 'w1', text: 'written meanwhile', metadata: {} })
+        .finally(() => {
+          settled = true;
+        });
+      await new Promise((res) => setImmediate(res));
+      expect(settled).toBe(false); // waits: no 200 for the preset
+      release();
+      await restoring;
+      await write;
+
+      const held = await r.getCollection(id);
+      expect(held?.preset).toBeUndefined();
+      expect(held?.displayName).toBe('mine');
+      expect((await r.getDocument(id, 'w1'))?.text).toBe('written meanwhile');
+      // and it is in the backend: a restart still has it
+      expect((await backendDoc(id, 'w1'))?.text).toBe('written meanwhile');
+    });
+
+    it('lands on the preset when the restore holds nothing under its id', async () => {
+      const r = await unrestored();
+      await ensurePresets(r, 'alice', presetLoader);
+      const id = presetCollectionId('rap-skills', 'alice');
+      await r.addDocument(id, { id: 'w1', text: 'preset note', metadata: {} });
+      await r.setEnabled('alice', id, true);
+      expect((await r.getCollection(id))?.preset).toBe(true);
+      expect((await r.getDocument(id, 'w1'))?.text).toBe('preset note');
+      expect(r.getEnabled('alice', id)).toBe(true);
+      expect(await records()).toHaveLength(0);
+    });
+
+    it('is refused (503) while the restore has failed, never a 200', async () => {
+      const r = await unrestored();
+      await ensurePresets(r, 'alice', presetLoader);
+      const id = presetCollectionId('rap-skills', 'alice');
+      down = true;
+      await failureOf(r.ready);
+      for (const op of [
+        () => r.addDocument(id, { id: 'w1', text: 'x', metadata: {} }),
+        () => r.updateDocument(id, 'rap-skills-doc', { text: 'y' }),
+        () => r.deleteDocument(id, 'rap-skills-doc'),
+        () => r.setEnabled('alice', id, true),
+        () => r.updateCollection(id, { displayName: 'renamed' }),
+        () => r.deleteCollection(id),
+      ]) {
+        const err = await failureOf(op());
+        expect(err).toBeInstanceOf(CollectionBackendError);
+        expect((err as CollectionBackendError).httpStatus).toBe(503);
+      }
+      down = false;
+      // nothing changed on the preset
+      expect((await r.getDocument(id, 'rap-skills-doc'))?.text).toBe(
+        'preset text for rap-skills',
+      );
+      expect((await r.getCollection(id))?.displayName).toBe('RAP Skills');
+    });
+  });
+
+  describe('F4: removing a session while the restore is not ready', () => {
+    const sessionMeta = (logical: string, sessionId: string) => ({
+      id: `${logical}__alice__s_${sessionId}`,
+      logicalId: logical,
+      displayName: logical,
+      description: '',
+      scope: 'session' as const,
+      owner: 'alice',
+      sessionId,
+      expiresAt: Date.now() + 60_000,
+    });
+
+    it('logout during a pending restore: after it the session collections are gone in memory and backend', async () => {
+      const gone = sessionMeta('notes', 's1');
+      const kept = sessionMeta('notes', 's2');
+      await reg.createCollection(gone);
+      await reg.createCollection(kept);
+      await reg.addDocument(gone.id, { id: 'd1', text: 'x', metadata: {} });
+      const r = await unrestored();
+      const release = holdBackend();
+      const restoring = r.ready;
+      await r.deleteSessionCollections('alice', 's1');
+      expect(r.hasSessionCollections('alice', 's1')).toBe(false);
+      release();
+      await restoring;
+
+      expect(await r.getCollection(gone.id)).toBeNull();
+      expect(r.hasSessionCollections('alice', 's1')).toBe(false);
+      expect(await r.getCollection(kept.id)).not.toBeNull();
+      expect(r.hasSessionCollections('alice', 's2')).toBe(true);
+      expect(await recordGone(gone.id)).toBe(true);
+      expect(await recordOf(kept.id)).toBeDefined();
+      const rows = await real.query(
+        `SELECT count(*)::int AS n FROM "${pgl.schema}"."rag_documents" WHERE "collection" = $1`,
+        [storeNameFor(gone.id)],
+      );
+      expect(rows.rows[0].n).toBe(0);
+    });
+
+    it('logout during a failed restore: the next successful restore deletes them', async () => {
+      const gone = sessionMeta('notes', 's1');
+      await reg.createCollection(gone);
+      const r = await unrestored();
+      down = true;
+      await failureOf(r.ready);
+      await r.deleteSessionCollections('alice', 's1');
+      expect(r.hasSessionCollections('alice', 's1')).toBe(false);
+      down = false;
+      await r.restore();
+      expect(await r.getCollection(gone.id)).toBeNull();
+      expect(await recordGone(gone.id)).toBe(true);
+      // A restore after that brings nothing back.
+      const again = await restarted();
+      expect(await again.getCollection(gone.id)).toBeNull();
+    });
+
+    it('once restored, a removal is the ordinary one (no tombstone kept)', async () => {
+      const s = sessionMeta('notes', 's1');
+      await reg.ready;
+      await reg.createCollection(s);
+      await reg.deleteSessionCollections('alice', 's1');
+      expect(await recordGone(s.id)).toBe(true);
+      // the same session may hold collections again
+      await reg.createCollection(s);
+      expect(reg.hasSessionCollections('alice', 's1')).toBe(true);
+    });
+  });
+
+  describe('M8: presets while the restore has failed', () => {
+    it('listing serves the presets and reports the rest unavailable; a chat over presets works', async () => {
+      const mine = userMeta('notes', 'alice');
+      await reg.createCollection(mine);
+      const r = await unrestored();
+      await ensurePresets(r, 'alice', presetLoader);
+      down = true;
+      await failureOf(r.ready);
+
+      const listed = await r.listCollectionsOrPresets('alice');
+      expect(listed.collections.map((c) => c.id).sort()).toEqual(
+        [
+          presetCollectionId('rap-context', 'alice'),
+          presetCollectionId('rap-skills', 'alice'),
+        ].sort(),
+      );
+      expect(listed.unavailable).toMatch(/collections unavailable/);
+      // listCollections itself still refuses: nothing silently left out
+      expect(await failureOf(r.listCollections('alice'))).toBeInstanceOf(
+        CollectionBackendError,
+      );
+
+      // What the chat does: each entry a held preset, then search.
+      const ids = [
+        'rap-skills',
+        presetCollectionId('rap-context', 'alice'),
+      ].map((e) => r.heldPresetFor(e, 'alice'));
+      expect(ids).toEqual([
+        presetCollectionId('rap-skills', 'alice'),
+        presetCollectionId('rap-context', 'alice'),
+      ]);
+      expect(await r.degradedOf(ids as string[])).toBeUndefined();
+      const stores = await r.getRagStores(ids as string[]);
+      expect(Object.keys(stores)).toHaveLength(2);
+      // a persistent name, another user's preset, or anonymous: not a held preset
+      expect(r.heldPresetFor('notes', 'alice')).toBeUndefined();
+      expect(r.heldPresetFor(mine.id, 'alice')).toBeUndefined();
+      expect(r.heldPresetFor('rap-skills', 'bob')).toBeUndefined();
+      expect(
+        r.heldPresetFor(presetCollectionId('rap-skills', 'alice'), 'bob'),
+      ).toBeUndefined();
+      expect(r.heldPresetFor('rap-skills', 'anonymous')).toBeUndefined();
+      down = false;
+    });
+
+    it('the list route answers 200 with the presets and collectionsUnavailable', async () => {
+      mockCdsContext.user = { id: 'alice', is: () => false };
+      const r = await unrestored();
+      await ensurePresets(r, 'alice', presetLoader);
+      down = true;
+      await failureOf(r.ready);
+      const { router, routes } = makeMockRouter();
+      registerRagRoutes(router, r);
+      const list = makeRes();
+      await findRoute(routes, 'GET', '/rag/collections').handler(
+        makeReq({}),
+        list.res,
+      );
+      down = false;
+      expect(list._status).toBe(200);
+      const body = list._body as {
+        collections: { preset?: boolean }[];
+        collectionsUnavailable?: string;
+      };
+      expect(body.collections).toHaveLength(2);
+      expect(body.collections.every((c) => c.preset)).toBe(true);
+      expect(body.collectionsUnavailable).toMatch(/collections unavailable/);
+    });
   });
 });

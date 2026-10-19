@@ -681,6 +681,7 @@ import {
   type RestoreStatus,
   type RetryRestoreOptions,
   retryRestore,
+  storePrefixFor,
 } from './lib/collection-persistence';
 import { type DumpBufferStore, makeDefaultDumpBuffer } from './lib/dump-buffer';
 import {
@@ -1061,6 +1062,12 @@ export function getCollectionRegistry(): CollectionRegistry {
             persistence: createCollectionPersistence(
               collections,
               fingerprintHash(e.fingerprint),
+              {
+                storePrefix: storePrefixFor(
+                  persistentKind,
+                  getAgentConfig().rag.qdrant?.prefix,
+                ),
+              },
             ),
           }
         : {}),
@@ -1193,9 +1200,13 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
   // failure there is logged and never breaks a chat turn.
   const log = cds.log('session-history');
   sharedHistoryRag = new SessionHistoryRag(
-    new PersistentHistoryStore(historyProvider(kind), {
-      warn: (m, d) => log.warn(m, d),
-    }),
+    new PersistentHistoryStore(
+      historyProvider(kind),
+      { warn: (m, d) => log.warn(m, d) },
+      {
+        storePrefix: storePrefixFor(kind, getAgentConfig().rag.qdrant?.prefix),
+      },
+    ),
     currentTurnOwner,
     undefined,
     { log: { warn: (m, d) => log.warn(m, d) } },

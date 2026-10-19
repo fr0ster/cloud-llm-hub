@@ -735,23 +735,38 @@ export async function handleChatCompletions(
     // reused by both the RAG store injection and semantic search below.
     // Persistent collections are restored first; until a restore succeeds a
     // request naming collections gets the explicit 503, not an answer quietly
-    // made without them.
+    // made without them. A chat naming only presets (each entry a preset this
+    // process holds for the caller) goes on meanwhile: presets live in this
+    // process. A session collection of the same name that the restore has not
+    // read back yet cannot shadow it then.
+    let presetsOnly: string[] | undefined;
     if (ragCollectionIds.length > 0) {
       try {
         await getCollectionRegistry().ready;
       } catch (err) {
         if (!(err instanceof CollectionBackendError) || res.headersSent)
           throw err;
-        log.warn('Chat refused: collections unavailable', {
-          error: err.message,
-        });
-        res.writeHead(err.httpStatus, { 'Content-Type': 'application/json' });
-        res.end(jsonError(err.message, 'service_unavailable'));
-        return;
+        const registry = getCollectionRegistry();
+        const presets = ragCollectionIds.map((entry) =>
+          registry.heldPresetFor(entry, getUserId()),
+        );
+        if (presets.every((id): id is string => id !== undefined)) {
+          presetsOnly = presets;
+        } else {
+          log.warn('Chat refused: collections unavailable', {
+            error: err.message,
+          });
+          res.writeHead(err.httpStatus, {
+            'Content-Type': 'application/json',
+          });
+          res.end(jsonError(err.message, 'service_unavailable'));
+          return;
+        }
       }
     }
     const resolvedCollectionIds: string[] =
-      ragCollectionIds.length > 0
+      presetsOnly ??
+      (ragCollectionIds.length > 0
         ? await (async () => {
             const registry = getCollectionRegistry();
             const ids: string[] = [];
@@ -767,7 +782,7 @@ export async function handleChatCompletions(
             }
             return ids;
           })()
-        : [];
+        : []);
 
     // A named collection that cannot be searched (restored incompatible or
     // unavailable) refuses the turn, before anything streams: 409 / 503 naming

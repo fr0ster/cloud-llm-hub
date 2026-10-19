@@ -39,8 +39,6 @@ function fakes() {
     HanaVectorRagProvider: mk('hanaProvider'),
     PgVectorRagProvider: mk('pgProvider'),
     QdrantRagProvider: mk('qdrantProvider'),
-    HanaVectorRag: mk('hanaRag'),
-    PgVectorRag: mk('pgRag'),
   } as unknown as RagCtors;
   return { calls, ctors };
 }
@@ -149,38 +147,27 @@ describe('createCollectionProvider', () => {
 });
 
 describe('store factory for the new kinds', () => {
-  it('hana-vector history store: shared layout, collectionName = name', () => {
-    const { ctors, calls } = fakes();
-    const f = createRagStoreFactory(
-      cfg('in-memory', { hana: {} }, 'hana-vector'),
-      embedding,
-      ctors,
-      env,
-    );
-    f.create('session', 'h_history');
-    expect(calls.hanaRag[0]).toMatchObject({
-      host: 'h',
-      schema: 'SCH',
-      layout: 'shared',
-      collectionName: 'h_history',
-      embedder: retrieval,
-    });
-  });
+  it.each([
+    ['hana-vector', { hana: {} }],
+    ['pg-vector', { pg: { url: 'postgres://db/x' } }],
+  ] as const)(
+    '%s: no bare store, it must go through the provider',
+    (kind, extra) => {
+      const f = createRagStoreFactory(
+        cfg('in-memory', extra as Partial<RagConfig>, kind),
+        embedding,
+      );
+      expect(() => f.create('session', 'h_history')).toThrow(
+        /opened through the collection provider/,
+      );
+    },
+  );
 
-  it('pg-vector store, and qdrant-only methods still throw', async () => {
-    const { ctors, calls } = fakes();
+  it('qdrant-only methods still throw for pg-vector', async () => {
     const f = createRagStoreFactory(
       cfg('in-memory', { pg: { url: 'postgres://db/x' } }, 'pg-vector'),
       embedding,
-      ctors,
-      env,
     );
-    f.create('session', 'h_history');
-    expect(calls.pgRag[0]).toMatchObject({
-      connectionString: 'postgres://db/x',
-      layout: 'shared',
-      collectionName: 'h_history',
-    });
     await expect(f.deleteStore('session', 'x')).rejects.toThrow(
       /not on qdrant/,
     );

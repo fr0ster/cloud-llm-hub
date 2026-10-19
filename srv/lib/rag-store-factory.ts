@@ -19,12 +19,6 @@ import type {
 } from '../agent-config';
 import { apiKeyCredential } from './llm-factory';
 import type { Embedding } from './providers';
-import {
-  defaultCtors,
-  hanaConnection,
-  pgConnection,
-  type RagCtors,
-} from './rag-provider-factory';
 
 export interface VectorStoreOptions {
   queryPreprocessors?: IQueryPreprocessor[];
@@ -95,8 +89,6 @@ const err = (msg: string, code: string): { ok: false; error: RagError } => ({
 export function createRagStoreFactory(
   rag: RagConfig,
   embedding: Embedding | null,
-  ctors: RagCtors = defaultCtors,
-  env: Record<string, string | undefined> = process.env,
 ): RagStoreFactory {
   const qdrant = rag.qdrant;
   const qName = (name: string) =>
@@ -161,20 +153,14 @@ export function createRagStoreFactory(
           `RAG class ${cls} is ${backend} but no embedder was built`,
         );
       if (backend === 'vector') return vectorStore(embedding, opts);
-      if (backend === 'hana-vector')
-        return new ctors.HanaVectorRag({
-          ...hanaConnection(rag, env),
-          layout: 'shared',
-          collectionName: name,
-          embedder: embedding.retrieval,
-        }) as IRag;
-      if (backend === 'pg-vector')
-        return new ctors.PgVectorRag({
-          ...pgConnection(rag),
-          layout: 'shared',
-          collectionName: name,
-          embedder: embedding.retrieval,
-        }) as IRag;
+      // Programmer-misuse assertion: a hana-vector / pg-vector store is opened
+      // through the collection provider, which writes its catalog record. A
+      // bare store here would hold rows no record describes (an orphan the
+      // next create refuses), so there is no such path.
+      if (backend === 'hana-vector' || backend === 'pg-vector')
+        throw new Error(
+          `RAG class ${cls} is ${backend}: its stores are opened through the collection provider, never as bare stores`,
+        );
       // No query preprocessors on `qdrant`: `opts.queryPreprocessors` (the
       // vector backend's TranslatePreprocessor) is not applied, so queries are
       // embedded as asked. Retrieval across languages relies on a multilingual

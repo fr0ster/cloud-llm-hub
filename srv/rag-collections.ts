@@ -34,6 +34,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import {
+  isPhysicalId,
+  normalizeLogicalId,
+  userCollectionId,
+} from './collection-ids';
+import {
   addPersistentDocument,
   COLLECTION_INCOMPATIBLE,
   COLLECTION_UNAVAILABLE,
@@ -43,12 +48,16 @@ import {
   CollectionStatusError,
   canonicalCollectionMeta,
   deletePersistentDocument,
-  storeNameFor as persistentStoreName,
   type RestoreOutcome,
   type RestoreStatus,
   unwrap,
   updatePersistentDocument,
 } from './lib/collection-persistence';
+
+/** One session of one user, as a key (a tuple: no separator to collide on). */
+function sessionKey(userId: string, sessionId: string): string {
+  return JSON.stringify([userId, sessionId]);
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -495,6 +504,12 @@ export class CollectionRegistry {
   private readyTimeoutMs: number;
   /** Creates in flight, by collection id; see getOrCreateCollection. */
   private creating = new Map<string, Promise<CollectionMeta>>();
+  /**
+   * Sessions removed while the restore was not ready (sessionKey). Their
+   * session collections are not in memory yet, so the removal is recorded
+   * here and applied by install. Cleared once a restore has installed.
+   */
+  private removedSessions = new Set<string>();
 
   constructor(opts?: {
     embedder?: IRetrievalEmbedder | null;
@@ -536,7 +551,10 @@ export class CollectionRegistry {
    * `retryRestore`, which also retries). Every registry method that touches a
    * persistent collection awaits it itself: while it is pending a call waits,
    * once it has failed a call is refused with that error until a retry
-   * succeeds. Presets stay usable meanwhile.
+   * succeeds. Presets stay readable meanwhile (their documents, listing them
+   * through listCollectionsOrPresets, a chat naming only presets through
+   * heldPresetFor); a write to a preset waits for the restore, since a
+   * restored collection under the same id would replace it.
    */
   get ready(): Promise<void> {
     return this.whenReady();
@@ -584,19 +602,38 @@ export class CollectionRegistry {
       this.restoreError = result.error.message;
       throw this.unavailable();
     }
-    this.install(result.value);
+    this.install(persistence, result.value);
     this.restoreState = 'ready';
     this.restoreError = undefined;
   }
 
-  /** Put what a restore read back into memory, in one synchronous step. */
-  private install(outcome: RestoreOutcome): void {
+  /**
+   * Put what a restore read back into memory, in one synchronous step. A
+   * session collection whose session was removed while the restore was not
+   * ready (a tombstone, see deleteSessionCollections) is not installed: its
+   * record is deleted through the provider instead.
+   */
+  private install(
+    persistence: CollectionPersistence,
+    outcome: RestoreOutcome,
+  ): void {
     for (const store of outcome.foreign)
       this.log.info('Foreign collection record left alone', { store });
     for (const r of outcome.rejected)
       this.log.warn('Unreadable collection record left alone', r);
     let degraded = 0;
+    let removed = 0;
     for (const c of outcome.collections) {
+      if (
+        c.meta.scope === 'session' &&
+        this.removedSessions.has(
+          sessionKey(c.meta.owner ?? '', c.meta.sessionId ?? ''),
+        )
+      ) {
+        removed++;
+        void this.releaseRecord(persistence, c.meta);
+        continue;
+      }
       const held = this.collections.get(c.meta.id);
       if (held?.persistent) {
         this.log.warn('Restored collection already in memory; kept', {
@@ -623,7 +660,7 @@ export class CollectionRegistry {
       });
       const stored: StoredCollection = {
         meta,
-        store: persistentStoreName(meta.id),
+        store: persistence.storeName(meta.id),
         persistent: true,
         documents,
         rag: new RecencyBoostedRag(c.rag ?? unavailableRag(c.error ?? '')),
@@ -640,8 +677,10 @@ export class CollectionRegistry {
         });
       }
     }
+    this.removedSessions.clear();
     this.log.info('Persistent collections restored', {
-      collections: outcome.collections.length,
+      collections: outcome.collections.length - removed,
+      removedSessions: removed,
       degraded,
       foreign: outcome.foreign.length,
       rejected: outcome.rejected.length,
@@ -691,14 +730,22 @@ export class CollectionRegistry {
 
   /**
    * Wait for the restore before touching `id` — or, with no id, any collection.
-   * A collection held only in this process (a preset) needs no restore. A no-op
-   * when nothing persists.
+   * A no-op when nothing persists.
+   *
+   * A collection held only in this process (a preset) needs no restore to be
+   * read. A write to it does, while the restore is not ready: the restore may
+   * hold a persistent collection under the same id, and install replaces the
+   * preset with it. Waiting makes the write land on what install leaves under
+   * that id, or be refused (503) when the restore fails or outlasts the wait —
+   * never a 200 for a change install then throws away.
    */
-  private async settled(id?: string): Promise<void> {
+  private async settled(id?: string, write = false): Promise<void> {
     if (!this.persistence) return;
     if (id !== undefined) {
       const stored = this.collections.get(id);
-      if (stored && !stored.persistent) return;
+      if (stored && !stored.persistent) {
+        if (!write || this.restoreState === 'ready') return;
+      }
     }
     await this.whenReady();
   }
@@ -793,6 +840,65 @@ export class CollectionRegistry {
       }
     }
     return result;
+  }
+
+  /**
+   * listCollections, or — while the restore of persistent collections has
+   * failed or is still running past the wait — the presets this process holds
+   * for `userId`, with the cause in `unavailable`: presets stay usable, and
+   * the persistent collections are reported unavailable, never silently left
+   * out. Without persistence it is listCollections.
+   */
+  async listCollectionsOrPresets(
+    userId?: string,
+  ): Promise<{ collections: CollectionMeta[]; unavailable?: string }> {
+    try {
+      return { collections: await this.listCollections(userId) };
+    } catch (err) {
+      if (
+        !(err instanceof CollectionStatusError) ||
+        err.cause.code !== COLLECTIONS_UNAVAILABLE
+      )
+        throw err;
+      const collections: CollectionMeta[] = [];
+      for (const stored of this.collections.values())
+        if (
+          !stored.persistent &&
+          stored.meta.preset &&
+          stored.meta.owner === userId
+        )
+          collections.push({
+            ...stored.meta,
+            documentCount: stored.documents.size,
+            sourceCount: countSources(stored),
+          });
+      return { collections, unavailable: err.message };
+    }
+  }
+
+  /**
+   * The preset a chat entry (a logical name or a physical id) names for
+   * `userId`, when this process holds it — or undefined. Lets a chat naming
+   * only presets go on while the restore of persistent collections is not
+   * ready; any other entry waits for the restore (or is refused with it).
+   */
+  heldPresetFor(entry: string, userId: string): string | undefined {
+    if (!userId || userId === 'anonymous') return undefined;
+    let id: string;
+    try {
+      id = isPhysicalId(entry)
+        ? entry
+        : userCollectionId(normalizeLogicalId(entry), userId);
+    } catch {
+      return undefined;
+    }
+    const stored = this.collections.get(id);
+    return stored &&
+      !stored.persistent &&
+      stored.meta.preset &&
+      stored.meta.owner === userId
+      ? id
+      : undefined;
   }
 
   async getCollection(id: string): Promise<CollectionMeta | null> {
@@ -899,7 +1005,7 @@ export class CollectionRegistry {
     const meta = canonicalCollectionMeta(full);
     this.collections.set(meta.id, {
       meta,
-      store: persistentStoreName(meta.id),
+      store: persistence.storeName(meta.id),
       persistent: true,
       documents: new Map(),
       rag: new RecencyBoostedRag(handles.rag),
@@ -917,7 +1023,7 @@ export class CollectionRegistry {
     id: string,
     update: Partial<Pick<CollectionMeta, 'displayName' | 'description'>>,
   ): Promise<CollectionMeta | null> {
-    if (this.persistence) await this.settled(id);
+    if (this.persistence) await this.settled(id, true);
     const stored = this.collections.get(id);
     if (!stored) return null;
     const apply = (m: CollectionMeta) => {
@@ -1035,7 +1141,7 @@ export class CollectionRegistry {
    * while the deletion is out).
    */
   async deleteCollection(id: string): Promise<boolean> {
-    if (this.persistence) await this.settled(id);
+    if (this.persistence) await this.settled(id, true);
     const stored = this.collections.get(id);
     if (stored?.persistent && this.persistence) {
       stored.deleting = true;
@@ -1068,7 +1174,7 @@ export class CollectionRegistry {
     physicalId: string,
     enabled: boolean,
   ): Promise<void> {
-    if (this.persistence) await this.settled(physicalId);
+    if (this.persistence) await this.settled(physicalId, true);
     const stored = this.collections.get(physicalId);
     if (stored?.persistent && this.persistence) {
       unwrap(
@@ -1243,7 +1349,7 @@ export class CollectionRegistry {
     meta: CollectionMeta,
   ): Promise<void> {
     this.releasing.add(meta.id);
-    const store = persistentStoreName(meta.id);
+    const store = persistence.storeName(meta.id);
     return persistence.remove(meta).then(
       (r) => {
         this.releasing.delete(meta.id);
@@ -1259,8 +1365,15 @@ export class CollectionRegistry {
   /**
    * Remove every collection of one session, from memory at once. Never throws;
    * see removeCollection. The promise settles once the stores are released.
+   *
+   * While the restore of persistent collections is not ready, the session's
+   * persistent collections are not in memory yet: the removal is recorded (a
+   * tombstone) and install deletes them through the provider instead of
+   * installing them. Synchronous either way, for retention's lease guarantee.
    */
   deleteSessionCollections(userId: string, sessionId: string): Promise<void> {
+    if (this.persistence && this.restoreState !== 'ready')
+      this.removedSessions.add(sessionKey(userId, sessionId));
     const released: Promise<void>[] = [];
     for (const [id, stored] of [...this.collections]) {
       if (
@@ -1275,8 +1388,13 @@ export class CollectionRegistry {
     return Promise.all(released).then(() => undefined);
   }
 
-  /** Whether this user's session still owns any session-scoped collection. */
+  /**
+   * Whether this user's session still owns any session-scoped collection. A
+   * session removed while the restore was not ready owns none (see
+   * deleteSessionCollections), whatever the restore will read back.
+   */
   hasSessionCollections(userId: string, sessionId: string): boolean {
+    if (this.removedSessions.has(sessionKey(userId, sessionId))) return false;
     for (const stored of this.collections.values()) {
       if (
         stored.meta.scope === 'session' &&
@@ -1366,9 +1484,15 @@ export class CollectionRegistry {
        * contract so a 4xx response means nothing was created.
        */
       persistOnFail?: boolean;
+      /**
+       * Preset seeding (ensurePresets): writes to what is held now, without
+       * waiting for the restore. Seeding is no change a caller is told about;
+       * the next ensure seeds again whatever install leaves under the id.
+       */
+      seed?: boolean;
     },
   ): Promise<RagDocument> {
-    if (this.persistence) await this.settled(collectionId);
+    if (this.persistence) await this.settled(collectionId, !options?.seed);
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
     this.refuseDegraded(stored, 'add document', 'write');
@@ -1440,7 +1564,7 @@ export class CollectionRegistry {
     // A collection that cannot take writes refuses the whole call, explicitly,
     // instead of one error per document.
     if (this.persistence) {
-      await this.settled(collectionId);
+      await this.settled(collectionId, true);
       const stored = this.collections.get(collectionId);
       if (stored) this.refuseDegraded(stored, 'add documents', 'write');
     }
@@ -1496,7 +1620,7 @@ export class CollectionRegistry {
     update: { text?: string; metadata?: Record<string, unknown> },
     namespace?: string,
   ): Promise<RagDocument | null> {
-    if (this.persistence) await this.settled(collectionId);
+    if (this.persistence) await this.settled(collectionId, true);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
     this.refuseDegraded(stored, 'update document', 'write');
@@ -1520,7 +1644,7 @@ export class CollectionRegistry {
   }
 
   async deleteDocument(collectionId: string, docId: string): Promise<boolean> {
-    if (this.persistence) await this.settled(collectionId);
+    if (this.persistence) await this.settled(collectionId, true);
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
     this.refuseDegraded(stored, 'delete document', 'write');

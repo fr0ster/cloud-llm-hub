@@ -150,8 +150,12 @@ export function registerRagRoutes(
     const sid = sessionIdOf(req);
 
     let collections: Awaited<ReturnType<typeof registry.listCollections>>;
+    // Set while the restore of persistent collections is not ready: only the
+    // presets are listed, and this says why the rest are missing.
+    let unavailable: string | undefined;
     try {
-      collections = await registry.listCollections(effectiveUserId);
+      ({ collections, unavailable } =
+        await registry.listCollectionsOrPresets(effectiveUserId));
     } catch (err) {
       failure(res, err, 500);
       return;
@@ -184,7 +188,10 @@ export function registerRagRoutes(
           : defaultEnabled(c),
     }));
 
-    json(res, 200, { collections: mapped });
+    json(res, 200, {
+      collections: mapped,
+      ...(unavailable ? { collectionsUnavailable: unavailable } : {}),
+    });
   });
 
   // POST /v1/rag/presets/ensure — seed per-user preset collections if missing.
@@ -192,15 +199,22 @@ export function registerRagRoutes(
     try {
       const userId = getUserId();
       await ensurePresets(registry, userId);
-      let collections: Awaited<ReturnType<typeof registry.listCollections>>;
+      let listed: Awaited<ReturnType<typeof registry.listCollectionsOrPresets>>;
       try {
-        collections = await registry.listCollections(userId);
+        // Presets are seeded; while the restore is not ready only they are
+        // listed, with the cause.
+        listed = await registry.listCollectionsOrPresets(userId);
       } catch (err) {
-        // Presets are seeded; the full list waits for the restore.
         failure(res, err, 500);
         return;
       }
-      json(res, 200, { ok: true, collections });
+      json(res, 200, {
+        ok: true,
+        collections: listed.collections,
+        ...(listed.unavailable
+          ? { collectionsUnavailable: listed.unavailable }
+          : {}),
+      });
     } catch (err) {
       error(res, 500, `ensurePresets failed: ${(err as Error).message}`);
     }

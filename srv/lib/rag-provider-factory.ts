@@ -1,6 +1,4 @@
 import {
-  HanaVectorRag,
-  type HanaVectorRagConfig,
   HanaVectorRagProvider,
   type HanaVectorRagProviderConfig,
 } from '@mcp-abap-adt/hana-vector-rag';
@@ -10,8 +8,6 @@ import {
   staticLogin,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  PgVectorRag,
-  type PgVectorRagConfig,
   PgVectorRagProvider,
   type PgVectorRagProviderConfig,
 } from '@mcp-abap-adt/pg-vector-rag';
@@ -31,20 +27,12 @@ export interface RagCtors {
   HanaVectorRagProvider: new (cfg: HanaVectorRagProviderConfig) => IRagProvider;
   PgVectorRagProvider: new (cfg: PgVectorRagProviderConfig) => IRagProvider;
   QdrantRagProvider: new (cfg: QdrantRagProviderConfig) => IRagProvider;
-  HanaVectorRag: new (
-    cfg: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
-  ) => unknown;
-  PgVectorRag: new (
-    cfg: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
-  ) => unknown;
 }
 
 export const defaultCtors: RagCtors = {
   HanaVectorRagProvider,
   PgVectorRagProvider,
   QdrantRagProvider,
-  HanaVectorRag,
-  PgVectorRag,
 };
 
 /** HANA connection of the `shared` layout, from the bound HDI container. */

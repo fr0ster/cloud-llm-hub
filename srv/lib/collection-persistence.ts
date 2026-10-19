@@ -38,9 +38,41 @@ import type { CollectionMeta, RagDocument } from '../rag-collections';
 /** Marks every catalog record this hub writes; restore opens only those. */
 export const WRITTEN_BY = 'cloud-llm-hub';
 
-/** Deterministic store name: identifier-safe, 42 characters. */
-export function storeNameFor(collectionId: string): string {
-  return `c_${createHash('sha256').update(collectionId).digest('hex').slice(0, 40)}`;
+/**
+ * Deterministic store name: identifier-safe, 42 characters. With a store
+ * prefix (Qdrant only: LLM_AGENT_QDRANT_PREFIX) it is `<prefix>_c_<sha40>`, so
+ * two deployments sharing one Qdrant never map a collection to one store.
+ * HANA and Postgres keep `c_<sha40>`: their catalog and tables are per
+ * container / schema already.
+ */
+export function storeNameFor(collectionId: string, prefix?: string): string {
+  const name = `c_${createHash('sha256').update(collectionId).digest('hex').slice(0, 40)}`;
+  return prefix ? `${prefix}_${name}` : name;
+}
+
+/** The longest store prefix: `<prefix>_c_<sha40>` stays well within Qdrant's 255. */
+const MAX_STORE_PREFIX = 200;
+/** What a Qdrant collection name may hold (the tool corpus uses the same prefix). */
+const STORE_PREFIX = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+/**
+ * The store prefix for a persistent kind: the Qdrant prefix on `qdrant`,
+ * none elsewhere. A prefix that cannot start a Qdrant collection name is a
+ * configuration error, thrown at startup.
+ */
+export function storePrefixFor(
+  kind: string,
+  qdrantPrefix: string | undefined,
+): string | undefined {
+  if (kind !== 'qdrant' || !qdrantPrefix) return undefined;
+  if (
+    qdrantPrefix.length > MAX_STORE_PREFIX ||
+    !STORE_PREFIX.test(qdrantPrefix)
+  )
+    throw new Error(
+      `LLM_AGENT_QDRANT_PREFIX "${qdrantPrefix}" cannot prefix a Qdrant collection name (letters, digits, "_", "-", "."; at most ${MAX_STORE_PREFIX} characters)`,
+    );
+  return qdrantPrefix;
 }
 
 /**
@@ -91,6 +123,7 @@ const str = (v: unknown): string | undefined =>
  */
 export function decodeRecord(
   rec: RagCollectionRecord,
+  storePrefix?: string,
 ):
   | { meta: CollectionMeta; enabled: boolean; embedderFp?: string }
   | { foreign: true } {
@@ -112,7 +145,7 @@ export function decodeRecord(
     !collectionId ||
     !logicalId ||
     !userId ||
-    rec.storeName !== storeNameFor(collectionId)
+    rec.storeName !== storeNameFor(collectionId, storePrefix)
   ) {
     return { foreign: true };
   }
@@ -216,6 +249,8 @@ export interface CollectionPersistence {
    * collection alone as `unavailable`.
    */
   restore(): Promise<Result<RestoreOutcome, RagError>>;
+  /** The store name of a collection id (see storeNameFor). */
+  storeName(collectionId: string): string;
 }
 
 /**
@@ -535,7 +570,11 @@ async function guarded<T>(
 export function createCollectionPersistence(
   provider: IRagProvider & Partial<IRagCatalogUpdater>,
   embedderFp: string,
+  opts: { storePrefix?: string } = {},
 ): CollectionPersistence {
+  const prefix = opts.storePrefix;
+  const storeName = (collectionId: string) =>
+    storeNameFor(collectionId, prefix);
   /** The tail of each collection's record-write chain. */
   const recordWrites = new Map<string, Promise<unknown>>();
   /**
@@ -554,7 +593,7 @@ export function createCollectionPersistence(
             'RAG_UNSUPPORTED',
           ),
         };
-      return provider.updateCollection(storeNameFor(meta.id), {
+      return provider.updateCollection(storeName(meta.id), {
         attributes: encodeAttributes(
           meta,
           enabled,
@@ -563,9 +602,10 @@ export function createCollectionPersistence(
       });
     });
   return {
+    storeName,
     create: (meta, enabled) =>
       guarded(() =>
-        provider.createCollection(storeNameFor(meta.id), {
+        provider.createCollection(storeName(meta.id), {
           ...catalogOwner(meta),
           collectionName: meta.id,
           attributes: encodeAttributes(
@@ -585,7 +625,7 @@ export function createCollectionPersistence(
               'RAG_UNSUPPORTED',
             ),
           };
-        const r = await provider.deleteCollection(storeNameFor(meta.id));
+        const r = await provider.deleteCollection(storeName(meta.id));
         if (r.ok) recordFps.delete(meta.id);
         return r;
       }),
@@ -620,7 +660,7 @@ export function createCollectionPersistence(
         if (!d.ok) return d;
         const expired: CollectionMeta[] = [];
         for (const rec of d.value.records) {
-          const decoded = decodeRecord(rec);
+          const decoded = decodeRecord(rec, prefix);
           if (
             'meta' in decoded &&
             decoded.meta.scope === 'session' &&
@@ -646,8 +686,8 @@ export function createCollectionPersistence(
         const foreign: string[] = [];
         for (const rec of d.value.records) {
           // The session history's own record: the hub's, but not a collection.
-          if (isHistoryRecord(rec)) continue;
-          const decoded = decodeRecord(rec);
+          if (isHistoryRecord(rec, prefix)) continue;
+          const decoded = decodeRecord(rec, prefix);
           if (!('meta' in decoded)) {
             foreign.push(rec.storeName);
             continue;
@@ -822,6 +862,11 @@ export function restoreHealth(status: RestoreStatus): {
 /** The store name of the session history, beside the `c_…` collections. */
 export const HISTORY_STORE = 'h_history';
 
+/** The history store name under a store prefix (Qdrant): `<prefix>_h_history`. */
+export function historyStoreName(prefix?: string): string {
+  return prefix ? `${prefix}_${HISTORY_STORE}` : HISTORY_STORE;
+}
+
 /** The record the history store is cataloged under: global, hub-written. */
 function historyRecordOptions(adoptExisting: boolean) {
   return {
@@ -836,10 +881,13 @@ function historyRecordOptions(adoptExisting: boolean) {
  * Whether a catalog record is this hub's session history store. Restore and
  * the expiry sweep pass over it: it is the hub's, but not a collection.
  */
-export function isHistoryRecord(rec: RagCollectionRecord): boolean {
+export function isHistoryRecord(
+  rec: RagCollectionRecord,
+  storePrefix?: string,
+): boolean {
   const a = rec.attributes;
   return (
-    rec.storeName === HISTORY_STORE &&
+    rec.storeName === historyStoreName(storePrefix) &&
     rec.scope === 'global' &&
     !!a &&
     typeof a === 'object' &&
@@ -856,19 +904,21 @@ export function isHistoryRecord(rec: RagCollectionRecord): boolean {
  */
 export async function ensureHistoryStore(
   provider: IRagProvider,
+  storePrefix?: string,
 ): Promise<Result<IRag, RagError>> {
+  const store = historyStoreName(storePrefix);
   return guarded(async (): Promise<Result<IRag, RagError>> => {
     // A plain create first; adopt only a store that exists without a record
     // (OrphanStoreError, from every provider). One attempt per real failure,
     // and Qdrant's adopt — which needs the collection to exist — is never
     // asked to create one.
     let created = await provider.createCollection(
-      HISTORY_STORE,
+      store,
       historyRecordOptions(false),
     );
     if (!created.ok && created.error instanceof OrphanStoreError)
       created = await provider.createCollection(
-        HISTORY_STORE,
+        store,
         historyRecordOptions(true),
       );
     if (created.ok) return { ok: true, value: created.value.rag };
@@ -883,12 +933,12 @@ export async function ensureHistoryStore(
       };
     const d = await provider.describeCollections();
     if (!d.ok) return d;
-    const rec = d.value.records.find((r) => r.storeName === HISTORY_STORE);
-    if (!rec || !isHistoryRecord(rec))
+    const rec = d.value.records.find((r) => r.storeName === store);
+    if (!rec || !isHistoryRecord(rec, storePrefix))
       return {
         ok: false,
         error: new RagError(
-          `catalog record "${HISTORY_STORE}" was not written by ${WRITTEN_BY}; left alone`,
+          `catalog record "${store}" was not written by ${WRITTEN_BY}; left alone`,
           'RAG_FOREIGN_RECORD',
         ),
       };
@@ -919,14 +969,20 @@ export class PersistentHistoryStore
   private failed?: { at: number; result: Result<IRag, RagError> };
   private readonly now: () => number;
   private readonly coolDownMs: number;
+  private readonly storePrefix?: string;
 
   constructor(
     private readonly provider: IRagProvider,
     private readonly log?: HistoryLog,
-    opts: { now?: () => number; coolDownMs?: number } = {},
+    opts: {
+      now?: () => number;
+      coolDownMs?: number;
+      storePrefix?: string;
+    } = {},
   ) {
     this.now = opts.now ?? Date.now;
     this.coolDownMs = opts.coolDownMs ?? HISTORY_OPEN_COOL_DOWN_MS;
+    this.storePrefix = opts.storePrefix;
   }
 
   /**
@@ -939,19 +995,21 @@ export class PersistentHistoryStore
     if (this.failed && this.now() - this.failed.at < this.coolDownMs)
       return Promise.resolve(this.failed.result);
     if (!this.opening) {
-      const run = ensureHistoryStore(this.provider).then((r) => {
-        if (r.ok) {
-          this.failed = undefined;
-        } else {
-          this.failed = { at: this.now(), result: r };
-          this.log?.warn('Session history store could not be opened', {
-            error: r.error.message,
-            retryInMs: this.coolDownMs,
-          });
-          if (this.opening === run) this.opening = undefined;
-        }
-        return r;
-      });
+      const run = ensureHistoryStore(this.provider, this.storePrefix).then(
+        (r) => {
+          if (r.ok) {
+            this.failed = undefined;
+          } else {
+            this.failed = { at: this.now(), result: r };
+            this.log?.warn('Session history store could not be opened', {
+              error: r.error.message,
+              retryInMs: this.coolDownMs,
+            });
+            if (this.opening === run) this.opening = undefined;
+          }
+          return r;
+        },
+      );
       this.opening = run;
     }
     return this.opening;

@@ -16,8 +16,12 @@ import {
   createCollectionPersistence,
   decodeRecord,
   encodeAttributes,
+  ensureHistoryStore,
+  historyStoreName,
+  isHistoryRecord,
   restoreHealth,
   storeNameFor,
+  storePrefixFor,
   unwrap,
   WRITTEN_BY,
 } from '../../srv/lib/collection-persistence';
@@ -456,5 +460,105 @@ describe('restoreHealth', () => {
         collections: { state: 'failed', error: 'ECONNREFUSED' },
       },
     });
+  });
+});
+
+describe('the Qdrant store prefix (LLM_AGENT_QDRANT_PREFIX)', () => {
+  const sha = (id: string) =>
+    createHash('sha256').update(id).digest('hex').slice(0, 40);
+
+  it('applies to qdrant only, and is validated as a collection name part', () => {
+    expect(storePrefixFor('qdrant', 'prod-hub')).toBe('prod-hub');
+    expect(storePrefixFor('hana-vector', 'prod-hub')).toBeUndefined();
+    expect(storePrefixFor('pg-vector', 'prod-hub')).toBeUndefined();
+    expect(storePrefixFor('qdrant', undefined)).toBeUndefined();
+    expect(() => storePrefixFor('qdrant', 'a/b')).toThrow(
+      /LLM_AGENT_QDRANT_PREFIX/,
+    );
+    expect(() => storePrefixFor('qdrant', 'x'.repeat(201))).toThrow(
+      /at most 200/,
+    );
+  });
+
+  it('prefixes the collection and history store names; none keeps them as they were', () => {
+    expect(storeNameFor(userMeta.id, 'prod-hub')).toBe(
+      `prod-hub_c_${sha(userMeta.id)}`,
+    );
+    expect(storeNameFor(userMeta.id)).toBe(`c_${sha(userMeta.id)}`);
+    expect(historyStoreName('prod-hub')).toBe('prod-hub_h_history');
+    expect(historyStoreName()).toBe('h_history');
+    // two deployments: one collection id, two stores
+    expect(storeNameFor(userMeta.id, 'prod')).not.toBe(
+      storeNameFor(userMeta.id, 'staging'),
+    );
+  });
+
+  it('create, update and delete go to the prefixed store name', async () => {
+    const calls: Array<[string, string]> = [];
+    const rag = new InMemoryRag();
+    const p = {
+      name: 'fake',
+      async createCollection(name: string) {
+        calls.push(['create', name]);
+        return { ok: true as const, value: { rag, editor: rag } };
+      },
+      async deleteCollection(name: string) {
+        calls.push(['delete', name]);
+        return { ok: true as const, value: undefined };
+      },
+      async updateCollection(name: string) {
+        calls.push(['update', name]);
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRagProvider;
+    const persistence = createCollectionPersistence(p, 'fp-1', {
+      storePrefix: 'prod-hub',
+    });
+    const name = `prod-hub_c_${sha(userMeta.id)}`;
+    expect(persistence.storeName(userMeta.id)).toBe(name);
+    await persistence.create(userMeta, true);
+    await persistence.update(userMeta, false);
+    await persistence.remove(userMeta);
+    expect(calls).toEqual([
+      ['create', name],
+      ['update', name],
+      ['delete', name],
+    ]);
+  });
+
+  it('restore takes only records under its own prefix; another deployment is foreign', () => {
+    const own = {
+      ...recordFor(userMeta),
+      storeName: storeNameFor(userMeta.id, 'prod'),
+    };
+    expect(decodeRecord(own, 'prod')).toMatchObject({
+      meta: { id: userMeta.id },
+    });
+    expect(decodeRecord(own, 'staging')).toEqual({ foreign: true });
+    expect(decodeRecord(own)).toEqual({ foreign: true });
+    const history = {
+      storeName: 'prod_h_history',
+      name: 'h_history',
+      scope: 'global',
+      attributes: { writtenBy: WRITTEN_BY, source: 'history' },
+    } as RagCollectionRecord;
+    expect(isHistoryRecord(history, 'prod')).toBe(true);
+    expect(isHistoryRecord(history, 'staging')).toBe(false);
+    expect(isHistoryRecord(history)).toBe(false);
+  });
+
+  it('the history store is created under the prefixed name', async () => {
+    const names: string[] = [];
+    const rag = new InMemoryRag();
+    const p = {
+      name: 'fake',
+      async createCollection(name: string) {
+        names.push(name);
+        return { ok: true as const, value: { rag, editor: rag } };
+      },
+    } as unknown as IRagProvider;
+    const r = await ensureHistoryStore(p, 'prod-hub');
+    expect(r.ok).toBe(true);
+    expect(names).toEqual(['prod-hub_h_history']);
   });
 });

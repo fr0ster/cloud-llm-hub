@@ -100,11 +100,17 @@ export async function ensurePresets(
     for (const doc of loadDocs(pack.key)) {
       if (!(await registry.getDocument(id, doc.id))) {
         try {
-          await registry.addDocument(id, {
-            id: doc.id,
-            text: doc.text,
-            metadata: { preset: pack.key },
-          });
+          // `seed`: no wait for the restore of persistent collections.
+          await registry.addDocument(
+            id,
+            {
+              id: doc.id,
+              text: doc.text,
+              metadata: { preset: pack.key },
+            },
+            undefined,
+            { seed: true },
+          );
         } catch (err) {
           cds.log('presets').warn('preset doc seed failed', {
             collection: id,
