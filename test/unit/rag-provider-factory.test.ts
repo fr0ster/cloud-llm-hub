@@ -82,7 +82,8 @@ describe('createCollectionProvider', () => {
       schema: 'SCH',
       layout: 'shared',
     });
-    expect(a.connection.credential).toBeDefined();
+    expect(a.connection.credential.principal).toBe('RT');
+    expect(await a.connection.credential.secret()).toBe('SECRET');
   });
 
   it('hana-vector without a binding throws naming VCAP_SERVICES only', () => {
@@ -92,7 +93,7 @@ describe('createCollectionProvider', () => {
     ).toThrow(/VCAP_SERVICES/);
   });
 
-  it('pg-vector: shared layout with schema and login', () => {
+  it('pg-vector: shared layout with schema and login', async () => {
     const { ctors, calls } = fakes();
     createCollectionProvider(
       cfg('pg-vector', {
@@ -115,7 +116,19 @@ describe('createCollectionProvider', () => {
       schema: 's',
       layout: 'shared',
     });
-    expect(a.connection.credential).toBeDefined();
+    expect(a.connection.credential.principal).toBe('u');
+    expect(await a.connection.credential.secret()).toBe('p');
+  });
+
+  it('pg-vector without a password sends no credential', () => {
+    const { ctors, calls } = fakes();
+    createCollectionProvider(
+      cfg('pg-vector', { pg: { url: 'postgres://db:5432/x', user: 'u' } }),
+      embedding,
+      env,
+      ctors,
+    );
+    expect(calls.pgProvider[0].connection).not.toHaveProperty('credential');
   });
 
   it('qdrant: catalog collection from the prefix', () => {

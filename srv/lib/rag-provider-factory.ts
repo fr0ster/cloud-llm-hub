@@ -1,14 +1,24 @@
 import {
   HanaVectorRag,
+  type HanaVectorRagConfig,
   HanaVectorRagProvider,
+  type HanaVectorRagProviderConfig,
 } from '@mcp-abap-adt/hana-vector-rag';
 import {
   type IRagProvider,
   type IRetrievalEmbedder,
   staticLogin,
 } from '@mcp-abap-adt/llm-agent';
-import { PgVectorRag, PgVectorRagProvider } from '@mcp-abap-adt/pg-vector-rag';
-import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
+import {
+  PgVectorRag,
+  type PgVectorRagConfig,
+  PgVectorRagProvider,
+  type PgVectorRagProviderConfig,
+} from '@mcp-abap-adt/pg-vector-rag';
+import {
+  QdrantRagProvider,
+  type QdrantRagProviderConfig,
+} from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../agent-config';
 import { readHanaBinding } from './hana-binding';
 import { apiKeyCredential } from './llm-factory';
@@ -16,16 +26,17 @@ import type { Embedding } from './providers';
 
 type Env = Record<string, string | undefined>;
 
-// biome-ignore lint/suspicious/noExplicitAny: constructors are only passed through
-type CtorArgs = any;
-
 /** The library constructors, injectable so tests need no network. */
 export interface RagCtors {
-  HanaVectorRagProvider: new (cfg: CtorArgs) => IRagProvider;
-  PgVectorRagProvider: new (cfg: CtorArgs) => IRagProvider;
-  QdrantRagProvider: new (cfg: CtorArgs) => IRagProvider;
-  HanaVectorRag: new (cfg: CtorArgs) => unknown;
-  PgVectorRag: new (cfg: CtorArgs) => unknown;
+  HanaVectorRagProvider: new (cfg: HanaVectorRagProviderConfig) => IRagProvider;
+  PgVectorRagProvider: new (cfg: PgVectorRagProviderConfig) => IRagProvider;
+  QdrantRagProvider: new (cfg: QdrantRagProviderConfig) => IRagProvider;
+  HanaVectorRag: new (
+    cfg: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
+  ) => unknown;
+  PgVectorRag: new (
+    cfg: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
+  ) => unknown;
 }
 
 export const defaultCtors: RagCtors = {
@@ -47,14 +58,20 @@ export function hanaConnection(rag: RagConfig, env: Env = process.env) {
   };
 }
 
-/** Postgres connection (address, schema, optional login) from LLM_AGENT_PG_*. */
+/**
+ * Postgres connection (address, schema, optional login) from LLM_AGENT_PG_*.
+ * The library takes the credential as optional; without a password none is
+ * sent (no empty-string secret).
+ */
 export function pgConnection(rag: RagConfig) {
   const pg = rag.pg;
   if (!pg) throw new Error('pg-vector is configured but rag.pg is missing');
   return {
     connectionString: pg.url,
     ...(pg.schema ? { schema: pg.schema } : {}),
-    ...(pg.user ? { credential: staticLogin(pg.user, pg.password ?? '') } : {}),
+    ...(pg.user && pg.password
+      ? { credential: staticLogin(pg.user, pg.password) }
+      : {}),
   };
 }
 
