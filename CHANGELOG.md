@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Persistent RAG collections on HANA, Postgres and Qdrant.** With
+  `LLM_AGENT_RAG_BACKEND` (and `LLM_AGENT_SESSION_RAG_BACKEND` for the session
+  history) set to `hana-vector`, `pg-vector` or `qdrant`, user and session
+  collections, their documents and the session history survive a restart. They
+  are stored through the `@mcp-abap-adt/llm-agent` providers (shared table
+  layout), restored at startup, and expire as before. New variables
+  `LLM_AGENT_HANA_SERVICE`, `LLM_AGENT_PG_URL`, `LLM_AGENT_PG_USER`,
+  `LLM_AGENT_PG_PASSWORD` and `LLM_AGENT_PG_SCHEMA`; the user and password are
+  secrets for `.env`, never `.mtaext`. Nothing changes for a deployment that
+  sets none of this.
+- **Optional HDI resource and table deployment.** `mta.yaml` declares
+  `cloud-llm-hub-hdi`, inactive until an `.mtaext` activates it (every template
+  carries the block); `tools/deploy-hdi-tables.sh` deploys the shared tables
+  into the container. The vector column is fixed at `REAL_VECTOR(1536)`
+  (`text-embedding-3-small`).
+- **`/health` reflects the restore.** 503 with the cause until persistent
+  collections are restored (retry after 30 s, doubling to 5 min); 200
+  `{"status":"UP"}` otherwise. Keep the Cloud Foundry port health check.
+
+### Changed
+
+- **Backend-first writes.** With a persistent backend, add, update, delete,
+  rename, enable and `rag_correct` / `rag_deprecate` write the database first
+  and change memory only on success. Errors are explicit: 409 duplicate, orphan,
+  being deleted or incompatible; 503 backend or collections unavailable (a
+  request waits up to 30 s for a running restore); 502 other backend failures.
+- **One backend per deployment.** With a persistent kind configured, a request
+  `backend` naming another is refused with 400 and `GET /rag/backends` lists
+  only the configured one. Presets stay in memory.
+- **Chat refuses a degraded collection.** A turn naming a collection restored as
+  `incompatible` (embedder changed) or `unavailable` is refused (409 / 503)
+  before streaming instead of silently skipping it.
+- **Reserved document metadata.** `id`, `namespace`, `collectionId`, `docId`,
+  `createdAt` and `_createdAtMs` belong to the hub; client values for these keys
+  are overridden.
+- **Session history turns** carry `userId`, `sessionId` and `createdAt`; with a
+  persistent session backend forgetting a session deletes by owner and each
+  owner keeps at most 200 turns.
+- Dependencies `@mcp-abap-adt/llm-agent*` 30.3.1.
+- Docs no longer describe the Qdrant and persistent collections as "not yet
+  supported" (Plan B); the stale HANA scenario in the extension guide points to
+  the real design.
+
 ## [7.2.1] - 2026-10-15
 
 ### Fixed

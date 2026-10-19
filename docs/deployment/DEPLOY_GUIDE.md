@@ -138,6 +138,20 @@ from the block to turn the resource off again.
 fork's `.env`, which `tools/deploy.sh` applies with `cf set-env`. HANA credentials come from the service
 binding (`VCAP_SERVICES`), not from `.env`.
 
+**5. Health check.** Keep the Cloud Foundry default port health check. If the first restore of collections
+fails (HANA unreachable at boot), `/health` answers 503 while the hub retries in the background (30 s,
+doubling to 5 min). Switching the app to an `http` health check on `/health` would turn that into a restart
+loop, killing the instance that is about to recover. `mta.yaml` sets no `health-check-type`; do not add one.
+
+**6. Dimension and other embedders.** The shipped tables are `REAL_VECTOR(1536)`, matching
+`text-embedding-3-small`. Another embedder needs regenerated DDL; the hub then stops at startup with
+`SHARED_LAYOUT_NOT_DEPLOYED` instead of running on a mismatched table. The startup log line
+`Persistent collections` shows the dimension in force. Behaviour and error codes are in
+[CONFIG_USAGE.md](../llm-agent/CONFIG_USAGE.md#persistent-rag-collections).
+
+**Postgres.** `LLM_AGENT_RAG_BACKEND: "pg-vector"` with `LLM_AGENT_PG_URL` (and optionally
+`LLM_AGENT_PG_SCHEMA`) in `.mtaext`; `LLM_AGENT_PG_USER` and `LLM_AGENT_PG_PASSWORD` only in `.env`.
+
 HANA is reachable only from Cloud Foundry, so there is no local run against it; use PGlite, Qdrant or
 the in-memory providers for local work.
 

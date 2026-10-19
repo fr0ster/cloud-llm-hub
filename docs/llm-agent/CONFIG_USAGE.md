@@ -40,12 +40,16 @@ are a different mechanism and do apply per request.
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDER_URL` | `openai`: `LLM_AGENT_BASE_URL`; `ollama`: `http://localhost:11434` | Embedder base URL |
 | `LLM_AGENT_EMBEDDER_API_KEY` | `openai`: `LLM_AGENT_API_KEY` | Embedder API key. Secret — set with `cf set-env`, never in `.mtaext` |
-| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class. `qdrant` does **not** translate queries (`vector` does — one LLM call per non-ASCII query); it relies on a multilingual embedder such as `bge-m3` |
-| `LLM_AGENT_SESSION_RAG_BACKEND` | same as tools | `in-memory` \| `vector` \| `qdrant` for the session-history RAG class. `qdrant` is not yet supported (phase 2) |
-| `LLM_AGENT_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` | `in-memory` \| `vector` \| `qdrant` for persistent collections. `qdrant` is not yet supported — it arrives with Plan B |
+| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). `qdrant` does **not** translate queries (`vector` does — one LLM call per non-ASCII query); it relies on a multilingual embedder such as `bge-m3` |
+| `LLM_AGENT_SESSION_RAG_BACKEND` | same as tools | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for the session-history RAG class. A persistent kind keeps the history across restarts (see [Persistent RAG collections](#persistent-rag-collections)) |
+| `LLM_AGENT_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for user and session collections. `qdrant`, `hana-vector` and `pg-vector` persist them (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_QDRANT_URL` | — | Required when any RAG class above is `qdrant` |
 | `LLM_AGENT_QDRANT_API_KEY` | — | Secret — set with `cf set-env`, never in `.mtaext` |
 | `LLM_AGENT_QDRANT_PREFIX` | `cloud-llm-hub` | Prefix for Qdrant collection names. Deployments sharing one Qdrant must each use a distinct prefix |
+| `LLM_AGENT_HANA_SERVICE` | the first `hana` binding | Name of the `hana` service binding in `VCAP_SERVICES` that `hana-vector` connects through. Credentials come from the binding, never from a variable |
+| `LLM_AGENT_PG_URL` | — | Required when any RAG class is `pg-vector`. Address only (`postgres://host:port/db`) |
+| `LLM_AGENT_PG_USER`, `LLM_AGENT_PG_PASSWORD` | — | `pg-vector` credentials. Secrets: set in `.env` (applied with `cf set-env`), never in `.mtaext`. A user without a password sends no credential, and `pg` then falls back to `PGUSER` / `PGPASSWORD` / trust authentication |
+| `LLM_AGENT_PG_SCHEMA` | the library default | Schema holding the shared tables for `pg-vector` |
 | `LLM_AGENT_DESTINATION_SOURCE` | `btp` | `btp` (Destination service) \| `env` (the Cloud SDK `destinations` variable — off-platform, where no Destination service is reachable) |
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
 | `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | The longest LLM-side `429` interval we wait out **when no door is configured**. Anything longer is reported with the number attached. Not applied once `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set: behind a door an admitted session waits exactly the interval the server named. A value that is not a whole number of milliseconds is refused at startup |
@@ -61,6 +65,35 @@ All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits
 
 `LLM_AGENT_STEP_REVIEW_ENABLED=false` switches off the honesty controller's
 reviewer (`srv/agent-manager.ts`).
+
+## Persistent RAG collections
+
+With `LLM_AGENT_RAG_BACKEND` set to `hana-vector`, `pg-vector` or `qdrant`, user and session RAG collections live in that database through the `@mcp-abap-adt/llm-agent` providers (shared table layout on HANA and Postgres). `LLM_AGENT_SESSION_RAG_BACKEND` does the same for the session history. With neither set to a persistent kind, nothing described here applies and the hub behaves as before.
+
+Design: [persistent RAG collections spec](../superpowers/specs/2026-10-19-persistent-rag-collections-design.md). Deployment of the HANA container: [DEPLOY_GUIDE.md](../deployment/DEPLOY_GUIDE.md#persistent-rag-on-hana).
+
+**Vector dimension.** On HANA and Postgres it is fixed at 1536: the shipped HDI tables declare `REAL_VECTOR(1536)`, which matches `text-embedding-3-small`. An embedder with another dimension needs regenerated DDL; until then the hub fails loudly at startup (the library reports `SHARED_LAYOUT_NOT_DEPLOYED`) rather than falling back to memory. The startup log line `Persistent collections` shows the effective dimension (`1536`, or `from the embedder` on Qdrant).
+
+**One backend.** When `LLM_AGENT_RAG_BACKEND` is a persistent kind, every new user or session collection uses it. A request `backend` naming anything else is refused with 400, and `GET /rag/backends` lists only that backend. Presets (`preset: true`) stay in process memory, together with their enabled flag.
+
+**Backend first.** Add, update, delete, `rag_correct`, `rag_deprecate`, rename, description and enabled writes go to the database first; memory changes only after it succeeded. A failure is an explicit error and leaves memory untouched, so no response reports a change a restart would undo.
+
+| Status | Cause |
+|--------|-------|
+| 409 | Duplicate name, an orphan store under that name, a collection being deleted, or a collection restored as `incompatible` |
+| 503 | Backend unavailable, collections not restored yet (a request waits up to 30 s for the restore), or a collection restored as `unavailable` |
+| 502 | Any other backend failure |
+| 400 | `backend` in the request differs from the configured persistent kind |
+
+**Restore at startup.** Collections are read back from the catalog before the registry serves persistent operations. Only records the hub wrote (`writtenBy: cloud-llm-hub`) are opened; others are left alone. If the whole restore fails, `GET /health` answers 503 and a background retry runs after 30 s, doubling up to 5 min, each attempt logged. `/health` answers 200 `{"status":"UP"}` once restored, and also whenever persistence is off. One collection failing to open or scan is restored as `unavailable` (the others work). A collection written with a different embedder is restored as `incompatible`: it can be listed, read and exported, while search and writes name both embedder fingerprints in the error. A chat turn that names an incompatible or unavailable collection is refused (409 / 503) before anything streams.
+
+**Documents.** The metadata keys `id`, `namespace`, `collectionId`, `docId`, `createdAt` and `_createdAtMs` belong to the hub; the hub's values win over the same keys supplied by a client.
+
+**Session collections** persist too and expire after the session TTL (`RAG_SESSION_TTL_MS`, default 24 h). The hourly sweep removes expired ones from memory and from the catalog.
+
+**Session history** with a persistent `LLM_AGENT_SESSION_RAG_BACKEND` is stored in the store `h_history`, created on first use. Forgetting a session deletes its turns by `userId` and `sessionId`; each owner is capped at 200 turns (the oldest are deleted). After a failed open the hub waits 30 s before trying again and logs one warning per window.
+
+**Not logged:** stores or rows with no catalog record (orphans) are not reported at startup, because the library has no listing for them and the hub does not issue SQL itself. A creation under an orphan's name is refused with 409. An upstream request is in [BACKLOG.md](../rfcs/BACKLOG.md).
 
 ## Scenario A — SAP AI Core
 
