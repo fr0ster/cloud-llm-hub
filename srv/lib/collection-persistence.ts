@@ -305,11 +305,12 @@ export function canonicalMetadata(
 }
 
 /**
- * Payload fields the write path adds beside a document's own metadata: the
- * point id (`id`), `namespace`, documentPayload's fields and RecencyBoostedRag's
- * `_createdAtMs`. Restore strips them, so a document reads back as it was
- * added. A document whose own metadata used one of these keys loses it — the
- * write path already overwrites those keys in the backend.
+ * Reserved metadata keys of a persistent document: the payload fields the
+ * write path adds beside a document's own metadata — the point id (`id`),
+ * `namespace`, documentPayload's fields and RecencyBoostedRag's
+ * `_createdAtMs`. The hub's values always win in the backend, a document's
+ * own value under one of them is not kept (not in memory, not after a
+ * restore), and restore strips them, so a document reads back as it was added.
  */
 export const PAYLOAD_BOOKKEEPING = [
   'id',
@@ -333,12 +334,10 @@ export function restoredDocument(
       : rec.id.startsWith(prefix)
         ? rec.id.slice(prefix.length)
         : rec.id;
-  const own: Record<string, unknown> = { ...m };
-  for (const k of PAYLOAD_BOOKKEEPING) delete own[k];
   return {
     id: docId,
     text: rec.text,
-    metadata: canonicalMetadata(own),
+    metadata: ownMetadata(m),
     createdAt:
       typeof m.createdAt === 'string' ? m.createdAt : new Date(0).toISOString(),
   };
@@ -401,7 +400,16 @@ function refuseWhileDeleting(entry: PersistentEntry, operation: string): void {
     );
 }
 
-/** The point id stays `doc:<collectionId>:<docId>`. */
+/**
+ * The backend payload of a persistent document. The point id stays
+ * `doc:<collectionId>:<docId>`.
+ *
+ * Reserved keys (PAYLOAD_BOOKKEEPING: id, namespace, collectionId, docId,
+ * createdAt, _createdAtMs) are the hub's: they are written after the
+ * document's own metadata, so they always win, and a document's own value
+ * under one of them is dropped (see ownMetadata). Every other metadata key is
+ * kept as given.
+ */
 function payload(
   entry: PersistentEntry,
   docId: string,
@@ -411,11 +419,24 @@ function payload(
 ): Record<string, unknown> {
   const collectionId = entry.meta.id;
   return {
+    ...ownMetadata(metadata),
     id: `doc:${collectionId}:${docId}`,
     namespace: namespace ?? entry.meta.owner,
-    ...metadata,
     ...documentPayload(collectionId, docId, createdAt),
   };
+}
+
+/**
+ * A persistent document's own metadata: what it was given, without the
+ * reserved keys (PAYLOAD_BOOKKEEPING), in canonical form. Memory holds this,
+ * and restore reads back the same.
+ */
+export function ownMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const own: Record<string, unknown> = { ...(metadata ?? {}) };
+  for (const k of PAYLOAD_BOOKKEEPING) delete own[k];
+  return canonicalMetadata(own);
 }
 
 /**
@@ -435,7 +456,7 @@ export async function addPersistentDocument(
   const persisted: RagDocument = {
     id: doc.id,
     text: doc.text,
-    metadata: canonicalMetadata(doc.metadata),
+    metadata: ownMetadata(doc.metadata),
     createdAt,
   };
   entry.documents.set(doc.id, persisted);
@@ -464,7 +485,7 @@ export async function updatePersistentDocument(
   );
   await backendWrite('update document', () => entry.rag.upsert(text, p));
   existing.text = text;
-  existing.metadata = canonicalMetadata(metadata);
+  existing.metadata = ownMetadata(metadata);
   return existing;
 }
 

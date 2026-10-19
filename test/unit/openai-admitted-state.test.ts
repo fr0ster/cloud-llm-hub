@@ -44,9 +44,14 @@ jest.mock('../../srv/collection-ids', () => ({
   resolveRouteId: (_registry: unknown, id: string) => id,
 }));
 
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { type Message, RagError } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import * as manager from '../../srv/agent-manager';
+import {
+  COLLECTION_INCOMPATIBLE,
+  COLLECTION_UNAVAILABLE,
+  CollectionStatusError,
+} from '../../srv/lib/collection-persistence';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import type { Lease } from '../../srv/lib/session-retention';
@@ -148,6 +153,42 @@ describe('the RAG stores a request names', () => {
       if (queued && 'admitted' in queued) queued.admitted.release();
     }
   });
+});
+
+describe('a request naming a degraded collection', () => {
+  it.each([
+    ['incompatible', COLLECTION_INCOMPATIBLE, 409],
+    ['unavailable', COLLECTION_UNAVAILABLE, 503],
+  ] as const)(
+    'is refused before the agent runs when %s',
+    async (_s, code, status) => {
+      configure();
+      const registry = manager.getCollectionRegistry();
+      jest
+        .spyOn(registry, 'degradedOf')
+        .mockResolvedValue(
+          new CollectionStatusError(
+            'search',
+            new RagError(`collection "col-1" is ${_s}: the cause`, code),
+          ),
+        );
+      const getRagStores = jest.spyOn(registry, 'getRagStores');
+      let ran = false;
+      harness.process = async () => {
+        ran = true;
+        return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+      };
+      const req = fakeReq(body()) as unknown as Request;
+      req.headers['x-rag-collections'] = 'col-1';
+      const res = fakeRes();
+      await handleChatCompletions(req, res as unknown as Response);
+
+      expect(res.statusCode).toBe(status);
+      expect(res.body).toMatch(/col-1.*the cause/);
+      expect(ran).toBe(false);
+      expect(getRagStores).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('a destination switch', () => {

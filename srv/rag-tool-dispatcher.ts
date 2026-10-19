@@ -138,24 +138,22 @@ export async function dispatchRagTool(
             error: 'Authenticated user required to add to a collection',
           };
         }
-        // Auto-create the collection if it does not exist yet.
-        if (!(await registry.getCollection(physical))) {
-          const isSession = !!sid && physical.includes('__s_');
-          await registry.createCollection({
-            id: physical,
-            logicalId: normalizeLogicalId(args.collection as string),
-            displayName: args.collection as string,
-            description: '',
-            scope: isSession ? 'session' : 'user',
-            owner: userId(),
-            ...(isSession
-              ? { sessionId: sid, expiresAt: Date.now() + SESSION_TTL_MS }
-              : {}),
-          });
-        } else {
-          // Refresh expiry for existing session collections.
-          if (sid) await registry.refreshSessionExpiry(physical);
-        }
+        // Auto-create the collection if it does not exist yet — atomically,
+        // so parallel rag_add calls on a new collection all land in one.
+        const isSession = !!sid && physical.includes('__s_');
+        const { created } = await registry.getOrCreateCollection({
+          id: physical,
+          logicalId: normalizeLogicalId(args.collection as string),
+          displayName: args.collection as string,
+          description: '',
+          scope: isSession ? 'session' : 'user',
+          owner: userId(),
+          ...(isSession
+            ? { sessionId: sid, expiresAt: Date.now() + SESSION_TTL_MS }
+            : {}),
+        });
+        // Refresh expiry for existing session collections.
+        if (!created && sid) await registry.refreshSessionExpiry(physical);
         const requestedId = (args.id as string | undefined)?.trim();
         const id = requestedId || randomUUID();
         if (requestedId) {

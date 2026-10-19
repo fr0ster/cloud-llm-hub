@@ -769,6 +769,30 @@ export async function handleChatCompletions(
           })()
         : [];
 
+    // A named collection that cannot be searched (restored incompatible or
+    // unavailable) refuses the turn, before anything streams: 409 / 503 naming
+    // the collection and its cause — never an answer quietly made without it.
+    if (resolvedCollectionIds.length > 0) {
+      const refusal = await getCollectionRegistry().degradedOf(
+        resolvedCollectionIds,
+      );
+      if (refusal) {
+        log.warn('Chat refused: a named collection is degraded', {
+          error: refusal.message,
+        });
+        res.writeHead(refusal.httpStatus, {
+          'Content-Type': 'application/json',
+        });
+        res.end(
+          jsonError(
+            refusal.message,
+            refusal.httpStatus === 409 ? 'conflict' : 'service_unavailable',
+          ),
+        );
+        return;
+      }
+    }
+
     if (resolvedCollectionIds.length > 0) {
       const registry = getCollectionRegistry();
       const dynamicStores = await registry.getRagStores(resolvedCollectionIds);
@@ -820,17 +844,8 @@ export async function handleChatCompletions(
 
         const relevantTexts: string[] = [];
         for (const colId of resolvedCollectionIds) {
-          // A degraded collection is left out here as in the injection above.
-          let store: Awaited<ReturnType<typeof registry.getRagStore>>;
-          try {
-            store = await registry.getRagStore(colId);
-          } catch (err) {
-            log.warn('Collection left out of the search', {
-              collection: colId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-            continue;
-          }
+          // Degraded collections were refused above, before the turn started.
+          const store = await registry.getRagStore(colId);
           if (!store) continue;
           const result = await new ExpositionFilteringRag(
             store,

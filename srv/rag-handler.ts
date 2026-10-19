@@ -192,10 +192,15 @@ export function registerRagRoutes(
     try {
       const userId = getUserId();
       await ensurePresets(registry, userId);
-      json(res, 200, {
-        ok: true,
-        collections: await registry.listCollections(userId),
-      });
+      let collections: Awaited<ReturnType<typeof registry.listCollections>>;
+      try {
+        collections = await registry.listCollections(userId);
+      } catch (err) {
+        // Presets are seeded; the full list waits for the restore.
+        failure(res, err, 500);
+        return;
+      }
+      json(res, 200, { ok: true, collections });
     } catch (err) {
       error(res, 500, `ensurePresets failed: ${(err as Error).message}`);
     }
@@ -308,18 +313,18 @@ export function registerRagRoutes(
         };
       }
 
-      // Idempotent: if the physical collection already exists, return existing meta.
-      const existing = await registry.getCollection(physical);
-      if (existing) {
+      // Idempotent: if the physical collection already exists, return existing
+      // meta. Atomic: concurrent requests for one id create it once.
+      const { collection: meta, created } =
+        await registry.getOrCreateCollection(createMeta);
+      if (!created) {
         log.info('Collection already exists (idempotent)', {
           id: physical,
           user: userId,
         });
-        json(res, 200, existing);
+        json(res, 200, meta);
         return;
       }
-
-      const meta = await registry.createCollection(createMeta);
       log.info('Collection created via API', {
         id: physical,
         logicalId,

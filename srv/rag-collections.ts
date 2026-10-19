@@ -261,6 +261,9 @@ export function isTransient(err: unknown): boolean {
 
 const RETRY_BACKOFFS_MS = [200, 500, 1500] as const;
 
+/** How long a call waits for a restore in flight by default; see whenReady. */
+export const READY_WAIT_MS = 30_000;
+
 /** Max total ms a single bulk call may spend sleeping in retry backoff. */
 export const RETRY_BUDGET_MS = 30_000;
 
@@ -488,6 +491,10 @@ export class CollectionRegistry {
   private restoreError?: string;
   /** The restore attempt in flight, if any. */
   private restoreAttempt?: Promise<void>;
+  /** How long a call waits for a restore in flight; see whenReady. */
+  private readyTimeoutMs: number;
+  /** Creates in flight, by collection id; see getOrCreateCollection. */
+  private creating = new Map<string, Promise<CollectionMeta>>();
 
   constructor(opts?: {
     embedder?: IRetrievalEmbedder | null;
@@ -500,6 +507,12 @@ export class CollectionRegistry {
      * Presets stay in this process.
      */
     persistence?: CollectionPersistence;
+    /**
+     * The longest a call waits for a restore in flight before it is refused
+     * with 503 "collections unavailable: restore still in progress" (default
+     * 30 s). The restore itself goes on.
+     */
+    readyTimeoutMs?: number;
   }) {
     this.embedder = opts?.embedder ?? null;
     this.breaker = opts?.breaker ?? null;
@@ -507,6 +520,7 @@ export class CollectionRegistry {
       opts?.defaultBackend ?? (opts?.embedder ? 'vector' : 'in-memory');
     this.persistence = opts?.persistence;
     this.restoreState = this.persistence ? 'pending' : 'off';
+    this.readyTimeoutMs = opts?.readyTimeoutMs ?? READY_WAIT_MS;
   }
 
   // -------------------------------------------------------------------------
@@ -583,12 +597,21 @@ export class CollectionRegistry {
       this.log.warn('Unreadable collection record left alone', r);
     let degraded = 0;
     for (const c of outcome.collections) {
-      if (this.collections.has(c.meta.id)) {
+      const held = this.collections.get(c.meta.id);
+      if (held?.persistent) {
         this.log.warn('Restored collection already in memory; kept', {
           id: c.meta.id,
         });
         continue;
       }
+      // A preset seeded while the restore ran, under the id of a persistent
+      // collection the user owns: the stored collection wins, as it would
+      // have before the restart (ensurePresets creates no preset over an
+      // existing collection).
+      if (held)
+        this.log.warn('Preset replaced by the restored collection', {
+          id: c.meta.id,
+        });
       const documents = new Map(
         persistentOrder(c.documents).map((d) => [d.id, d]),
       );
@@ -640,7 +663,30 @@ export class CollectionRegistry {
     if (!this.persistence || this.restoreState === 'ready') return;
     if (this.restoreState === 'failed' && !this.restoreAttempt)
       throw this.unavailable();
-    await this.restore();
+    // Bounded: a restore that hangs (a stalled query, a long scan) answers
+    // 503 instead of holding every request. The attempt itself goes on.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new CollectionStatusError(
+              'restore collections',
+              new RagError(
+                'collections unavailable: restore still in progress',
+                COLLECTIONS_UNAVAILABLE,
+              ),
+            ),
+          ),
+        this.readyTimeoutMs,
+      );
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([this.restore(), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -758,6 +804,42 @@ export class CollectionRegistry {
       documentCount: stored.documents.size,
       sourceCount: countSources(stored),
     };
+  }
+
+  /**
+   * The collection under `meta.id`, created from `meta` if there is none —
+   * atomically: concurrent callers for one id share a single create and all
+   * get the same collection; `created` is true for exactly one of them.
+   *
+   * Without persistence (and for a preset, which lives only in this process)
+   * the check and the create happen in one synchronous step, as the callers'
+   * check-then-create did before reads became async; a preset never waits for
+   * the restore. A persistent one waits for the restore first, then the
+   * check, the in-flight lookup and the start of the create are synchronous.
+   */
+  async getOrCreateCollection(
+    meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
+  ): Promise<{ collection: CollectionMeta; created: boolean }> {
+    if (this.persistence && !meta.preset) await this.whenReady();
+    const existing = this.collections.get(meta.id);
+    if (existing)
+      return {
+        collection: {
+          ...existing.meta,
+          documentCount: existing.documents.size,
+          sourceCount: countSources(existing),
+        },
+        created: false,
+      };
+    const inFlight = this.creating.get(meta.id);
+    if (inFlight) return { collection: await inFlight, created: false };
+    const create = this.createCollection(meta);
+    this.creating.set(meta.id, create);
+    const forget = () => {
+      if (this.creating.get(meta.id) === create) this.creating.delete(meta.id);
+    };
+    create.then(forget, forget);
+    return { collection: await create, created: true };
   }
 
   /**
@@ -1478,9 +1560,33 @@ export class CollectionRegistry {
   }
 
   /**
+   * The refusal a search over these collections gets, if one is degraded: the
+   * CollectionStatusError of the first (409 incompatible, 503 unavailable),
+   * naming the collection and its cause; undefined when all can be searched.
+   * The chat asks this before it starts, and refuses the turn on an answer.
+   */
+  async degradedOf(
+    collectionIds: string[],
+  ): Promise<CollectionStatusError | undefined> {
+    for (const id of collectionIds) {
+      await this.settled(id);
+      const stored = this.collections.get(id);
+      if (!stored) continue;
+      try {
+        this.refuseDegraded(stored, 'search', 'search');
+      } catch (err) {
+        if (err instanceof CollectionStatusError) return err;
+        throw err;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Get all RAG stores for given collection IDs (for injecting into
-   * SmartAgent). A degraded collection is left out, with a warning, so one
-   * collection does not fail the whole chat turn.
+   * SmartAgent). Ids with no collection are skipped; a degraded collection is
+   * never dropped silently — it throws its CollectionStatusError (see
+   * degradedOf, which callers ask first).
    */
   async getRagStores(collectionIds: string[]): Promise<Record<string, IRag>> {
     const stores: Record<string, IRag> = {};
@@ -1488,14 +1594,7 @@ export class CollectionRegistry {
       await this.settled(id);
       const stored = this.collections.get(id);
       if (!stored) continue;
-      if (stored.meta.status) {
-        this.log.warn('Degraded collection left out of the search', {
-          id,
-          status: stored.meta.status,
-          error: stored.meta.statusError,
-        });
-        continue;
-      }
+      this.refuseDegraded(stored, 'search', 'search');
       stores[id] = stored.rag;
     }
     return stores;

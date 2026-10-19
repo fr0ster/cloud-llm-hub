@@ -1336,10 +1336,15 @@ describe('restore at startup (Task 7)', () => {
       expect((err as CollectionBackendError).httpStatus).toBe(503);
       expect((err as Error).message).toMatch(/store is gone/);
     }
-    // The chat leaves it out instead of failing the turn.
-    expect(Object.keys(await reg.getRagStores([good.id, bad.id]))).toEqual([
-      good.id,
-    ]);
+    // The chat is refused, naming the collection and its cause: degradedOf
+    // reports it, and getRagStores never drops it silently.
+    const refusal = await reg.degradedOf([good.id, bad.id]);
+    expect(refusal).toBeInstanceOf(CollectionBackendError);
+    expect(refusal?.httpStatus).toBe(503);
+    expect(refusal?.message).toMatch(new RegExp(`${bad.id}.*store is gone`));
+    expect(await reg.degradedOf([good.id])).toBeUndefined();
+    const stores = await failureOf(reg.getRagStores([good.id, bad.id]));
+    expect((stores as CollectionBackendError).httpStatus).toBe(503);
   });
 
   it('an unreachable backend at boot: 503 and explicit errors, then the retry restores and health is 200', async () => {
@@ -1469,5 +1474,210 @@ describe('retryRestore backoff', () => {
     expect(
       logged.filter((m) => /failed; next attempt in/.test(m)),
     ).toHaveLength(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 7, fix round 1
+// ---------------------------------------------------------------------------
+
+describe('Task 7 fix round 1', () => {
+  beforeEach(() => {
+    mockCdsContext.user = { id: 'alice', is: () => false };
+  });
+
+  const presetLoader = (pack: string) => [
+    { id: `${pack}-doc`, text: `preset text for ${pack}` },
+  ];
+
+  describe.each([
+    ['persistence off', () => new CollectionRegistry()],
+    ['persistence on', () => reg],
+  ])('get-or-create under concurrency (%s)', (_mode, make) => {
+    it('two parallel rag_add on a new collection: both succeed, one collection', async () => {
+      const r = make();
+      const results = await Promise.all([
+        dispatchRagTool(r, 'rag_add', {
+          collection: 'par',
+          id: 'a',
+          text: 'one',
+        }),
+        dispatchRagTool(r, 'rag_add', {
+          collection: 'par',
+          id: 'b',
+          text: 'two',
+        }),
+      ]);
+      expect(results).toEqual([
+        { ok: true, id: 'a' },
+        { ok: true, id: 'b' },
+      ]);
+      const mine = (await r.listCollections('alice')).filter(
+        (c) => c.logicalId === 'par',
+      );
+      expect(mine).toHaveLength(1);
+      expect(mine[0].documentCount).toBe(2);
+    });
+
+    it('two parallel idempotent POST /rag/collections: 201 and 200, one collection', async () => {
+      const r = make();
+      const { router, routes } = makeMockRouter();
+      registerRagRoutes(router, r);
+      const post = findRoute(routes, 'POST', '/rag/collections');
+      const a = makeRes();
+      const b = makeRes();
+      await Promise.all([
+        post.handler(
+          makeReq({ body: { id: 'twice', displayName: 'T' } }),
+          a.res,
+        ),
+        post.handler(
+          makeReq({ body: { id: 'twice', displayName: 'T' } }),
+          b.res,
+        ),
+      ]);
+      expect([a._status, b._status].sort()).toEqual([200, 201]);
+      expect((a._body as { id: string }).id).toBe(
+        (b._body as { id: string }).id,
+      );
+      expect(
+        (await r.listCollections('alice')).filter(
+          (c) => c.logicalId === 'twice',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('two parallel ensurePresets: both succeed, one collection per pack', async () => {
+      const r = make();
+      await Promise.all([
+        ensurePresets(r, 'alice', presetLoader),
+        ensurePresets(r, 'alice', presetLoader),
+      ]);
+      const presets = (await r.listCollections('alice')).filter(
+        (c) => c.preset,
+      );
+      expect(presets.map((c) => c.logicalId).sort()).toEqual([
+        'rap-context',
+        'rap-skills',
+      ]);
+    });
+  });
+
+  it('with persistence on, parallel creates write one record', async () => {
+    await Promise.all([
+      reg.getOrCreateCollection(userMeta('one', 'alice')),
+      reg.getOrCreateCollection(userMeta('one', 'alice')),
+    ]);
+    expect(
+      (await records()).filter(
+        (x) => x.storeName === storeNameFor(userMeta('one', 'alice').id),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('waiting on a restore is bounded: 503 "restore still in progress"', async () => {
+    const r = new CollectionRegistry({
+      embedder,
+      defaultBackend: 'pg-vector',
+      persistence: { restore: () => new Promise(() => {}) } as never,
+      readyTimeoutMs: 20,
+    });
+    const err = await failureOf(r.listCollections('alice'));
+    expect(err).toBeInstanceOf(CollectionBackendError);
+    expect((err as CollectionBackendError).httpStatus).toBe(503);
+    expect((err as Error).message).toBe(
+      'collections unavailable: restore still in progress',
+    );
+  });
+
+  it.each([
+    [
+      'failed',
+      () => Promise.resolve({ ok: false, error: new RagError('down', 'X') }),
+    ],
+    ['pending', () => new Promise(() => {})],
+  ])('presets never wait on a %s restore', async (_state, restore) => {
+    const r = new CollectionRegistry({
+      embedder,
+      defaultBackend: 'pg-vector',
+      persistence: { restore } as never,
+      readyTimeoutMs: 60_000,
+    });
+    if (_state === 'failed') await failureOf(r.ready);
+    await ensurePresets(r, 'alice', presetLoader);
+    const id = presetCollectionId('rap-skills', 'alice');
+    expect((await r.getCollection(id))?.preset).toBe(true);
+    expect((await r.getDocument(id, 'rap-skills-doc'))?.text).toBe(
+      'preset text for rap-skills',
+    );
+  });
+
+  it('reserved payload keys: the hub values win; the document keeps its other metadata', async () => {
+    const meta = userMeta('reserved', 'alice');
+    await reg.createCollection(meta);
+    await reg.addDocument(meta.id, {
+      id: 'd1',
+      text: 'kept text',
+      metadata: {
+        namespace: 'mine',
+        id: 'evil',
+        docId: 'evil',
+        collectionId: 'evil',
+        createdAt: 'evil',
+        _createdAtMs: 1,
+        keep: 'yes',
+      },
+    });
+    // The backend holds the hub's values under the point id.
+    const stored = await backendDoc(meta.id, 'd1');
+    expect(stored?.metadata).toMatchObject({
+      namespace: 'alice',
+      docId: 'd1',
+      collectionId: meta.id,
+      keep: 'yes',
+    });
+    expect(stored?.metadata.createdAt).not.toBe('evil');
+    expect(stored?.metadata._createdAtMs).not.toBe(1);
+    // The document's own metadata: the reserved keys are not part of it.
+    const before = JSON.stringify(await reg.getDocument(meta.id, 'd1'));
+    expect(JSON.parse(before).metadata).toEqual({ keep: 'yes' });
+    reg = await restarted();
+    expect(JSON.stringify(await reg.getDocument(meta.id, 'd1'))).toBe(before);
+  });
+
+  it('bulk add is refused on incompatible (409) and unavailable (503) collections', async () => {
+    const inc = userMeta('inc', 'alice');
+    const una = userMeta('una', 'alice');
+    await reg.createCollection(inc);
+    await reg.createCollection(una);
+    await restartBackend();
+    const open = provider.openCollection.bind(provider);
+    provider.openCollection = async (rec) =>
+      rec.storeName === storeNameFor(una.id)
+        ? { ok: false, error: new RagError('gone', 'RAG_OPEN_ERROR') }
+        : open(rec);
+    reg = new CollectionRegistry({
+      embedder,
+      defaultBackend: 'pg-vector',
+      persistence: createCollectionPersistence(provider, 'fp-new'),
+    });
+    await reg.ready;
+    const bulk = (id: string) =>
+      reg.addDocumentsBulk(
+        id,
+        [{ id: 'b1', text: 'x', metadata: {} }],
+        undefined,
+        {
+          sleep: async () => {},
+        },
+      );
+    for (const [id, status] of [
+      [inc.id, 409],
+      [una.id, 503],
+    ] as const) {
+      const err = await failureOf(bulk(id));
+      expect(err).toBeInstanceOf(CollectionBackendError);
+      expect((err as CollectionBackendError).httpStatus).toBe(status);
+    }
   });
 });
