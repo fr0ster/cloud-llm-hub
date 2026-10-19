@@ -81,6 +81,7 @@ import {
   bundleFileFor,
   collectionFor,
   corpusByRole,
+  fingerprintHash,
   recordIsCurrent,
   type SharedCorpusDoc,
   toolStoreName,
@@ -669,6 +670,7 @@ import {
   CLOUD_LOCAL_TOOLS,
   mergeCloudLocalTools,
 } from './lib/cloud-local-tools';
+import { createCollectionPersistence } from './lib/collection-persistence';
 import { type DumpBufferStore, makeDefaultDumpBuffer } from './lib/dump-buffer';
 import {
   handleGetDumpSectionCall,
@@ -1018,13 +1020,22 @@ let collectionRegistryInstance: CollectionRegistry | null = null;
 /** Get or create the shared CollectionRegistry. */
 export function getCollectionRegistry(): CollectionRegistry {
   if (!collectionRegistryInstance) {
-    const { embedding: e, stores } = getProviders();
+    const { embedding: e, stores, collections } = getProviders();
     collectionRegistryInstance = new CollectionRegistry({
       embedder: e?.retrieval ?? null,
       breaker: e?.breaker ?? null,
       // LLM_AGENT_RAG_BACKEND, not "vector whenever an embedder exists":
       // another class's embedder must not move persistent collections.
       defaultBackend: stores.backendOf('persistent'),
+      // A persistent kind: user and session collections go to its catalog.
+      ...(collections && e
+        ? {
+            persistence: createCollectionPersistence(
+              collections,
+              fingerprintHash(e.fingerprint),
+            ),
+          }
+        : {}),
     });
   }
   return collectionRegistryInstance;

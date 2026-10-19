@@ -87,7 +87,7 @@ export async function ensurePresets(
   for (const pack of PRESET_PACKS) {
     const id = presetCollectionId(pack.key, userId);
     if (!registry.getCollection(id)) {
-      registry.createCollection({
+      await registry.createCollection({
         id,
         logicalId: pack.key,
         displayName: pack.displayName,

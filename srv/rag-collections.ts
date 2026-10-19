@@ -6,8 +6,10 @@
  * - Dynamic user/admin collections (SAP notes, product docs, etc.)
  * - Namespace isolation (global vs per-user)
  *
- * The registry lives in this process only: nothing is written to disk, and a
- * collection's data lives in its RAG backend.
+ * The registry lives in this process: nothing is written to disk, and a
+ * collection's data lives in its RAG backend. With a persistent backend
+ * configured, user and session collections are also recorded in that
+ * provider's catalog (lib/collection-persistence); presets never are.
  *
  * Collections are wired into SmartAgent as additional RAG stores.
  */
@@ -29,6 +31,14 @@ import {
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import {
+  addPersistentDocument,
+  type CollectionPersistence,
+  deletePersistentDocument,
+  storeNameFor as persistentStoreName,
+  unwrap,
+  updatePersistentDocument,
+} from './lib/collection-persistence';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -146,6 +156,10 @@ interface StoredCollection {
   store: string;
   /** The backend that created the store, asked to delete it on removal. */
   backend?: RagBackend;
+  /** Held in the persistence provider's catalog; see CollectionPersistence. */
+  persistent?: boolean;
+  /** Set while a persistent deletion is out: writes are refused meanwhile. */
+  deleting?: boolean;
   documents: Map<string, RagDocument>;
   rag: RecencyBoostedRag;
 }
@@ -416,17 +430,30 @@ export class CollectionRegistry {
   private breaker: CircuitBreaker | null;
   private log = cds.log('rag-collections');
   private enabledByUser: Map<string, Map<string, boolean>> = new Map();
+  private persistence?: CollectionPersistence;
 
   constructor(opts?: {
     embedder?: IRetrievalEmbedder | null;
     breaker?: CircuitBreaker | null;
     /** Default backend for new collections (default: "vector" if embedder provided, else "in-memory") */
     defaultBackend?: RagBackendType;
+    /**
+     * Keeps user and session collections in the provider's catalog;
+     * `defaultBackend` then names its kind, the only one a request may ask for.
+     * Presets stay in this process.
+     */
+    persistence?: CollectionPersistence;
   }) {
     this.embedder = opts?.embedder ?? null;
     this.breaker = opts?.breaker ?? null;
     this.defaultBackend =
       opts?.defaultBackend ?? (opts?.embedder ? 'vector' : 'in-memory');
+    this.persistence = opts?.persistence;
+  }
+
+  /** The persistent backend kind, when collections persist; otherwise undefined. */
+  persistentBackend(): RagBackendType | undefined {
+    return this.persistence ? this.defaultBackend : undefined;
   }
 
   /**
@@ -446,6 +473,7 @@ export class CollectionRegistry {
 
   /** List available backend types. */
   listBackends(): string[] {
+    if (this.persistence) return [this.defaultBackend];
     return Array.from(this.backends.keys());
   }
 
@@ -499,9 +527,15 @@ export class CollectionRegistry {
     };
   }
 
-  createCollection(
+  /**
+   * Create a collection. A persistent one (persistence on, not a preset) is in
+   * the backend's catalog before it is in memory; the backend's refusal —
+   * DuplicateCollectionError, OrphanStoreError included — reaches the caller
+   * as a CollectionBackendError, and nothing is deleted in response.
+   */
+  async createCollection(
     meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
-  ): CollectionMeta {
+  ): Promise<CollectionMeta> {
     if (this.collections.has(meta.id)) {
       throw new Error(`Collection "${meta.id}" already exists`);
     }
@@ -512,6 +546,12 @@ export class CollectionRegistry {
       documentCount: 0,
       sourceCount: 0,
     };
+    if (this.persistence && !meta.preset) {
+      return this.createPersistent(this.persistence, full, meta.backend);
+    }
+    // Presets stay in this process even when collections persist.
+    if (this.persistence && !meta.backend)
+      full.backend = this.embedder ? 'vector' : 'in-memory';
     const store = storeNameFor(meta.id);
     this.collections.set(meta.id, {
       meta: full,
@@ -524,12 +564,51 @@ export class CollectionRegistry {
     return full;
   }
 
-  updateCollection(
+  private async createPersistent(
+    persistence: CollectionPersistence,
+    full: CollectionMeta,
+    requested: RagBackendType | undefined,
+  ): Promise<CollectionMeta> {
+    if (requested !== undefined && requested !== this.defaultBackend) {
+      throw new Error(
+        `Backend "${requested}" is not available: collections are stored on "${this.defaultBackend}"`,
+      );
+    }
+    const handles = unwrap(
+      await persistence.create(full, true),
+      'create collection',
+    );
+    this.collections.set(full.id, {
+      meta: full,
+      store: persistentStoreName(full.id),
+      persistent: true,
+      documents: new Map(),
+      rag: new RecencyBoostedRag(handles.rag),
+    });
+    this.log.info('Collection created', { id: full.id, scope: full.scope });
+    return full;
+  }
+
+  /** The enabled flag a persistent record holds: its owner's. */
+  private enabledOf(stored: StoredCollection): boolean {
+    return this.getEnabled(stored.meta.owner ?? '', stored.meta.id) ?? true;
+  }
+
+  async updateCollection(
     id: string,
     update: Partial<Pick<CollectionMeta, 'displayName' | 'description'>>,
-  ): CollectionMeta | null {
+  ): Promise<CollectionMeta | null> {
     const stored = this.collections.get(id);
     if (!stored) return null;
+    if (stored.persistent && this.persistence) {
+      const next = { ...stored.meta };
+      if (update.displayName) next.displayName = update.displayName;
+      if (update.description) next.description = update.description;
+      unwrap(
+        await this.persistence.update(next, this.enabledOf(stored)),
+        'update collection',
+      );
+    }
     if (update.displayName) stored.meta.displayName = update.displayName;
     if (update.description) stored.meta.description = update.description;
     return {
@@ -553,28 +632,38 @@ export class CollectionRegistry {
    * worst leaves data in the backend that nothing points at (issue #234).
    * Never throws.
    */
-  private removeCollection(id: string): boolean {
+  private removeCollection(id: string): Promise<void> | false {
     const stored = this.collections.get(id);
     if (!stored) return false;
-    this.collections.delete(id);
-    for (const m of this.enabledByUser.values()) m.delete(id);
-    this.releaseStore(id, stored);
-    return true;
+    this.forget(id);
+    return this.releaseStore(id, stored);
   }
 
-  /** Delete a removed collection's store, or empty it where the backend deletes none. */
-  private releaseStore(id: string, stored: StoredCollection): void {
+  /** Drop a collection from memory: its entry and every user's enabled flag. */
+  private forget(id: string): void {
+    this.collections.delete(id);
+    for (const m of this.enabledByUser.values()) m.delete(id);
+  }
+
+  /**
+   * Delete a removed collection's store, or empty it where the backend deletes
+   * none. A persistent one is deleted through the provider (record and rows).
+   * Resolves once that has settled; never rejects.
+   */
+  private releaseStore(id: string, stored: StoredCollection): Promise<void> {
     const { store, backend, rag } = stored;
     let released: Promise<Result<void, RagError>> | undefined;
     try {
-      if (backend?.deleteStore) {
+      if (stored.persistent && this.persistence) {
+        released = this.persistence.remove(stored.meta);
+      } else if (backend?.deleteStore) {
         released = backend.deleteStore(store);
       } else {
         released = rag.writer?.()?.clearAll?.();
       }
     } catch (err) {
       this.reportRemovalFailure(id, store, err);
-      return;
+      return Promise.resolve();
     }
     if (!released) {
       this.reportRemovalFailure(
@@ -582,9 +671,9 @@ export class CollectionRegistry {
         store,
         new Error('the RAG backend can neither delete nor clear a store'),
       );
-      return;
+      return Promise.resolve();
     }
-    released.then(
+    return released.then(
       (r) => {
         if (!r.ok) this.reportRemovalFailure(id, store, r.error);
       },
@@ -605,8 +694,26 @@ export class CollectionRegistry {
     });
   }
 
-  deleteCollection(id: string): boolean {
-    const deleted = this.removeCollection(id);
+  /**
+   * Delete a collection. A persistent one is deleted in the backend first and
+   * leaves memory only once that succeeded: a failure throws a
+   * CollectionBackendError and the collection stays (writes to it are refused
+   * while the deletion is out).
+   */
+  async deleteCollection(id: string): Promise<boolean> {
+    const stored = this.collections.get(id);
+    if (stored?.persistent && this.persistence) {
+      stored.deleting = true;
+      try {
+        unwrap(await this.persistence.remove(stored.meta), 'delete collection');
+      } finally {
+        stored.deleting = false;
+      }
+      if (this.collections.get(id) === stored) this.forget(id);
+      this.log.info('Collection deleted', { id });
+      return true;
+    }
+    const deleted = this.removeCollection(id) !== false;
     if (deleted) this.log.info('Collection deleted', { id });
     return deleted;
   }
@@ -615,7 +722,21 @@ export class CollectionRegistry {
     return this.enabledByUser.get(userId)?.get(physicalId);
   }
 
-  setEnabled(userId: string, physicalId: string, enabled: boolean): void {
+  /**
+   * A persistent collection's flag is in its record: written there first, by
+   * its owner; a backend failure throws and leaves the flag as it was.
+   */
+  async setEnabled(
+    userId: string,
+    physicalId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const stored = this.collections.get(physicalId);
+    if (stored?.persistent && this.persistence && stored.meta.owner === userId)
+      unwrap(
+        await this.persistence.update(stored.meta, enabled),
+        'set enabled',
+      );
     let m = this.enabledByUser.get(userId);
     if (!m) {
       m = new Map();
@@ -640,34 +761,45 @@ export class CollectionRegistry {
    *
    * `maySweep` is asked about each collection's session in the same synchronous
    * pass that removes it, so nothing can take a lease on the session between
-   * the answer and the removal.
+   * the answer and the removal. The stores are then released (a persistent
+   * one through the provider); the promise settles once they all have, and
+   * never rejects — a failure is counted, as in removeCollection.
    */
   sweepExpiredSessions(
     maySweep: (userId: string, sessionId: string) => boolean = () => true,
-  ): void {
+  ): Promise<void> {
     const now = Date.now();
+    const released: Promise<void>[] = [];
     for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         (stored.meta.expiresAt ?? 0) <= now &&
         maySweep(stored.meta.owner ?? '', stored.meta.sessionId ?? '')
       ) {
-        this.removeCollection(id);
+        const r = this.removeCollection(id);
+        if (r) released.push(r);
       }
     }
+    return Promise.all(released).then(() => undefined);
   }
 
-  /** Remove every collection of one session. Never throws; see removeCollection. */
-  deleteSessionCollections(userId: string, sessionId: string): void {
+  /**
+   * Remove every collection of one session, from memory at once. Never throws;
+   * see removeCollection. The promise settles once the stores are released.
+   */
+  deleteSessionCollections(userId: string, sessionId: string): Promise<void> {
+    const released: Promise<void>[] = [];
     for (const [id, stored] of [...this.collections]) {
       if (
         stored.meta.scope === 'session' &&
         stored.meta.owner === userId &&
         stored.meta.sessionId === sessionId
       ) {
-        this.removeCollection(id);
+        const r = this.removeCollection(id);
+        if (r) released.push(r);
       }
     }
+    return Promise.all(released).then(() => undefined);
   }
 
   /** Whether this user's session still owns any session-scoped collection. */
@@ -752,6 +884,8 @@ export class CollectionRegistry {
   ): Promise<RagDocument> {
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
+    // Backend first, memory only on success; see addPersistentDocument.
+    if (stored.persistent) return addPersistentDocument(stored, doc, namespace);
 
     // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
@@ -871,6 +1005,8 @@ export class CollectionRegistry {
     if (!stored) return null;
     const existing = stored.documents.get(docId);
     if (!existing) return null;
+    if (stored.persistent)
+      return updatePersistentDocument(stored, existing, update, namespace);
 
     if (update.text) existing.text = update.text;
     if (update.metadata)
@@ -889,6 +1025,7 @@ export class CollectionRegistry {
   async deleteDocument(collectionId: string, docId: string): Promise<boolean> {
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
+    if (stored.persistent) return deletePersistentDocument(stored, docId);
     const deleted = stored.documents.delete(docId);
     if (deleted) {
       stored.meta.documentCount = stored.documents.size;

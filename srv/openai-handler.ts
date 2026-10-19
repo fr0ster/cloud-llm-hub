@@ -690,7 +690,11 @@ export async function handleChatCompletions(
           { sessionId },
         );
       } else {
-        getCollectionRegistry().deleteSessionCollections(userId, sessionId);
+        // Memory goes at once; awaited for the stores' release (never rejects).
+        await getCollectionRegistry().deleteSessionCollections(
+          userId,
+          sessionId,
+        );
       }
       // Re-build normalizedMessages with only the new user message (no stale history)
       const lastUserContent = extractText(

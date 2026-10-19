@@ -15,6 +15,7 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
+import { CollectionBackendError } from './lib/collection-persistence';
 import { leaseSession } from './lib/gatekeeper';
 import {
   isRefusal,
@@ -56,6 +57,18 @@ function json(res: Response, status: number, data: unknown): void {
 
 function error(res: Response, status: number, message: string): void {
   res.status(status).json({ error: { message } });
+}
+
+/**
+ * A failed registry call: a persistent backend's refusal carries its own
+ * status (409 duplicate/orphan, 502 otherwise); anything else gets `fallback`.
+ */
+function failure(res: Response, err: unknown, fallback: number): void {
+  error(
+    res,
+    err instanceof CollectionBackendError ? err.httpStatus : fallback,
+    (err as Error).message,
+  );
 }
 
 /**
@@ -180,13 +193,28 @@ export function registerRagRoutes(
   });
 
   // POST /v1/rag/collections
-  router.post('/rag/collections', (req: Request, res: Response) => {
+  router.post('/rag/collections', async (req: Request, res: Response) => {
     let lease: Lease | undefined;
     try {
       const { id, displayName, description, scope, backend } = req.body;
 
       if (!id || !displayName) {
         error(res, 400, 'id and displayName are required');
+        return;
+      }
+
+      // Collections persist on one backend; no request picks another.
+      const persistentKind = registry.persistentBackend();
+      if (
+        persistentKind &&
+        backend !== undefined &&
+        backend !== persistentKind
+      ) {
+        error(
+          res,
+          400,
+          `backend "${backend}" is not available: collections are stored on "${persistentKind}"`,
+        );
         return;
       }
 
@@ -282,7 +310,7 @@ export function registerRagRoutes(
         return;
       }
 
-      const meta = registry.createCollection(createMeta);
+      const meta = await registry.createCollection(createMeta);
       log.info('Collection created via API', {
         id: physical,
         logicalId,
@@ -291,7 +319,7 @@ export function registerRagRoutes(
       });
       json(res, 201, meta);
     } catch (err) {
-      error(res, 409, (err as Error).message);
+      failure(res, err, 409);
     } finally {
       lease?.release();
     }
@@ -442,20 +470,25 @@ export function registerRagRoutes(
   // PATCH /v1/rag/collections/:id/enabled
   router.patch(
     '/rag/collections/:id/enabled',
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId || !registry.getCollection(physId)) {
         error(res, 404, 'Collection not found');
         return;
       }
       const { enabled } = req.body;
-      registry.setEnabled(getUserId(), physId, !!enabled);
+      try {
+        await registry.setEnabled(getUserId(), physId, !!enabled);
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
       json(res, 200, { id: physId, enabled: !!enabled });
     },
   );
 
   // PUT /v1/rag/collections/:id
-  router.put('/rag/collections/:id', (req: Request, res: Response) => {
+  router.put('/rag/collections/:id', async (req: Request, res: Response) => {
     const physId = (req as Request & { _physId?: string })._physId;
     if (!physId) {
       error(res, 404, 'Collection not found');
@@ -467,14 +500,18 @@ export function registerRagRoutes(
       return;
     }
 
-    const updated = registry.updateCollection(physId, req.body);
-    json(res, 200, updated);
+    try {
+      const updated = await registry.updateCollection(physId, req.body);
+      json(res, 200, updated);
+    } catch (err) {
+      failure(res, err, 500);
+    }
   });
 
   // DELETE /v1/rag/collections/:id
   router.delete(
     '/rag/collections/:id',
-    leased((req: Request, res: Response) => {
+    leased(async (req: Request, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId) {
         error(res, 404, 'Collection not found');
@@ -486,7 +523,12 @@ export function registerRagRoutes(
         return;
       }
 
-      registry.deleteCollection(physId);
+      try {
+        await registry.deleteCollection(physId);
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
       res.status(204).end();
     }),
   );
@@ -539,7 +581,7 @@ export function registerRagRoutes(
         );
         json(res, 201, doc);
       } catch (err) {
-        error(res, 400, (err as Error).message);
+        failure(res, err, 400);
       }
     }),
   );
@@ -639,7 +681,7 @@ export function registerRagRoutes(
         }
         json(res, 200, doc);
       } catch (err) {
-        error(res, 400, (err as Error).message);
+        failure(res, err, 400);
       }
     }),
   );
@@ -653,7 +695,13 @@ export function registerRagRoutes(
         error(res, 404, 'Collection not found');
         return;
       }
-      const deleted = await registry.deleteDocument(physId, req.params.did);
+      let deleted: boolean;
+      try {
+        deleted = await registry.deleteDocument(physId, req.params.did);
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
       if (!deleted) {
         error(res, 404, 'Document not found');
         return;
@@ -823,7 +871,7 @@ export function registerRagRoutes(
         const result = await runWithSessionId(sid, () =>
           dispatchRagTool(registry, name, req.body ?? {}),
         );
-        json(res, result.ok ? 200 : 400, result);
+        json(res, result.ok ? 200 : (result.status ?? 400), result);
       } finally {
         lease?.release();
       }

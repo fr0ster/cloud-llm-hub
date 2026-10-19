@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import { normalizeLogicalId, resolveByName } from './collection-ids';
+import { CollectionBackendError } from './lib/collection-persistence';
 import type { CollectionRegistry } from './rag-collections';
 import { SESSION_TTL_MS } from './rag-collections';
 import { getRequestSessionId } from './request-session';
@@ -94,7 +95,8 @@ export function buildRagToolSchemas(): Array<{
 
 type DispatchResult =
   | { ok: true; [key: string]: unknown }
-  | { ok: false; error: string };
+  /** `status`: set when a persistent backend refused (409 or 502). */
+  | { ok: false; error: string; status?: number };
 
 export async function dispatchRagTool(
   registry: CollectionRegistry,
@@ -139,7 +141,7 @@ export async function dispatchRagTool(
         // Auto-create the collection if it does not exist yet.
         if (!registry.getCollection(physical)) {
           const isSession = !!sid && physical.includes('__s_');
-          registry.createCollection({
+          await registry.createCollection({
             id: physical,
             logicalId: normalizeLogicalId(args.collection as string),
             displayName: args.collection as string,
@@ -250,6 +252,12 @@ export async function dispatchRagTool(
       }
     }
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return {
+      ok: false,
+      error: (err as Error).message,
+      ...(err instanceof CollectionBackendError
+        ? { status: err.httpStatus }
+        : {}),
+    };
   }
 }

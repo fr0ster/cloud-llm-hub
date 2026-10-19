@@ -747,10 +747,11 @@ cds.on('served', () => {
   // The registry exists only once the providers are built; until then there
   // is no session collection to sweep.
   setInterval(
-    guardedTask('Session collection sweep', log, () => {
-      if (isProvidersReady())
-        getCollectionRegistry().sweepExpiredSessions(maySweepSession);
-    }),
+    guardedTask('Session collection sweep', log, () =>
+      isProvidersReady()
+        ? getCollectionRegistry().sweepExpiredSessions(maySweepSession)
+        : undefined,
+    ),
     60 * 60 * 1000,
   ).unref();
   // Every five minutes, beside the history sweep: a session whose turns have
