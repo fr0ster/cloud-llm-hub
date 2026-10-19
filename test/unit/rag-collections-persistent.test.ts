@@ -741,3 +741,145 @@ describe('fix round 1', () => {
     expect(res._status).toBe(401);
   });
 });
+
+describe('session collections: ownership, sweep and expiry (Task 6)', () => {
+  const sessionMeta = (
+    logical: string,
+    owner: string,
+    sessionId: string,
+    expiresAt: number,
+  ) => ({
+    id: `${logical}__${owner}__s_${sessionId}`,
+    logicalId: logical,
+    displayName: logical,
+    description: '',
+    scope: 'session' as const,
+    owner,
+    sessionId,
+    expiresAt,
+  });
+
+  it("after a restart a user sees their own session collection and not another user's", async () => {
+    const mine = sessionMeta('notes', 'alice', 'sa', Date.now() + 60_000);
+    const theirs = sessionMeta('notes', 'bob', 'sb', Date.now() + 60_000);
+    await reg.createCollection(mine);
+    await reg.createCollection(theirs);
+    await reg.addDocument(mine.id, {
+      id: 'd1',
+      text: 'alice note',
+      metadata: {},
+    });
+
+    // A new provider over the same database; the full restore path is Task 7,
+    // so the backend state is read through the provider directly.
+    await real.end();
+    await pgl.restart();
+    real = await createPgClient({
+      connectionString: pgl.url,
+      credential: pgl.credential,
+      collectionName: 'hub-collections',
+      poolMax: 4,
+    });
+    provider = newProvider();
+    const restarted = newRegistry(provider);
+    expect(restarted.listCollections('alice')).toHaveLength(0); // not restored yet
+
+    const recs = await records();
+    const aliceRecs = recs.filter(
+      (r) =>
+        (r.attributes as { hubOwner?: { userId?: string } }).hubOwner
+          ?.userId === 'alice',
+    );
+    expect(aliceRecs).toHaveLength(1);
+    expect(aliceRecs[0]).toMatchObject({
+      scope: 'session',
+      sessionId: 'sa',
+      storeName: storeNameFor(mine.id),
+    });
+    expect(aliceRecs[0].attributes).toMatchObject({
+      expiresAt: mine.expiresAt,
+    });
+    expect((await backendDoc(mine.id, 'd1'))?.text).toBe('alice note');
+    // Bob's record has another session and another user: not alice's.
+    expect(recs.some((r) => r.storeName === storeNameFor(theirs.id))).toBe(
+      true,
+    );
+    expect(aliceRecs.some((r) => r.storeName === storeNameFor(theirs.id))).toBe(
+      false,
+    );
+  });
+
+  it('an expired, unleased session collection is deleted in the backend; a leased one is kept', async () => {
+    const leased = sessionMeta('a', 'alice', 'leased', Date.now() - 1);
+    const free = sessionMeta('b', 'alice', 'free', Date.now() - 1);
+    const live = sessionMeta('c', 'alice', 'live', Date.now() + 60_000);
+    for (const m of [leased, free, live]) await reg.createCollection(m);
+    await reg.sweepExpiredSessions((_u, sid) => sid !== 'leased');
+    expect(await recordOf(free.id)).toBeUndefined();
+    expect(reg.getCollection(free.id)).toBeNull();
+    expect(await recordOf(leased.id)).toBeDefined();
+    expect(reg.getCollection(leased.id)).not.toBeNull();
+    expect(await recordOf(live.id)).toBeDefined();
+    // Once the lease is gone the next sweep takes it.
+    await reg.sweepExpiredSessions(() => true);
+    expect(await recordOf(leased.id)).toBeUndefined();
+    expect(await recordOf(live.id)).toBeDefined();
+  });
+
+  it('a failed backend delete leaves the record; the next sweep re-sweeps it, even from a new registry', async () => {
+    const m = sessionMeta('x', 'alice', 'sx', Date.now() - 1);
+    await reg.createCollection(m);
+    down = true;
+    await reg.sweepExpiredSessions();
+    down = false;
+    expect(reg.getCollection(m.id)).toBeNull();
+    expect(await recordOf(m.id)).toBeDefined(); // the record is still there
+
+    const fresh = newRegistry(); // a restart before restore: no memory entry
+    const exp = await createCollectionPersistence(
+      provider,
+      'fp-test',
+    ).expiredSessions(Date.now());
+    expect(exp.ok && exp.value.map((x) => x.id)).toEqual([m.id]);
+    // A leased session is skipped; then released.
+    await fresh.sweepExpiredSessions(() => false);
+    expect(await recordOf(m.id)).toBeDefined();
+    await fresh.sweepExpiredSessions(() => true);
+    expect(await recordOf(m.id)).toBeUndefined();
+  });
+
+  it("deleteSessionCollections removes the session's records and no other", async () => {
+    const a = sessionMeta('a', 'alice', 's1', Date.now() + 60_000);
+    const b = sessionMeta('b', 'alice', 's2', Date.now() + 60_000);
+    await reg.createCollection(a);
+    await reg.createCollection(b);
+    await reg.deleteSessionCollections('alice', 's1');
+    expect(await recordOf(a.id)).toBeUndefined();
+    expect(await recordOf(b.id)).toBeDefined();
+  });
+
+  it('refreshSessionExpiry persists the new expiry; a failed write leaves the old one', async () => {
+    const m = sessionMeta('r', 'alice', 'sr', Date.now() + 1_000);
+    await reg.createCollection(m);
+    await reg.refreshSessionExpiry(m.id);
+    const stored = (await recordOf(m.id))?.attributes as { expiresAt: number };
+    expect(stored.expiresAt).toBeGreaterThan(m.expiresAt + 60_000);
+    expect(reg.getCollection(m.id)?.expiresAt).toBe(stored.expiresAt);
+    // The record, not memory, is what a restart sees.
+    const exp = await createCollectionPersistence(
+      provider,
+      'fp-test',
+    ).expiredSessions(Date.now() + 1_000_000);
+    expect(exp.ok).toBe(true);
+
+    const m2 = sessionMeta('r2', 'alice', 'sr2', Date.now() + 1_000);
+    await reg.createCollection(m2);
+    down = true;
+    await expect(reg.refreshSessionExpiry(m2.id)).resolves.toBeUndefined();
+    down = false;
+    expect(reg.getCollection(m2.id)?.expiresAt).toBe(m2.expiresAt);
+    expect((await recordOf(m2.id))?.attributes).toMatchObject({
+      expiresAt: m2.expiresAt,
+    });
+  });
+});

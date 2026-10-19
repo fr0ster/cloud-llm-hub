@@ -159,6 +159,12 @@ export interface CollectionPersistence {
     snapshot: () => { meta: CollectionMeta; enabled: boolean },
     apply: () => void,
   ): Promise<Result<void, RagError>>;
+  /**
+   * Session collections whose record says they expired by `now`, read from the
+   * catalog. A backend delete that failed leaves its record behind; this is how
+   * a later pass (the sweep, and Task 7's restore) finds it again.
+   */
+  expiredSessions(now: number): Promise<Result<CollectionMeta[], RagError>>;
   /** Not implemented yet: restore at startup is Task 7. */
   restore(): Promise<Result<RestoredCollection[], RagError>>;
 }
@@ -399,6 +405,30 @@ export function createCollectionPersistence(
       });
       return run;
     },
+    expiredSessions: (now) =>
+      guarded(async (): Promise<Result<CollectionMeta[], RagError>> => {
+        if (!provider.describeCollections)
+          return {
+            ok: false,
+            error: new RagError(
+              `provider "${provider.name}" cannot describe its collections`,
+              'RAG_UNSUPPORTED',
+            ),
+          };
+        const d = await provider.describeCollections();
+        if (!d.ok) return d;
+        const expired: CollectionMeta[] = [];
+        for (const rec of d.value.records) {
+          const decoded = decodeRecord(rec);
+          if (
+            'meta' in decoded &&
+            decoded.meta.scope === 'session' &&
+            (decoded.meta.expiresAt ?? 0) <= now
+          )
+            expired.push(decoded.meta);
+        }
+        return { ok: true, value: expired };
+      }),
     restore: async () => ({
       ok: false,
       error: new RagError(

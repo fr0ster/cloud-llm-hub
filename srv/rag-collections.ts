@@ -431,6 +431,8 @@ export class CollectionRegistry {
   private log = cds.log('rag-collections');
   private enabledByUser: Map<string, Map<string, boolean>> = new Map();
   private persistence?: CollectionPersistence;
+  /** Ids whose record is being deleted with no memory entry (catalog sweep). */
+  private releasing = new Set<string>();
 
   constructor(opts?: {
     embedder?: IRetrievalEmbedder | null;
@@ -644,7 +646,13 @@ export class CollectionRegistry {
     const stored = this.collections.get(id);
     if (!stored) return false;
     this.forget(id);
-    return this.releaseStore(id, stored);
+    if (!stored.persistent) return this.releaseStore(id, stored);
+    // The record outlives the memory entry until the backend delete settles;
+    // the catalog sweep must not start a second delete meanwhile.
+    this.releasing.add(id);
+    return this.releaseStore(id, stored).then(() => {
+      this.releasing.delete(id);
+    });
   }
 
   /** Drop a collection from memory: its entry and every user's enabled flag. */
@@ -770,12 +778,43 @@ export class CollectionRegistry {
 
   /**
    * Refresh the expiry timestamp of a session-scoped collection so it is not
-   * swept while the session is still active.
+   * swept while the session is still active. A persistent collection's record
+   * carries the expiry, so it is rewritten too (serialized with its other
+   * record writes); memory takes the new expiry only once the record has it,
+   * so a restart never resurrects an earlier expiry than memory shows. A failed
+   * write is logged, not thrown: the tool call that triggered it goes on, and
+   * the next call tries again. Never rejects.
    */
-  refreshSessionExpiry(physicalId: string): void {
+  async refreshSessionExpiry(physicalId: string): Promise<void> {
     const stored = this.collections.get(physicalId);
-    if (stored && stored.meta.scope === 'session') {
-      stored.meta.expiresAt = Date.now() + SESSION_TTL_MS;
+    if (stored?.meta.scope !== 'session') return;
+    const expiresAt = Date.now() + SESSION_TTL_MS;
+    if (!(stored.persistent && this.persistence)) {
+      stored.meta.expiresAt = expiresAt;
+      return;
+    }
+    // Every tool call refreshes: skip a write that would move the expiry by
+    // under a minute.
+    if ((stored.meta.expiresAt ?? 0) >= expiresAt - 60_000) return;
+    try {
+      unwrap(
+        await this.persistence.updateRecord(
+          physicalId,
+          () => ({
+            meta: { ...stored.meta, expiresAt },
+            enabled: this.enabledOf(stored),
+          }),
+          () => {
+            stored.meta.expiresAt = expiresAt;
+          },
+        ),
+        'refresh session expiry',
+      );
+    } catch (err) {
+      this.log.warn('Session expiry could not be persisted', {
+        id: physicalId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -787,6 +826,14 @@ export class CollectionRegistry {
    * the answer and the removal. The stores are then released (a persistent
    * one through the provider); the promise settles once they all have, and
    * never rejects — a failure is counted, as in removeCollection.
+   *
+   * Memory goes first, so a backend delete that fails leaves its record behind.
+   * With persistence on, a second pass reads the catalog for expired session
+   * records that memory does not hold and deletes those, asking `maySweep` in
+   * the same step that starts each delete. That is how a failed delete is
+   * retried by the next sweep. Task 7's restore needs no special case: it
+   * loads expired records into memory like any other, and the memory pass
+   * above collects them.
    */
   sweepExpiredSessions(
     maySweep: (userId: string, sessionId: string) => boolean = () => true,
@@ -803,7 +850,62 @@ export class CollectionRegistry {
         if (r) released.push(r);
       }
     }
-    return Promise.all(released).then(() => undefined);
+    const first = Promise.all(released).then(() => undefined);
+    const persistence = this.persistence;
+    if (!persistence) return first;
+    return first.then(() =>
+      this.sweepExpiredRecords(persistence, now, maySweep),
+    );
+  }
+
+  /** The catalog pass of sweepExpiredSessions. Never rejects. */
+  private async sweepExpiredRecords(
+    persistence: CollectionPersistence,
+    now: number,
+    maySweep: (userId: string, sessionId: string) => boolean,
+  ): Promise<void> {
+    try {
+      const found = await persistence.expiredSessions(now);
+      if (!found.ok) {
+        this.log.warn('Expired session records could not be listed', {
+          error: found.error.message,
+        });
+        return;
+      }
+      const released: Promise<void>[] = [];
+      for (const meta of found.value) {
+        // In memory: the pass above (or its owner) handles it. Being released:
+        // a delete is already out.
+        if (this.collections.has(meta.id) || this.releasing.has(meta.id))
+          continue;
+        if (!maySweep(meta.owner ?? '', meta.sessionId ?? '')) continue;
+        released.push(this.releaseRecord(persistence, meta));
+      }
+      await Promise.all(released);
+    } catch (err) {
+      this.log.warn('Expired session record sweep failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Delete the backend record of a collection memory does not hold. */
+  private releaseRecord(
+    persistence: CollectionPersistence,
+    meta: CollectionMeta,
+  ): Promise<void> {
+    this.releasing.add(meta.id);
+    const store = persistentStoreName(meta.id);
+    return persistence.remove(meta).then(
+      (r) => {
+        this.releasing.delete(meta.id);
+        if (!r.ok) this.reportRemovalFailure(meta.id, store, r.error);
+      },
+      (err: unknown) => {
+        this.releasing.delete(meta.id);
+        this.reportRemovalFailure(meta.id, store, err);
+      },
+    );
   }
 
   /**

@@ -154,7 +154,7 @@ export async function dispatchRagTool(
           });
         } else {
           // Refresh expiry for existing session collections.
-          if (sid) registry.refreshSessionExpiry(physical);
+          if (sid) await registry.refreshSessionExpiry(physical);
         }
         const requestedId = (args.id as string | undefined)?.trim();
         const id = requestedId || randomUUID();
