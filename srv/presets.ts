@@ -86,7 +86,7 @@ export async function ensurePresets(
 ): Promise<void> {
   for (const pack of PRESET_PACKS) {
     const id = presetCollectionId(pack.key, userId);
-    if (!registry.getCollection(id)) {
+    if (!(await registry.getCollection(id))) {
       await registry.createCollection({
         id,
         logicalId: pack.key,
@@ -98,7 +98,7 @@ export async function ensurePresets(
       });
     }
     for (const doc of loadDocs(pack.key)) {
-      if (!registry.getDocument(id, doc.id)) {
+      if (!(await registry.getDocument(id, doc.id))) {
         try {
           await registry.addDocument(id, {
             id: doc.id,

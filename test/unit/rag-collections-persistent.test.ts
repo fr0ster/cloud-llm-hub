@@ -25,6 +25,7 @@ jest.mock('../../srv/request-session', () => ({
 import {
   type IRag,
   type RagCollectionRecord,
+  RagError,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -36,6 +37,8 @@ import { userCollectionId } from '../../srv/collection-ids';
 import {
   CollectionBackendError,
   createCollectionPersistence,
+  restoreHealth,
+  retryRestore,
   storeNameFor,
 } from '../../srv/lib/collection-persistence';
 import { ensurePresets, presetCollectionId } from '../../srv/presets';
@@ -232,7 +235,7 @@ describe('lifecycle on the provider catalog', () => {
       docId: 'd1',
       createdAt: doc.createdAt,
     });
-    expect(reg.getCollection(meta.id)?.documentCount).toBe(1);
+    expect((await reg.getCollection(meta.id))?.documentCount).toBe(1);
 
     // query
     await reg.addDocument(meta.id, {
@@ -240,7 +243,7 @@ describe('lifecycle on the provider catalog', () => {
       text: 'quantum physics lecture',
       metadata: {},
     });
-    const hits = await search(reg.getRagStore(meta.id), 'kangaroo fence');
+    const hits = await search(await reg.getRagStore(meta.id), 'kangaroo fence');
     expect(hits[0]).toBe('kangaroo jumps over the fence');
 
     // update
@@ -248,7 +251,9 @@ describe('lifecycle on the provider catalog', () => {
     expect((await backendDoc(meta.id, 'd1'))?.text).toBe(
       'wombat digs a burrow',
     );
-    expect(reg.getDocument(meta.id, 'd1')?.text).toBe('wombat digs a burrow');
+    expect((await reg.getDocument(meta.id, 'd1'))?.text).toBe(
+      'wombat digs a burrow',
+    );
     expect((await backendDoc(meta.id, 'd1'))?.metadata).toMatchObject({
       createdAt: doc.createdAt,
     });
@@ -256,7 +261,7 @@ describe('lifecycle on the provider catalog', () => {
     // delete a document
     expect(await reg.deleteDocument(meta.id, 'd2')).toBe(true);
     expect(await backendDoc(meta.id, 'd2')).toBeNull();
-    expect(reg.getDocument(meta.id, 'd2')).toBeNull();
+    expect(await reg.getDocument(meta.id, 'd2')).toBeNull();
 
     // rename
     await reg.updateCollection(meta.id, {
@@ -278,7 +283,7 @@ describe('lifecycle on the provider catalog', () => {
     // delete the collection: record and rows go
     expect(await reg.deleteCollection(meta.id)).toBe(true);
     expect(await recordOf(meta.id)).toBeUndefined();
-    expect(reg.getCollection(meta.id)).toBeNull();
+    expect(await reg.getCollection(meta.id)).toBeNull();
     const rows = await real.query(
       `SELECT count(*)::int AS n FROM "${pgl.schema}"."rag_documents" WHERE "collection" = $1`,
       [storeNameFor(meta.id)],
@@ -305,20 +310,22 @@ describe('lifecycle on the provider catalog', () => {
     });
 
     await reg.sweepExpiredSessions();
-    expect(reg.getCollection(id)).toBeNull();
+    expect(await reg.getCollection(id)).toBeNull();
     expect(await recordOf(id)).toBeUndefined();
   });
 
   it('a record that exists in the backend but not in memory: 409 Duplicate, nothing deleted', async () => {
+    // Another instance, restored before this one created the record.
+    const other = newRegistry();
+    await other.ready;
     const meta = userMeta('dup', 'alice');
     await reg.createCollection(meta);
     await reg.addDocument(meta.id, { id: 'd1', text: 'keep me', metadata: {} });
 
-    const other = newRegistry(); // another start, before restore exists
     const err = await other.createCollection(meta).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CollectionBackendError);
     expect((err as CollectionBackendError).httpStatus).toBe(409);
-    expect(other.getCollection(meta.id)).toBeNull();
+    expect(await other.getCollection(meta.id)).toBeNull();
     expect((await backendDoc(meta.id, 'd1'))?.text).toBe('keep me');
   });
 });
@@ -348,9 +355,9 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
       reg.addDocument(meta.id, { id: 'd3', text: 'fine text', metadata: {} }),
     ).rejects.toBeInstanceOf(CollectionBackendError);
     down = false;
-    expect(reg.getDocument(meta.id, 'd2')).toBeNull();
-    expect(reg.getDocument(meta.id, 'd3')).toBeNull();
-    expect(reg.getCollection(meta.id)?.documentCount).toBe(1);
+    expect(await reg.getDocument(meta.id, 'd2')).toBeNull();
+    expect(await reg.getDocument(meta.id, 'd3')).toBeNull();
+    expect((await reg.getCollection(meta.id))?.documentCount).toBe(1);
   });
 
   it('bulk add: failures are reported, none kept as unindexed', async () => {
@@ -365,8 +372,8 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
     );
     expect(res.added).toBe(1);
     expect(res.errors).toHaveLength(1);
-    expect(reg.getDocument(meta.id, 'b1')).not.toBeNull();
-    expect(reg.getDocument(meta.id, 'b2')).toBeNull();
+    expect(await reg.getDocument(meta.id, 'b1')).not.toBeNull();
+    expect(await reg.getDocument(meta.id, 'b2')).toBeNull();
   });
 
   it('update (also what rag_correct calls)', async () => {
@@ -376,7 +383,7 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
         metadata: { v: 2 },
       }),
     ).rejects.toBeInstanceOf(CollectionBackendError);
-    expect(reg.getDocument(meta.id, 'd1')).toMatchObject({
+    expect(await reg.getDocument(meta.id, 'd1')).toMatchObject({
       text: 'original text',
       metadata: { v: 1 },
     });
@@ -389,7 +396,7 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
       CollectionBackendError,
     );
     down = false;
-    expect(reg.getDocument(meta.id, 'd1')).not.toBeNull();
+    expect(await reg.getDocument(meta.id, 'd1')).not.toBeNull();
     expect(await backendDoc(meta.id, 'd1')).not.toBeNull();
   });
 
@@ -405,9 +412,9 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
       CollectionBackendError,
     );
     down = false;
-    expect(reg.getCollection(meta.id)?.displayName).toBe('fragile');
+    expect((await reg.getCollection(meta.id))?.displayName).toBe('fragile');
     expect(reg.getEnabled('alice', meta.id)).toBeUndefined();
-    expect(reg.getDocument(meta.id, 'd1')).not.toBeNull();
+    expect(await reg.getDocument(meta.id, 'd1')).not.toBeNull();
     // and it still works once the backend is back
     await reg.addDocument(meta.id, {
       id: 'd9',
@@ -424,7 +431,7 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
       CollectionBackendError,
     );
     down = false;
-    expect(reg.getCollection(other.id)).toBeNull();
+    expect(await reg.getCollection(other.id)).toBeNull();
   });
 });
 
@@ -457,10 +464,10 @@ describe('two users with the same logical id (Review Focus 1)', () => {
     });
 
     expect(
-      await search(reg.getRagStore(a.id), 'secret kangaroo wombat'),
+      await search(await reg.getRagStore(a.id), 'secret kangaroo wombat'),
     ).toEqual(['alice secret kangaroo']);
     expect(
-      await search(reg.getRagStore(b.id), 'secret kangaroo wombat'),
+      await search(await reg.getRagStore(b.id), 'secret kangaroo wombat'),
     ).toEqual(['bob secret wombat']);
 
     await reg.deleteCollection(a.id);
@@ -513,6 +520,9 @@ describe('routes over the persistent registry', () => {
   });
 
   it('a backend failure is 502 and a taken record 409', async () => {
+    // Another instance, restored before the record below exists.
+    const second = newRegistry();
+    await second.ready;
     const r = routes();
     const post = findRoute(r, 'POST', '/rag/collections');
     const created = makeRes();
@@ -537,10 +547,10 @@ describe('routes over the persistent registry', () => {
     );
     down = false;
     expect(add._status).toBe(502);
-    expect(reg.getDocument(id, 'd1')).toBeNull();
+    expect(await reg.getDocument(id, 'd1')).toBeNull();
 
-    // a second start (no restore yet) cannot take the same record
-    reg = newRegistry();
+    // the other instance cannot take the same record
+    reg = second;
     const again = makeRes();
     const post2 = findRoute(routes(), 'POST', '/rag/collections');
     await post2.handler(
@@ -557,11 +567,11 @@ describe('presets are not persisted', () => {
       { id: `${pack}-doc`, text: `preset text for ${pack}` },
     ]);
     const id = presetCollectionId('rap-skills', 'alice');
-    expect(reg.getCollection(id)).toMatchObject({
+    expect(await reg.getCollection(id)).toMatchObject({
       preset: true,
       backend: 'vector',
     });
-    expect(reg.getDocument(id, 'rap-skills-doc')).not.toBeNull();
+    expect(await reg.getDocument(id, 'rap-skills-doc')).not.toBeNull();
     expect(await records()).toHaveLength(0);
     const rows = await real.query(
       `SELECT count(*)::int AS n FROM "${pgl.schema}"."rag_documents"`,
@@ -656,7 +666,7 @@ describe('fix round 1', () => {
       description: 'described',
       enabled: false,
     });
-    expect(reg.getCollection(meta.id)).toMatchObject({
+    expect(await reg.getCollection(meta.id)).toMatchObject({
       displayName: 'Renamed',
       description: 'described',
     });
@@ -770,8 +780,7 @@ describe('session collections: ownership, sweep and expiry (Task 6)', () => {
       metadata: {},
     });
 
-    // A new provider over the same database; the full restore path is Task 7,
-    // so the backend state is read through the provider directly.
+    // A new provider over the same database, and a registry restored from it.
     await real.end();
     await pgl.restart();
     real = await createPgClient({
@@ -782,7 +791,15 @@ describe('session collections: ownership, sweep and expiry (Task 6)', () => {
     });
     provider = newProvider();
     const restarted = newRegistry(provider);
-    expect(restarted.listCollections('alice')).toHaveLength(0); // not restored yet
+    expect((await restarted.listCollections('alice')).map((c) => c.id)).toEqual(
+      [mine.id],
+    );
+    expect((await restarted.listCollections('bob')).map((c) => c.id)).toEqual([
+      theirs.id,
+    ]);
+    expect((await restarted.getDocument(mine.id, 'd1'))?.text).toBe(
+      'alice note',
+    );
 
     const recs = await records();
     const aliceRecs = recs.filter(
@@ -816,9 +833,9 @@ describe('session collections: ownership, sweep and expiry (Task 6)', () => {
     for (const m of [leased, free, live]) await reg.createCollection(m);
     await reg.sweepExpiredSessions((_u, sid) => sid !== 'leased');
     expect(await recordOf(free.id)).toBeUndefined();
-    expect(reg.getCollection(free.id)).toBeNull();
+    expect(await reg.getCollection(free.id)).toBeNull();
     expect(await recordOf(leased.id)).toBeDefined();
-    expect(reg.getCollection(leased.id)).not.toBeNull();
+    expect(await reg.getCollection(leased.id)).not.toBeNull();
     expect(await recordOf(live.id)).toBeDefined();
     // Once the lease is gone the next sweep takes it.
     await reg.sweepExpiredSessions(() => true);
@@ -832,7 +849,7 @@ describe('session collections: ownership, sweep and expiry (Task 6)', () => {
     down = true;
     await reg.sweepExpiredSessions();
     down = false;
-    expect(reg.getCollection(m.id)).toBeNull();
+    expect(await reg.getCollection(m.id)).toBeNull();
     expect(await recordOf(m.id)).toBeDefined(); // the record is still there
 
     const fresh = newRegistry(); // a restart before restore: no memory entry
@@ -864,7 +881,7 @@ describe('session collections: ownership, sweep and expiry (Task 6)', () => {
     await reg.refreshSessionExpiry(m.id);
     const stored = (await recordOf(m.id))?.attributes as { expiresAt: number };
     expect(stored.expiresAt).toBeGreaterThan(m.expiresAt + 60_000);
-    expect(reg.getCollection(m.id)?.expiresAt).toBe(stored.expiresAt);
+    expect((await reg.getCollection(m.id))?.expiresAt).toBe(stored.expiresAt);
     // The record, not memory, is what a restart sees.
     const exp = await createCollectionPersistence(
       provider,
@@ -877,9 +894,580 @@ describe('session collections: ownership, sweep and expiry (Task 6)', () => {
     down = true;
     await expect(reg.refreshSessionExpiry(m2.id)).resolves.toBeUndefined();
     down = false;
-    expect(reg.getCollection(m2.id)?.expiresAt).toBe(m2.expiresAt);
+    expect((await reg.getCollection(m2.id))?.expiresAt).toBe(m2.expiresAt);
     expect((await recordOf(m2.id))?.attributes).toMatchObject({
       expiresAt: m2.expiresAt,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 7: restore at startup, retry, health
+// ---------------------------------------------------------------------------
+
+/** End the pool, restart PGlite on the same data, and open a new pool. */
+async function restartBackend(): Promise<void> {
+  await real.end();
+  await pgl.restart();
+  real = await createPgClient({
+    connectionString: pgl.url,
+    credential: pgl.credential,
+    collectionName: 'hub-collections',
+    poolMax: 4,
+  });
+  provider = newProvider();
+}
+
+/** A new process: a new registry over a new provider, restored. */
+async function restarted(fp = 'fp-test'): Promise<CollectionRegistry> {
+  await restartBackend();
+  const r = new CollectionRegistry({
+    embedder,
+    defaultBackend: 'pg-vector',
+    persistence: createCollectionPersistence(provider, fp),
+  });
+  await r.ready;
+  return r;
+}
+
+/** Let pending promise callbacks run until `cond` holds. */
+async function flush(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 1000 && !cond(); i++)
+    await new Promise((r) => setImmediate(r));
+  if (!cond()) throw new Error('condition not reached');
+}
+
+/** A rejection, or undefined when `p` resolves. */
+async function failureOf(p: Promise<unknown>): Promise<unknown> {
+  return p.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+}
+
+describe('restore at startup (Task 7)', () => {
+  beforeEach(() => {
+    mockCdsContext.user = { id: 'alice', is: () => false };
+  });
+
+  /** Every read the API offers on alice's collection, as JSON text. */
+  async function snapshot(id: string): Promise<Record<string, string>> {
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, reg);
+    const list = makeRes();
+    await findRoute(routes, 'GET', '/rag/collections').handler(
+      makeReq({}),
+      list.res,
+    );
+    const get = await runIdRoute(
+      routes,
+      'GET',
+      '/rag/collections/:id',
+      makeReq({ params: { id } }),
+    );
+    const docs = await runIdRoute(
+      routes,
+      'GET',
+      '/rag/collections/:id/documents',
+      makeReq({ params: { id }, path: '/documents' }),
+    );
+    const doc = await runIdRoute(
+      routes,
+      'GET',
+      '/rag/collections/:id/documents/:did',
+      makeReq({ params: { id, did: 'd1' }, path: '/documents/d1' }),
+    );
+    const query = await runIdRoute(
+      routes,
+      'POST',
+      '/rag/collections/:id/query',
+      makeReq({
+        method: 'POST',
+        params: { id },
+        path: '/query',
+        body: { text: 'kangaroo fence' },
+      }),
+    );
+    for (const r of [list, get, docs, doc, query]) expect(r._status).toBe(200);
+    const hits = (query._body as { results: { text: string }[] }).results;
+    return {
+      list: JSON.stringify(list._body),
+      get: JSON.stringify(get._body),
+      documents: JSON.stringify(docs._body),
+      document: JSON.stringify(doc._body),
+      query: JSON.stringify(hits.map((h) => h.text)),
+    };
+  }
+
+  it('create, then restart: list, get, export and query are byte-identical', async () => {
+    const meta = userMeta('notes', 'alice');
+    await reg.createCollection(meta);
+    await reg.addDocument(meta.id, {
+      id: 'd1',
+      text: 'kangaroo jumps over the fence',
+      metadata: { tag: 'animals', nested: { z: 1, a: [1, 2] }, b: true },
+    });
+    await reg.addDocumentsBulk(
+      meta.id,
+      [
+        {
+          id: 'c1',
+          text: 'quantum physics lecture',
+          metadata: { source: 'f.txt', uploadId: 'u1', chunkIndex: 0 },
+        },
+        {
+          id: 'c2',
+          text: 'second chunk',
+          metadata: { source: 'f.txt', uploadId: 'u1', chunkIndex: 1 },
+        },
+      ],
+      undefined,
+      { sleep: async () => {} },
+    );
+    await reg.updateDocument(meta.id, 'd1', { metadata: { reviewed: 'yes' } });
+    await reg.updateCollection(meta.id, {
+      displayName: 'My notes',
+      description: 'mine',
+    });
+    const session = {
+      id: 'scratch__s_aa11',
+      logicalId: 'scratch',
+      displayName: 'scratch',
+      description: '',
+      scope: 'session' as const,
+      owner: 'alice',
+      sessionId: 'sess-a',
+      expiresAt: Date.now() + 60_000,
+    };
+    await reg.createCollection(session);
+    await reg.setEnabled('alice', session.id, false);
+
+    const before = await snapshot(meta.id);
+    const sessionBefore = JSON.stringify(await reg.getCollection(session.id));
+
+    reg = await restarted();
+
+    expect(await snapshot(meta.id)).toEqual(before);
+    expect(JSON.stringify(await reg.getCollection(session.id))).toBe(
+      sessionBefore,
+    );
+    expect(reg.getEnabled('alice', session.id)).toBe(false);
+    // The payload bookkeeping never reaches the API.
+    const d1 = await reg.getDocument(meta.id, 'd1');
+    for (const k of [
+      'collectionId',
+      'docId',
+      'createdAt',
+      'namespace',
+      '_createdAtMs',
+      'id',
+    ])
+      expect(d1?.metadata).not.toHaveProperty(k);
+    // And the restored collection takes writes.
+    await reg.addDocument(meta.id, { id: 'd9', text: 'later', metadata: {} });
+    expect((await backendDoc(meta.id, 'd9'))?.text).toBe('later');
+  });
+
+  it("after a restore a user cannot reach another user's collection", async () => {
+    const a = userMeta('secret', 'alice');
+    await reg.createCollection(a);
+    await reg.addDocument(a.id, { id: 'd1', text: 'alice only', metadata: {} });
+    reg = await restarted();
+
+    mockCdsContext.user = { id: 'bob', is: () => false };
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, reg);
+    const list = makeRes();
+    await findRoute(routes, 'GET', '/rag/collections').handler(
+      makeReq({}),
+      list.res,
+    );
+    expect(list._status).toBe(200);
+    expect(list._body).toEqual({ collections: [] });
+    for (const id of [a.id, 'secret']) {
+      for (const [method, path, suffix] of [
+        ['GET', '/rag/collections/:id', '/'],
+        ['GET', '/rag/collections/:id/documents', '/documents'],
+        ['POST', '/rag/collections/:id/query', '/query'],
+      ] as const) {
+        const res = await runIdRoute(
+          routes,
+          method,
+          path,
+          makeReq({
+            method,
+            params: { id },
+            path: suffix,
+            body: { text: 'x' },
+          }),
+        );
+        expect(res._status).toBe(404);
+      }
+    }
+    expect(
+      await dispatchRagTool(reg, 'rag_correct', {
+        collection: 'secret',
+        id: 'd1',
+        newText: 'stolen',
+        reason: 'r',
+      }),
+    ).toMatchObject({ ok: false });
+    expect((await backendDoc(a.id, 'd1'))?.text).toBe('alice only');
+  });
+
+  it('a restored expired session collection is collected by the memory pass of the sweep', async () => {
+    const id = 'old__s_bb22';
+    await reg.createCollection({
+      id,
+      logicalId: 'old',
+      displayName: 'old',
+      description: '',
+      scope: 'session',
+      owner: 'alice',
+      sessionId: 'sess-old',
+      expiresAt: Date.now() - 1,
+    });
+    reg = await restarted();
+    expect(await reg.getCollection(id)).not.toBeNull();
+    const asked: string[] = [];
+    await reg.sweepExpiredSessions((_u, sid) => {
+      asked.push(sid);
+      return true;
+    });
+    // Asked once: by the memory pass; the catalog pass then had nothing left.
+    expect(asked).toEqual(['sess-old']);
+    expect(await reg.getCollection(id)).toBeNull();
+    expect(await recordOf(id)).toBeUndefined();
+  });
+
+  it('the catalog sweep deletes only expired records this hub wrote', async () => {
+    reg = await restarted();
+    // Written after this registry's restore: in the catalog, not in memory.
+    const expiredBob = {
+      id: 'x__s_bob1',
+      logicalId: 'x',
+      displayName: 'x',
+      description: '',
+      scope: 'session' as const,
+      owner: 'bob',
+      sessionId: 'sess-bob',
+      expiresAt: Date.now() - 1,
+      createdAt: new Date().toISOString(),
+      documentCount: 0,
+      sourceCount: 0,
+    };
+    const liveBob = {
+      ...expiredBob,
+      id: 'y__s_bob2',
+      logicalId: 'y',
+      sessionId: 'sess-bob2',
+      expiresAt: Date.now() + 60_000,
+    };
+    const other = createCollectionPersistence(provider, 'fp-test');
+    for (const m of [expiredBob, liveBob])
+      expect((await other.create(m, true)).ok).toBe(true);
+    const foreign = await provider.createCollection('foreign_expired', {
+      scope: 'session',
+      sessionId: 'sess-f',
+      collectionName: 'foreign',
+      attributes: {
+        writtenBy: 'another-tool',
+        source: 'session',
+        expiresAt: 1,
+        hubOwner: { userId: 'alice', sessionId: 'sess-f' },
+      },
+    });
+    expect(foreign.ok).toBe(true);
+
+    await reg.sweepExpiredSessions(() => true);
+    expect(await recordOf(expiredBob.id)).toBeUndefined();
+    expect(await recordOf(liveBob.id)).toBeDefined();
+    expect(
+      (await records()).some((r) => r.storeName === 'foreign_expired'),
+    ).toBe(true);
+  });
+
+  it('a foreign record is neither opened nor shown', async () => {
+    const mine = userMeta('mine', 'alice');
+    await reg.createCollection(mine);
+    const foreign = await provider.createCollection('foreign_store', {
+      scope: 'user',
+      userId: 'alice',
+      collectionName: 'foreign',
+      attributes: { writtenBy: 'another-tool' },
+    });
+    expect(foreign.ok).toBe(true);
+    // A hub-shaped record whose catalog owner is not its hubOwner.
+    const forged = userMeta('forged', 'alice');
+    const forgedRec = await provider.createCollection(storeNameFor(forged.id), {
+      scope: 'user',
+      userId: 'mallory',
+      collectionName: forged.id,
+      attributes: {
+        writtenBy: 'cloud-llm-hub',
+        collectionId: forged.id,
+        logicalId: 'forged',
+        embedder: 'fp-test',
+        hubOwner: { userId: 'alice' },
+      },
+    });
+    expect(forgedRec.ok).toBe(true);
+
+    await restartBackend();
+    const opened: string[] = [];
+    const open = provider.openCollection.bind(provider);
+    provider.openCollection = async (rec) => {
+      opened.push(rec.storeName);
+      return open(rec);
+    };
+    const r = newRegistry(provider);
+    await r.ready;
+    expect(opened).toEqual([storeNameFor(mine.id)]);
+    expect((await r.listCollections('alice')).map((c) => c.id)).toEqual([
+      mine.id,
+    ]);
+    expect(await r.listCollections('mallory')).toEqual([]);
+    expect(
+      (await records()).filter((x) =>
+        ['foreign_store', storeNameFor(forged.id)].includes(x.storeName),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('a fingerprint mismatch restores the collection as incompatible', async () => {
+    const meta = userMeta('old-embedder', 'alice');
+    await reg.createCollection(meta);
+    await reg.addDocument(meta.id, {
+      id: 'd1',
+      text: 'kangaroo jumps over the fence',
+      metadata: {},
+    });
+    reg = await restarted('fp-new');
+
+    const got = await reg.getCollection(meta.id);
+    expect(got).toMatchObject({ status: 'incompatible', documentCount: 1 });
+    expect(got?.statusError).toMatch(/fp-test/);
+    expect(got?.statusError).toMatch(/fp-new/);
+    // Listed, read and exported.
+    expect((await reg.listDocuments(meta.id))?.total).toBe(1);
+    expect((await reg.getDocument(meta.id, 'd1'))?.text).toBe(
+      'kangaroo jumps over the fence',
+    );
+    // Search and writes: an explicit 409 naming both fingerprints.
+    for (const p of [
+      reg.getRagStore(meta.id),
+      reg.addDocument(meta.id, { id: 'd2', text: 'x', metadata: {} }),
+      reg.updateDocument(meta.id, 'd1', { text: 'y' }),
+      reg.deleteDocument(meta.id, 'd1'),
+    ] as Promise<unknown>[]) {
+      const err = await failureOf(p);
+      expect(err).toBeInstanceOf(CollectionBackendError);
+      expect((err as CollectionBackendError).httpStatus).toBe(409);
+      expect((err as Error).message).toMatch(/fp-test.*fp-new/);
+    }
+    // The routes say so.
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, reg);
+    const list = makeRes();
+    await findRoute(routes, 'GET', '/rag/collections').handler(
+      makeReq({}),
+      list.res,
+    );
+    expect(
+      (list._body as { collections: { status?: string }[] }).collections[0],
+    ).toMatchObject({ status: 'incompatible' });
+    const query = await runIdRoute(
+      routes,
+      'POST',
+      '/rag/collections/:id/query',
+      makeReq({
+        method: 'POST',
+        params: { id: meta.id },
+        path: '/query',
+        body: { text: 'kangaroo' },
+      }),
+    );
+    expect(query._status).toBe(409);
+    // Renaming and disabling keep the record's fingerprint: still incompatible.
+    await reg.updateCollection(meta.id, { displayName: 'Renamed' });
+    await reg.setEnabled('alice', meta.id, false);
+    expect((await recordOf(meta.id))?.attributes).toMatchObject({
+      displayName: 'Renamed',
+      enabled: false,
+      embedder: 'fp-test',
+    });
+    // It can still be deleted.
+    expect(await reg.deleteCollection(meta.id)).toBe(true);
+    expect(await recordOf(meta.id)).toBeUndefined();
+  });
+
+  it('one collection that cannot be opened is unavailable; the others work', async () => {
+    const good = userMeta('good', 'alice');
+    const bad = userMeta('bad', 'alice');
+    await reg.createCollection(good);
+    await reg.createCollection(bad);
+    await reg.addDocument(good.id, { id: 'd1', text: 'fine', metadata: {} });
+    await reg.addDocument(bad.id, { id: 'd1', text: 'lost', metadata: {} });
+
+    await restartBackend();
+    const open = provider.openCollection.bind(provider);
+    provider.openCollection = async (rec) =>
+      rec.storeName === storeNameFor(bad.id)
+        ? { ok: false, error: new RagError('store is gone', 'RAG_OPEN_ERROR') }
+        : open(rec);
+    reg = newRegistry(provider);
+    await reg.ready;
+
+    expect((await reg.getDocument(good.id, 'd1'))?.text).toBe('fine');
+    expect(await search(await reg.getRagStore(good.id), 'fine')).toEqual([
+      'fine',
+    ]);
+    const meta = await reg.getCollection(bad.id);
+    expect(meta).toMatchObject({ status: 'unavailable' });
+    expect(meta?.statusError).toMatch(/store is gone/);
+    for (const p of [
+      reg.listDocuments(bad.id),
+      reg.getDocument(bad.id, 'd1'),
+      reg.getRagStore(bad.id),
+      reg.addDocument(bad.id, { id: 'd2', text: 'x', metadata: {} }),
+    ] as Promise<unknown>[]) {
+      const err = await failureOf(p);
+      expect(err).toBeInstanceOf(CollectionBackendError);
+      expect((err as CollectionBackendError).httpStatus).toBe(503);
+      expect((err as Error).message).toMatch(/store is gone/);
+    }
+    // The chat leaves it out instead of failing the turn.
+    expect(Object.keys(await reg.getRagStores([good.id, bad.id]))).toEqual([
+      good.id,
+    ]);
+  });
+
+  it('an unreachable backend at boot: 503 and explicit errors, then the retry restores and health is 200', async () => {
+    const meta = userMeta('durable', 'alice');
+    await reg.createCollection(meta);
+    await reg.addDocument(meta.id, {
+      id: 'd1',
+      text: 'survives',
+      metadata: {},
+    });
+
+    // The process starts while the database is down.
+    await real.end();
+    await pgl.suspend();
+    real = await createPgClient({
+      connectionString: pgl.url,
+      credential: pgl.credential,
+      collectionName: 'hub-collections',
+      poolMax: 4,
+    });
+    provider = newProvider();
+    reg = newRegistry(provider);
+    expect(restoreHealth(reg.restoreStatus()).status).toBe(503);
+
+    const delays: number[] = [];
+    let next: (() => void) | undefined;
+    const logged: string[] = [];
+    const restored = retryRestore(() => reg.restore(), {
+      schedule: (run, ms) => {
+        delays.push(ms);
+        next = run;
+      },
+      log: {
+        info: (m: string) => logged.push(m),
+        warn: (m: string) => logged.push(m),
+      },
+    });
+    await expect(reg.ready).rejects.toThrow(/collections unavailable/);
+    await flush(() => delays.length === 1);
+    expect(delays).toEqual([30_000]);
+    expect(reg.restoreStatus().state).toBe('failed');
+    const h = restoreHealth(reg.restoreStatus());
+    expect(h.status).toBe(503);
+    expect(JSON.stringify(h.body)).toMatch(/ECONNREFUSED/);
+
+    // Persistent operations are refused explicitly meanwhile: 503 with the cause.
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, reg);
+    const list = makeRes();
+    await findRoute(routes, 'GET', '/rag/collections').handler(
+      makeReq({}),
+      list.res,
+    );
+    expect(list._status).toBe(503);
+    expect(JSON.stringify(list._body)).toMatch(/collections unavailable/);
+    const create = makeRes();
+    await findRoute(routes, 'POST', '/rag/collections').handler(
+      makeReq({ body: { id: 'n2', displayName: 'n2' } }),
+      create.res,
+    );
+    expect(create._status).toBe(503);
+    const get = await runIdRoute(
+      routes,
+      'GET',
+      '/rag/collections/:id',
+      makeReq({ params: { id: meta.id } }),
+    );
+    expect(get._status).toBe(503);
+
+    // A second failed attempt doubles the delay.
+    next?.();
+    await flush(() => delays.length === 2);
+    expect(delays).toEqual([30_000, 60_000]);
+
+    // The database comes back; the next attempt restores.
+    await pgl.resume();
+    next?.();
+    await restored;
+    expect(reg.restoreStatus().state).toBe('ready');
+    expect(restoreHealth(reg.restoreStatus())).toMatchObject({ status: 200 });
+    expect((await reg.getDocument(meta.id, 'd1'))?.text).toBe('survives');
+    expect(
+      logged.filter((m) => /attempt/i.test(m)).length,
+    ).toBeGreaterThanOrEqual(3);
+    const again = makeRes();
+    await findRoute(routes, 'GET', '/rag/collections').handler(
+      makeReq({}),
+      again.res,
+    );
+    expect(again._status).toBe(200);
+  });
+});
+
+describe('retryRestore backoff', () => {
+  it('30 s, doubling, capped at 5 min; each attempt logged', async () => {
+    const delays: number[] = [];
+    let next: (() => void) | undefined;
+    let fails = 6;
+    const logged: string[] = [];
+    const done = retryRestore(
+      async () => {
+        if (fails-- > 0) throw new Error('down');
+      },
+      {
+        schedule: (run, ms) => {
+          delays.push(ms);
+          next = run;
+        },
+        log: {
+          info: (m: string) => logged.push(m),
+          warn: (m: string) => logged.push(m),
+        },
+      },
+    );
+    for (let i = 1; i <= 6; i++) {
+      await flush(() => delays.length === i);
+      next?.();
+    }
+    await done;
+    expect(delays).toEqual([
+      30_000, 60_000, 120_000, 240_000, 300_000, 300_000,
+    ]);
+    // Each attempt is logged when it starts, and again with its outcome.
+    expect(
+      logged.filter((m) => /^Collection restore attempt \d+$/.test(m)),
+    ).toHaveLength(7);
+    expect(
+      logged.filter((m) => /failed; next attempt in/.test(m)),
+    ).toHaveLength(6);
   });
 });

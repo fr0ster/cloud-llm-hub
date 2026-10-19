@@ -176,7 +176,7 @@ describe('the retention cap on the RAG routes', () => {
       },
     });
     expect(
-      registry.getCollection(sessionCollectionId('notes', 'bob', 'B')),
+      await registry.getCollection(sessionCollectionId('notes', 'bob', 'B')),
     ).toBeNull();
     running.release();
   });
@@ -189,12 +189,12 @@ describe('the retention cap on the RAG routes', () => {
       text: 'hello',
       metadata: {},
     });
-    const store = registry.getRagStore(physId) as InMemoryRag | null;
+    const store = (await registry.getRagStore(physId)) as InMemoryRag | null;
     expect(await storeHolds(store, physId, 'd1')).toBe(true);
 
     expect((await createSessionCollection('bob', 'B'))._status).toBe(201);
 
-    expect(registry.getCollection(physId)).toBeNull();
+    expect(await registry.getCollection(physId)).toBeNull();
     expect(await storeHolds(store, physId, 'd1')).toBe(false);
     expect(collectionRemovalFailureCount()).toBe(0);
   });
@@ -219,7 +219,7 @@ describe('a removal whose backend does not clear', () => {
     await new Promise((r) => setImmediate(r));
 
     expect(gatekeeper.sessionIsLive('alice', 'A')).toBe(false);
-    expect(registry.getCollection(physId)).toBeNull();
+    expect(await registry.getCollection(physId)).toBeNull();
     expect(gatekeeper.theRetention().snapshot()).toMatchObject({
       retained: 0,
       closing: 0,
@@ -330,7 +330,7 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
 
     // Carol needs a place. Bob's idle session is evicted, not Alice's.
     expect((await createSessionCollection('carol', 'C'))._status).toBe(201);
-    expect(registry.getCollection(bobPhys)).toBeNull();
+    expect(await registry.getCollection(bobPhys)).toBeNull();
 
     // With every place held by something working, nothing is evicted: refused.
     const holdCarol = gatekeeper.leaseSession(
@@ -344,7 +344,7 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
 
     open();
     await running;
-    expect(registry.getCollection(physId)).not.toBeNull();
+    expect(await registry.getCollection(physId)).not.toBeNull();
     await gatekeeper.deleteSession('carol', 'C');
   });
 
@@ -378,14 +378,14 @@ describe.each(OPERATIONS)('while $name is in flight', ({ start }) => {
     );
 
     // The collection is still there while the operation runs against it.
-    expect(registry.getCollection(physId)).not.toBeNull();
+    expect(await registry.getCollection(physId)).not.toBeNull();
     open();
     await running;
     await removal;
 
     // The assertion that matters is made after the operation has finished: a
     // cleanup racing it passes every check made before.
-    expect(registry.getCollection(physId)).toBeNull();
+    expect(await registry.getCollection(physId)).toBeNull();
   });
 });
 
@@ -399,17 +399,17 @@ describe('the TTL sweep', () => {
       text: 'hello',
       metadata: {},
     });
-    const store = registry.getRagStore(physId) as InMemoryRag | null;
+    const store = (await registry.getRagStore(physId)) as InMemoryRag | null;
     storedCollection(physId).meta.expiresAt = Date.now() - 1;
 
     const held = gatekeeper.leaseSession('alice', 'A', 'rag');
     expect(isRefusal(held)).toBe(false);
     registry.sweepExpiredSessions(gatekeeper.maySweepSession);
-    expect(registry.getCollection(physId)).not.toBeNull();
+    expect(await registry.getCollection(physId)).not.toBeNull();
 
     (held as Lease).release();
     registry.sweepExpiredSessions(gatekeeper.maySweepSession);
-    expect(registry.getCollection(physId)).toBeNull();
+    expect(await registry.getCollection(physId)).toBeNull();
     expect(await storeHolds(store, physId, 'd1')).toBe(false);
   });
 });
@@ -442,7 +442,7 @@ describe('a retired cookie', () => {
     expect(set['Set-Cookie']).toContain(`clh_session=${req.sessionId}`);
 
     const list = makeRes();
-    findRoute(routes, 'GET', '/rag/collections').handler(
+    await findRoute(routes, 'GET', '/rag/collections').handler(
       makeReq({
         method: 'GET',
         headers: { cookie: `clh_session=${req.sessionId}` },
@@ -478,7 +478,7 @@ describe('a request that outlived its session', () => {
     );
     expect(res._status).toBe(410);
     expect(
-      registry.getCollection(sessionCollectionId('late', 'alice', 'A')),
+      await registry.getCollection(sessionCollectionId('late', 'alice', 'A')),
     ).toBeNull();
     expect(gatekeeper.theRetention().snapshot().retained).toBe(0);
   });

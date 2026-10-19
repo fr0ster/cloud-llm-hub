@@ -55,6 +55,11 @@ jest.mock('../../srv/agent-manager', () => ({
   getCollectionRegistry: () => ({
     sweepExpiredSessions: () => {},
   }),
+  startCollectionRestore: () => {
+    order.push('startCollectionRestore');
+    return Promise.resolve();
+  },
+  collectionsRestoreStatus: () => ({ state: 'off' }),
 }));
 jest.mock('../../srv/agent-mcp', () => ({}));
 jest.mock('../../srv/anthropic-handler', () => ({}));
@@ -264,6 +269,7 @@ describe("server.ts's served listener", () => {
       'startProviders',
       'initProviders',
       'registerRagRoutes',
+      'startCollectionRestore',
       'initSmartAgents',
     ]);
     expect(exits).toEqual([]);

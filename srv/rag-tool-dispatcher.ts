@@ -122,7 +122,7 @@ export async function dispatchRagTool(
         const sid = sessionId();
         let physical: string | undefined;
         try {
-          physical = resolveByName(
+          physical = await resolveByName(
             registry,
             args.collection as string,
             userId(),
@@ -139,7 +139,7 @@ export async function dispatchRagTool(
           };
         }
         // Auto-create the collection if it does not exist yet.
-        if (!registry.getCollection(physical)) {
+        if (!(await registry.getCollection(physical))) {
           const isSession = !!sid && physical.includes('__s_');
           await registry.createCollection({
             id: physical,
@@ -159,7 +159,10 @@ export async function dispatchRagTool(
         const requestedId = (args.id as string | undefined)?.trim();
         const id = requestedId || randomUUID();
         if (requestedId) {
-          const existing = registry.findActiveByCanonicalKey(physical, id);
+          const existing = await registry.findActiveByCanonicalKey(
+            physical,
+            id,
+          );
           if (existing) {
             return {
               ok: false,
@@ -179,7 +182,7 @@ export async function dispatchRagTool(
         return { ok: true, id };
       }
       case 'rag_correct': {
-        const physical = resolveByName(
+        const physical = await resolveByName(
           registry,
           args.collection as string,
           userId(),
@@ -193,7 +196,7 @@ export async function dispatchRagTool(
           };
         }
         const id = args.id as string;
-        const active = registry.findActiveByCanonicalKey(physical, id);
+        const active = await registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
           return {
             ok: false,
@@ -220,7 +223,7 @@ export async function dispatchRagTool(
         return { ok: true, id };
       }
       case 'rag_deprecate': {
-        const physical = resolveByName(
+        const physical = await resolveByName(
           registry,
           args.collection as string,
           userId(),
@@ -234,7 +237,7 @@ export async function dispatchRagTool(
           };
         }
         const id = args.id as string;
-        const active = registry.findActiveByCanonicalKey(physical, id);
+        const active = await registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
           return {
             ok: false,

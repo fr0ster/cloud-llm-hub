@@ -9,7 +9,9 @@
  * The registry lives in this process: nothing is written to disk, and a
  * collection's data lives in its RAG backend. With a persistent backend
  * configured, user and session collections are also recorded in that
- * provider's catalog (lib/collection-persistence); presets never are.
+ * provider's catalog (lib/collection-persistence); presets never are. Those
+ * are read back from the catalog at startup (see `ready`), and every method
+ * touching one waits for that restore.
  *
  * Collections are wired into SmartAgent as additional RAG stores.
  */
@@ -26,16 +28,24 @@ import {
   type IRagBackendWriter,
   type IRagEditor,
   type IRetrievalEmbedder,
-  type RagError,
+  RagError,
   type Result,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import {
   addPersistentDocument,
+  COLLECTION_INCOMPATIBLE,
+  COLLECTION_UNAVAILABLE,
+  COLLECTIONS_UNAVAILABLE,
   type CollectionPersistence,
+  type CollectionStatus,
+  CollectionStatusError,
+  canonicalCollectionMeta,
   deletePersistentDocument,
   storeNameFor as persistentStoreName,
+  type RestoreOutcome,
+  type RestoreStatus,
   unwrap,
   updatePersistentDocument,
 } from './lib/collection-persistence';
@@ -141,6 +151,13 @@ export interface CollectionMeta {
   documentCount: number;
   /** Number of logical source documents — chunks of the same file count once. */
   sourceCount: number;
+  /**
+   * Set only on a persistent collection restored degraded; see
+   * CollectionStatus. Absent: the collection works in full.
+   */
+  status?: CollectionStatus;
+  /** Why, when `status` is set (names both fingerprints, or the cause). */
+  statusError?: string;
 }
 
 export interface RagDocument {
@@ -395,6 +412,38 @@ class RecencyBoostedRag implements IRag, IRagEditor {
   }
 }
 
+/**
+ * The order a persistent collection lists its documents in: by createdAt,
+ * then id. A backend scan returns them in its own order (by id), so insertion
+ * order would not survive a restart; this one does.
+ */
+function persistentOrder(docs: Iterable<RagDocument>): RagDocument[] {
+  return [...docs].sort((a, b) =>
+    a.createdAt === b.createdAt
+      ? a.id < b.id
+        ? -1
+        : a.id > b.id
+          ? 1
+          : 0
+      : a.createdAt < b.createdAt
+        ? -1
+        : 1,
+  );
+}
+
+/**
+ * The store of a collection restored `unavailable`: its open failed, so every
+ * call fails with that cause. The registry refuses those collections' document
+ * operations before reaching it; this only keeps the entry's shape.
+ */
+function unavailableRag(reason: string): IRag {
+  const fail = async () => ({
+    ok: false as const,
+    error: new RagError(reason, COLLECTION_UNAVAILABLE),
+  });
+  return { query: fail, getById: fail, healthCheck: fail };
+}
+
 // ---------------------------------------------------------------------------
 // CollectionRegistry
 // ---------------------------------------------------------------------------
@@ -433,6 +482,12 @@ export class CollectionRegistry {
   private persistence?: CollectionPersistence;
   /** Ids whose record is being deleted with no memory entry (catalog sweep). */
   private releasing = new Set<string>();
+  /** Where the restore of persistent collections stands; see `ready`. */
+  private restoreState: RestoreStatus['state'];
+  /** The cause of the last failed restore attempt. */
+  private restoreError?: string;
+  /** The restore attempt in flight, if any. */
+  private restoreAttempt?: Promise<void>;
 
   constructor(opts?: {
     embedder?: IRetrievalEmbedder | null;
@@ -451,6 +506,180 @@ export class CollectionRegistry {
     this.defaultBackend =
       opts?.defaultBackend ?? (opts?.embedder ? 'vector' : 'in-memory');
     this.persistence = opts?.persistence;
+    this.restoreState = this.persistence ? 'pending' : 'off';
+  }
+
+  // -------------------------------------------------------------------------
+  // Restore of persistent collections (spec §2.3, §6)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Settles once the persistent collections are restored into memory: at once
+   * when nothing persists; rejects with a 503 CollectionStatusError
+   * ("collections unavailable: <cause>") when the restore attempt fails.
+   *
+   * Taking it starts the restore if nothing has (the server starts it through
+   * `retryRestore`, which also retries). Every registry method that touches a
+   * persistent collection awaits it itself: while it is pending a call waits,
+   * once it has failed a call is refused with that error until a retry
+   * succeeds. Presets stay usable meanwhile.
+   */
+  get ready(): Promise<void> {
+    return this.whenReady();
+  }
+
+  /** Where the restore stands, for /health. */
+  restoreStatus(): RestoreStatus {
+    return {
+      state: this.restoreState,
+      ...(this.restoreError ? { error: this.restoreError } : {}),
+    };
+  }
+
+  /**
+   * One restore attempt; concurrent calls share it, and a restored registry
+   * resolves at once. Rejects with the 503 CollectionStatusError on failure.
+   */
+  restore(): Promise<void> {
+    const persistence = this.persistence;
+    if (!persistence || this.restoreState === 'ready') return Promise.resolve();
+    if (this.restoreAttempt) return this.restoreAttempt;
+    this.restoreState = 'restoring';
+    const attempt = this.runRestore(persistence).finally(() => {
+      this.restoreAttempt = undefined;
+    });
+    this.restoreAttempt = attempt;
+    return attempt;
+  }
+
+  private async runRestore(persistence: CollectionPersistence): Promise<void> {
+    let result: Awaited<ReturnType<CollectionPersistence['restore']>>;
+    try {
+      result = await persistence.restore();
+    } catch (err) {
+      result = {
+        ok: false,
+        error: new RagError(
+          err instanceof Error ? err.message : String(err),
+          'RAG_BACKEND_ERROR',
+        ),
+      };
+    }
+    if (!result.ok) {
+      this.restoreState = 'failed';
+      this.restoreError = result.error.message;
+      throw this.unavailable();
+    }
+    this.install(result.value);
+    this.restoreState = 'ready';
+    this.restoreError = undefined;
+  }
+
+  /** Put what a restore read back into memory, in one synchronous step. */
+  private install(outcome: RestoreOutcome): void {
+    for (const store of outcome.foreign)
+      this.log.info('Foreign collection record left alone', { store });
+    for (const r of outcome.rejected)
+      this.log.warn('Unreadable collection record left alone', r);
+    let degraded = 0;
+    for (const c of outcome.collections) {
+      if (this.collections.has(c.meta.id)) {
+        this.log.warn('Restored collection already in memory; kept', {
+          id: c.meta.id,
+        });
+        continue;
+      }
+      const documents = new Map(
+        persistentOrder(c.documents).map((d) => [d.id, d]),
+      );
+      const meta = canonicalCollectionMeta({
+        ...c.meta,
+        backend: this.defaultBackend,
+        documentCount: documents.size,
+        ...(c.status ? { status: c.status, statusError: c.error } : {}),
+      });
+      const stored: StoredCollection = {
+        meta,
+        store: persistentStoreName(meta.id),
+        persistent: true,
+        documents,
+        rag: new RecencyBoostedRag(c.rag ?? unavailableRag(c.error ?? '')),
+      };
+      stored.meta.sourceCount = countSources(stored);
+      this.collections.set(meta.id, stored);
+      this.putEnabled(meta.owner ?? '', meta.id, c.enabled);
+      if (c.status) {
+        degraded++;
+        this.log.warn('Collection restored degraded', {
+          id: meta.id,
+          status: c.status,
+          error: c.error,
+        });
+      }
+    }
+    this.log.info('Persistent collections restored', {
+      collections: outcome.collections.length,
+      degraded,
+      foreign: outcome.foreign.length,
+      rejected: outcome.rejected.length,
+    });
+  }
+
+  /** The error every persistent operation gets while nothing is restored. */
+  private unavailable(): CollectionStatusError {
+    return new CollectionStatusError(
+      'restore collections',
+      new RagError(
+        `collections unavailable: ${this.restoreError ?? 'not restored yet'}`,
+        COLLECTIONS_UNAVAILABLE,
+      ),
+    );
+  }
+
+  private async whenReady(): Promise<void> {
+    if (!this.persistence || this.restoreState === 'ready') return;
+    if (this.restoreState === 'failed' && !this.restoreAttempt)
+      throw this.unavailable();
+    await this.restore();
+  }
+
+  /**
+   * Wait for the restore before touching `id` — or, with no id, any collection.
+   * A collection held only in this process (a preset) needs no restore. A no-op
+   * when nothing persists.
+   */
+  private async settled(id?: string): Promise<void> {
+    if (!this.persistence) return;
+    if (id !== undefined) {
+      const stored = this.collections.get(id);
+      if (stored && !stored.persistent) return;
+    }
+    await this.whenReady();
+  }
+
+  /**
+   * Refuse an operation a degraded collection cannot serve: everything on
+   * documents of an `unavailable` one (503), search and document writes on an
+   * `incompatible` one (409, naming both fingerprints).
+   */
+  private refuseDegraded(
+    stored: StoredCollection,
+    operation: string,
+    kind: 'read' | 'search' | 'write',
+  ): void {
+    const status = stored.meta.status;
+    if (!status) return;
+    if (status === 'incompatible' && kind === 'read') return;
+    throw new CollectionStatusError(
+      operation,
+      new RagError(
+        stored.meta.statusError ??
+          `collection "${stored.meta.id}" is ${status}`,
+        status === 'incompatible'
+          ? COLLECTION_INCOMPATIBLE
+          : COLLECTION_UNAVAILABLE,
+      ),
+    );
   }
 
   /** The persistent backend kind, when collections persist; otherwise undefined. */
@@ -505,7 +734,8 @@ export class CollectionRegistry {
   // Collection CRUD
   // -------------------------------------------------------------------------
 
-  listCollections(userId?: string): CollectionMeta[] {
+  async listCollections(userId?: string): Promise<CollectionMeta[]> {
+    await this.settled();
     const result: CollectionMeta[] = [];
     for (const stored of this.collections.values()) {
       if (stored.meta.owner === userId) {
@@ -519,7 +749,8 @@ export class CollectionRegistry {
     return result;
   }
 
-  getCollection(id: string): CollectionMeta | null {
+  async getCollection(id: string): Promise<CollectionMeta | null> {
+    await this.settled(id);
     const stored = this.collections.get(id);
     if (!stored) return null;
     return {
@@ -538,6 +769,8 @@ export class CollectionRegistry {
   async createCollection(
     meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
   ): Promise<CollectionMeta> {
+    // A persistent one may already be in the catalog: restore first.
+    if (this.persistence && !meta.preset) await this.whenReady();
     if (this.collections.has(meta.id)) {
       throw new Error(`Collection "${meta.id}" already exists`);
     }
@@ -580,15 +813,17 @@ export class CollectionRegistry {
       await persistence.create(full, true),
       'create collection',
     );
-    this.collections.set(full.id, {
-      meta: full,
-      store: persistentStoreName(full.id),
+    // One field order, the one a restore produces: see canonicalCollectionMeta.
+    const meta = canonicalCollectionMeta(full);
+    this.collections.set(meta.id, {
+      meta,
+      store: persistentStoreName(meta.id),
       persistent: true,
       documents: new Map(),
       rag: new RecencyBoostedRag(handles.rag),
     });
-    this.log.info('Collection created', { id: full.id, scope: full.scope });
-    return full;
+    this.log.info('Collection created', { id: meta.id, scope: meta.scope });
+    return meta;
   }
 
   /** The enabled flag a persistent record holds: its owner's. */
@@ -600,6 +835,7 @@ export class CollectionRegistry {
     id: string,
     update: Partial<Pick<CollectionMeta, 'displayName' | 'description'>>,
   ): Promise<CollectionMeta | null> {
+    if (this.persistence) await this.settled(id);
     const stored = this.collections.get(id);
     if (!stored) return null;
     const apply = (m: CollectionMeta) => {
@@ -717,6 +953,7 @@ export class CollectionRegistry {
    * while the deletion is out).
    */
   async deleteCollection(id: string): Promise<boolean> {
+    if (this.persistence) await this.settled(id);
     const stored = this.collections.get(id);
     if (stored?.persistent && this.persistence) {
       stored.deleting = true;
@@ -749,6 +986,7 @@ export class CollectionRegistry {
     physicalId: string,
     enabled: boolean,
   ): Promise<void> {
+    if (this.persistence) await this.settled(physicalId);
     const stored = this.collections.get(physicalId);
     if (stored?.persistent && this.persistence) {
       unwrap(
@@ -786,6 +1024,13 @@ export class CollectionRegistry {
    * the next call tries again. Never rejects.
    */
   async refreshSessionExpiry(physicalId: string): Promise<void> {
+    if (this.persistence) {
+      try {
+        await this.settled(physicalId);
+      } catch {
+        return; // Not restored: no collection to refresh; the caller goes on.
+      }
+    }
     const stored = this.collections.get(physicalId);
     if (stored?.meta.scope !== 'session') return;
     const expiresAt = Date.now() + SESSION_TTL_MS;
@@ -831,14 +1076,40 @@ export class CollectionRegistry {
    * With persistence on, a second pass reads the catalog for expired session
    * records that memory does not hold and deletes those, asking `maySweep` in
    * the same step that starts each delete. That is how a failed delete is
-   * retried by the next sweep. Task 7's restore needs no special case: it
-   * loads expired records into memory like any other, and the memory pass
-   * above collects them.
+   * retried by the next sweep. The restore needs no special case: it loads
+   * expired records into memory like any other, and the memory pass above
+   * collects them.
+   *
+   * With persistence on, both passes wait for the restore; while it has
+   * failed the sweep does nothing (logged) and the next one tries again.
+   * Without persistence the memory pass runs within this call, as it always
+   * did.
    */
   sweepExpiredSessions(
     maySweep: (userId: string, sessionId: string) => boolean = () => true,
   ): Promise<void> {
-    const now = Date.now();
+    if (!this.persistence) return this.sweepMemory(Date.now(), maySweep);
+    const persistence = this.persistence;
+    return this.whenReady().then(
+      () => {
+        const now = Date.now();
+        return this.sweepMemory(now, maySweep).then(() =>
+          this.sweepExpiredRecords(persistence, now, maySweep),
+        );
+      },
+      (err: unknown) => {
+        this.log.warn('Session collection sweep skipped', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      },
+    );
+  }
+
+  /** The memory pass of sweepExpiredSessions. Never rejects. */
+  private sweepMemory(
+    now: number,
+    maySweep: (userId: string, sessionId: string) => boolean,
+  ): Promise<void> {
     const released: Promise<void>[] = [];
     for (const [id, stored] of [...this.collections]) {
       if (
@@ -850,12 +1121,7 @@ export class CollectionRegistry {
         if (r) released.push(r);
       }
     }
-    const first = Promise.all(released).then(() => undefined);
-    const persistence = this.persistence;
-    if (!persistence) return first;
-    return first.then(() =>
-      this.sweepExpiredRecords(persistence, now, maySweep),
-    );
+    return Promise.all(released).then(() => undefined);
   }
 
   /** The catalog pass of sweepExpiredSessions. Never rejects. */
@@ -945,13 +1211,17 @@ export class CollectionRegistry {
   // Document CRUD
   // -------------------------------------------------------------------------
 
-  listDocuments(
+  async listDocuments(
     collectionId: string,
     opts?: { offset?: number; limit?: number },
-  ): { documents: RagDocument[]; total: number } | null {
+  ): Promise<{ documents: RagDocument[]; total: number } | null> {
+    await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
-    const all = Array.from(stored.documents.values());
+    this.refuseDegraded(stored, 'list documents', 'read');
+    const all = stored.persistent
+      ? persistentOrder(stored.documents.values())
+      : Array.from(stored.documents.values());
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
     return {
@@ -960,8 +1230,15 @@ export class CollectionRegistry {
     };
   }
 
-  getDocument(collectionId: string, docId: string): RagDocument | null {
-    return this.collections.get(collectionId)?.documents.get(docId) ?? null;
+  async getDocument(
+    collectionId: string,
+    docId: string,
+  ): Promise<RagDocument | null> {
+    await this.settled(collectionId);
+    const stored = this.collections.get(collectionId);
+    if (!stored) return null;
+    this.refuseDegraded(stored, 'get document', 'read');
+    return stored.documents.get(docId) ?? null;
   }
 
   /**
@@ -970,12 +1247,14 @@ export class CollectionRegistry {
    * Returns null when no match; throws when more than one active match exists
    * (an invariant violation that callers should surface, not silently pick one).
    */
-  findActiveByCanonicalKey(
+  async findActiveByCanonicalKey(
     collectionId: string,
     canonicalKey: string,
-  ): RagDocument | null {
+  ): Promise<RagDocument | null> {
+    await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
+    this.refuseDegraded(stored, 'find document', 'read');
     const matches: RagDocument[] = [];
     for (const doc of stored.documents.values()) {
       if (doc.metadata?.canonicalKey !== canonicalKey) continue;
@@ -1007,8 +1286,10 @@ export class CollectionRegistry {
       persistOnFail?: boolean;
     },
   ): Promise<RagDocument> {
+    if (this.persistence) await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
+    this.refuseDegraded(stored, 'add document', 'write');
     // Backend first, memory only on success; see addPersistentDocument.
     if (stored.persistent) return addPersistentDocument(stored, doc, namespace);
 
@@ -1074,6 +1355,13 @@ export class CollectionRegistry {
       signal?: AbortSignal;
     },
   ): Promise<{ added: number; errors: string[] }> {
+    // A collection that cannot take writes refuses the whole call, explicitly,
+    // instead of one error per document.
+    if (this.persistence) {
+      await this.settled(collectionId);
+      const stored = this.collections.get(collectionId);
+      if (stored) this.refuseDegraded(stored, 'add documents', 'write');
+    }
     const errors: string[] = [];
     let added = 0;
     const budgetMs = options?.budgetMs ?? RETRY_BUDGET_MS;
@@ -1126,8 +1414,10 @@ export class CollectionRegistry {
     update: { text?: string; metadata?: Record<string, unknown> },
     namespace?: string,
   ): Promise<RagDocument | null> {
+    if (this.persistence) await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
+    this.refuseDegraded(stored, 'update document', 'write');
     const existing = stored.documents.get(docId);
     if (!existing) return null;
     if (stored.persistent)
@@ -1148,8 +1438,10 @@ export class CollectionRegistry {
   }
 
   async deleteDocument(collectionId: string, docId: string): Promise<boolean> {
+    if (this.persistence) await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
+    this.refuseDegraded(stored, 'delete document', 'write');
     if (stored.persistent) return deletePersistentDocument(stored, docId);
     const deleted = stored.documents.delete(docId);
     if (deleted) {
@@ -1173,17 +1465,38 @@ export class CollectionRegistry {
   // Query
   // -------------------------------------------------------------------------
 
-  /** Get IRag store for a collection (used by SmartAgent integration) */
-  getRagStore(collectionId: string): IRag | null {
-    return this.collections.get(collectionId)?.rag ?? null;
+  /**
+   * Get IRag store for a collection, to search it. A degraded one is refused:
+   * a CollectionStatusError, 409 for `incompatible`, 503 for `unavailable`.
+   */
+  async getRagStore(collectionId: string): Promise<IRag | null> {
+    await this.settled(collectionId);
+    const stored = this.collections.get(collectionId);
+    if (!stored) return null;
+    this.refuseDegraded(stored, 'search', 'search');
+    return stored.rag;
   }
 
-  /** Get all RAG stores for given collection IDs (for injecting into SmartAgent) */
-  getRagStores(collectionIds: string[]): Record<string, IRag> {
+  /**
+   * Get all RAG stores for given collection IDs (for injecting into
+   * SmartAgent). A degraded collection is left out, with a warning, so one
+   * collection does not fail the whole chat turn.
+   */
+  async getRagStores(collectionIds: string[]): Promise<Record<string, IRag>> {
     const stores: Record<string, IRag> = {};
     for (const id of collectionIds) {
-      const rag = this.getRagStore(id);
-      if (rag) stores[id] = rag;
+      await this.settled(id);
+      const stored = this.collections.get(id);
+      if (!stored) continue;
+      if (stored.meta.status) {
+        this.log.warn('Degraded collection left out of the search', {
+          id,
+          status: stored.meta.status,
+          error: stored.meta.statusError,
+        });
+        continue;
+      }
+      stores[id] = stored.rag;
     }
     return stores;
   }

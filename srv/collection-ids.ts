@@ -54,14 +54,21 @@ export function isPhysicalId(id: string): boolean {
   return id.includes('__');
 }
 
-/** Minimal shape the resolvers need from the registry. */
+/** What the resolvers read of a collection. */
+type LookedUp = {
+  id: string;
+  owner?: string;
+  scope?: 'user' | 'session';
+  sessionId?: string;
+} | null;
+
+/**
+ * Minimal shape the resolvers need from the registry. The registry's lookup is
+ * async (it waits for the restore of persistent collections); a plain value
+ * serves too.
+ */
 export interface CollectionLookup {
-  getCollection(id: string): {
-    id: string;
-    owner?: string;
-    scope?: 'user' | 'session';
-    sessionId?: string;
-  } | null;
+  getCollection(id: string): LookedUp | Promise<LookedUp>;
 }
 
 /**
@@ -70,13 +77,13 @@ export interface CollectionLookup {
  * - write (forWrite=true): the caller's private (create-if-absent).
  * Never returns another user's collection. Rejects names containing `__`.
  */
-export function resolveByName(
+export async function resolveByName(
   reg: CollectionLookup,
   name: string,
   userId: string,
   sessionId: string | undefined,
   forWrite: boolean,
-): string | undefined {
+): Promise<string | undefined> {
   // No anonymous-owned collections (spec non-goal): an unauthenticated caller has
   // no private namespace, so they can neither create nor reach one by name.
   if (!userId || userId === 'anonymous') return undefined;
@@ -85,9 +92,9 @@ export function resolveByName(
   const sp = sessionId
     ? sessionCollectionId(logical, userId, sessionId)
     : undefined;
-  if (sp && reg.getCollection(sp)) return sp;
+  if (sp && (await reg.getCollection(sp))) return sp;
   const up = userCollectionId(logical, userId);
-  if (reg.getCollection(up)) return up;
+  if (await reg.getCollection(up)) return up;
   if (forWrite) return sp ?? up; // default write: session if in a session, else user
   return undefined;
 }
@@ -99,15 +106,15 @@ export function resolveByName(
  * another user's store. A bare logical id goes through resolveByName.
  * Returns the physical id the caller may use, or undefined.
  */
-export function resolveRouteId(
+export async function resolveRouteId(
   reg: CollectionLookup,
   id: string,
   userId: string,
   sessionId: string | undefined,
   forWrite: boolean,
-): string | undefined {
+): Promise<string | undefined> {
   if (isPhysicalId(id)) {
-    const c = reg.getCollection(id);
+    const c = await reg.getCollection(id);
     if (!c || c.owner !== userId) return undefined; // own-only; cross-user → undefined
     if (c.scope === 'session' && c.sessionId !== sessionId) return undefined; // other-session → undefined
     return id;

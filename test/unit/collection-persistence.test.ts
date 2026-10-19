@@ -9,10 +9,14 @@ import {
   validateRagAttributes,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  COLLECTION_INCOMPATIBLE,
+  COLLECTION_UNAVAILABLE,
+  COLLECTIONS_UNAVAILABLE,
   CollectionBackendError,
   createCollectionPersistence,
   decodeRecord,
   encodeAttributes,
+  restoreHealth,
   storeNameFor,
   unwrap,
   WRITTEN_BY,
@@ -287,13 +291,132 @@ describe('createCollectionPersistence', () => {
     ]);
   });
 
-  it('restore is not implemented yet and says so', async () => {
+  it('restore needs a provider that describes and opens its collections', async () => {
     const res = await createCollectionPersistence(
       provider().p,
       'fp-1',
     ).restore();
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error.code).toBe('NOT_IMPLEMENTED');
+    if (!res.ok) expect(res.error.code).toBe('RAG_UNSUPPORTED');
+  });
+
+  describe('restore', () => {
+    const own = recordFor(userMeta);
+    const foreign: RagCollectionRecord = {
+      ...own,
+      storeName: 'other_tool_store',
+      attributes: { writtenBy: 'llm-agent-live-check' },
+    };
+    const point = (docId: string, extra: Record<string, unknown> = {}) => ({
+      id: `doc:${userMeta.id}:${docId}`,
+      text: `text ${docId}`,
+      metadata: {
+        id: `doc:${userMeta.id}:${docId}`,
+        namespace: 'alice@example.com',
+        collectionId: userMeta.id,
+        docId,
+        createdAt: '2026-10-19T11:00:00.000Z',
+        _createdAtMs: 1,
+        ...extra,
+      },
+    });
+
+    function restoring(
+      pages: Array<{ records: unknown[]; cursor?: string }> | Error,
+    ) {
+      const opened: string[] = [];
+      const cursors: Array<string | undefined> = [];
+      const { p } = provider({
+        async describeCollections() {
+          return {
+            ok: true as const,
+            value: { records: [own, foreign], rejected: [] },
+          };
+        },
+        async openCollection(rec: RagCollectionRecord) {
+          opened.push(rec.storeName);
+          let i = 0;
+          const rag = {
+            async scan(opts?: { cursor?: string }) {
+              cursors.push(opts?.cursor);
+              if (pages instanceof Error) throw pages;
+              return { ok: true as const, value: pages[i++] };
+            },
+          };
+          return { ok: true as const, value: { rag, editor: rag } } as never;
+        },
+      });
+      return { p, opened, cursors };
+    }
+
+    it('opens only the records this hub wrote and scans every page', async () => {
+      const { p, opened, cursors } = restoring([
+        { records: [], cursor: 'c1' }, // empty page: the scan goes on
+        { records: [point('d1', { tag: 'x' })], cursor: 'c2' },
+        { records: [point('d2')] }, // no cursor: done
+      ]);
+      const res = await createCollectionPersistence(p, 'fp-1').restore();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(opened).toEqual([own.storeName]);
+      expect(cursors).toEqual([undefined, 'c1', 'c2']);
+      expect(res.value.foreign).toEqual(['other_tool_store']);
+      const [c] = res.value.collections;
+      expect(c.status).toBeUndefined();
+      expect(c.meta.id).toBe(userMeta.id);
+      // docId and createdAt come from the payload; bookkeeping is stripped.
+      expect(c.documents).toEqual([
+        {
+          id: 'd1',
+          text: 'text d1',
+          metadata: { tag: 'x' },
+          createdAt: '2026-10-19T11:00:00.000Z',
+        },
+        {
+          id: 'd2',
+          text: 'text d2',
+          metadata: {},
+          createdAt: '2026-10-19T11:00:00.000Z',
+        },
+      ]);
+    });
+
+    it('a scan that fails makes that collection unavailable, with the cause', async () => {
+      const { p } = restoring(new Error('scan exploded'));
+      const res = await createCollectionPersistence(p, 'fp-1').restore();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.value.collections[0]).toMatchObject({
+        status: 'unavailable',
+        documents: [],
+      });
+      expect(res.value.collections[0].error).toMatch(/scan exploded/);
+    });
+
+    it('another fingerprint makes it incompatible, naming both', async () => {
+      const { p } = restoring([{ records: [point('d1')] }]);
+      const res = await createCollectionPersistence(p, 'fp-2').restore();
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const [c] = res.value.collections;
+      expect(c.status).toBe('incompatible');
+      expect(c.error).toMatch(/"fp-1".*"fp-2"/);
+      expect(c.documents).toHaveLength(1);
+    });
+
+    it('a catalog that cannot be read fails the whole restore', async () => {
+      const { p } = provider({
+        async describeCollections() {
+          throw new Error('connect ECONNREFUSED');
+        },
+        async openCollection() {
+          throw new Error('never');
+        },
+      });
+      const res = await createCollectionPersistence(p, 'fp-1').restore();
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.message).toMatch(/ECONNREFUSED/);
+    });
   });
 });
 
@@ -311,5 +434,27 @@ describe('CollectionBackendError', () => {
     expect(status(new DuplicateCollectionError('x'))).toBe(409);
     expect(status(new OrphanStoreError('x', 'rows without record'))).toBe(409);
     expect(status(new RagError('down', 'CONNECTION_ERROR'))).toBe(502);
+    expect(status(new RagError('x', COLLECTION_INCOMPATIBLE))).toBe(409);
+    expect(status(new RagError('x', COLLECTION_UNAVAILABLE))).toBe(503);
+    expect(status(new RagError('x', COLLECTIONS_UNAVAILABLE))).toBe(503);
+  });
+});
+
+describe('restoreHealth', () => {
+  it('200 UP when nothing persists or the restore succeeded; 503 with the cause otherwise', () => {
+    expect(restoreHealth({ state: 'off' })).toEqual({
+      status: 200,
+      body: { status: 'UP' },
+    });
+    expect(restoreHealth({ state: 'ready' }).status).toBe(200);
+    expect(restoreHealth({ state: 'pending' }).status).toBe(503);
+    expect(restoreHealth({ state: 'restoring' }).status).toBe(503);
+    expect(restoreHealth({ state: 'failed', error: 'ECONNREFUSED' })).toEqual({
+      status: 503,
+      body: {
+        status: 'DOWN',
+        collections: { state: 'failed', error: 'ECONNREFUSED' },
+      },
+    });
   });
 });

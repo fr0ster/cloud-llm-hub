@@ -23,6 +23,7 @@ import express from 'express';
 
 import { ensureAiCoreCredentials, getAgentConfig } from './agent-config';
 import {
+  collectionsRestoreStatus,
   getCollectionRegistry,
   getDestinationMappings,
   initProviders,
@@ -30,11 +31,13 @@ import {
   isProvidersReady,
   refreshDestinations,
   resolveSystemDestination,
+  startCollectionRestore,
 } from './agent-manager';
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { getAvailableDestinations } from './lib/btp-destinations';
+import { restoreHealth } from './lib/collection-persistence';
 import {
   formatErrorMessage,
   httpErrorText,
@@ -351,6 +354,15 @@ cds.on('bootstrap', (app: Application) => {
   getAgentConfig();
 
   const log = cds.log('mcp-proxy/bootstrap');
+
+  // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
+  // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with
+  // the restore's state and cause until the restore has succeeded.
+  app.get('/health', (_req: Request, res: Response) => {
+    const h = restoreHealth(collectionsRestoreStatus());
+    res.status(h.status).json(h.body);
+  });
+
   log.info('Registering /mcp endpoints');
 
   // Serve chat UI static files (app/chat/webapp is copied to gen/srv/app/chat/webapp during build)
@@ -776,6 +788,8 @@ cds.on('served', () => {
     .then((p) => {
       initProviders(p);
       registerRagRoutes(ragRouter, getCollectionRegistry());
+      // Persistent collections: restored in the background, with retry.
+      void startCollectionRestore();
       log.info('Providers ready');
     })
     .then(

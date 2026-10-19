@@ -61,7 +61,8 @@ function error(res: Response, status: number, message: string): void {
 
 /**
  * A failed registry call: a persistent backend's refusal carries its own
- * status (409 duplicate/orphan, 502 otherwise); anything else gets `fallback`.
+ * status (409 duplicate/orphan/incompatible, 503 collections not restored or
+ * a collection unavailable, 502 otherwise); anything else gets `fallback`.
  */
 function failure(res: Response, err: unknown, fallback: number): void {
   error(
@@ -139,7 +140,7 @@ export function registerRagRoutes(
   });
 
   // GET /v1/rag/collections
-  router.get('/rag/collections', (req: Request, res: Response) => {
+  router.get('/rag/collections', async (req: Request, res: Response) => {
     const userId = getUserId();
     // Anonymous callers have no collections (no global scope; user scope requires identity).
     // listCollections() filters by owner === userId, so an 'anonymous' userId
@@ -148,7 +149,13 @@ export function registerRagRoutes(
       userId && userId !== 'anonymous' ? userId : undefined;
     const sid = sessionIdOf(req);
 
-    let collections = registry.listCollections(effectiveUserId);
+    let collections: Awaited<ReturnType<typeof registry.listCollections>>;
+    try {
+      collections = await registry.listCollections(effectiveUserId);
+    } catch (err) {
+      failure(res, err, 500);
+      return;
+    }
     // Filter session-scoped collections to the current session only — prevents
     // stale/parallel sessions from showing in MANAGE and leaking physical ids.
     collections = collections.filter(
@@ -169,6 +176,8 @@ export function registerRagRoutes(
       documentCount: c.documentCount,
       sourceCount: c.sourceCount,
       preset: c.preset,
+      // Only on a persistent collection restored degraded.
+      ...(c.status ? { status: c.status, statusError: c.statusError } : {}),
       enabled:
         effectiveUserId !== undefined
           ? (registry.getEnabled(effectiveUserId, c.id) ?? defaultEnabled(c))
@@ -185,7 +194,7 @@ export function registerRagRoutes(
       await ensurePresets(registry, userId);
       json(res, 200, {
         ok: true,
-        collections: registry.listCollections(userId),
+        collections: await registry.listCollections(userId),
       });
     } catch (err) {
       error(res, 500, `ensurePresets failed: ${(err as Error).message}`);
@@ -300,7 +309,7 @@ export function registerRagRoutes(
       }
 
       // Idempotent: if the physical collection already exists, return existing meta.
-      const existing = registry.getCollection(physical);
+      const existing = await registry.getCollection(physical);
       if (existing) {
         log.info('Collection already exists (idempotent)', {
           id: physical,
@@ -387,7 +396,13 @@ export function registerRagRoutes(
     ) =>
     async (req: Request<P>, res: Response): Promise<void> => {
       const physId = (req as Request & { _physId?: string })._physId;
-      const meta = physId ? registry.getCollection(physId) : null;
+      let meta: Awaited<ReturnType<typeof registry.getCollection>>;
+      try {
+        meta = physId ? await registry.getCollection(physId) : null;
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
       if (meta?.scope !== 'session' || !meta.owner || !meta.sessionId) {
         await handler(req, res);
         return;
@@ -417,20 +432,30 @@ export function registerRagRoutes(
   // for global collections read is open but write requires MCP_Admin.
   router.use(
     '/rag/collections/:id',
-    (req: Request<{ id: string }>, res: Response, next) => {
+    async (req: Request<{ id: string }>, res: Response, next) => {
       // PATCH /enabled must use read-mode so it never creates a new collection.
       const isContentWrite =
         req.method !== 'GET' &&
         !req.path.endsWith('/query') &&
         !req.path.endsWith('/enabled');
 
-      const physical = resolveRouteId(
-        registry,
-        req.params.id,
-        getUserId(),
-        sessionIdOf(req),
-        isContentWrite,
-      );
+      // Waits for the restore of persistent collections; while it has failed
+      // every collection route is a 503 "collections unavailable: <cause>".
+      let physical: string | undefined;
+      let meta: Awaited<ReturnType<typeof registry.getCollection>>;
+      try {
+        physical = await resolveRouteId(
+          registry,
+          req.params.id,
+          getUserId(),
+          sessionIdOf(req),
+          isContentWrite,
+        );
+        meta = physical ? await registry.getCollection(physical) : null;
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
 
       if (!physical) {
         error(res, 404, 'Collection not found');
@@ -439,7 +464,6 @@ export function registerRagRoutes(
 
       (req as Request & { _physId?: string })._physId = physical;
 
-      const meta = registry.getCollection(physical);
       if (!meta) {
         error(res, 404, 'Collection not found');
         return;
@@ -453,13 +477,19 @@ export function registerRagRoutes(
   );
 
   // GET /v1/rag/collections/:id
-  router.get('/rag/collections/:id', (req: Request, res: Response) => {
+  router.get('/rag/collections/:id', async (req: Request, res: Response) => {
     const physId = (req as Request & { _physId?: string })._physId;
     if (!physId) {
       error(res, 404, 'Collection not found');
       return;
     }
-    const meta = registry.getCollection(physId);
+    let meta: Awaited<ReturnType<typeof registry.getCollection>>;
+    try {
+      meta = await registry.getCollection(physId);
+    } catch (err) {
+      failure(res, err, 500);
+      return;
+    }
     if (!meta) {
       error(res, 404, `Collection "${physId}" not found`);
       return;
@@ -472,12 +502,12 @@ export function registerRagRoutes(
     '/rag/collections/:id/enabled',
     async (req: Request, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
-      if (!physId || !registry.getCollection(physId)) {
-        error(res, 404, 'Collection not found');
-        return;
-      }
       const { enabled } = req.body;
       try {
+        if (!physId || !(await registry.getCollection(physId))) {
+          error(res, 404, 'Collection not found');
+          return;
+        }
         await registry.setEnabled(getUserId(), physId, !!enabled);
       } catch (err) {
         failure(res, err, 500);
@@ -494,13 +524,12 @@ export function registerRagRoutes(
       error(res, 404, 'Collection not found');
       return;
     }
-    const meta = registry.getCollection(physId);
-    if (!meta) {
-      error(res, 404, `Collection "${physId}" not found`);
-      return;
-    }
-
     try {
+      const meta = await registry.getCollection(physId);
+      if (!meta) {
+        error(res, 404, `Collection "${physId}" not found`);
+        return;
+      }
       const updated = await registry.updateCollection(physId, req.body);
       json(res, 200, updated);
     } catch (err) {
@@ -517,13 +546,12 @@ export function registerRagRoutes(
         error(res, 404, 'Collection not found');
         return;
       }
-      const meta = registry.getCollection(physId);
-      if (!meta) {
-        error(res, 404, `Collection "${physId}" not found`);
-        return;
-      }
-
       try {
+        const meta = await registry.getCollection(physId);
+        if (!meta) {
+          error(res, 404, `Collection "${physId}" not found`);
+          return;
+        }
         await registry.deleteCollection(physId);
       } catch (err) {
         failure(res, err, 500);
@@ -540,7 +568,7 @@ export function registerRagRoutes(
   // GET /v1/rag/collections/:id/documents
   router.get(
     '/rag/collections/:id/documents',
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId) {
         error(res, 404, 'Collection not found');
@@ -548,7 +576,13 @@ export function registerRagRoutes(
       }
       const offset = Number(req.query.offset) || 0;
       const limit = Math.min(Number(req.query.limit) || 50, 200);
-      const result = registry.listDocuments(physId, { offset, limit });
+      let result: Awaited<ReturnType<typeof registry.listDocuments>>;
+      try {
+        result = await registry.listDocuments(physId, { offset, limit });
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
       if (!result) {
         error(res, 404, `Collection "${physId}" not found`);
         return;
@@ -637,7 +671,7 @@ export function registerRagRoutes(
 
         json(res, 200, result);
       } catch (err) {
-        error(res, 400, (err as Error).message);
+        failure(res, err, 400);
       }
     }),
   );
@@ -645,13 +679,19 @@ export function registerRagRoutes(
   // GET /v1/rag/collections/:id/documents/:did
   router.get(
     '/rag/collections/:id/documents/:did',
-    (req: Request<{ id: string; did: string }>, res: Response) => {
+    async (req: Request<{ id: string; did: string }>, res: Response) => {
       const physId = (req as Request & { _physId?: string })._physId;
       if (!physId) {
         error(res, 404, 'Collection not found');
         return;
       }
-      const doc = registry.getDocument(physId, req.params.did);
+      let doc: Awaited<ReturnType<typeof registry.getDocument>>;
+      try {
+        doc = await registry.getDocument(physId, req.params.did);
+      } catch (err) {
+        failure(res, err, 500);
+        return;
+      }
       if (!doc) {
         error(res, 404, 'Document not found');
         return;
@@ -726,7 +766,7 @@ export function registerRagRoutes(
           error(res, 404, 'Collection not found');
           return;
         }
-        const meta = registry.getCollection(collectionId);
+        const meta = await registry.getCollection(collectionId);
         if (!meta) {
           error(res, 404, `Collection "${collectionId}" not found`);
           return;
@@ -787,7 +827,7 @@ export function registerRagRoutes(
           errors: result.errors,
         });
       } catch (err) {
-        error(res, 500, (err as Error).message);
+        failure(res, err, 500);
       }
     }),
   );
@@ -806,7 +846,7 @@ export function registerRagRoutes(
           error(res, 404, 'Collection not found');
           return;
         }
-        const store = registry.getRagStore(physId);
+        const store = await registry.getRagStore(physId);
         if (!store) {
           error(res, 404, `Collection "${physId}" not found`);
           return;
@@ -832,7 +872,7 @@ export function registerRagRoutes(
 
         json(res, 200, { results: result.value });
       } catch (err) {
-        error(res, 500, (err as Error).message);
+        failure(res, err, 500);
       }
     }),
   );

@@ -37,6 +37,7 @@ import {
 } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
+import { CollectionBackendError } from './lib/collection-persistence';
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import {
@@ -732,21 +733,45 @@ export async function handleChatCompletions(
     // ids owned by another user → dropped. Session collection shadows user
     // collection. After the switch, which may have removed session collections;
     // reused by both the RAG store injection and semantic search below.
+    // Persistent collections are restored first; until a restore succeeds a
+    // request naming collections gets the explicit 503, not an answer quietly
+    // made without them.
+    if (ragCollectionIds.length > 0) {
+      try {
+        await getCollectionRegistry().ready;
+      } catch (err) {
+        if (!(err instanceof CollectionBackendError) || res.headersSent)
+          throw err;
+        log.warn('Chat refused: collections unavailable', {
+          error: err.message,
+        });
+        res.writeHead(err.httpStatus, { 'Content-Type': 'application/json' });
+        res.end(jsonError(err.message, 'service_unavailable'));
+        return;
+      }
+    }
     const resolvedCollectionIds: string[] =
       ragCollectionIds.length > 0
-        ? (() => {
+        ? await (async () => {
             const registry = getCollectionRegistry();
-            return ragCollectionIds
-              .map((entry) =>
-                resolveRouteId(registry, entry, getUserId(), sessionId, false),
-              )
-              .filter((id): id is string => id !== undefined);
+            const ids: string[] = [];
+            for (const entry of ragCollectionIds) {
+              const id = await resolveRouteId(
+                registry,
+                entry,
+                getUserId(),
+                sessionId,
+                false,
+              );
+              if (id !== undefined) ids.push(id);
+            }
+            return ids;
           })()
         : [];
 
     if (resolvedCollectionIds.length > 0) {
       const registry = getCollectionRegistry();
-      const dynamicStores = registry.getRagStores(resolvedCollectionIds);
+      const dynamicStores = await registry.getRagStores(resolvedCollectionIds);
       const injected = Object.keys(dynamicStores);
       if (injected.length > 0) {
         const mergedStores = { ...originalRagStores };
@@ -795,7 +820,17 @@ export async function handleChatCompletions(
 
         const relevantTexts: string[] = [];
         for (const colId of resolvedCollectionIds) {
-          const store = registry.getRagStore(colId);
+          // A degraded collection is left out here as in the injection above.
+          let store: Awaited<ReturnType<typeof registry.getRagStore>>;
+          try {
+            store = await registry.getRagStore(colId);
+          } catch (err) {
+            log.warn('Collection left out of the search', {
+              collection: colId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            continue;
+          }
           if (!store) continue;
           const result = await new ExpositionFilteringRag(
             store,

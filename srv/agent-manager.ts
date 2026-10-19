@@ -670,7 +670,12 @@ import {
   CLOUD_LOCAL_TOOLS,
   mergeCloudLocalTools,
 } from './lib/cloud-local-tools';
-import { createCollectionPersistence } from './lib/collection-persistence';
+import {
+  createCollectionPersistence,
+  type RestoreStatus,
+  type RetryRestoreOptions,
+  retryRestore,
+} from './lib/collection-persistence';
 import { type DumpBufferStore, makeDefaultDumpBuffer } from './lib/dump-buffer';
 import {
   handleGetDumpSectionCall,
@@ -1055,6 +1060,40 @@ export function getCollectionRegistry(): CollectionRegistry {
     });
   }
   return collectionRegistryInstance;
+}
+
+/**
+ * Start restoring persistent collections into the registry, retrying until it
+ * succeeds (30 s, doubling to 5 min; each attempt logged). Called by server
+ * startup right after `initProviders`. A no-op when nothing persists. The
+ * promise resolves once restored; nothing need wait for it — the registry's
+ * methods wait for the restore themselves, and /health reports it.
+ */
+export function startCollectionRestore(
+  opts: Omit<RetryRestoreOptions, 'log'> = {},
+): Promise<void> {
+  const registry = getCollectionRegistry();
+  if (registry.restoreStatus().state === 'off') return Promise.resolve();
+  const log = cds.log('rag-collections');
+  return retryRestore(() => registry.restore(), {
+    ...opts,
+    log: {
+      info: (m, d) => (d === undefined ? log.info(m) : log.info(m, d)),
+      warn: (m, d) => (d === undefined ? log.warn(m) : log.warn(m, d)),
+    },
+  });
+}
+
+/**
+ * Where the restore of persistent collections stands, for /health. Before the
+ * providers are built, a configured persistent kind is `pending`.
+ */
+export function collectionsRestoreStatus(): RestoreStatus {
+  if (!isProvidersReady())
+    return isPersistentKind(getAgentConfig().rag.backends.persistent)
+      ? { state: 'pending' }
+      : { state: 'off' };
+  return getCollectionRegistry().restoreStatus();
 }
 
 /**

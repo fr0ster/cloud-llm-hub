@@ -90,7 +90,7 @@ describe('the RAG stores a request names', () => {
     jest
       .spyOn(registry, 'getRagStores')
       .mockReturnValue({ 'col-1': store } as never);
-    jest.spyOn(registry, 'getRagStore').mockReturnValue(null);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(null);
     const handle = (await manager.getSmartAgent()) as unknown as {
       agent: { deps: { ragStores: Record<string, unknown> } };
     };
@@ -126,7 +126,7 @@ describe('the RAG stores a request names', () => {
     const getRagStores = jest
       .spyOn(registry, 'getRagStores')
       .mockReturnValue({ 'col-1': {} } as never);
-    jest.spyOn(registry, 'getRagStore').mockReturnValue(null);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(null);
     const hold = await gatekeeper.admitPipeline('bob', 'busy');
     // Fills the queue. Rejected if the gatekeeper is reset while it still waits.
     const filler = gatekeeper

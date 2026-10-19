@@ -23,6 +23,10 @@ export interface PgliteHandle {
   credential: ReturnType<typeof staticLogin>;
   stop(): Promise<void>;
   restart(): Promise<void>;
+  /** Stop the server and keep its data: the port refuses connections. */
+  suspend(): Promise<void>;
+  /** Bring a suspended server back on the same port, with the same data. */
+  resume(): Promise<void>;
 }
 
 const SCRIPT = path.join(__dirname, 'serve-pglite.mjs');
@@ -149,6 +153,13 @@ export async function startPglite(opts: {
     async restart() {
       await stopChild(running);
       await portFree(port);
+      running = await launch(port, dataDir);
+    },
+    async suspend() {
+      await stopChild(running);
+      await portFree(port);
+    },
+    async resume() {
       running = await launch(port, dataDir);
     },
   };

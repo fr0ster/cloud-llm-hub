@@ -76,7 +76,7 @@ async function withDocument(
     ...meta,
   });
   await reg.addDocument(id, { id: 'd1', text: 'hello', metadata: {} });
-  const store = reg.getRagStore(id) as InMemoryRag;
+  const store = (await reg.getRagStore(id)) as InMemoryRag;
   // Guard the premise: a store that never held the document proves nothing
   // about clearing it.
   expect(await holds(store, id)).toBe(true);
@@ -126,8 +126,8 @@ describe.each(ENDINGS)('$name', ({ expiresAt, end }) => {
       backend: 'counting',
     });
     end(reg);
-    expect(reg.getCollection('s__x_1')).toBeNull();
-    expect(reg.getRagStore('s__x_1')).toBeNull();
+    expect(await reg.getCollection('s__x_1')).toBeNull();
+    expect(await reg.getRagStore('s__x_1')).toBeNull();
     expect(reg.hasSessionCollections('alice', 'x')).toBe(false);
     expect(b.calls.clearAll).toBe(1);
     expect(await holds(store, 's__x_1')).toBe(false);
@@ -146,7 +146,7 @@ describe.each(ENDINGS)('$name', ({ expiresAt, end }) => {
         backend: 'failing',
       });
       expect(() => end(reg)).not.toThrow();
-      expect(reg.getCollection('s__x_1')).toBeNull();
+      expect(await reg.getCollection('s__x_1')).toBeNull();
       expect(reg.hasSessionCollections('alice', 'x')).toBe(false);
       await new Promise((r) => setImmediate(r));
       expect(collectionRemovalFailureCount()).toBe(1);
@@ -198,8 +198,8 @@ describe('a session with several collections', () => {
       backend: 'good',
     });
     reg.deleteSessionCollections('alice', 'g');
-    expect(reg.getCollection('s__g_1')).toBeNull();
-    expect(reg.getCollection('s__g_2')).toBeNull();
+    expect(await reg.getCollection('s__g_1')).toBeNull();
+    expect(await reg.getCollection('s__g_2')).toBeNull();
     expect(await holds(kept, 's__g_2')).toBe(false);
     expect(collectionRemovalFailureCount()).toBe(1);
   });
@@ -285,7 +285,7 @@ describe('collections over one shared backend', () => {
     // The store itself is gone, not merely emptied.
     expect(server.list()).toEqual([other]);
     expect(await holds(second, 's__b_1')).toBe(true);
-    expect(reg.getCollection('s__b_1')).not.toBeNull();
+    expect(await reg.getCollection('s__b_1')).not.toBeNull();
     expect(collectionRemovalFailureCount()).toBe(0);
   });
 
@@ -324,7 +324,7 @@ describe('collections over one shared backend', () => {
         backend: 'shared',
       });
       await expect(reg.deleteCollection('s__f_1')).resolves.toBe(true);
-      expect(reg.getCollection('s__f_1')).toBeNull();
+      expect(await reg.getCollection('s__f_1')).toBeNull();
       await settle(server);
       expect(collectionRemovalFailureCount()).toBe(1);
     },

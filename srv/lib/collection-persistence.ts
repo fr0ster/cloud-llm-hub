@@ -14,11 +14,13 @@ import {
   type IRagEditor,
   type IRagProvider,
   isRagCatalogUpdater,
+  isRagScanner,
   OrphanStoreError,
   type RagCollectionOwner,
   type RagCollectionRecord,
   RagError,
   type RagJsonValue,
+  type RagScanRecord,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
@@ -128,13 +130,45 @@ export function decodeRecord(
   };
 }
 
-/** A collection read back from the catalog at startup (Task 7). */
+/**
+ * Why a restored collection cannot be used in full:
+ * - `incompatible`: its record names another embedder fingerprint. It can be
+ *   listed, read and exported; search and document writes are refused (409).
+ * - `unavailable`: its store could not be opened or scanned at startup. Only
+ *   its record is known; document reads, search and writes are refused (503).
+ * Both can be renamed, disabled and deleted.
+ */
+export type CollectionStatus = 'incompatible' | 'unavailable';
+
+/** A collection read back from the catalog at startup. */
 export interface RestoredCollection {
   meta: CollectionMeta;
   enabled: boolean;
-  embedderFp?: string;
-  rag: IRag;
-  editor: IRagEditor;
+  /** Absent when the store could not be opened (`unavailable`). */
+  rag?: IRag;
+  /** Rebuilt from a scan of the store; empty when `unavailable`. */
+  documents: RagDocument[];
+  status?: CollectionStatus;
+  /** Why, when `status` is set: names both fingerprints, or the cause. */
+  error?: string;
+}
+
+/** What one restore read back. */
+export interface RestoreOutcome {
+  collections: RestoredCollection[];
+  /** Store names of records this hub did not write: logged, never opened. */
+  foreign: string[];
+  /** Catalog rows the provider could not read as records. */
+  rejected: readonly { storeName?: string; reason: string }[];
+}
+
+/**
+ * Where the registry's restore stands. `off`: nothing persists. `pending`: not
+ * tried yet. `failed`: the last attempt failed with `error`; a retry is due.
+ */
+export interface RestoreStatus {
+  state: 'off' | 'pending' | 'restoring' | 'ready' | 'failed';
+  error?: string;
 }
 
 export interface CollectionPersistence {
@@ -165,8 +199,13 @@ export interface CollectionPersistence {
    * a later pass (the sweep, and Task 7's restore) finds it again.
    */
   expiredSessions(now: number): Promise<Result<CollectionMeta[], RagError>>;
-  /** Not implemented yet: restore at startup is Task 7. */
-  restore(): Promise<Result<RestoredCollection[], RagError>>;
+  /**
+   * Read the catalog back: `describeCollections`, then `openCollection` and a
+   * full `scan` of each record this hub wrote. A failure to read the catalog
+   * fails the whole restore; a failure to open or scan one store restores that
+   * collection alone as `unavailable`.
+   */
+  restore(): Promise<Result<RestoreOutcome, RagError>>;
 }
 
 /**
@@ -187,16 +226,41 @@ export class CollectionBackendError extends Error {
    * being deleted, else 502.
    */
   get httpStatus(): number {
+    if (
+      this.cause.code === COLLECTIONS_UNAVAILABLE ||
+      this.cause.code === COLLECTION_UNAVAILABLE
+    )
+      return 503;
     return this.cause instanceof DuplicateCollectionError ||
       this.cause instanceof OrphanStoreError ||
-      this.cause.code === COLLECTION_DELETING
+      this.cause.code === COLLECTION_DELETING ||
+      this.cause.code === COLLECTION_INCOMPATIBLE
       ? 409
       : 502;
   }
 }
 
+/**
+ * A persistent collection the registry cannot serve right now: collections not
+ * restored yet (503), one restored as `unavailable` (503) or `incompatible`
+ * (409). Its message is the cause alone, e.g. "collections unavailable: …".
+ */
+export class CollectionStatusError extends CollectionBackendError {
+  constructor(operation: string, cause: RagError) {
+    super(operation, cause);
+    this.name = 'CollectionStatusError';
+    this.message = cause.message;
+  }
+}
+
 /** Error code: a write reached a collection whose deletion is out. */
 export const COLLECTION_DELETING = 'COLLECTION_DELETING';
+/** Error code: the persistent collections have not been restored (yet). */
+export const COLLECTIONS_UNAVAILABLE = 'COLLECTIONS_UNAVAILABLE';
+/** Error code: a collection whose store could not be opened at startup. */
+export const COLLECTION_UNAVAILABLE = 'COLLECTION_UNAVAILABLE';
+/** Error code: a collection written with another embedder fingerprint. */
+export const COLLECTION_INCOMPATIBLE = 'COLLECTION_INCOMPATIBLE';
 
 /** The value of an ok Result, or a CollectionBackendError naming `operation`. */
 export function unwrap<T>(r: Result<T, RagError>, operation: string): T {
@@ -213,6 +277,95 @@ export async function backendWrite<T>(
   run: () => Promise<Result<T, RagError>>,
 ): Promise<T> {
   return unwrap(await guarded(run), operation);
+}
+
+/**
+ * A copy of a JSON-like value with the keys of every plain object sorted and
+ * undefined values dropped. A persistent document's metadata is held in this
+ * form: a backend (PG jsonb) need not keep key order, and what the API returns
+ * must not change across a restart.
+ */
+export function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value === null || typeof value !== 'object') return value;
+  if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    const v = (value as Record<string, unknown>)[key];
+    if (v !== undefined) out[key] = canonicalJson(v);
+  }
+  return out;
+}
+
+/** A persistent document's metadata in its canonical form; see canonicalJson. */
+export function canonicalMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  return canonicalJson(metadata ?? {}) as Record<string, unknown>;
+}
+
+/**
+ * Payload fields the write path adds beside a document's own metadata: the
+ * point id (`id`), `namespace`, documentPayload's fields and RecencyBoostedRag's
+ * `_createdAtMs`. Restore strips them, so a document reads back as it was
+ * added. A document whose own metadata used one of these keys loses it — the
+ * write path already overwrites those keys in the backend.
+ */
+export const PAYLOAD_BOOKKEEPING = [
+  'id',
+  'namespace',
+  'collectionId',
+  'docId',
+  'createdAt',
+  '_createdAtMs',
+] as const;
+
+/** A scanned record back into a registry document; see PAYLOAD_BOOKKEEPING. */
+export function restoredDocument(
+  collectionId: string,
+  rec: RagScanRecord,
+): RagDocument {
+  const m = (rec.metadata ?? {}) as Record<string, unknown>;
+  const prefix = `doc:${collectionId}:`;
+  const docId =
+    typeof m.docId === 'string'
+      ? m.docId
+      : rec.id.startsWith(prefix)
+        ? rec.id.slice(prefix.length)
+        : rec.id;
+  const own: Record<string, unknown> = { ...m };
+  for (const k of PAYLOAD_BOOKKEEPING) delete own[k];
+  return {
+    id: docId,
+    text: rec.text,
+    metadata: canonicalMetadata(own),
+    createdAt:
+      typeof m.createdAt === 'string' ? m.createdAt : new Date(0).toISOString(),
+  };
+}
+
+/**
+ * A collection's metadata with its fields in one fixed order, so the API's
+ * JSON for a persistent collection is the same before and after a restart.
+ */
+export function canonicalCollectionMeta(m: CollectionMeta): CollectionMeta {
+  return {
+    id: m.id,
+    logicalId: m.logicalId,
+    displayName: m.displayName,
+    description: m.description,
+    scope: m.scope,
+    ...(m.preset !== undefined ? { preset: m.preset } : {}),
+    ...(m.backend !== undefined ? { backend: m.backend } : {}),
+    ...(m.owner !== undefined ? { owner: m.owner } : {}),
+    ...(m.sessionId !== undefined ? { sessionId: m.sessionId } : {}),
+    ...(m.expiresAt !== undefined ? { expiresAt: m.expiresAt } : {}),
+    createdAt: m.createdAt,
+    documentCount: m.documentCount,
+    sourceCount: m.sourceCount,
+    ...(m.status !== undefined ? { status: m.status } : {}),
+    ...(m.statusError !== undefined ? { statusError: m.statusError } : {}),
+  };
 }
 
 /** Payload fields every persistent document carries, beside its own metadata. */
@@ -279,7 +432,12 @@ export async function addPersistentDocument(
   const createdAt = new Date().toISOString();
   const p = payload(entry, doc.id, doc.metadata, createdAt, namespace);
   await backendWrite('add document', () => entry.rag.upsert(doc.text, p));
-  const persisted: RagDocument = { ...doc, createdAt };
+  const persisted: RagDocument = {
+    id: doc.id,
+    text: doc.text,
+    metadata: canonicalMetadata(doc.metadata),
+    createdAt,
+  };
   entry.documents.set(doc.id, persisted);
   entry.meta.documentCount = entry.documents.size;
   return persisted;
@@ -306,7 +464,7 @@ export async function updatePersistentDocument(
   );
   await backendWrite('update document', () => entry.rag.upsert(text, p));
   existing.text = text;
-  existing.metadata = metadata;
+  existing.metadata = canonicalMetadata(metadata);
   return existing;
 }
 
@@ -349,6 +507,12 @@ export function createCollectionPersistence(
 ): CollectionPersistence {
   /** The tail of each collection's record-write chain. */
   const recordWrites = new Map<string, Promise<unknown>>();
+  /**
+   * The fingerprint a restored record names, where it is not the current one
+   * (an incompatible collection). A record rewrite keeps it: renaming or
+   * disabling must not make old vectors look compatible.
+   */
+  const recordFps = new Map<string, string>();
   const update = (meta: CollectionMeta, enabled: boolean) =>
     guarded(async (): Promise<Result<void, RagError>> => {
       if (!isRagCatalogUpdater(provider))
@@ -360,7 +524,11 @@ export function createCollectionPersistence(
           ),
         };
       return provider.updateCollection(storeNameFor(meta.id), {
-        attributes: encodeAttributes(meta, enabled, embedderFp),
+        attributes: encodeAttributes(
+          meta,
+          enabled,
+          recordFps.get(meta.id) ?? embedderFp,
+        ),
       });
     });
   return {
@@ -386,7 +554,9 @@ export function createCollectionPersistence(
               'RAG_UNSUPPORTED',
             ),
           };
-        return provider.deleteCollection(storeNameFor(meta.id));
+        const r = await provider.deleteCollection(storeNameFor(meta.id));
+        if (r.ok) recordFps.delete(meta.id);
+        return r;
       }),
     update,
     updateRecord: (collectionId, snapshot, apply) => {
@@ -429,12 +599,185 @@ export function createCollectionPersistence(
         }
         return { ok: true, value: expired };
       }),
-    restore: async () => ({
-      ok: false,
-      error: new RagError(
-        'restoring persistent collections is not implemented yet',
-        'NOT_IMPLEMENTED',
-      ),
-    }),
+    restore: () =>
+      guarded(async (): Promise<Result<RestoreOutcome, RagError>> => {
+        if (!provider.describeCollections || !provider.openCollection)
+          return {
+            ok: false,
+            error: new RagError(
+              `provider "${provider.name}" cannot describe and open its collections`,
+              'RAG_UNSUPPORTED',
+            ),
+          };
+        const d = await provider.describeCollections();
+        if (!d.ok) return d;
+        const collections: RestoredCollection[] = [];
+        const foreign: string[] = [];
+        for (const rec of d.value.records) {
+          const decoded = decodeRecord(rec);
+          if (!('meta' in decoded)) {
+            foreign.push(rec.storeName);
+            continue;
+          }
+          if (decoded.embedderFp !== embedderFp)
+            recordFps.set(decoded.meta.id, decoded.embedderFp ?? '');
+          collections.push(
+            await restoreOne(provider, rec, decoded, embedderFp),
+          );
+        }
+        return {
+          ok: true,
+          value: { collections, foreign, rejected: d.value.rejected },
+        };
+      }),
+  };
+}
+
+/** Open and scan one record of this hub; a failure makes it `unavailable`. */
+async function restoreOne(
+  provider: IRagProvider,
+  rec: RagCollectionRecord,
+  decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
+  embedderFp: string,
+): Promise<RestoredCollection> {
+  const { meta, enabled } = decoded;
+  const unavailable = (cause: unknown): RestoredCollection => ({
+    meta,
+    enabled,
+    documents: [],
+    status: 'unavailable',
+    error: `collection "${meta.id}" is unavailable: ${toRagError(cause).message}`,
+  });
+  let rag: IRag;
+  try {
+    const opened = await provider.openCollection?.(rec);
+    if (!opened) return unavailable('the provider cannot open a collection');
+    if (!opened.ok) return unavailable(opened.error);
+    rag = opened.value.rag;
+  } catch (err) {
+    return unavailable(err);
+  }
+  if (!isRagScanner(rag)) return unavailable('its store cannot be scanned');
+  const documents = new Map<string, RagDocument>();
+  try {
+    let cursor: string | undefined;
+    do {
+      const page = await rag.scan(cursor === undefined ? {} : { cursor });
+      if (!page.ok) return unavailable(page.error);
+      for (const r of page.value.records) {
+        const doc = restoredDocument(meta.id, r);
+        documents.set(doc.id, doc);
+      }
+      if (page.value.cursor !== undefined && page.value.cursor === cursor)
+        return unavailable('its scan did not advance');
+      cursor = page.value.cursor;
+    } while (cursor !== undefined);
+  } catch (err) {
+    return unavailable(err);
+  }
+  const restored: RestoredCollection = {
+    meta,
+    enabled,
+    rag,
+    documents: [...documents.values()],
+  };
+  if (decoded.embedderFp !== embedderFp) {
+    restored.status = 'incompatible';
+    restored.error = `collection "${meta.id}" is incompatible: it was indexed with embedder "${decoded.embedderFp ?? 'unknown'}", the current embedder is "${embedderFp}"`;
+  }
+  return restored;
+}
+
+// ---------------------------------------------------------------------------
+// Restore with retry, and what /health reports
+// ---------------------------------------------------------------------------
+
+/** First retry delay after a failed restore. */
+export const RESTORE_RETRY_INITIAL_MS = 30_000;
+/** The retry delay doubles up to this. */
+export const RESTORE_RETRY_MAX_MS = 5 * 60_000;
+
+export interface RetryRestoreOptions {
+  /** Run `run` after `ms`. Defaults to an unref'd setTimeout; tests inject. */
+  schedule?: (run: () => void, ms: number) => void;
+  log?: {
+    info(message: string, data?: unknown): void;
+    warn(message: string, data?: unknown): void;
+  };
+  initialMs?: number;
+  maxMs?: number;
+}
+
+/**
+ * Run `attempt` until it succeeds: at once, then after 30 s, doubling up to
+ * 5 min between attempts. Each attempt and its outcome is logged. The promise
+ * resolves once an attempt has succeeded; it never rejects.
+ */
+export function retryRestore(
+  attempt: () => Promise<void>,
+  opts: RetryRestoreOptions = {},
+): Promise<void> {
+  const schedule =
+    opts.schedule ??
+    ((run: () => void, ms: number) => {
+      setTimeout(run, ms).unref();
+    });
+  const log = opts.log;
+  const initial = opts.initialMs ?? RESTORE_RETRY_INITIAL_MS;
+  const max = opts.maxMs ?? RESTORE_RETRY_MAX_MS;
+  return new Promise<void>((resolve) => {
+    let n = 0;
+    const run = () => {
+      n++;
+      const at = n;
+      log?.info(`Collection restore attempt ${at}`);
+      guardedAttempt(attempt).then(
+        () => {
+          log?.info(`Collection restore attempt ${at} succeeded`);
+          resolve();
+        },
+        (err: unknown) => {
+          const delay = Math.min(initial * 2 ** (at - 1), max);
+          log?.warn(
+            `Collection restore attempt ${at} failed; next attempt in ${delay / 1000} s`,
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+          schedule(run, delay);
+        },
+      );
+    };
+    run();
+  });
+}
+
+/** `attempt()`, with a synchronous throw turned into a rejection. */
+function guardedAttempt(attempt: () => Promise<void>): Promise<void> {
+  try {
+    return attempt();
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+/**
+ * The /health answer for a restore status: 200 `{ status: 'UP' }` when nothing
+ * persists or the restore has succeeded; 503 with the state and its cause
+ * while it has not.
+ */
+export function restoreHealth(status: RestoreStatus): {
+  status: number;
+  body: Record<string, unknown>;
+} {
+  if (status.state === 'off' || status.state === 'ready')
+    return { status: 200, body: { status: 'UP' } };
+  return {
+    status: 503,
+    body: {
+      status: 'DOWN',
+      collections: {
+        state: status.state,
+        ...(status.error ? { error: status.error } : {}),
+      },
+    },
   };
 }

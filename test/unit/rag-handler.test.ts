@@ -227,7 +227,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       expect(res._status).toBe(201);
       const expectedId = userCollectionId('result', 'alice@example.com');
       expect((res._body as { id?: string }).id).toBe(expectedId);
-      expect(registry.getCollection(expectedId)).not.toBeNull();
+      expect(await registry.getCollection(expectedId)).not.toBeNull();
     });
 
     test('user-scope create: idempotent — second call returns 200 with existing meta', async () => {
@@ -430,16 +430,16 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
   // -------------------------------------------------------------------------
 
   describe('GET /rag/collections', () => {
-    function doGet(headers: Record<string, string> = {}) {
+    async function doGet(headers: Record<string, string> = {}) {
       const req = makeReq({ method: 'GET', headers });
       const res = makeRes();
       const handler = findRoute(routes, 'GET', '/rag/collections');
       if (!handler) throw new Error('GET /rag/collections route not found');
-      handler.handler(req, res.res);
+      await handler.handler(req, res.res);
       return res;
     }
 
-    test('returns logicalId, scope, and enabled for user collections', () => {
+    test('returns logicalId, scope, and enabled for user collections', async () => {
       asUser('alice@example.com');
       const physId = userCollectionId('result', 'alice@example.com');
       registry.createCollection({
@@ -452,7 +452,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       });
       registry.setEnabled('alice@example.com', physId, false);
 
-      const res = doGet();
+      const res = await doGet();
       expect(res._status).toBe(200);
       const body = res._body as {
         collections: Array<{
@@ -470,7 +470,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       expect(c.enabled).toBe(false);
     });
 
-    test('enabled defaults to true for non-preset collections', () => {
+    test('enabled defaults to true for non-preset collections', async () => {
       asUser('alice@example.com');
       const physId = userCollectionId('notes', 'alice@example.com');
       registry.createCollection({
@@ -483,12 +483,12 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       });
       // No setEnabled call — should default to true
 
-      const res = doGet();
+      const res = await doGet();
       const body = res._body as { collections: Array<{ enabled: boolean }> };
       expect(body.collections[0].enabled).toBe(true);
     });
 
-    test('enabled defaults to false for preset collections', () => {
+    test('enabled defaults to false for preset collections', async () => {
       asUser('alice@example.com');
       const physId = userCollectionId('preset-col', 'alice@example.com');
       registry.createCollection({
@@ -501,12 +501,12 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         preset: true,
       });
 
-      const res = doGet();
+      const res = await doGet();
       const body = res._body as { collections: Array<{ enabled: boolean }> };
       expect(body.collections[0].enabled).toBe(false);
     });
 
-    test('session collections from other sessions are filtered out', () => {
+    test('session collections from other sessions are filtered out', async () => {
       asUser('alice@example.com');
       const sessId1 = sessionCollectionId(
         'notes',
@@ -540,13 +540,13 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       });
 
       // Request from session-1 — should only see session-1 collection
-      const res = doGet({ cookie: 'clh_session=session-1' });
+      const res = await doGet({ cookie: 'clh_session=session-1' });
       const body = res._body as { collections: Array<{ id: string }> };
       expect(body.collections.map((c) => c.id)).toContain(sessId1);
       expect(body.collections.map((c) => c.id)).not.toContain(sessId2);
     });
 
-    test('user collections are always visible regardless of session header', () => {
+    test('user collections are always visible regardless of session header', async () => {
       asUser('alice@example.com');
       const physId = userCollectionId('always', 'alice@example.com');
       registry.createCollection({
@@ -558,12 +558,12 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         owner: 'alice@example.com',
       });
 
-      const res = doGet({ cookie: 'clh_session=some-session' });
+      const res = await doGet({ cookie: 'clh_session=some-session' });
       const body = res._body as { collections: Array<{ id: string }> };
       expect(body.collections.map((c) => c.id)).toContain(physId);
     });
 
-    test('two users never see each other collections', () => {
+    test('two users never see each other collections', async () => {
       asUser('alice@example.com');
       const aliceId = userCollectionId('result', 'alice@example.com');
       registry.createCollection({
@@ -585,7 +585,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       });
 
       // Alice's listing
-      const aliceRes = doGet();
+      const aliceRes = await doGet();
       const aliceBody = aliceRes._body as {
         collections: Array<{ id: string }>;
       };
@@ -594,7 +594,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
 
       // Bob's listing
       mockCdsContext.user = { id: 'bob@example.com', is: () => false };
-      const bobRes = doGet();
+      const bobRes = await doGet();
       const bobBody = bobRes._body as { collections: Array<{ id: string }> };
       expect(bobBody.collections.map((c) => c.id)).toEqual([bobId]);
       expect(bobBody.collections.map((c) => c.id)).not.toContain(aliceId);
