@@ -203,21 +203,6 @@ export function registerRagRoutes(
         return;
       }
 
-      // Collections persist on one backend; no request picks another.
-      const persistentKind = registry.persistentBackend();
-      if (
-        persistentKind &&
-        backend !== undefined &&
-        backend !== persistentKind
-      ) {
-        error(
-          res,
-          400,
-          `backend "${backend}" is not available: collections are stored on "${persistentKind}"`,
-        );
-        return;
-      }
-
       if (scope === 'global') {
         error(res, 400, 'global collections are no longer supported');
         return;
@@ -229,6 +214,21 @@ export function registerRagRoutes(
           res,
           401,
           'Authenticated user required for user-scoped collections',
+        );
+        return;
+      }
+
+      // Collections persist on one backend; no request picks another.
+      const persistentKind = registry.persistentBackend();
+      if (
+        persistentKind &&
+        backend !== undefined &&
+        backend !== persistentKind
+      ) {
+        error(
+          res,
+          400,
+          `backend "${backend}" is not available: collections are stored on "${persistentKind}"`,
         );
         return;
       }

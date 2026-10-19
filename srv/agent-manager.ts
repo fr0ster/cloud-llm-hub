@@ -678,6 +678,10 @@ import {
 } from './lib/get-dump-section';
 import { makeHubLlm } from './lib/llm-factory';
 import { loggerAdapter } from './lib/logger';
+import {
+  collectionDimension,
+  isPersistentKind,
+} from './lib/rag-provider-factory';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
 import { CollectionRegistry } from './rag-collections';
 
@@ -1021,12 +1025,24 @@ let collectionRegistryInstance: CollectionRegistry | null = null;
 export function getCollectionRegistry(): CollectionRegistry {
   if (!collectionRegistryInstance) {
     const { embedding: e, stores, collections } = getProviders();
+    const persistentKind = stores.backendOf('persistent');
+    if (isPersistentKind(persistentKind)) {
+      // Explicit, never a silent in-memory fallback for a persistent kind.
+      if (!collections || !e)
+        throw new Error(
+          `LLM_AGENT_RAG_BACKEND is "${persistentKind}" but no collection provider was built (an embedder is required)`,
+        );
+      cds.log('rag-collections').info('Persistent collections', {
+        backend: persistentKind,
+        dimension: collectionDimension(persistentKind),
+      });
+    }
     collectionRegistryInstance = new CollectionRegistry({
       embedder: e?.retrieval ?? null,
       breaker: e?.breaker ?? null,
       // LLM_AGENT_RAG_BACKEND, not "vector whenever an embedder exists":
       // another class's embedder must not move persistent collections.
-      defaultBackend: stores.backendOf('persistent'),
+      defaultBackend: persistentKind,
       // A persistent kind: user and session collections go to its catalog.
       ...(collections && e
         ? {

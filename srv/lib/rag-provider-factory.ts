@@ -19,7 +19,7 @@ import {
   QdrantRagProvider,
   type QdrantRagProviderConfig,
 } from '@mcp-abap-adt/qdrant-rag';
-import type { RagConfig } from '../agent-config';
+import type { RagBackendKind, RagConfig } from '../agent-config';
 import { readHanaBinding } from './hana-binding';
 import { apiKeyCredential } from './llm-factory';
 import type { Embedding } from './providers';
@@ -74,6 +74,29 @@ export function pgConnection(rag: RagConfig) {
       : {}),
   };
 }
+
+/** Whether collections of this kind persist through a provider. */
+export function isPersistentKind(kind: RagBackendKind): boolean {
+  return kind === 'hana-vector' || kind === 'pg-vector' || kind === 'qdrant';
+}
+
+/**
+ * The vector dimension persistent collections are written with. HANA and PG
+ * use the provider default (no dimension is configured), which the deployed
+ * `vector(n)` / `REAL_VECTOR(n)` column must equal; Qdrant sizes each
+ * collection from the embedder.
+ */
+export function collectionDimension(
+  kind: RagBackendKind,
+): number | 'from the embedder' | undefined {
+  if (kind === 'hana-vector' || kind === 'pg-vector')
+    return PROVIDER_DEFAULT_DIMENSION;
+  if (kind === 'qdrant') return 'from the embedder';
+  return undefined;
+}
+
+/** The `defaultDimension` of HanaVectorRagProvider and PgVectorRagProvider. */
+export const PROVIDER_DEFAULT_DIMENSION = 1536;
 
 /**
  * The provider behind the persistent collections, or null when the

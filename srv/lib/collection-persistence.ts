@@ -75,7 +75,7 @@ const str = (v: unknown): string | undefined =>
 /**
  * A record back into the registry's terms, or `{ foreign: true }` for anything
  * this hub did not write (another tool's record, a global one, a store name
- * that is not this collection's).
+ * that is not this collection's, a catalog owner that is not `hubOwner`'s).
  */
 export function decodeRecord(
   rec: RagCollectionRecord,
@@ -89,9 +89,14 @@ export function decodeRecord(
   const logicalId = str(attrs.logicalId);
   const hubOwner = attrs.hubOwner as Record<string, unknown> | undefined;
   const userId = str(hubOwner?.userId);
+  const ownerAgrees =
+    rec.scope === 'user'
+      ? rec.userId === userId
+      : rec.scope === 'session' && rec.sessionId === str(hubOwner?.sessionId);
   if (
     attrs.writtenBy !== WRITTEN_BY ||
     rec.scope === 'global' ||
+    !ownerAgrees ||
     !collectionId ||
     !logicalId ||
     !userId ||
@@ -143,6 +148,17 @@ export interface CollectionPersistence {
     meta: CollectionMeta,
     enabled: boolean,
   ): Promise<Result<void, RagError>>;
+  /**
+   * `update`, serialized per collection: `snapshot` is taken only after the
+   * collection's previous record write has settled, and `apply` (the memory
+   * change) runs on success before the next write takes its snapshot. Every
+   * write therefore carries the changes of the ones before it — no lost update.
+   */
+  updateRecord(
+    collectionId: string,
+    snapshot: () => { meta: CollectionMeta; enabled: boolean },
+    apply: () => void,
+  ): Promise<Result<void, RagError>>;
   /** Not implemented yet: restore at startup is Task 7. */
   restore(): Promise<Result<RestoredCollection[], RagError>>;
 }
@@ -160,14 +176,21 @@ export class CollectionBackendError extends Error {
     this.name = 'CollectionBackendError';
   }
 
-  /** 409 for a name that is taken (or an orphan store under it), else 502. */
+  /**
+   * 409 for a name that is taken (or an orphan store under it) or a collection
+   * being deleted, else 502.
+   */
   get httpStatus(): number {
     return this.cause instanceof DuplicateCollectionError ||
-      this.cause instanceof OrphanStoreError
+      this.cause instanceof OrphanStoreError ||
+      this.cause.code === COLLECTION_DELETING
       ? 409
       : 502;
   }
 }
+
+/** Error code: a write reached a collection whose deletion is out. */
+export const COLLECTION_DELETING = 'COLLECTION_DELETING';
 
 /** The value of an ok Result, or a CollectionBackendError naming `operation`. */
 export function unwrap<T>(r: Result<T, RagError>, operation: string): T {
@@ -208,9 +231,15 @@ export interface PersistentEntry {
   deleting?: boolean;
 }
 
-function refuseWhileDeleting(entry: PersistentEntry): void {
+function refuseWhileDeleting(entry: PersistentEntry, operation: string): void {
   if (entry.deleting)
-    throw new Error(`Collection "${entry.meta.id}" is being deleted`);
+    throw new CollectionBackendError(
+      operation,
+      new RagError(
+        `collection "${entry.meta.id}" is being deleted`,
+        COLLECTION_DELETING,
+      ),
+    );
 }
 
 /** The point id stays `doc:<collectionId>:<docId>`. */
@@ -240,7 +269,7 @@ export async function addPersistentDocument(
   doc: Omit<RagDocument, 'createdAt'>,
   namespace?: string,
 ): Promise<RagDocument> {
-  refuseWhileDeleting(entry);
+  refuseWhileDeleting(entry, 'add document');
   const createdAt = new Date().toISOString();
   const p = payload(entry, doc.id, doc.metadata, createdAt, namespace);
   await backendWrite('add document', () => entry.rag.upsert(doc.text, p));
@@ -257,7 +286,7 @@ export async function updatePersistentDocument(
   update: { text?: string; metadata?: Record<string, unknown> },
   namespace?: string,
 ): Promise<RagDocument> {
-  refuseWhileDeleting(entry);
+  refuseWhileDeleting(entry, 'update document');
   const text = update.text || existing.text;
   const metadata = update.metadata
     ? { ...existing.metadata, ...update.metadata }
@@ -281,7 +310,7 @@ export async function deletePersistentDocument(
   docId: string,
 ): Promise<boolean> {
   if (!entry.documents.has(docId)) return false;
-  refuseWhileDeleting(entry);
+  refuseWhileDeleting(entry, 'delete document');
   await backendWrite('delete document', () =>
     entry.rag.deleteById(`doc:${entry.meta.id}:${docId}`),
   );
@@ -312,6 +341,22 @@ export function createCollectionPersistence(
   provider: IRagProvider & Partial<IRagCatalogUpdater>,
   embedderFp: string,
 ): CollectionPersistence {
+  /** The tail of each collection's record-write chain. */
+  const recordWrites = new Map<string, Promise<unknown>>();
+  const update = (meta: CollectionMeta, enabled: boolean) =>
+    guarded(async (): Promise<Result<void, RagError>> => {
+      if (!isRagCatalogUpdater(provider))
+        return {
+          ok: false,
+          error: new RagError(
+            `provider "${provider.name}" cannot update a catalog record`,
+            'RAG_UNSUPPORTED',
+          ),
+        };
+      return provider.updateCollection(storeNameFor(meta.id), {
+        attributes: encodeAttributes(meta, enabled, embedderFp),
+      });
+    });
   return {
     create: (meta, enabled) =>
       guarded(() =>
@@ -337,20 +382,23 @@ export function createCollectionPersistence(
           };
         return provider.deleteCollection(storeNameFor(meta.id));
       }),
-    update: (meta, enabled) =>
-      guarded(async () => {
-        if (!isRagCatalogUpdater(provider))
-          return {
-            ok: false,
-            error: new RagError(
-              `provider "${provider.name}" cannot update a catalog record`,
-              'RAG_UNSUPPORTED',
-            ),
-          };
-        return provider.updateCollection(storeNameFor(meta.id), {
-          attributes: encodeAttributes(meta, enabled, embedderFp),
-        });
-      }),
+    update,
+    updateRecord: (collectionId, snapshot, apply) => {
+      const prev = recordWrites.get(collectionId) ?? Promise.resolve();
+      const run = prev.then(async () => {
+        const { meta, enabled } = snapshot();
+        const r = await update(meta, enabled);
+        if (r.ok) apply();
+        return r;
+      });
+      const tail = run.catch(() => undefined);
+      recordWrites.set(collectionId, tail);
+      void tail.then(() => {
+        if (recordWrites.get(collectionId) === tail)
+          recordWrites.delete(collectionId);
+      });
+      return run;
+    },
     restore: async () => ({
       ok: false,
       error: new RagError(

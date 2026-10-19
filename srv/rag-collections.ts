@@ -600,17 +600,25 @@ export class CollectionRegistry {
   ): Promise<CollectionMeta | null> {
     const stored = this.collections.get(id);
     if (!stored) return null;
+    const apply = (m: CollectionMeta) => {
+      if (update.displayName) m.displayName = update.displayName;
+      if (update.description) m.description = update.description;
+    };
     if (stored.persistent && this.persistence) {
-      const next = { ...stored.meta };
-      if (update.displayName) next.displayName = update.displayName;
-      if (update.description) next.description = update.description;
+      // Serialized with the collection's other record writes; see updateRecord.
       unwrap(
-        await this.persistence.update(next, this.enabledOf(stored)),
+        await this.persistence.updateRecord(
+          id,
+          () => {
+            const meta = { ...stored.meta };
+            apply(meta);
+            return { meta, enabled: this.enabledOf(stored) };
+          },
+          () => apply(stored.meta),
+        ),
         'update collection',
       );
-    }
-    if (update.displayName) stored.meta.displayName = update.displayName;
-    if (update.description) stored.meta.description = update.description;
+    } else apply(stored.meta);
     return {
       ...stored.meta,
       documentCount: stored.documents.size,
@@ -723,8 +731,10 @@ export class CollectionRegistry {
   }
 
   /**
-   * A persistent collection's flag is in its record: written there first, by
-   * its owner; a backend failure throws and leaves the flag as it was.
+   * A persistent collection's flag is one per collection, in its record: it
+   * is written there first, whoever sets it (owner or admin), and then becomes
+   * the owner's flag (and the caller's). A backend failure throws and leaves
+   * the flag as it was.
    */
   async setEnabled(
     userId: string,
@@ -732,11 +742,24 @@ export class CollectionRegistry {
     enabled: boolean,
   ): Promise<void> {
     const stored = this.collections.get(physicalId);
-    if (stored?.persistent && this.persistence && stored.meta.owner === userId)
+    if (stored?.persistent && this.persistence) {
       unwrap(
-        await this.persistence.update(stored.meta, enabled),
+        await this.persistence.updateRecord(
+          physicalId,
+          () => ({ meta: { ...stored.meta }, enabled }),
+          () => {
+            this.putEnabled(stored.meta.owner ?? '', physicalId, enabled);
+            this.putEnabled(userId, physicalId, enabled);
+          },
+        ),
         'set enabled',
       );
+      return;
+    }
+    this.putEnabled(userId, physicalId, enabled);
+  }
+
+  private putEnabled(userId: string, physicalId: string, enabled: boolean) {
     let m = this.enabledByUser.get(userId);
     if (!m) {
       m = new Map();

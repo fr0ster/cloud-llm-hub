@@ -41,6 +41,7 @@ import {
 import { ensurePresets, presetCollectionId } from '../../srv/presets';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
+import { dispatchRagTool } from '../../srv/rag-tool-dispatcher';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 import {
   findRoute,
@@ -82,13 +83,28 @@ let pgl: PgliteHandle;
 let real: PgClient;
 /** While true every statement fails, as against an unreachable database. */
 let down = false;
+/** While set, every statement waits for it: a slow backend. */
+let gate: Promise<void> | undefined;
 const client: PgClient = {
-  query: (sql, params) =>
-    down
-      ? Promise.reject(new Error('connect ECONNREFUSED (backend down)'))
-      : real.query(sql, params),
+  query: async (sql, params) => {
+    if (gate) await gate;
+    if (down) throw new Error('connect ECONNREFUSED (backend down)');
+    return real.query(sql, params);
+  },
   end: async () => {},
 };
+
+/** Hold every statement until the returned release is called. */
+function holdBackend(): () => void {
+  let release = () => {};
+  gate = new Promise<void>((r) => {
+    release = () => {
+      gate = undefined;
+      r();
+    };
+  });
+  return release;
+}
 
 function newProvider(): PgVectorRagProvider {
   return new PgVectorRagProvider({
@@ -172,6 +188,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   down = false;
+  gate = undefined;
   await real.query(
     `TRUNCATE "${pgl.schema}"."rag_documents", "${pgl.schema}"."rag_collections"`,
   );
@@ -579,5 +596,148 @@ describe('the PGlite harness', () => {
     provider = newProvider();
     expect(await recordOf(meta.id)).toBeDefined();
     expect((await backendDoc(meta.id, 'd1'))?.text).toBe('still here');
+  });
+});
+
+describe('fix round 1', () => {
+  it('a write while the collection is being deleted is a 409 CollectionBackendError', async () => {
+    const meta = userMeta('going', 'alice');
+    await reg.createCollection(meta);
+    await reg.addDocument(meta.id, { id: 'd1', text: 'hello', metadata: {} });
+    mockCdsContext.user = { id: 'alice', is: () => false };
+
+    const release = holdBackend();
+    const deleting = reg.deleteCollection(meta.id);
+    const conflict = async (p: Promise<unknown>) => {
+      const err = await p.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(CollectionBackendError);
+      expect((err as CollectionBackendError).httpStatus).toBe(409);
+    };
+    await conflict(
+      reg.addDocument(meta.id, { id: 'd2', text: 'late', metadata: {} }),
+    );
+    await conflict(reg.updateDocument(meta.id, 'd1', { text: 'late' }));
+    await conflict(reg.deleteDocument(meta.id, 'd1'));
+    expect(
+      await dispatchRagTool(reg, 'rag_add', {
+        collection: 'going',
+        id: 'late-fact',
+        text: 'late',
+      }),
+    ).toMatchObject({ ok: false, status: 409 });
+    const bulk = await reg.addDocumentsBulk(
+      meta.id,
+      [{ id: 'b1', text: 'late', metadata: {} }],
+      undefined,
+      { sleep: async () => {} },
+    );
+    expect(bulk.added).toBe(0);
+    expect(bulk.errors[0]).toMatch(/being deleted/);
+    release();
+    await expect(deleting).resolves.toBe(true);
+  });
+
+  it('concurrent rename and disable both land in the record', async () => {
+    const meta = userMeta('busy', 'alice');
+    await reg.createCollection(meta);
+    const release = holdBackend();
+    const writes = Promise.all([
+      reg.updateCollection(meta.id, { displayName: 'Renamed' }),
+      reg.setEnabled('alice', meta.id, false),
+      reg.updateCollection(meta.id, { description: 'described' }),
+    ]);
+    release();
+    await writes;
+    expect((await recordOf(meta.id))?.attributes).toMatchObject({
+      displayName: 'Renamed',
+      description: 'described',
+      enabled: false,
+    });
+    expect(reg.getCollection(meta.id)).toMatchObject({
+      displayName: 'Renamed',
+      description: 'described',
+    });
+    expect(reg.getEnabled('alice', meta.id)).toBe(false);
+  });
+
+  it('an admin setting the enabled flag persists it as the collection flag', async () => {
+    const meta = userMeta('owned', 'alice');
+    await reg.createCollection(meta);
+    await reg.setEnabled('admin', meta.id, false);
+    expect((await recordOf(meta.id))?.attributes).toMatchObject({
+      enabled: false,
+    });
+    expect(reg.getEnabled('alice', meta.id)).toBe(false);
+    expect(reg.getEnabled('admin', meta.id)).toBe(false);
+  });
+
+  describe('rag tool status', () => {
+    beforeEach(async () => {
+      mockCdsContext.user = { id: 'alice', is: () => false };
+      await reg.createCollection(userMeta('kb', 'alice'));
+      await dispatchRagTool(reg, 'rag_add', {
+        collection: 'kb',
+        id: 'fact',
+        text: 'the sky is blue',
+      });
+    });
+
+    it.each([
+      ['rag_add', { collection: 'kb', id: 'other', text: 'grass is green' }],
+      [
+        'rag_correct',
+        { collection: 'kb', id: 'fact', newText: 'red', reason: 'r' },
+      ],
+      ['rag_deprecate', { collection: 'kb', id: 'fact', reason: 'r' }],
+    ])('%s with the backend down is 502', async (name, args) => {
+      down = true;
+      const result = await dispatchRagTool(reg, name, args);
+      down = false;
+      expect(result).toMatchObject({ ok: false, status: 502 });
+    });
+
+    it('/rag/tool/:name answers with that status, and 400 for a plain failure', async () => {
+      const { router, routes } = makeMockRouter();
+      registerRagRoutes(router, reg);
+      const route = findRoute(routes, 'POST', '/rag/tool/:name');
+
+      down = true;
+      const failed = makeRes();
+      await route.handler(
+        makeReq({
+          params: { name: 'rag_correct' },
+          body: { collection: 'kb', id: 'fact', newText: 'red', reason: 'r' },
+        }),
+        failed.res,
+      );
+      down = false;
+      expect(failed._status).toBe(502);
+
+      const plain = makeRes();
+      await route.handler(
+        makeReq({
+          params: { name: 'rag_correct' },
+          body: { collection: 'kb', id: 'missing', newText: 'x', reason: 'r' },
+        }),
+        plain.res,
+      );
+      expect(plain._status).toBe(400);
+      expect(plain._body).not.toHaveProperty('status');
+    });
+  });
+
+  it('POST /rag/collections: an anonymous caller is 401 even with a wrong backend', async () => {
+    mockCdsContext.user = undefined;
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, reg);
+    const res = makeRes();
+    await findRoute(routes, 'POST', '/rag/collections').handler(
+      makeReq({ body: { id: 'n', displayName: 'n', backend: 'vector' } }),
+      res.res,
+    );
+    expect(res._status).toBe(401);
   });
 });

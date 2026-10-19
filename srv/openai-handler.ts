@@ -690,11 +690,16 @@ export async function handleChatCompletions(
           { sessionId },
         );
       } else {
-        // Memory goes at once; awaited for the stores' release (never rejects).
-        await getCollectionRegistry().deleteSessionCollections(
-          userId,
-          sessionId,
-        );
+        // Memory goes at once; the stores' release is not waited for, so a
+        // slow backend delete does not stall this chat request.
+        void getCollectionRegistry()
+          .deleteSessionCollections(userId, sessionId)
+          .catch((err: unknown) =>
+            log.warn('Session collection release failed', {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
       }
       // Re-build normalizedMessages with only the new user message (no stale history)
       const lastUserContent = extractText(

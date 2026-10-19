@@ -323,7 +323,7 @@ describe('collections over one shared backend', () => {
         owner: 'alice',
         backend: 'shared',
       });
-      expect(() => reg.deleteCollection('s__f_1')).not.toThrow();
+      await expect(reg.deleteCollection('s__f_1')).resolves.toBe(true);
       expect(reg.getCollection('s__f_1')).toBeNull();
       await settle(server);
       expect(collectionRemovalFailureCount()).toBe(1);

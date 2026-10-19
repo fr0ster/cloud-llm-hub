@@ -124,6 +124,8 @@ describe('decodeRecord', () => {
         attributes: attrs,
       },
       { ...own, attributes: ['not', 'an', 'object'] },
+      // the catalog owner disagrees with hubOwner
+      { ...own, scope: 'user', userId: 'mallory@example.com' },
     ];
     for (const rec of foreign)
       expect(decodeRecord(rec)).toEqual({ foreign: true });
@@ -225,6 +227,64 @@ describe('createCollectionPersistence', () => {
     const persistence = createCollectionPersistence(p, 'fp-1');
     expect((await persistence.update(userMeta, true)).ok).toBe(false);
     expect((await persistence.remove(userMeta)).ok).toBe(false);
+  });
+
+  it('a session record whose sessionId disagrees with hubOwner is foreign', () => {
+    const own = recordFor(sessionMeta);
+    expect(
+      decodeRecord({ ...own, sessionId: 'other-session' } as never),
+    ).toEqual({ foreign: true });
+  });
+
+  it('updateRecord serializes per collection: each snapshot sees the previous write applied', async () => {
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const sent: unknown[] = [];
+    const { p } = provider({
+      updateCollection: async (_name: string, patch: unknown) => {
+        await held;
+        sent.push(patch);
+        return { ok: true as const, value: undefined };
+      },
+    });
+    const persistence = createCollectionPersistence(p, 'fp-1');
+    const live = { ...userMeta };
+    let enabled = true;
+    const first = persistence.updateRecord(
+      live.id,
+      () => ({ meta: { ...live, displayName: 'Renamed' }, enabled }),
+      () => {
+        live.displayName = 'Renamed';
+      },
+    );
+    const second = persistence.updateRecord(
+      live.id,
+      () => ({ meta: { ...live }, enabled: false }),
+      () => {
+        enabled = false;
+      },
+    );
+    release();
+    expect((await first).ok).toBe(true);
+    expect((await second).ok).toBe(true);
+    expect(sent).toEqual([
+      {
+        attributes: encodeAttributes(
+          { ...userMeta, displayName: 'Renamed' },
+          true,
+          'fp-1',
+        ),
+      },
+      {
+        attributes: encodeAttributes(
+          { ...userMeta, displayName: 'Renamed' },
+          false,
+          'fp-1',
+        ),
+      },
+    ]);
   });
 
   it('restore is not implemented yet and says so', async () => {
