@@ -101,15 +101,18 @@ export const PROVIDER_DEFAULT_DIMENSION = 1536;
 /**
  * The provider behind the persistent collections, or null when the
  * `persistent` class is not a persistent kind. `env` carries VCAP_SERVICES.
+ * `kind` selects another class's backend (the session history uses the
+ * `session` class's).
  */
 export function createCollectionProvider(
   rag: RagConfig,
   embedding: Embedding,
   env: Env = process.env,
   ctors: RagCtors = defaultCtors,
+  kind: RagBackendKind = rag.backends.persistent,
 ): IRagProvider | null {
   const embedder: IRetrievalEmbedder = embedding.retrieval;
-  switch (rag.backends.persistent) {
+  switch (kind) {
     case 'hana-vector':
       return new ctors.HanaVectorRagProvider({
         name: 'hub-collections',

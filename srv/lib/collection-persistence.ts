@@ -8,18 +8,28 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  type CallOptions,
   DuplicateCollectionError,
+  type IQueryEmbedding,
   type IRag,
+  type IRagBackendWriter,
   type IRagCatalogUpdater,
   type IRagEditor,
+  type IRagFilteredDeleter,
   type IRagProvider,
+  type IRagScanner,
   isRagCatalogUpdater,
+  isRagFilteredDeleter,
   isRagScanner,
   OrphanStoreError,
   type RagCollectionOwner,
   type RagCollectionRecord,
   RagError,
   type RagJsonValue,
+  type RagMetadata,
+  type RagResult,
+  type RagScanFilter,
+  type RagScanPage,
   type RagScanRecord,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
@@ -635,6 +645,8 @@ export function createCollectionPersistence(
         const collections: RestoredCollection[] = [];
         const foreign: string[] = [];
         for (const rec of d.value.records) {
+          // The session history's own record: the hub's, but not a collection.
+          if (isHistoryRecord(rec)) continue;
           const decoded = decodeRecord(rec);
           if (!('meta' in decoded)) {
             foreign.push(rec.storeName);
@@ -801,4 +813,209 @@ export function restoreHealth(status: RestoreStatus): {
       },
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// The session history store (spec §6: one catalog record of its own)
+// ---------------------------------------------------------------------------
+
+/** The store name of the session history, beside the `c_…` collections. */
+export const HISTORY_STORE = 'h_history';
+
+/** The record the history store is cataloged under: global, hub-written. */
+function historyRecordOptions(adoptExisting: boolean) {
+  return {
+    scope: 'global' as const,
+    collectionName: HISTORY_STORE,
+    attributes: { writtenBy: WRITTEN_BY, source: 'history' },
+    ...(adoptExisting ? { adoptExisting: true } : {}),
+  };
+}
+
+/**
+ * Whether a catalog record is this hub's session history store. Restore and
+ * the expiry sweep pass over it: it is the hub's, but not a collection.
+ */
+export function isHistoryRecord(rec: RagCollectionRecord): boolean {
+  const a = rec.attributes;
+  return (
+    rec.storeName === HISTORY_STORE &&
+    rec.scope === 'global' &&
+    !!a &&
+    typeof a === 'object' &&
+    !Array.isArray(a) &&
+    (a as Record<string, unknown>).writtenBy === WRITTEN_BY
+  );
+}
+
+/**
+ * The history store, through the provider, with its catalog record ensured:
+ * created when absent, adopted when its rows exist without a record (spec §6),
+ * opened when the record is already there. A record under `h_history` that
+ * this hub did not write is refused and left alone.
+ */
+export async function ensureHistoryStore(
+  provider: IRagProvider,
+): Promise<Result<IRag, RagError>> {
+  return guarded(async (): Promise<Result<IRag, RagError>> => {
+    // adoptExisting: on the shared layout this writes the record whether or
+    // not rows exist. Qdrant's adopt requires the collection to exist, so a
+    // refused adopt is followed by a plain create.
+    let created = await provider.createCollection(
+      HISTORY_STORE,
+      historyRecordOptions(true),
+    );
+    if (!created.ok && !(created.error instanceof DuplicateCollectionError))
+      created = await provider.createCollection(
+        HISTORY_STORE,
+        historyRecordOptions(false),
+      );
+    if (created.ok) return { ok: true, value: created.value.rag };
+    if (!(created.error instanceof DuplicateCollectionError)) return created;
+    if (!provider.describeCollections || !provider.openCollection)
+      return {
+        ok: false,
+        error: new RagError(
+          `provider "${provider.name}" cannot open the existing history store`,
+          'RAG_UNSUPPORTED',
+        ),
+      };
+    const d = await provider.describeCollections();
+    if (!d.ok) return d;
+    const rec = d.value.records.find((r) => r.storeName === HISTORY_STORE);
+    if (!rec || !isHistoryRecord(rec))
+      return {
+        ok: false,
+        error: new RagError(
+          `catalog record "${HISTORY_STORE}" was not written by ${WRITTEN_BY}; left alone`,
+          'RAG_FOREIGN_RECORD',
+        ),
+      };
+    const opened = await provider.openCollection(rec);
+    if (!opened.ok) return opened;
+    return { ok: true, value: opened.value.rag };
+  });
+}
+
+export interface HistoryLog {
+  warn(message: string, data?: unknown): void;
+}
+
+/**
+ * The history store as one IRag that is usable at once: the store is opened
+ * through the provider on first use (ensureHistoryStore), and an open that
+ * fails is retried on the next call, never memoised. Scan and filtered
+ * delete pass through to the opened store.
+ */
+export class PersistentHistoryStore
+  implements IRag, IRagScanner, IRagFilteredDeleter
+{
+  private opening?: Promise<Result<IRag, RagError>>;
+
+  constructor(
+    private readonly provider: IRagProvider,
+    private readonly log?: HistoryLog,
+  ) {}
+
+  private store(): Promise<Result<IRag, RagError>> {
+    if (!this.opening) {
+      const run = ensureHistoryStore(this.provider).then((r) => {
+        if (!r.ok) {
+          this.log?.warn('Session history store could not be opened', {
+            error: r.error.message,
+          });
+          if (this.opening === run) this.opening = undefined;
+        }
+        return r;
+      });
+      this.opening = run;
+    }
+    return this.opening;
+  }
+
+  async query(
+    embedding: IQueryEmbedding,
+    k: number,
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>> {
+    const s = await this.store();
+    return s.ok ? s.value.query(embedding, k, options) : s;
+  }
+
+  async getById(
+    id: string,
+    options?: CallOptions,
+  ): Promise<Result<RagResult | null, RagError>> {
+    const s = await this.store();
+    return s.ok ? s.value.getById(id, options) : s;
+  }
+
+  async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
+    const s = await this.store();
+    return s.ok ? s.value.healthCheck(options) : s;
+  }
+
+  private async innerWriter(): Promise<Result<IRagBackendWriter, RagError>> {
+    const s = await this.store();
+    if (!s.ok) return s;
+    const w = s.value.writer?.();
+    return w
+      ? { ok: true, value: w }
+      : {
+          ok: false,
+          error: new RagError(
+            'the history store has no writer',
+            'RAG_UNSUPPORTED',
+          ),
+        };
+  }
+
+  writer(): IRagBackendWriter {
+    return {
+      upsertRaw: async (
+        id: string,
+        text: string,
+        metadata: RagMetadata,
+        options?: CallOptions,
+      ) => {
+        const w = await this.innerWriter();
+        return w.ok ? w.value.upsertRaw(id, text, metadata, options) : w;
+      },
+      deleteByIdRaw: async (id: string, options?: CallOptions) => {
+        const w = await this.innerWriter();
+        return w.ok ? w.value.deleteByIdRaw(id, options) : w;
+      },
+    };
+  }
+
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    const s = await this.store();
+    if (!s.ok) return s;
+    if (!isRagScanner(s.value))
+      return {
+        ok: false,
+        error: new RagError('the history store cannot scan', 'RAG_UNSUPPORTED'),
+      };
+    return s.value.scan(opts, options);
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    const s = await this.store();
+    if (!s.ok) return s;
+    if (!isRagFilteredDeleter(s.value))
+      return {
+        ok: false,
+        error: new RagError(
+          'the history store cannot delete by filter',
+          'RAG_UNSUPPORTED',
+        ),
+      };
+    return s.value.deleteWhere(filter, options);
+  }
 }

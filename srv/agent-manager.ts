@@ -33,6 +33,7 @@ import {
   type IRag,
   type IRagBackendWriter,
   type IRagEditor,
+  type IRagProvider,
   type ISubAgent,
   type Message,
   type RagMetadata,
@@ -54,7 +55,11 @@ import {
 } from '@mcp-abap-adt/llm-agent-mcp';
 import cds from '@sap/cds';
 import { z } from 'zod';
-import { type AgentConfig, getAgentConfig } from './agent-config';
+import {
+  type AgentConfig,
+  getAgentConfig,
+  type RagBackendKind,
+} from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
 
@@ -672,6 +677,7 @@ import {
 } from './lib/cloud-local-tools';
 import {
   createCollectionPersistence,
+  PersistentHistoryStore,
   type RestoreStatus,
   type RetryRestoreOptions,
   retryRestore,
@@ -685,6 +691,7 @@ import { makeHubLlm } from './lib/llm-factory';
 import { loggerAdapter } from './lib/logger';
 import {
   collectionDimension,
+  createCollectionProvider,
   isPersistentKind,
 } from './lib/rag-provider-factory';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
@@ -1171,12 +1178,53 @@ let sharedHistoryRag: SessionHistoryRag | undefined;
 export function getSharedHistoryRag(): SessionHistoryRag | undefined {
   if (sharedHistoryRag) return sharedHistoryRag;
   const stores = getProviders().stores;
-  if (stores.backendOf('session') === 'in-memory') return undefined;
+  const kind = stores.backendOf('session');
+  if (kind === 'in-memory') return undefined;
+  if (!isPersistentKind(kind)) {
+    sharedHistoryRag = new SessionHistoryRag(
+      stores.create('session', 'history'),
+      currentTurnOwner,
+    );
+    return sharedHistoryRag;
+  }
+  // A persistent kind: the history is a cataloged store (`h_history`, spec
+  // §6), opened through the provider — never a bare store without a record.
+  // Forget and the cap then go to the store (deleteWhere, scan); every
+  // failure there is logged and never breaks a chat turn.
+  const log = cds.log('session-history');
   sharedHistoryRag = new SessionHistoryRag(
-    stores.create('session', 'history'),
+    new PersistentHistoryStore(historyProvider(kind), {
+      warn: (m, d) => log.warn(m, d),
+    }),
     currentTurnOwner,
+    undefined,
+    { log: { warn: (m, d) => log.warn(m, d) } },
   );
   return sharedHistoryRag;
+}
+
+/**
+ * The provider of the `session` class's backend: the collections' provider
+ * when both classes are on the same backend, else one of its own.
+ */
+function historyProvider(kind: RagBackendKind): IRagProvider {
+  const p = getProviders();
+  if (p.stores.backendOf('persistent') === kind && p.collections)
+    return p.collections;
+  if (!p.embedding)
+    throw new Error(
+      `LLM_AGENT_SESSION_RAG_BACKEND is "${kind}" but no embedder was built`,
+    );
+  const provider = createCollectionProvider(
+    getAgentConfig().rag,
+    p.embedding,
+    process.env,
+    undefined,
+    kind,
+  );
+  if (!provider)
+    throw new Error(`no history provider for session backend "${kind}"`);
+  return provider;
 }
 
 /** Who is asking, for recall scoping — undefined outside a request. */

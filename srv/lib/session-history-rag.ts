@@ -17,14 +17,17 @@
  * one fact worth keeping. It costs context, and that is the deliberate trade.
  */
 
-import type {
-  CallOptions,
-  IQueryEmbedding,
-  IRag,
-  IRagBackendWriter,
-  RagError,
-  RagResult,
-  Result,
+import {
+  type CallOptions,
+  type IQueryEmbedding,
+  type IRag,
+  type IRagBackendWriter,
+  isRagFilteredDeleter,
+  isRagScanner,
+  type RagError,
+  type RagResult,
+  type RagScanFilter,
+  type Result,
 } from '@mcp-abap-adt/llm-agent';
 
 /** How much of the answer is kept. Tool output can run to tens of thousands of
@@ -49,6 +52,32 @@ const MAX_TURNS_PER_OWNER = 200;
  */
 export function turnOwner(userId: string, sessionId: string): string {
   return JSON.stringify([userId, sessionId]);
+}
+
+/** The (userId, sessionId) pair back out of a turnOwner, or undefined. */
+export function parseTurnOwner(
+  owner: string,
+): { userId: string; sessionId: string } | undefined {
+  try {
+    const v: unknown = JSON.parse(owner);
+    if (
+      Array.isArray(v) &&
+      v.length === 2 &&
+      typeof v[0] === 'string' &&
+      typeof v[1] === 'string'
+    )
+      return { userId: v[0], sessionId: v[1] };
+  } catch {
+    // Not a turnOwner: no filter can be built from it.
+  }
+  return undefined;
+}
+
+export interface SessionHistoryOptions {
+  /** Where best-effort failures of the persistent path are reported. */
+  log?: { warn(message: string, data?: unknown): void };
+  /** The clock behind a turn's `createdAt`; tests inject. */
+  now?: () => Date;
 }
 
 /**
@@ -100,7 +129,29 @@ export class SessionHistoryRag implements IRag {
     /** The conversation asking, or undefined outside a request. */
     private readonly currentOwner: () => string | undefined,
     private readonly maxTurnsPerOwner = MAX_TURNS_PER_OWNER,
+    private readonly options: SessionHistoryOptions = {},
   ) {}
+
+  /** Turns kept per conversation. */
+  get maxTurns(): number {
+    return this.maxTurnsPerOwner;
+  }
+
+  /**
+   * A store that can enumerate a conversation's turns (a persistent one) is
+   * the source of truth for them: the cap is applied from a scan, and turns
+   * carry the userId/sessionId/createdAt the scan filters and sorts on. Then
+   * `ids` is only a cache. Any other store keeps today's in-process path.
+   */
+  private get scans(): boolean {
+    return isRagScanner(this.inner);
+  }
+
+  private warn(message: string, err: unknown): void {
+    this.options.log?.warn(message, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   private async drop(ids: string[]): Promise<void> {
     const writer = this.writer();
@@ -117,6 +168,20 @@ export class SessionHistoryRag implements IRag {
 
   /** Forget a whole conversation — its session was cleared or reconnected. */
   async forgetOwner(owner: string): Promise<void> {
+    const key = parseTurnOwner(owner);
+    if (key && isRagFilteredDeleter(this.inner)) {
+      this.ids.delete(owner);
+      // Best-effort, as the in-process path: a failed delete is logged and
+      // never surfaces on the request that cleared the session. Turns written
+      // before turns carried userId/sessionId are not reached (spec §6).
+      try {
+        const r = await this.inner.deleteWhere(key);
+        if (!r.ok) this.warn('Session history forget failed', r.error);
+      } catch (err) {
+        this.warn('Session history forget failed', err);
+      }
+      return;
+    }
     const ids = this.ids.get(owner);
     if (!ids?.length) return;
     this.ids.delete(owner);
@@ -177,13 +242,24 @@ export class SessionHistoryRag implements IRag {
     const writer = this.writer();
     if (!writer) return false;
     const id = input.id ?? `turn:${input.owner}:${Date.now()}`;
+    const key = this.scans ? parseTurnOwner(input.owner) : undefined;
     try {
       const res = await writer.upsertRaw(
         id,
         renderTurn(input.userText, input.assistantText),
-        { owner: input.owner },
+        key
+          ? {
+              owner: input.owner,
+              ...key,
+              createdAt: (this.options.now?.() ?? new Date()).toISOString(),
+            }
+          : { owner: input.owner },
       );
       if (!res.ok) return false;
+      if (key) {
+        await this.capFromStore(input.owner, key, id);
+        return true;
+      }
       const ids = this.ids.get(input.owner) ?? [];
       ids.push(id);
       // Oldest first out: a conversation keeps its recent past, not all of it.
@@ -196,6 +272,78 @@ export class SessionHistoryRag implements IRag {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * The cap from the store: scan the conversation's turns, sort by
+   * `createdAt`, delete the oldest above the cap. Best-effort: a scan or a
+   * delete that fails is logged and never breaks the turn, which is already
+   * stored and answered — the next turn's pass catches up.
+   */
+  private async capFromStore(
+    owner: string,
+    filter: RagScanFilter,
+    justWritten: string,
+  ): Promise<void> {
+    const cached = this.ids.get(owner) ?? [];
+    if (!cached.includes(justWritten)) cached.push(justWritten);
+    this.ids.set(owner, cached);
+    if (!isRagScanner(this.inner)) return;
+    const turns: { id: string; createdAt: string }[] = [];
+    try {
+      let cursor: string | undefined;
+      do {
+        const page = await this.inner.scan(
+          cursor === undefined ? { filter } : { filter, cursor },
+        );
+        if (!page.ok) {
+          this.warn('Session history cap: scan failed', page.error);
+          return;
+        }
+        for (const r of page.value.records)
+          turns.push({
+            id: r.id,
+            createdAt:
+              typeof r.metadata.createdAt === 'string'
+                ? r.metadata.createdAt
+                : '',
+          });
+        if (page.value.cursor !== undefined && page.value.cursor === cursor) {
+          this.warn('Session history cap: scan did not advance', cursor);
+          return;
+        }
+        cursor = page.value.cursor;
+      } while (cursor !== undefined);
+    } catch (err) {
+      this.warn('Session history cap: scan failed', err);
+      return;
+    }
+    // Oldest first; ISO timestamps sort as strings, the id breaks a tie.
+    turns.sort((a, b) =>
+      a.createdAt === b.createdAt
+        ? a.id.localeCompare(b.id)
+        : a.createdAt < b.createdAt
+          ? -1
+          : 1,
+    );
+    const overflow = turns.splice(
+      0,
+      Math.max(0, turns.length - this.maxTurnsPerOwner),
+    );
+    this.ids.set(
+      owner,
+      turns.map((t) => t.id),
+    );
+    const writer = this.writer();
+    for (const t of overflow) {
+      try {
+        const r = await writer?.deleteByIdRaw(t.id);
+        if (r && !r.ok)
+          this.warn('Session history cap: delete failed', r.error);
+      } catch (err) {
+        this.warn('Session history cap: delete failed', err);
+      }
     }
   }
 }
