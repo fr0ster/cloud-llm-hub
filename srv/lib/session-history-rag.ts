@@ -198,7 +198,18 @@ export class SessionHistoryRag implements IRag {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const res = await this.inner.query(embedding, k, options);
+    let opts = options;
+    if (isRagScanner(this.inner)) {
+      // The persistent path: the caller's ragFilter is the chat's (namespace
+      // `${userId}:${destination}`, exposition, sessionId), and no turn carries
+      // a namespace, so passed through it would match nothing. The owner of
+      // the request is the only scope a turn has: filter on its userId and
+      // sessionId, which the persistent turns carry. No owner, no recall.
+      const key = parseTurnOwner(this.currentOwner() ?? '');
+      if (!key) return { ok: true as const, value: [] };
+      opts = { ...options, ragFilter: { ...key } };
+    }
+    const res = await this.inner.query(embedding, k, opts);
     if (!res.ok) return res;
     return { ok: true as const, value: this.mine(res.value) };
   }

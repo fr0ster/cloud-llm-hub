@@ -480,6 +480,59 @@ describe('persistent recall', () => {
     expect(texts[0]).toContain('ZDEMO_THIS_SESSION');
   });
 
+  // The options openai-handler builds, after the pipeline's `history` stage
+  // merges `sessionId` into them: a namespace no turn carries, an exposition,
+  // and the session.
+  const productionOptions = (userId: string, sessionId: string) => ({
+    sessionId,
+    ragFilter: {
+      namespace: `${userId}:DEST`,
+      exposition: ['readonly'],
+      sessionId,
+    },
+  });
+
+  it('with the full production options (namespace + exposition + sessionId) the turns are recalled', async () => {
+    await history(() => ALICE).recordTurn({
+      owner: ALICE,
+      userText: 'kangaroo fence',
+      assistantText: 'ZDEMO_RECALLED',
+    });
+    const r = await history(() => ALICE).query(
+      new TextOnlyEmbedding('kangaroo fence'),
+      10,
+      productionOptions('alice@example.com', 's-1'),
+    );
+    if (!r.ok) throw r.error;
+    const texts = r.value.map((x) => x.text);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('ZDEMO_RECALLED');
+  });
+
+  it('with the full production options another owner never sees the turns', async () => {
+    await history(() => ALICE).recordTurn({
+      owner: ALICE,
+      userText: 'kangaroo fence',
+      assistantText: 'ZDEMO_ALICE',
+    });
+    // Bob asks with Alice's session id in the filter: the owner decides.
+    const r = await history(() => BOB).query(
+      new TextOnlyEmbedding('kangaroo fence'),
+      10,
+      productionOptions('bob@example.com', 's-1'),
+    );
+    if (!r.ok) throw r.error;
+    expect(r.value).toEqual([]);
+    // No owner at all: nothing, whatever the filter says.
+    const none = await history(() => undefined).query(
+      new TextOnlyEmbedding('kangaroo fence'),
+      10,
+      productionOptions('alice@example.com', 's-1'),
+    );
+    if (!none.ok) throw none.error;
+    expect(none.value).toEqual([]);
+  });
+
   it('two turns of one owner in the same millisecond are both stored', async () => {
     const spy = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     try {
