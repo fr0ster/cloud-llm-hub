@@ -2,6 +2,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Message } from '@mcp-abap-adt/llm-agent';
+import { runWithReviewSignals } from './lib/review-scope';
 
 const als = new AsyncLocalStorage<{
   sessionId?: string;
@@ -23,7 +24,7 @@ export function runWithSessionId<T>(
   fn: () => T,
   history?: Message[],
 ): T {
-  return als.run({ sessionId, history }, fn);
+  return als.run({ sessionId, history }, () => runWithReviewSignals(fn));
 }
 
 export function getRequestSessionId(): string | undefined {

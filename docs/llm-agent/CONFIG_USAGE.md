@@ -57,6 +57,7 @@ are a different mechanism and do apply per request.
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | the capacity | How many callers may wait to be admitted — for a slot, for their own session, or for a retention place. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`. The queue passing three quarters is logged as pressure |
 | `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | unbounded | How many sessions may hold history and session collections. An idle one is evicted — history, collections and their files — to make room: first sessions no caller ever presented (a client keeping no cookie gets one per request), then the least recently used; a session with a pipeline or a RAG operation running is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller. With `/v1/rag/*` in use, set it above the capacity by the number of concurrent uploads |
 | `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS` | provider defaults | Sampling parameters |
+| `LLM_AGENT_SAP_RELEVANCE_SCORE` | `0.48` | Minimum top non-skill tool score for SAP relevance; validated in `0..1` |
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
@@ -65,6 +66,8 @@ All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits
 
 `LLM_AGENT_STEP_REVIEW_ENABLED=false` switches off the honesty controller's
 reviewer (`srv/agent-manager.ts`).
+
+`LLM_AGENT_SAP_RELEVANCE_SCORE` (default `0.48`, range `0..1`) is the minimum top non-skill tool retrieval score that marks a request as SAP-related for step review. SAP identifiers also qualify. The LLM critic runs only for SAP requests without tool calls or anomalous executor completion token counts (outside mean +/- two standard deviations over the last 50 steps per model, after 20 steps). The deterministic check always runs unless `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
 ## Long sessions
 

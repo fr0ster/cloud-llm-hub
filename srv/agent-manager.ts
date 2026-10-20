@@ -82,6 +82,7 @@ import {
 } from './lib/providers';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { requestSystemContextResolver } from './lib/request-system-context';
+import { recordToolScore } from './lib/review-scope';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
 import {
@@ -537,6 +538,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       );
     };
     const filtered = result.value.filter(isAllowed);
+    const topTool = filtered.find((row) => !isSkillId(row.metadata.id));
+    if (topTool) recordToolScore(topTool.score);
 
     if (filtered.length < result.value.length) {
       log.debug('RAG tool search filtered by exposition', {
@@ -2481,7 +2484,7 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
-    .withMainLlm(mainLlm)
+    .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([mcpAdapter]);
 

@@ -185,6 +185,7 @@ export interface AgentConfig {
      * default 3; 0 disables skills). Skills and tools compete for one top-K.
      */
     skillRagK: number;
+    sapRelevanceScore?: number;
 
     /**
      * `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true`: a request that names no
@@ -349,6 +350,17 @@ export function parseRagConfig(
     };
   }
   return rag;
+}
+
+export function parseSapRelevanceScore(env: NodeJS.ProcessEnv): number {
+  const raw = set(env, 'LLM_AGENT_SAP_RELEVANCE_SCORE');
+  const score = raw === undefined ? 0.48 : Number(raw);
+  if (!Number.isFinite(score) || score < 0 || score > 1) {
+    throw new Error(
+      'Invalid LLM_AGENT_SAP_RELEVANCE_SCORE: expected a number in 0..1',
+    );
+  }
+  return score;
 }
 
 /** `LLM_AGENT_SKILL_RAG_K`: a finite number, truncated and floored at 0; else 3. */
@@ -560,6 +572,7 @@ export function loadAgentConfig(): AgentConfig {
       historyRecencyWindow,
       ragQueryK,
       skillRagK: parseSkillRagK(process.env),
+      sapRelevanceScore: parseSapRelevanceScore(process.env),
       allowLlmOnlyFallback:
         process.env.LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK === 'true',
     },

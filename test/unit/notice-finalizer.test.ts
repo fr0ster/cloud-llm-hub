@@ -2,6 +2,8 @@ import type { FinalizerInput, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { renderNotice } from '../../srv/lib/notify-policy';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { recordToolScore } from '../../srv/lib/review-scope';
+import { runWithSessionId } from '../../srv/request-session';
 
 function baseInput(overrides: Partial<FinalizerInput>): FinalizerInput {
   return {
@@ -149,10 +151,7 @@ describe('NoticeFinalizer', () => {
     expect(
       onPartial.mock.calls[1][0].delta.startsWith('UNVERIFIED_WRITE:'),
     ).toBe(true);
-    // The response asserts a completed write, so the critic IS consulted — it is
-    // the claim, not the amount of work, that decides. It found nothing, so the
-    // deterministic issue is the only one that reaches the reader.
-    expect(benignLlm.chat).toHaveBeenCalled();
+    expect(benignLlm.chat).not.toHaveBeenCalled();
     expect(result.output).toBe(input.interpreterOutput);
   });
 
@@ -199,4 +198,31 @@ describe('NoticeFinalizer', () => {
     expect(onPartial).not.toHaveBeenCalled();
     expect(result.output).toBe('');
   });
+});
+
+test('NoticeFinalizer uses request-scoped retrieval score to gate the critic', async () => {
+  const chat = jest.fn(async () => ({
+    ok: true,
+    value: {
+      content: '{"possiblyFake":false,"confidence":"low","reasons":"ok"}',
+    },
+  }));
+  const finalizer = new NoticeFinalizer(new RecordingMcpClient(fakeInner()), {
+    chat,
+    streamChat: async function* () {},
+  } as never);
+  await runWithSessionId('sap', async () => {
+    recordToolScore(0.48);
+    await finalizer.finalize(
+      baseInput({
+        prompt: 'List objects',
+        interpreterOutput: 'Here they are.',
+      }),
+    );
+  });
+  expect(chat).toHaveBeenCalledTimes(1);
+  await runWithSessionId('chat', () =>
+    finalizer.finalize(baseInput({ prompt: 'Hello', interpreterOutput: 'Hi' })),
+  );
+  expect(chat).toHaveBeenCalledTimes(1);
 });
