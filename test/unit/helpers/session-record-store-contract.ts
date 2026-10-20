@@ -2,9 +2,10 @@
  * The contract every SessionRecordStore keeps, run against each backend
  * (SQLite in session-record-store.test.ts, PG in session-record-store.pg.test.ts).
  */
-import type {
-  SessionRecord,
-  SessionRecordStore,
+import {
+  type SessionRecord,
+  SessionRecordOwnerError,
+  type SessionRecordStore,
 } from '../../../srv/lib/session-record-store';
 
 const T0 = Date.parse('2026-10-20T10:00:00.000Z');
@@ -18,6 +19,14 @@ export function record(over: Partial<SessionRecord> = {}): SessionRecord {
     ttlMs: 3_600_000,
     ...over,
   };
+}
+
+/** The backend's own write, under every put and touch. */
+function spyOnWrite(store: SessionRecordStore) {
+  return jest.spyOn(
+    store as unknown as { writeRecord(r: SessionRecord): Promise<void> },
+    'writeRecord',
+  );
 }
 
 /** `make` returns an empty store for each test. */
@@ -68,7 +77,7 @@ export function sessionRecordStoreContract(
   it('touch writes the record at most once a minute', async () => {
     const r = record();
     await store.put(r);
-    const write = jest.spyOn(store, 'put');
+    const write = spyOnWrite(store);
     await store.touch({ ...r, lastActivity: T0 + 10_000 });
     await store.touch({ ...r, lastActivity: T0 + 50_000 });
     expect(write).not.toHaveBeenCalled();
@@ -76,6 +85,39 @@ export function sessionRecordStoreContract(
     await store.touch({ ...r, lastActivity: T0 + 61_000 });
     expect(write).toHaveBeenCalledTimes(1);
     expect((await store.get(r.userId, r.key))?.lastActivity).toBe(T0 + 61_000);
+    write.mockRestore();
+  });
+
+  it("put never replaces another user's record of the same key", async () => {
+    const r = record();
+    await store.put(r);
+    await expect(
+      store.put({ ...r, userId: 'bob@example.com', lastActivity: T0 + 1 }),
+    ).rejects.toBeInstanceOf(SessionRecordOwnerError);
+    expect(await store.get(r.userId, r.key)).toEqual(r);
+    expect(await store.get('bob@example.com', r.key)).toBeUndefined();
+    expect(await store.list()).toEqual([r]);
+  });
+
+  it('overlapping touches write once, and never an older lastActivity', async () => {
+    const r = record();
+    await store.put(r);
+    const write = spyOnWrite(store);
+    const original = Object.getPrototypeOf(store).writeRecord as (
+      r: SessionRecord,
+    ) => Promise<void>;
+    // The first write is the slow one: unserialised, the older one lands last.
+    const delays = [50, 0];
+    write.mockImplementation(async (x: SessionRecord) => {
+      await new Promise((res) => setTimeout(res, delays.shift() ?? 0));
+      return original.call(store, x);
+    });
+    await Promise.all([
+      store.touch({ ...r, lastActivity: T0 + 120_000 }),
+      store.touch({ ...r, lastActivity: T0 + 61_000 }),
+    ]);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect((await store.get(r.userId, r.key))?.lastActivity).toBe(T0 + 120_000);
     write.mockRestore();
   });
 }

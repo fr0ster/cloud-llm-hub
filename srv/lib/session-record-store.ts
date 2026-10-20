@@ -90,35 +90,77 @@ function decode(text: string): SessionRecord | undefined {
   return stored(o as unknown as SessionRecord);
 }
 
-/**
- * The `touch` throttle, shared by the backends: per key, the lastActivity of
- * the last record written. A key never written by this process is written.
- */
-abstract class ThrottledSessionRecordStore implements SessionRecordStore {
-  private readonly written = new Map<string, number>();
-
-  abstract put(r: SessionRecord): Promise<void>;
-  abstract get(userId: string, key: string): Promise<SessionRecord | undefined>;
-  abstract delete(userId: string, key: string): Promise<void>;
-  abstract list(): Promise<SessionRecord[]>;
-
-  async touch(r: SessionRecord): Promise<void> {
-    const last = this.written.get(slot(r.userId, r.key));
-    if (last !== undefined && r.lastActivity - last < TOUCH_INTERVAL_MS) return;
-    await this.put(r);
-  }
-
-  protected wrote(r: SessionRecord): void {
-    this.written.set(slot(r.userId, r.key), r.lastActivity);
-  }
-
-  protected forget(userId: string, key: string): void {
-    this.written.delete(slot(userId, key));
+/** A key that is already another user's: its record is never replaced. */
+export class SessionRecordOwnerError extends Error {
+  constructor(key: string) {
+    super(`session record "${key}" belongs to another user`);
+    this.name = 'SessionRecordOwnerError';
   }
 }
 
-function slot(userId: string, key: string): string {
-  return `${userId}\n${key}`;
+/**
+ * What the backends share: writes of one key run one at a time (a promise
+ * chain per key), a write never replaces another user's record, and the
+ * `touch` throttle — per key, the lastActivity of the last record written; a
+ * key never written by this process is written.
+ */
+abstract class SerialSessionRecordStore implements SessionRecordStore {
+  private readonly written = new Map<string, number>();
+  private readonly queues = new Map<string, Promise<unknown>>();
+
+  abstract get(userId: string, key: string): Promise<SessionRecord | undefined>;
+  abstract list(): Promise<SessionRecord[]>;
+  /** The user whose record holds `key`, of any owner; undefined when none. */
+  protected abstract ownerOf(key: string): Promise<string | undefined>;
+  protected abstract writeRecord(r: SessionRecord): Promise<void>;
+  /** Removes the record of `userId` under `key`; whether there was one. */
+  protected abstract deleteRecord(
+    userId: string,
+    key: string,
+  ): Promise<boolean>;
+
+  put(r: SessionRecord): Promise<void> {
+    return this.serial(r.key, () => this.write(r));
+  }
+
+  /**
+   * The threshold is checked inside the key's chain, so overlapping touches
+   * see each other's writes: one write per minute, and a lastActivity older
+   * than the last written one is never written.
+   */
+  touch(r: SessionRecord): Promise<void> {
+    return this.serial(r.key, async () => {
+      const last = this.written.get(r.key);
+      if (last !== undefined && r.lastActivity - last < TOUCH_INTERVAL_MS)
+        return;
+      await this.write(r);
+    });
+  }
+
+  delete(userId: string, key: string): Promise<void> {
+    return this.serial(key, async () => {
+      if (await this.deleteRecord(userId, key)) this.written.delete(key);
+    });
+  }
+
+  private async write(r: SessionRecord): Promise<void> {
+    const owner = await this.ownerOf(r.key);
+    if (owner !== undefined && owner !== r.userId)
+      throw new SessionRecordOwnerError(r.key);
+    await this.writeRecord(r);
+    this.written.set(r.key, r.lastActivity);
+  }
+
+  private serial<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const prev = this.queues.get(key) ?? Promise.resolve();
+    const result = prev.then(run);
+    const tail = result.catch(() => undefined);
+    this.queues.set(key, tail);
+    void tail.then(() => {
+      if (this.queues.get(key) === tail) this.queues.delete(key);
+    });
+    return result;
+  }
 }
 
 /**
@@ -142,7 +184,7 @@ async function openSqlite(file: string): Promise<DatabaseSync> {
   return db;
 }
 
-export class SqliteSessionRecordStore extends ThrottledSessionRecordStore {
+export class SqliteSessionRecordStore extends SerialSessionRecordStore {
   private opening?: Promise<DatabaseSync>;
 
   constructor(private readonly path: string) {
@@ -161,12 +203,19 @@ export class SqliteSessionRecordStore extends ThrottledSessionRecordStore {
     return this.opening;
   }
 
-  async put(r: SessionRecord): Promise<void> {
+  protected async ownerOf(key: string): Promise<string | undefined> {
+    const db = await this.db();
+    const row = db
+      .prepare('SELECT user_id FROM sessions WHERE key = ? LIMIT 1')
+      .get(key) as { user_id: string } | undefined;
+    return row?.user_id;
+  }
+
+  protected async writeRecord(r: SessionRecord): Promise<void> {
     const db = await this.db();
     db.prepare(
       'INSERT INTO sessions (user_id, key, record) VALUES (?, ?, ?) ON CONFLICT (user_id, key) DO UPDATE SET record = excluded.record',
     ).run(r.userId, r.key, JSON.stringify(stored(r)));
-    this.wrote(r);
   }
 
   async get(userId: string, key: string): Promise<SessionRecord | undefined> {
@@ -177,13 +226,12 @@ export class SqliteSessionRecordStore extends ThrottledSessionRecordStore {
     return row ? decode(row.record) : undefined;
   }
 
-  async delete(userId: string, key: string): Promise<void> {
+  protected async deleteRecord(userId: string, key: string): Promise<boolean> {
     const db = await this.db();
-    db.prepare('DELETE FROM sessions WHERE user_id = ? AND key = ?').run(
-      userId,
-      key,
-    );
-    this.forget(userId, key);
+    const r = db
+      .prepare('DELETE FROM sessions WHERE user_id = ? AND key = ?')
+      .run(userId, key);
+    return Number(r.changes) > 0;
   }
 
   async list(): Promise<SessionRecord[]> {
@@ -220,7 +268,7 @@ function recordId(key: string): string {
  * A record is the JSON text of its row, written with a zero vector: it is
  * never searched, so it is never embedded.
  */
-export class ProviderSessionRecordStore extends ThrottledSessionRecordStore {
+export class ProviderSessionRecordStore extends SerialSessionRecordStore {
   private opening?: Promise<OpenedRecordStore>;
   private readonly storePrefix?: string;
   private readonly zeroVector: number[];
@@ -302,7 +350,18 @@ export class ProviderSessionRecordStore extends ThrottledSessionRecordStore {
     return rec;
   }
 
-  async put(r: SessionRecord): Promise<void> {
+  /** The record row of `key`, of any owner. */
+  private async recordOf(key: string): Promise<SessionRecord | undefined> {
+    const rows = await this.scanAll({ sessionId: key });
+    const row = rows.find((x) => x.id === recordId(key));
+    return row && this.decodeRow(row);
+  }
+
+  protected async ownerOf(key: string): Promise<string | undefined> {
+    return (await this.recordOf(key))?.userId;
+  }
+
+  protected async writeRecord(r: SessionRecord): Promise<void> {
     const { writer } = await this.store();
     const w = await writer.upsertPrecomputedRaw(
       recordId(r.key),
@@ -311,7 +370,6 @@ export class ProviderSessionRecordStore extends ThrottledSessionRecordStore {
       { userId: r.userId, sessionId: r.key },
     );
     if (!w.ok) throw w.error;
-    this.wrote(r);
   }
 
   async get(userId: string, key: string): Promise<SessionRecord | undefined> {
@@ -322,12 +380,12 @@ export class ProviderSessionRecordStore extends ThrottledSessionRecordStore {
   }
 
   /** Deletes only a record of `userId`: a key alone never reaches another user's. */
-  async delete(userId: string, key: string): Promise<void> {
-    if (!(await this.get(userId, key))) return;
+  protected async deleteRecord(userId: string, key: string): Promise<boolean> {
+    if (!(await this.get(userId, key))) return false;
     const { writer } = await this.store();
     const d = await writer.deleteByIdRaw(recordId(key));
     if (!d.ok) throw d.error;
-    this.forget(userId, key);
+    return true;
   }
 
   async list(): Promise<SessionRecord[]> {
