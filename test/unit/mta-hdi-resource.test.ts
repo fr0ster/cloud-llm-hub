@@ -34,10 +34,10 @@ describe('mta.yaml optional HDI resource (persistent RAG on HANA)', () => {
     expect(hdi.optional).toBe(true);
   });
 
-  it('is required by srv as optional, so an inactive resource cannot break the deploy', () => {
+  it('is required by srv by name only: mbt rejects an optional field on a requires entry', () => {
     const srv = mta.modules.find((m) => m.name === 'cloud-llm-hub-srv');
     const dep = srv?.requires?.find((r) => r.name === 'cloud-llm-hub-hdi');
-    expect(dep).toEqual({ name: 'cloud-llm-hub-hdi', optional: true });
+    expect(dep).toEqual({ name: 'cloud-llm-hub-hdi' });
   });
 
   it('the srv module does not request it with a binding group or parameters', () => {

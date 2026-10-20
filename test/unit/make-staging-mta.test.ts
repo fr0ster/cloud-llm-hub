@@ -23,7 +23,6 @@ modules:
       - name: cloud-llm-hub-auth
       - name: cloud-llm-hub-ai-core
       - name: cloud-llm-hub-hdi
-        optional: true
   - name: cloud-llm-hub
     type: approuter.nodejs
     parameters:
@@ -152,7 +151,6 @@ describe('make-staging-mta', () => {
     expect(hdi.parameters).toEqual({ 'service-name': '<your-hdi-service>' });
     expect(doc.modules[0].requires).toContainEqual({
       name: 'cloud-llm-hub-staging-hdi',
-      optional: true,
     });
   });
 
