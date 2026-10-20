@@ -1043,6 +1043,16 @@ export function getProviders(): Providers {
   return providers;
 }
 
+/**
+ * The query embedder for a search the hub runs itself (a chat's collections):
+ * one embedding of the query, shared by every store searched with it. The chat
+ * controller carries none, since it retrieves nothing.
+ */
+export function getQueryEmbedder(): IQueryEmbedder | undefined {
+  const e = providers?.embedding;
+  return e ? agentQueryEmbedder(e) : undefined;
+}
+
 /** False until server startup has built the providers; requests wait for it. */
 export function isProvidersReady(): boolean {
   return providers !== null;

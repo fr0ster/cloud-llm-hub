@@ -28,6 +28,8 @@ export const harness = {
   closedDestination: undefined as string | undefined,
   /** What `retryAfterForDestination` reports while a destination is closed. */
   retryAfterSeconds: undefined as number | undefined,
+  /** What `getQueryEmbedder` answers; none by default, as with no embedder configured. */
+  queryEmbedder: undefined as unknown,
   /** What `recMcp.unanswered(traceId)` reports for the current test. */
   unanswered: [] as Array<{ call: { name: string } }>,
   /** Every `closeDestination(name, reason)` call a test observed. */
@@ -75,6 +77,7 @@ export const harness = {
     harness.agentGate = Promise.resolve();
     harness.closedDestination = undefined;
     harness.retryAfterSeconds = undefined;
+    harness.queryEmbedder = undefined;
     harness.unanswered = [];
     harness.closeDestinationCalls = [];
     harness.establishCalls = [];
@@ -177,6 +180,7 @@ export function agentManagerMock() {
     getCurrentClassifierModel: () => 'm',
     getDestinationStates: () => [],
     getSharedHistoryRag: () => undefined,
+    getQueryEmbedder: () => harness.queryEmbedder,
     runWithRequestConnection: (_c: unknown, fn: () => unknown) => fn(),
     // Mocked ahead of Tasks 15 and 18, which add these to the handlers' imports;
     // without them every channel test would break at Task 15. Driven off

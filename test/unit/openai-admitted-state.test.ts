@@ -124,6 +124,34 @@ describe('the RAG stores a request names', () => {
     expect(Object.keys(deps.ragStores)).not.toContain('col-1');
   });
 
+  it('embed the query once for every collection the chat names', async () => {
+    configure();
+    const registry = manager.getCollectionRegistry();
+    const embedQuery = jest.fn(async () => ({ vector: [1, 0] }));
+    harness.queryEmbedder = { embedQuery };
+    // Like VectorRag: each store asks the shared query embedding for its vector.
+    const store = {
+      query: async (e: { toVector(): Promise<number[]> }) => {
+        await e.toVector();
+        return { ok: true, value: [] };
+      },
+      healthCheck: async () => ({ ok: true, value: undefined }),
+      getById: async () => ({ ok: true, value: null }),
+    };
+    jest.spyOn(registry, 'getRagStores').mockResolvedValue({} as never);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(store as never);
+    harness.process = async () => ({
+      ok: true,
+      value: { content: 'done', stopReason: 'stop' },
+    });
+
+    const req = fakeReq(body()) as unknown as Request;
+    req.headers['x-rag-collections'] = 'col-1,col-2';
+    await handleChatCompletions(req, fakeRes() as unknown as Response);
+
+    expect(embedQuery).toHaveBeenCalledTimes(1);
+  });
+
   it('find collection documents that carry no exposition tag', async () => {
     configure();
     const registry = manager.getCollectionRegistry();
