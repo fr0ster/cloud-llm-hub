@@ -26,7 +26,6 @@ import {
   getCurrentDestination,
   getCurrentModel,
   getDestinationStates,
-  getSharedHistoryRag,
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
@@ -55,7 +54,7 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { turnOwner } from './lib/session-history-rag';
+import { recordTurn } from './lib/session-turns';
 import {
   destinationClosedText,
   openAiDoorRefusal,
@@ -134,36 +133,6 @@ function extractText(c: unknown): string {
 
 // Re-exported: tests and other modules imported these from the handler.
 export { appendToSession, clearSession, getSessionHistory };
-
-/**
- * Store the completed turn for semantic recall, beside the verbatim store.
- *
- * The two answer different questions. `appendToSession` keeps the last turns
- * word for word, which is what resolves "that domain" on the very next
- * message. This one survives the recency window: many turns later, when the
- * wording is gone, a similar question still finds what the object was called.
- *
- * Fire-and-forget on purpose. The answer has already been sent; a failure to
- * remember it must not surface as an error on a request that succeeded.
- */
-function recordTurnForRecall(
-  sessionId: string,
-  userId: string,
-  lastUser: Message,
-  answer: string,
-): void {
-  const rag = getSharedHistoryRag();
-  if (!rag) return;
-  const question = extractText(lastUser.content);
-  if (!question || !answer) return;
-  void rag
-    .recordTurn({
-      owner: turnOwner(userId, sessionId),
-      userText: question,
-      assistantText: answer,
-    })
-    .catch(() => {});
-}
 
 /**
  * Trim messages for SmartAgent context to prevent context window overflow.
@@ -1262,7 +1231,7 @@ async function serveChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          recordTurnForRecall(sessionId, userId, lastUser, accumulatedContent);
+          recordTurn(sessionId, userId, lastUser, accumulatedContent);
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
@@ -1361,7 +1330,7 @@ async function serveChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
-        recordTurnForRecall(sessionId, userId, lastUser, finalContent);
+        recordTurn(sessionId, userId, lastUser, finalContent);
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.

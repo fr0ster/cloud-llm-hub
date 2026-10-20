@@ -3,7 +3,7 @@ import {
   warmSystemIdentity,
 } from './lib/system-identity-cache';
 /**
- * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes two
+ * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes
  * tools for an external planner (e.g. Claude Code):
  *
  *   - `list_destinations` — the SAP systems this instance can reach, so the
@@ -12,13 +12,13 @@ import {
  *     the chosen destination and return its text.
  *
  * The division of labour lives in `execute_step`'s description: the connecting
- * client is the planner/controller; the agent behind the tool is a stateless
- * executor. The full ABAP tool set stays on `/mcp/stream/http`; this is an
+ * client is the planner/controller; the agent behind the tool is an
+ * executor that can continue an explicitly opened session. The full ABAP tool set stays on `/mcp/stream/http`; this is an
  * additive, parallel surface.
  *
  * Auth is unchanged: SAP credentials arrive in `x-sap-login` / `x-sap-password`
  * headers (set by the auth proxy's defaults or overridden by the client). The
- * server stores no credentials. The destination is chosen per call (the
+ * server binds held connections to the caller credentials. The destination is chosen per call (the
  * `destination` argument), so the SAP connection is built lazily inside the
  * `execute_step` handler — `list_destinations` and the MCP handshake need no
  * connection at all.
@@ -29,10 +29,11 @@ import './env-setup';
 import { randomUUID } from 'node:crypto';
 import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import type { Message } from '@mcp-abap-adt/llm-agent';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 import {
   closeDestination,
@@ -53,6 +54,7 @@ import {
   theDoor,
 } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
+import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { bearerToken, computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
@@ -61,6 +63,17 @@ import {
   runWithRequestSystem,
 } from './lib/request-system-context';
 import { Semaphore } from './lib/semaphore';
+import {
+  acquireSessionConnection,
+  releaseRequestConnection,
+} from './lib/session-connection';
+import {
+  openSession,
+  resolveSession,
+  SessionLimitError,
+  takeRevivalNotice,
+} from './lib/session-lifecycle';
+import { recordTurn } from './lib/session-turns';
 import { resolveSystemType } from './lib/system-type';
 import {
   destinationClosedText,
@@ -73,6 +86,7 @@ import {
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
+import { appendToSession, getSessionHistory } from './session-store';
 
 /**
  * The cap on concurrent `execute_step` runs when no door is configured.
@@ -94,11 +108,11 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'You say WHAT, the executor decides HOW. State the goal in plain business/domain terms. Do NOT prescribe the approach — do not name SAP transactions, GUI steps, MCP tools, function modules, or endpoints. Your theoretical knowledge of HOW something is usually done in SAP (e.g. "run ST22", "use SE11") is very likely WRONG here: the executor works through ADT and picks the right tool itself — telling it HOW only pushes it down a wrong path. Name the subject/outcome (the WHAT — e.g. "the latest short dumps", "table VBAK’s definition"), never the method (the HOW). If it cannot do something, it will tell you.',
   '',
-  'Roles. The agent is a capable ABAP executor: it knows the system and selects the right MCP tools by analysing your request, but it does NOT plan, keeps NO state between calls, and cannot adjust based on earlier results. YOU are the planner and controller.',
+  'Roles. The agent is a capable ABAP executor: it knows the system and selects the right MCP tools by analysing your request, but it does NOT plan. It continues the conversation and ABAP connection (debugger, locks) when given a session. YOU are the planner and controller.',
   '',
   'Two kinds of knowledge — keep them apart. GENERAL ABAP knowledge (the language, RAP, CDS, DDIC, the patterns) is yours to bring: if your client supports skills, load `sap-abap` from the `sap-skills` marketplace (invoke it as `sap-abap:sap-abap`) — that exact one, the marketplace ships ~33 similarly named SAP plugins (`sap-abap-cds`, `sap-sqlscript`, `sap-cap-capire` …) which are not it. CONCRETE knowledge about THIS system — what actually exists in it, how it really behaves, which tool reaches it — belongs to the executor, not to you. So use the skill to decide WHAT to build and to write any source you hand over; never use it to prescribe HOW the executor should reach the system.',
   '',
-  'ONE object per step — keep every step MINIMAL. Each call is an isolated unit of work with its own connection and its own executor session, so one object = one step = one call. NEVER batch several objects into a single step: a long step can exceed the client timeout, and a step cut mid-flight leaves objects created-but-INACTIVE and LOCKED by the orphaned session — which then blocks every later attempt to activate them.',
+  'ONE object per step — keep every step MINIMAL. Keep one object per step, including when several steps share a session. NEVER batch several objects into a single step: a long step can exceed the client timeout, and a step cut mid-flight leaves objects created-but-INACTIVE and LOCKED by the orphaned session — which then blocks every later attempt to activate them.',
   '',
   'Parallel is allowed — sequencing is only for real dependencies. Steps that do not depend on each other’s result MAY be dispatched in parallel; only a step that needs a previous step’s outcome waits for it. Do not serialise work that has no dependency between its parts.',
   '',
@@ -114,7 +128,7 @@ const EXECUTE_STEP_DESCRIPTION = [
   '- ANALYSE each response before the next step; the executor can err or hallucinate. An impossible request answered confidently is an error or a problem, not success — surface it; do not accept the hallucination.',
   '- CORRECT the plan from what the executor actually returns; do not assume success just because text came back.',
   '',
-  'Each call is independent — pass everything the step needs here; nothing carries over.',
+  'For multi-step work call `session_open` first, pass its key as `session` in every call, and call `session_close` when done. With `session`, execute_step continues the conversation and ABAP connection (debugger, locks). Calls of one session run one after another. Without `session`, each call is independent as before.',
   '',
   "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts. Use it to track and budget what the executor spends across your plan.",
 ].join('\n');
@@ -150,8 +164,49 @@ export interface StepCaller {
 export async function executeStep(
   req: Request,
   caller: StepCaller,
+  args: { session?: string; destination?: string; task: string },
+  callerSignal?: AbortSignal,
+) {
+  if (args.session === undefined)
+    return executeStepRun(req, caller, args, callerSignal);
+  try {
+    const s = await resolveSession(caller.userId, args.session);
+    if (!s) return textResult('SESSION_NOT_FOUND', true);
+    const result = await longSessions().run(s, async () => {
+      if (
+        args.destination !== undefined &&
+        args.destination.trim() !== s.destination
+      ) {
+        return textResult(
+          `Destination "${args.destination}" differs from session destination "${s.destination}".`,
+          true,
+        );
+      }
+      return executeStepRun(
+        req,
+        caller,
+        { ...args, destination: s.destination },
+        callerSignal,
+        s,
+      );
+    });
+    return 'refused' in result ? textResult(result.refused, true) : result;
+  } catch (err) {
+    return textResult(
+      err instanceof SessionLimitError
+        ? 'SESSION_LIMIT'
+        : `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+      true,
+    );
+  }
+}
+
+async function executeStepRun(
+  req: Request,
+  caller: StepCaller,
   { destination, task }: { destination?: string; task: string },
   callerSignal?: AbortSignal,
+  longSession?: LongSession,
 ) {
   const log = cds.log('agent-mcp');
   const { userId, exposition } = caller;
@@ -209,8 +264,8 @@ export async function executeStep(
     // Ephemeral session per call → the executor loads/saves no history.
     // Doubles as the per-trace telemetry id (Verified fact 10): unique per
     // call, threaded below as `trace.traceId`, dropped in the `finally`.
-    const sessionId = `agent-step-${randomUUID()}`;
-    traceId = sessionId;
+    traceId = `agent-step-${randomUUID()}`;
+    const sessionId = longSession?.key ?? traceId;
 
     // Admitted after the agent is resolved, like every channel, and before a
     // connection is built: a queued step holds no CSRF-fetched SAP session.
@@ -240,27 +295,50 @@ export async function executeStep(
     pipeline = admission.admitted;
     const admitted = pipeline;
 
-    const built = await buildConnectionForDestination(req, targetDestination);
-    connection = built.connection;
-    const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
-      built;
+    let dumpScope: ReturnType<typeof computeDumpScope>;
+    let notice: string | undefined;
+    if (longSession) {
+      let refusal = '';
+      const response = {
+        writeHead() {},
+        end(body?: string) {
+          refusal = body ?? '';
+        },
+        setHeader() {},
+      } as unknown as Response;
+      const acquired = await acquireSessionConnection(
+        longSession,
+        req,
+        response,
+        targetDestination,
+      );
+      if (acquired.handled) return textResult(refusal, true);
+      connection = acquired.connection;
+      dumpScope = acquired.dumpScope;
+      notice = acquired.notice;
+    } else {
+      const built = await buildConnectionForDestination(req, targetDestination);
+      connection = built.connection;
+      const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
+        built;
 
-    // Stable, non-reversible principal + system scope for the principal-scoped
-    // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
-    // paths via computeDumpScope so the tool has a principal wherever it can
-    // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
-    // raw login never enters a key/log; jwtSub is null on this path.
-    const dumpScope = computeDumpScope({
-      cdsUserId: userId,
-      usedBasicOverride,
-      sapLogin,
-      destinationAuthType: sapConfig.authType,
-      resolvedUsername: resolved.username,
-      destinationName: resolved.destinationName,
-      rawClient: sapClient,
-      resolvedClient: resolved.sapConfig.client,
-      jwtSub: null,
-    });
+      // Stable, non-reversible principal + system scope for the principal-scoped
+      // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
+      // paths via computeDumpScope so the tool has a principal wherever it can
+      // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
+      // raw login never enters a key/log; jwtSub is null on this path.
+      dumpScope = computeDumpScope({
+        cdsUserId: userId,
+        usedBasicOverride,
+        sapLogin,
+        destinationAuthType: sapConfig.authType,
+        resolvedUsername: resolved.username,
+        destinationName: resolved.destinationName,
+        rawClient: sapClient,
+        resolvedClient: resolved.sapConfig.client,
+        jwtSub: null,
+      });
+    }
 
     const opts = {
       stream: false,
@@ -270,7 +348,7 @@ export async function executeStep(
         namespace: `${userId}:${targetDestination}`,
         exposition,
       },
-      trace: { traceId: sessionId },
+      trace: { traceId },
       // Surface skill selection on the planner path (chat has its own
       // sessionLogger; execute_step had none, so skill matching was invisible).
       sessionLogger: {
@@ -298,7 +376,10 @@ export async function executeStep(
             conn,
             () =>
               agentHandle.agent.process(
-                [{ role: 'user', content: task }],
+                [
+                  ...(longSession ? getSessionHistory(sessionId, userId) : []),
+                  { role: 'user', content: task },
+                ],
                 opts,
               ),
             dumpScope,
@@ -351,7 +432,16 @@ export async function executeStep(
       totalTokens: r.value.usage?.totalTokens,
       stopReason: r.value.stopReason,
     });
-    return textResult(rawContent, false);
+    if (longSession) {
+      const lastUser: Message = { role: 'user', content: task };
+      appendToSession(sessionId, userId, lastUser, {
+        role: 'assistant',
+        content: rawContent,
+      });
+      recordTurn(sessionId, userId, lastUser, rawContent);
+    }
+    if (longSession && takeRevivalNotice(longSession)) notice = 'revived';
+    return textResult(notice ? `${notice}\n${rawContent}` : rawContent, false);
   } catch (err) {
     if (targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
@@ -367,7 +457,8 @@ export async function executeStep(
     // admission never ran the pipeline, so there is no per-trace bucket to
     // free — dropRequest only makes sense once the pipeline actually ran.
     await pipeline?.drain();
-    await safeStop(connection);
+    if (longSession) await releaseRequestConnection(connection, longSession);
+    else await safeStop(connection);
     if (pipeline) {
       // Free the per-trace telemetry bucket — nobody else calls dropRequest,
       // so omitting this leaks memory per call (Verified fact 10). Guarded: a
@@ -524,12 +615,65 @@ export async function createAgentMcpServerForRequest(
     },
   );
 
+  server.registerTool(
+    'session_open',
+    {
+      description:
+        'Open a session for multi-step work sharing conversation and ABAP connection.',
+      inputSchema: { destination: z.string().optional() },
+    },
+    async ({ destination }) => {
+      const target =
+        destination?.trim() ||
+        (req.headers['x-sap-destination'] as string | undefined)?.trim();
+      const s = await openSession(userId, target);
+      return 'refused' in s
+        ? textResult(s.refused, true)
+        : textResult(
+            JSON.stringify({
+              session: s.key,
+              ttlSeconds: longSessions().ttlMs / 1000,
+              destination: s.destination,
+            }),
+          );
+    },
+  );
+  server.registerTool(
+    'session_close',
+    {
+      description:
+        'Close a session and release its ABAP connection and conversation.',
+      inputSchema: { session: z.string() },
+    },
+    async ({ session }) => {
+      let s: LongSession | undefined;
+      try {
+        s = await resolveSession(userId, session);
+      } catch (err) {
+        if (err instanceof SessionLimitError)
+          return textResult('SESSION_LIMIT', true);
+        throw err;
+      }
+      if (!s) return textResult('SESSION_NOT_FOUND', true);
+      try {
+        await longSessions().close(userId, session, 'explicit');
+      } catch (err) {
+        log.warn('session close cleanup failed', { error: String(err) });
+      }
+      return textResult(JSON.stringify({ closed: true }));
+    },
+  );
+
   // --- execute_step -------------------------------------------------------
   server.registerTool(
     'execute_step',
     {
       description: EXECUTE_STEP_DESCRIPTION,
       inputSchema: {
+        session: z
+          .string()
+          .optional()
+          .describe('Session key returned by session_open.'),
         destination: z
           .string()
           .optional()
@@ -545,8 +689,10 @@ export async function createAgentMcpServerForRequest(
     },
     // `extra.signal` is aborted by the SDK when the transport closes; it lets a
     // step still queued at the door leave, and reaches nothing after admission.
-    async (args: { destination?: string; task: string }, extra) =>
-      executeStep(req, { userId, exposition }, args, extra.signal),
+    async (
+      args: { session?: string; destination?: string; task: string },
+      extra,
+    ) => executeStep(req, { userId, exposition }, args, extra.signal),
   );
 
   const transport = new StreamableHTTPServerTransport({

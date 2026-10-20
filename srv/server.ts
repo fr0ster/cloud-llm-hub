@@ -69,6 +69,7 @@ import {
   lifecycleHooks,
   openSession,
   resolveSession,
+  SessionLimitError,
   startSessionSweep,
   takeRevivalNotice,
 } from './lib/session-lifecycle';
@@ -702,7 +703,10 @@ cds.on('bootstrap', (app: Application) => {
       const error = err instanceof Error ? err : new Error(String(err));
       alog.error('agent-stream handler error', { error: error.message });
       if (!res.headersSent) {
-        res.status(500).json({ error: 'Internal Server Error' });
+        const limited = err instanceof SessionLimitError;
+        res.status(limited ? 429 : 500).json({
+          error: limited ? 'SESSION_LIMIT' : 'Internal Server Error',
+        });
       }
     } finally {
       if (cleanup) {
