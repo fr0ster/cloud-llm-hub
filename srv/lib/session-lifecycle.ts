@@ -23,12 +23,13 @@ import {
   isProvidersReady,
   setSessionDestination,
 } from '../agent-manager';
+import type { CollectionRegistry } from '../rag-collections';
 import {
   appendToSession,
   hasSessionHistory,
   SESSION_MAX_MESSAGES,
 } from '../session-store';
-import { deleteSession } from './gatekeeper';
+import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
 import {
   type LongSession,
@@ -84,6 +85,24 @@ export class SessionLimitError extends Error {
   constructor() {
     super('session limit reached');
     this.name = 'SessionLimitError';
+  }
+}
+
+/** Retry-After of a revival refused before the providers are built. */
+export const PROVIDERS_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * A revival refused because the providers are not built yet: the history
+ * window cannot be read, and a session revived without it would never get it
+ * back. The client retries; the record waits. Same as the readiness gate on
+ * the chat routes, which refuses rather than waits.
+ */
+export class SessionNotReadyError extends Error {
+  readonly refused = 'SESSION_STORE_UNAVAILABLE';
+  readonly retryAfterSeconds = PROVIDERS_RETRY_AFTER_SECONDS;
+  constructor() {
+    super('the hub is starting: the session cannot be revived yet');
+    this.name = 'SessionNotReadyError';
   }
 }
 
@@ -143,8 +162,9 @@ export async function openSession(
 /**
  * The live session under this key, or one revived from its record; undefined
  * when there is neither (never opened, closed, expired, another user's).
- * Rejects with `SessionLimitError` when a revival finds no room, and with the
- * store's error when the record cannot be read.
+ * Rejects with `SessionLimitError` when a revival finds no room, with
+ * `SessionNotReadyError` when a record exists but the providers are not built,
+ * and with the store's error when the record cannot be read.
  */
 export function resolveSession(
   userId: string,
@@ -226,6 +246,7 @@ async function revive(
     if (mayDiscard()) await discardSession(userId, key);
     return undefined;
   }
+  if (!isProvidersReady()) throw new SessionNotReadyError();
   const turns = await readWindow(userId, key);
   // Closed or discarded while the record and the history were read.
   if (isClosed(userId, key)) return undefined;
@@ -265,7 +286,7 @@ async function revive(
  */
 async function readWindow(userId: string, key: string): Promise<StoredTurn[]> {
   if (hasSessionHistory(key, userId)) return [];
-  const rag = isProvidersReady() ? getSharedHistoryRag() : undefined;
+  const rag = getSharedHistoryRag();
   if (!rag) return [];
   try {
     const turns = await rag.listTurns(turnOwner(userId, key));
@@ -315,4 +336,17 @@ export function startSessionSweep(intervalMs = 60_000): () => void {
   );
   timer.unref();
   return () => clearInterval(timer);
+}
+
+/** Session collections with a durable record belong to lifecycle cleanup. */
+export async function sweepSessionCollections(
+  collections: Pick<CollectionRegistry, 'sweepExpiredSessions'>,
+): Promise<unknown> {
+  const stored = new Set(
+    ((await records?.list()) ?? []).map((r) => slot(r.userId, r.key)),
+  );
+  return collections.sweepExpiredSessions(
+    (userId, key) =>
+      !stored.has(slot(userId, key)) && maySweepSession(userId, key),
+  );
 }

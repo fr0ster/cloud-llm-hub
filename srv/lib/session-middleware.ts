@@ -4,6 +4,7 @@ import {
   buildSetCookie,
   resolveSessionId,
   resolveSessionKey,
+  SESSION_HEADER,
   type WithSession,
 } from '../session-id';
 import type { LongSession } from './long-session';
@@ -30,13 +31,16 @@ export interface SessionMiddlewareDeps {
   userIdOf?: () => string;
   /**
    * The long session under a presented key: live, or revived. Rejects with
-   * `{ refused: 'SESSION_LIMIT' }` when a revival finds no room. Absent: keys
+   * `{ refused: 'SESSION_LIMIT' }` when a revival finds no room, and with a
+   * `retryAfterSeconds` when it cannot run yet (503 with Retry-After). Absent: keys
    * are not read and every request is handled as in plain mode.
    */
   resolveSession?: (
     userId: string,
     key: string,
   ) => Promise<LongSession | undefined>;
+  /** Activity on a resolved session: every `/v1` request in it extends its TTL. */
+  touchSession?: (s: LongSession) => void;
   /** Whether this response is the first after a revival (told once). */
   takeRevivalNotice?: (s: LongSession) => boolean;
   /**
@@ -73,8 +77,8 @@ function refuse(
  * A long-session key (`x-clh-session`, or a long-session key in the cookie)
  * binds the request to that session: live, or revived from its record. A key
  * that names none — closed, expired, never opened, another user's — is refused
- * 404, never replaced: the client opens a new session. A header and a cookie
- * naming two sessions are refused 400.
+ * 404 when sent in the header; an unknown cookie key is treated as absent.
+ * The header takes precedence over the cookie.
  *
  * Without a key, the plain mode of before: the presented `clh_session` is kept
  * when it names a live session, and otherwise one is minted and the cookie set
@@ -89,11 +93,7 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
   ): undefined | Promise<void> => {
     const r = req as Request & WithSession & LongSessionRequest;
     const userId = deps.userIdOf?.() ?? 'anonymous';
-    const { key, conflict } = resolveSessionKey(r);
-    if (conflict) {
-      refuse(res, dialectOf(req), 'SESSION_KEY_CONFLICT');
-      return;
-    }
+    const { key } = resolveSessionKey(r);
     const resolve = deps.resolveSession;
     if (key === undefined || !resolve) {
       perRequest(r, res, userId, deps);
@@ -103,6 +103,7 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
     return resolve(userId, key).then(
       (s) => {
         if (s) {
+          deps.touchSession?.(s);
           r.sessionId = key;
           r.sessionMinted = false;
           r.longSession = s;
@@ -114,7 +115,10 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
           next();
           return;
         }
-        if (deps.keyOptional?.(req)) {
+        if (
+          !r.headers[SESSION_HEADER]?.toString().trim() ||
+          deps.keyOptional?.(req)
+        ) {
           // The stale key is not a plain session either: mint.
           mint(r, res);
           next();
@@ -123,8 +127,14 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
         refuse(res, dialectOf(req), 'SESSION_NOT_FOUND');
       },
       (err: unknown) => {
-        const limit =
-          (err as { refused?: unknown } | null)?.refused === 'SESSION_LIMIT';
+        const e = err as {
+          refused?: unknown;
+          retryAfterSeconds?: unknown;
+        } | null;
+        const limit = e?.refused === 'SESSION_LIMIT';
+        // Not ready yet (a revival before the providers are built): retry.
+        if (typeof e?.retryAfterSeconds === 'number')
+          res.setHeader('Retry-After', String(e.retryAfterSeconds));
         refuse(
           res,
           dialectOf(req),

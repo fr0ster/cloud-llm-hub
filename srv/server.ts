@@ -46,7 +46,6 @@ import {
 import {
   deleteSession,
   forgetEmptySessions,
-  maySweepSession,
   sessionIsLive,
   shutdownGatekeeper,
 } from './lib/gatekeeper';
@@ -71,6 +70,7 @@ import {
   resolveSession,
   SessionLimitError,
   startSessionSweep,
+  sweepSessionCollections,
   takeRevivalNotice,
 } from './lib/session-lifecycle';
 import {
@@ -757,6 +757,7 @@ cds.on('bootstrap', (app: Application) => {
       userIdOf: () => cds.context?.user?.id ?? 'anonymous',
       isLive: sessionIsLive,
       resolveSession,
+      touchSession: (s) => longSessionsIfReady()?.touch(s.userId, s.key),
       takeRevivalNotice,
       keyOptional: (req) =>
         req.path === '/session' || req.path === '/session/close',
@@ -901,7 +902,7 @@ cds.on('served', () => {
   setInterval(
     guardedTask('Session collection sweep', log, () =>
       isProvidersReady()
-        ? getCollectionRegistry().sweepExpiredSessions(maySweepSession)
+        ? sweepSessionCollections(getCollectionRegistry())
         : undefined,
     ),
     60 * 60 * 1000,

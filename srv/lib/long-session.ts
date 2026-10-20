@@ -145,11 +145,11 @@ export class LongSessionRegistry {
     try {
       await previous;
       if (entry.closing) return { refused: 'SESSION_CLOSED' };
-      this.touch(s);
+      this.touch(s.userId, s.key);
       try {
         return await fn();
       } finally {
-        this.touch(s);
+        this.touch(s.userId, s.key);
       }
     } finally {
       entry.active -= 1;
@@ -212,7 +212,9 @@ export class LongSessionRegistry {
     return n;
   }
 
-  private touch(s: LongSession): void {
+  touch(userId: string, key: string): void {
+    const s = this.get(userId, key);
+    if (!s) return;
     s.lastActivity = this.now();
     this.hooks.onTouch?.(s);
   }

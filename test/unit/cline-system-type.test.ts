@@ -114,7 +114,7 @@ describe('applySapConfigToHeaders — header names the hub reads', () => {
 
 describe('templates point at an endpoint the hub serves', () => {
   // srv/server.ts registers Stream-HTTP only; /mcp/stream/sse is disabled.
-  const SERVED = ['/mcp/stream/http', '/mcp/agent/stream/http'];
+  const SERVED = ['/mcp/agent/stream/http'];
   const tools = tool as unknown as {
     TEMPLATE_ENDPOINT_SUFFIX: Record<string, string>;
     convertDefinitionToClineConnection: (definition: object) => {

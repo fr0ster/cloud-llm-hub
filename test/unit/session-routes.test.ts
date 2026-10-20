@@ -245,15 +245,16 @@ describe('plain mode', () => {
     expect(await m.json()).toEqual({ reached: 'messages', session: null });
   });
 
-  it('a key and a cookie that disagree → 400 SESSION_KEY_CONFLICT', async () => {
+  it('R16 header wins over a different cookie on the wire', async () => {
     const { body } = await openOne();
     const res = await chat({
       [SESSION_HEADER]: body.session,
-      cookie: `${SESSION_COOKIE}=s-other`,
+      cookie: `${SESSION_COOKIE}=ls-other`,
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({
-      error: { code: 'SESSION_KEY_CONFLICT' },
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      reached: 'chat',
+      session: body.session,
     });
   });
 

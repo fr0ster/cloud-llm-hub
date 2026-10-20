@@ -243,7 +243,6 @@ export type SessionRefusalCode =
   | 'SESSION_BUSY'
   | 'SESSION_NOT_FOUND'
   | 'SESSION_LIMIT'
-  | 'SESSION_KEY_CONFLICT'
   | 'SESSION_REQUIRED'
   | 'SESSION_STORE_UNAVAILABLE';
 
@@ -266,11 +265,6 @@ const SESSION_REFUSALS: Record<
     status: 429,
     message:
       'No more sessions can be opened right now. Close a session you no longer need, or retry later.',
-  },
-  SESSION_KEY_CONFLICT: {
-    status: 400,
-    message:
-      'The x-clh-session header and the clh_session cookie name different sessions. Send one session key.',
   },
   SESSION_REQUIRED: {
     status: 400,

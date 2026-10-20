@@ -127,16 +127,34 @@ describe('long-session keys on /v1', () => {
     return { req, set, out };
   }
 
-  it('header and cookie disagree → 400 SESSION_KEY_CONFLICT', async () => {
-    const { out } = await runKeyed({
+  it('R16 header wins over a different cookie', async () => {
+    const { req, out } = await runKeyed({
       [SESSION_HEADER]: 'ls-1',
-      cookie: `${SESSION_COOKIE}=s-other`,
+      cookie: `${SESSION_COOKIE}=ls-other`,
     });
-    expect(out.next).toBe(false);
-    expect(out.status).toBe(400);
-    expect(out.body).toMatchObject({
-      error: { code: 'SESSION_KEY_CONFLICT' },
-    });
+    expect(out.next).toBe(true);
+    expect(req.longSession).toBe(live);
+  });
+
+  it('R17 stale cookie on models mints instead of refusing', async () => {
+    const { req, out, set } = await runKeyed(
+      { cookie: `${SESSION_COOKIE}=ls-gone` },
+      {},
+      '/models',
+    );
+    expect(out.next).toBe(true);
+    expect(req.sessionMinted).toBe(true);
+    expect(set['Set-Cookie']).toContain('clh_session=s-');
+  });
+
+  it('R20 non-chat activity touches the resolved session', async () => {
+    const touchSession = jest.fn();
+    await runKeyed(
+      { [SESSION_HEADER]: 'ls-1' },
+      { touchSession },
+      '/rag/collections',
+    );
+    expect(touchSession).toHaveBeenCalledWith(live);
   });
 
   it('known key → req.sessionId is the key, sessionMinted false', async () => {
@@ -223,6 +241,28 @@ describe('long-session keys on /v1', () => {
       },
     );
     expect(out.status).toBe(503);
+    expect(out.body).toMatchObject({
+      error: { code: 'SESSION_STORE_UNAVAILABLE' },
+    });
+  });
+
+  it('a revival that cannot run yet → 503 with Retry-After, no notice', async () => {
+    const { out, set } = await runKeyed(
+      { [SESSION_HEADER]: 'ls-1' },
+      {
+        resolveSession: async () => {
+          throw Object.assign(new Error('starting'), {
+            refused: 'SESSION_STORE_UNAVAILABLE',
+            retryAfterSeconds: 5,
+          });
+        },
+        takeRevivalNotice: () => true,
+      },
+    );
+    expect(out.next).toBe(false);
+    expect(out.status).toBe(503);
+    expect(set['Retry-After']).toBe('5');
+    expect(set[SESSION_NOTICE_HEADER]).toBeUndefined();
     expect(out.body).toMatchObject({
       error: { code: 'SESSION_STORE_UNAVAILABLE' },
     });

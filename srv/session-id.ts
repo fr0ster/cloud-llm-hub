@@ -4,15 +4,14 @@
  * A session is one this service issued, together with the authenticated user:
  * a per-request id in the `clh_session` cookie, or a long-session key
  * (`POST /v1/session`), which the client sends back in `x-clh-session` or,
- * where it cannot set a header (`sendBeacon`), in the cookie. `x-session-id`
+ * for cookie-based clients, in the cookie. `x-session-id`
  * and `mcp-session-id` are still not read: they named sessions this service
  * never issued.
  *
  * Reading `x-clh-session` is safe for the same reason the cookie is. Neither
  * is signed, so a caller can send any value; but the user half of the key
  * comes from the token, so a chosen key reaches its own author's sessions and
- * nobody else's. A header and a cookie that name two different sessions are
- * refused, never resolved by picking one.
+ * nobody else's. The header takes precedence over the shared cookie.
  */
 
 /** Name of the HttpOnly session cookie issued by the session middleware. */
@@ -54,26 +53,23 @@ export function resolveSessionId(req: IncomingHeaders): string | undefined {
 }
 
 /**
- * The long-session key this request presents, and whether it presents two.
+ * The long-session key this request presents.
  *
  * The header always names a long session. The cookie does only when it holds
  * a long-session key: a minted per-request id there is the plain mode's, and
- * the middleware handles it as before. A header and a cookie with different
- * values are a conflict, whatever either holds.
+ * the middleware handles it as before. The header wins over the cookie.
  */
-export function resolveSessionKey(req: IncomingHeaders): {
-  key?: string;
-  conflict: boolean;
-} {
+export function resolveSessionKey(req: IncomingHeaders): { key?: string } {
   const raw = req.headers[SESSION_HEADER];
   const header = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined;
   const cookie = resolveSessionId(req);
-  if (header !== undefined && cookie !== undefined && header !== cookie) {
-    return { key: undefined, conflict: true };
-  }
   const key =
-    header ?? (cookie?.startsWith(LONG_SESSION_PREFIX) ? cookie : undefined);
-  return { key, conflict: false };
+    raw !== undefined
+      ? header
+      : cookie?.startsWith(LONG_SESSION_PREFIX)
+        ? cookie
+        : undefined;
+  return { key };
 }
 
 /**

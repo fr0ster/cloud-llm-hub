@@ -329,11 +329,13 @@
         let sessionOpening = null;
 
         function sessionHeaders() {
+            sessionKey = localStorage.getItem('clh.session') || '';
             return { 'x-clh-session': sessionKey, ...getSapCredHeaders() };
         }
 
         async function ensureSession() {
             if (sessionOpening) return sessionOpening;
+            sessionKey = localStorage.getItem('clh.session') || '';
             if (sessionKey) return;
             sessionOpening = (async () => {
                 const response = await fetch('/v1/session', {
@@ -350,12 +352,18 @@
         }
 
         async function closeSession() {
-            if (sessionOpening) await sessionOpening;
-            if (!sessionKey) return;
-            const response = await fetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
-            if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
-            sessionKey = '';
-            localStorage.removeItem('clh.session');
+            try {
+                if (sessionOpening) await sessionOpening;
+                sessionKey = localStorage.getItem('clh.session') || '';
+                if (!sessionKey) return;
+                const response = await fetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
+                if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
+            } catch (error) {
+                console.warn('Session close failed', error);
+            } finally {
+                sessionKey = '';
+                localStorage.removeItem('clh.session');
+            }
         }
 
         function showSessionNotice(message) {
@@ -369,12 +377,15 @@
         async function sessionFetch(url, opts = {}) {
             await ensureSession();
             const request = () => fetch(url, { ...opts, headers: { ...opts.headers, ...sessionHeaders() } });
+            const requestedKey = localStorage.getItem('clh.session');
             let response = await request();
             if (response.status === 404) {
                 const data = await response.clone().json().catch(() => null);
                 if (data?.error?.code === 'SESSION_NOT_FOUND') {
-                    sessionKey = '';
-                    localStorage.removeItem('clh.session');
+                    if (localStorage.getItem('clh.session') === requestedKey) {
+                        sessionKey = '';
+                        localStorage.removeItem('clh.session');
+                    }
                     await ensureSession();
                     showSessionNotice('Сесію перезапущено');
                     response = await request();
@@ -388,14 +399,10 @@
 
         async function logout() {
             try { await closeSession(); }
-            catch (error) { showSessionNotice(error.message); return; }
+            catch (error) { console.warn('Session close failed', error); }
             try { localStorage.clear(); sessionStorage.clear(); } catch {}
             window.location.replace('/logout');
         }
-
-        window.addEventListener('pagehide', () => {
-            navigator.sendBeacon('/v1/session/close');
-        });
 
         // Input history (Up/Down arrow navigation like terminal)
         const inputHistory = [];
@@ -509,7 +516,7 @@
             if (client && !/^\d{3}$/.test(client)) return fail('SAP client must be 3 digits, e.g. 100.');
             err.style.display = 'none';
 
-            try { await closeSession(); } catch (error) { return fail(error.message); }
+            try { await closeSession(); } catch (error) { console.warn('Session close failed', error); }
             sapCredsLogin = sso ? '' : login;
             sapCredsPassword = sso ? '' : password;
             if (sso) {

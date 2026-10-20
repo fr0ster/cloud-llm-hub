@@ -143,10 +143,8 @@ whichever HTTP connection it arrives on.
 - **Requests of one session are serialised.** One stateful ADT context cannot serve two runs at once
   (locks, debugger). A second request queues behind the running one, using the existing per-session
   pipeline lease; the bounded wait and the refusal when the queue is full follow today's door rules.
-- **Eviction is a close for good.** If the retention cap evicts an idle long session, that is a close:
-  the ABAP session is closed, history and session collections are deleted. A separate cap bounds live
-  ABAP connections (total and per user); a new `session_open` beyond it is refused, not served by
-  evicting an active one.
+- **Long sessions are pinned and never evicted** by the retention cap. They are bounded by their
+  own caps (total and per user) and inactivity TTL; a new `session_open` beyond the cap is refused.
 - **Revived history comes from the recall store.** The persistent session history (turns keyed by
   (userId, sessionId), with `createdAt`) is scanned for the owner and the in-memory window is rebuilt
   from its latest turns. Session collections are already durable and restored at startup; revival only
@@ -155,9 +153,8 @@ whichever HTTP connection it arrives on.
   connection and the chat history (no throwaway `agent-step-<uuid>` session). A call whose
   `destination` differs from the session's is refused with an error naming both; a switch is explicit
   (a separate call), never a side effect of one step.
-- **Header and cookie disagree: refused.** A request carrying `x-clh-session` and a `clh_session` cookie
-  with different values gets 400. Reading a session header reverses the stance in `session-id.ts`; it is
-  safe for the same reason the cookie is: the user half of the key comes from the token.
+- **The session header wins over the cookie.** When `x-clh-session` is present, the shared
+  `clh_session` cookie is ignored. The user half of the key still comes from the token.
 
 ## 7. Left to the builder
 

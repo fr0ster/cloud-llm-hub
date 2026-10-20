@@ -32,8 +32,9 @@ type Turn = {
 };
 const listTurns = jest.fn(async (_owner: string): Promise<Turn[]> => []);
 const setSessionDestination = jest.fn();
+let providersReady = true;
 jest.mock('../../srv/agent-manager', () => ({
-  isProvidersReady: () => true,
+  isProvidersReady: () => providersReady,
   getSharedHistoryRag: () => ({ listTurns, forgetOwner: async () => {} }),
   setSessionDestination: (u: string, s: string, d: string) =>
     setSessionDestination(u, s, d),
@@ -49,6 +50,7 @@ import {
   discardSession,
   lifecycleHooks,
   openSession,
+  PROVIDERS_RETRY_AFTER_SECONDS,
   resolveSession,
   sweepSessions,
   takeRevivalNotice,
@@ -112,6 +114,7 @@ beforeEach(() => {
   dropSessionConnection.mockClear();
   listTurns.mockReset().mockResolvedValue([]);
   setSessionDestination.mockClear();
+  providersReady = true;
   setup();
 });
 
@@ -367,6 +370,26 @@ describe('revival', () => {
     expect(getSessionHistory('ls-old', 'alice')).toHaveLength(0);
   });
 
+  it('before the providers are built: refused 503 with Retry-After, not revived empty', async () => {
+    stored();
+    listTurns.mockResolvedValue([turn(1)]);
+    providersReady = false;
+    await expect(resolveSession('alice', 'ls-old')).rejects.toMatchObject({
+      refused: 'SESSION_STORE_UNAVAILABLE',
+      retryAfterSeconds: PROVIDERS_RETRY_AFTER_SECONDS,
+    });
+    expect(longSessions().get('alice', 'ls-old')).toBeUndefined();
+    expect(listTurns).not.toHaveBeenCalled();
+    expect(records.rows.has(records.id('alice', 'ls-old'))).toBe(true);
+    // Once they are: the retry gets the session with its history.
+    providersReady = true;
+    const s = await resolveSession('alice', 'ls-old');
+    expect(s?.revived).toBe(true);
+    expect(getSessionHistory('ls-old', 'alice')).toHaveLength(2);
+    if (!s) throw new Error('not revived');
+    expect(takeRevivalNotice(s)).toBe(true);
+  });
+
   it('the user at the cap: refused with SESSION_LIMIT, the record kept', async () => {
     stored();
     await open('alice');
@@ -403,4 +426,15 @@ describe('the sweep', () => {
     expect(longSessions().has('alice', s.key)).toBe(true);
     expect(records.rows.size).toBe(1);
   });
+});
+
+it('R20 direct activity touch extends TTL and updates record without a queued run', async () => {
+  const s = await open('alice');
+  now += TTL - 1;
+  longSessions().touch(s.userId, s.key);
+  expect(records.store.touch).toHaveBeenLastCalledWith(
+    expect.objectContaining({ lastActivity: now }),
+  );
+  now += TTL - 1;
+  expect(await longSessions().sweep()).toBe(0);
 });

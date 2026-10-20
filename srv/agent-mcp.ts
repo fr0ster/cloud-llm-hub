@@ -71,6 +71,7 @@ import {
   openSession,
   resolveSession,
   SessionLimitError,
+  SessionNotReadyError,
   takeRevivalNotice,
 } from './lib/session-lifecycle';
 import { recordTurn } from './lib/session-turns';
@@ -174,6 +175,7 @@ export async function executeStep(
     if (!s) return textResult('SESSION_NOT_FOUND', true);
     const result = await longSessions().run(s, async () => {
       if (
+        s.destination !== undefined &&
         args.destination !== undefined &&
         args.destination.trim() !== s.destination
       ) {
@@ -185,7 +187,7 @@ export async function executeStep(
       return executeStepRun(
         req,
         caller,
-        { ...args, destination: s.destination },
+        { ...args, destination: s.destination ?? args.destination },
         callerSignal,
         s,
       );
@@ -195,7 +197,9 @@ export async function executeStep(
     return textResult(
       err instanceof SessionLimitError
         ? 'SESSION_LIMIT'
-        : `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+        : err instanceof SessionNotReadyError
+          ? 'SESSION_STORE_UNAVAILABLE: the hub is starting, retry shortly'
+          : `ERROR: ${err instanceof Error ? err.message : String(err)}`,
       true,
     );
   }

@@ -79,10 +79,16 @@ BODY=$(jq -n \
     ]
   }')
 
+# Open an explicit long session for API calls; close it on exit.
+SESSION=$(curl -fsS -X POST "$STAGING_URL/v1/session" \
+  -H "Authorization: Bearer $STAGING_TOKEN" -H "Content-Type: application/json" -d '{}' | jq -er '.session')
+trap 'curl -fsS -X DELETE "$STAGING_URL/v1/session" -H "Authorization: Bearer $STAGING_TOKEN" -H "x-clh-session: $SESSION" >/dev/null || true' EXIT
+
 # Send request
 RESPONSE=$(curl -s -w "\n---HTTP_CODE:%{http_code}---" \
   "$STAGING_URL/v1/chat/completions" \
   -H "Authorization: Bearer $STAGING_TOKEN" \
+  -H "x-clh-session: $SESSION" \
   -H "Content-Type: application/json" \
   -d "$BODY")
 

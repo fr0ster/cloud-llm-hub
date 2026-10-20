@@ -491,7 +491,19 @@ describe('logout and clear-chat in server.ts', () => {
       'utf8',
     );
     expect(src).toMatch(/void\s+deleteSession\(\s*userId\s*,\s*sessionId\s*\)/);
-    expect(src).toMatch(/sweepExpiredSessions\(\s*maySweepSession\s*\)/);
+    expect(src).toMatch(
+      /sweepSessionCollections\(\s*getCollectionRegistry\(\)\s*\)/,
+    );
     expect(src).toMatch(/isLive:\s*sessionIsLive/);
+  });
+
+  it('every /v1 request in a long session touches it (Ruling 20)', () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, '../../srv/server.ts'),
+      'utf8',
+    );
+    expect(src).toMatch(
+      /touchSession:\s*\(s\)\s*=>\s*longSessionsIfReady\(\)\?\.touch\(s\.userId,\s*s\.key\)/,
+    );
   });
 });

@@ -253,3 +253,17 @@ it('session_close answers closed even when cleanup fails', async () => {
     'SESSION_NOT_FOUND',
   );
 });
+
+it('R19 first execute_step adopts destination', async () => {
+  const emptyReq = { headers: {} } as unknown as Request;
+  await createAgentMcpServerForRequest(emptyReq);
+  const session = await opened();
+  const result = await executeStep(emptyReq, caller, {
+    session,
+    destination: 'DEST',
+    task: 'first',
+  });
+  expect(result.isError).not.toBe(true);
+  expect(longSessions().get('alice', session)?.destination).toBe('DEST');
+  expect(harness.establishCalls).toEqual(['DEST']);
+});

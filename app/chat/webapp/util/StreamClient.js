@@ -40,9 +40,22 @@ sap.ui.define([], function () {
     },
 
     _sessionFetch: function (url, options) {
+      var that = this;
       return this._ensureSession().then(function () {
-        options.headers["x-clh-session"] = localStorage.getItem("clh.session");
-        return fetch(url, options);
+        var key = localStorage.getItem("clh.session");
+        function request() {
+          return fetch(url, Object.assign({}, options, { headers: Object.assign({}, options.headers, {
+            "x-clh-session": localStorage.getItem("clh.session")
+          }) }));
+        }
+        return request().then(function (response) {
+          if (response.status !== 404) { return response; }
+          return response.clone().json().catch(function () { return null; }).then(function (data) {
+            if (!data || !data.error || data.error.code !== "SESSION_NOT_FOUND") { return response; }
+            if (localStorage.getItem("clh.session") === key) { localStorage.removeItem("clh.session"); }
+            return that._ensureSession().then(request);
+          });
+        });
       });
     },
     /**

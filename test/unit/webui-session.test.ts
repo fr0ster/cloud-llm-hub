@@ -14,8 +14,8 @@ describe('WebUI extended session protocol', () => {
     expect(html).toMatch(/fetch\('\/v1\/session',\s*\{\s*method: 'POST'/);
     expect(html).toContain("localStorage.setItem('clh.session'");
   });
-  test('plain UI closes on pagehide and recovers by error code', () => {
-    expect(html).toContain("sendBeacon('/v1/session/close'");
+  test('R15 plain UI keeps sessions on pagehide and recovers by error code', () => {
+    expect(html).not.toContain("sendBeacon('/v1/session/close'");
     expect(html).toContain("error?.code === 'SESSION_NOT_FOUND'");
     expect(html).toContain('Сесію перезапущено');
     expect(html).toContain('Сесію відновлено після перезапуску сервісу');
@@ -148,4 +148,117 @@ describe('session request helper', () => {
     });
     expect(ui.values.has('clh.session')).toBe(false);
   });
+});
+
+test('R16 rereads storage', async () => {
+  const ui = sessionHarness('old');
+  ui.values.set('clh.session', 'other');
+  ui.fetch.mockResolvedValue(response(200));
+  await ui.sessionFetch('/v1/models');
+  expect(ui.fetch.mock.calls[0][1].headers['x-clh-session']).toBe('other');
+});
+test('R24 failed delete forgets the key', async () => {
+  const ui = sessionHarness('old');
+  ui.fetch.mockRejectedValue(new Error('offline'));
+  await expect(ui.closeSession()).resolves.toBeUndefined();
+  expect(ui.values.has('clh.session')).toBe(false);
+});
+test('R24 concurrent 404 including late response reopens only once', async () => {
+  const ui = sessionHarness('old');
+  let late!: (r: unknown) => void;
+  let oldCalls = 0;
+  ui.fetch.mockImplementation((url: string, opts: any) => {
+    if (url === '/v1/session')
+      return Promise.resolve(response(201, { session: 'new' }));
+    if (opts.headers['x-clh-session'] === 'old') {
+      if (++oldCalls === 2)
+        return new Promise((resolve) => {
+          late = resolve;
+        });
+      return Promise.resolve(
+        response(404, { error: { code: 'SESSION_NOT_FOUND' } }),
+      );
+    }
+    return Promise.resolve(response(200));
+  });
+  const first = ui.sessionFetch('/v1/models');
+  const second = ui.sessionFetch('/v1/models');
+  await first;
+  late(response(404, { error: { code: 'SESSION_NOT_FOUND' } }));
+  await second;
+  expect(
+    ui.fetch.mock.calls.filter(([url]: [string]) => url === '/v1/session'),
+  ).toHaveLength(1);
+});
+function ui5Harness() {
+  const values = new Map([['clh.session', 'old']]);
+  const fetch = jest.fn();
+  let api: any;
+  runInNewContext(client, {
+    sap: {
+      ui: {
+        define: (_: unknown, f: () => unknown) => {
+          api = f();
+        },
+      },
+    },
+    fetch,
+    localStorage: {
+      getItem: (k: string) => values.get(k),
+      setItem: (k: string, v: string) => values.set(k, v),
+      removeItem: (k: string) => values.delete(k),
+    },
+  });
+  return { api, fetch };
+}
+test('R21 UI5 reopens once with same body', async () => {
+  const { api, fetch } = ui5Harness();
+  const missing = response(404, { error: { code: 'SESSION_NOT_FOUND' } });
+  fetch
+    .mockResolvedValueOnce(missing)
+    .mockResolvedValueOnce(response(201, { session: 'new' }))
+    .mockResolvedValueOnce(missing);
+  expect(await api._sessionFetch('/chat', { headers: {}, body: 'same' })).toBe(
+    missing,
+  );
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(fetch.mock.calls[2][1]).toMatchObject({
+    body: 'same',
+    headers: { 'x-clh-session': 'new' },
+  });
+});
+test('R22 tools open sessions and configure agent MCP', () => {
+  for (const file of ['tools/test-endpoints.sh', 'tools/tutorial-test.sh']) {
+    const script = readFileSync(resolve(file), 'utf8');
+    expect(script).toMatch(/-X POST "\$\w+\/v1\/session"/);
+    expect(script).toContain('x-clh-session:');
+  }
+  const config = readFileSync(
+    resolve('tools/update-cline-connection.js'),
+    'utf8',
+  );
+  expect(config).toContain("'direct-basic': '/mcp/agent/stream/http'");
+  expect(config).toContain('LLM_AGENT_PLAIN_MCP=true');
+});
+test('R25 spec documents pinning', () => {
+  expect(
+    readFileSync(
+      resolve('docs/superpowers/specs/2026-10-20-long-sessions-design.md'),
+      'utf8',
+    ),
+  ).toContain('Long sessions are pinned and never evicted');
+});
+
+test('R24 failed HTTP delete forgets key and logs', async () => {
+  const ui = sessionHarness('old');
+  ui.fetch.mockResolvedValue(response(500));
+  await expect(ui.closeSession()).resolves.toBeUndefined();
+  expect(ui.values.has('clh.session')).toBe(false);
+});
+test('R21 UI5 does not reopen other errors', async () => {
+  const { api, fetch } = ui5Harness();
+  const error = response(404, { error: { code: 'OTHER' } });
+  fetch.mockResolvedValue(error);
+  expect(await api._sessionFetch('/chat', { headers: {} })).toBe(error);
+  expect(fetch).toHaveBeenCalledTimes(1);
 });

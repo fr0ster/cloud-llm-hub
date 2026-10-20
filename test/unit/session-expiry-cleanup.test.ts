@@ -129,3 +129,25 @@ it('before the providers are built: left for a later pass, record kept', async (
   expect(records.rows.size).toBe(1);
   expect(deleteSessionCollections).not.toHaveBeenCalled();
 });
+
+it('R23 collection sweep protects stored sessions after restart, by owner', async () => {
+  const sweep =
+    require('../../srv/lib/session-lifecycle').sweepSessionCollections;
+  const sweepExpiredSessions = jest.fn(
+    async (maySweep: (u: string, k: string) => boolean) => {
+      expect(maySweep('alice', 'ls-expired')).toBe(false);
+      expect(maySweep('bob', 'ls-expired')).toBe(true);
+      expect(maySweep('alice', 'ls-orphan')).toBe(true);
+    },
+  );
+  await sweep({ sweepExpiredSessions });
+  expect(sweepExpiredSessions).toHaveBeenCalledTimes(1);
+  records.rows.clear();
+  await sweep({
+    sweepExpiredSessions: async (
+      maySweep: (u: string, k: string) => boolean,
+    ) => {
+      expect(maySweep('alice', 'ls-expired')).toBe(true);
+    },
+  });
+});
