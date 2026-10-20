@@ -4,7 +4,42 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Breaking
+
+- **Plain API and plain MCP are off by default.** `/v1/chat/completions` and
+  `/v1/messages` answer a request without a long-session key with 400
+  `SESSION_REQUIRED`, and `/mcp/stream/http` answers 404 `PLAIN_MCP_DISABLED`.
+  Connect through the agent MCP (`/mcp/agent/stream/http`, tools `session_open`
+  / `session_close`) or open a session with `POST /v1/session` and send its key
+  in `x-clh-session`. `LLM_AGENT_PLAIN_API=true` and `LLM_AGENT_PLAIN_MCP=true`
+  bring the old behaviour back. The `tools/` connection scripts and Cline set-up
+  now use the agent MCP.
+- **A destination switch keeps the conversation.** The session's history and
+  session collections stay; only the ABAP session is replaced.
+- **One TTL per session.** `LLM_AGENT_SESSION_TTL_MS` (default 1 h of
+  inactivity) covers the long session, its history and its session collections;
+  `RAG_SESSION_TTL_MS` still overrides it for collections only and is
+  deprecated.
+
 ### Added
+
+- **Long sessions.** A server-issued key (`ls-<uuid>`) names a hub session that
+  holds one ABAP connection between requests (debugger, locks), its chat
+  history, session collections and destination. `POST /v1/session`,
+  `DELETE /v1/session` (or `POST /v1/session/close`), header `x-clh-session`;
+  on the agent MCP `session_open`, `session_close` and `execute_step` with
+  `session`. Requests of a session run one after another and must carry the
+  SAP login the session was opened with. Caps `LLM_AGENT_MAX_SESSIONS`,
+  `LLM_AGENT_MAX_SESSIONS_PER_USER`, `LLM_AGENT_SESSION_QUEUE`.
+- **Session records and revival.** With `LLM_AGENT_SESSION_STORE` (`sqlite`,
+  `hana-vector`, `pg-vector`; by default the session RAG backend's kind) every
+  open session has a record. A key presented after a restart, within its TTL,
+  gets its hub session back with `x-clh-session-notice: revived`; its ABAP
+  session is new. Closing the old ABAP session from the record waits for
+  `@mcp-abap-adt/connection`.
+- **WebUI** opens a long session on connect, sends its key in `x-clh-session`,
+  closes it on reconnect and disconnect, and opens a new one once on
+  `SESSION_NOT_FOUND`. A page reload keeps the session.
 
 - **Persistent RAG collections on HANA, Postgres and Qdrant.** With
   `LLM_AGENT_RAG_BACKEND` (and `LLM_AGENT_SESSION_RAG_BACKEND` for the session

@@ -17,6 +17,7 @@
 ## Session / History
 
 - [ ] **History recall on the vector path returns nothing (main-repo fix)** — the pipeline filters by namespace, turns carry none. The chat's `ragFilter` has `namespace: ${userId}:${destination}` (plus `exposition`, and the `history` stage adds `sessionId`); every store drops a record whose `metadata.namespace` differs, and `vector`-path turns carry only `owner` (no namespace, no sessionId). The persistent path is fixed (`SessionHistoryRag.query` filters by the owner's `userId`/`sessionId`); on `vector` the same replacement, or no `ragFilter` relying on `mine()`, changes behaviour with persistence off, so it ships separately with a CHANGELOG "Fixed" line.
+- [ ] **ABAP close after a crash** — waits for `@mcp-abap-adt/connection`: export a live session's identifiers (cookie jar, `saplb`, client) and close a session from them with a credential (stateless release, debugger listener stop, ICF logoff) without re-login, reporting "already gone" honestly. Until then a revived or expired long session leaves its old ABAP session to SAP's timeout; the record store already keeps what the close will need.
 - [ ] **Session-scoped RAG cleanup on CLR** — `IRag.clear()` for session history store when user clicks CLR.
 - [ ] **Explicit "remember" command** — user says "запам'ятай це" → save to user-scoped facts store. Not auto-upsert from classifier.
 
