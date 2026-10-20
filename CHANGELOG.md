@@ -62,6 +62,14 @@ All notable changes to this project will be documented in this file. The format 
   collections are restored (retry after 30 s, doubling to 5 min); 200
   `{"status":"UP"}` otherwise. Keep the Cloud Foundry port health check.
 
+### Fixed
+
+- **Deploy without naming every model.** `LLM_AGENT_PRESENTATION_MODEL` (read
+  by nothing) is gone from `mta.yaml`, and `LLM_AGENT_CLASSIFIER_MODEL` and
+  `LLM_AGENT_EMBEDDING_MODEL` default to unset, so an `.mtaext` names only
+  `LLM_AGENT_MODEL`; `cf deploy` no longer fails on an unresolved model
+  parameter.
+
 ### Changed
 
 - **Backend-first writes.** With a persistent backend, add, update, delete,

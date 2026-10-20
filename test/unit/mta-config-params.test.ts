@@ -82,3 +82,14 @@ it('every new parameter has a default, so a deployment without it still resolves
     expect([name, mta.parameters[name]]).toEqual([name, '']);
   }
 });
+
+it('only LLM_AGENT_MODEL has to name a model in an .mtaext', () => {
+  const mta = load(
+    fs.readFileSync(path.resolve(__dirname, '../../mta.yaml'), 'utf8'),
+  ) as { parameters: Record<string, unknown> };
+  const bare = Object.entries(mta.parameters)
+    .filter(([k, v]) => k.endsWith('_MODEL') && (v === null || v === undefined))
+    .map(([k]) => k);
+  expect(bare).toEqual(['LLM_AGENT_MODEL']);
+  expect('LLM_AGENT_PRESENTATION_MODEL' in mta.parameters).toBe(false);
+});
