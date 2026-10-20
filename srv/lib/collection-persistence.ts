@@ -660,6 +660,8 @@ export function createCollectionPersistence(
         if (!d.ok) return d;
         const expired: CollectionMeta[] = [];
         for (const rec of d.value.records) {
+          // The long-session records: the hub's, never a session collection.
+          if (isSessionRecordStore(rec, prefix)) continue;
           const decoded = decodeRecord(rec, prefix);
           if (
             'meta' in decoded &&
@@ -685,8 +687,10 @@ export function createCollectionPersistence(
         const collections: RestoredCollection[] = [];
         const foreign: string[] = [];
         for (const rec of d.value.records) {
-          // The session history's own record: the hub's, but not a collection.
-          if (isHistoryRecord(rec, prefix)) continue;
+          // The hub's own stores (session history, long-session records):
+          // the hub's, but not collections.
+          if (isHistoryRecord(rec, prefix) || isSessionRecordStore(rec, prefix))
+            continue;
           const decoded = decodeRecord(rec, prefix);
           if (!('meta' in decoded)) {
             foreign.push(rec.storeName);
@@ -867,14 +871,54 @@ export function historyStoreName(prefix?: string): string {
   return prefix ? `${prefix}_${HISTORY_STORE}` : HISTORY_STORE;
 }
 
-/** The record the history store is cataloged under: global, hub-written. */
-function historyRecordOptions(adoptExisting: boolean) {
+/**
+ * A store of the hub's own beside the `c_…` collections (the session history,
+ * the long-session records): cataloged under one global, hub-written record.
+ */
+interface HubStore {
+  /** The store name, under the store prefix. */
+  storeName: string;
+  /** The unprefixed name, the record's collection name. */
+  collectionName: string;
+  /** `attributes.source` of the record. */
+  source: string;
+  /** What error messages call it. */
+  label: string;
+}
+
+function historyStore(prefix?: string): HubStore {
+  return {
+    storeName: historyStoreName(prefix),
+    collectionName: HISTORY_STORE,
+    source: 'history',
+    label: 'history store',
+  };
+}
+
+/** The record a hub store is cataloged under: global, hub-written. */
+function hubRecordOptions(s: HubStore, adoptExisting: boolean) {
   return {
     scope: 'global' as const,
-    collectionName: HISTORY_STORE,
-    attributes: { writtenBy: WRITTEN_BY, source: 'history' },
+    collectionName: s.collectionName,
+    attributes: { writtenBy: WRITTEN_BY, source: s.source },
     ...(adoptExisting ? { adoptExisting: true } : {}),
   };
+}
+
+/** Whether a catalog record is the hub's record of the store `storeName`. */
+function isHubStoreRecord(
+  rec: RagCollectionRecord,
+  storeName: string,
+): boolean {
+  const a = rec.attributes;
+  return (
+    rec.storeName === storeName &&
+    rec.scope === 'global' &&
+    !!a &&
+    typeof a === 'object' &&
+    !Array.isArray(a) &&
+    (a as Record<string, unknown>).writtenBy === WRITTEN_BY
+  );
 }
 
 /**
@@ -885,15 +929,37 @@ export function isHistoryRecord(
   rec: RagCollectionRecord,
   storePrefix?: string,
 ): boolean {
-  const a = rec.attributes;
-  return (
-    rec.storeName === historyStoreName(storePrefix) &&
-    rec.scope === 'global' &&
-    !!a &&
-    typeof a === 'object' &&
-    !Array.isArray(a) &&
-    (a as Record<string, unknown>).writtenBy === WRITTEN_BY
-  );
+  return isHubStoreRecord(rec, historyStoreName(storePrefix));
+}
+
+/** The store name of the long-session records (session-record-store.ts). */
+export const SESSION_RECORD_STORE_NAME = 'h_sessions';
+
+/** The session record store name under a store prefix: `<prefix>_h_sessions`. */
+export function sessionRecordStoreName(prefix?: string): string {
+  return prefix
+    ? `${prefix}_${SESSION_RECORD_STORE_NAME}`
+    : SESSION_RECORD_STORE_NAME;
+}
+
+function sessionRecordStore(prefix?: string): HubStore {
+  return {
+    storeName: sessionRecordStoreName(prefix),
+    collectionName: SESSION_RECORD_STORE_NAME,
+    source: 'sessions',
+    label: 'session record store',
+  };
+}
+
+/**
+ * Whether a catalog record is this hub's long-session record store. Restore
+ * and the expiry sweep pass over it, as over the history store.
+ */
+export function isSessionRecordStore(
+  rec: RagCollectionRecord,
+  storePrefix?: string,
+): boolean {
+  return isHubStoreRecord(rec, sessionRecordStoreName(storePrefix));
 }
 
 /**
@@ -902,11 +968,26 @@ export function isHistoryRecord(
  * opened when the record is already there. A record under `h_history` that
  * this hub did not write is refused and left alone.
  */
-export async function ensureHistoryStore(
+export function ensureHistoryStore(
   provider: IRagProvider,
   storePrefix?: string,
 ): Promise<Result<IRag, RagError>> {
-  const store = historyStoreName(storePrefix);
+  return ensureHubStore(provider, historyStore(storePrefix));
+}
+
+/** The long-session record store (`h_sessions`), ensured like the history store. */
+export function ensureSessionRecordStore(
+  provider: IRagProvider,
+  storePrefix?: string,
+): Promise<Result<IRag, RagError>> {
+  return ensureHubStore(provider, sessionRecordStore(storePrefix));
+}
+
+async function ensureHubStore(
+  provider: IRagProvider,
+  hub: HubStore,
+): Promise<Result<IRag, RagError>> {
+  const store = hub.storeName;
   return guarded(async (): Promise<Result<IRag, RagError>> => {
     // A plain create first; adopt only a store that exists without a record
     // (OrphanStoreError, from every provider). One attempt per real failure,
@@ -914,12 +995,12 @@ export async function ensureHistoryStore(
     // asked to create one.
     let created = await provider.createCollection(
       store,
-      historyRecordOptions(false),
+      hubRecordOptions(hub, false),
     );
     if (!created.ok && created.error instanceof OrphanStoreError)
       created = await provider.createCollection(
         store,
-        historyRecordOptions(true),
+        hubRecordOptions(hub, true),
       );
     if (created.ok) return { ok: true, value: created.value.rag };
     if (!(created.error instanceof DuplicateCollectionError)) return created;
@@ -927,14 +1008,14 @@ export async function ensureHistoryStore(
       return {
         ok: false,
         error: new RagError(
-          `provider "${provider.name}" cannot open the existing history store`,
+          `provider "${provider.name}" cannot open the existing ${hub.label}`,
           'RAG_UNSUPPORTED',
         ),
       };
     const d = await provider.describeCollections();
     if (!d.ok) return d;
     const rec = d.value.records.find((r) => r.storeName === store);
-    if (!rec || !isHistoryRecord(rec, storePrefix))
+    if (!rec || !isHubStoreRecord(rec, store))
       return {
         ok: false,
         error: new RagError(

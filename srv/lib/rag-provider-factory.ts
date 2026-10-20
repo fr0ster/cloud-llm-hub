@@ -90,11 +90,11 @@ export const PROVIDER_DEFAULT_DIMENSION = 1536;
  * The provider behind the persistent collections, or null when the
  * `persistent` class is not a persistent kind. `env` carries VCAP_SERVICES.
  * `kind` selects another class's backend (the session history uses the
- * `session` class's).
+ * `session` class's). Only the embedding's `retrieval` embedder is used.
  */
 export function createCollectionProvider(
   rag: RagConfig,
-  embedding: Embedding,
+  embedding: Pick<Embedding, 'retrieval'>,
   env: Env = process.env,
   ctors: RagCtors = defaultCtors,
   kind: RagBackendKind = rag.backends.persistent,
