@@ -75,6 +75,11 @@ export class LongSessionRegistry {
     private readonly now: () => number = Date.now,
   ) {}
 
+  /** Idle time after which a session is closed. */
+  get ttlMs(): number {
+    return this.cfg.ttlMs;
+  }
+
   open(
     userId: string,
     init: {
@@ -244,6 +249,14 @@ export function longSessions(): LongSessionRegistry {
       'Long sessions are not initialised: call initLongSessions(hooks) first',
     );
   }
+  return singleton;
+}
+
+/**
+ * The registry, or undefined before `initLongSessions`: for callers that run
+ * whether or not the server built one (retention, shutdown).
+ */
+export function longSessionsIfReady(): LongSessionRegistry | undefined {
   return singleton;
 }
 

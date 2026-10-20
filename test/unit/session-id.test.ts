@@ -3,7 +3,9 @@ import {
   carriesSessionHeader,
   honouredSessionId,
   resolveSessionId,
+  resolveSessionKey,
   SESSION_COOKIE,
+  SESSION_HEADER,
   sessionIdOf,
 } from '../../srv/session-id';
 
@@ -127,6 +129,43 @@ describe('buildSetCookie', () => {
   test('cookie name is SESSION_COOKIE constant', () => {
     expect(
       buildSetCookie('val', false).startsWith(`${SESSION_COOKIE}=val`),
+    ).toBe(true);
+  });
+});
+
+describe('resolveSessionKey — the long-session key, from the header or the cookie', () => {
+  test('reads x-clh-session', () => {
+    expect(resolveSessionKey(req({ [SESSION_HEADER]: 'ls-1' }))).toEqual({
+      key: 'ls-1',
+      conflict: false,
+    });
+  });
+
+  test('reads a long-session key from the cookie (sendBeacon carries no header)', () => {
+    expect(
+      resolveSessionKey(req({ cookie: `${SESSION_COOKIE}=ls-1` })),
+    ).toEqual({ key: 'ls-1', conflict: false });
+  });
+
+  test('a minted cookie names no long session', () => {
+    expect(resolveSessionKey(req({ cookie: `${SESSION_COOKIE}=s-1` }))).toEqual(
+      { key: undefined, conflict: false },
+    );
+  });
+
+  test('header and cookie that agree are one key', () => {
+    expect(
+      resolveSessionKey(
+        req({ [SESSION_HEADER]: 'ls-1', cookie: `${SESSION_COOKIE}=ls-1` }),
+      ),
+    ).toEqual({ key: 'ls-1', conflict: false });
+  });
+
+  test('header and cookie that disagree are a conflict', () => {
+    expect(
+      resolveSessionKey(
+        req({ [SESSION_HEADER]: 'ls-1', cookie: `${SESSION_COOKIE}=s-2` }),
+      ).conflict,
     ).toBe(true);
   });
 });

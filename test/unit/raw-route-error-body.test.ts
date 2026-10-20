@@ -27,12 +27,16 @@ jest.mock(
 );
 
 import type { Request, Response } from 'express';
+import { clearSessionConfig } from '../../srv/lib/session-config';
 import { handleStreamHTTP } from '../../srv/server';
 
 let server: Server;
 let base: string;
 
 beforeAll(async () => {
+  // The plain MCP is off by default; this route is the plain MCP.
+  process.env.LLM_AGENT_PLAIN_MCP = 'true';
+  clearSessionConfig();
   server = createServer((req, res) => {
     void handleStreamHTTP(
       req as unknown as Request,
@@ -44,6 +48,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  delete process.env.LLM_AGENT_PLAIN_MCP;
+  clearSessionConfig();
   await new Promise<void>((r) => server.close(() => r()));
 });
 

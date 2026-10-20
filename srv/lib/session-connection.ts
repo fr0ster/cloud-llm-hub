@@ -27,7 +27,12 @@ import {
 /** A request the long-session middleware has bound to its session. */
 export type LongSessionRequest = Request & { longSession?: LongSession };
 
-export type SessionNotice = 'abap_session_renewed';
+/**
+ * `abap_session_renewed`: a new ABAP session replaced the held one (debugger
+ * state and locks lost). `revived`: the hub session came back after a restart
+ * from its record; its ABAP side is new.
+ */
+export type SessionNotice = 'abap_session_renewed' | 'revived';
 
 /** Tells the client what the session lost, e.g. debugger state and locks. */
 export const SESSION_NOTICE_HEADER = 'x-clh-session-notice';

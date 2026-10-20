@@ -1,0 +1,286 @@
+/**
+ * What opening, closing and reviving a long session mean for the rest of the
+ * hub. The registry (`long-session.ts`) owns the caps, the queue and the close
+ * protocol; this module is the hooks it calls and the two ways in.
+ *
+ * - Open: a registry entry and a record.
+ * - Close for good (explicit, TTL): the held ABAP connection, then everything
+ *   kept under the key (history in memory and in the recall store, session
+ *   collections, destination — retention's close) and the record.
+ * - Shutdown: the ABAP connection only. The state and the record stay, so a
+ *   client presenting its key after the restart gets its hub session back.
+ * - Revival: a key the registry does not hold, whose record is still within
+ *   its TTL, is opened again under the same key, with its destination and the
+ *   latest turns of its history. Its ABAP side starts afresh (spec §6: the old
+ *   ABAP session is left to SAP's timeout until the library can close it).
+ *
+ * The record store `lifecycleHooks` was given is the one `openSession`,
+ * `resolveSession` and the sweep use: there is one registry per process.
+ */
+import cds from '@sap/cds';
+import {
+  getSharedHistoryRag,
+  isProvidersReady,
+  setSessionDestination,
+} from '../agent-manager';
+import {
+  appendToSession,
+  hasSessionHistory,
+  SESSION_MAX_MESSAGES,
+} from '../session-store';
+import { deleteSession } from './gatekeeper';
+import { guardedTask } from './guarded-task';
+import {
+  type LongSession,
+  type LongSessionHooks,
+  longSessions,
+  longSessionsIfReady,
+  type OpenRefusal,
+} from './long-session';
+import { dropSessionConnection } from './session-connection';
+import { type StoredTurn, turnOwner } from './session-history-rag';
+import type { SessionRecord, SessionRecordStore } from './session-record-store';
+
+const log = () => cds.log('long-session');
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+let records: SessionRecordStore | undefined;
+
+/**
+ * Keys closed for good, until their TTL would have run out anyway. A record
+ * whose delete failed must not bring a closed session back (spec §6: a closed
+ * key is refused, never revived); past the TTL the record is expired and
+ * refused on its own.
+ */
+const closed = new Map<string, number>();
+
+/** Revivals in flight: two requests presenting one key read the store once. */
+const reviving = new Map<string, Promise<LongSession | undefined>>();
+
+/** Revived sessions whose first response has not told the client yet. */
+const revivalNotices = new WeakSet<LongSession>();
+
+function slot(userId: string, key: string): string {
+  return JSON.stringify([userId, key]);
+}
+
+function recordOf(s: LongSession): SessionRecord {
+  return {
+    userId: s.userId,
+    key: s.key,
+    createdAt: s.createdAt,
+    lastActivity: s.lastActivity,
+    ttlMs: longSessions().ttlMs,
+    ...(s.destination !== undefined ? { destination: s.destination } : {}),
+  };
+}
+
+/** A revival refused because the user, or the hub, holds all the sessions it may. */
+export class SessionLimitError extends Error {
+  readonly refused = 'SESSION_LIMIT';
+  constructor() {
+    super('session limit reached');
+    this.name = 'SessionLimitError';
+  }
+}
+
+/** The registry's hooks; `store` is where records go (none: no revival). */
+export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
+  records = store;
+  closed.clear();
+  reviving.clear();
+  return {
+    async onClose(s, reason) {
+      await dropSessionConnection(s);
+      if (reason === 'shutdown') return;
+      closed.set(slot(s.userId, s.key), s.lastActivity + longSessions().ttlMs);
+      // Both run whatever the other does; the first failure is the close's.
+      const results = await Promise.allSettled([
+        deleteSession(s.userId, s.key),
+        records?.delete(s.userId, s.key),
+      ]);
+      const failed = results.find((r) => r.status === 'rejected');
+      if (failed) throw failed.reason;
+    },
+    onTouch(s) {
+      void records?.touch(recordOf(s)).catch((err) =>
+        log().warn('session record write failed', {
+          key: s.key,
+          error: errorText(err),
+        }),
+      );
+    },
+  };
+}
+
+/**
+ * A new long session and its record. A failed record write is logged, not
+ * refused: the session works; only its revival after a crash is at stake, and
+ * the next activity writes the record again.
+ */
+export async function openSession(
+  userId: string,
+  destination?: string,
+): Promise<LongSession | OpenRefusal> {
+  const s = longSessions().open(userId, { destination });
+  if ('refused' in s) return s;
+  if (destination !== undefined)
+    setSessionDestination(userId, s.key, destination);
+  try {
+    await records?.put(recordOf(s));
+  } catch (err) {
+    log().warn('session record write failed', {
+      key: s.key,
+      error: errorText(err),
+    });
+  }
+  return s;
+}
+
+/**
+ * The live session under this key, or one revived from its record; undefined
+ * when there is neither (never opened, closed, expired, another user's).
+ * Rejects with `SessionLimitError` when a revival finds no room, and with the
+ * store's error when the record cannot be read.
+ */
+export function resolveSession(
+  userId: string,
+  key: string,
+): Promise<LongSession | undefined> {
+  const live = longSessions().get(userId, key);
+  if (live) return Promise.resolve(live);
+  if (!records || isClosed(userId, key)) return Promise.resolve(undefined);
+  const id = slot(userId, key);
+  let pending = reviving.get(id);
+  if (!pending) {
+    pending = revive(records, userId, key).finally(() => reviving.delete(id));
+    reviving.set(id, pending);
+  }
+  return pending;
+}
+
+/** Whether the client still has to be told this session was revived; once. */
+export function takeRevivalNotice(s: LongSession): boolean {
+  return revivalNotices.delete(s);
+}
+
+function isClosed(userId: string, key: string): boolean {
+  const until = closed.get(slot(userId, key));
+  return until !== undefined && until >= Date.now();
+}
+
+async function revive(
+  store: SessionRecordStore,
+  userId: string,
+  key: string,
+): Promise<LongSession | undefined> {
+  const rec = await store.get(userId, key);
+  if (!rec) return undefined;
+  if (rec.lastActivity + rec.ttlMs < Date.now()) {
+    await store.delete(userId, key).catch((err) =>
+      log().warn('expired session record delete failed', {
+        key,
+        error: errorText(err),
+      }),
+    );
+    return undefined;
+  }
+  // Closed while the record was read.
+  if (isClosed(userId, key)) return undefined;
+  const opened = longSessions().open(userId, {
+    key,
+    createdAt: rec.createdAt,
+    destination: rec.destination,
+    revived: true,
+  });
+  if ('refused' in opened) {
+    // Opened meanwhile by another path: that session is the one.
+    if (opened.refused === 'SESSION_EXISTS')
+      return longSessions().get(userId, key);
+    throw new SessionLimitError();
+  }
+  if (rec.destination !== undefined)
+    setSessionDestination(userId, key, rec.destination);
+  await rebuildWindow(opened);
+  revivalNotices.add(opened);
+  log().info('long session revived', { key });
+  return opened;
+}
+
+/**
+ * The in-memory history window from the recall store's latest turns. Without
+ * a recall store, or when it fails, the session comes back without its window;
+ * the turns stay in the store, still reachable by recall.
+ */
+async function rebuildWindow(s: LongSession): Promise<void> {
+  if (hasSessionHistory(s.key, s.userId)) return;
+  const rag = isProvidersReady() ? getSharedHistoryRag() : undefined;
+  if (!rag) return;
+  let turns: StoredTurn[];
+  try {
+    turns = await rag.listTurns(turnOwner(s.userId, s.key));
+  } catch (err) {
+    log().warn('revived session history could not be read', {
+      key: s.key,
+      error: errorText(err),
+    });
+    return;
+  }
+  for (const t of turns.slice(-SESSION_MAX_MESSAGES / 2)) {
+    appendToSession(
+      s.key,
+      s.userId,
+      { role: 'user', content: t.userText },
+      { role: 'assistant', content: t.assistantText },
+    );
+  }
+}
+
+/**
+ * One sweep pass: idle sessions are closed (TTL), and records past their TTL
+ * that no live session holds — sessions nobody came back for after a restart
+ * — are deleted.
+ */
+export async function sweepSessions(): Promise<void> {
+  const registry = longSessionsIfReady();
+  if (!registry) return;
+  await registry.sweep();
+  const now = Date.now();
+  for (const [id, until] of closed) if (until < now) closed.delete(id);
+  if (!records) return;
+  for (const r of await records.list()) {
+    if (r.lastActivity + r.ttlMs >= now || registry.has(r.userId, r.key))
+      continue;
+    try {
+      await records.delete(r.userId, r.key);
+      log().info('unclaimed session record deleted', { key: r.key });
+    } catch (err) {
+      log().warn('unclaimed session record delete failed', {
+        key: r.key,
+        error: errorText(err),
+      });
+    }
+  }
+}
+
+/** Runs `sweepSessions` every `intervalMs`; a pass still running skips a tick. Returns the stop. */
+export function startSessionSweep(intervalMs = 60_000): () => void {
+  let running = false;
+  const timer = setInterval(
+    guardedTask('Long-session sweep', log(), async () => {
+      if (running) return;
+      running = true;
+      try {
+        await sweepSessions();
+      } finally {
+        running = false;
+      }
+    }),
+    intervalMs,
+  );
+  timer.unref();
+  return () => clearInterval(timer);
+}

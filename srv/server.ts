@@ -53,6 +53,7 @@ import {
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
+import { initLongSessions, longSessionsIfReady } from './lib/long-session';
 import {
   agentStepCalls,
   jsonRpcError,
@@ -63,7 +64,20 @@ import {
 import { needsSapConnection } from './lib/mcp-request';
 import { startProviders } from './lib/providers';
 import { sessionConfig } from './lib/session-config';
-import { sessionMiddleware } from './lib/session-middleware';
+import type { LongSessionRequest } from './lib/session-connection';
+import {
+  lifecycleHooks,
+  openSession,
+  resolveSession,
+  startSessionSweep,
+  takeRevivalNotice,
+} from './lib/session-lifecycle';
+import {
+  requireLongSession,
+  sessionMiddleware,
+} from './lib/session-middleware';
+import { createSessionRecordStore } from './lib/session-record-store';
+import { openAiSessionRefusal } from './lib/throttle-surfacing';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   handleChatCompletions,
@@ -71,7 +85,12 @@ import {
   handleUsage,
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
-import { sessionIdOf } from './session-id';
+import {
+  buildClearCookie,
+  buildSetCookie,
+  resolveSessionId,
+  sessionIdOf,
+} from './session-id';
 
 /**
  * RAG collection management routes (/v1/rag/*). Mounted in `bootstrap`, filled
@@ -163,6 +182,21 @@ export async function handleStreamHTTP(
   const log = cds.log('mcp-proxy/stream-http');
   let body: unknown = null;
   let cleanup: (() => Promise<void>) | null = null;
+
+  // The plain MCP is off by default (LLM_AGENT_PLAIN_MCP): every call stands
+  // alone there, with no long session. The agent MCP is the external channel.
+  if (!sessionConfig().plainMcp) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        error: 'PLAIN_MCP_DISABLED',
+        message:
+          'The plain MCP endpoint is disabled on this hub. Connect through the agent MCP at /mcp/agent/stream/http, or ask the operator to set LLM_AGENT_PLAIN_MCP=true.',
+        supportedEndpoint: '/mcp/agent/stream/http',
+      }),
+    );
+    return;
+  }
 
   // Only handle POST requests (like mcp-abap-adt)
   if (req.method !== 'POST') {
@@ -324,6 +358,101 @@ export async function handleStreamHTTP(
   }
 }
 
+/** Whether the request came over HTTPS (directly or behind the approuter). */
+function isSecure(req: Request): boolean {
+  return !!(req.secure || req.headers['x-forwarded-proto'] === 'https');
+}
+
+/**
+ * POST /v1/session — open a long session (the HTTP form of `session_open`).
+ *
+ * Answers 201 with the key, which the client sends in `x-clh-session` from now
+ * on. The key also goes into the `clh_session` cookie: `sendBeacon` (closing a
+ * browser tab) cannot set a header, and the cookie carries it there.
+ */
+export async function handleOpenSession(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const destination = (req.body as { destination?: unknown } | undefined)
+    ?.destination;
+  if (destination !== undefined && typeof destination !== 'string') {
+    res.status(400).json({
+      error: {
+        message: 'destination must be a string',
+        type: 'invalid_request_error',
+      },
+    });
+    return;
+  }
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  const s = await openSession(userId, destination?.trim() || undefined);
+  if ('refused' in s) {
+    // A new key never exists already: the refusal is the cap.
+    const r = openAiSessionRefusal('SESSION_LIMIT');
+    res.status(r.status).json(r.body);
+    return;
+  }
+  res.setHeader('Set-Cookie', buildSetCookie(s.key, isSecure(req)));
+  res.status(201).json({
+    session: s.key,
+    ttlSeconds: Math.floor(sessionConfig().ttlMs / 1000),
+    destination: s.destination ?? null,
+  });
+}
+
+/**
+ * DELETE /v1/session, and POST /v1/session/close for `sendBeacon`.
+ *
+ * A long session is closed for good (`explicit`): its ABAP session, history,
+ * session collections, destination and record. Answered once the session is
+ * gone; a cleanup that failed is logged, and the session is gone all the same.
+ * Without a long session: the clear-chat of before.
+ */
+export async function handleCloseSession(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const s = (req as LongSessionRequest).longSession;
+  if (s) {
+    try {
+      await longSessionsIfReady()?.close(s.userId, s.key, 'explicit');
+    } catch (err) {
+      cds.log('session').warn('long session cleanup failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    // The cookie named the closed session: clear it, so that a later plain
+    // request is not refused for a key that is gone.
+    if (resolveSessionId(req) === s.key)
+      res.setHeader('Set-Cookie', buildClearCookie(isSecure(req)));
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        error: { message: 'no session (the clh_session cookie is required)' },
+      }),
+    );
+    return;
+  }
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  // Answered at the mark. The session is unreachable from this moment; its
+  // bytes go when the last operation against them has stopped — a pipeline
+  // runs to its own end, a RAG upload is cancelled and then waited for.
+  void deleteSession(userId, sessionId).catch((err) =>
+    cds.log('session').warn('session removal failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
+  res.writeHead(204);
+  res.end();
+}
+
 // NOTE: Destination probe is implemented as CAP function ProbeDestination in mcp-proxy.ts
 // It uses executeHttpRequest from SAP Cloud SDK for automatic destination handling
 
@@ -359,6 +488,11 @@ cds.on('bootstrap', (app: Application) => {
 
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Long-session configuration', { ...sessions });
+  // The registry with its record store. A store the configuration names but
+  // cannot build stops the server here, like any other configuration error.
+  initLongSessions(
+    lifecycleHooks(createSessionRecordStore(sessions, getAgentConfig().rag)),
+  );
 
   // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
   // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with
@@ -609,25 +743,31 @@ cds.on('bootstrap', (app: Application) => {
   // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
-  // Every /v1 request runs under a session this service issued. The cookie is
-  // the only thing read; a header naming a session is not.
+  // Every /v1 request runs under a session this service issued: a long
+  // session named by its key (x-clh-session, or the cookie), or the
+  // per-request session of the plain mode (the cookie). x-session-id is not
+  // read.
   app.use(
     '/v1',
     sessionMiddleware({
       userIdOf: () => cds.context?.user?.id ?? 'anonymous',
       isLive: sessionIsLive,
+      resolveSession,
+      takeRevivalNotice,
+      keyOptional: (req) =>
+        req.path === '/session' || req.path === '/session/close',
     }),
   );
 
   // CORS preflight for /v1/* routes
   app.options('/v1/{*path}', (_req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      // No X-Session-Id: the service issues the session in its cookie and no
-      // route reads a header naming one.
-      'Content-Type, Authorization, X-Rag-Collections',
+      // No X-Session-Id: no route reads it. x-clh-session carries the key of
+      // a long session this service issued.
+      'Content-Type, Authorization, X-Rag-Collections, x-clh-session',
     );
     res.writeHead(204);
     res.end();
@@ -648,10 +788,19 @@ cds.on('bootstrap', (app: Application) => {
   app.use('/v1', ragRouter);
 
   // POST /v1/chat/completions — main chat (streaming + non-streaming)
-  app.post('/v1/chat/completions', handleChatCompletions as never);
+  // Outside a long session only in plain mode (LLM_AGENT_PLAIN_API).
+  app.post(
+    '/v1/chat/completions',
+    requireLongSession('openai'),
+    handleChatCompletions as never,
+  );
 
   // POST /v1/messages — Anthropic Messages API (streaming + non-streaming)
-  app.post('/v1/messages', handleAnthropicMessages as never);
+  app.post(
+    '/v1/messages',
+    requireLongSession('anthropic'),
+    handleAnthropicMessages as never,
+  );
 
   // GET /v1/models — model list (no auth required via /v1 middleware above)
   app.get('/v1/models', handleModels as never);
@@ -710,30 +859,11 @@ cds.on('bootstrap', (app: Application) => {
     }
   }) as never);
 
-  // DELETE /v1/session — clear server-side conversation history
-  app.delete('/v1/session', ((req: Request, res: Response) => {
-    const sessionId = sessionIdOf(req);
-    if (!sessionId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error: { message: 'no session (the clh_session cookie is required)' },
-        }),
-      );
-      return;
-    }
-    const userId = cds.context?.user?.id ?? 'anonymous';
-    // Answered at the mark. The session is unreachable from this moment; its
-    // bytes go when the last operation against them has stopped — a pipeline
-    // runs to its own end, a RAG upload is cancelled and then waited for.
-    void deleteSession(userId, sessionId).catch((err) =>
-      cds.log('session').warn('session removal failed', {
-        error: err instanceof Error ? err.message : String(err),
-      }),
-    );
-    res.writeHead(204);
-    res.end();
-  }) as never);
+  // POST /v1/session — open a long session. DELETE /v1/session and
+  // POST /v1/session/close (sendBeacon) — close it, or clear a plain session.
+  app.post('/v1/session', handleOpenSession as never);
+  app.delete('/v1/session', handleCloseSession as never);
+  app.post('/v1/session/close', handleCloseSession as never);
 
   log.info('Custom Express endpoints registered', {
     streamHttp: 'POST /mcp/stream/http',
@@ -741,7 +871,8 @@ cds.on('bootstrap', (app: Application) => {
     anthropicMessages: 'POST /v1/messages',
     models: 'GET /v1/models',
     usage: 'GET /v1/usage',
-    sessionClear: 'DELETE /v1/session',
+    sessionOpen: 'POST /v1/session',
+    sessionClose: 'DELETE /v1/session, POST /v1/session/close',
     ragCollections: '/v1/rag/collections (CRUD + upload + query)',
     destinationProbe:
       'GET /mcp-proxy/ProbeDestination?destination=NAME (CAP function)',
@@ -777,6 +908,9 @@ cds.on('served', () => {
     guardedTask('Empty session forget', log, () => forgetEmptySessions()),
     5 * 60 * 1000,
   ).unref();
+  // Every minute: long sessions idle past their TTL are closed, and records
+  // nobody came back for after a restart are deleted.
+  startSessionSweep();
   log.info(
     'Starting providers, then pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
@@ -823,5 +957,11 @@ cds.on('served', () => {
     );
 });
 
-// Only shutdown ends an admitted session.
-cds.on('shutdown', () => shutdownGatekeeper());
+// Only shutdown ends an admitted session. Long sessions close first: their
+// ABAP sessions end, their state and records stay for revival. A close waits
+// for the session's running request, which the gatekeeper's abort ends.
+cds.on('shutdown', async () => {
+  const closing = longSessionsIfReady()?.closeAll('shutdown');
+  shutdownGatekeeper();
+  await closing;
+});

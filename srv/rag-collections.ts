@@ -53,6 +53,7 @@ import {
   unwrap,
   updatePersistentDocument,
 } from './lib/collection-persistence';
+import { sessionConfig } from './lib/session-config';
 
 /** One session of one user, as a key (a tuple: no separator to collide on). */
 function sessionKey(userId: string, sessionId: string): string {
@@ -63,9 +64,14 @@ function sessionKey(userId: string, sessionId: string): string {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** TTL for session-scoped RAG collections (ms). Override via RAG_SESSION_TTL_MS env var. */
-export const SESSION_TTL_MS =
-  Number(process.env.RAG_SESSION_TTL_MS) || 24 * 60 * 60 * 1000;
+/**
+ * TTL for session-scoped RAG collections (ms): the session's one TTL
+ * (`LLM_AGENT_SESSION_TTL_MS`). `RAG_SESSION_TTL_MS` still overrides it for
+ * collections only; it is deprecated.
+ */
+export function sessionCollectionTtlMs(): number {
+  return Number(process.env.RAG_SESSION_TTL_MS) || sessionConfig().ttlMs;
+}
 
 /**
  * Collection removals whose store the RAG backend did not delete or clear, since start.
@@ -1221,7 +1227,7 @@ export class CollectionRegistry {
     }
     const stored = this.collections.get(physicalId);
     if (stored?.meta.scope !== 'session') return;
-    const expiresAt = Date.now() + SESSION_TTL_MS;
+    const expiresAt = Date.now() + sessionCollectionTtlMs();
     if (!(stored.persistent && this.persistence)) {
       stored.meta.expiresAt = expiresAt;
       return;

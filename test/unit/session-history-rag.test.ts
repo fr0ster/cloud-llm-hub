@@ -166,3 +166,11 @@ describe('recording a turn', () => {
     ).resolves.toBe(false);
   });
 });
+
+describe('listTurns', () => {
+  it('is empty for a store that cannot enumerate its turns', async () => {
+    const rag = new SessionHistoryRag(fakeInner() as never, () => ALICE);
+    await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
+    await expect(rag.listTurns(ALICE)).resolves.toEqual([]);
+  });
+});

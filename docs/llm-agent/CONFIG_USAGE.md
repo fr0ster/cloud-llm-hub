@@ -81,6 +81,10 @@ A hub session holds an ABAP connection between requests under a server-issued ke
 | `LLM_AGENT_PLAIN_API` | off | `true` allows plain (session-less) calls on the HTTP API; any other value is off |
 | `LLM_AGENT_PLAIN_MCP` | off | `true` allows plain calls on MCP; any other value is off |
 
+One TTL covers the whole session: the long session, its chat history and its session collections.
+
+With `LLM_AGENT_PLAIN_API` off, `/v1/chat/completions` and `/v1/messages` answer a request outside a long session with 400 `SESSION_REQUIRED`: open one with `POST /v1/session` (body `{ "destination"?: string }`, answer 201 `{ session, ttlSeconds, destination }`) and send the key in `x-clh-session`; close it with `DELETE /v1/session` (or `POST /v1/session/close`, for `sendBeacon`). A key that names no open session is refused with 404 `SESSION_NOT_FOUND`; a header and a `clh_session` cookie naming different sessions with 400 `SESSION_KEY_CONFLICT`; an open beyond the caps with 429 `SESSION_LIMIT`. With `LLM_AGENT_PLAIN_MCP` off, `/mcp/stream/http` answers 404 `PLAIN_MCP_DISABLED`. With a session store, a key presented after a restart, within its TTL, gets its hub session back (history window, collections, destination) with `x-clh-session-notice: revived` on the first response; its ABAP session is new.
+
 `LLM_AGENT_SESSION_TTL_MS`, `LLM_AGENT_SESSION_STORE`, `LLM_AGENT_PLAIN_API` and `LLM_AGENT_PLAIN_MCP` are `mta.yaml` parameters (empty reads as unset); the caps, the queue and the path are environment-only, like `LLM_GATEKEEPER_*`.
 
 ## Persistent RAG collections
@@ -108,7 +112,7 @@ While the restore has failed (or is still running past the wait), presets stay u
 
 **Documents.** The metadata keys `id`, `namespace`, `collectionId`, `docId`, `createdAt` and `_createdAtMs` belong to the hub; the hub's values win over the same keys supplied by a client.
 
-**Session collections** persist too and expire after the session TTL (`RAG_SESSION_TTL_MS`, default 24 h). The hourly sweep removes expired ones from memory and from the catalog.
+**Session collections** persist too and expire after the session TTL (`LLM_AGENT_SESSION_TTL_MS`, default 1 h, counted from their last use). `RAG_SESSION_TTL_MS` still overrides it for collections only; it is deprecated. The hourly sweep removes expired ones from memory and from the catalog; the collections of an open long session are left to the session, which deletes them when it closes.
 
 **Session history** with a persistent `LLM_AGENT_SESSION_RAG_BACKEND` is stored in the store `h_history` (`<prefix>_h_history` on Qdrant), created on first use. Recall is scoped to the asking conversation by `userId` and `sessionId`. Forgetting a session deletes its turns by `userId` and `sessionId`; each owner is capped at 200 turns (the oldest are deleted). After a failed open the hub waits 30 s before trying again and logs one warning per window.
 

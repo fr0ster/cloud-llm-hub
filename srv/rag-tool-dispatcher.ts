@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { normalizeLogicalId, resolveByName } from './collection-ids';
 import { CollectionBackendError } from './lib/collection-persistence';
 import type { CollectionRegistry } from './rag-collections';
-import { SESSION_TTL_MS } from './rag-collections';
+import { sessionCollectionTtlMs } from './rag-collections';
 import { getRequestSessionId } from './request-session';
 
 const ragAddSchema = z.object({
@@ -149,7 +149,10 @@ export async function dispatchRagTool(
           scope: isSession ? 'session' : 'user',
           owner: userId(),
           ...(isSession
-            ? { sessionId: sid, expiresAt: Date.now() + SESSION_TTL_MS }
+            ? {
+                sessionId: sid,
+                expiresAt: Date.now() + sessionCollectionTtlMs(),
+              }
             : {}),
         });
         // Refresh expiry for existing session collections.

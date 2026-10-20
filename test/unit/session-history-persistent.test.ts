@@ -596,6 +596,52 @@ describe('persistent recall', () => {
   });
 });
 
+describe('listTurns', () => {
+  it("listTurns returns an owner's turns oldest first and parses User/Assistant text", async () => {
+    const rag = history(() => ALICE);
+    const long = `created ZDEMO_LONG ${'x'.repeat(1300)}`;
+    await rag.recordTurn({
+      owner: ALICE,
+      userText: 'make a domain\nnamed kangaroo',
+      assistantText: 'created ZDEMO_KANGAROO',
+    });
+    await rag.recordTurn({ owner: BOB, userText: 'bob', assistantText: 'b' });
+    await rag.recordTurn({
+      owner: ALICE,
+      userText: 'and a long one',
+      assistantText: long,
+    });
+    await rag.recordTurn({
+      owner: ALICE,
+      userText: 'thanks',
+      assistantText: 'you are welcome',
+    });
+
+    // A new process: nothing cached, everything from the store.
+    const turns = await history(() => undefined).listTurns(ALICE);
+    expect(turns.map((t) => t.userText)).toEqual([
+      'make a domain\nnamed kangaroo',
+      'and a long one',
+      'thanks',
+    ]);
+    expect(turns[0].assistantText).toBe('created ZDEMO_KANGAROO');
+    // The stored answer is clipped; the names line is not part of it.
+    expect(turns[1].assistantText.startsWith('created ZDEMO_LONG')).toBe(true);
+    expect(turns[1].assistantText).not.toContain('Objects:');
+    expect(turns[2].assistantText).toBe('you are welcome');
+    for (const t of turns) {
+      expect(typeof t.id).toBe('string');
+      expect(new Date(t.createdAt).toISOString()).toBe(t.createdAt);
+    }
+    const order = turns.map((t) => t.createdAt);
+    expect(order).toEqual([...order].sort());
+  });
+
+  it('is empty for an owner with no turns', async () => {
+    await expect(history(() => ALICE).listTurns(ALICE)).resolves.toEqual([]);
+  });
+});
+
 describe('forget', () => {
   it('removes only that owner, also after a restart (no in-process ids)', async () => {
     const writer = history(() => ALICE);

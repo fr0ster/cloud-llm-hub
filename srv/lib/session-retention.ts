@@ -18,6 +18,12 @@ export interface RetentionStores {
    * deleteAll threw. Retention calls this instead of throwing to the caller.
    */
   reportDeleteError?(userId: string, sessionId: string, error: unknown): void;
+  /**
+   * Whether this session is pinned: never an eviction candidate. An open long
+   * session is — it ends by its own close or its TTL, not to make room.
+   * Synchronous, like everything eviction asks.
+   */
+  isPinned?(userId: string, sessionId: string): boolean;
 }
 
 /**
@@ -278,13 +284,15 @@ export class SessionRetention {
 
   /**
    * An idle session nobody ever presented, least recently used first; only
-   * when there is none, the least recently used idle one somebody did.
+   * when there is none, the least recently used idle one somebody did. A
+   * pinned session is never one.
    */
   private evictionCandidate(): Entry | undefined {
     let neverPresented: Entry | undefined;
     let presented: Entry | undefined;
     for (const e of this.entries.values()) {
       if (e.leases.size > 0 || e.closing) continue;
+      if (this.stores.isPinned?.(e.userId, e.sessionId)) continue;
       if (e.presented) {
         if (!presented || e.lastUsed < presented.lastUsed) presented = e;
       } else if (!neverPresented || e.lastUsed < neverPresented.lastUsed) {

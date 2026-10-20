@@ -10,6 +10,7 @@ import cds from '@sap/cds';
 import { createCallRegister, runWithAdmission } from './admission-scope';
 import { Door } from './door';
 import { gatekeeperConfig } from './gatekeeper-config';
+import { longSessionsIfReady } from './long-session';
 import {
   isRefusal,
   type Lease,
@@ -22,12 +23,23 @@ import type { DoorRefusalReason } from './throttle-surfacing';
 
 let retention: SessionRetention | undefined;
 
+/** An open long session, not closing. */
+function isOpenLongSession(userId: string, sessionId: string): boolean {
+  return longSessionsIfReady()?.has(userId, sessionId) ?? false;
+}
+
 export function theRetention(): SessionRetention {
   if (!retention) {
     retention = new SessionRetention(
       {
-        hasState: hasSessionState,
+        // An open long session holds state by definition, even before its
+        // first turn: without this, its first request (presented, since the
+        // key was kept) would find it "gone" and be refused.
+        hasState: (userId, sessionId) =>
+          hasSessionState(userId, sessionId) ||
+          isOpenLongSession(userId, sessionId),
         deleteAll: deleteSessionState,
+        isPinned: isOpenLongSession,
         reportDeleteError: (userId, sessionId, error) =>
           cds.log('gatekeeper').warn('session removal failed', {
             userId,
@@ -136,13 +148,18 @@ export async function admitPipeline(
  * Whether a presented cookie still names a session.
  *
  * Closing means no, from the mark: the session is unreachable from that moment.
- * Otherwise yes when retention knows it or any store still holds it — the
- * second covers state no lease has touched in this process, such as history.
+ * Otherwise yes when retention knows it, any store still holds it — the second
+ * covers state no lease has touched in this process, such as history — or it
+ * is an open long session.
  */
 export function sessionIsLive(userId: string, sessionId: string): boolean {
   const r = theRetention();
   if (r.isClosing(userId, sessionId)) return false;
-  return r.isKnown(userId, sessionId) || hasSessionState(userId, sessionId);
+  return (
+    r.isKnown(userId, sessionId) ||
+    hasSessionState(userId, sessionId) ||
+    isOpenLongSession(userId, sessionId)
+  );
 }
 
 export function leaseSession(
@@ -176,8 +193,15 @@ export function deleteSession(
   return removal.finally(() => theDoor()?.poke());
 }
 
+/**
+ * The collection sweep leaves an open long session alone: its collections end
+ * with the session (explicit close or TTL), whatever their own expiry says.
+ */
 export function maySweepSession(userId: string, sessionId: string): boolean {
-  return theRetention().maySweep(userId, sessionId);
+  return (
+    theRetention().maySweep(userId, sessionId) &&
+    !isOpenLongSession(userId, sessionId)
+  );
 }
 
 /**

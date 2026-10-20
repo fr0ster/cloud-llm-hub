@@ -1338,7 +1338,7 @@ graph LR
 ### Stateless by Default
 
 - **Raw MCP protocol** (`/mcp/stream/http`) is stateless per request: `MCP_ENABLE_SESSION_STORAGE=false` by default, no cross-request MCP session store
-- **Exception — `/v1/chat/completions` server-managed sessions:** the OpenAI handler keeps a process-local `sessionStore` of chat history keyed by session+user (`openai-handler.ts`), expired after 30 min of inactivity by a periodic cleanup (`SESSION_TTL_MS`). This is conversation history, not connection or agent state
+- **Exception — `/v1/chat/completions` server-managed sessions:** the OpenAI handler keeps a process-local `sessionStore` of chat history keyed by session+user (`session-store.ts`), expired after the session TTL of inactivity by a periodic cleanup (`LLM_AGENT_SESSION_TTL_MS`, default 60 min). This is conversation history, not connection or agent state
 - **Agent handles** (`SmartAgentHandle`) are cached **per destination for the process lifetime** — reused across requests, cleared only on shutdown cleanup (no TTL). The 30-min TTL above applies to OpenAI chat history, not to agent instances
 - Fresh auth on every **SAP-touching** request — the raw MCP path and the agent/tool-execution endpoints (`/mcp/stream/http`, `/mcp/agent/stream/http`, `POST /v1/chat/completions`, `POST /v1/messages`) build a per-request SAP connection from the caller's credentials, never a cached connection. The non-SAP-connection routes (`/v1/models`, `/v1/usage`, `/v1/destinations/*`, `/v1/token`) create no per-request SAP connection — some touch `getSmartAgent()`/`refreshDestinations()` for metadata or destination warm-up, but none open a caller-credentialed ABAP connection
 

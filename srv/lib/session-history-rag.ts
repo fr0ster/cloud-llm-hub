@@ -107,6 +107,37 @@ export function renderTurn(userText: string, assistantText: string): string {
   ].join('\n');
 }
 
+/** One stored turn, read back. */
+export interface StoredTurn {
+  id: string;
+  userText: string;
+  assistantText: string;
+  /** ISO; empty for a turn written without one. */
+  createdAt: string;
+}
+
+/**
+ * A rendered turn read back: the user and assistant text, without the names
+ * line. The answer is the clipped one that was stored. Undefined for text
+ * `renderTurn` did not write.
+ */
+export function parseTurn(
+  text: string,
+): { userText: string; assistantText: string } | undefined {
+  if (!text.startsWith('User: ')) return undefined;
+  const split = text.indexOf('\nAssistant: ');
+  if (split === -1) return undefined;
+  let answer = text.slice(split + '\nAssistant: '.length);
+  // The names line is last when there is one, and only ever appended.
+  const names = answer.lastIndexOf('\nObjects: ');
+  if (names !== -1 && !answer.slice(names + 1).includes('\n'))
+    answer = answer.slice(0, names);
+  return {
+    userText: text.slice('User: '.length, split),
+    assistantText: answer,
+  };
+}
+
 /**
  * The `history` store, scoped to the conversation asking.
  *
@@ -178,6 +209,50 @@ export class SessionHistoryRag implements IRag {
     if (!ids?.length) return;
     this.ids.delete(owner);
     await this.drop(ids);
+  }
+
+  /**
+   * A conversation's stored turns, oldest first, read back from the store —
+   * what a revived session rebuilds its window from. Empty for a store that
+   * cannot enumerate turns (the in-process one does not outlive the process
+   * anyway). A failed scan throws; the caller decides what a window without
+   * history is worth.
+   */
+  async listTurns(owner: string): Promise<StoredTurn[]> {
+    const key = parseTurnOwner(owner);
+    if (!key || !isRagScanner(this.inner)) return [];
+    const turns: StoredTurn[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.inner.scan(
+        cursor === undefined ? { filter: key } : { filter: key, cursor },
+      );
+      if (!page.ok) throw page.error;
+      for (const r of page.value.records) {
+        if (r.metadata.owner !== owner) continue;
+        const text = parseTurn(r.text);
+        if (!text) continue;
+        turns.push({
+          id: r.id,
+          ...text,
+          createdAt:
+            typeof r.metadata.createdAt === 'string'
+              ? r.metadata.createdAt
+              : '',
+        });
+      }
+      if (page.value.cursor !== undefined && page.value.cursor === cursor)
+        throw new Error('Session history scan did not advance');
+      cursor = page.value.cursor;
+    } while (cursor !== undefined);
+    // Oldest first; ISO timestamps sort as strings, the id breaks a tie.
+    return turns.sort((a, b) =>
+      a.createdAt === b.createdAt
+        ? a.id.localeCompare(b.id)
+        : a.createdAt < b.createdAt
+          ? -1
+          : 1,
+    );
   }
 
   /** How many turns are held for a conversation. */

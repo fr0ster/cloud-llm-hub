@@ -11,13 +11,11 @@
 
 import type { Message } from '@mcp-abap-adt/llm-agent';
 import { getSharedHistoryRag, isProvidersReady } from './agent-manager';
+import { sessionConfig } from './lib/session-config';
 import { turnOwner } from './lib/session-history-rag';
 
 /** Max messages kept in server session (before SmartAgent's own summarization) */
-const SESSION_MAX_MESSAGES = 20;
-
-/** Session TTL: 30 minutes of inactivity */
-const SESSION_TTL_MS = 30 * 60 * 1000;
+export const SESSION_MAX_MESSAGES = 20;
 
 /** Cleanup interval: every 5 minutes */
 const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
@@ -45,11 +43,13 @@ function sessionStoreKey(sessionId: string, userId: string): string {
 }
 
 /** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the
- *  Node process (or Jest workers) alive after everything else exits. */
+ *  Node process (or Jest workers) alive after everything else exits. The TTL
+ *  is the session's one TTL (`LLM_AGENT_SESSION_TTL_MS`), read at each pass. */
 setInterval(() => {
   const now = Date.now();
+  const ttlMs = sessionConfig().ttlMs;
   for (const [id, entry] of sessionStore) {
-    if (now - entry.lastAccess > SESSION_TTL_MS) {
+    if (now - entry.lastAccess > ttlMs) {
       sessionStore.delete(id);
     }
   }

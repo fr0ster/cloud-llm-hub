@@ -79,6 +79,7 @@ jest.mock('../../srv/lib/basic-to-bearer', () => ({
 }));
 jest.mock('../../srv/lib/session-middleware', () => ({
   sessionMiddleware: () => () => {},
+  requireLongSession: () => () => {},
 }));
 jest.mock('../../srv/lib/gatekeeper-metrics', () => ({
   installThrottleObserver: () => {},

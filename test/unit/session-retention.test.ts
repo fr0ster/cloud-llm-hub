@@ -130,6 +130,30 @@ describe('places', () => {
     expect(f.log).toEqual([]);
   });
 
+  it('a pinned entry is never evicted', () => {
+    // An open long session: closing it is the session's own business (an
+    // explicit close or its TTL), never a side effect of another's lease.
+    const f = fakeStores();
+    const c = clock();
+    const r = new SessionRetention(
+      { ...f.stores, isPinned: (u, s) => u === 'alice' && s === 'A' },
+      2,
+      c.now,
+    );
+    for (const s of ['A', 'B']) {
+      f.put('alice', s);
+      lease(r.lease('alice', s, 'rag')).release();
+      c.tick();
+    }
+    // A is the oldest, and pinned: B goes instead.
+    lease(r.lease('alice', 'C', 'rag'));
+    expect(f.log).toEqual(['delete alice/B']);
+    expect(r.isKnown('alice', 'A')).toBe(true);
+    // Only a pinned and a leased entry left: no room, and A is still not taken.
+    expect(r.lease('bob', 'D', 'rag')).toEqual({ refused: 'retention' });
+    expect(f.log).toEqual(['delete alice/B']);
+  });
+
   it('never evicts a session in the middle of a RAG operation, slot or no slot', () => {
     // The test the slot-only rule passed while being wrong: the upload holds no
     // slot, and it is the least recently used.

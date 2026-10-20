@@ -31,9 +31,9 @@ Do not conflate them:
 | Cache | Where | Lifetime |
 |-------|-------|----------|
 | `agentHandles` — the agent per destination | `agent-manager.ts` | Process lifetime. No TTL; cleared only on shutdown |
-| `sessionStore` — chat history per session+user | `openai-handler.ts` | `SESSION_TTL_MS` = 30 minutes of inactivity |
+| `sessionStore` — chat history per session+user | `session-store.ts` | `LLM_AGENT_SESSION_TTL_MS` of inactivity (default 60 minutes) |
 
-The 30-minute figure belongs to conversation history, not to agents.
+The session TTL belongs to conversation history, not to agents.
 
 ## Calling it
 

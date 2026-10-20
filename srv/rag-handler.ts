@@ -28,7 +28,7 @@ import {
 } from './lib/throttle-surfacing';
 import { ensurePresets } from './presets';
 import type { CollectionRegistry } from './rag-collections';
-import { SESSION_TTL_MS } from './rag-collections';
+import { sessionCollectionTtlMs } from './rag-collections';
 import {
   buildRagToolSchemas,
   dispatchRagTool,
@@ -281,7 +281,7 @@ export function registerRagRoutes(
           error(
             res,
             400,
-            'x-session-id is no longer read. A session collection belongs to the session this service issued: keep the clh_session cookie from a previous response and send it back.',
+            'x-session-id is no longer read. A session collection belongs to a session this service issued: send the key of your session (POST /v1/session) in x-clh-session, or keep the clh_session cookie from a previous response and send it back.',
           );
           return;
         }
@@ -312,7 +312,7 @@ export function registerRagRoutes(
           backend,
           owner: userId,
           sessionId: sid,
-          expiresAt: Date.now() + SESSION_TTL_MS,
+          expiresAt: Date.now() + sessionCollectionTtlMs(),
         };
       } else {
         physical = userCollectionId(logicalId, userId);
