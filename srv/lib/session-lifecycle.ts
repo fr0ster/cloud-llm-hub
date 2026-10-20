@@ -19,7 +19,6 @@
  */
 import cds from '@sap/cds';
 import {
-  getCollectionRegistry,
   getSharedHistoryRag,
   isProvidersReady,
   setSessionDestination,
@@ -229,22 +228,19 @@ async function markClosed(record: SessionRecord): Promise<void> {
   }
 }
 
+/**
+ * The session's state, then its history. `deleteSession` goes through
+ * retention, which cancels the session's RAG leases and waits for them before
+ * removing its collections; only then is the history forgotten, with the
+ * outcome checked, so a failed delete keeps the closed record for a retry.
+ */
 async function cleanupSession(userId: string, key: string): Promise<void> {
-  const results = await Promise.allSettled([
-    (async () => {
-      if (!isProvidersReady()) return;
-      const forgotten = await getSharedHistoryRag()?.forgetOwner(
-        turnOwner(userId, key),
-      );
-      if (forgotten === false) throw new Error('Session history forget failed');
-    })(),
-    isProvidersReady()
-      ? getCollectionRegistry().deleteSessionCollections(userId, key)
-      : undefined,
-    deleteSession(userId, key),
-  ]);
-  const failed = results.find((r) => r.status === 'rejected');
-  if (failed) throw failed.reason;
+  await deleteSession(userId, key);
+  if (!isProvidersReady()) return;
+  const forgotten = await getSharedHistoryRag()?.forgetOwner(
+    turnOwner(userId, key),
+  );
+  if (forgotten === false) throw new Error('Session history forget failed');
 }
 
 /**
