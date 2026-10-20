@@ -54,7 +54,6 @@ import {
 } from '../../srv/lib/collection-persistence';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
-import type { Lease } from '../../srv/lib/session-retention';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { getRequestHistory } from '../../srv/request-session';
 import * as sessionStore from '../../srv/session-store';
@@ -217,7 +216,7 @@ describe('a destination switch', () => {
   beforeEach(() => sessionStore.clearSession(SID, USER));
   afterEach(() => sessionStore.clearSession(SID, USER));
 
-  it('wipes and switches nothing for a request refused at the door', async () => {
+  it('switches nothing for a request refused at the door', async () => {
     configure(1, 1);
     const del = jest.spyOn(
       manager.getCollectionRegistry(),
@@ -246,7 +245,7 @@ describe('a destination switch', () => {
     }
   });
 
-  it('wipes and switches nothing for a request that leaves while queued', async () => {
+  it('switches nothing for a request that leaves while queued', async () => {
     configure(1, 1);
     const del = jest.spyOn(
       manager.getCollectionRegistry(),
@@ -290,33 +289,7 @@ describe('a destination switch', () => {
     expect(harness.destinationSets).toEqual([]);
   });
 
-  it('keeps the session collections while a RAG operation holds the session', async () => {
-    configure(2);
-    const del = jest.spyOn(
-      manager.getCollectionRegistry(),
-      'deleteSessionCollections',
-    );
-    const req = switchingRequest();
-    // An upload into this session's collection is still writing: removing the
-    // registry entry and directory under it is the leak three-step deletion
-    // closes.
-    const upload = gatekeeper.leaseSession(USER, SID, 'rag') as Lease;
-    try {
-      const res = fakeRes();
-      await handleChatCompletions(req, res as unknown as Response);
-
-      expect(res.statusCode).toBe(200);
-      expect(del).not.toHaveBeenCalled();
-      // The history is still cleared: the admission's pipeline lease already
-      // excludes this session's other pipelines.
-      expect(history()).not.toContain('earlier');
-      expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
-    } finally {
-      upload.release();
-    }
-  });
-
-  it('clears the history, removes the collections and switches, once admitted', async () => {
+  it('destination switch keeps server history and session collections', async () => {
     configure(2);
     const del = jest.spyOn(
       manager.getCollectionRegistry(),
@@ -333,13 +306,14 @@ describe('a destination switch', () => {
     await handleChatCompletions(switchingRequest(), res as unknown as Response);
 
     expect(res.statusCode).toBe(200);
-    expect(del).toHaveBeenCalledWith(USER, SID);
-    expect(history()).not.toContain('earlier');
+    // A switch is a new ABAP session, not a new conversation (spec goal 10).
+    expect(del).not.toHaveBeenCalled();
+    expect(history()).toEqual(['earlier', 'hi', 'done']);
     expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
-    // The run itself starts clean: neither its messages nor the prior turns
-    // bound for the executor carry the history the switch cleared.
-    expect(JSON.stringify(messages)).not.toContain('earlier');
-    expect(JSON.stringify(priorTurns)).not.toContain('earlier');
+    // The run carries the earlier turn, and so do the prior turns bound for
+    // the executor.
+    expect(JSON.stringify(messages)).toContain('earlier');
+    expect(JSON.stringify(priorTurns)).toContain('earlier');
   });
 });
 

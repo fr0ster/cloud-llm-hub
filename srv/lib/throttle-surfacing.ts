@@ -12,6 +12,7 @@
  */
 
 import { findThrottled } from '@mcp-abap-adt/llm-agent';
+import type { RunRefusal } from './long-session';
 import { describeCause } from './mcp-outage';
 
 /**
@@ -233,6 +234,63 @@ export function anthropicSessionClosed(): HttpRefusal {
     body: {
       type: 'error',
       error: { type: 'invalid_request_error', message: sessionClosedText() },
+    },
+  };
+}
+
+/**
+ * A long session that cannot take this request: its queue is full (`429`,
+ * retry once the earlier requests are done), or it closed while the request
+ * waited (`404`, open a new one). The code rides in `code` on both envelopes.
+ */
+function sessionRunRefusalOf(refused: RunRefusal['refused']): {
+  status: number;
+  code: string;
+  message: string;
+} {
+  return refused === 'SESSION_BUSY'
+    ? {
+        status: 429,
+        code: 'SESSION_BUSY',
+        message:
+          'This session is busy with earlier requests. Retry when they are done.',
+      }
+    : {
+        status: 404,
+        code: 'SESSION_NOT_FOUND',
+        message: 'This session is closed. Open a new session.',
+      };
+}
+
+export function openAiSessionRunRefusal(
+  refused: RunRefusal['refused'],
+): HttpRefusal {
+  const r = sessionRunRefusalOf(refused);
+  return {
+    status: r.status,
+    body: {
+      error: {
+        message: r.message,
+        type: r.status === 429 ? 'rate_limit_error' : 'invalid_request_error',
+        code: r.code,
+      },
+    },
+  };
+}
+
+export function anthropicSessionRunRefusal(
+  refused: RunRefusal['refused'],
+): HttpRefusal {
+  const r = sessionRunRefusalOf(refused);
+  return {
+    status: r.status,
+    body: {
+      type: 'error',
+      error: {
+        type: r.status === 429 ? 'rate_limit_error' : 'not_found_error',
+        message: r.message,
+        code: r.code,
+      },
     },
   };
 }

@@ -225,6 +225,9 @@ export function requestConnectionMock() {
     safeStop: async () => {
       harness.events.push('safeStop');
     },
+    // The same credential on every request, so a long session reuses its
+    // connection unless a test says otherwise.
+    readRequestCredential: () => ({ kind: 'basic', sapLogin: 'ALICE' }),
   };
 }
 

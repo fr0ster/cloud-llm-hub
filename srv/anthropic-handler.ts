@@ -35,16 +35,23 @@ import { detachedSink } from './lib/detached-sink';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
+import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
-import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { establishRequestConnection } from './lib/request-connection';
 import {
   resolveRequestSystem,
   runWithRequestSystem,
 } from './lib/request-system-context';
 import {
+  acquireSessionConnection,
+  type LongSessionRequest,
+  releaseRequestConnection,
+} from './lib/session-connection';
+import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
   anthropicSessionClosed,
+  anthropicSessionRunRefusal,
   anthropicUnverifiedWrite,
   destinationClosedText,
   type RecMcpHandle,
@@ -70,8 +77,6 @@ export async function handleAnthropicMessages(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const log = cds.log('anthropic-handler');
-
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
@@ -103,6 +108,27 @@ export async function handleAnthropicMessages(
     throw err;
   }
 
+  // A long session serves its requests one at a time, through the connection
+  // it holds; without one the request stands alone, as it always has.
+  const s = (req as LongSessionRequest).longSession;
+  if (!s) return serveMessages(req, res, normalized);
+  const ran = await longSessions().run(s, () =>
+    serveMessages(req, res, normalized, s),
+  );
+  if (ran) {
+    const refusal = anthropicSessionRunRefusal(ran.refused);
+    res.status(refusal.status).json(refusal.body);
+  }
+}
+
+/** The request itself, once the body is valid; `s` is the long session it runs in. */
+async function serveMessages(
+  req: Request,
+  res: Response,
+  normalized: NormalizedRequest,
+  s?: LongSession,
+): Promise<void> {
+  const log = cds.log('anthropic-handler');
   const { messages, stream, options, context } = normalized;
 
   log.info('Messages request', {
@@ -155,7 +181,9 @@ export async function handleAnthropicMessages(
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
   if (destination) {
-    const established = await establishRequestConnection(req, res, destination);
+    const established = s
+      ? await acquireSessionConnection(s, req, res, destination)
+      : await establishRequestConnection(req, res, destination);
     if (established.handled) return;
     requestConnection = established.connection;
     requestDumpScope = established.dumpScope;
@@ -183,7 +211,7 @@ export async function handleAnthropicMessages(
   try {
     handle = await getSmartAgent(undefined, destination);
   } catch (err) {
-    await safeStop(requestConnection);
+    await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);
     log.error('Failed to initialize SmartAgent', { error: message });
     res.status(503).json({
@@ -222,20 +250,20 @@ export async function handleAnthropicMessages(
       },
     );
     if ('refused' in admission) {
-      await safeStop(requestConnection);
+      await releaseRequestConnection(requestConnection, s);
       const refusal = anthropicDoorRefusal(admission.refused);
       out.json(refusal.status, refusal.body);
       return;
     }
     if ('closed' in admission) {
-      await safeStop(requestConnection);
+      await releaseRequestConnection(requestConnection, s);
       const closed = anthropicSessionClosed();
       out.json(closed.status, closed.body);
       return;
     }
     pipeline = admission.admitted;
   } catch {
-    await safeStop(requestConnection);
+    await releaseRequestConnection(requestConnection, s);
     return;
   }
 
@@ -454,7 +482,7 @@ export async function handleAnthropicMessages(
     }
   } finally {
     await pipeline.drain();
-    await safeStop(requestConnection);
+    await releaseRequestConnection(requestConnection, s);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
     // omitting this leaks memory per request (Verified fact 10). Guarded: a
     // throw here must not skip the release below, which would hold the slot
