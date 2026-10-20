@@ -78,6 +78,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- **Faster answers: one translation, one retrieval, the critic on suspicion.**
+  Measured on a test subaccount, a Ukrainian question took 9.2-9.5 s to its
+  first character against 2.5 s in English; the difference was spent around
+  the answer, not on it.
+  - The query is translated to English only for tool search, once, by the
+    classifier model, on every tools backend (`qdrant` and in-memory now
+    translate too), cached. History and collections are searched with the
+    original text. The pipeline's own translate stage is off.
+  - The chat controller does no retrieval: nothing it retrieved was used; the
+    executor retrieves for itself.
+  - `execute_step` (agent MCP) runs the executor alone, without the controller,
+    and keeps the honesty check and its NOTICE.
+  - The deterministic claim check still runs on every step. The LLM critic runs
+    only on suspicion: the executor's completion tokens far from its recent
+    average, or an SAP request answered without any tool (top tool score at
+    least `LLM_AGENT_SAP_RELEVANCE_SCORE`, default 0.48, or an SAP object name
+    in the request).
 - **Backend-first writes.** With a persistent backend, add, update, delete,
   rename, enable and `rag_correct` / `rag_deprecate` write the database first
   and change memory only on success. Errors are explicit: 409 duplicate, orphan,
