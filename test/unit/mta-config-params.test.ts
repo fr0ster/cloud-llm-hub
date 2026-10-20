@@ -20,6 +20,10 @@ const CARRIED = [
   'LLM_AGENT_PG_URL',
   'LLM_AGENT_PG_SCHEMA',
   'LLM_AGENT_DESTINATION_SOURCE',
+  'LLM_AGENT_SESSION_TTL_MS',
+  'LLM_AGENT_SESSION_STORE',
+  'LLM_AGENT_PLAIN_API',
+  'LLM_AGENT_PLAIN_MCP',
 ];
 
 it('every non-secret RAG/destination setting reaches cloud-llm-hub-srv', () => {

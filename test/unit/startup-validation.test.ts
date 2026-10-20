@@ -29,7 +29,9 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
-const getAgentConfig = jest.fn(() => ({}));
+const getAgentConfig = jest.fn(() => ({
+  rag: { backends: { session: 'vector' } },
+}));
 jest.mock('../../srv/agent-config', () => ({
   ensureAiCoreCredentials,
   getAgentConfig,

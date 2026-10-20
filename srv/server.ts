@@ -62,6 +62,7 @@ import {
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
 import { startProviders } from './lib/providers';
+import { sessionConfig } from './lib/session-config';
 import { sessionMiddleware } from './lib/session-middleware';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
@@ -352,8 +353,12 @@ cds.on('bootstrap', (app: Application) => {
   // Configuration shape errors stop the server here, before it listens. The
   // instances are built from it later, in `served`.
   getAgentConfig();
+  // After getAgentConfig(): the default store follows the session RAG backend.
+  // Logged here, not in agent-config.ts, which session-config imports.
+  const sessions = sessionConfig();
 
   const log = cds.log('mcp-proxy/bootstrap');
+  log.info('Long-session configuration', { ...sessions });
 
   // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
   // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with

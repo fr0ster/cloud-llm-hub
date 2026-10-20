@@ -66,6 +66,23 @@ All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits
 `LLM_AGENT_STEP_REVIEW_ENABLED=false` switches off the honesty controller's
 reviewer (`srv/agent-manager.ts`).
 
+## Long sessions
+
+A hub session holds an ABAP connection between requests under a server-issued key. These variables bound it. Unset means the default; a value that is not plain digits for a positive integer, a per-user cap above the total, or an unknown store stops `cds serve` before it listens, naming the variable. The values in force are logged at startup (`Long-session configuration`).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `LLM_AGENT_SESSION_TTL_MS` | `3600000` (1 h) | Idle time before a session expires |
+| `LLM_AGENT_MAX_SESSIONS` | `50` | Sessions held at once, all users |
+| `LLM_AGENT_MAX_SESSIONS_PER_USER` | `5` | Sessions one user may hold; not above the total |
+| `LLM_AGENT_SESSION_QUEUE_LENGTH` | `2` | Callers that may wait for a session slot |
+| `LLM_AGENT_SESSION_STORE` | follows `LLM_AGENT_SESSION_RAG_BACKEND` | `none`, `sqlite`, `hana-vector` or `pg-vector`. With a `hana-vector` or `pg-vector` session backend that kind, otherwise `none` |
+| `LLM_AGENT_SESSION_STORE_PATH` | `.data/sessions.db` | File of the `sqlite` store |
+| `LLM_AGENT_PLAIN_API` | off | `true` allows plain (session-less) calls on the HTTP API; any other value is off |
+| `LLM_AGENT_PLAIN_MCP` | off | `true` allows plain calls on MCP; any other value is off |
+
+`LLM_AGENT_SESSION_TTL_MS`, `LLM_AGENT_SESSION_STORE`, `LLM_AGENT_PLAIN_API` and `LLM_AGENT_PLAIN_MCP` are `mta.yaml` parameters (empty reads as unset); the caps, the queue and the path are environment-only, like `LLM_GATEKEEPER_*`.
+
 ## Persistent RAG collections
 
 With `LLM_AGENT_RAG_BACKEND` set to `hana-vector`, `pg-vector` or `qdrant`, user and session RAG collections live in that database through the `@mcp-abap-adt/llm-agent` providers (shared table layout on HANA and Postgres). `LLM_AGENT_SESSION_RAG_BACKEND` does the same for the session history. With neither set to a persistent kind, nothing described here applies and the hub behaves as before.
