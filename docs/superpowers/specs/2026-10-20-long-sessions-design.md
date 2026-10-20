@@ -134,8 +134,8 @@ whichever HTTP connection it arrives on.
 - One TTL for the whole session, default 60 minutes of inactivity, configurable. It replaces the two
   separate TTLs today (chat session 30 minutes, session collections 24 hours).
 - One hub instance. Several instances would need sticky routing or a shared registry; out of scope.
-- A key presented after its session was closed (explicitly or by TTL) gets a new session, never a
-  revival of the closed one.
+- A key presented after its session was closed (explicitly or by TTL) is refused with 404
+  `SESSION_NOT_FOUND`, never revived; the client opens a new session (`session_open`).
 - **A long session opens explicitly.** The agent-MCP tool `session_open`, or its HTTP form in the
   extended protocol, returns a key; only such a session holds an ABAP connection and a record. A request
   with no key stays per-request, as today (`safeStop` at the end), so no client can leak one stateful SAP
