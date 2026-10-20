@@ -57,11 +57,16 @@ check() {
 echo "Testing cloud-llm-hub at $SRV_URL"
 echo "================================================"
 
+# Open an explicit long session for API calls; close it on exit.
+SESSION=$(curl -fsS -X POST "$SRV_URL/v1/session" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' | jq -er '.session')
+trap 'curl -fsS -X DELETE "$SRV_URL/v1/session" -H "Authorization: Bearer $TOKEN" -H "x-clh-session: $SESSION" >/dev/null || true' EXIT
+
 # --- Health / Models ---
 echo ""
 echo "--- Basic endpoints ---"
 
-resp=$(curl -s -w "\n%{http_code}" "$SRV_URL/v1/models" -H "Authorization: Bearer $TOKEN")
+resp=$(curl -s -w "\n%{http_code}" "$SRV_URL/v1/models" -H "Authorization: Bearer $TOKEN" -H "x-clh-session: $SESSION")
 body=$(echo "$resp" | head -n -1)
 status=$(echo "$resp" | tail -1)
 check "GET /v1/models" "$status" "$body" "200" "data"
@@ -70,13 +75,14 @@ check "GET /v1/models" "$status" "$body" "200" "data"
 echo ""
 echo "--- MCP (StreamableHTTP) ---"
 
-resp=$(curl -s -w "\n%{http_code}" -X POST "$SRV_URL/mcp/stream/http" \
+resp=$(curl -s -w "\n%{http_code}" -X POST "$SRV_URL/mcp/agent/stream/http" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-clh-session: $SESSION" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}')
 body=$(echo "$resp" | head -n -1)
 status=$(echo "$resp" | tail -1)
-check "POST /mcp/stream/http (initialize)" "$status" "$body" "200" "protocolVersion"
+check "POST /mcp/agent/stream/http (initialize)" "$status" "$body" "200" "protocolVersion"
 
 # --- OpenAI Chat Completions ---
 echo ""
@@ -84,6 +90,7 @@ echo "--- OpenAI (/v1/chat/completions) ---"
 
 resp=$(curl -s -w "\n%{http_code}" -X POST "$SRV_URL/v1/chat/completions" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-clh-session: $SESSION" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say hello in one word"}]}')
 body=$(echo "$resp" | head -n -1)
@@ -93,6 +100,7 @@ check "POST /v1/chat/completions (non-streaming)" "$status" "$body" "200" "chat.
 # Streaming
 resp=$(curl -s -w "\n%{http_code}" -N -X POST "$SRV_URL/v1/chat/completions" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-clh-session: $SESSION" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say hi"}],"stream":true}')
 body=$(echo "$resp" | head -n -1)
@@ -105,6 +113,7 @@ echo "--- Anthropic (/v1/messages) ---"
 
 resp=$(curl -s -w "\n%{http_code}" -X POST "$SRV_URL/v1/messages" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-clh-session: $SESSION" \
   -H "Content-Type: application/json" \
   -d '{"model":"smart-agent","max_tokens":256,"messages":[{"role":"user","content":"Say hello in one word"}]}')
 body=$(echo "$resp" | head -n -1)
@@ -114,6 +123,7 @@ check "POST /v1/messages (non-streaming)" "$status" "$body" "200" '"type":"messa
 # Streaming
 resp=$(curl -s -w "\n%{http_code}" -N -X POST "$SRV_URL/v1/messages" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-clh-session: $SESSION" \
   -H "Content-Type: application/json" \
   -d '{"model":"smart-agent","max_tokens":256,"stream":true,"messages":[{"role":"user","content":"Say hi"}]}')
 body=$(echo "$resp" | head -n -1)

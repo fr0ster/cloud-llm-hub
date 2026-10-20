@@ -19,12 +19,14 @@ import {
   getSharedCorpusDocs,
   loadToolEmbeddingBundle,
 } from '../../srv/agent-manager';
-import { embedderFingerprint } from '../../srv/lib/providers';
+import { type Embedding, embedderFingerprint } from '../../srv/lib/providers';
+import { createCollectionProvider } from '../../srv/lib/rag-provider-factory';
 import type { SharedCorpusDoc } from '../../srv/lib/tool-corpus';
 import {
   applyMtaext,
   decideToolBuild,
   loadTargetConfig,
+  toolBuildConfig,
 } from '../../tools/generate-tool-embeddings';
 
 const RAG_VARS = [
@@ -116,6 +118,34 @@ describe('loadTargetConfig', () => {
       mtaext({ LLM_AGENT_EMBEDDING_MODEL: 'model-b' }),
     ]);
     expect(config.rag.embedder?.model).toBe('model-b');
+  });
+});
+
+describe('toolBuildConfig', () => {
+  it('a HANA deployment builds tool vectors without opening HANA (no VCAP_SERVICES locally)', () => {
+    delete process.env.VCAP_SERVICES;
+    const config = loadTargetConfig([
+      '--mtaext',
+      mtaext({
+        LLM_AGENT_RAG_TYPE: 'vector',
+        LLM_AGENT_RAG_BACKEND: 'hana-vector',
+        LLM_AGENT_SESSION_RAG_BACKEND: 'hana-vector',
+        LLM_AGENT_EMBEDDER: 'sap-ai-core',
+        LLM_AGENT_PROVIDER: 'sap-ai-sdk',
+      }),
+    ]);
+    const embedding = { retrieval: {} } as unknown as Embedding;
+    expect(() => createCollectionProvider(config.rag, embedding)).toThrow(
+      /VCAP_SERVICES/,
+    );
+    const built = toolBuildConfig(config);
+    expect(built.rag.backends).toEqual({
+      tools: config.rag.backends.tools,
+      session: 'in-memory',
+      persistent: 'in-memory',
+    });
+    expect(createCollectionProvider(built.rag, embedding)).toBeNull();
+    expect(config.rag.backends.persistent).toBe('hana-vector');
   });
 });
 

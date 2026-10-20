@@ -38,6 +38,11 @@ import {
   gatekeeperSnapshot,
 } from '../../srv/lib/gatekeeper-metrics';
 import {
+  type LongSession,
+  LongSessionRegistry,
+  setLongSessionsForTest,
+} from '../../srv/lib/long-session';
+import {
   destinationClosedText,
   openAiDoorRefusal,
 } from '../../srv/lib/throttle-surfacing';
@@ -486,5 +491,89 @@ describe('an unanswered write, streaming exception', () => {
 
     expect(res.body).toContain('socket hang up');
     expect(res.body).not.toContain('UNVERIFIED_WRITE');
+  });
+});
+
+describe('a long session', () => {
+  let registry: LongSessionRegistry;
+  let s: LongSession;
+  beforeEach(() => {
+    registry = new LongSessionRegistry(
+      { ttlMs: 60_000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+      { onClose: async () => {} },
+    );
+    setLongSessionsForTest(registry);
+    s = registry.open('alice', {}) as LongSession;
+  });
+  afterEach(() => setLongSessionsForTest(undefined));
+
+  function callInSession(b: unknown, res = fakeRes()) {
+    const req = fakeReq(b) as unknown as Request & {
+      longSession?: LongSession;
+    };
+    req.longSession = s;
+    const done = handleChatCompletions(req, res as unknown as Response);
+    return { res, done };
+  }
+
+  it('a long-session request leaves its connection open after the response — success', async () => {
+    configure();
+    const { res, done } = callInSession(body());
+    await done;
+    expect(res.statusCode).toBe(200);
+    expect(harness.events).not.toContain('safeStop');
+    expect(s.connection).toEqual({ id: 'conn' });
+    expect(s.destination).toBe('DEST');
+
+    // The next request of the session is served through the same connection.
+    const held = s.connection;
+    await callInSession(body()).done;
+    expect(harness.establishCalls).toEqual(['DEST']);
+    expect(s.connection).toBe(held);
+  });
+
+  it('a long-session request leaves its connection open after the response — model error', async () => {
+    configure();
+    harness.process = async () => ({
+      ok: false,
+      error: new Error('socket hang up'),
+    });
+    const { done } = callInSession(body());
+    await done;
+    expect(harness.events).toContain('pipeline');
+    expect(harness.events).not.toContain('safeStop');
+    expect(s.connection).toEqual({ id: 'conn' });
+  });
+
+  it('a long-session request leaves its connection open after the response — admission refusal', async () => {
+    configure(1, 1);
+    const hold = await gatekeeper.admitPipeline('bob', 'busy');
+    void gatekeeper.admitPipeline('carol', 'queued');
+    await tick();
+    try {
+      const { res, done } = callInSession(body());
+      await done;
+      expect(res.statusCode).toBe(openAiDoorRefusal('capacity').status);
+      expect(harness.events).not.toContain('safeStop');
+      expect(s.connection).toEqual({ id: 'conn' });
+    } finally {
+      if ('admitted' in hold) hold.admitted.release();
+    }
+  });
+
+  it('a closed session is refused 404 SESSION_NOT_FOUND and connects nothing', async () => {
+    configure();
+    await registry.close('alice', s.key, 'explicit');
+    const { res, done } = callInSession(body());
+    await done;
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body).error.code).toBe('SESSION_NOT_FOUND');
+    expect(harness.establishCalls).toEqual([]);
+  });
+
+  it('a request without a long session still stops its connection', async () => {
+    configure();
+    await call(body()).done;
+    expect(harness.events).toContain('safeStop');
   });
 });

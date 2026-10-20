@@ -9,7 +9,7 @@ jest.mock(
 
 import { CollectionRegistry } from '../../srv/rag-collections';
 
-test('sweepExpiredSessions deletes only expired session collections', () => {
+test('sweepExpiredSessions deletes only expired session collections', async () => {
   const reg = new CollectionRegistry();
   (reg as any).collections.set('a__s_x', {
     meta: {
@@ -40,11 +40,11 @@ test('sweepExpiredSessions deletes only expired session collections', () => {
     rag: (reg as any).createRagStore(),
   });
   reg.sweepExpiredSessions();
-  expect(reg.getCollection('a__s_x')).toBeNull(); // expired session gone
-  expect(reg.getCollection('b__u_k')).not.toBeNull(); // user untouched
+  expect(await reg.getCollection('a__s_x')).toBeNull(); // expired session gone
+  expect(await reg.getCollection('b__u_k')).not.toBeNull(); // user untouched
 });
 
-test('deleteSessionCollections removes only matching owner+sessionId', () => {
+test('deleteSessionCollections removes only matching owner+sessionId', async () => {
   const reg = new CollectionRegistry();
   // alice's session 'sess1'
   (reg as any).collections.set('x__s_alicesess1', {
@@ -95,7 +95,7 @@ test('deleteSessionCollections removes only matching owner+sessionId', () => {
 
   reg.deleteSessionCollections('alice', 'sess1');
 
-  expect(reg.getCollection('x__s_alicesess1')).toBeNull(); // alice's session removed
-  expect(reg.getCollection('x__s_bobsess1')).not.toBeNull(); // bob's session NOT removed
-  expect(reg.getCollection('y__u_alice')).not.toBeNull(); // alice's user collection untouched
+  expect(await reg.getCollection('x__s_alicesess1')).toBeNull(); // alice's session removed
+  expect(await reg.getCollection('x__s_bobsess1')).not.toBeNull(); // bob's session NOT removed
+  expect(await reg.getCollection('y__u_alice')).not.toBeNull(); // alice's user collection untouched
 });

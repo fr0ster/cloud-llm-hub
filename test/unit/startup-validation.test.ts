@@ -29,12 +29,18 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
-const getAgentConfig = jest.fn(() => ({}));
+const getAgentConfig = jest.fn(() => ({
+  rag: { backends: { session: 'vector' } },
+}));
 jest.mock('../../srv/agent-config', () => ({
   ensureAiCoreCredentials,
   getAgentConfig,
 }));
 const order: string[] = [];
+// What the mocked collectionsRestoreStatus answers; /health maps it.
+const restoreStatus: { value: { state: string; error?: string } } = {
+  value: { state: 'off' },
+};
 // Set by a test to make the provider startup reject.
 const providersFailure: { error?: Error } = {};
 jest.mock('../../srv/lib/providers', () => ({
@@ -55,6 +61,11 @@ jest.mock('../../srv/agent-manager', () => ({
   getCollectionRegistry: () => ({
     sweepExpiredSessions: () => {},
   }),
+  startCollectionRestore: () => {
+    order.push('startCollectionRestore');
+    return Promise.resolve();
+  },
+  collectionsRestoreStatus: () => restoreStatus.value,
 }));
 jest.mock('../../srv/agent-mcp', () => ({}));
 jest.mock('../../srv/anthropic-handler', () => ({}));
@@ -68,6 +79,7 @@ jest.mock('../../srv/lib/basic-to-bearer', () => ({
 }));
 jest.mock('../../srv/lib/session-middleware', () => ({
   sessionMiddleware: () => () => {},
+  requireLongSession: () => () => {},
 }));
 jest.mock('../../srv/lib/gatekeeper-metrics', () => ({
   installThrottleObserver: () => {},
@@ -159,6 +171,75 @@ describe('the /v1 CORS preflight', () => {
     expect(headers['Access-Control-Allow-Headers']).not.toMatch(
       /x-session-id/i,
     );
+  });
+});
+
+describe('GET /health', () => {
+  function health(): (req: unknown, res: unknown) => void {
+    const gets: unknown[][] = [];
+    const app = new Proxy(
+      {},
+      {
+        get:
+          (_t, method: string) =>
+          (...args: unknown[]) => {
+            if (method === 'get') gets.push(args);
+          },
+      },
+    );
+    handlers.bootstrap(app);
+    const route = gets.find((g) => g[0] === '/health');
+    if (!route) throw new Error('no /health route was registered');
+    return route[1] as (req: unknown, res: unknown) => void;
+  }
+
+  function call(state: { state: string; error?: string }) {
+    restoreStatus.value = state;
+    const out: { status: number; body: unknown } = { status: 0, body: null };
+    const res = {
+      status: (code: number) => {
+        out.status = code;
+        return res;
+      },
+      json: (b: unknown) => {
+        out.body = b;
+        return res;
+      },
+    };
+    health()({}, res);
+    return out;
+  }
+
+  afterEach(() => {
+    restoreStatus.value = { state: 'off' };
+  });
+
+  it('200 { status: UP } when nothing persists, as CAP answers', () => {
+    expect(call({ state: 'off' })).toEqual({
+      status: 200,
+      body: { status: 'UP' },
+    });
+  });
+
+  it('503 with the state and cause while the restore has not succeeded', () => {
+    expect(call({ state: 'pending' })).toEqual({
+      status: 503,
+      body: { status: 'DOWN', collections: { state: 'pending' } },
+    });
+    expect(call({ state: 'failed', error: 'connect ECONNREFUSED' })).toEqual({
+      status: 503,
+      body: {
+        status: 'DOWN',
+        collections: { state: 'failed', error: 'connect ECONNREFUSED' },
+      },
+    });
+  });
+
+  it('200 once restored', () => {
+    expect(call({ state: 'ready' })).toEqual({
+      status: 200,
+      body: { status: 'UP' },
+    });
   });
 });
 
@@ -264,6 +345,7 @@ describe("server.ts's served listener", () => {
       'startProviders',
       'initProviders',
       'registerRagRoutes',
+      'startCollectionRestore',
       'initSmartAgents',
     ]);
     expect(exits).toEqual([]);

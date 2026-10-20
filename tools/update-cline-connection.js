@@ -126,6 +126,8 @@ function printHelp() {
   const entryName = path.basename(__filename);
   console.log(`Update MCP connection settings for Cline
 
+Default endpoint: /mcp/agent/stream/http. Plain MCP needs LLM_AGENT_PLAIN_MCP=true.
+
 Usage: node ${entryName} --connection <name> [options]
 
 Options:
@@ -794,12 +796,13 @@ const TEMPLATE_RENDERERS = {
 };
 
 const TEMPLATE_ENDPOINT_SUFFIX = {
-  // The hub serves Stream-HTTP only (`/mcp/stream/http`); its SSE endpoint is
-  // disabled, so no template points there.
-  'direct-basic': '/mcp/stream/http',
-  'direct-jwt': '/mcp/stream/http',
-  'cloud-internet': '/mcp/stream/http',
-  'cloud-destination': '/mcp/stream/http',
+  // Templates point at the agent MCP (`/mcp/agent/stream/http`): the plain MCP
+  // (`/mcp/stream/http`) answers only with LLM_AGENT_PLAIN_MCP=true. The SSE
+  // endpoint is disabled, so no template points there.
+  'direct-basic': '/mcp/agent/stream/http',
+  'direct-jwt': '/mcp/agent/stream/http',
+  'cloud-internet': '/mcp/agent/stream/http',
+  'cloud-destination': '/mcp/agent/stream/http',
 };
 
 const DEFAULT_ABAP_CLIENT = '210';
@@ -970,7 +973,7 @@ function determineTokenAlias({
 
 function renderDirectBasicTemplate(options = {}) {
   const endpoint =
-    options.mcpEndpoint || 'http://localhost:4004/mcp/stream/http';
+    options.mcpEndpoint || 'http://localhost:4004/mcp/agent/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const serviceKeysSection = options.serviceKeysSection || '';
   const cfBlock = options.cfBlock || '';
@@ -1015,7 +1018,7 @@ abapConnection:
 
 function renderDirectJwtTemplate(options = {}) {
   const endpoint =
-    options.mcpEndpoint || 'https://example.proxy.local/mcp/stream/http';
+    options.mcpEndpoint || 'https://example.proxy.local/mcp/agent/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const abapClient = options.abapClient || DEFAULT_ABAP_CLIENT;
   const serviceKeysSection = options.serviceKeysSection || '';
@@ -1119,7 +1122,8 @@ ${abapTokenBlock}
 }
 function renderCloudInternetTemplate(options = {}) {
   const endpoint =
-    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/http';
+    options.mcpEndpoint ||
+    'https://<your-approuter-host>/mcp/agent/stream/http';
   const abapUrl = options.abapUrl || 'https://my.sap.system.example.com';
   const abapClient = options.abapClient || DEFAULT_ABAP_CLIENT;
   const serviceKeysSection = options.serviceKeysSection || '';
@@ -1185,7 +1189,8 @@ function renderCloudDestinationTemplate(options = {}) {
     ? `  name: ${options.connectionName}\n`
     : '';
   const endpoint =
-    options.mcpEndpoint || 'https://<your-approuter-host>/mcp/stream/http';
+    options.mcpEndpoint ||
+    'https://<your-approuter-host>/mcp/agent/stream/http';
   const mcpAlias = options.mcpTokenAlias || 'mcpXsuaa';
   const destinationName = options.destinationName || 'SAP_CLOUD_DEST';
   const mcpTokenBlock = mcpAlias
@@ -1583,6 +1588,8 @@ function parseYamlArgs(argv) {
 
 function printYamlHelp() {
   console.log(`Update Cline MCP settings using a declarative YAML plan
+
+Default endpoint: /mcp/agent/stream/http. Plain MCP needs LLM_AGENT_PLAIN_MCP=true.
 
 Usage: node tools/update-cline-connection.js --config <file> [options]
 

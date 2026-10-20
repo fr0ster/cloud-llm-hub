@@ -27,7 +27,7 @@ const embedding = {
   fingerprint: { provider: 'ollama', embeddingModel: 'bge-m3' },
 } as never;
 
-it('persistent collections use the configured persistent backend', () => {
+it('persistent collections use the configured persistent backend', async () => {
   initProviders({
     embedding,
     stores: createRagStoreFactory(rag, embedding),
@@ -38,7 +38,7 @@ it('persistent collections use the configured persistent backend', () => {
       refuse: () => null,
     },
   });
-  const meta = getCollectionRegistry().createCollection({
+  const meta = await getCollectionRegistry().createCollection({
     id: 'notes',
     logicalId: 'notes',
     displayName: 'notes',

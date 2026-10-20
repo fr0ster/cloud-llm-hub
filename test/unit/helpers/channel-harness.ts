@@ -178,9 +178,6 @@ export function agentManagerMock() {
     getDestinationStates: () => [],
     getSharedHistoryRag: () => undefined,
     runWithRequestConnection: (_c: unknown, fn: () => unknown) => fn(),
-    ExpositionFilteringRag: class {
-      constructor(readonly inner: unknown) {}
-    },
     // Mocked ahead of Tasks 15 and 18, which add these to the handlers' imports;
     // without them every channel test would break at Task 15. Driven off
     // `harness.closedDestination`/`harness.retryAfterSeconds` so a test can
@@ -220,11 +217,15 @@ export function requestConnectionMock() {
         handled: false,
         connection: { id: 'conn' },
         dumpScope: undefined,
+        credential: { kind: 'basic', sapLogin: 'ALICE' },
       };
     },
     safeStop: async () => {
       harness.events.push('safeStop');
     },
+    // The same credential on every request, so a long session reuses its
+    // connection unless a test says otherwise.
+    readRequestCredential: () => ({ kind: 'basic', sapLogin: 'ALICE' }),
   };
 }
 

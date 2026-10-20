@@ -18,8 +18,9 @@ import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import { normalizeLogicalId, resolveByName } from './collection-ids';
+import { CollectionBackendError } from './lib/collection-persistence';
 import type { CollectionRegistry } from './rag-collections';
-import { SESSION_TTL_MS } from './rag-collections';
+import { sessionCollectionTtlMs } from './rag-collections';
 import { getRequestSessionId } from './request-session';
 
 const ragAddSchema = z.object({
@@ -94,7 +95,8 @@ export function buildRagToolSchemas(): Array<{
 
 type DispatchResult =
   | { ok: true; [key: string]: unknown }
-  | { ok: false; error: string };
+  /** `status`: set when a persistent backend refused (409 or 502). */
+  | { ok: false; error: string; status?: number };
 
 export async function dispatchRagTool(
   registry: CollectionRegistry,
@@ -120,7 +122,7 @@ export async function dispatchRagTool(
         const sid = sessionId();
         let physical: string | undefined;
         try {
-          physical = resolveByName(
+          physical = await resolveByName(
             registry,
             args.collection as string,
             userId(),
@@ -136,28 +138,32 @@ export async function dispatchRagTool(
             error: 'Authenticated user required to add to a collection',
           };
         }
-        // Auto-create the collection if it does not exist yet.
-        if (!registry.getCollection(physical)) {
-          const isSession = !!sid && physical.includes('__s_');
-          registry.createCollection({
-            id: physical,
-            logicalId: normalizeLogicalId(args.collection as string),
-            displayName: args.collection as string,
-            description: '',
-            scope: isSession ? 'session' : 'user',
-            owner: userId(),
-            ...(isSession
-              ? { sessionId: sid, expiresAt: Date.now() + SESSION_TTL_MS }
-              : {}),
-          });
-        } else {
-          // Refresh expiry for existing session collections.
-          if (sid) registry.refreshSessionExpiry(physical);
-        }
+        // Auto-create the collection if it does not exist yet — atomically,
+        // so parallel rag_add calls on a new collection all land in one.
+        const isSession = !!sid && physical.includes('__s_');
+        const { created } = await registry.getOrCreateCollection({
+          id: physical,
+          logicalId: normalizeLogicalId(args.collection as string),
+          displayName: args.collection as string,
+          description: '',
+          scope: isSession ? 'session' : 'user',
+          owner: userId(),
+          ...(isSession
+            ? {
+                sessionId: sid,
+                expiresAt: Date.now() + sessionCollectionTtlMs(),
+              }
+            : {}),
+        });
+        // Refresh expiry for existing session collections.
+        if (!created && sid) await registry.refreshSessionExpiry(physical);
         const requestedId = (args.id as string | undefined)?.trim();
         const id = requestedId || randomUUID();
         if (requestedId) {
-          const existing = registry.findActiveByCanonicalKey(physical, id);
+          const existing = await registry.findActiveByCanonicalKey(
+            physical,
+            id,
+          );
           if (existing) {
             return {
               ok: false,
@@ -177,7 +183,7 @@ export async function dispatchRagTool(
         return { ok: true, id };
       }
       case 'rag_correct': {
-        const physical = resolveByName(
+        const physical = await resolveByName(
           registry,
           args.collection as string,
           userId(),
@@ -191,7 +197,7 @@ export async function dispatchRagTool(
           };
         }
         const id = args.id as string;
-        const active = registry.findActiveByCanonicalKey(physical, id);
+        const active = await registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
           return {
             ok: false,
@@ -218,7 +224,7 @@ export async function dispatchRagTool(
         return { ok: true, id };
       }
       case 'rag_deprecate': {
-        const physical = resolveByName(
+        const physical = await resolveByName(
           registry,
           args.collection as string,
           userId(),
@@ -232,7 +238,7 @@ export async function dispatchRagTool(
           };
         }
         const id = args.id as string;
-        const active = registry.findActiveByCanonicalKey(physical, id);
+        const active = await registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
           return {
             ok: false,
@@ -250,6 +256,12 @@ export async function dispatchRagTool(
       }
     }
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return {
+      ok: false,
+      error: (err as Error).message,
+      ...(err instanceof CollectionBackendError
+        ? { status: err.httpStatus }
+        : {}),
+    };
   }
 }

@@ -12,6 +12,7 @@
  */
 
 import { findThrottled } from '@mcp-abap-adt/llm-agent';
+import type { RunRefusal } from './long-session';
 import { describeCause } from './mcp-outage';
 
 /**
@@ -235,6 +236,99 @@ export function anthropicSessionClosed(): HttpRefusal {
       error: { type: 'invalid_request_error', message: sessionClosedText() },
     },
   };
+}
+
+/** Why a request was not served in a long session; rides in `code`. */
+export type SessionRefusalCode =
+  | 'SESSION_BUSY'
+  | 'SESSION_NOT_FOUND'
+  | 'SESSION_LIMIT'
+  | 'SESSION_REQUIRED'
+  | 'SESSION_STORE_UNAVAILABLE';
+
+const SESSION_REFUSALS: Record<
+  SessionRefusalCode,
+  { status: number; message: string }
+> = {
+  // The queue is full: retry once the earlier requests are done.
+  SESSION_BUSY: {
+    status: 429,
+    message:
+      'This session is busy with earlier requests. Retry when they are done.',
+  },
+  // Closed, expired, never opened, or another user's: open a new one.
+  SESSION_NOT_FOUND: {
+    status: 404,
+    message: 'This session is closed. Open a new session.',
+  },
+  SESSION_LIMIT: {
+    status: 429,
+    message:
+      'No more sessions can be opened right now. Close a session you no longer need, or retry later.',
+  },
+  SESSION_REQUIRED: {
+    status: 400,
+    message:
+      'This endpoint serves requests in a session only. Open one with POST /v1/session and send its key in the x-clh-session header with every request, or connect through the agent MCP (/mcp/agent/stream/http) and use session_open.',
+  },
+  SESSION_STORE_UNAVAILABLE: {
+    status: 503,
+    message:
+      'The session store cannot be reached right now. Please try again shortly.',
+  },
+};
+
+function openAiType(status: number): string {
+  if (status === 429) return 'rate_limit_error';
+  return status >= 500 ? 'server_error' : 'invalid_request_error';
+}
+
+function anthropicType(status: number): string {
+  if (status === 429) return 'rate_limit_error';
+  if (status === 404) return 'not_found_error';
+  return status >= 500 ? 'api_error' : 'invalid_request_error';
+}
+
+/** A session refusal in the OpenAI envelope. */
+export function openAiSessionRefusal(code: SessionRefusalCode): HttpRefusal {
+  const r = SESSION_REFUSALS[code];
+  return {
+    status: r.status,
+    body: { error: { message: r.message, type: openAiType(r.status), code } },
+  };
+}
+
+/** The same, in the Anthropic envelope. */
+export function anthropicSessionRefusal(code: SessionRefusalCode): HttpRefusal {
+  const r = SESSION_REFUSALS[code];
+  return {
+    status: r.status,
+    body: {
+      type: 'error',
+      error: { type: anthropicType(r.status), message: r.message, code },
+    },
+  };
+}
+
+/**
+ * A long session that cannot take this request: its queue is full (`429`,
+ * retry once the earlier requests are done), or it closed while the request
+ * waited (`404`, open a new one). The code rides in `code` on both envelopes.
+ */
+function runRefusalCode(refused: RunRefusal['refused']): SessionRefusalCode {
+  return refused === 'SESSION_BUSY' ? 'SESSION_BUSY' : 'SESSION_NOT_FOUND';
+}
+
+export function openAiSessionRunRefusal(
+  refused: RunRefusal['refused'],
+): HttpRefusal {
+  return openAiSessionRefusal(runRefusalCode(refused));
+}
+
+export function anthropicSessionRunRefusal(
+  refused: RunRefusal['refused'],
+): HttpRefusal {
+  return anthropicSessionRefusal(runRefusalCode(refused));
 }
 
 /** A destination we have closed. Temporary, and a 5xx because it is ours. */

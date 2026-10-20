@@ -96,6 +96,75 @@ modules:
 - `.mtaext` - Your config (NOT committed, in .gitignore)
 - `mta.yaml` - MTA descriptor (committed to Git)
 
+## Persistent RAG on HANA
+
+User and session RAG collections (and session history) can live in SAP HANA Cloud through the
+`hana-vector` provider. This is opt-in: with no HANA settings the hub behaves as before.
+
+**1. Service.** An HDI container (`hana` service, plan `hdi-shared`) on your HANA Cloud instance. Create
+it once, for example `cf create-service hana hdi-shared hdi-llm`. The MTA binds this existing container
+(step 3); it does not create one.
+
+**2. Tables.** The shared layout needs two tables, `RAG_DOCUMENTS` and `RAG_COLLECTIONS`, shipped as
+`.hdbtable` files by `@mcp-abap-adt/hana-vector-rag`. Deploy them into the container:
+
+```bash
+npm ci
+cf login ...                              # target the space that holds the container
+tools/deploy-hdi-tables.sh hdi-llm        # service name, default hdi-llm
+tools/deploy-hdi-tables.sh --dry-run      # print the steps without calling cf
+```
+
+The script pushes a throwaway `@sap/hdi-deploy` app bound to the container, waits up to 5 minutes for
+`Deployment to container ... done` in its logs, then deletes the app (retrying while an unbind is in
+progress). It exits non-zero on failure. The vector column is fixed at `REAL_VECTOR(1536)`.
+
+**3. `.mtaext`.** `mta.yaml` declares the resource `cloud-llm-hub-hdi` as an inactive, optional
+`org.cloudfoundry.existing-service` with a placeholder `service-name`, so nothing changes by default. An
+extension descriptor cannot change a resource type, so the `.mtaext` only switches the resource on and
+names the container from step 2. Every template in `docs/deployment/templates/` carries this block
+commented out:
+
+```yaml
+resources:
+  - name: cloud-llm-hub-hdi
+    active: true
+    parameters: { service-name: "hdi-llm" }
+```
+
+Then set the backend parameters in the same `.mtaext` (`LLM_AGENT_RAG_BACKEND: "hana-vector"`,
+`LLM_AGENT_SESSION_RAG_BACKEND: "hana-vector"`, `LLM_AGENT_HANA_SERVICE: "hdi-llm"`). Remove `active: true`
+from the block to turn the resource off again. Staging (`cloud-llm-hub-staging-hdi`) must use a container
+of its own: with a shared catalog it would restore and serve production's collections and history.
+
+If you want the MTA to **create** the container instead of binding an existing one, that is a change to
+`mta.yaml` itself, not to `.mtaext`: set the resource's `type: com.sap.xs.hdi-container` with
+`parameters: { service: hana, service-plan: hdi-shared }`, then deploy the tables (step 2) into the
+container the MTA created.
+
+**4. Secrets.** The embedder key (`LLM_AGENT_EMBEDDER_API_KEY`) is not an MTA parameter: put it in the
+fork's `.env`, which `tools/deploy.sh` applies with `cf set-env`. HANA credentials come from the service
+binding (`VCAP_SERVICES`), not from `.env`.
+
+**5. Health check.** Keep the Cloud Foundry default port health check. If the first restore of collections
+fails (HANA unreachable at boot), `/health` answers 503 while the hub retries in the background (30 s,
+doubling to 5 min). Switching the app to an `http` health check on `/health` would turn that into a restart
+loop, killing the instance that is about to recover. `mta.yaml` sets no `health-check-type`; do not add one.
+
+**6. Dimension and other embedders.** The shipped tables are `REAL_VECTOR(1536)`, matching
+`text-embedding-3-small`. Another embedder needs regenerated DDL. Nothing stops the hub at startup over a
+mismatch: the library checks the tables lazily, per store. Tables of another dimension make the collections
+restore as `unavailable`, and writes are refused with `SHARED_LAYOUT_NOT_DEPLOYED`; an embedder of another
+width makes every write and search fail with `INVALID_VECTOR`. There is no fallback to memory. The startup
+log line `Persistent collections` shows the configured dimension. Behaviour and error codes are in
+[CONFIG_USAGE.md](../llm-agent/CONFIG_USAGE.md#persistent-rag-collections).
+
+**Postgres.** `LLM_AGENT_RAG_BACKEND: "pg-vector"` with `LLM_AGENT_PG_URL` (and optionally
+`LLM_AGENT_PG_SCHEMA`) in `.mtaext`; `LLM_AGENT_PG_USER` and `LLM_AGENT_PG_PASSWORD` only in `.env`.
+
+HANA is reachable only from Cloud Foundry, so there is no local run against it; use PGlite, Qdrant or
+the in-memory providers for local work.
+
 ## Multi-Destination Support (v2.2+)
 
 After deployment, Cloud LLM Hub automatically discovers SAP ABAP destinations from BTP Destination Service.

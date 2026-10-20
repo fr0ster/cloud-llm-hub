@@ -333,6 +333,25 @@ export async function buildQdrantStores(
  * LLM_AGENT_API_KEY), then `--mtaext <file>`'s parameters, which win. Writes
  * them into `process.env`, because `loadAgentConfig` reads only that.
  */
+/**
+ * The build needs only the embedder and the tools class. The session and
+ * persistent classes are set to in-memory, so their backends (an HDI binding
+ * that exists only in Cloud Foundry, a Postgres) are never opened here.
+ */
+export function toolBuildConfig(config: AgentConfig): AgentConfig {
+  return {
+    ...config,
+    rag: {
+      ...config.rag,
+      backends: {
+        ...config.rag.backends,
+        session: 'in-memory',
+        persistent: 'in-memory',
+      },
+    },
+  };
+}
+
 export function loadTargetConfig(argv: string[]): AgentConfig {
   const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
   if (fs.existsSync(defaultEnvPath)) {
@@ -371,7 +390,7 @@ async function main() {
     process.exit(1);
   }
 
-  const p = await startProviders(config);
+  const p = await startProviders(toolBuildConfig(config));
   const decision = decideToolBuild(
     config,
     p.embedding?.fingerprint ?? null,

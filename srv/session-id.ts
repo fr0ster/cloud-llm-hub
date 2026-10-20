@@ -1,20 +1,27 @@
 /**
  * Session identity.
  *
- * A session is the one this service issued in `clh_session`, together with the
- * authenticated user. Nothing a caller writes in a header names one:
- * `x-session-id` and `mcp-session-id` are not read. Between a consumer and MCP
- * and ABAP there is no reason for a consumer to name a chat session, and a
- * header that did was one more value to validate and one more way to collide.
+ * A session is one this service issued, together with the authenticated user:
+ * a per-request id in the `clh_session` cookie, or a long-session key
+ * (`POST /v1/session`), which the client sends back in `x-clh-session` or,
+ * for cookie-based clients, in the cookie. `x-session-id`
+ * and `mcp-session-id` are still not read: they named sessions this service
+ * never issued.
  *
- * The cookie is unsigned and nothing records what was issued, so a caller can
- * still send any value in it. That is harmless only because the user half of
- * the key comes from the token: a chosen id collides with its own author's
- * requests and nobody else's.
+ * Reading `x-clh-session` is safe for the same reason the cookie is. Neither
+ * is signed, so a caller can send any value; but the user half of the key
+ * comes from the token, so a chosen key reaches its own author's sessions and
+ * nobody else's. The header takes precedence over the shared cookie.
  */
 
 /** Name of the HttpOnly session cookie issued by the session middleware. */
 export const SESSION_COOKIE = 'clh_session';
+
+/** The header carrying a long-session key (the extended OpenAI protocol). */
+export const SESSION_HEADER = 'x-clh-session';
+
+/** Prefix of a long-session key (`newSessionKey`); a minted id starts `s-`. */
+const LONG_SESSION_PREFIX = 'ls-';
 
 /** Minimal shape of an Express request the helpers here need. */
 interface IncomingHeaders {
@@ -43,6 +50,26 @@ export function resolveSessionId(req: IncomingHeaders): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * The long-session key this request presents.
+ *
+ * The header always names a long session. The cookie does only when it holds
+ * a long-session key: a minted per-request id there is the plain mode's, and
+ * the middleware handles it as before. The header wins over the cookie.
+ */
+export function resolveSessionKey(req: IncomingHeaders): { key?: string } {
+  const raw = req.headers[SESSION_HEADER];
+  const header = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined;
+  const cookie = resolveSessionId(req);
+  const key =
+    raw !== undefined
+      ? header
+      : cookie?.startsWith(LONG_SESSION_PREFIX)
+        ? cookie
+        : undefined;
+  return { key };
 }
 
 /**
@@ -86,4 +113,9 @@ export function honouredSessionId(req: WithSession): string | undefined {
 export function buildSetCookie(sessionId: string, secure: boolean): string {
   const base = `${SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Lax; Path=/`;
   return secure ? `${base}; Secure` : base;
+}
+
+/** A `Set-Cookie` value that removes the session cookie. */
+export function buildClearCookie(secure: boolean): string {
+  return `${buildSetCookie('', secure)}; Max-Age=0`;
 }

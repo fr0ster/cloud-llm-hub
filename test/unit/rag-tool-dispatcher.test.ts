@@ -57,7 +57,7 @@ describe('dispatchRagTool — collection resolution', () => {
     });
     expect(result.ok).toBe(true);
     const expectedId = `result__u_${sanitizeUserKey('alice@example.com')}`;
-    const meta = reg.getCollection(expectedId);
+    const meta = await reg.getCollection(expectedId);
     expect(meta).not.toBeNull();
     expect(meta?.scope).toBe('user');
     expect(meta?.owner).toBe('alice@example.com');
@@ -78,7 +78,7 @@ describe('dispatchRagTool — collection resolution', () => {
       'alice@example.com',
       'sess-abc',
     );
-    const meta = reg.getCollection(sessionPhysical);
+    const meta = await reg.getCollection(sessionPhysical);
     expect(meta).not.toBeNull();
     expect(meta?.scope).toBe('session');
     expect(meta?.owner).toBe('alice@example.com');
@@ -131,12 +131,16 @@ describe('dispatchRagTool — collection resolution', () => {
     const bobPhysical = `result__u_${sanitizeUserKey('bob@example.com')}`;
 
     expect(alicePhysical).not.toBe(bobPhysical);
-    expect(reg.getCollection(alicePhysical)).not.toBeNull();
-    expect(reg.getCollection(bobPhysical)).not.toBeNull();
+    expect(await reg.getCollection(alicePhysical)).not.toBeNull();
+    expect(await reg.getCollection(bobPhysical)).not.toBeNull();
 
     // alice's document is NOT visible in bob's collection
-    expect(reg.findActiveByCanonicalKey(bobPhysical, 'doc-alice')).toBeNull();
-    expect(reg.findActiveByCanonicalKey(alicePhysical, 'doc-bob')).toBeNull();
+    expect(
+      await reg.findActiveByCanonicalKey(bobPhysical, 'doc-alice'),
+    ).toBeNull();
+    expect(
+      await reg.findActiveByCanonicalKey(alicePhysical, 'doc-bob'),
+    ).toBeNull();
   });
 
   test('rag_correct resolves to user collection and updates the document', async () => {
@@ -157,7 +161,7 @@ describe('dispatchRagTool — collection resolution', () => {
     });
     expect(result.ok).toBe(true);
     const physical = `notes__u_${sanitizeUserKey('alice@example.com')}`;
-    const active = reg.findActiveByCanonicalKey(physical, 'note-1');
+    const active = await reg.findActiveByCanonicalKey(physical, 'note-1');
     expect(active?.text).toBe('updated');
   });
 
@@ -192,7 +196,7 @@ describe('dispatchRagTool — collection resolution', () => {
     expect(r1.ok).toBe(true);
 
     // Manually set expiresAt to a past value to simulate time passing.
-    const meta1 = reg.getCollection(physical);
+    const meta1 = await reg.getCollection(physical);
     expect(meta1).not.toBeNull();
     // Force expiry to the past so the second call must refresh it.
     const pastExpiry = Date.now() - 1000;
@@ -212,7 +216,7 @@ describe('dispatchRagTool — collection resolution', () => {
     expect(r2.ok).toBe(true);
 
     // Only one collection with this physical id must exist.
-    const meta2 = reg.getCollection(physical);
+    const meta2 = await reg.getCollection(physical);
     expect(meta2).not.toBeNull();
     expect(meta2?.scope).toBe('session');
 
@@ -236,6 +240,6 @@ describe('dispatchRagTool — collection resolution', () => {
     });
     expect(result.ok).toBe(true);
     const physical = `notes__u_${sanitizeUserKey('alice@example.com')}`;
-    expect(reg.findActiveByCanonicalKey(physical, 'note-del')).toBeNull();
+    expect(await reg.findActiveByCanonicalKey(physical, 'note-del')).toBeNull();
   });
 });

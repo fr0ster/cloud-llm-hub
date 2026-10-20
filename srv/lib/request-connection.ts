@@ -35,6 +35,7 @@ import {
   userDependentAuthenticationTypes,
 } from './destination-authentication';
 import { maskLoginForLog } from './log-mask';
+import type { CredentialBinding } from './long-session';
 import { bearerToken, computeDumpScope, type DumpScope } from './principal';
 import { resolveSystemType } from './system-type';
 
@@ -64,6 +65,56 @@ export interface EstablishResult {
   /** Principal scope for GetDumpSection — the caller must thread it into
    * runWithRequestConnection so the tool has a principal on this (chat) path too. */
   dumpScope?: DumpScope;
+  /** The credential the connection authenticated with, for a long session to bind. */
+  credential?: CredentialBinding;
+}
+
+/** The caller's SAP credential headers, as every connection reads them. */
+function credentialHeaders(req: Request): {
+  sapLogin?: string;
+  sapPassword?: string;
+  sapClient?: string;
+} {
+  return {
+    sapLogin: (req.headers['x-sap-login'] as string | undefined)?.trim(),
+    sapPassword: req.headers['x-sap-password'] as string | undefined,
+    // Caller-supplied SAP client (mandant), e.g. "600". Overrides the
+    // destination's own sap-client so a single URL-only destination can serve
+    // multiple clients per request.
+    sapClient: (req.headers['x-sap-client'] as string | undefined)?.trim(),
+  };
+}
+
+/**
+ * The credential this request authenticates with, as a long session binds
+ * it: SAP basic when both a login and a password are sent (the same rule as
+ * the basic-auth override below) and the destination does not authenticate
+ * with the user JWT (`userDependent`), else the user JWT, else none. The JWT's
+ * user is the hub user the request is authenticated as. The password is never
+ * kept.
+ */
+export function readRequestCredential(
+  req: Request,
+  opts: { userDependent?: boolean } = {},
+): CredentialBinding {
+  const { sapLogin, sapPassword, sapClient } = credentialHeaders(req);
+  const scope = {
+    ...(sapClient ? { sapClient } : {}),
+    ...(opts.userDependent ? { userDependent: true } : {}),
+  };
+  if (sapLogin && sapPassword && !opts.userDependent) {
+    return { kind: 'basic', sapLogin, ...scope };
+  }
+  const jwt = bearerToken(req.headers.authorization);
+  if (jwt) {
+    return {
+      kind: 'jwt',
+      jwtUser: cds.context?.user?.id ?? 'anonymous',
+      jwt,
+      ...scope,
+    };
+  }
+  return { kind: 'none', ...scope };
 }
 
 /**
@@ -87,12 +138,7 @@ export async function establishRequestConnection(
     return { handled: false };
   }
 
-  const sapLogin = (req.headers['x-sap-login'] as string | undefined)?.trim();
-  const sapPassword = req.headers['x-sap-password'] as string | undefined;
-  // Caller-supplied SAP client (mandant), e.g. "600". Overrides the
-  // destination's own sap-client so a single URL-only destination can serve
-  // multiple clients per request.
-  const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
+  const { sapLogin, sapPassword, sapClient } = credentialHeaders(req);
   // The basic-auth override needs BOTH a login and a password — a login alone
   // does NOT authenticate as that login. Declared before the try so BOTH the
   // success and the failure logs (and the auth config + dump principal) key off
@@ -198,7 +244,15 @@ export async function establishRequestConnection(
       jwtSub: null,
     });
 
-    return { connection, handled: false, dumpScope };
+    // The credential the connection actually authenticated with: SAP headers
+    // ignored above for user-dependent auth are not part of it.
+    const credential = readRequestCredential(req, {
+      userDependent: userDependentAuthenticationTypes.has(
+        resolved.authenticationType ?? '',
+      ),
+    });
+
+    return { connection, handled: false, dumpScope, credential };
   } catch (connErr) {
     const err = connErr instanceof Error ? connErr : new Error(String(connErr));
     const errWithCode = err as CredentialError;

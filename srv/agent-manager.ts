@@ -33,6 +33,7 @@ import {
   type IRag,
   type IRagBackendWriter,
   type IRagEditor,
+  type IRagProvider,
   type ISubAgent,
   type Message,
   type RagMetadata,
@@ -54,7 +55,11 @@ import {
 } from '@mcp-abap-adt/llm-agent-mcp';
 import cds from '@sap/cds';
 import { z } from 'zod';
-import { type AgentConfig, getAgentConfig } from './agent-config';
+import {
+  type AgentConfig,
+  getAgentConfig,
+  type RagBackendKind,
+} from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
 
@@ -81,6 +86,7 @@ import {
   bundleFileFor,
   collectionFor,
   corpusByRole,
+  fingerprintHash,
   recordIsCurrent,
   type SharedCorpusDoc,
   toolStoreName,
@@ -669,6 +675,14 @@ import {
   CLOUD_LOCAL_TOOLS,
   mergeCloudLocalTools,
 } from './lib/cloud-local-tools';
+import {
+  createCollectionPersistence,
+  PersistentHistoryStore,
+  type RestoreStatus,
+  type RetryRestoreOptions,
+  retryRestore,
+  storePrefixFor,
+} from './lib/collection-persistence';
 import { type DumpBufferStore, makeDefaultDumpBuffer } from './lib/dump-buffer';
 import {
   handleGetDumpSectionCall,
@@ -676,6 +690,11 @@ import {
 } from './lib/get-dump-section';
 import { makeHubLlm } from './lib/llm-factory';
 import { loggerAdapter } from './lib/logger';
+import {
+  collectionDimension,
+  createCollectionProvider,
+  isPersistentKind,
+} from './lib/rag-provider-factory';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
 import { CollectionRegistry } from './rag-collections';
 
@@ -1018,16 +1037,77 @@ let collectionRegistryInstance: CollectionRegistry | null = null;
 /** Get or create the shared CollectionRegistry. */
 export function getCollectionRegistry(): CollectionRegistry {
   if (!collectionRegistryInstance) {
-    const { embedding: e, stores } = getProviders();
+    const { embedding: e, stores, collections } = getProviders();
+    const persistentKind = stores.backendOf('persistent');
+    if (isPersistentKind(persistentKind)) {
+      // Explicit, never a silent in-memory fallback for a persistent kind.
+      if (!collections || !e)
+        throw new Error(
+          `LLM_AGENT_RAG_BACKEND is "${persistentKind}" but no collection provider was built (an embedder is required)`,
+        );
+      cds.log('rag-collections').info('Persistent collections', {
+        backend: persistentKind,
+        dimension: collectionDimension(persistentKind),
+      });
+    }
     collectionRegistryInstance = new CollectionRegistry({
       embedder: e?.retrieval ?? null,
       breaker: e?.breaker ?? null,
       // LLM_AGENT_RAG_BACKEND, not "vector whenever an embedder exists":
       // another class's embedder must not move persistent collections.
-      defaultBackend: stores.backendOf('persistent'),
+      defaultBackend: persistentKind,
+      // A persistent kind: user and session collections go to its catalog.
+      ...(collections && e
+        ? {
+            persistence: createCollectionPersistence(
+              collections,
+              fingerprintHash(e.fingerprint),
+              {
+                storePrefix: storePrefixFor(
+                  persistentKind,
+                  getAgentConfig().rag.qdrant?.prefix,
+                ),
+              },
+            ),
+          }
+        : {}),
     });
   }
   return collectionRegistryInstance;
+}
+
+/**
+ * Start restoring persistent collections into the registry, retrying until it
+ * succeeds (30 s, doubling to 5 min; each attempt logged). Called by server
+ * startup right after `initProviders`. A no-op when nothing persists. The
+ * promise resolves once restored; nothing need wait for it — the registry's
+ * methods wait for the restore themselves, and /health reports it.
+ */
+export function startCollectionRestore(
+  opts: Omit<RetryRestoreOptions, 'log'> = {},
+): Promise<void> {
+  const registry = getCollectionRegistry();
+  if (registry.restoreStatus().state === 'off') return Promise.resolve();
+  const log = cds.log('rag-collections');
+  return retryRestore(() => registry.restore(), {
+    ...opts,
+    log: {
+      info: (m, d) => (d === undefined ? log.info(m) : log.info(m, d)),
+      warn: (m, d) => (d === undefined ? log.warn(m) : log.warn(m, d)),
+    },
+  });
+}
+
+/**
+ * Where the restore of persistent collections stands, for /health. Before the
+ * providers are built, a configured persistent kind is `pending`.
+ */
+export function collectionsRestoreStatus(): RestoreStatus {
+  if (!isProvidersReady())
+    return isPersistentKind(getAgentConfig().rag.backends.persistent)
+      ? { state: 'pending' }
+      : { state: 'off' };
+  return getCollectionRegistry().restoreStatus();
 }
 
 /**
@@ -1105,12 +1185,57 @@ let sharedHistoryRag: SessionHistoryRag | undefined;
 export function getSharedHistoryRag(): SessionHistoryRag | undefined {
   if (sharedHistoryRag) return sharedHistoryRag;
   const stores = getProviders().stores;
-  if (stores.backendOf('session') === 'in-memory') return undefined;
+  const kind = stores.backendOf('session');
+  if (kind === 'in-memory') return undefined;
+  if (!isPersistentKind(kind)) {
+    sharedHistoryRag = new SessionHistoryRag(
+      stores.create('session', 'history'),
+      currentTurnOwner,
+    );
+    return sharedHistoryRag;
+  }
+  // A persistent kind: the history is a cataloged store (`h_history`, spec
+  // §6), opened through the provider — never a bare store without a record.
+  // Forget and the cap then go to the store (deleteWhere, scan); every
+  // failure there is logged and never breaks a chat turn.
+  const log = cds.log('session-history');
   sharedHistoryRag = new SessionHistoryRag(
-    stores.create('session', 'history'),
+    new PersistentHistoryStore(
+      historyProvider(kind),
+      { warn: (m, d) => log.warn(m, d) },
+      {
+        storePrefix: storePrefixFor(kind, getAgentConfig().rag.qdrant?.prefix),
+      },
+    ),
     currentTurnOwner,
+    undefined,
+    { log: { warn: (m, d) => log.warn(m, d) } },
   );
   return sharedHistoryRag;
+}
+
+/**
+ * The provider of the `session` class's backend: the collections' provider
+ * when both classes are on the same backend, else one of its own.
+ */
+function historyProvider(kind: RagBackendKind): IRagProvider {
+  const p = getProviders();
+  if (p.stores.backendOf('persistent') === kind && p.collections)
+    return p.collections;
+  if (!p.embedding)
+    throw new Error(
+      `LLM_AGENT_SESSION_RAG_BACKEND is "${kind}" but no embedder was built`,
+    );
+  const provider = createCollectionProvider(
+    getAgentConfig().rag,
+    p.embedding,
+    process.env,
+    undefined,
+    kind,
+  );
+  if (!provider)
+    throw new Error(`no history provider for session backend "${kind}"`);
+  return provider;
 }
 
 /** Who is asking, for recall scoping — undefined outside a request. */

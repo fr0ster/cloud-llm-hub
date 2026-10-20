@@ -49,7 +49,16 @@ parameters:
   # LLM_AGENT_RAG_BACKEND: ""
   # LLM_AGENT_QDRANT_URL: ""
   # LLM_AGENT_QDRANT_PREFIX: ""
+  # LLM_AGENT_HANA_SERVICE: ""
+  # LLM_AGENT_PG_URL: ""
+  # LLM_AGENT_PG_SCHEMA: ""
   # LLM_AGENT_DESTINATION_SOURCE: ""
+
+  # Long sessions (see docs/llm-agent/CONFIG_USAGE.md) — empty/commented = defaults.
+  # LLM_AGENT_SESSION_TTL_MS: ""
+  # LLM_AGENT_SESSION_STORE: ""
+  # LLM_AGENT_PLAIN_API: ""
+  # LLM_AGENT_PLAIN_MCP: ""
 
   # Staging host: <subaccount subdomain>-cloud-llm-hub-staging (the approuter
   # takes the xsuaa tenant from it; tools/deploy.sh checks)
@@ -59,3 +68,14 @@ parameters:
 resources:
   - name: cloud-llm-hub-staging-ai-core               # renamed by the generator
     active: true
+
+  # Persistent RAG on HANA (optional): activate the HDI resource and point it at an
+  # existing HDI container that holds the RAG tables (tools/deploy-hdi-tables.sh).
+  # The resource type is fixed in mta.yaml (existing service); only `active` and
+  # `service-name` are set here. To use it, uncomment these lines (they continue the
+  # `resources:` list above) and put your container's service instance name.
+  # Use a container of its own for staging, never the production one: a shared
+  # RAG catalog would make staging restore and serve production's collections.
+  # - name: cloud-llm-hub-staging-hdi
+  #   active: true
+  #   parameters: { service-name: "<your-staging-hdi-service>" }

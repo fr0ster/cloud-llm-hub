@@ -18,15 +18,18 @@ parameters:
   LLM_AGENT_MAX_ITERATIONS:
   LLM_AGENT_RAG_TYPE:
   LLM_AGENT_RESOURCE_GROUP: "default"
-  LLM_AGENT_CLASSIFIER_MODEL:
-  LLM_AGENT_EMBEDDING_MODEL:
-  LLM_AGENT_PRESENTATION_MODEL:
+  # Which models a subaccount offers differs: only LLM_AGENT_MODEL must be
+  # named. "" = not set: the classifier uses LLM_AGENT_MODEL, the embedder its
+  # own default.
+  LLM_AGENT_CLASSIFIER_MODEL: ""
+  LLM_AGENT_EMBEDDING_MODEL: ""
   LLM_AGENT_HISTORY_RECENCY_WINDOW:
   LLM_AGENT_RAG_QUERY_K: "15"
   LLM_AGENT_PIPELINE_MODE: "default"
   # RAG providers (spec §3). "" = not set = today's behaviour; a bare key
   # (no value) would fail the deploy of every .mtaext that does not set it. Secrets
-  # (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY) are NOT here:
+  # (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY, LLM_AGENT_PG_USER,
+  # LLM_AGENT_PG_PASSWORD) are NOT here:
   # put them in the fork's .env, which tools/deploy.sh applies with cf set-env.
   LLM_AGENT_EMBEDDER: ""
   LLM_AGENT_EMBEDDER_URL: ""
@@ -35,7 +38,14 @@ parameters:
   LLM_AGENT_RAG_BACKEND: ""
   LLM_AGENT_QDRANT_URL: ""
   LLM_AGENT_QDRANT_PREFIX: ""
+  LLM_AGENT_HANA_SERVICE: ""
+  LLM_AGENT_PG_URL: ""
+  LLM_AGENT_PG_SCHEMA: ""
   LLM_AGENT_DESTINATION_SOURCE: ""
+  LLM_AGENT_SESSION_TTL_MS: ""
+  LLM_AGENT_SESSION_STORE: ""
+  LLM_AGENT_PLAIN_API: ""
+  LLM_AGENT_PLAIN_MCP: ""
   # System-to-destination mapping: "DEV.100=S4HANA_DEV,QAS.600=S4HANA_QAS"
   DESTINATION_MAPPING: ""
   # AI Core credentials: set via cf set-env (not in .mtaext — secrets!)
@@ -106,7 +116,6 @@ modules:
       LLM_AGENT_RESOURCE_GROUP: ${LLM_AGENT_RESOURCE_GROUP}
       LLM_AGENT_CLASSIFIER_MODEL: ${LLM_AGENT_CLASSIFIER_MODEL}
       LLM_AGENT_EMBEDDING_MODEL: ${LLM_AGENT_EMBEDDING_MODEL}
-      LLM_AGENT_PRESENTATION_MODEL: ${LLM_AGENT_PRESENTATION_MODEL}
       LLM_AGENT_HISTORY_RECENCY_WINDOW: ${LLM_AGENT_HISTORY_RECENCY_WINDOW}
       LLM_AGENT_RAG_QUERY_K: ${LLM_AGENT_RAG_QUERY_K}
       LLM_AGENT_PIPELINE_MODE: ${LLM_AGENT_PIPELINE_MODE}
@@ -117,7 +126,14 @@ modules:
       LLM_AGENT_RAG_BACKEND: ${LLM_AGENT_RAG_BACKEND}
       LLM_AGENT_QDRANT_URL: ${LLM_AGENT_QDRANT_URL}
       LLM_AGENT_QDRANT_PREFIX: ${LLM_AGENT_QDRANT_PREFIX}
+      LLM_AGENT_HANA_SERVICE: ${LLM_AGENT_HANA_SERVICE}
+      LLM_AGENT_PG_URL: ${LLM_AGENT_PG_URL}
+      LLM_AGENT_PG_SCHEMA: ${LLM_AGENT_PG_SCHEMA}
       LLM_AGENT_DESTINATION_SOURCE: ${LLM_AGENT_DESTINATION_SOURCE}
+      LLM_AGENT_SESSION_TTL_MS: ${LLM_AGENT_SESSION_TTL_MS}
+      LLM_AGENT_SESSION_STORE: ${LLM_AGENT_SESSION_STORE}
+      LLM_AGENT_PLAIN_API: ${LLM_AGENT_PLAIN_API}
+      LLM_AGENT_PLAIN_MCP: ${LLM_AGENT_PLAIN_MCP}
       DESTINATION_MAPPING: ${DESTINATION_MAPPING}
     build-parameters:
       builder: custom
@@ -139,6 +155,11 @@ modules:
       - name: cloud-llm-hub-destination
       - name: cloud-llm-hub-connectivity
       - name: cloud-llm-hub-ai-core
+      # Persistent RAG on HANA (docs/deployment/DEPLOY_GUIDE.md). The resource is
+      # inactive and optional unless an .mtaext activates it; the deploy service
+      # drops the requires entry of an inactive resource. A requires entry takes
+      # no `optional` field: mbt rejects the descriptor.
+      - name: cloud-llm-hub-hdi
   - name: cloud-llm-hub
     type: approuter.nodejs
     path: app/router
@@ -235,3 +256,15 @@ resources:
     parameters:
       service: aicore
       service-plan: extended
+  # Optional HDI container for persistent RAG collections (hana-vector): an EXISTING
+  # container that already holds the shared RAG tables (see tools/deploy-hdi-tables.sh).
+  # Inactive by default. A deployment activates it in its .mtaext with `active: true`
+  # and its own `parameters.service-name` (an extension descriptor cannot change a
+  # resource type). To have the MTA CREATE the container instead, edit this file:
+  # type com.sap.xs.hdi-container with parameters { service: hana, service-plan: hdi-shared }.
+  - name: cloud-llm-hub-hdi
+    type: org.cloudfoundry.existing-service
+    active: false
+    optional: true
+    parameters:
+      service-name: "<your-hdi-service>"

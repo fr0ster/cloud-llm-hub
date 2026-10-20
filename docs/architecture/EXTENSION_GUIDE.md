@@ -167,73 +167,15 @@ That's it. No changes needed in `@mcp-abap-adt/lib`, `openai-handler.ts`, or `ag
 
 ## Extension Scenarios
 
-### Scenario 1: Persistent RAG (Replace In-Memory)
+### Scenario 1: Persistent RAG
 
-**Goal:** Agent remembers facts, feedback, and state across restarts.
-
-**Backend options:**
-
-| Backend | Pros | Cons |
-|---------|------|------|
-| SAP HANA Cloud Vector Engine | Native BTP, managed, scalable | Requires HANA Cloud instance |
-| PostgreSQL + pgvector | Cheap, well-supported | Need to deploy/manage on BTP |
-| Ollama embeddings + local file | Simple, no external deps | Not production-ready |
-
-**Changes required:**
-
-| File | Change |
-|------|--------|
-| `srv/rag/hana-vector-rag.ts` | **New.** Implement `IRag` interface for HANA Vector Engine |
-| `srv/agent-config.ts` | Add env vars: `RAG_BACKEND`, `RAG_HANA_URL`, `RAG_HANA_SCHEMA` |
-| `srv/agent-manager.ts` | Register the store through the builder's RAG API — `setToolsRag`, `setHistoryRag`, `addRagCollection`, `addRagProvider`, `setRagRegistry`. There is no `withRag({facts, feedback, state})` method |
-| `mta.yaml` | Add HANA Cloud resource binding |
-| `docs/deployment/templates/*.mtaext.template` | Add RAG backend config vars |
-
-**Implementation pattern:**
-
-```typescript
-// srv/rag/hana-vector-rag.ts
-import type { IRag } from '@mcp-abap-adt/llm-agent';
-
-export class HanaVectorRag implements IRag {
-  constructor(private schema: string, private tableName: string) {}
-
-  async query(text: string, k: number, filter?: { namespace?: string }) {
-    // 1. Generate embedding via SAP AI Core
-    // 2. SELECT with COSINE_SIMILARITY from HANA Vector column
-    // 3. Filter by namespace if provided
-    // 4. Return top-k results
-  }
-
-  async upsert(text: string, metadata: RagMetadata) {
-    // 1. Generate embedding
-    // 2. UPSERT into HANA table (id, text, embedding, metadata, namespace)
-  }
-
-  async delete(id: string) {
-    // DELETE FROM table WHERE id = ?
-  }
-}
-```
-
-**In agent-manager.ts:**
-
-```typescript
-// Replace the in-memory default (LLM_AGENT_RAG_TYPE=in-memory) with the
-// persistent store, registering it through the builder's actual RAG API.
-const persistentRag = new HanaVectorRag(config.rag.schema, 'agent_memory');
-
-builder.setHistoryRag(persistentRag);
-// addRagCollection takes ONE object: { name, rag, editor?, meta?, idempotent? }
-builder.addRagCollection({ name: 'facts', rag: persistentRag });
-builder.addRagCollection({ name: 'feedback', rag: persistentRag });
-// setToolsRag is already wired by agent-manager.ts to the SHARED tool corpus —
-// only override it if you also want tool intents in HANA.
-```
-
-Reusing one instance across collections is fine: entries are separated by
-namespace metadata. Check the exact signatures against the installed
-`SmartAgentBuilder` before writing code — this API has moved before.
+Implemented. User and session RAG collections and the session history persist on SAP HANA Cloud
+(`hana-vector`), Postgres (`pg-vector`) or Qdrant, chosen with `LLM_AGENT_RAG_BACKEND` and
+`LLM_AGENT_SESSION_RAG_BACKEND`, through the `@mcp-abap-adt/llm-agent` providers. Nothing needs to be
+written for it; see the design in
+[the persistent RAG collections spec](../superpowers/specs/2026-10-19-persistent-rag-collections-design.md),
+the variables and behaviour in [CONFIG_USAGE.md](../llm-agent/CONFIG_USAGE.md#persistent-rag-collections),
+and the HANA container in [DEPLOY_GUIDE.md](../deployment/DEPLOY_GUIDE.md#persistent-rag-on-hana).
 
 ---
 
@@ -446,7 +388,7 @@ SmartAgent
 ├── MCP Clients:
 │   ├── ABAP → embedded handlers, in-process (no HTTP self-loop)
 │   └── JIRA → jira-mcp-server → Atlassian API
-├── RAG (persistent, HANA Vector):
+├── RAG (persistent: HANA Vector, Postgres or Qdrant):
 │   ├── facts:    abap-knowledge + client-data + tools (namespaced)
 │   ├── feedback: user corrections and preferences
 │   └── state:    session context, working memory
@@ -457,7 +399,6 @@ SmartAgent
 
 | File | S1: Persistent RAG | S2: Knowledge | S3: ABAP Tools | S4: JIRA |
 |------|:-:|:-:|:-:|:-:|
-| `srv/rag/hana-vector-rag.ts` | **New** | Reuse | — | — |
 | `srv/agent-config.ts` | Modify | Modify | Modify | Modify |
 | `srv/agent-manager.ts` | Modify | — | Modify | Modify |
 | `tools/ingest-abap-docs.ts` | — | **New** | — | — |
@@ -471,9 +412,6 @@ SmartAgent
 
 | Variable | Scenario | Default | Description |
 |----------|----------|---------|-------------|
-| `RAG_BACKEND` | 1 | `in-memory` | `in-memory`, `hana`, `postgresql` |
-| `RAG_HANA_URL` | 1 | — | HANA Cloud connection URL |
-| `RAG_HANA_SCHEMA` | 1 | `AGENT` | Schema for vector tables |
 | `RAG_EMBEDDING_MODEL` | 1,2 | `text-embedding-ada-002` | Model for embeddings |
 | `LLM_AGENT_JIRA_MCP_URL` | 3 | — | JIRA MCP server URL |
 | `LLM_AGENT_JIRA_API_TOKEN` | 3 | — | JIRA API token |

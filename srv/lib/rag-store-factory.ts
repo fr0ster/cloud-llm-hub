@@ -153,6 +153,14 @@ export function createRagStoreFactory(
           `RAG class ${cls} is ${backend} but no embedder was built`,
         );
       if (backend === 'vector') return vectorStore(embedding, opts);
+      // Programmer-misuse assertion: a hana-vector / pg-vector store is opened
+      // through the collection provider, which writes its catalog record. A
+      // bare store here would hold rows no record describes (an orphan the
+      // next create refuses), so there is no such path.
+      if (backend === 'hana-vector' || backend === 'pg-vector')
+        throw new Error(
+          `RAG class ${cls} is ${backend}: its stores are opened through the collection provider, never as bare stores`,
+        );
       // No query preprocessors on `qdrant`: `opts.queryPreprocessors` (the
       // vector backend's TranslatePreprocessor) is not applied, so queries are
       // embedded as asked. Retrieval across languages relies on a multilingual

@@ -44,12 +44,16 @@ jest.mock('../../srv/collection-ids', () => ({
   resolveRouteId: (_registry: unknown, id: string) => id,
 }));
 
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { type Message, RagError } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import * as manager from '../../srv/agent-manager';
+import {
+  COLLECTION_INCOMPATIBLE,
+  COLLECTION_UNAVAILABLE,
+  CollectionStatusError,
+} from '../../srv/lib/collection-persistence';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
-import type { Lease } from '../../srv/lib/session-retention';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { getRequestHistory } from '../../srv/request-session';
 import * as sessionStore from '../../srv/session-store';
@@ -90,7 +94,7 @@ describe('the RAG stores a request names', () => {
     jest
       .spyOn(registry, 'getRagStores')
       .mockReturnValue({ 'col-1': store } as never);
-    jest.spyOn(registry, 'getRagStore').mockReturnValue(null);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(null);
     const handle = (await manager.getSmartAgent()) as unknown as {
       agent: { deps: { ragStores: Record<string, unknown> } };
     };
@@ -120,13 +124,65 @@ describe('the RAG stores a request names', () => {
     expect(Object.keys(deps.ragStores)).not.toContain('col-1');
   });
 
+  it('find collection documents that carry no exposition tag', async () => {
+    configure();
+    const registry = manager.getCollectionRegistry();
+    // Like the backends: a ragFilter namespace keeps only records of it, and a
+    // collection document has none.
+    const doc = {
+      text: 'The office cat is called Pixel.',
+      score: 0.9,
+      metadata: { id: 'd1', docId: 'd1' },
+    };
+    const store = {
+      query: async (
+        _e: unknown,
+        _k: number,
+        o?: { ragFilter?: { namespace?: string } },
+      ) => ({ ok: true, value: o?.ragFilter?.namespace ? [] : [doc] }),
+      healthCheck: async () => ({ ok: true, value: undefined }),
+      getById: async () => ({ ok: true, value: null }),
+    };
+    jest
+      .spyOn(registry, 'getRagStores')
+      .mockResolvedValue({ 'col-1': store } as never);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(store as never);
+    const handle = (await manager.getSmartAgent()) as unknown as {
+      agent: {
+        deps: {
+          ragStores: Record<
+            string,
+            { query(e: unknown, k: number, o: unknown): Promise<unknown> }
+          >;
+        };
+      };
+    };
+    let prompt = '';
+    let agentSearch: unknown;
+    harness.process = async (m: unknown) => {
+      const msgs = m as Message[];
+      prompt = String(msgs[msgs.length - 1].content);
+      agentSearch = await handle.agent.deps.ragStores['col-1'].query({}, 3, {
+        ragFilter: { namespace: 'bob:DEST', exposition: ['readonly'] },
+      });
+      return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+    };
+
+    const req = fakeReq(body()) as unknown as Request;
+    req.headers['x-rag-collections'] = 'col-1';
+    await handleChatCompletions(req, fakeRes() as unknown as Response);
+
+    expect(prompt).toContain('The office cat is called Pixel.');
+    expect(agentSearch).toEqual({ ok: true, value: [doc] });
+  });
+
   it('are never installed for a request refused at the door (RAG)', async () => {
     configure(1, 1);
     const registry = manager.getCollectionRegistry();
     const getRagStores = jest
       .spyOn(registry, 'getRagStores')
       .mockReturnValue({ 'col-1': {} } as never);
-    jest.spyOn(registry, 'getRagStore').mockReturnValue(null);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(null);
     const hold = await gatekeeper.admitPipeline('bob', 'busy');
     // Fills the queue. Rejected if the gatekeeper is reset while it still waits.
     const filler = gatekeeper
@@ -148,6 +204,42 @@ describe('the RAG stores a request names', () => {
       if (queued && 'admitted' in queued) queued.admitted.release();
     }
   });
+});
+
+describe('a request naming a degraded collection', () => {
+  it.each([
+    ['incompatible', COLLECTION_INCOMPATIBLE, 409],
+    ['unavailable', COLLECTION_UNAVAILABLE, 503],
+  ] as const)(
+    'is refused before the agent runs when %s',
+    async (_s, code, status) => {
+      configure();
+      const registry = manager.getCollectionRegistry();
+      jest
+        .spyOn(registry, 'degradedOf')
+        .mockResolvedValue(
+          new CollectionStatusError(
+            'search',
+            new RagError(`collection "col-1" is ${_s}: the cause`, code),
+          ),
+        );
+      const getRagStores = jest.spyOn(registry, 'getRagStores');
+      let ran = false;
+      harness.process = async () => {
+        ran = true;
+        return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+      };
+      const req = fakeReq(body()) as unknown as Request;
+      req.headers['x-rag-collections'] = 'col-1';
+      const res = fakeRes();
+      await handleChatCompletions(req, res as unknown as Response);
+
+      expect(res.statusCode).toBe(status);
+      expect(res.body).toMatch(/col-1.*the cause/);
+      expect(ran).toBe(false);
+      expect(getRagStores).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('a destination switch', () => {
@@ -176,7 +268,7 @@ describe('a destination switch', () => {
   beforeEach(() => sessionStore.clearSession(SID, USER));
   afterEach(() => sessionStore.clearSession(SID, USER));
 
-  it('wipes and switches nothing for a request refused at the door', async () => {
+  it('switches nothing for a request refused at the door', async () => {
     configure(1, 1);
     const del = jest.spyOn(
       manager.getCollectionRegistry(),
@@ -205,7 +297,7 @@ describe('a destination switch', () => {
     }
   });
 
-  it('wipes and switches nothing for a request that leaves while queued', async () => {
+  it('switches nothing for a request that leaves while queued', async () => {
     configure(1, 1);
     const del = jest.spyOn(
       manager.getCollectionRegistry(),
@@ -249,33 +341,7 @@ describe('a destination switch', () => {
     expect(harness.destinationSets).toEqual([]);
   });
 
-  it('keeps the session collections while a RAG operation holds the session', async () => {
-    configure(2);
-    const del = jest.spyOn(
-      manager.getCollectionRegistry(),
-      'deleteSessionCollections',
-    );
-    const req = switchingRequest();
-    // An upload into this session's collection is still writing: removing the
-    // registry entry and directory under it is the leak three-step deletion
-    // closes.
-    const upload = gatekeeper.leaseSession(USER, SID, 'rag') as Lease;
-    try {
-      const res = fakeRes();
-      await handleChatCompletions(req, res as unknown as Response);
-
-      expect(res.statusCode).toBe(200);
-      expect(del).not.toHaveBeenCalled();
-      // The history is still cleared: the admission's pipeline lease already
-      // excludes this session's other pipelines.
-      expect(history()).not.toContain('earlier');
-      expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
-    } finally {
-      upload.release();
-    }
-  });
-
-  it('clears the history, removes the collections and switches, once admitted', async () => {
+  it('destination switch keeps server history and session collections', async () => {
     configure(2);
     const del = jest.spyOn(
       manager.getCollectionRegistry(),
@@ -292,13 +358,14 @@ describe('a destination switch', () => {
     await handleChatCompletions(switchingRequest(), res as unknown as Response);
 
     expect(res.statusCode).toBe(200);
-    expect(del).toHaveBeenCalledWith(USER, SID);
-    expect(history()).not.toContain('earlier');
+    // A switch is a new ABAP session, not a new conversation (spec goal 10).
+    expect(del).not.toHaveBeenCalled();
+    expect(history()).toEqual(['earlier', 'hi', 'done']);
     expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
-    // The run itself starts clean: neither its messages nor the prior turns
-    // bound for the executor carry the history the switch cleared.
-    expect(JSON.stringify(messages)).not.toContain('earlier');
-    expect(JSON.stringify(priorTurns)).not.toContain('earlier');
+    // The run carries the earlier turn, and so do the prior turns bound for
+    // the executor.
+    expect(JSON.stringify(messages)).toContain('earlier');
+    expect(JSON.stringify(priorTurns)).toContain('earlier');
   });
 });
 

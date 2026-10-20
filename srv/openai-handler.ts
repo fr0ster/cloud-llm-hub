@@ -20,13 +20,11 @@ import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   closeDestination,
-  ExpositionFilteringRag,
   getCollectionRegistry,
   getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
   getDestinationStates,
-  getSharedHistoryRag,
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
@@ -37,31 +35,36 @@ import {
 } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
+import { CollectionBackendError } from './lib/collection-persistence';
 import { detachedSink } from './lib/detached-sink';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
-import {
-  admitPipeline,
-  hasRagLease,
-  type PipelineSession,
-} from './lib/gatekeeper';
+import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
+import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { classifyProbe } from './lib/probe-classifier';
-import { establishRequestConnection, safeStop } from './lib/request-connection';
+import { establishRequestConnection } from './lib/request-connection';
 import {
   resolveRequestSystem,
   runWithRequestSystem,
 } from './lib/request-system-context';
-import { turnOwner } from './lib/session-history-rag';
+import {
+  acquireSessionConnection,
+  type LongSessionRequest,
+  releaseRequestConnection,
+} from './lib/session-connection';
+import { extractText, recordTurn } from './lib/session-turns';
 import {
   destinationClosedText,
   openAiDoorRefusal,
   openAiSessionClosed,
+  openAiSessionRunRefusal,
   type RecMcpHandle,
   throttleMessage,
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { CollectionSearchRag } from './rag-collections';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
@@ -111,55 +114,8 @@ function withRequestConnection<T>(
 // Rate-limit retry helpers
 // ---------------------------------------------------------------------------
 
-/** Extract plain text from OpenAI content (string | content-block array) */
-function extractText(c: unknown): string {
-  if (c === null || c === undefined) return '';
-  if (typeof c === 'string') return c;
-  if (!Array.isArray(c)) return '';
-  return c
-    .filter(
-      (b: unknown) =>
-        typeof b === 'object' &&
-        b !== null &&
-        (b as { type?: string }).type === 'text' &&
-        typeof (b as { text?: string }).text === 'string',
-    )
-    .map((b: { text: string }) => b.text)
-    .join('\n');
-}
-
 // Re-exported: tests and other modules imported these from the handler.
 export { appendToSession, clearSession, getSessionHistory };
-
-/**
- * Store the completed turn for semantic recall, beside the verbatim store.
- *
- * The two answer different questions. `appendToSession` keeps the last turns
- * word for word, which is what resolves "that domain" on the very next
- * message. This one survives the recency window: many turns later, when the
- * wording is gone, a similar question still finds what the object was called.
- *
- * Fire-and-forget on purpose. The answer has already been sent; a failure to
- * remember it must not surface as an error on a request that succeeded.
- */
-function recordTurnForRecall(
-  sessionId: string,
-  userId: string,
-  lastUser: Message,
-  answer: string,
-): void {
-  const rag = getSharedHistoryRag();
-  if (!rag) return;
-  const question = extractText(lastUser.content);
-  if (!question || !answer) return;
-  void rag
-    .recordTurn({
-      owner: turnOwner(userId, sessionId),
-      userText: question,
-      assistantText: answer,
-    })
-    .catch(() => {});
-}
 
 /**
  * Trim messages for SmartAgent context to prevent context window overflow.
@@ -266,8 +222,6 @@ export async function handleChatCompletions(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const log = cds.log('openai-handler');
-
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
@@ -324,6 +278,30 @@ export async function handleChatCompletions(
     );
     return;
   }
+
+  // A long session serves its requests one at a time, through the connection
+  // it holds; without one the request stands alone, as it always has.
+  const s = (req as LongSessionRequest).longSession;
+  if (!s) return serveChatCompletions(req, res, body, userMessages);
+  const ran = await longSessions().run(s, () =>
+    serveChatCompletions(req, res, body, userMessages, s),
+  );
+  if (ran) {
+    const refusal = openAiSessionRunRefusal(ran.refused);
+    res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(refusal.body));
+  }
+}
+
+/** The chat itself, once the body is valid; `s` is the long session it runs in. */
+async function serveChatCompletions(
+  req: Request,
+  res: Response,
+  body: OpenAIChatRequest,
+  userMessages: OpenAIChatRequest['messages'],
+  s?: LongSession,
+): Promise<void> {
+  const log = cds.log('openai-handler');
 
   // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
@@ -459,7 +437,7 @@ export async function handleChatCompletions(
 
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(userId, sessionId);
-  const destAfter = requestedDestination || destBefore;
+  const destAfter = requestedDestination || s?.destination || destBefore;
   let requestConnection:
     | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
     | undefined;
@@ -498,7 +476,9 @@ export async function handleChatCompletions(
   }
 
   if (destAfter) {
-    const established = await establishRequestConnection(req, res, destAfter);
+    const established = s
+      ? await acquireSessionConnection(s, req, res, destAfter)
+      : await establishRequestConnection(req, res, destAfter);
     if (established.handled) return;
     requestConnection = established.connection;
     requestDumpScope = established.dumpScope;
@@ -532,7 +512,7 @@ export async function handleChatCompletions(
     // for session-scoped chats, which would fall to the configured default.
     handle = await getSmartAgent(requestedModel, destAfter);
   } catch (err) {
-    await safeStop(requestConnection);
+    await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);
     // Propagate the structured destination_unreachable error from getSmartAgent
     // so clients can distinguish "your SAP system isn't reachable" from generic
@@ -628,7 +608,7 @@ export async function handleChatCompletions(
       },
     );
     if ('refused' in admission) {
-      await safeStop(requestConnection);
+      await releaseRequestConnection(requestConnection, s);
       const refusal = openAiDoorRefusal(admission.refused);
       out.json(refusal.status, refusal.body);
       return;
@@ -636,7 +616,7 @@ export async function handleChatCompletions(
     if ('closed' in admission) {
       // Logged out while this request waited for its agent. Running now would
       // bring the session back under the id the caller asked us to destroy.
-      await safeStop(requestConnection);
+      await releaseRequestConnection(requestConnection, s);
       const closed = openAiSessionClosed();
       out.json(closed.status, closed.body);
       return;
@@ -644,7 +624,7 @@ export async function handleChatCompletions(
     pipeline = admission.admitted;
   } catch {
     // Left while queued. Nothing was started, so nothing is owed but the connection.
-    await safeStop(requestConnection);
+    await releaseRequestConnection(requestConnection, s);
     return;
   }
 
@@ -652,7 +632,8 @@ export async function handleChatCompletions(
   // now that the request is admitted: every pipeline on this destination runs on
   // this same agent, so stores installed before the queue wait would be seen by
   // every run admitted ahead of this one. Restored in the `finally` below.
-  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
+  // Wrapped with CollectionSearchRag: the agent's ragFilter (namespace,
+  // exposition) scopes tools and destination data, not collection documents.
   // Interleaved admitted runs that both inject can still restore each other's
   // set — a pre-existing race of mutating shared deps, left for per-request
   // stores.
@@ -663,40 +644,20 @@ export async function handleChatCompletions(
   };
 
   try {
-    // Track which destination this session is using. A changed destination is
-    // a reconnect boundary: wipe session-scoped state before continuing — and
-    // only now, admitted. A request refused, answered 410 or gone while queued
-    // started nothing, so it changes nothing; the admission's pipeline lease
-    // already excludes this session's other pipelines, so none of them loses
-    // its history mid-run. Read again here rather than at arrival: a run of
-    // this session that ended while this request waited may have moved it.
+    // Track which destination this session is using. A switch keeps the
+    // conversation: its history and session collections stay (spec goal 10);
+    // only the ABAP session is new, and a long session has already replaced
+    // its connection above. Recorded only now, admitted: a request refused,
+    // answered 410 or gone while queued started nothing, so it changes
+    // nothing. Read again here rather than at arrival: a run of this session
+    // that ended while this request waited may have moved it.
     const lastDestination = getCurrentDestination(userId, sessionId);
     if (lastDestination !== destAfter && serverManaged) {
-      log.info('Destination reconnect, clearing session history', {
+      log.info('Destination switch, session history kept', {
         from: lastDestination,
         to: destAfter,
         sessionId,
       });
-      clearSession(sessionId, userId);
-      // Drop the session's ephemeral RAG collections too (owner-guarded), so
-      // they don't keep shadowing user collections after a reconnect — unless a
-      // RAG operation is still writing into them. Removing the registry entry
-      // and directory under a live upload is the leak three-step deletion
-      // closes; the collections then stay, and go with the session. Asked and
-      // removed in one synchronous step, so no lease is taken in between.
-      if (hasRagLease(userId, sessionId)) {
-        log.info(
-          'Destination reconnect kept the session collections: a RAG operation holds the session',
-          { sessionId },
-        );
-      } else {
-        getCollectionRegistry().deleteSessionCollections(userId, sessionId);
-      }
-      // Re-build normalizedMessages with only the new user message (no stale history)
-      const lastUserContent = extractText(
-        userMessages[userMessages.length - 1].content,
-      );
-      normalizedMessages = [{ role: 'user', content: lastUserContent }];
     }
     // Under the admission's lease: a logout's removal waits for it, so this
     // entry cannot be written back after the session it names is gone.
@@ -708,8 +669,7 @@ export async function handleChatCompletions(
      * The coordinator composes the executor's prompt from the LAST user message
      * alone, so the executor needs the turns that came before it — and only
      * those, or the new message would appear twice. Bound to the request scope
-     * below and read back inside the executor. Taken after the switch above, so
-     * turns it cleared do not reach the executor anyway.
+     * below and read back inside the executor.
      */
     const priorTurns = (() => {
       for (let i = normalizedMessages.length - 1; i >= 0; i--) {
@@ -721,33 +681,90 @@ export async function handleChatCompletions(
 
     // Resolve each entry: bare logical names → caller's own physical id; physical
     // ids owned by another user → dropped. Session collection shadows user
-    // collection. After the switch, which may have removed session collections;
-    // reused by both the RAG store injection and semantic search below.
+    // collection. Reused by both the RAG store injection and semantic search below.
+    // Persistent collections are restored first; until a restore succeeds a
+    // request naming collections gets the explicit 503, not an answer quietly
+    // made without them. A chat naming only presets (each entry a preset this
+    // process holds for the caller) goes on meanwhile: presets live in this
+    // process. A session collection of the same name that the restore has not
+    // read back yet cannot shadow it then.
+    let presetsOnly: string[] | undefined;
+    if (ragCollectionIds.length > 0) {
+      try {
+        await getCollectionRegistry().ready;
+      } catch (err) {
+        if (!(err instanceof CollectionBackendError) || res.headersSent)
+          throw err;
+        const registry = getCollectionRegistry();
+        const presets = ragCollectionIds.map((entry) =>
+          registry.heldPresetFor(entry, getUserId()),
+        );
+        if (presets.every((id): id is string => id !== undefined)) {
+          presetsOnly = presets;
+        } else {
+          log.warn('Chat refused: collections unavailable', {
+            error: err.message,
+          });
+          res.writeHead(err.httpStatus, {
+            'Content-Type': 'application/json',
+          });
+          res.end(jsonError(err.message, 'service_unavailable'));
+          return;
+        }
+      }
+    }
     const resolvedCollectionIds: string[] =
-      ragCollectionIds.length > 0
-        ? (() => {
+      presetsOnly ??
+      (ragCollectionIds.length > 0
+        ? await (async () => {
             const registry = getCollectionRegistry();
-            return ragCollectionIds
-              .map((entry) =>
-                resolveRouteId(registry, entry, getUserId(), sessionId, false),
-              )
-              .filter((id): id is string => id !== undefined);
+            const ids: string[] = [];
+            for (const entry of ragCollectionIds) {
+              const id = await resolveRouteId(
+                registry,
+                entry,
+                getUserId(),
+                sessionId,
+                false,
+              );
+              if (id !== undefined) ids.push(id);
+            }
+            return ids;
           })()
-        : [];
+        : []);
+
+    // A named collection that cannot be searched (restored incompatible or
+    // unavailable) refuses the turn, before anything streams: 409 / 503 naming
+    // the collection and its cause — never an answer quietly made without it.
+    if (resolvedCollectionIds.length > 0) {
+      const refusal = await getCollectionRegistry().degradedOf(
+        resolvedCollectionIds,
+      );
+      if (refusal) {
+        log.warn('Chat refused: a named collection is degraded', {
+          error: refusal.message,
+        });
+        res.writeHead(refusal.httpStatus, {
+          'Content-Type': 'application/json',
+        });
+        res.end(
+          jsonError(
+            refusal.message,
+            refusal.httpStatus === 409 ? 'conflict' : 'service_unavailable',
+          ),
+        );
+        return;
+      }
+    }
 
     if (resolvedCollectionIds.length > 0) {
       const registry = getCollectionRegistry();
-      const dynamicStores = registry.getRagStores(resolvedCollectionIds);
+      const dynamicStores = await registry.getRagStores(resolvedCollectionIds);
       const injected = Object.keys(dynamicStores);
       if (injected.length > 0) {
         const mergedStores = { ...originalRagStores };
         for (const [key, store] of Object.entries(dynamicStores)) {
-          mergedStores[key] = new ExpositionFilteringRag(
-            store,
-            undefined,
-            undefined,
-            getAgentConfig().agent.skillRagK,
-          );
+          mergedStores[key] = new CollectionSearchRag(store);
         }
         deps.ragStores = mergedStores;
         log.info('Dynamic RAG collections injected', {
@@ -761,8 +778,6 @@ export async function handleChatCompletions(
     // Semantic search across active RAG collections and inject relevant results.
     // llm-agent hardcoded flow only queries RAG for "action" subprompts —
     // chat questions classified as "chat" → RAG skipped. We do our own search.
-    // After the switch: it reads the session's collections and adds to the
-    // message the switch may have just rebuilt.
     if (resolvedCollectionIds.length > 0) {
       const registry = getCollectionRegistry();
       const userMessage = normalizedMessages
@@ -786,14 +801,10 @@ export async function handleChatCompletions(
 
         const relevantTexts: string[] = [];
         for (const colId of resolvedCollectionIds) {
-          const store = registry.getRagStore(colId);
+          // Degraded collections were refused above, before the turn started.
+          const store = await registry.getRagStore(colId);
           if (!store) continue;
-          const result = await new ExpositionFilteringRag(
-            store,
-            undefined,
-            undefined,
-            getAgentConfig().agent.skillRagK,
-          ).query(embedding, 3);
+          const result = await store.query(embedding, 3);
           if (result.ok) {
             for (const r of result.value) {
               log.info('RAG search result', {
@@ -1194,7 +1205,7 @@ export async function handleChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          recordTurnForRecall(sessionId, userId, lastUser, accumulatedContent);
+          recordTurn(sessionId, userId, lastUser, accumulatedContent);
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
@@ -1293,7 +1304,7 @@ export async function handleChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
-        recordTurnForRecall(sessionId, userId, lastUser, finalContent);
+        recordTurn(sessionId, userId, lastUser, finalContent);
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.
@@ -1328,7 +1339,7 @@ export async function handleChatCompletions(
     // The pipeline has returned, so it starts no more calls. Wait for the ones it
     // started, then end the ADT session, then give the slot back — last.
     await pipeline.drain();
-    await safeStop(requestConnection);
+    await releaseRequestConnection(requestConnection, s);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so
     // omitting this leaks memory per request (Verified fact 10). Guarded: a
     // throw here must not skip the release below, which would hold the slot

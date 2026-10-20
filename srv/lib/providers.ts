@@ -6,6 +6,7 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   type IQueryEmbedder,
+  type IRagProvider,
   type IRetrievalEmbedder,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
@@ -22,6 +23,7 @@ import {
   type DestinationSource,
 } from './destination-source';
 import { apiKeyCredential } from './llm-factory';
+import { createCollectionProvider } from './rag-provider-factory';
 import {
   createRagStoreFactory,
   type RagStoreFactory,
@@ -119,6 +121,8 @@ export function agentQueryEmbedder(e: Embedding): IQueryEmbedder {
 export interface Providers {
   embedding: Embedding | null;
   stores: RagStoreFactory;
+  /** The provider behind persistent collections; null unless that class is persistent. */
+  collections?: IRagProvider | null;
   destinations: DestinationSource;
 }
 
@@ -133,6 +137,9 @@ export async function startProviders(
   return {
     embedding,
     stores: createRagStoreFactory(cfg.rag, embedding),
+    collections: embedding
+      ? createCollectionProvider(cfg.rag, embedding)
+      : null,
     destinations,
   };
 }

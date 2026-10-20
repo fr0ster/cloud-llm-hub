@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import { load } from 'js-yaml';
 
 // Non-secret settings parsed by parseRagConfig / parseDestinationConfig.
-// Secrets (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY) go through
+// Secrets (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY, LLM_AGENT_PG_USER,
+// LLM_AGENT_PG_PASSWORD) go through
 // .env → cf set-env (tools/deploy.sh), never through mta.yaml.
 const CARRIED = [
   'LLM_AGENT_EMBEDDER',
@@ -15,7 +16,14 @@ const CARRIED = [
   'LLM_AGENT_RAG_TYPE',
   'LLM_AGENT_QDRANT_URL',
   'LLM_AGENT_QDRANT_PREFIX',
+  'LLM_AGENT_HANA_SERVICE',
+  'LLM_AGENT_PG_URL',
+  'LLM_AGENT_PG_SCHEMA',
   'LLM_AGENT_DESTINATION_SOURCE',
+  'LLM_AGENT_SESSION_TTL_MS',
+  'LLM_AGENT_SESSION_STORE',
+  'LLM_AGENT_PLAIN_API',
+  'LLM_AGENT_PLAIN_MCP',
 ];
 
 it('every non-secret RAG/destination setting reaches cloud-llm-hub-srv', () => {
@@ -40,6 +48,9 @@ const NEW = [
   'LLM_AGENT_RAG_BACKEND',
   'LLM_AGENT_QDRANT_URL',
   'LLM_AGENT_QDRANT_PREFIX',
+  'LLM_AGENT_HANA_SERVICE',
+  'LLM_AGENT_PG_URL',
+  'LLM_AGENT_PG_SCHEMA',
   'LLM_AGENT_DESTINATION_SOURCE',
 ];
 
@@ -70,4 +81,15 @@ it('every new parameter has a default, so a deployment without it still resolves
   for (const name of NEW) {
     expect([name, mta.parameters[name]]).toEqual([name, '']);
   }
+});
+
+it('only LLM_AGENT_MODEL has to name a model in an .mtaext', () => {
+  const mta = load(
+    fs.readFileSync(path.resolve(__dirname, '../../mta.yaml'), 'utf8'),
+  ) as { parameters: Record<string, unknown> };
+  const bare = Object.entries(mta.parameters)
+    .filter(([k, v]) => k.endsWith('_MODEL') && (v === null || v === undefined))
+    .map(([k]) => k);
+  expect(bare).toEqual(['LLM_AGENT_MODEL']);
+  expect('LLM_AGENT_PRESENTATION_MODEL' in mta.parameters).toBe(false);
 });

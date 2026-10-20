@@ -77,7 +77,7 @@ describe('one session, every store', () => {
     expect(getCurrentDestination('bob', SID)).toBe('S4HANA_QAS');
   });
 
-  it("deletes one user's session and leaves the other's turns, collections and destination", () => {
+  it("deletes one user's session and leaves the other's turns, collections and destination", async () => {
     seed('alice', 'S4HANA_DEV');
     seed('bob', 'S4HANA_QAS');
 
@@ -85,7 +85,7 @@ describe('one session, every store', () => {
 
     expect(getSessionHistory(SID, 'alice')).toEqual([]);
     expect(
-      getCollectionRegistry().getCollection(
+      await getCollectionRegistry().getCollection(
         sessionCollectionId('notes', 'alice', SID),
       ),
     ).toBeNull();
@@ -93,7 +93,7 @@ describe('one session, every store', () => {
 
     expect(getSessionHistory(SID, 'bob')).toHaveLength(1);
     expect(
-      getCollectionRegistry().getCollection(
+      await getCollectionRegistry().getCollection(
         sessionCollectionId('notes', 'bob', SID),
       ),
     ).not.toBeNull();

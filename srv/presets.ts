@@ -86,25 +86,31 @@ export async function ensurePresets(
 ): Promise<void> {
   for (const pack of PRESET_PACKS) {
     const id = presetCollectionId(pack.key, userId);
-    if (!registry.getCollection(id)) {
-      registry.createCollection({
-        id,
-        logicalId: pack.key,
-        displayName: pack.displayName,
-        description: `Preset: ${pack.displayName}`,
-        scope: 'user',
-        owner: userId,
-        preset: true,
-      });
-    }
+    // Atomic, and never waits for the restore of persistent collections:
+    // presets live in this process only.
+    await registry.getOrCreateCollection({
+      id,
+      logicalId: pack.key,
+      displayName: pack.displayName,
+      description: `Preset: ${pack.displayName}`,
+      scope: 'user',
+      owner: userId,
+      preset: true,
+    });
     for (const doc of loadDocs(pack.key)) {
-      if (!registry.getDocument(id, doc.id)) {
+      if (!(await registry.getDocument(id, doc.id))) {
         try {
-          await registry.addDocument(id, {
-            id: doc.id,
-            text: doc.text,
-            metadata: { preset: pack.key },
-          });
+          // `seed`: no wait for the restore of persistent collections.
+          await registry.addDocument(
+            id,
+            {
+              id: doc.id,
+              text: doc.text,
+              metadata: { preset: pack.key },
+            },
+            undefined,
+            { seed: true },
+          );
         } catch (err) {
           cds.log('presets').warn('preset doc seed failed', {
             collection: id,

@@ -81,12 +81,14 @@ describe('ensurePresets', () => {
     await ensurePresets(reg, 'alice', fakeLoader);
     const skillsId = presetCollectionId('rap-skills', 'alice');
     const ctxId = presetCollectionId('rap-context', 'alice');
-    const skills = reg.getCollection(skillsId);
+    const skills = await reg.getCollection(skillsId);
     expect(skills?.scope).toBe('user');
     expect(skills?.owner).toBe('alice');
-    expect(reg.getDocument(skillsId, 'creating-domain')?.text).toBe('A');
-    expect(reg.getDocument(ctxId, 'phase-procedure')?.text).toBe('B');
-    expect(reg.getDocument(ctxId, 'strict-mode-2')?.text).toBe('C');
+    expect((await reg.getDocument(skillsId, 'creating-domain'))?.text).toBe(
+      'A',
+    );
+    expect((await reg.getDocument(ctxId, 'phase-procedure'))?.text).toBe('B');
+    expect((await reg.getDocument(ctxId, 'strict-mode-2'))?.text).toBe('C');
   });
 
   test('is idempotent — second run adds nothing and does not throw', async () => {
@@ -96,7 +98,7 @@ describe('ensurePresets', () => {
       ensurePresets(reg, 'alice', fakeLoader),
     ).resolves.toBeUndefined();
     expect(
-      reg.getCollection(presetCollectionId('rap-context', 'alice'))
+      (await reg.getCollection(presetCollectionId('rap-context', 'alice')))
         ?.documentCount,
     ).toBe(2);
   });
@@ -108,8 +110,10 @@ describe('ensurePresets', () => {
     await reg.deleteDocument(ctxId, 'strict-mode-2'); // simulate partial seed
     await reg.updateDocument(ctxId, 'phase-procedure', { text: 'EDITED' });
     await ensurePresets(reg, 'alice', fakeLoader);
-    expect(reg.getDocument(ctxId, 'strict-mode-2')?.text).toBe('C'); // re-added
-    expect(reg.getDocument(ctxId, 'phase-procedure')?.text).toBe('EDITED'); // preserved
+    expect((await reg.getDocument(ctxId, 'strict-mode-2'))?.text).toBe('C'); // re-added
+    expect((await reg.getDocument(ctxId, 'phase-procedure'))?.text).toBe(
+      'EDITED',
+    ); // preserved
   });
 
   test('two users get non-colliding collections', async () => {
@@ -120,7 +124,7 @@ describe('ensurePresets', () => {
       presetCollectionId('rap-skills', 'bob'),
     );
     expect(
-      reg.getCollection(presetCollectionId('rap-skills', 'bob')),
+      await reg.getCollection(presetCollectionId('rap-skills', 'bob')),
     ).not.toBeNull();
   });
 
@@ -151,6 +155,8 @@ describe('ensurePresets', () => {
 
     // The second doc must have been attempted and stored.
     const skillsId = presetCollectionId('rap-skills', 'alice');
-    expect(reg.getDocument(skillsId, 'doc-ok')?.text).toBe('will-succeed');
+    expect((await reg.getDocument(skillsId, 'doc-ok'))?.text).toBe(
+      'will-succeed',
+    );
   });
 });

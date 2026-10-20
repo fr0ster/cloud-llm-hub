@@ -375,7 +375,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 
 **Endpoint:** `POST /mcp/stream/http`
 
-**Description:** MCP Streamable HTTP. **One JSON-RPC message per HTTP request** — `srv/server.ts` reads the whole body and runs a single `JSON.parse`, so a body holding several objects is a parse error. The transport is stateless (`sessionIdGenerator: undefined`), so each request stands alone. Responses stream back as SSE when the tool emits progress.
+**Description:** Off by default: answers `404` `PLAIN_MCP_DISABLED` unless `LLM_AGENT_PLAIN_MCP=true`. The agent MCP (`/mcp/agent/stream/http`) is the default external channel. MCP Streamable HTTP. **One JSON-RPC message per HTTP request** — `srv/server.ts` reads the whole body and runs a single `JSON.parse`, so a body holding several objects is a parse error. The transport is stateless (`sessionIdGenerator: undefined`), so each request stands alone. Responses stream back as SSE when the tool emits progress.
 
 **Authentication:** Required
 
@@ -680,10 +680,61 @@ guessed at.
 
 ---
 
-### Sessions
+### Long sessions
 
-The service issues the session in an `HttpOnly` cookie, `clh_session`, on the
-first `/v1` response that has none, and keys every session by that value
+`/v1/chat/completions` and `/v1/messages` serve requests in a long session only,
+unless `LLM_AGENT_PLAIN_API=true` (see [CONFIG_USAGE](../llm-agent/CONFIG_USAGE.md#long-sessions)).
+A long session holds one ABAP connection between requests (one stateful ADT
+context: debugger, locks), its chat history, its session collections and its
+destination, under a server-issued key. Its TTL counts from the last request.
+
+| Call | Answer |
+|---|---|
+| `POST /v1/session`, body `{ "destination"?: string }` | `201 { session, ttlSeconds, destination }`; the key also comes back in the `clh_session` cookie |
+| any `/v1` request with `x-clh-session: <key>` | served in that session; the header wins over the cookie |
+| `DELETE /v1/session` (or `POST /v1/session/close`) with the key | `204` once the session is closed: ABAP session, history, session collections and record are gone |
+
+Requests of one session run one after another; a request behind a full queue is
+refused. Refusals carry the code in `error.code`, in the OpenAI and the
+Anthropic envelope alike:
+
+| Code | Status | When |
+|---|---|---|
+| `SESSION_REQUIRED` | 400 | no key, plain mode off |
+| `SESSION_NOT_FOUND` | 404 | the header names no open session (closed, expired, never opened, another user's); an unknown cookie is ignored |
+| `SESSION_LIMIT` | 429 | an open (or a revival) beyond `LLM_AGENT_MAX_SESSIONS` / `LLM_AGENT_MAX_SESSIONS_PER_USER` |
+| `SESSION_BUSY` | 429 | the session's queue (`LLM_AGENT_SESSION_QUEUE`) is full |
+| `SESSION_STORE_UNAVAILABLE` | 503, `Retry-After: 5` | a revival asked for before the hub's providers are ready |
+| `SAP_CREDENTIALS_REQUIRED` | 401 | the session was opened with SAP credentials and this request carries none |
+| `SESSION_CREDENTIAL_MISMATCH` | 403 | another SAP login (or client) than the session was opened with |
+
+The two credential refusals use the shape of every SAP credential failure:
+`{ error: { type: <code>, message, destination } }`, the code in `error.type`.
+
+**Notices.** `x-clh-session-notice` on a response:
+
+- `revived`: the hub restarted and gave the session back from its record
+  (history window, session collections, destination). Its ABAP session is new:
+  debugger state and locks are lost. The old ABAP session is left to SAP's own
+  timeout.
+- `abap_session_renewed`: a new ABAP session replaced the held one (a changed
+  JWT, a destination switch); debugger state and locks are lost.
+
+**Destination switch.** A request naming another destination closes the old ABAP
+session and opens a new one; the chat history and session collections stay.
+
+**Agent MCP.** On `/mcp/agent/stream/http` the same session is reached through
+tools: `session_open({ destination? })` returns `{ session, ttlSeconds,
+destination }`, `execute_step({ session, task, destination? })` runs in it (a
+`destination` other than the session's is refused), and
+`session_close({ session })` closes it. Errors come back as tool errors with the
+codes above.
+
+### Plain sessions (cookie)
+
+This applies with `LLM_AGENT_PLAIN_API=true`, to requests that carry no
+long-session key. The service issues the session in an `HttpOnly` cookie,
+`clh_session`, on the first `/v1` response that has none, and keys every session by that value
 **together with the authenticated user**. Request headers do not name a
 session: `x-session-id` and `mcp-session-id` are not read.
 

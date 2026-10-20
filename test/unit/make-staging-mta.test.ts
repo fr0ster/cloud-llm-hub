@@ -22,6 +22,7 @@ modules:
     requires:
       - name: cloud-llm-hub-auth
       - name: cloud-llm-hub-ai-core
+      - name: cloud-llm-hub-hdi
   - name: cloud-llm-hub
     type: approuter.nodejs
     parameters:
@@ -50,6 +51,12 @@ resources:
   - name: cloud-llm-hub-ai-core
     parameters:
       service: aicore
+  - name: cloud-llm-hub-hdi
+    type: org.cloudfoundry.existing-service
+    active: false
+    optional: true
+    parameters:
+      service-name: "<your-hdi-service>"
 `;
 
 const PROD_XS_AUTH = JSON.stringify(
@@ -129,7 +136,22 @@ describe('make-staging-mta', () => {
       'cloud-llm-hub-staging-auth',
       'cloud-llm-hub-staging-analyst-consumer',
       'cloud-llm-hub-staging-ai-core',
+      'cloud-llm-hub-staging-hdi',
     ]);
+  });
+
+  test('renames the optional HDI resource and its requires entry', () => {
+    const doc = run(dir);
+    // biome-ignore lint/suspicious/noExplicitAny: dynamic
+    const hdi = doc.resources.find((r: any) => r.name.endsWith('-hdi'));
+    expect(hdi.name).toBe('cloud-llm-hub-staging-hdi');
+    expect(hdi.active).toBe(false);
+    // the type and the placeholder service name pass through unchanged
+    expect(hdi.type).toBe('org.cloudfoundry.existing-service');
+    expect(hdi.parameters).toEqual({ 'service-name': '<your-hdi-service>' });
+    expect(doc.modules[0].requires).toContainEqual({
+      name: 'cloud-llm-hub-staging-hdi',
+    });
   });
 
   test('renames requires references', () => {
@@ -138,6 +160,7 @@ describe('make-staging-mta', () => {
     expect(doc.modules[0].requires.map((r: any) => r.name)).toEqual([
       'cloud-llm-hub-staging-auth',
       'cloud-llm-hub-staging-ai-core',
+      'cloud-llm-hub-staging-hdi',
     ]);
     // srv-api is NOT renamed (no cloud-llm-hub token)
     // biome-ignore lint/suspicious/noExplicitAny: dynamic
@@ -197,6 +220,7 @@ describe('make-staging-mta', () => {
       './xs-security.generated.json',
       './xs-security-analyst-consumer.generated.json',
       undefined, // ai-core has no path
+      undefined, // hdi has no path
     ]);
   });
 

@@ -6,6 +6,58 @@ sap.ui.define([], function () {
    * Modeled after the reference llm_agent index.html fetch+pump pattern.
    */
   return {
+    _sessionOpening: null,
+
+    _ensureSession: function () {
+      var that = this;
+      if (this._sessionOpening) { return this._sessionOpening; }
+      if (localStorage.getItem("clh.session")) { return Promise.resolve(); }
+      this._sessionOpening = fetch(this._getBaseUrl() + "/v1/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-clh-session": "" },
+        body: JSON.stringify({})
+      }).then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) { throw new Error(data.error && data.error.message || "HTTP " + response.status); }
+          localStorage.setItem("clh.session", data.session);
+        });
+      }).finally(function () { that._sessionOpening = null; });
+      return this._sessionOpening;
+    },
+
+    closeSession: function () {
+      var that = this;
+      return Promise.resolve(this._sessionOpening).then(function () {
+        return fetch(that._getBaseUrl() + "/v1/session", {
+          method: "DELETE",
+          headers: { "x-clh-session": localStorage.getItem("clh.session") || "" }
+        });
+      }).then(function (response) {
+        if (!response.ok && response.status !== 404) { throw new Error("HTTP " + response.status); }
+        localStorage.removeItem("clh.session");
+        return that._ensureSession();
+      });
+    },
+
+    _sessionFetch: function (url, options) {
+      var that = this;
+      return this._ensureSession().then(function () {
+        var key = localStorage.getItem("clh.session");
+        function request() {
+          return fetch(url, Object.assign({}, options, { headers: Object.assign({}, options.headers, {
+            "x-clh-session": localStorage.getItem("clh.session")
+          }) }));
+        }
+        return request().then(function (response) {
+          if (response.status !== 404) { return response; }
+          return response.clone().json().catch(function () { return null; }).then(function (data) {
+            if (!data || !data.error || data.error.code !== "SESSION_NOT_FOUND") { return response; }
+            if (localStorage.getItem("clh.session") === key) { localStorage.removeItem("clh.session"); }
+            return that._ensureSession().then(request);
+          });
+        });
+      });
+    },
     /**
      * Stream a chat completion request.
      *
@@ -25,7 +77,7 @@ sap.ui.define([], function () {
       var url = this._getBaseUrl() + "/v1/chat/completions";
       var headers = { "Content-Type": "application/json" };
 
-      fetch(url, {
+      this._sessionFetch(url, {
         method: "POST",
         headers: headers,
         body: JSON.stringify({
@@ -154,7 +206,7 @@ sap.ui.define([], function () {
     chat: function (messages) {
       var url = this._getBaseUrl() + "/v1/chat/completions";
 
-      return fetch(url, {
+      return this._sessionFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: messages, stream: false })

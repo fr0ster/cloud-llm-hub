@@ -199,7 +199,7 @@ async function doGet(
   const res = makeRes();
   const handler = findRoute(routes, 'GET', '/rag/collections');
   if (!handler) throw new Error('GET /rag/collections route not found');
-  handler.handler(req, res.res);
+  await handler.handler(req, res.res);
   return res;
 }
 
@@ -328,7 +328,7 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
     expect(bobPhysId).not.toContain('bob');
   });
 
-  test("DELETE /v1/session for User A does NOT delete User B's same-raw-sessionId collection", () => {
+  test("DELETE /v1/session for User A does NOT delete User B's same-raw-sessionId collection", async () => {
     const rawSessionId = 's1';
 
     // Create session collections for both users with the same raw session id
@@ -368,9 +368,9 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
     registry.deleteSessionCollections('alice@example.com', rawSessionId);
 
     // Alice's collection is gone
-    expect(registry.getCollection(alicePhysId)).toBeNull();
+    expect(await registry.getCollection(alicePhysId)).toBeNull();
     // Bob's collection is UNTOUCHED
-    expect(registry.getCollection(bobPhysId)).not.toBeNull();
+    expect(await registry.getCollection(bobPhysId)).not.toBeNull();
   });
 });
 

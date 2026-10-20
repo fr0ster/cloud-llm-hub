@@ -65,94 +65,102 @@ describe('collection-ids helpers', () => {
 });
 
 describe('resolveByName', () => {
-  test('read returns own private if present, else undefined (no session)', () => {
+  test('read returns own private if present, else undefined (no session)', async () => {
     const reg = stubRegistry({ [`result__u_${aliceKey}`]: { owner: 'alice' } });
-    expect(resolveByName(reg, 'result', 'alice', undefined, false)).toBe(
+    expect(await resolveByName(reg, 'result', 'alice', undefined, false)).toBe(
       `result__u_${aliceKey}`,
     );
     expect(
-      resolveByName(reg, 'missing', 'alice', undefined, false),
+      await resolveByName(reg, 'missing', 'alice', undefined, false),
     ).toBeUndefined();
   });
-  test('write returns own private (create-if-absent, no session)', () => {
+  test('write returns own private (create-if-absent, no session)', async () => {
     const reg = stubRegistry({});
-    expect(resolveByName(reg, 'result', 'alice', undefined, true)).toBe(
+    expect(await resolveByName(reg, 'result', 'alice', undefined, true)).toBe(
       `result__u_${aliceKey}`,
     );
   });
-  test('two users never collide', () => {
+  test('two users never collide', async () => {
     const reg = stubRegistry({});
-    expect(resolveByName(reg, 'result', 'alice', undefined, true)).not.toBe(
-      resolveByName(reg, 'result', 'bob', undefined, true),
-    );
+    expect(
+      await resolveByName(reg, 'result', 'alice', undefined, true),
+    ).not.toBe(await resolveByName(reg, 'result', 'bob', undefined, true));
   });
-  test('rejects __ in name', () => {
-    expect(() =>
+  test('rejects __ in name', async () => {
+    await expect(
       resolveByName(stubRegistry({}), 'a__b', 'alice', undefined, true),
-    ).toThrow();
+    ).rejects.toThrow();
   });
-  test('anonymous gets no private namespace (read or write)', () => {
+  test('anonymous gets no private namespace (read or write)', async () => {
     const reg = stubRegistry({});
     expect(
-      resolveByName(reg, 'result', 'anonymous', undefined, true),
+      await resolveByName(reg, 'result', 'anonymous', undefined, true),
     ).toBeUndefined();
-    expect(resolveByName(reg, 'result', '', undefined, false)).toBeUndefined();
+    expect(
+      await resolveByName(reg, 'result', '', undefined, false),
+    ).toBeUndefined();
   });
-  test('session shadows user on read', () => {
+  test('session shadows user on read', async () => {
     const reg = stubRegistry({
       [`result__u_${aliceKey}`]: { owner: 'alice' },
       [`result__s_${sessKey}`]: { owner: 'alice' },
     });
-    expect(resolveByName(reg, 'result', 'alice', 'sess1', false)).toBe(
+    expect(await resolveByName(reg, 'result', 'alice', 'sess1', false)).toBe(
       `result__s_${sessKey}`,
     );
   });
-  test('session read falls through to user when no session collection yet', () => {
+  test('session read falls through to user when no session collection yet', async () => {
     const reg = stubRegistry({ [`result__u_${aliceKey}`]: { owner: 'alice' } });
-    expect(resolveByName(reg, 'result', 'alice', 'sess1', false)).toBe(
+    expect(await resolveByName(reg, 'result', 'alice', 'sess1', false)).toBe(
       `result__u_${aliceKey}`,
     );
   });
-  test('write in a session defaults to the session scope', () => {
+  test('write in a session defaults to the session scope', async () => {
     const reg = stubRegistry({});
-    expect(resolveByName(reg, 'result', 'alice', 'sess1', true)).toBe(
+    expect(await resolveByName(reg, 'result', 'alice', 'sess1', true)).toBe(
       `result__s_${sessKey}`,
     );
-    expect(resolveByName(reg, 'result', 'alice', undefined, true)).toBe(
+    expect(await resolveByName(reg, 'result', 'alice', undefined, true)).toBe(
       `result__u_${aliceKey}`,
     );
   });
 });
 
 describe('resolveRouteId', () => {
-  test('physical id (has __) -> exact lookup', () => {
+  test('physical id (has __) -> exact lookup', async () => {
     const reg = stubRegistry({ [`result__u_${aliceKey}`]: { owner: 'alice' } });
     expect(
-      resolveRouteId(reg, `result__u_${aliceKey}`, 'alice', undefined, false),
+      await resolveRouteId(
+        reg,
+        `result__u_${aliceKey}`,
+        'alice',
+        undefined,
+        false,
+      ),
     ).toBe(`result__u_${aliceKey}`);
   });
-  test('bare id (no __) -> resolveByName', () => {
+  test('bare id (no __) -> resolveByName', async () => {
     const reg = stubRegistry({});
-    expect(resolveRouteId(reg, 'uploads', 'alice', undefined, true)).toBe(
+    expect(await resolveRouteId(reg, 'uploads', 'alice', undefined, true)).toBe(
       `uploads__u_${aliceKey}`,
     );
   });
-  test('physical id owned by another user -> undefined (no cross-user leak)', () => {
+  test('physical id owned by another user -> undefined (no cross-user leak)', async () => {
     const reg = stubRegistry({ result__u_OTHER: { owner: 'bob' } });
     expect(
-      resolveRouteId(reg, 'result__u_OTHER', 'alice', undefined, false),
+      await resolveRouteId(reg, 'result__u_OTHER', 'alice', undefined, false),
     ).toBeUndefined();
   });
-  test('session physical id from a DIFFERENT session of the same user -> undefined', () => {
+  test('session physical id from a DIFFERENT session of the same user -> undefined', async () => {
     const otherSessId = sessionCollectionId('result', 'alice', 'sessOLD'); // owned by alice, session sessOLD
     const reg = stubRegistry({
       [otherSessId]: { owner: 'alice', scope: 'session', sessionId: 'sessOLD' },
     });
     expect(
-      resolveRouteId(reg, otherSessId, 'alice', 'sess1', false),
+      await resolveRouteId(reg, otherSessId, 'alice', 'sess1', false),
     ).toBeUndefined(); // current session is sess1
-    expect(resolveRouteId(reg, otherSessId, 'alice', 'sessOLD', false)).toBe(
-      otherSessId,
-    ); // matching session OK
+    expect(
+      await resolveRouteId(reg, otherSessId, 'alice', 'sessOLD', false),
+    ).toBe(otherSessId); // matching session OK
   });
 });
