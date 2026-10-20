@@ -27,6 +27,7 @@ import {
   type CallOptions,
   ClineClientAdapter,
   FallbackLlmCallStrategy,
+  type ILlm,
   type IMcpClient,
   InMemoryRag,
   type IQueryEmbedder,
@@ -2575,7 +2576,15 @@ export async function buildAgentForDestination(
   // just which tool NAMES ran (a name match alone can't tell an activated
   // create from an inactive one).
   const recMcp = new RecordingMcpClient(mcpAdapter);
-  const executorWorker = await buildExecutorWorker(recMcp, toolsRag, config);
+  let executor: SmartAgent | undefined;
+  const executorWorker = await buildExecutorWorker(
+    recMcp,
+    toolsRag,
+    config,
+    (agent) => {
+      executor = agent;
+    },
+  );
 
   // Same shared main LLM the rest of the destination agent uses — no extra
   // provider client stood up just for the critic layer.
@@ -2620,8 +2629,7 @@ export async function buildAgentForDestination(
   // Expose recMcp on the handle so channel handlers can call
   // `recMcp.dropRequest(traceId)` in their `finally` block — nobody else
   // drops it, so the per-trace bucket would otherwise leak.
-  (handle as SmartAgentHandle & { recMcp?: RecordingMcpClient }).recMcp =
-    recMcp;
+  Object.assign(handle, { recMcp, executor, criticLlm });
 
   // Diagnostic: confirm structured pipeline is active
   // biome-ignore lint/suspicious/noExplicitAny: diagnostic access to private fields
@@ -2642,6 +2650,16 @@ export async function buildAgentForDestination(
 }
 
 /**
+ * A destination handle as `execute_step` reads it: the executor and what its
+ * honesty check needs, when the destination has one (the LLM-only agent has not).
+ */
+export type ExecutorAgentHandle = SmartAgentHandle &
+  (
+    | { executor?: undefined }
+    | { executor: SmartAgent; recMcp: RecordingMcpClient; criticLlm: ILlm }
+  );
+
+/**
  * Build the coordinator-less executor worker — the SAME tool-loop SmartAgent
  * configuration as `buildAgentForDestination` (via the shared
  * `configureDestinationAgentBuilder` helper), MINUS any coordinator. The
@@ -2654,6 +2672,7 @@ export async function buildExecutorWorker(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
+  exposeExecutor?: (agent: SmartAgent) => void,
 ): Promise<ISubAgent> {
   const builder = await configureDestinationAgentBuilder(
     mcpAdapter,
@@ -2662,10 +2681,9 @@ export async function buildExecutorWorker(
   );
 
   const handle = await builder.build();
-  return new SmartAgentSubAgent(
-    'executor',
-    withConversationHistory(handle.agent),
-  );
+  const executor = withConversationHistory(handle.agent);
+  exposeExecutor?.(executor);
+  return new SmartAgentSubAgent('executor', executor);
 }
 
 /**
