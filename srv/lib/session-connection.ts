@@ -86,14 +86,13 @@ export async function acquireSessionConnection(
   res: Response,
   destination: string,
 ): Promise<SessionConnectionResult> {
-  const credential = readRequestCredential(req);
-  // A destination switch: the old ABAP session goes, the conversation stays.
-  if (s.connection && s.destination !== destination) {
-    await dropSessionConnection(s);
-  }
-
   let notice: SessionNotice | undefined;
-  if (s.connection) {
+  // On the same destination the credential must be the one bound. A
+  // destination switch binds anew: another system may need another user.
+  if (s.connection && s.destination === destination) {
+    const credential = readRequestCredential(req, {
+      userDependent: s.binding?.userDependent,
+    });
     switch (compare(s.binding ?? { kind: 'none' }, credential)) {
       case 'same':
         return {
@@ -118,17 +117,20 @@ export async function acquireSessionConnection(
           destination,
         );
       case 'renew':
-        await dropSessionConnection(s);
         notice = 'abap_session_renewed';
         break;
     }
   }
 
+  // The new connection first: a request refused here (missing credentials,
+  // failed connect) leaves the held connection, binding and destination as
+  // they were. Only once it stands does the old ABAP session go.
   const established = await establishRequestConnection(req, res, destination);
   if (established.handled || !established.connection) return { handled: true };
+  if (s.connection) await dropSessionConnection(s);
   s.connection = established.connection;
   s.dumpScope = established.dumpScope;
-  s.binding = credential;
+  s.binding = established.credential ?? readRequestCredential(req);
   s.destination = destination;
   if (notice) res.setHeader(SESSION_NOTICE_HEADER, notice);
   return {

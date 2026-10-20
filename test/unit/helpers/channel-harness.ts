@@ -220,6 +220,7 @@ export function requestConnectionMock() {
         handled: false,
         connection: { id: 'conn' },
         dumpScope: undefined,
+        credential: { kind: 'basic', sapLogin: 'ALICE' },
       };
     },
     safeStop: async () => {

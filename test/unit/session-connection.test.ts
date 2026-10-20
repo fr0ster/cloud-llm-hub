@@ -33,17 +33,47 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 }));
 
 let connections = 0;
+/** Destinations that authenticate with the user JWT, as PrincipalPropagation does. */
+const USER_DEPENDENT = new Set(['PP']);
+/** Destinations that require the caller's SAP login, as on-premise basic ones do. */
+const NEEDS_LOGIN = new Set(['ONPREM']);
 const mockEstablish = jest.fn(
-  async (_req: unknown, _res: unknown, destination: string | undefined) => ({
-    handled: false,
-    connection: { id: `conn-${++connections}`, destination },
-    dumpScope: undefined,
-  }),
+  async (
+    req: Request,
+    res: { writeHead(c: number): unknown; end(b: string): unknown },
+    destination: string | undefined,
+  ): Promise<Record<string, unknown>> => {
+    const { readRequestCredential } = jest.requireActual(
+      '../../srv/lib/request-connection',
+    );
+    const credential = readRequestCredential(req, {
+      userDependent: USER_DEPENDENT.has(destination ?? ''),
+    });
+    if (NEEDS_LOGIN.has(destination ?? '') && credential.kind !== 'basic') {
+      res.writeHead(401);
+      res.end(
+        JSON.stringify({
+          error: {
+            type: 'SAP_CREDENTIALS_REQUIRED',
+            message: 'needs login',
+            destination,
+          },
+        }),
+      );
+      return { handled: true };
+    }
+    return {
+      handled: false,
+      connection: { id: `conn-${++connections}`, destination },
+      dumpScope: undefined,
+      credential,
+    };
+  },
 );
 const mockSafeStop = jest.fn(async (_c?: unknown) => {});
 jest.mock('../../srv/lib/request-connection', () => ({
   ...jest.requireActual('../../srv/lib/request-connection'),
-  establishRequestConnection: (req: unknown, res: unknown, d?: string) =>
+  establishRequestConnection: (req: never, res: never, d?: string) =>
     mockEstablish(req, res, d),
   safeStop: (c?: unknown) => mockSafeStop(c),
 }));
@@ -239,13 +269,92 @@ describe('acquireSessionConnection', () => {
     expect(s.destination).toBe('OTHER');
   });
 
+  it('a switch to a destination the request has no credentials for → 401, the held connection untouched', async () => {
+    const s = session();
+    await acquireSessionConnection(s, jwt('t1'), res(), 'DEST');
+    const held = s.connection;
+    const binding = s.binding;
+    const out = makeRes();
+    const r = await acquireSessionConnection(
+      s,
+      jwt('t1'),
+      out as unknown as Response,
+      'ONPREM',
+    );
+    expect(r).toEqual({ handled: true });
+    expect(out.statusCode).toBe(401);
+    expect(out.body).toMatchObject({
+      error: { type: 'SAP_CREDENTIALS_REQUIRED', destination: 'ONPREM' },
+    });
+    expect(mockSafeStop).not.toHaveBeenCalled();
+    expect(s.connection).toBe(held);
+    expect(s.binding).toBe(binding);
+    expect(s.destination).toBe('DEST');
+  });
+
+  it('a switch with another SAP login binds the new login and stops the old connection', async () => {
+    const s = session();
+    await acquireSessionConnection(s, basic(), res(), 'DEST');
+    const old = s.connection;
+    const r = await acquireSessionConnection(s, basic('BOB'), res(), 'ONPREM');
+    expect(r).toMatchObject({
+      handled: false,
+      connection: { id: 'conn-2', destination: 'ONPREM' },
+    });
+    expect(mockSafeStop).toHaveBeenCalledTimes(1);
+    expect(mockSafeStop).toHaveBeenCalledWith(old);
+    expect(s.binding).toEqual({ kind: 'basic', sapLogin: 'BOB' });
+    expect(s.destination).toBe('ONPREM');
+  });
+
+  it('a user-dependent destination binds the JWT despite SAP headers, and a new token renews', async () => {
+    const s = session();
+    const withHeaders = (token: string) => {
+      const req = basic();
+      req.headers.authorization = `Bearer ${token}`;
+      return req;
+    };
+    await acquireSessionConnection(s, withHeaders('A'), res(), 'PP');
+    const old = s.connection;
+    expect(s.binding).toEqual({
+      kind: 'jwt',
+      jwtUser: 'alice',
+      jwt: 'A',
+      userDependent: true,
+    });
+
+    const same = await acquireSessionConnection(
+      s,
+      withHeaders('A'),
+      res(),
+      'PP',
+    );
+    expect(same).toMatchObject({ handled: false, connection: old });
+
+    const r = await acquireSessionConnection(s, withHeaders('B'), res(), 'PP');
+    expect(r).toMatchObject({
+      handled: false,
+      notice: 'abap_session_renewed',
+    });
+    expect(mockSafeStop).toHaveBeenCalledTimes(1);
+    expect(mockSafeStop).toHaveBeenCalledWith(old);
+    expect(s.binding).toMatchObject({ kind: 'jwt', jwt: 'B' });
+  });
+
+  it('a failed renew keeps the held connection', async () => {
+    const s = session();
+    await acquireSessionConnection(s, jwt('t1'), res(), 'DEST');
+    const held = s.connection;
+    mockEstablish.mockImplementationOnce(async () => ({ handled: true }));
+    const r = await acquireSessionConnection(s, jwt('t2'), res(), 'DEST');
+    expect(r).toEqual({ handled: true });
+    expect(mockSafeStop).not.toHaveBeenCalled();
+    expect(s.connection).toBe(held);
+  });
+
   it('a failed establish leaves the session without a connection', async () => {
     const s = session();
-    mockEstablish.mockImplementationOnce(async () => ({
-      handled: true,
-      connection: undefined as never,
-      dumpScope: undefined,
-    }));
+    mockEstablish.mockImplementationOnce(async () => ({ handled: true }));
     const r = await acquireSessionConnection(s, basic(), res(), 'DEST');
     expect(r).toEqual({ handled: true });
     expect(s.connection).toBeUndefined();

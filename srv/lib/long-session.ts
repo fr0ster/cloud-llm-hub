@@ -21,6 +21,8 @@ export interface CredentialBinding {
   sapClient?: string;
   jwtUser?: string;
   jwt?: string;
+  /** The destination authenticates with the user JWT: SAP basic headers are ignored. */
+  userDependent?: boolean;
 }
 
 export interface LongSession {

@@ -159,6 +159,8 @@ describe('establishRequestConnection', () => {
     expect(passedConfig.username).toBe('MCPUSER');
     expect(passedConfig.password).toBe('secret');
     expect(mockConnect).toHaveBeenCalledTimes(1);
+    // What a long session binds: the login, never the password.
+    expect(result.credential).toEqual({ kind: 'basic', sapLogin: 'MCPUSER' });
   });
 
   test('cloud destination without credentials → uses resolved auth (no 401)', async () => {
@@ -241,6 +243,14 @@ test.each([false, true])(
         }),
       }),
     );
+    // The connection runs on the JWT, so a long session binds the JWT even
+    // when SAP basic headers came along: a new token must renew it.
+    expect(result.credential).toEqual({
+      kind: 'jwt',
+      jwtUser: 'anonymous',
+      jwt: 'user-jwt',
+      userDependent: true,
+    });
   },
 );
 

@@ -65,6 +65,8 @@ export interface EstablishResult {
   /** Principal scope for GetDumpSection — the caller must thread it into
    * runWithRequestConnection so the tool has a principal on this (chat) path too. */
   dumpScope?: DumpScope;
+  /** The credential the connection authenticated with, for a long session to bind. */
+  credential?: CredentialBinding;
 }
 
 /** The caller's SAP credential headers, as every connection reads them. */
@@ -84,25 +86,35 @@ function credentialHeaders(req: Request): {
 }
 
 /**
- * The credential this request carries, as a long session binds it: SAP basic
- * when both a login and a password are sent (the same rule as the basic-auth
- * override below), else the user JWT, else none. The JWT's user is the hub
- * user the request is authenticated as. The password is never kept.
+ * The credential this request authenticates with, as a long session binds
+ * it: SAP basic when both a login and a password are sent (the same rule as
+ * the basic-auth override below) and the destination does not authenticate
+ * with the user JWT (`userDependent`), else the user JWT, else none. The JWT's
+ * user is the hub user the request is authenticated as. The password is never
+ * kept.
  */
-export function readRequestCredential(req: Request): CredentialBinding {
+export function readRequestCredential(
+  req: Request,
+  opts: { userDependent?: boolean } = {},
+): CredentialBinding {
   const { sapLogin, sapPassword, sapClient } = credentialHeaders(req);
-  const client = sapClient ? { sapClient } : {};
-  if (sapLogin && sapPassword) return { kind: 'basic', sapLogin, ...client };
+  const scope = {
+    ...(sapClient ? { sapClient } : {}),
+    ...(opts.userDependent ? { userDependent: true } : {}),
+  };
+  if (sapLogin && sapPassword && !opts.userDependent) {
+    return { kind: 'basic', sapLogin, ...scope };
+  }
   const jwt = bearerToken(req.headers.authorization);
   if (jwt) {
     return {
       kind: 'jwt',
       jwtUser: cds.context?.user?.id ?? 'anonymous',
       jwt,
-      ...client,
+      ...scope,
     };
   }
-  return { kind: 'none', ...client };
+  return { kind: 'none', ...scope };
 }
 
 /**
@@ -232,7 +244,15 @@ export async function establishRequestConnection(
       jwtSub: null,
     });
 
-    return { connection, handled: false, dumpScope };
+    // The credential the connection actually authenticated with: SAP headers
+    // ignored above for user-dependent auth are not part of it.
+    const credential = readRequestCredential(req, {
+      userDependent: userDependentAuthenticationTypes.has(
+        resolved.authenticationType ?? '',
+      ),
+    });
+
+    return { connection, handled: false, dumpScope, credential };
   } catch (connErr) {
     const err = connErr instanceof Error ? connErr : new Error(String(connErr));
     const errWithCode = err as CredentialError;
