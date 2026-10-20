@@ -302,7 +302,7 @@
             <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
             <button id="clear-btn" onclick="clearChat()">CLR</button>
             <button id="export-btn" onclick="exportSessionLog()" title="Export session log as markdown">LOG</button>
-            <button id="logout-btn" onclick="try{localStorage.clear();sessionStorage.clear()}catch{};window.location.replace('/logout')" title="Sign out / switch destination">LOGOUT</button>
+            <button id="logout-btn" onclick="logout()" title="Sign out / switch destination">LOGOUT</button>
         </div>
         <div id="attached-files" style="display:none;padding:4px 10px;font-size:12px;color:#888;background:#111;border:1px solid #222;border-radius:3px;margin-bottom:5px"></div>
     </div>
@@ -325,9 +325,77 @@
         const destinationMeta = {};
         // Latest destination list from the server, used to populate the login gate.
         let gateDestinations = [];
-        // Session ID is now managed server-side via an HttpOnly cookie (clh_session).
-        // The browser sends the cookie automatically on every same-origin request,
-        // so the session survives page reloads without JS generating a new random id.
+        let sessionKey = localStorage.getItem('clh.session') || '';
+        let sessionOpening = null;
+
+        function sessionHeaders() {
+            return { 'x-clh-session': sessionKey, ...getSapCredHeaders() };
+        }
+
+        async function ensureSession() {
+            if (sessionOpening) return sessionOpening;
+            if (sessionKey) return;
+            sessionOpening = (async () => {
+                const response = await fetch('/v1/session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...sessionHeaders() },
+                    body: JSON.stringify({ destination: connectedDestination || undefined })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error?.message || 'HTTP ' + response.status);
+                sessionKey = data.session;
+                localStorage.setItem('clh.session', sessionKey);
+            })();
+            try { await sessionOpening; } finally { sessionOpening = null; }
+        }
+
+        async function closeSession() {
+            if (sessionOpening) await sessionOpening;
+            if (!sessionKey) return;
+            const response = await fetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
+            if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
+            sessionKey = '';
+            localStorage.removeItem('clh.session');
+        }
+
+        function showSessionNotice(message) {
+            const notice = document.createElement('div');
+            notice.className = 'message';
+            notice.textContent = message;
+            chatWindow.appendChild(notice);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        async function sessionFetch(url, opts = {}) {
+            await ensureSession();
+            const request = () => fetch(url, { ...opts, headers: { ...opts.headers, ...sessionHeaders() } });
+            let response = await request();
+            if (response.status === 404) {
+                const data = await response.clone().json().catch(() => null);
+                if (data?.error?.code === 'SESSION_NOT_FOUND') {
+                    sessionKey = '';
+                    localStorage.removeItem('clh.session');
+                    await ensureSession();
+                    showSessionNotice('Сесію перезапущено');
+                    response = await request();
+                }
+            }
+            const notice = response.headers.get('x-clh-session-notice');
+            if (notice === 'revived') showSessionNotice('Сесію відновлено після перезапуску сервісу');
+            if (notice === 'abap_session_renewed') showSessionNotice("З'єднання з SAP оновлено: стан відладки та локи втрачено");
+            return response;
+        }
+
+        async function logout() {
+            try { await closeSession(); }
+            catch (error) { showSessionNotice(error.message); return; }
+            try { localStorage.clear(); sessionStorage.clear(); } catch {}
+            window.location.replace('/logout');
+        }
+
+        window.addEventListener('pagehide', () => {
+            navigator.sendBeacon('/v1/session/close');
+        });
 
         // Input history (Up/Down arrow navigation like terminal)
         const inputHistory = [];
@@ -427,7 +495,7 @@
             return 'Your platform session has expired. Reload the page and sign in again.';
         }
 
-        function submitLoginGate() {
+        async function submitLoginGate() {
             const dest = document.getElementById('gate-dest').value;
             const login = document.getElementById('sap-login').value.trim();
             const password = document.getElementById('sap-password').value;
@@ -441,6 +509,7 @@
             if (client && !/^\d{3}$/.test(client)) return fail('SAP client must be 3 digits, e.g. 100.');
             err.style.display = 'none';
 
+            try { await closeSession(); } catch (error) { return fail(error.message); }
             sapCredsLogin = sso ? '' : login;
             sapCredsPassword = sso ? '' : password;
             if (sso) {
@@ -469,6 +538,7 @@
                     );
                 } catch (e) { /* non-fatal: unsupported browser/context */ }
             }
+            try { await ensureSession(); } catch (error) { return fail(error.message); }
             loginGateDone = true;
             hideLoginGate();
             unlockInput('login-gate');
@@ -548,7 +618,7 @@
         async function getRagTools() {
             if (ragToolsCache) return ragToolsCache;
             if (!ragToolsPromise) {
-                ragToolsPromise = fetch('/v1/rag/tools')
+                ragToolsPromise = ragFetch('/v1/rag/tools')
                     .then((r) => (r.ok ? r.json() : { tools: [] }))
                     .then((d) => { ragToolsCache = Array.isArray(d.tools) ? d.tools : []; return ragToolsCache; })
                     .catch(() => { ragToolsCache = []; return ragToolsCache; });
@@ -1349,9 +1419,9 @@
             selectEl.disabled = false;
         }
 
-        function clearChat() {
-            // Clear server-side session history — clh_session cookie is sent automatically
-            fetch('/v1/session', { method: 'DELETE' }).catch(() => {});
+        async function clearChat() {
+            try { await closeSession(); await ensureSession(); }
+            catch (error) { showSessionNotice(error.message); return; }
             Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];
             chatWindow.innerHTML = '';
@@ -1508,8 +1578,6 @@
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally.
-                // Session is tracked via the clh_session HttpOnly cookie (set by server);
-                // the browser names no session of its own.
                 const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders() };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
@@ -1519,7 +1587,7 @@
                     reqBody.rag_collections = activeRagCollections;
                 }
 
-                const response = await fetch('/v1/chat/completions', {
+                const response = await sessionFetch('/v1/chat/completions', {
                     method: 'POST',
                     headers,
                     body: JSON.stringify(reqBody)
@@ -1876,8 +1944,7 @@
         let ragCurrentCollection = null;
 
         function ragFetch(url, opts = {}) {
-            // clh_session cookie is sent automatically by the browser on same-origin requests.
-            return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
+            return sessionFetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
         }
 
         async function ensurePresets() {

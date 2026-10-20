@@ -120,12 +120,9 @@ sap.ui.define([
         this._abortStream = null;
         oModel.setProperty("/busy", false);
       }
-      // The clh_session cookie is sent automatically; the server issues a new
-      // session on the next request once this one is gone.
-      fetch(StreamClient._getBaseUrl() + "/v1/session", {
-        method: "DELETE",
-        credentials: "same-origin"
-      }).catch(function () { /* best effort */ });
+      StreamClient.closeSession().catch(function (err) {
+        MessageToast.show(err.message);
+      });
       this._renderChat();
     },
 
