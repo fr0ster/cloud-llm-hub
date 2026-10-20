@@ -31,11 +31,13 @@ type Turn = {
   createdAt: string;
 };
 const listTurns = jest.fn(async (_owner: string): Promise<Turn[]> => []);
+const forgetOwner = jest.fn(async () => true);
 const setSessionDestination = jest.fn();
 let providersReady = true;
 jest.mock('../../srv/agent-manager', () => ({
+  getCollectionRegistry: () => ({ deleteSessionCollections: async () => {} }),
   isProvidersReady: () => providersReady,
-  getSharedHistoryRag: () => ({ listTurns, forgetOwner: async () => {} }),
+  getSharedHistoryRag: () => ({ listTurns, forgetOwner }),
   setSessionDestination: (u: string, s: string, d: string) =>
     setSessionDestination(u, s, d),
 }));
@@ -110,6 +112,7 @@ async function open(userId: string, destination?: string) {
 beforeEach(() => {
   now = 1_000_000;
   jest.spyOn(Date, 'now').mockImplementation(() => now);
+  forgetOwner.mockReset().mockResolvedValue(true);
   deleteSession.mockClear();
   dropSessionConnection.mockClear();
   listTurns.mockReset().mockResolvedValue([]);
@@ -174,6 +177,41 @@ describe('close', () => {
     expect(records.rows.size).toBe(0);
   });
 
+  it('history delete failure keeps the closed record', async () => {
+    const s = await open('alice');
+    forgetOwner.mockResolvedValueOnce(false);
+    await expect(
+      longSessions().close('alice', s.key, 'explicit'),
+    ).rejects.toThrow();
+    expect(records.store.delete).not.toHaveBeenCalled();
+    expect(records.rows.get(records.id('alice', s.key))).toMatchObject({
+      closedAt: now,
+    });
+  });
+
+  it('failed record deletion cannot revive after restart and sweep retries', async () => {
+    const s = await open('alice');
+    records.store.delete.mockRejectedValueOnce(new Error('down'));
+    await expect(
+      longSessions().close('alice', s.key, 'explicit'),
+    ).rejects.toThrow('down');
+    expect(records.rows.get(records.id('alice', s.key))).toMatchObject({
+      closedAt: now,
+    });
+    setLongSessionsForTest(
+      new LongSessionRegistry(
+        { ttlMs: TTL, maxSessions: 10, maxPerUser: 2, queueLength: 1 },
+        lifecycleHooks(records.store),
+        () => now,
+      ),
+    );
+    providersReady = false;
+    expect(await resolveSession('alice', s.key)).toBeUndefined();
+    providersReady = true;
+    await sweepSessions();
+    expect(records.rows.size).toBe(0);
+  });
+
   it('ttl close does the same', async () => {
     const s = await open('alice');
     now += TTL + 1;
@@ -195,13 +233,16 @@ describe('close', () => {
     clearSession(s.key, 'alice');
   });
 
-  it('a failing state delete still removes the record and rejects the close', async () => {
+  it('a failing state delete keeps the closed record and rejects the close', async () => {
     const s = await open('alice');
     deleteSession.mockRejectedValueOnce(new Error('collections down'));
     await expect(
       longSessions().close('alice', s.key, 'explicit'),
     ).rejects.toThrow('collections down');
-    expect(records.store.delete).toHaveBeenCalledWith('alice', s.key);
+    expect(records.store.delete).not.toHaveBeenCalled();
+    expect(records.rows.get(records.id('alice', s.key))).toMatchObject({
+      closedAt: now,
+    });
     expect(longSessions().has('alice', s.key)).toBe(false);
   });
 });

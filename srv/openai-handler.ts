@@ -437,7 +437,7 @@ async function serveChatCompletions(
 
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(userId, sessionId);
-  const destAfter = requestedDestination || destBefore;
+  const destAfter = requestedDestination || s?.destination || destBefore;
   let requestConnection:
     | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
     | undefined;

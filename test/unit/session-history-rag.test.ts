@@ -174,3 +174,46 @@ describe('listTurns', () => {
     await expect(rag.listTurns(ALICE)).resolves.toEqual([]);
   });
 });
+
+it('close waits for a late turn write before deleting its owner', async () => {
+  const inner = fakeInner();
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const writer = inner.writer();
+  const upsert = writer.upsertRaw;
+  writer.upsertRaw = async (...args) => {
+    await wait;
+    return upsert(...args);
+  };
+  inner.writer = () => writer;
+  const backend = {
+    ...inner,
+    deleteWhere: async () => {
+      inner.written.length = 0;
+      return { ok: true as const, value: 0 };
+    },
+  };
+  const rag = new SessionHistoryRag(backend as never, () => ALICE);
+  const writing = rag.recordTurn({
+    owner: ALICE,
+    userText: 'hi',
+    assistantText: 'hello',
+  });
+  const closing = rag.forgetOwner(ALICE);
+  release();
+  await Promise.all([writing, closing]);
+  expect(inner.written).toHaveLength(0);
+});
+
+it('forget reports a failed persistent delete without throwing', async () => {
+  const inner = {
+    ...fakeInner(),
+    deleteWhere: async () => {
+      throw new Error('down');
+    },
+  };
+  const rag = new SessionHistoryRag(inner as never, () => ALICE);
+  expect(await rag.forgetOwner(ALICE)).toBe(false);
+});

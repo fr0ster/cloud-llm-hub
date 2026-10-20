@@ -44,6 +44,24 @@ export function sessionRecordStoreContract(
     expect(await store.get(r.userId, r.key)).toEqual(r);
   });
 
+  it('round-trips a closed marker', async () => {
+    const r = { ...record(), closedAt: T0 + 1 };
+    await store.put(r);
+    expect(await store.get(r.userId, r.key)).toEqual(r);
+  });
+
+  it('writes a destination change within the touch window', async () => {
+    const r = record({ destination: 'A' });
+    await store.put(r);
+    const write = spyOnWrite(store);
+    await store.touch({ ...r, destination: 'B', lastActivity: T0 + 1000 });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect((await store.get(r.userId, r.key))?.destination).toBe('B');
+    await store.touch({ ...r, destination: 'B', lastActivity: T0 + 2000 });
+    expect(write).toHaveBeenCalledTimes(1);
+    write.mockRestore();
+  });
+
   it('get for another user → undefined', async () => {
     const r = record();
     await store.put(r);

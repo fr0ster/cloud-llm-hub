@@ -539,6 +539,30 @@ describe('a long session', () => {
     return { res, done };
   }
 
+  it('keeps destination B after a header switches away from A', async () => {
+    configure();
+    s.destination = 'A';
+    const send = async (destination?: string) => {
+      const req = fakeReq(body()) as unknown as Request & {
+        longSession?: LongSession;
+      };
+      req.longSession = s;
+      if (destination) req.headers['x-sap-destination'] = destination;
+      else delete req.headers['x-sap-destination'];
+      await handleAnthropicMessages(req, fakeRes() as unknown as Response);
+    };
+    await send('A');
+    await send('B');
+    await send();
+    expect(harness.establishCalls).toEqual(['A', 'B']);
+    expect(s.destination).toBe('B');
+    expect(harness.destinationSets).toContainEqual({
+      userId: 'alice',
+      sessionId: s.key,
+      destination: 'B',
+    });
+  });
+
   it('a long-session request leaves its connection open after the response — success', async () => {
     configure();
     const { res, done } = callInSession(body());

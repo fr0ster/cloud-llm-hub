@@ -148,7 +148,9 @@ async function serveMessages(
   const sessionId = sessionIdOf(req);
   const userId = cds.context?.user?.id ?? 'anonymous';
   const destination =
-    requestedDestination || getCurrentDestination(userId, sessionId);
+    requestedDestination ||
+    s?.destination ||
+    getCurrentDestination(userId, sessionId);
 
   // A closed destination refuses before anything is built for it. Connecting
   // first would CSRF-fetch against the system that is down and answer

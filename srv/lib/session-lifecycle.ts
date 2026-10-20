@@ -19,6 +19,7 @@
  */
 import cds from '@sap/cds';
 import {
+  getCollectionRegistry,
   getSharedHistoryRag,
   isProvidersReady,
   setSessionDestination,
@@ -116,13 +117,9 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
       await dropSessionConnection(s);
       if (reason === 'shutdown') return;
       closed.set(slot(s.userId, s.key), s.lastActivity + longSessions().ttlMs);
-      // Both run whatever the other does; the first failure is the close's.
-      const results = await Promise.allSettled([
-        deleteSession(s.userId, s.key),
-        records?.delete(s.userId, s.key),
-      ]);
-      const failed = results.find((r) => r.status === 'rejected');
-      if (failed) throw failed.reason;
+      await markClosed(recordOf(s));
+      await cleanupSession(s.userId, s.key);
+      await records?.delete(s.userId, s.key);
     },
     onTouch(s) {
       void records?.touch(recordOf(s)).catch((err) =>
@@ -206,19 +203,48 @@ export async function discardSession(
   key: string,
 ): Promise<void> {
   closed.set(slot(userId, key), Date.now() + longSessions().ttlMs);
-  const results = await Promise.allSettled([
-    deleteSession(userId, key),
-    records?.delete(userId, key),
-  ]);
-  const failed = results.find((r) => r.status === 'rejected');
-  if (failed) {
+  try {
+    const record = await records?.get(userId, key);
+    if (record) await markClosed(record);
+    await cleanupSession(userId, key);
+    await records?.delete(userId, key);
+  } catch (err) {
     log().warn('expired session cleanup failed', {
       key,
-      error: errorText(failed.reason),
+      error: errorText(err),
     });
     return;
   }
   log().info('expired session deleted', { key });
+}
+
+async function markClosed(record: SessionRecord): Promise<void> {
+  try {
+    await records?.put({ ...record, closedAt: record.closedAt ?? Date.now() });
+  } catch (err) {
+    log().warn('session close marker write failed', {
+      key: record.key,
+      error: errorText(err),
+    });
+  }
+}
+
+async function cleanupSession(userId: string, key: string): Promise<void> {
+  const results = await Promise.allSettled([
+    (async () => {
+      if (!isProvidersReady()) return;
+      const forgotten = await getSharedHistoryRag()?.forgetOwner(
+        turnOwner(userId, key),
+      );
+      if (forgotten === false) throw new Error('Session history forget failed');
+    })(),
+    isProvidersReady()
+      ? getCollectionRegistry().deleteSessionCollections(userId, key)
+      : undefined,
+    deleteSession(userId, key),
+  ]);
+  const failed = results.find((r) => r.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
 /**
@@ -242,7 +268,7 @@ async function revive(
 ): Promise<LongSession | undefined> {
   const rec = await store.get(userId, key);
   if (!rec) return undefined;
-  if (rec.lastActivity + rec.ttlMs < Date.now()) {
+  if (rec.closedAt !== undefined || rec.lastActivity + rec.ttlMs < Date.now()) {
     if (mayDiscard()) await discardSession(userId, key);
     return undefined;
   }
@@ -313,7 +339,10 @@ export async function sweepSessions(): Promise<void> {
   for (const [id, until] of closed) if (until < now) closed.delete(id);
   if (!records || !mayDiscard()) return;
   for (const r of await records.list()) {
-    if (r.lastActivity + r.ttlMs >= now || registry.has(r.userId, r.key))
+    if (
+      (r.closedAt === undefined && r.lastActivity + r.ttlMs >= now) ||
+      registry.has(r.userId, r.key)
+    )
       continue;
     await discardSession(r.userId, r.key);
   }

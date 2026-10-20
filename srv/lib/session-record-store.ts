@@ -42,6 +42,7 @@ export interface SessionRecord {
   lastActivity: number;
   ttlMs: number;
   destination?: string;
+  closedAt?: number;
 }
 
 export interface SessionRecordStore {
@@ -65,6 +66,7 @@ function stored(r: SessionRecord): SessionRecord {
     lastActivity: r.lastActivity,
     ttlMs: r.ttlMs,
     ...(r.destination !== undefined ? { destination: r.destination } : {}),
+    ...(r.closedAt !== undefined ? { closedAt: r.closedAt } : {}),
   };
 }
 
@@ -84,7 +86,8 @@ function decode(text: string): SessionRecord | undefined {
     typeof o.createdAt !== 'number' ||
     typeof o.lastActivity !== 'number' ||
     typeof o.ttlMs !== 'number' ||
-    (o.destination !== undefined && typeof o.destination !== 'string')
+    (o.destination !== undefined && typeof o.destination !== 'string') ||
+    (o.closedAt !== undefined && typeof o.closedAt !== 'number')
   )
     return undefined;
   return stored(o as unknown as SessionRecord);
@@ -105,6 +108,7 @@ export class SessionRecordOwnerError extends Error {
  * key never written by this process is written.
  */
 abstract class SerialSessionRecordStore implements SessionRecordStore {
+  private readonly destinations = new Map<string, string | undefined>();
   private readonly written = new Map<string, number>();
   private readonly queues = new Map<string, Promise<unknown>>();
 
@@ -125,13 +129,17 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
 
   /**
    * The threshold is checked inside the key's chain, so overlapping touches
-   * see each other's writes: one write per minute, and a lastActivity older
-   * than the last written one is never written.
+   * see each other's writes: timestamp-only updates write once per minute;
+   * a destination change always writes.
    */
   touch(r: SessionRecord): Promise<void> {
     return this.serial(r.key, async () => {
       const last = this.written.get(r.key);
-      if (last !== undefined && r.lastActivity - last < TOUCH_INTERVAL_MS)
+      if (
+        last !== undefined &&
+        this.destinations.get(r.key) === r.destination &&
+        r.lastActivity - last < TOUCH_INTERVAL_MS
+      )
         return;
       await this.write(r);
     });
@@ -139,7 +147,10 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
 
   delete(userId: string, key: string): Promise<void> {
     return this.serial(key, async () => {
-      if (await this.deleteRecord(userId, key)) this.written.delete(key);
+      if (await this.deleteRecord(userId, key)) {
+        this.written.delete(key);
+        this.destinations.delete(key);
+      }
     });
   }
 
@@ -149,6 +160,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
       throw new SessionRecordOwnerError(r.key);
     await this.writeRecord(r);
     this.written.set(r.key, r.lastActivity);
+    this.destinations.set(r.key, r.destination);
   }
 
   private serial<T>(key: string, run: () => Promise<T>): Promise<T> {

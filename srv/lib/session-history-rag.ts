@@ -147,6 +147,8 @@ export function parseTurn(
  * optimisation.
  */
 export class SessionHistoryRag implements IRag {
+  private readonly pending = new Map<string, Set<Promise<boolean>>>();
+
   /**
    * Turn ids per conversation, newest last.
    *
@@ -190,7 +192,8 @@ export class SessionHistoryRag implements IRag {
   }
 
   /** Forget a whole conversation — its session was cleared or reconnected. */
-  async forgetOwner(owner: string): Promise<void> {
+  async forgetOwner(owner: string): Promise<boolean> {
+    await Promise.allSettled(this.pending.get(owner) ?? []);
     const key = parseTurnOwner(owner);
     if (key && isRagFilteredDeleter(this.inner)) {
       this.ids.delete(owner);
@@ -199,16 +202,21 @@ export class SessionHistoryRag implements IRag {
       // before turns carried userId/sessionId are not reached (spec §6).
       try {
         const r = await this.inner.deleteWhere(key);
-        if (!r.ok) this.warn('Session history forget failed', r.error);
+        if (!r.ok) {
+          this.warn('Session history forget failed', r.error);
+          return false;
+        }
       } catch (err) {
         this.warn('Session history forget failed', err);
+        return false;
       }
-      return;
+      return true;
     }
     const ids = this.ids.get(owner);
-    if (!ids?.length) return;
+    if (!ids?.length) return true;
     this.ids.delete(owner);
     await this.drop(ids);
+    return true;
   }
 
   /**
@@ -311,7 +319,24 @@ export class SessionHistoryRag implements IRag {
    * Store one completed turn. Best-effort: recall is an improvement, never a
    * precondition, so a failure here must not touch the answer already sent.
    */
-  async recordTurn(input: {
+  recordTurn(input: {
+    owner: string;
+    userText: string;
+    assistantText: string;
+    id?: string;
+  }): Promise<boolean> {
+    const writes = this.pending.get(input.owner) ?? new Set<Promise<boolean>>();
+    this.pending.set(input.owner, writes);
+    const writing = this.writeTurn(input);
+    writes.add(writing);
+    void writing.finally(() => {
+      writes.delete(writing);
+      if (!writes.size) this.pending.delete(input.owner);
+    });
+    return writing;
+  }
+
+  private async writeTurn(input: {
     owner: string;
     userText: string;
     assistantText: string;

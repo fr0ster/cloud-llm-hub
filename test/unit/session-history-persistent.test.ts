@@ -662,7 +662,7 @@ describe('forget', () => {
     const rag = history(() => ALICE, { warnings });
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     down = true;
-    await expect(rag.forgetOwner(ALICE)).resolves.toBeUndefined();
+    await expect(rag.forgetOwner(ALICE)).resolves.toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
   });
 });

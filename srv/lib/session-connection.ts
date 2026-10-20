@@ -16,7 +16,9 @@
 
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import type { Request, Response } from 'express';
+import { setSessionDestination } from '../agent-manager';
 import type { CredentialBinding, LongSession } from './long-session';
+import { longSessionsIfReady } from './long-session';
 import type { DumpScope } from './principal';
 import {
   establishRequestConnection,
@@ -136,7 +138,10 @@ export async function acquireSessionConnection(
   s.connection = established.connection;
   s.dumpScope = established.dumpScope;
   s.binding = established.credential ?? readRequestCredential(req);
+  const changed = s.destination !== destination;
   s.destination = destination;
+  setSessionDestination(s.userId, s.key, destination);
+  if (changed) longSessionsIfReady()?.touch(s.userId, s.key);
   if (notice) res.setHeader(SESSION_NOTICE_HEADER, notice);
   return {
     connection: established.connection,
