@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Fork `cloud-llm-hub-poc-hana-rag`, branch `feat/long-sessions`; commits GPG-signed, never `--no-gpg-sign`.
+- Branch `feat/long-sessions`; commits GPG-signed, never `--no-gpg-sign`.
 - Session key format: `ls-<uuid v4>`; it is used as the hub `sessionId` everywhere.
 - Header `x-clh-session`; cookie `clh_session` carries the same value; both present and different → 400 `SESSION_KEY_CONFLICT`.
 - Session keyed by (userId from the token, key); another user's key resolves to nothing (404 `SESSION_NOT_FOUND`).
@@ -281,6 +281,6 @@
 - Create: `docs/superpowers/verification/2026-10-20-long-sessions-hana.md`
 
 - [ ] **Step 1:** Docs as listed; `npm run check:docs` if present.
-- [ ] **Step 2:** Merge into `deploy/poc-hana-rag`, deploy with `tools/deploy.sh` (POC `.mtaext` unchanged; store follows `hana-vector`).
-- [ ] **Step 3:** Verify on the POC with E19 (`e19-tech.env`, credentials in headers): agent MCP `session_open` → two `execute_step` calls share history; `cf restart`; the same key → revived, history recalled; `session_close` → key gives 404; WebUI: connect, chat, restart, notice "revived"; plain `/v1/chat/completions` without key → 400 `SESSION_REQUIRED`.
+- [ ] **Step 2:** Merge into the test subaccount's deployment branch, deploy with `tools/deploy.sh` (its `.mtaext` unchanged; store follows `hana-vector`).
+- [ ] **Step 3:** Verify on the test subaccount with an on-premise ABAP system (technical SAP user, credentials in headers): agent MCP `session_open` → two `execute_step` calls share history; `cf restart`; the same key → revived, history recalled; `session_close` → key gives 404; WebUI: connect, chat, restart, notice "revived"; plain `/v1/chat/completions` without key → 400 `SESSION_REQUIRED`.
 - [ ] **Step 4:** Record results; commit `docs: long sessions`.

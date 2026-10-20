@@ -1,8 +1,8 @@
 # Persistent RAG collections on HANA: verification
 
 **Date:** 2026-10-20
-**Target:** CF org `cloud-llm-hub-dev`, space `llm-agent` (eu10-005), HDI container `hdi-llm`
-**Build:** `deploy/poc-hana-rag` at `c315d02`, hub 7.2.1, `@mcp-abap-adt/*` 30.3.1
+**Target:** a test subaccount (CF, eu10), an existing HDI container
+**Build:** `feat/persistent-rag-collections` at `c315d02`, hub 7.2.1, `@mcp-abap-adt/*` 30.3.1
 **Config:** `LLM_AGENT_RAG_BACKEND` and `LLM_AGENT_SESSION_RAG_BACKEND` = `hana-vector`, tools `vector`,
 embedder `sap-ai-core` / `text-embedding-3-small` (1536), AI Core credentials from `.env`.
 **Caller:** a technical client (xsuaa client_credentials, temporary service key, deleted afterwards), so
@@ -43,11 +43,11 @@ show them in their metadata, as the spec's payload defines.
 
 ## Chat
 
-Through `E19_HTTP` with the technical SAP user `MCPDEV01` (`e19-tech.env`); the SAP credentials went in
+Through an on-premise ABAP destination with a technical SAP user; the SAP credentials went in
 the `x-sap-login` / `x-sap-password` headers, nothing was written to the destination. With no destination
 at all the hub serves the LLM-only agent, which has no RAG by design (`ragQueryK: 0`).
 
-- **Search in chat: FAIL, pre-existing on main.** `X-Rag-Collections: pocverify` resolves and injects the
+- **Search in chat: FAIL, pre-existing on main.** `X-Rag-Collections: <collection>` resolves and injects the
   collection (`Dynamic RAG collections injected`), but the hub's own search returns nothing. It wraps the
   store in `ExpositionFilteringRag`, whose post-filter drops every record without an `exposition` tag (the
   v6.22.0 fail-closed fix for untagged tools). User documents carry no such tag, so on every backend chat
@@ -71,5 +71,5 @@ at all the hub serves the LLM-only agent, which has no RAG by design (`ragQueryK
   `tools/deploy.sh`; the build now starts only the tools class (`93b2be9`).
 - `mta.yaml`: mbt rejects `optional` on a requires entry; removed (`c315d02`).
 - `LLM_AGENT_PRESENTATION_MODEL` is declared in `mta.yaml` without a default and is missing from the
-  `.mtaext` templates, so `cf deploy` fails to resolve it. The POC `.mtaext` sets it to `""`; srv does
-  not read it. Pre-existing; for the main repo.
+  `.mtaext` templates, so `cf deploy` fails to resolve it. srv does not read it. Fixed in this branch:
+  the parameter is gone from `mta.yaml`.

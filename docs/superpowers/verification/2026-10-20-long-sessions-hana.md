@@ -1,13 +1,13 @@
 # Long sessions on HANA: verification
 
 **Date:** 2026-10-20
-**Target:** CF org `cloud-llm-hub-dev`, space `llm-agent` (eu10-005), HDI container `hdi-llm`
-**Build:** `deploy/poc-hana-rag` at `dad46a7` (`feat/long-sessions`), hub 7.2.1, `@mcp-abap-adt/*` 30.3.1
+**Target:** a test subaccount (CF, eu10), an existing HDI container
+**Build:** `feat/long-sessions` at `dad46a7`, hub 7.2.1, `@mcp-abap-adt/*` 30.3.1
 **Config:** startup log `Long-session configuration { ttlMs: 3600000, maxSessions: 50, maxPerUser: 5,
 queueLength: 2, store: 'hana-vector', plainApi: false, plainMcp: false }`; the store follows
-`LLM_AGENT_SESSION_RAG_BACKEND=hana-vector`, nothing new in the POC `.mtaext`.
+`LLM_AGENT_SESSION_RAG_BACKEND=hana-vector`, nothing new in the `.mtaext`.
 **Caller:** a technical client (xsuaa client_credentials, temporary service key, deleted afterwards).
-**SAP:** destination `E19_HTTP`, technical user from `e19-tech.env`; credentials only in the
+**SAP:** an on-premise ABAP destination, a technical SAP user; credentials only in the
 `x-sap-login` / `x-sap-password` / `x-sap-client` headers, nothing written to the destination.
 
 ## Results
@@ -16,7 +16,7 @@ queueLength: 2, store: 'hana-vector', plainApi: false, plainMcp: false }`; the s
 |------|--------|
 | `/v1/chat/completions` without a key | PASS: 400 `SESSION_REQUIRED` |
 | `/mcp/stream/http` | PASS: 404 `PLAIN_MCP_DISABLED` |
-| `POST /v1/session { destination: E19_HTTP }` | PASS: 201, `ls-…` key, `ttlSeconds` 3600 |
+| `POST /v1/session { destination }` | PASS: 201, `ls-…` key, `ttlSeconds` 3600 |
 | Two chats with `x-clh-session` | PASS: the second recalls a codeword given in the first |
 | Same key, another SAP login | PASS: 403 `SESSION_CREDENTIAL_MISMATCH` (code in `error.type`, see below) |
 | Unknown key in the header | PASS: 404 `SESSION_NOT_FOUND` |

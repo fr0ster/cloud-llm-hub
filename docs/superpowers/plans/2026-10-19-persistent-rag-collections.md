@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** User and session collections and session history persist on `hana-vector` (HDI, shared layout), `pg-vector` or `qdrant`, chosen by configuration, through the llm-agent providers. Collections are restored at startup, and the current RAG functionality is verified on HANA in `cloud-llm-hub-dev`.
+**Goal:** User and session collections and session history persist on `hana-vector` (HDI, shared layout), `pg-vector` or `qdrant`, chosen by configuration, through the llm-agent providers. Collections are restored at startup, and the current RAG functionality is verified on HANA in a test subaccount.
 
 **Architecture:**
 - The hub keeps its own `CollectionRegistry` and its in-memory `documents` mirror.
@@ -84,11 +84,11 @@
     - name: cloud-llm-hub-hdi
       active: true
       type: org.cloudfoundry.existing-service
-      parameters: { service-name: hdi-llm }
+      parameters: { service-name: <your-hdi-service> }
   ```
 - `tools/deploy-hdi-tables.sh` with a `tools/hdi-deployer/` template (`package.json` with `@sap/hdi-deploy` and `@sap/hana-client`, and a `manifest.yml` with no route, process health check, `command: npm start; sleep 3600`):
   - copies `node_modules/@mcp-abap-adt/hana-vector-rag/ddl/{RAG_DOCUMENTS,RAG_COLLECTIONS}.hdbtable` and `.hdiconfig` into `src/`;
-  - runs `cf push`, bound to `$1` (the service name, default `hdi-llm`);
+  - runs `cf push`, bound to `$1` (the HDI service name);
   - polls `cf logs --recent` for `Deployment to container .* done`, up to 5 min;
   - deletes the app, retrying while an unbind is in progress;
   - exits non-zero on failure.
@@ -213,8 +213,8 @@
 
 ### Task 10: Deploy and verify on HANA (controller only, user go-ahead required)
 
-- [ ] **Step 1:** In the fork, merge `feat/persistent-rag-collections` into `deploy/poc-hana-rag`. Its `.mtaext` sets `LLM_AGENT_RAG_BACKEND=hana-vector` and `LLM_AGENT_SESSION_RAG_BACKEND=hana-vector`, keeps the embedder as configured, and activates `cloud-llm-hub-hdi` as the existing service `hdi-llm`.
-- [ ] **Step 2:** The tables already exist. Re-run `tools/deploy-hdi-tables.sh hdi-llm` only if the DDL changed.
-- [ ] **Step 3:** Run `tools/deploy.sh` (cf deploy) to `cloud-llm-hub-dev`/`llm-agent`.
+- [ ] **Step 1:** Merge `feat/persistent-rag-collections` into the test subaccount's deployment branch. Its `.mtaext` sets `LLM_AGENT_RAG_BACKEND=hana-vector` and `LLM_AGENT_SESSION_RAG_BACKEND=hana-vector`, keeps the embedder as configured, and activates `cloud-llm-hub-hdi` as an existing HDI service.
+- [ ] **Step 2:** The tables already exist. Re-run `tools/deploy-hdi-tables.sh <your-hdi-service>` only if the DDL changed.
+- [ ] **Step 3:** Run `tools/deploy.sh` (cf deploy) to the test subaccount.
 - [ ] **Step 4:** Work through the spec §2.6 checklist against the deployed app, then `cf restart cloud-llm-hub-srv`, then go through the checklist again. Record every step's result in `docs/superpowers/verification/2026-10-19-persistent-rag-hana.md`.
 - [ ] **Step 5:** Report the result. The PR to cloud-llm-hub is a separate step after the user's review.

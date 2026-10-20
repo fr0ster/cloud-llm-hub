@@ -1,12 +1,12 @@
 # Persistent RAG collections on a vector database (Plan B, revised)
 
 Status: design, for review.
-Branch `feat/persistent-rag-collections` is in the fork `cloud-llm-hub-poc-hana-rag`. It is tested there on the deploy branch, then sent to cloud-llm-hub as a PR.
+Branch `feat/persistent-rag-collections`, tested on a deployment branch against a test subaccount, then sent to cloud-llm-hub as a PR.
 Depends on **@mcp-abap-adt/llm-agent 30.3.0**: `IRagScanner`, `IRagFilteredDeleter` and `IRagCatalogUpdater`, plus the `shared` table layout from 30.2.0.
 
 ## 1. Intent
 
-The hub's RAG collections and the session history live in process memory and are lost on every restart. The 2026-09-29 spec (§4.3, §4.6, "Plan B") designed their persistence, but it waited for a vector database. The POC subaccount now has one: SAP HANA Cloud through the HDI container `hdi-llm`, holding the tables `RAG_DOCUMENTS` and `RAG_COLLECTIONS`, deployed and verified on 2026-10-19.
+The hub's RAG collections and the session history live in process memory and are lost on every restart. The 2026-09-29 spec (§4.3, §4.6, "Plan B") designed their persistence, but it waited for a vector database. A test subaccount now has one: SAP HANA Cloud through an HDI container holding the tables `RAG_DOCUMENTS` and `RAG_COLLECTIONS`, deployed and verified on 2026-10-19.
 
 This project **binds the hub to a vector database and proves that the current RAG functionality works on it**:
 - user and session collections;
@@ -16,7 +16,7 @@ This project **binds the hub to a vector database and proves that the current RA
 - session history.
 
 The backend is chosen by configuration:
-- `hana-vector` (HDI, shared layout) is the POC target;
+- `hana-vector` (HDI, shared layout) is the first target;
 - `pg-vector` (shared layout) is for local development and tests;
 - `qdrant` stays as it is.
 
@@ -36,7 +36,7 @@ Later projects build on this one, each with its own spec:
    - PG connection: `LLM_AGENT_PG_URL` (address only) plus `LLM_AGENT_PG_USER`/`LLM_AGENT_PG_PASSWORD`, set from `.env`. Secrets are never in `mta.yaml`.
    - New parameters follow the existing plumbing: `mta.yaml` parameters default to `""`, there is a `${NAME}` srv property, they appear in all six `.mtaext` templates, and they are added to `mta-config-params.test.ts`.
 2. **Deployment.**
-   - `mta.yaml` gains an optional HDI resource (`cloud-llm-hub-hdi`, `active: false` by default), switched on by `.mtaext`. The POC `.mtaext` binds the existing service `hdi-llm` (`org.cloudfoundry.existing-service`). `tools/make-staging-mta.js` keeps renaming it for staging.
+   - `mta.yaml` gains an optional HDI resource (`cloud-llm-hub-hdi`, `active: false` by default), switched on by `.mtaext`. A test `.mtaext` binds an existing HDI service (`org.cloudfoundry.existing-service`). `tools/make-staging-mta.js` keeps renaming it for staging.
    - The tables are deployed by `tools/deploy-hdi-tables.sh` (§6), not by an MTA module.
 3. **The collection registry persists through `IRagProvider`:**
    - the backend's provider is `HanaVectorRagProvider` / `PgVectorRagProvider` (`layout: 'shared'`) or `QdrantRagProvider`;
@@ -67,7 +67,7 @@ Later projects build on this one, each with its own spec:
 5. **Explicit errors.** A backend that is unreachable, misconfigured or not deployed (`SHARED_LAYOUT_NOT_DEPLOYED`) gives an explicit error, and `/health` reflects it. There is never a silent fallback to memory.
    - `GET /rag/backends` lists only what is configured and registered.
    - A requested `backend` that is not available is refused (400), instead of today's silent in-memory store.
-6. **Verification of current functionality on HANA** in `cloud-llm-hub-dev`/`llm-agent`, deployed from `deploy/poc-hana-rag`. A checklist is run against the deployed app and recorded:
+6. **Verification of current functionality on HANA** in a test subaccount, deployed from its deployment branch. A checklist is run against the deployed app and recorded:
    - create a user collection;
    - add, bulk-add and upload documents;
    - list, query and search them in chat;
@@ -113,7 +113,7 @@ Later projects build on this one, each with its own spec:
 - **History in the shared layout.** The history store gets one catalog record of its own, `storeName: 'h_history'`, `scope: 'global'`, `writtenBy` marker, created if absent at startup and adopted if its rows exist. That way it is never an orphan.
   - History turns gain `userId`, `sessionId` and `createdAt` metadata fields, so that `deleteWhere`, `scan` and the cap work. `metadata.owner` stays for compatibility.
   - Turns written before this change carry no `userId`/`sessionId`. They are reached by neither forget nor the cap. With in-memory history there are none, so nothing has to be migrated.
-- **No `db` module in this project.** MTA cannot switch off a module from `.mtaext`, and the POC tables already exist in `hdi-llm`.
+- **No `db` module in this project.** MTA cannot switch off a module from `.mtaext`, and the tables may already exist in the bound container.
   - The project ships `tools/deploy-hdi-tables.sh` instead. It pushes a throwaway HDI deployer app carrying the `.hdbtable` files of `@mcp-abap-adt/hana-vector-rag`, bound to the named service, waits for "Deployment … done", and deletes the app. This is the proven llm-agent pattern.
   - `DEPLOYMENT.md` documents the script.
   - An MTA-native `db` module is a later concern.

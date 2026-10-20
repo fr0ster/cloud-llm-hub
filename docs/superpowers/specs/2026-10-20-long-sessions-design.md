@@ -2,8 +2,7 @@
 
 **Status:** draft for review
 **Date:** 2026-10-20
-**Repo:** cloud-llm-hub (developed in the poc-hana-rag fork, branch `feat/long-sessions` off
-`feat/persistent-rag-collections`, then a PR to the main repo)
+**Repo:** cloud-llm-hub (branch `feat/long-sessions` off `feat/persistent-rag-collections`)
 
 ## 1. Intent
 
