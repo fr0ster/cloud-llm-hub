@@ -7,6 +7,8 @@
  * exists to make visible. The precedent is `LLM_AGENT_THROTTLE_MAX_WAIT_MS`.
  */
 
+import { readPositiveIntFrom } from './env-int';
+
 const LIVE = 'LLM_GATEKEEPER_MAX_LIVE_SESSIONS';
 const QUEUE = 'LLM_GATEKEEPER_QUEUE_LENGTH';
 const RETAINED = 'LLM_GATEKEEPER_MAX_RETAINED_SESSIONS';
@@ -21,18 +23,7 @@ export interface GatekeeperConfig {
 }
 
 function readPositiveInt(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === '') return undefined;
-  // Digits and nothing else. `Number()` alone reads "0x10" as sixteen, "1e3" as
-  // a thousand and " 5" as five: a limit configured by accident is the failure
-  // refusing to start exists to prevent.
-  const n = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN;
-  if (!Number.isSafeInteger(n) || n < 1) {
-    throw new Error(
-      `Invalid ${name}: expected a positive whole number, got ${JSON.stringify(raw)}`,
-    );
-  }
-  return n;
+  return readPositiveIntFrom(process.env, name);
 }
 
 export function loadGatekeeperConfig(): GatekeeperConfig {

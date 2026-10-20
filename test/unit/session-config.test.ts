@@ -51,7 +51,7 @@ describe('loadSessionConfig', () => {
         LLM_AGENT_SESSION_TTL_MS: '60000',
         LLM_AGENT_MAX_SESSIONS: '10',
         LLM_AGENT_MAX_SESSIONS_PER_USER: '2',
-        LLM_AGENT_SESSION_QUEUE_LENGTH: '7',
+        LLM_AGENT_SESSION_QUEUE: '7',
         LLM_AGENT_SESSION_STORE_PATH: '/tmp/s.db',
       },
       'vector',

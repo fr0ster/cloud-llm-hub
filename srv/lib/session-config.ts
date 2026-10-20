@@ -5,6 +5,7 @@
  * `gatekeeper-config.ts`). Absent means the default below.
  */
 import { getAgentConfig } from '../agent-config';
+import { readPositiveIntFrom } from './env-int';
 
 export type SessionStoreKind = 'none' | 'sqlite' | 'hana-vector' | 'pg-vector';
 
@@ -39,17 +40,7 @@ function readPositiveInt(
   name: string,
   fallback: number,
 ): number {
-  const raw = env[name];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  // Digits and nothing else: `Number()` alone reads "0x10" as sixteen and
-  // "1e3" as a thousand.
-  const n = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN;
-  if (!Number.isSafeInteger(n) || n < 1) {
-    throw new Error(
-      `Invalid ${name}: expected a positive whole number, got ${JSON.stringify(raw)}`,
-    );
-  }
-  return n;
+  return readPositiveIntFrom(env, name) ?? fallback;
 }
 
 function readStore(
@@ -87,7 +78,7 @@ export function loadSessionConfig(
     ttlMs: readPositiveInt(env, 'LLM_AGENT_SESSION_TTL_MS', 3_600_000),
     maxSessions,
     maxPerUser,
-    queueLength: readPositiveInt(env, 'LLM_AGENT_SESSION_QUEUE_LENGTH', 2),
+    queueLength: readPositiveInt(env, 'LLM_AGENT_SESSION_QUEUE', 2),
     store: readStore(env, sessionBackend),
     storePath: env.LLM_AGENT_SESSION_STORE_PATH?.trim() || '.data/sessions.db',
     plainApi: env.LLM_AGENT_PLAIN_API === 'true',

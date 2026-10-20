@@ -75,7 +75,7 @@ A hub session holds an ABAP connection between requests under a server-issued ke
 | `LLM_AGENT_SESSION_TTL_MS` | `3600000` (1 h) | Idle time before a session expires |
 | `LLM_AGENT_MAX_SESSIONS` | `50` | Sessions held at once, all users |
 | `LLM_AGENT_MAX_SESSIONS_PER_USER` | `5` | Sessions one user may hold; not above the total |
-| `LLM_AGENT_SESSION_QUEUE_LENGTH` | `2` | Callers that may wait for a session slot |
+| `LLM_AGENT_SESSION_QUEUE` | `2` | Callers that may wait for a session slot |
 | `LLM_AGENT_SESSION_STORE` | follows `LLM_AGENT_SESSION_RAG_BACKEND` | `none`, `sqlite`, `hana-vector` or `pg-vector`. With a `hana-vector` or `pg-vector` session backend that kind, otherwise `none` |
 | `LLM_AGENT_SESSION_STORE_PATH` | `.data/sessions.db` | File of the `sqlite` store |
 | `LLM_AGENT_PLAIN_API` | off | `true` allows plain (session-less) calls on the HTTP API; any other value is off |
