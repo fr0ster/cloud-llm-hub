@@ -431,6 +431,34 @@ class RecencyBoostedRag implements IRag, IRagEditor {
 }
 
 /**
+ * A collection as the agent searches it. The agent's `ragFilter` scopes tools
+ * (`exposition`) and destination data (`namespace`); collection documents
+ * carry neither, so passed on it would drop every one of them. Which
+ * collections a caller reaches is decided before this, when the names are
+ * resolved against the caller's own collections.
+ */
+export class CollectionSearchRag implements IRag {
+  constructor(private readonly inner: IRag) {}
+
+  query(embedding: IQueryEmbedding, k: number, options?: CallOptions) {
+    const { ragFilter: _agentFilter, ...rest } = options ?? {};
+    return this.inner.query(embedding, k, rest);
+  }
+
+  healthCheck(options?: CallOptions) {
+    return this.inner.healthCheck(options);
+  }
+
+  getById(id: string, options?: CallOptions) {
+    return this.inner.getById(id, options);
+  }
+
+  writer(): IRagBackendWriter | undefined {
+    return this.inner.writer?.();
+  }
+}
+
+/**
  * The order a persistent collection lists its documents in: by createdAt,
  * then id. A backend scan returns them in its own order (by id), so insertion
  * order would not survive a restart; this one does.

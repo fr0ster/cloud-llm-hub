@@ -69,6 +69,12 @@ All notable changes to this project will be documented in this file. The format 
   `LLM_AGENT_EMBEDDING_MODEL` default to unset, so an `.mtaext` names only
   `LLM_AGENT_MODEL`; `cf deploy` no longer fails on an unresolved model
   parameter.
+- **Chat finds documents of the collections it names.** A chat with
+  `X-Rag-Collections` searched those collections through the tools' role
+  filter, which drops every record without an `exposition` tag, so no user
+  document ever reached the answer, on every backend. Collections are now
+  searched without the agent's tool and namespace filter; which collections a
+  caller reaches is still decided when their names are resolved.
 
 ### Changed
 

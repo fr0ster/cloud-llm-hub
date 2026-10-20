@@ -124,6 +124,58 @@ describe('the RAG stores a request names', () => {
     expect(Object.keys(deps.ragStores)).not.toContain('col-1');
   });
 
+  it('find collection documents that carry no exposition tag', async () => {
+    configure();
+    const registry = manager.getCollectionRegistry();
+    // Like the backends: a ragFilter namespace keeps only records of it, and a
+    // collection document has none.
+    const doc = {
+      text: 'The office cat is called Pixel.',
+      score: 0.9,
+      metadata: { id: 'd1', docId: 'd1' },
+    };
+    const store = {
+      query: async (
+        _e: unknown,
+        _k: number,
+        o?: { ragFilter?: { namespace?: string } },
+      ) => ({ ok: true, value: o?.ragFilter?.namespace ? [] : [doc] }),
+      healthCheck: async () => ({ ok: true, value: undefined }),
+      getById: async () => ({ ok: true, value: null }),
+    };
+    jest
+      .spyOn(registry, 'getRagStores')
+      .mockResolvedValue({ 'col-1': store } as never);
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue(store as never);
+    const handle = (await manager.getSmartAgent()) as unknown as {
+      agent: {
+        deps: {
+          ragStores: Record<
+            string,
+            { query(e: unknown, k: number, o: unknown): Promise<unknown> }
+          >;
+        };
+      };
+    };
+    let prompt = '';
+    let agentSearch: unknown;
+    harness.process = async (m: unknown) => {
+      const msgs = m as Message[];
+      prompt = String(msgs[msgs.length - 1].content);
+      agentSearch = await handle.agent.deps.ragStores['col-1'].query({}, 3, {
+        ragFilter: { namespace: 'bob:DEST', exposition: ['readonly'] },
+      });
+      return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+    };
+
+    const req = fakeReq(body()) as unknown as Request;
+    req.headers['x-rag-collections'] = 'col-1';
+    await handleChatCompletions(req, fakeRes() as unknown as Response);
+
+    expect(prompt).toContain('The office cat is called Pixel.');
+    expect(agentSearch).toEqual({ ok: true, value: [doc] });
+  });
+
   it('are never installed for a request refused at the door (RAG)', async () => {
     configure(1, 1);
     const registry = manager.getCollectionRegistry();

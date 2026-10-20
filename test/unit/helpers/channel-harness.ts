@@ -178,9 +178,6 @@ export function agentManagerMock() {
     getDestinationStates: () => [],
     getSharedHistoryRag: () => undefined,
     runWithRequestConnection: (_c: unknown, fn: () => unknown) => fn(),
-    ExpositionFilteringRag: class {
-      constructor(readonly inner: unknown) {}
-    },
     // Mocked ahead of Tasks 15 and 18, which add these to the handlers' imports;
     // without them every channel test would break at Task 15. Driven off
     // `harness.closedDestination`/`harness.retryAfterSeconds` so a test can

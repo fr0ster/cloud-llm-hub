@@ -20,7 +20,6 @@ import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   closeDestination,
-  ExpositionFilteringRag,
   getCollectionRegistry,
   getCurrentClassifierModel,
   getCurrentDestination,
@@ -65,6 +64,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { CollectionSearchRag } from './rag-collections';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
@@ -632,7 +632,8 @@ async function serveChatCompletions(
   // now that the request is admitted: every pipeline on this destination runs on
   // this same agent, so stores installed before the queue wait would be seen by
   // every run admitted ahead of this one. Restored in the `finally` below.
-  // Wrapped with ExpositionFilteringRag because ragFilter namespace won't match.
+  // Wrapped with CollectionSearchRag: the agent's ragFilter (namespace,
+  // exposition) scopes tools and destination data, not collection documents.
   // Interleaved admitted runs that both inject can still restore each other's
   // set — a pre-existing race of mutating shared deps, left for per-request
   // stores.
@@ -763,12 +764,7 @@ async function serveChatCompletions(
       if (injected.length > 0) {
         const mergedStores = { ...originalRagStores };
         for (const [key, store] of Object.entries(dynamicStores)) {
-          mergedStores[key] = new ExpositionFilteringRag(
-            store,
-            undefined,
-            undefined,
-            getAgentConfig().agent.skillRagK,
-          );
+          mergedStores[key] = new CollectionSearchRag(store);
         }
         deps.ragStores = mergedStores;
         log.info('Dynamic RAG collections injected', {
@@ -808,12 +804,7 @@ async function serveChatCompletions(
           // Degraded collections were refused above, before the turn started.
           const store = await registry.getRagStore(colId);
           if (!store) continue;
-          const result = await new ExpositionFilteringRag(
-            store,
-            undefined,
-            undefined,
-            getAgentConfig().agent.skillRagK,
-          ).query(embedding, 3);
+          const result = await store.query(embedding, 3);
           if (result.ok) {
             for (const r of result.value) {
               log.info('RAG search result', {
