@@ -708,6 +708,9 @@ Anthropic envelope alike:
 | `SAP_CREDENTIALS_REQUIRED` | 401 | the session was opened with SAP credentials and this request carries none |
 | `SESSION_CREDENTIAL_MISMATCH` | 403 | another SAP login (or client) than the session was opened with |
 
+The two credential refusals use the shape of every SAP credential failure:
+`{ error: { type: <code>, message, destination } }`, the code in `error.type`.
+
 **Notices.** `x-clh-session-notice` on a response:
 
 - `revived`: the hub restarted and gave the session back from its record
