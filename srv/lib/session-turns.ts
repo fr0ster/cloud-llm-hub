@@ -2,7 +2,8 @@ import type { Message } from '@mcp-abap-adt/llm-agent';
 import { getSharedHistoryRag } from '../agent-manager';
 import { turnOwner } from './session-history-rag';
 
-function extractText(c: unknown): string {
+/** Extract plain text from OpenAI content (string | content-block array) */
+export function extractText(c: unknown): string {
   if (c === null || c === undefined) return '';
   if (typeof c === 'string') return c;
   if (!Array.isArray(c)) return '';

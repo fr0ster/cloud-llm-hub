@@ -54,7 +54,7 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { recordTurn } from './lib/session-turns';
+import { extractText, recordTurn } from './lib/session-turns';
 import {
   destinationClosedText,
   openAiDoorRefusal,
@@ -113,23 +113,6 @@ function withRequestConnection<T>(
 // ---------------------------------------------------------------------------
 // Rate-limit retry helpers
 // ---------------------------------------------------------------------------
-
-/** Extract plain text from OpenAI content (string | content-block array) */
-function extractText(c: unknown): string {
-  if (c === null || c === undefined) return '';
-  if (typeof c === 'string') return c;
-  if (!Array.isArray(c)) return '';
-  return c
-    .filter(
-      (b: unknown) =>
-        typeof b === 'object' &&
-        b !== null &&
-        (b as { type?: string }).type === 'text' &&
-        typeof (b as { text?: string }).text === 'string',
-    )
-    .map((b: { text: string }) => b.text)
-    .join('\n');
-}
 
 // Re-exported: tests and other modules imported these from the handler.
 export { appendToSession, clearSession, getSessionHistory };
