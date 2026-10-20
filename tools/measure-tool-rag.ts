@@ -8,8 +8,8 @@
  * only) and `MCP_Developer` (reader + writer collections, each capped at k and
  * concatenated, the same way `capPerCollection` builds it in production).
  *
- * Every backend is measured WITHOUT a query preprocessor (`translateQueries:
- * false`), so non-ASCII queries test the embedder, not an LLM translation.
+ * Translation defaults off. Set TOOL_RAG_MEASURE_TRANSLATE=1 to measure
+ * classifier-model translation before tool search on every backend.
  *
  * Labels (tools/tool-rag-queries.json), per query:
  *   - `relevant`: every tool that is a correct/useful answer.
@@ -182,7 +182,9 @@ async function main() {
       `bad labels — unknown tools: ${unknown.join(', ') || 'none'}; ` +
         `required but not relevant: ${notRelevant.join(', ') || 'none'}`,
     );
-  const { store } = await loadToolCorpus(p, docs, { translateQueries: false });
+  const { store } = await loadToolCorpus(p, docs, {
+    translateQueries: process.env.TOOL_RAG_MEASURE_TRANSLATE === '1',
+  });
 
   const rows: Row[] = [];
   for (const { q, relevant, required, multi } of queries) {

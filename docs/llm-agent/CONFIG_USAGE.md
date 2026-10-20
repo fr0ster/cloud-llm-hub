@@ -40,7 +40,7 @@ are a different mechanism and do apply per request.
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDER_URL` | `openai`: `LLM_AGENT_BASE_URL`; `ollama`: `http://localhost:11434` | Embedder base URL |
 | `LLM_AGENT_EMBEDDER_API_KEY` | `openai`: `LLM_AGENT_API_KEY` | Embedder API key. Secret — set with `cf set-env`, never in `.mtaext` |
-| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). `qdrant` does **not** translate queries (`vector` does — one LLM call per non-ASCII query); it relies on a multilingual embedder such as `bge-m3` |
+| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). Tool search translates non-ASCII queries of at least 15 characters with the classifier model on every backend, caching up to 500 translations; history and collections use the original query |
 | `LLM_AGENT_SESSION_RAG_BACKEND` | same as tools | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for the session-history RAG class. A persistent kind keeps the history across restarts (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for user and session collections. `qdrant`, `hana-vector` and `pg-vector` persist them (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_QDRANT_URL` | — | Required when any RAG class above is `qdrant` |
@@ -163,3 +163,6 @@ which makes tool selection keyword-only.
 - `srv/agent-config.ts` — the single place these variables are read
 - [ARCHITECTURE.md §12](../architecture/ARCHITECTURE.md) — per-variable semantics
 - [Installation Plan](../deployment/INSTALLATION_PLAN.md) — which of these a deployment actually needs
+
+Tool retrieval measurement defaults to untranslated queries. Set `TOOL_RAG_MEASURE_TRANSLATE=1`
+when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-query translation.

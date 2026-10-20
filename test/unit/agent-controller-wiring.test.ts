@@ -69,7 +69,10 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
 }));
 
-import { DagPlanInterpreter } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DagPlanInterpreter,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 // buildAgentForDestination is exported (like buildExecutorWorker) purely so
 // this wiring contract can be driven directly, without going through the
@@ -154,6 +157,18 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       config,
     );
     expect(withToolCache).not.toHaveBeenCalled();
+  });
+
+  it('disables pipeline translation on the controller and executor builders', async () => {
+    await agentManager.buildAgentForDestination(
+      {} as never,
+      {} as never,
+      config,
+    );
+    const calls = (SmartAgentBuilder as jest.Mock).mock.calls;
+    expect(calls).toHaveLength(2);
+    for (const [options] of calls)
+      expect(options.agent.ragTranslateEnabled).toBe(false);
   });
 
   it('never calls withRequestLogger — RecordingRequestLogger is gone', async () => {
@@ -273,6 +288,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     const end = candidates.length ? Math.min(...candidates) : rest.length;
     const body = rest.slice(0, end);
 
+    expect(body).toContain('ragTranslateEnabled: false');
     expect(body).not.toContain('withDagCoordinator');
     expect(body).not.toContain('withCoordinator');
   });
