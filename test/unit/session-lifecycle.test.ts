@@ -46,6 +46,7 @@ import {
 } from '../../srv/lib/long-session';
 import { turnOwner } from '../../srv/lib/session-history-rag';
 import {
+  discardSession,
   lifecycleHooks,
   openSession,
   resolveSession,
@@ -276,7 +277,46 @@ describe('revival', () => {
     stored({ lastActivity: now - TTL - 1 });
     expect(await resolveSession('alice', 'ls-old')).toBeUndefined();
     expect(records.store.delete).toHaveBeenCalledWith('alice', 'ls-old');
+    // Its state goes with it: history, collections, destination.
+    expect(deleteSession).toHaveBeenCalledWith('alice', 'ls-old');
     expect(longSessions().has('alice', 'ls-old')).toBe(false);
+  });
+
+  it('concurrent resolve awaits the restore and sees the history', async () => {
+    stored();
+    let release!: (t: Turn[]) => void;
+    listTurns.mockReturnValue(
+      new Promise<Turn[]>((r) => {
+        release = r;
+      }),
+    );
+    const first = resolveSession('alice', 'ls-old');
+    await new Promise((r) => setImmediate(r));
+    // Not visible while it is being restored.
+    expect(longSessions().get('alice', 'ls-old')).toBeUndefined();
+    const second = resolveSession('alice', 'ls-old');
+    release([turn(1), turn(2)]);
+    const [a, b] = await Promise.all([first, second]);
+    expect(b).toBe(a);
+    expect(getSessionHistory('ls-old', 'alice')).toHaveLength(4);
+  });
+
+  it('discarded during the scan: no history written, key not revived', async () => {
+    stored();
+    let release!: (t: Turn[]) => void;
+    listTurns.mockReturnValue(
+      new Promise<Turn[]>((r) => {
+        release = r;
+      }),
+    );
+    const pending = resolveSession('alice', 'ls-old');
+    await new Promise((r) => setImmediate(r));
+    await discardSession('alice', 'ls-old');
+    release([turn(1)]);
+    expect(await pending).toBeUndefined();
+    expect(longSessions().has('alice', 'ls-old')).toBe(false);
+    expect(getSessionHistory('ls-old', 'alice')).toHaveLength(0);
+    expect(await resolveSession('alice', 'ls-old')).toBeUndefined();
   });
 
   it('closed key is not revived', async () => {
@@ -353,6 +393,7 @@ describe('the sweep', () => {
     expect(longSessions().has('alice', s.key)).toBe(false);
     expect(records.rows.size).toBe(0);
     expect(records.store.delete).toHaveBeenCalledWith('bob', 'ls-orphan');
+    expect(deleteSession).toHaveBeenCalledWith('bob', 'ls-orphan');
   });
 
   it('leaves a live session and its record', async () => {

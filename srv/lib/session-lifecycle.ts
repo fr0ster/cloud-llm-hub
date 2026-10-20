@@ -150,16 +150,18 @@ export function resolveSession(
   userId: string,
   key: string,
 ): Promise<LongSession | undefined> {
+  const id = slot(userId, key);
+  // A revival in flight first: until it is complete, nothing is served.
+  const pending = reviving.get(id);
+  if (pending) return pending;
   const live = longSessions().get(userId, key);
   if (live) return Promise.resolve(live);
   if (!records || isClosed(userId, key)) return Promise.resolve(undefined);
-  const id = slot(userId, key);
-  let pending = reviving.get(id);
-  if (!pending) {
-    pending = revive(records, userId, key).finally(() => reviving.delete(id));
-    reviving.set(id, pending);
-  }
-  return pending;
+  const started = revive(records, userId, key).finally(() =>
+    reviving.delete(id),
+  );
+  reviving.set(id, started);
+  return started;
 }
 
 /** Whether the client still has to be told this session was revived; once. */
@@ -172,6 +174,47 @@ function isClosed(userId: string, key: string): boolean {
   return until !== undefined && until >= Date.now();
 }
 
+/**
+ * Everything kept under a session the registry does not hold, deleted: history
+ * (memory and the recall store), session collections, destination — through
+ * retention's close, as for a live session — and the record. For a session
+ * that expired while the hub was down. The key is tombstoned first, so a
+ * revival reading the record meanwhile writes nothing back. Logged, not thrown.
+ */
+export async function discardSession(
+  userId: string,
+  key: string,
+): Promise<void> {
+  closed.set(slot(userId, key), Date.now() + longSessions().ttlMs);
+  const results = await Promise.allSettled([
+    deleteSession(userId, key),
+    records?.delete(userId, key),
+  ]);
+  const failed = results.find((r) => r.status === 'rejected');
+  if (failed) {
+    log().warn('expired session cleanup failed', {
+      key,
+      error: errorText(failed.reason),
+    });
+    return;
+  }
+  log().info('expired session deleted', { key });
+}
+
+/**
+ * Before the providers are built there is no recall store or collection
+ * registry to delete from: an expired session then stays as it is, record
+ * included, for a later pass.
+ */
+function mayDiscard(): boolean {
+  return isProvidersReady();
+}
+
+/**
+ * A revival is complete before anything sees it: the window is read first,
+ * and the registry entry, destination and window are set in one synchronous
+ * step after it, unless the key was closed or discarded meanwhile.
+ */
 async function revive(
   store: SessionRecordStore,
   userId: string,
@@ -180,15 +223,11 @@ async function revive(
   const rec = await store.get(userId, key);
   if (!rec) return undefined;
   if (rec.lastActivity + rec.ttlMs < Date.now()) {
-    await store.delete(userId, key).catch((err) =>
-      log().warn('expired session record delete failed', {
-        key,
-        error: errorText(err),
-      }),
-    );
+    if (mayDiscard()) await discardSession(userId, key);
     return undefined;
   }
-  // Closed while the record was read.
+  const turns = await readWindow(userId, key);
+  // Closed or discarded while the record and the history were read.
   if (isClosed(userId, key)) return undefined;
   const opened = longSessions().open(userId, {
     key,
@@ -204,45 +243,46 @@ async function revive(
   }
   if (rec.destination !== undefined)
     setSessionDestination(userId, key, rec.destination);
-  await rebuildWindow(opened);
+  if (!hasSessionHistory(key, userId)) {
+    for (const t of turns) {
+      appendToSession(
+        key,
+        userId,
+        { role: 'user', content: t.userText },
+        { role: 'assistant', content: t.assistantText },
+      );
+    }
+  }
   revivalNotices.add(opened);
   log().info('long session revived', { key });
   return opened;
 }
 
 /**
- * The in-memory history window from the recall store's latest turns. Without
- * a recall store, or when it fails, the session comes back without its window;
+ * The latest turns of the recall store, for the in-memory window. Without a
+ * recall store, or when it fails, the session comes back without its window;
  * the turns stay in the store, still reachable by recall.
  */
-async function rebuildWindow(s: LongSession): Promise<void> {
-  if (hasSessionHistory(s.key, s.userId)) return;
+async function readWindow(userId: string, key: string): Promise<StoredTurn[]> {
+  if (hasSessionHistory(key, userId)) return [];
   const rag = isProvidersReady() ? getSharedHistoryRag() : undefined;
-  if (!rag) return;
-  let turns: StoredTurn[];
+  if (!rag) return [];
   try {
-    turns = await rag.listTurns(turnOwner(s.userId, s.key));
+    const turns = await rag.listTurns(turnOwner(userId, key));
+    return turns.slice(-SESSION_MAX_MESSAGES / 2);
   } catch (err) {
     log().warn('revived session history could not be read', {
-      key: s.key,
+      key,
       error: errorText(err),
     });
-    return;
-  }
-  for (const t of turns.slice(-SESSION_MAX_MESSAGES / 2)) {
-    appendToSession(
-      s.key,
-      s.userId,
-      { role: 'user', content: t.userText },
-      { role: 'assistant', content: t.assistantText },
-    );
+    return [];
   }
 }
 
 /**
- * One sweep pass: idle sessions are closed (TTL), and records past their TTL
- * that no live session holds — sessions nobody came back for after a restart
- * — are deleted.
+ * One sweep pass: idle sessions are closed (TTL), and sessions whose record
+ * ran past its TTL with no live session — nobody came back after a restart —
+ * are discarded, state and record.
  */
 export async function sweepSessions(): Promise<void> {
   const registry = longSessionsIfReady();
@@ -250,19 +290,11 @@ export async function sweepSessions(): Promise<void> {
   await registry.sweep();
   const now = Date.now();
   for (const [id, until] of closed) if (until < now) closed.delete(id);
-  if (!records) return;
+  if (!records || !mayDiscard()) return;
   for (const r of await records.list()) {
     if (r.lastActivity + r.ttlMs >= now || registry.has(r.userId, r.key))
       continue;
-    try {
-      await records.delete(r.userId, r.key);
-      log().info('unclaimed session record deleted', { key: r.key });
-    } catch (err) {
-      log().warn('unclaimed session record delete failed', {
-        key: r.key,
-        error: errorText(err),
-      });
-    }
+    await discardSession(r.userId, r.key);
   }
 }
 
