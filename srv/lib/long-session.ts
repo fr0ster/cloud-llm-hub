@@ -36,7 +36,7 @@ export interface LongSession {
   binding?: CredentialBinding;
 }
 
-export type OpenRefusal = { refused: 'SESSION_LIMIT' };
+export type OpenRefusal = { refused: 'SESSION_LIMIT' | 'SESSION_EXISTS' };
 export type RunRefusal = { refused: 'SESSION_BUSY' | 'SESSION_CLOSED' };
 
 export interface LongSessionHooks {
@@ -82,6 +82,10 @@ export class LongSessionRegistry {
       revived?: boolean;
     },
   ): LongSession | OpenRefusal {
+    // Live or still closing: never replace an entry.
+    if (init.key !== undefined && this.entries.has(slot(userId, init.key))) {
+      return { refused: 'SESSION_EXISTS' };
+    }
     if (
       this.entries.size >= this.cfg.maxSessions ||
       this.size(userId) >= this.cfg.maxPerUser
@@ -164,18 +168,31 @@ export class LongSessionRegistry {
         e.active === 0 &&
         now - e.session.lastActivity > this.cfg.ttlMs,
     );
-    await Promise.all(
-      idle.map((e) => this.close(e.session.userId, e.session.key, 'ttl')),
-    );
+    await this.closeEach(idle, 'ttl');
     return idle.length;
   }
 
   async closeAll(reason: CloseReason): Promise<void> {
-    await Promise.all(
-      [...this.entries.values()].map((e) =>
-        this.close(e.session.userId, e.session.key, reason),
-      ),
+    await this.closeEach([...this.entries.values()], reason);
+  }
+
+  /** Waits for every close; a failing one is logged, not thrown. */
+  private async closeEach(
+    entries: Entry[],
+    reason: CloseReason,
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      entries.map((e) => this.close(e.session.userId, e.session.key, reason)),
     );
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        cds
+          .log('long-session')
+          .warn(
+            `closing session ${entries[i].session.key} failed: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`,
+          );
+      }
+    });
   }
 
   /** Sessions held, closing ones included; of one user when given. */
@@ -201,12 +218,6 @@ export class LongSessionRegistry {
     try {
       await entry.tail;
       await this.hooks.onClose(entry.session, reason);
-    } catch (err) {
-      cds
-        .log('long-session')
-        .warn(
-          `closing session ${entry.session.key} failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
     } finally {
       this.entries.delete(id);
     }

@@ -258,20 +258,58 @@ describe('LongSessionRegistry', () => {
     expect(registry.size()).toBe(0);
   });
 
-  it('a throwing onClose still removes the session', async () => {
+  it('a throwing onClose rejects close but still removes the session', async () => {
     const { registry } = make({}, async () => {
       throw new Error('abap gone');
     });
     const s = opened(registry.open('alice', {}));
+    await expect(registry.close('alice', s.key, 'explicit')).rejects.toThrow(
+      'abap gone',
+    );
+    expect(registry.size()).toBe(0);
+    expect(registry.get('alice', s.key)).toBeUndefined();
+  });
+
+  it('sweep and closeAll close the others when one hook throws', async () => {
+    const closed: string[] = [];
+    const { registry, setTime } = make({}, async (s) => {
+      if (s.userId === 'bad') throw new Error('abap gone');
+      closed.push(s.key);
+    });
     const warn = jest
       .spyOn(cds.log('long-session'), 'warn')
       .mockReturnValue(undefined as never);
-    await expect(
-      registry.close('alice', s.key, 'explicit'),
-    ).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    const good = opened(registry.open('alice', {}));
+    opened(registry.open('bad', {}));
+    setTime(5000);
+    expect(await registry.sweep()).toBe(2);
+    expect(closed).toEqual([good.key]);
     expect(registry.size()).toBe(0);
-    expect(registry.get('alice', s.key)).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    opened(registry.open('bad', {}));
+    opened(registry.open('alice', {}));
+    await expect(registry.closeAll('shutdown')).resolves.toBeUndefined();
+    expect(closed).toHaveLength(2);
+    expect(registry.size()).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it('open refuses an existing key, live or closing', async () => {
+    const gate = deferred();
+    const { registry } = make({}, async () => gate.promise);
+    const s = opened(registry.open('alice', { key: 'ls-k' }));
+    expect(registry.open('alice', { key: 'ls-k' })).toEqual({
+      refused: 'SESSION_EXISTS',
+    });
+    expect(registry.get('alice', 'ls-k')).toBe(s);
+    const closing = registry.close('alice', 'ls-k', 'explicit');
+    expect(registry.open('alice', { key: 'ls-k' })).toEqual({
+      refused: 'SESSION_EXISTS',
+    });
+    gate.resolve();
+    await closing;
+    expect('refused' in registry.open('alice', { key: 'ls-k' })).toBe(false);
   });
 });
