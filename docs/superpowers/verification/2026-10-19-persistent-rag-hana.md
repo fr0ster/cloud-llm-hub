@@ -70,6 +70,6 @@ at all the hub serves the LLM-only agent, which has no RAG by design (`ragQueryK
 - `tools/generate-tool-embeddings.ts` opened the HANA provider locally (no `VCAP_SERVICES`) and stopped
   `tools/deploy.sh`; the build now starts only the tools class (`93b2be9`).
 - `mta.yaml`: mbt rejects `optional` on a requires entry; removed (`c315d02`).
-- `LLM_AGENT_PRESENTATION_MODEL` is declared in `mta.yaml` without a default and is missing from the
-  `.mtaext` templates, so `cf deploy` fails to resolve it. srv does not read it. Fixed in this branch:
-  the parameter is gone from `mta.yaml`.
+- `mta.yaml` declared a presentation-model parameter without a default that the `.mtaext` templates
+  do not set, so `cf deploy` failed to resolve it. srv does not read it. Fixed in this branch: the
+  parameter is gone from `mta.yaml`.

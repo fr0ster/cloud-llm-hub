@@ -280,7 +280,7 @@
 - Modify: `docs/llm-agent/CONFIG_USAGE.md`, `docs/architecture/API_REFERENCE.md` (session routes, header, error codes), `docs/rfcs/BACKLOG.md` (drop the user-level history item; add "ABAP close after a crash — waits for `@mcp-abap-adt/connection` close-from-identifiers"), `CHANGELOG.md` (breaking: plain API and plain MCP off by default)
 - Create: `docs/superpowers/verification/2026-10-20-long-sessions-hana.md`
 
-- [ ] **Step 1:** Docs as listed; `npm run check:docs` if present.
+- [ ] **Step 1:** Docs as listed; `npm run docs:check`.
 - [ ] **Step 2:** Merge into the test subaccount's deployment branch, deploy with `tools/deploy.sh` (its `.mtaext` unchanged; store follows `hana-vector`).
 - [ ] **Step 3:** Verify on the test subaccount with an on-premise ABAP system (technical SAP user, credentials in headers): agent MCP `session_open` → two `execute_step` calls share history; `cf restart`; the same key → revived, history recalled; `session_close` → key gives 404; WebUI: connect, chat, restart, notice "revived"; plain `/v1/chat/completions` without key → 400 `SESSION_REQUIRED`.
 - [ ] **Step 4:** Record results; commit `docs: long sessions`.
