@@ -2433,7 +2433,7 @@ async function configureDestinationAgentBuilder(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
-  opts?: { skipSkills?: boolean },
+  opts?: { skipSkills?: boolean; skipRetrieval?: boolean },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
     getOrCreateSharedLlms(config);
@@ -2486,12 +2486,14 @@ async function configureDestinationAgentBuilder(
     .withMcpClients([mcpAdapter]);
 
   // Tools RAG store for MCP tool selection (auto-vectorized)
-  builder.setToolsRag(toolsRag);
+  if (!opts?.skipRetrieval) builder.setToolsRag(toolsRag);
 
   // Recall of earlier turns. The pipeline already queries `history` on every
   // request; until now nothing wrote to it, so it answered nothing every time.
-  const historyRag = getSharedHistoryRag();
-  if (historyRag) builder.setHistoryRag(historyRag);
+  if (!opts?.skipRetrieval) {
+    const historyRag = getSharedHistoryRag();
+    if (historyRag) builder.setHistoryRag(historyRag);
+  }
 
   // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
   // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
@@ -2513,7 +2515,7 @@ async function configureDestinationAgentBuilder(
 
   // Share embedder across all RAG queries
   const e = getProviders().embedding;
-  if (e) builder.withEmbedder(agentQueryEmbedder(e));
+  if (e && !opts?.skipRetrieval) builder.withEmbedder(agentQueryEmbedder(e));
 
   builder
     .withClassification(false) // Disable classifier — treat all input as action.
@@ -2528,7 +2530,6 @@ async function configureDestinationAgentBuilder(
     // server, which knows what may be cached and for whom.
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
-    .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter())
     // Consumer-owned seam: tells the tool loop an MCP failure means the
     // destination is unavailable (fail loud) rather than a tool-level error to
@@ -2540,6 +2541,10 @@ async function configureDestinationAgentBuilder(
     // this same shared helper — is the one whose tool loop actually runs
     // tools and needs it.
     .withMcpFailureClassifier(outageClassifier);
+
+  // The builder auto-creates a history store when summarization is enabled,
+  // even without setHistoryRag. Keep that store on the executor alone.
+  if (!opts?.skipRetrieval) builder.withHistorySummarization(20);
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
@@ -2574,7 +2579,8 @@ export async function buildAgentForDestination(
   const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms(config);
   const criticLlm = await mainLlmPromise;
 
-  // Controller build skips skills — its tool-loop stage is gated off
+  // Controller build skips retrieval and skills: the DAG coordinator consumes
+  // input/clarification history, not assembled retrieval context. Its tool-loop is gated off
   // whenever the DAG coordinator is active, so the controller never
   // consults the skills pool (see `configureDestinationAgentBuilder`).
   // Only the executor worker above needs the real skill vectorization. The
@@ -2584,7 +2590,7 @@ export async function buildAgentForDestination(
     mcpAdapter,
     toolsRag,
     config,
-    { skipSkills: true },
+    { skipSkills: true, skipRetrieval: true },
   );
 
   builder.withDagCoordinator({
