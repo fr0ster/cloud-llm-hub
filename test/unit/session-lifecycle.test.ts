@@ -1,3 +1,5 @@
+import { getRunRecordStore } from '../../srv/lib/run-record-store';
+
 /**
  * What opening, closing and reviving a long session do to the rest of the
  * hub: the record, the session's state, the history window.
@@ -478,4 +480,42 @@ it('R20 direct activity touch extends TTL and updates record without a queued ru
   );
   now += TTL - 1;
   expect(await longSessions().sweep()).toBe(0);
+});
+
+it('expired long session deletes the run record', async () => {
+  setup();
+  const s = await open('alice');
+  await getRunRecordStore().save(s.key, {
+    runId: 'r',
+    request: 'hi',
+    plan: { steps: [], createdAt: 1 },
+    steps: [],
+    outcome: 'answered',
+    finishedAt: 2,
+  });
+  now += TTL + 1;
+  await sweepSessions();
+  expect(await getRunRecordStore().load(s.key)).toBeUndefined();
+});
+it('session expired while offline deletes its run record', async () => {
+  setup();
+  const s = await open('alice');
+  await getRunRecordStore().save(s.key, {
+    runId: 'r',
+    request: 'hi',
+    plan: { steps: [], createdAt: 1 },
+    steps: [],
+    outcome: 'answered',
+    finishedAt: 2,
+  });
+  setup();
+  await records.store.put({
+    userId: 'alice',
+    key: s.key,
+    createdAt: 1,
+    lastActivity: 1,
+    ttlMs: TTL,
+  });
+  await sweepSessions();
+  expect(await getRunRecordStore().load(s.key)).toBeUndefined();
 });

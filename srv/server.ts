@@ -62,6 +62,7 @@ import {
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
 import { startProviders } from './lib/providers';
+import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
 import type { LongSessionRequest } from './lib/session-connection';
 import {
@@ -486,6 +487,7 @@ cds.on('bootstrap', (app: Application) => {
   // After getAgentConfig(): the default store follows the session RAG backend.
   // Logged here, not in agent-config.ts, which session-config imports.
   const sessions = sessionConfig();
+  initializeRunRecordStore(sessions, getAgentConfig().rag);
 
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Long-session configuration', { ...sessions });

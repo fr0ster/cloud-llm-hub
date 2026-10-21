@@ -35,6 +35,10 @@ parameters:
   # SmartAgent Configuration
   LLM_AGENT_MODE: "smart"
   LLM_AGENT_MAX_ITERATIONS: "20"
+  LLM_AGENT_CHAT_COORDINATOR: "adaptive"
+  LLM_AGENT_PLAN_MAX_STEPS: ""
+  LLM_AGENT_PLAN_MAX_REVISIONS: ""
+  LLM_AGENT_PLAN_MAX_DURATION_MS: ""
   LLM_AGENT_RAG_TYPE: "vector"
 
   # Handler sets to expose

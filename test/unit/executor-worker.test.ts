@@ -86,6 +86,7 @@ const config: AgentConfig = {
   },
   mcp: { destination: 'TEST_DEST', systemDestinations: {} },
   agent: {
+    chatCoordinator: 'fixed',
     mode: 'smart',
     maxIterations: 10,
     ragType: 'in-memory',

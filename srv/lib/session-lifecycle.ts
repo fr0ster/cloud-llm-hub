@@ -38,6 +38,7 @@ import {
   longSessionsIfReady,
   type OpenRefusal,
 } from './long-session';
+import { getRunRecordStore } from './run-record-store';
 import { dropSessionConnection } from './session-connection';
 import { type StoredTurn, turnOwner } from './session-history-rag';
 import type { SessionRecord, SessionRecordStore } from './session-record-store';
@@ -235,6 +236,7 @@ async function markClosed(record: SessionRecord): Promise<void> {
  * outcome checked, so a failed delete keeps the closed record for a retry.
  */
 async function cleanupSession(userId: string, key: string): Promise<void> {
+  await getRunRecordStore().delete(key);
   await deleteSession(userId, key);
   if (!isProvidersReady()) return;
   const forgotten = await getSharedHistoryRag()?.forgetOwner(

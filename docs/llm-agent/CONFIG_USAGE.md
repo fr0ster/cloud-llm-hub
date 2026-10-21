@@ -170,6 +170,17 @@ which makes tool selection keyword-only.
 Tool retrieval measurement defaults to untranslated queries. Set `TOOL_RAG_MEASURE_TRANSLATE=1`
 when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-query translation.
 
+### Chat coordinator
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` or `fixed`. Invalid values reject startup. |
+| `LLM_AGENT_PLAN_MAX_STEPS` | library: `20` | Optional positive integer step limit. |
+| `LLM_AGENT_PLAN_MAX_REVISIONS` | library: `3` | Optional positive integer revision limit. |
+| `LLM_AGENT_PLAN_MAX_DURATION_MS` | library: `300000` | Optional positive integer duration limit in milliseconds. |
+
+Unset budget fields remain undefined so the library applies its defaults. Malformed values reject startup. These settings apply to the chat path; `execute_step` retains its existing behavior. Run records keep only the latest run per session, with each step output limited to 4000 characters. With a HANA or PG session store they use the dedicated `h_runs` hub store; otherwise they stay in memory, bounded by `LLM_AGENT_MAX_SESSIONS`. Closing or expiring a session deletes its run record.
+
 ### Tool gate
 
 | Variable | Default | Meaning |

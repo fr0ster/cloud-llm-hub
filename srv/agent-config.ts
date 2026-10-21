@@ -18,6 +18,9 @@
  * - LLM_AGENT_MCP_DESTINATION: Destination name for MCP/ABAP connection (required)
  * - LLM_AGENT_MCP_ENDPOINT: MCP proxy endpoint URL (optional, defaults to local)
  * - LLM_AGENT_MODE: SmartAgent mode: 'smart' | 'pass' | 'hard' (default: 'smart')
+ * - LLM_AGENT_CHAT_COORDINATOR: 'adaptive' | 'fixed' (default: 'adaptive')
+ * - LLM_AGENT_PLAN_MAX_STEPS / MAX_REVISIONS / MAX_DURATION_MS: optional positive integers
+ *   (library defaults: 20 / 3 / 300000)
  * - LLM_AGENT_MAX_ITERATIONS: Max tool loop iterations (default: 10)
  * - LLM_AGENT_RAG_TYPE: RAG backend: 'in-memory' | 'ollama' (default: 'in-memory')
  * - LLM_AGENT_EXPOSITION: (deprecated — tool filtering now role-based via RAG)
@@ -26,6 +29,7 @@
 import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import { readPositiveIntFrom } from './lib/env-int';
 import {
   describeGatekeeperConfig,
   gatekeeperConfig,
@@ -167,6 +171,12 @@ export interface AgentConfig {
   agent: {
     /** Agent mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only) */
     mode: SmartAgentMode;
+    chatCoordinator: 'adaptive' | 'fixed';
+    planBudget?: {
+      maxSteps?: number;
+      maxRevisions?: number;
+      maxDurationMs?: number;
+    };
 
     /** Maximum tool loop iterations */
     maxIterations: number;
@@ -569,6 +579,20 @@ export function loadAgentConfig(): AgentConfig {
     },
     agent: {
       mode,
+      chatCoordinator: parseChatCoordinator(
+        process.env.LLM_AGENT_CHAT_COORDINATOR,
+      ),
+      planBudget: {
+        maxSteps: readPositiveIntFrom(process.env, 'LLM_AGENT_PLAN_MAX_STEPS'),
+        maxRevisions: readPositiveIntFrom(
+          process.env,
+          'LLM_AGENT_PLAN_MAX_REVISIONS',
+        ),
+        maxDurationMs: readPositiveIntFrom(
+          process.env,
+          'LLM_AGENT_PLAN_MAX_DURATION_MS',
+        ),
+      },
       maxIterations,
       ragType,
       historyRecencyWindow,
@@ -601,6 +625,8 @@ export function loadAgentConfig(): AgentConfig {
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',
     agentMode: config.agent.mode,
+    chatCoordinator: config.agent.chatCoordinator,
+    planBudget: config.agent.planBudget,
     maxIterations: config.agent.maxIterations,
     ragType: config.agent.ragType,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
@@ -725,4 +751,15 @@ export function parseToolGateTimeoutMs(value: string | undefined): number {
     .log('agent-config')
     .warn('Invalid LLM_AGENT_TOOL_GATE_TIMEOUT_MS; using 4000 ms');
   return 4000;
+}
+
+export function parseChatCoordinator(
+  value: string | undefined,
+): 'adaptive' | 'fixed' {
+  if (value === undefined || value === '' || value === 'adaptive')
+    return 'adaptive';
+  if (value === 'fixed') return 'fixed';
+  throw new Error(
+    `Invalid LLM_AGENT_CHAT_COORDINATOR: ${value}; expected adaptive or fixed`,
+  );
 }

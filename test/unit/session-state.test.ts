@@ -1,3 +1,6 @@
+import { getRunRecordStore } from '../../srv/lib/run-record-store';
+
+const mockWarn = jest.fn();
 const mockCdsContext: {
   user?: { id: string; is?: (role: string) => boolean };
 } = {};
@@ -6,7 +9,7 @@ jest.mock(
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: () => ({ info() {}, warn: mockWarn, error() {}, debug() {} }),
       get context() {
         return mockCdsContext;
       },
@@ -119,4 +122,31 @@ describe('no per-session map is keyed by the session alone', () => {
       /lastDestinationBySession\.(get|set|delete)\(\s*sessionId\s*[,)]/,
     );
   });
+});
+
+it('deleteSessionState deletes the run record and isolates a new session', async () => {
+  const store = getRunRecordStore();
+  await store.save(SID, {
+    runId: 'r',
+    request: 'hi',
+    plan: { steps: [], createdAt: 1 },
+    steps: [],
+    outcome: 'answered',
+    finishedAt: 2,
+  });
+  deleteSessionState('alice', SID);
+  await Promise.resolve();
+  expect(await store.load(SID)).toBeUndefined();
+  expect(await store.load('new-session')).toBeUndefined();
+});
+it('deleteSessionState logs a rejected run-record delete', async () => {
+  const spy = jest
+    .spyOn(getRunRecordStore(), 'delete')
+    .mockRejectedValueOnce(new Error('offline'));
+  expect(() => deleteSessionState('alice', 'failed-delete')).not.toThrow();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(mockWarn).toHaveBeenCalledWith('Run record delete failed', {
+    error: 'offline',
+  });
+  spy.mockRestore();
 });

@@ -661,7 +661,11 @@ export function createCollectionPersistence(
         const expired: CollectionMeta[] = [];
         for (const rec of d.value.records) {
           // The long-session records: the hub's, never a session collection.
-          if (isSessionRecordStore(rec, prefix)) continue;
+          if (
+            isSessionRecordStore(rec, prefix) ||
+            isRunRecordStore(rec, prefix)
+          )
+            continue;
           const decoded = decodeRecord(rec, prefix);
           if (
             'meta' in decoded &&
@@ -689,7 +693,11 @@ export function createCollectionPersistence(
         for (const rec of d.value.records) {
           // The hub's own stores (session history, long-session records):
           // the hub's, but not collections.
-          if (isHistoryRecord(rec, prefix) || isSessionRecordStore(rec, prefix))
+          if (
+            isHistoryRecord(rec, prefix) ||
+            isSessionRecordStore(rec, prefix) ||
+            isRunRecordStore(rec, prefix)
+          )
             continue;
           const decoded = decodeRecord(rec, prefix);
           if (!('meta' in decoded)) {
@@ -981,6 +989,24 @@ export function ensureSessionRecordStore(
   storePrefix?: string,
 ): Promise<Result<IRag, RagError>> {
   return ensureHubStore(provider, sessionRecordStore(storePrefix));
+}
+
+export const RUN_RECORD_STORE_NAME = 'h_runs';
+export function isRunRecordStore(
+  rec: RagCollectionRecord,
+  prefix?: string,
+): boolean {
+  return isHubStoreRecord(rec, prefix ? `${prefix}_h_runs` : 'h_runs');
+}
+export function ensureRunRecordStore(
+  provider: IRagProvider,
+): Promise<Result<IRag, RagError>> {
+  return ensureHubStore(provider, {
+    storeName: RUN_RECORD_STORE_NAME,
+    collectionName: RUN_RECORD_STORE_NAME,
+    source: 'runs',
+    label: 'run record store',
+  });
 }
 
 async function ensureHubStore(
