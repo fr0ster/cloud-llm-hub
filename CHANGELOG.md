@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Adaptive chat plans.** Executor and checker workers support checks,
+  verdict branches, revisions and clarification questions. Optional plan budgets
+  bound execution; failed planning falls back to one executor step. The latest
+  run is retained per session (HANA/PG `h_runs` for vector session stores,
+  memory otherwise) and deleted with the session.
+- **Chat step progress.** Both streaming protocols send `: status {json}`
+  SSE comments; the WebUI shows the current status and a compact step trail.
+
+### Changed
+
+- **Chat defaults to adaptive coordination.** The controller plans each
+  request, with instructions to answer small talk itself and use one executor
+  step for simple work. Set `LLM_AGENT_CHAT_COORDINATOR=fixed` to return to
+  the previous one-step DAG. The agent MCP `execute_step` path is unchanged.
+
 ## [8.2.0] - 2026-10-21
 
 ### Changed

@@ -174,12 +174,12 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` or `fixed`. Invalid values reject startup. |
+| `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` plans per request; `fixed` restores the previous one-step DAG. Unset or empty selects `adaptive`; other values reject startup. |
 | `LLM_AGENT_PLAN_MAX_STEPS` | library: `20` | Optional positive integer step limit. |
 | `LLM_AGENT_PLAN_MAX_REVISIONS` | library: `3` | Optional positive integer revision limit. |
 | `LLM_AGENT_PLAN_MAX_DURATION_MS` | library: `300000` | Optional positive integer duration limit in milliseconds. |
 
-Unset budget fields remain undefined so the library applies its defaults. Malformed values reject startup. These settings apply to the chat path; `execute_step` retains its existing behavior. Run records keep only the latest run per session, with each step output limited to 4000 characters. With a HANA or PG session store they use the dedicated `h_runs` hub store; otherwise they stay in memory, bounded by `LLM_AGENT_MAX_SESSIONS`. Closing or expiring a session deletes its run record.
+Unset or blank budget fields remain undefined so the library applies its defaults. Values must otherwise be positive safe integers written as decimal digits; malformed values reject startup. Budgets apply to adaptive execution; elapsed time is checked between steps, not as a timeout on planning or an in-flight worker call. These settings apply to the chat path; `execute_step` retains its existing behavior. Run records keep only the latest run per session, with each step output limited to 4000 characters. With a HANA or PG session store they use the dedicated `h_runs` hub store; otherwise they stay in memory, bounded by `LLM_AGENT_MAX_SESSIONS`. Closing or expiring a session deletes its run record.
 
 ### Tool gate
 

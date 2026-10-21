@@ -2,7 +2,7 @@
 
 SmartAgent configuration, integration, and testing.
 
-**v6.28+:** the SmartAgent (`@mcp-abap-adt/llm-agent-libs`, currently `^29.0.0`; `@mcp-abap-adt/llm-agent` is the contract/types surface) now runs as a coordinator-less executor worker under an explicit DAG coordinator, with a result-based reviewer (`NoticeFinalizer`) appending an `UNVERIFIED_WRITE:` notice when a response's claims contradict the actual tool results. See `../architecture/ARCHITECTURE.md` §7 and §16.
+Chat uses the adaptive coordinator by default (`@mcp-abap-adt/llm-agent-libs`, `^30.5.0`), with executor and checker workers. `LLM_AGENT_CHAT_COORDINATOR=fixed` restores the previous one-step DAG. `NoticeFinalizer` checks completed answers against captured tool results and can append an `UNVERIFIED_WRITE:` notice. The agent MCP `execute_step` runs the executor directly with the same honesty reviewer. See [Architecture](../architecture/ARCHITECTURE.md), sections 7 and 16.
 
 ## Documents
 
