@@ -44,8 +44,10 @@ import {
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  AdaptiveCoordinatorHandler,
   DagPlanInterpreter,
   InMemoryMetrics,
+  LlmAdaptiveController,
   SessionManager,
   type SmartAgent,
   SmartAgentBuilder,
@@ -84,6 +86,7 @@ import {
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { requestSystemContextResolver } from './lib/request-system-context';
 import { recordToolScore } from './lib/review-scope';
+import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
 import {
@@ -2592,6 +2595,11 @@ async function configureDestinationAgentBuilder(
   return builder;
 }
 
+export const EXECUTOR_DESCRIPTION =
+  "ABAP executor with the SAP system's tools: reads, searches, creates, changes and activates ABAP objects; returns what it did and found.";
+export const CHECKER_DESCRIPTION =
+  "Verifies an earlier step's result against the SAP system with the same tools (reads objects back, syntax check, activation status, test runs) and returns a JSON verdict; it does not change objects.";
+
 /**
  * Build a SmartAgent for a specific destination.
  * Shares LLM, embedder, facts/feedback/state RAG, metrics across all agents.
@@ -2612,13 +2620,16 @@ export async function buildAgentForDestination(
   // create from an inactive one).
   const recMcp = new RecordingMcpClient(mcpAdapter);
   let executor: SmartAgent | undefined;
+  let rawExecutor: SmartAgent | undefined;
   const executorWorker = await buildExecutorWorker(
     recMcp,
     toolsRag,
     config,
-    (agent) => {
+    (agent, rawAgent) => {
       executor = agent;
+      rawExecutor = rawAgent;
     },
+    { injectHistory: config.agent.chatCoordinator === 'fixed' },
   );
 
   // Same shared main LLM the rest of the destination agent uses — no extra
@@ -2626,9 +2637,9 @@ export async function buildAgentForDestination(
   const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms(config);
   const criticLlm = await mainLlmPromise;
 
-  // Controller build skips retrieval and skills: the DAG coordinator consumes
+  // Controller build skips retrieval and skills: the coordinator consumes
   // input/clarification history, not assembled retrieval context. Its tool-loop is gated off
-  // whenever the DAG coordinator is active, so the controller never
+  // whenever the coordinator is active, so the controller never
   // consults the skills pool (see `configureDestinationAgentBuilder`).
   // Only the executor worker above needs the real skill vectorization. The
   // controller itself never calls tools under the coordinator, so the bare
@@ -2640,18 +2651,46 @@ export async function buildAgentForDestination(
     { skipSkills: true, skipRetrieval: true },
   );
 
-  builder.withDagCoordinator({
-    planner: new FixedExecutorPlanner(),
-    interpreter: new DagPlanInterpreter(),
-    // Key MUST be 'executor' — FixedExecutorPlanner hardcodes `agent:
-    // 'executor'` on the single DAG node; a mismatched key makes the
-    // interpreter throw PLAN_INVALID.
-    workers: new Map([['executor', executorWorker]]),
-    // Reads the SAME recMcp the worker was built with.
-    finalizer: new NoticeFinalizer(recMcp, criticLlm),
-    // errorStrategy omitted -> AbortErrorStrategy default;
-    // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
-  });
+  if (config.agent.chatCoordinator === 'adaptive') {
+    // The worker wraps the raw agent; execute_step keeps the history proxy.
+    if (!rawExecutor) throw new Error('Executor agent was not built');
+    const workers = new Map<string, ISubAgent>([['executor', executorWorker]]);
+    // Both workers use the same tool loop and RecordingMcpClient.
+    workers.set(
+      'checker',
+      new SmartAgentSubAgent('checker', rawExecutor, {
+        description: CHECKER_DESCRIPTION,
+      }),
+    );
+    const budget = Object.fromEntries(
+      Object.entries(config.agent.planBudget ?? {}).filter(
+        ([, value]) => value !== undefined,
+      ),
+    );
+    builder.withStepperCoordinator(
+      new AdaptiveCoordinatorHandler({
+        controller: new LlmAdaptiveController(criticLlm),
+        workers,
+        finalizer: new NoticeFinalizer(recMcp, criticLlm),
+        runRecords: getRunRecordStore(),
+        budget,
+        fallbackWorker: 'executor',
+      }),
+    );
+  } else {
+    builder.withDagCoordinator({
+      planner: new FixedExecutorPlanner(),
+      interpreter: new DagPlanInterpreter(),
+      // Key MUST be 'executor' — FixedExecutorPlanner hardcodes `agent:
+      // 'executor'` on the single DAG node; a mismatched key makes the
+      // interpreter throw PLAN_INVALID.
+      workers: new Map([['executor', executorWorker]]),
+      // Reads the SAME recMcp the worker was built with.
+      finalizer: new NoticeFinalizer(recMcp, criticLlm),
+      // errorStrategy omitted -> AbortErrorStrategy default;
+      // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
+    });
+  }
 
   // NOTE: this builder's OWN tool-loop stage is gated off while the DAG
   // coordinator is active (see `configureDestinationAgentBuilder` below), so
@@ -2678,7 +2717,7 @@ export async function buildAgentForDestination(
     refreshToolsPerIteration: agentObj.config?.refreshToolsPerIteration,
     toolReselectPerIteration: agentObj.config?.toolReselectPerIteration,
     ragQueryK: agentObj.config?.ragQueryK,
-    hasDagCoordinator: true,
+    chatCoordinator: config.agent.chatCoordinator,
   });
 
   return handle;
@@ -2707,7 +2746,8 @@ export async function buildExecutorWorker(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
-  exposeExecutor?: (agent: SmartAgent) => void,
+  exposeExecutor?: (agent: SmartAgent, rawAgent: SmartAgent) => void,
+  options: { injectHistory: boolean } = { injectHistory: true },
 ): Promise<ISubAgent> {
   const builder = await configureDestinationAgentBuilder(
     mcpAdapter,
@@ -2717,8 +2757,12 @@ export async function buildExecutorWorker(
 
   const handle = await builder.build();
   const executor = withConversationHistory(handle.agent);
-  exposeExecutor?.(executor);
-  return new SmartAgentSubAgent('executor', executor);
+  exposeExecutor?.(executor, handle.agent);
+  return new SmartAgentSubAgent(
+    'executor',
+    options.injectHistory ? executor : handle.agent,
+    options.injectHistory ? undefined : { description: EXECUTOR_DESCRIPTION },
+  );
 }
 
 /**

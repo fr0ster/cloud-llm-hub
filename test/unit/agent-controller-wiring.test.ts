@@ -14,6 +14,7 @@
 const withRequestLogger = jest.fn();
 const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
+const withStepperCoordinator = jest.fn();
 const withSkillManager = jest.fn();
 const withMcpClients = jest.fn();
 const withMcpFailureClassifier = jest.fn();
@@ -47,6 +48,7 @@ function makeChainableBuilder() {
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
   builder.withDagCoordinator = chainable(withDagCoordinator);
+  builder.withStepperCoordinator = chainable(withStepperCoordinator);
   builder.withMcpFailureClassifier = chainable(withMcpFailureClassifier);
   builder.build = buildMock;
   return builder;
@@ -73,7 +75,9 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 }));
 
 import {
+  AdaptiveCoordinatorHandler,
   DagPlanInterpreter,
+  LlmAdaptiveController,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
@@ -86,7 +90,9 @@ import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { startProviders } from '../../srv/lib/providers';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import { runWithSessionId } from '../../srv/request-session';
 
 const config: AgentConfig = {
   llm: {
@@ -135,6 +141,78 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       .mockResolvedValueOnce({ agent: controllerAgent, ragStores: {} });
   });
 
+  it.each([
+    [undefined, {}],
+    [
+      {
+        maxSteps: undefined,
+        maxRevisions: undefined,
+        maxDurationMs: undefined,
+      },
+      {},
+    ],
+    [
+      { maxSteps: 7, maxRevisions: undefined, maxDurationMs: 1234 },
+      { maxSteps: 7, maxDurationMs: 1234 },
+    ],
+  ])(
+    'wires adaptive workers, shared dependencies and defined budget fields (%j)',
+    async (planBudget, expectedBudget) => {
+      const handle = await agentManager.buildAgentForDestination(
+        {} as never,
+        {} as never,
+        {
+          ...config,
+          agent: { ...config.agent, chatCoordinator: 'adaptive', planBudget },
+        },
+      );
+      expect(withDagCoordinator).not.toHaveBeenCalled();
+      expect(withStepperCoordinator).toHaveBeenCalledTimes(1);
+      const handler = withStepperCoordinator.mock.calls[0][0];
+      expect(handler).toBeInstanceOf(AdaptiveCoordinatorHandler);
+      const deps = handler.deps;
+      expect(deps.controller).toBeInstanceOf(LlmAdaptiveController);
+      expect(deps.finalizer).toBeInstanceOf(NoticeFinalizer);
+      expect(deps.controller.llm).toBe(deps.finalizer.criticLlm);
+      expect(deps.runRecords).toBe(getRunRecordStore());
+      expect(deps.budget).toEqual(expectedBudget);
+      expect(deps.fallbackWorker).toBe('executor');
+      expect([...deps.workers.keys()]).toEqual(['executor', 'checker']);
+      const exposed = handle as unknown as {
+        executor: unknown;
+        recMcp: unknown;
+        criticLlm: unknown;
+      };
+      expect(exposed.executor).toBeDefined();
+      expect(exposed.executor).not.toBe(workerAgent);
+      expect(exposed.recMcp).toBe(withMcpClients.mock.calls[0][0][0]);
+      expect(exposed.recMcp).toBe(deps.finalizer.recMcp);
+      expect(exposed.criticLlm).toBe(deps.controller.llm);
+      workerAgent.process.mockResolvedValue({
+        ok: true,
+        value: { content: 'done' },
+      });
+      for (const [name, worker] of deps.workers) {
+        expect(worker.description).toBe(
+          name === 'executor'
+            ? agentManager.EXECUTOR_DESCRIPTION
+            : agentManager.CHECKER_DESCRIPTION,
+        );
+        // Private identity plus behavior: ALS history must never replace the
+        // context selected by the controller, including an empty history.
+        expect(worker.agent).toBe(workerAgent);
+        await runWithSessionId(
+          'adaptive',
+          () => worker.run({ task: 'selected task', history: [] }),
+          [{ role: 'user', content: 'must not inject this' }],
+        );
+        expect(workerAgent.process.mock.calls.at(-1)?.[0]).toBe(
+          'selected task',
+        );
+      }
+    },
+  );
+
   it('wires withDagCoordinator exactly once with the correct dep shapes', async () => {
     const handle = await agentManager.buildAgentForDestination(
       {} as never,
@@ -143,6 +221,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     );
 
     expect(withDagCoordinator).toHaveBeenCalledTimes(1);
+    expect(withStepperCoordinator).not.toHaveBeenCalled();
     const deps = withDagCoordinator.mock.calls[0][0];
 
     expect(deps.planner).toBeInstanceOf(FixedExecutorPlanner);
