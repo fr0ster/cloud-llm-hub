@@ -60,11 +60,38 @@ describe('NoticeFinalizer', () => {
     benignLlm.chat.mockClear();
   });
 
-  // Under the DAG coordinator (llm-agent #166) the interpreter's onPartial goes
-  // to the session log ONLY — the FINALIZER's onPartial is the single
-  // client-facing content source (streaming AND the accumulated process()
-  // result). So the finalizer MUST re-emit interpreterOutput as content first,
-  // then any trailing notice.
+  it('opts into live interpreter content streaming', () => {
+    const finalizer = new NoticeFinalizer(
+      new RecordingMcpClient(fakeInner()),
+      benignLlm as never,
+    );
+    expect(finalizer.streamsInterpreterContent).toBe(true);
+  });
+
+  it('emits only the trailing NOTICE when the full answer was streamed', async () => {
+    const recMcp = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
+      {
+        call: { id: '', name: 'CreateDomain', arguments: {} },
+        result: { content: '{"success":true,"status":"inactive"}' },
+      },
+    ]);
+    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const onPartial = jest.fn();
+    const input = baseInput({
+      interpreterOutput: 'The domain was created and activated successfully.',
+      interpreterContentStreamed: true,
+      onPartial,
+    });
+    expect(await finalizer.finalize(input)).toEqual({
+      output: input.interpreterOutput,
+    });
+    expect(onPartial).toHaveBeenCalledTimes(1);
+    expect(onPartial).toHaveBeenCalledWith({
+      kind: 'content',
+      delta: expect.stringMatching(/^UNVERIFIED_WRITE:/),
+    });
+  });
 
   it('(a) emits the answer content FIRST, then a single trailing UNVERIFIED_WRITE notice when the claim outruns the tool RESULT', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
@@ -155,31 +182,35 @@ describe('NoticeFinalizer', () => {
     expect(result.output).toBe(input.interpreterOutput);
   });
 
-  it('(d) re-emits interpreterOutput as the client-facing content (single source under DAG #166) — no answer is lost', async () => {
-    const recMcp = new RecordingMcpClient(fakeInner());
-    jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
-      {
-        call: { id: '', name: 'CreateDomain', arguments: {} },
-        result: { content: '{"success":true,"status":"active"}' },
-      },
-    ]);
+  it.each([false, undefined])(
+    'emits the answer once when interpreterContentStreamed is %s',
+    async (interpreterContentStreamed) => {
+      const recMcp = new RecordingMcpClient(fakeInner());
+      jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
+        {
+          call: { id: '', name: 'CreateDomain', arguments: {} },
+          result: { content: '{"success":true,"status":"active"}' },
+        },
+      ]);
 
-    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
-    const onPartial = jest.fn();
-    const input = baseInput({
-      interpreterOutput: 'The domain was created and activated successfully.',
-      trace: { traceId: 't1' },
-      onPartial,
-    });
+      const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+      const onPartial = jest.fn();
+      const input = baseInput({
+        interpreterOutput: 'The domain was created and activated successfully.',
+        interpreterContentStreamed,
+        trace: { traceId: 't1' },
+        onPartial,
+      });
 
-    await finalizer.finalize(input);
+      await finalizer.finalize(input);
 
-    const contentDeltas = onPartial.mock.calls
-      .map((c) => c[0])
-      .filter((chunk) => chunk.kind === 'content')
-      .map((chunk) => chunk.delta);
-    expect(contentDeltas).toContain(input.interpreterOutput);
-  });
+      const contentDeltas = onPartial.mock.calls
+        .map((c) => c[0])
+        .filter((chunk) => chunk.kind === 'content')
+        .map((chunk) => chunk.delta);
+      expect(contentDeltas).toEqual([input.interpreterOutput]);
+    },
+  );
 
   it('(e) emits nothing when the executor produced no output and there is no contradiction (empty answer stays empty, no stray delta)', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());

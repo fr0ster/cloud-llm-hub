@@ -126,6 +126,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    buildMock.mockReset();
     // First build() call is the executor worker (buildExecutorWorker), the
     // second is the top-level controller — matches call order in the wiring.
     buildMock
@@ -278,6 +279,37 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(embedQuery).not.toHaveBeenCalled();
     expect(chat).not.toHaveBeenCalled();
     expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it('streams worker deltas through the real coordinator without duplicating the answer', async () => {
+    const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');
+    const deltas = ['Hello', ' from', ' the executor.'];
+    workerAgent.process.mockImplementationOnce(async (_prompt, options) => {
+      for (const delta of deltas) {
+        options.onPartial({ kind: 'content', delta });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      return { ok: true, value: { content: deltas.join('') } };
+    });
+    (SmartAgentBuilder as jest.Mock)
+      .mockImplementationOnce(() => makeChainableBuilder())
+      .mockImplementationOnce(
+        (options) => new actual.SmartAgentBuilder(options),
+      );
+    const handle = await agentManager.buildAgentForDestination(
+      { listTools: async () => ({ ok: true, value: [] }) } as never,
+      {} as never,
+      config,
+    );
+    const chunks: string[] = [];
+    for await (const chunk of handle.agent.streamProcess('Hello')) {
+      expect(chunk.ok).toBe(true);
+      if (chunk.ok && chunk.value.content) {
+        chunks.push(chunk.value.content);
+      }
+    }
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join('')).toBe(deltas.join(''));
   });
 
   it('never calls withRequestLogger — RecordingRequestLogger is gone', async () => {
