@@ -1,29 +1,8 @@
 /**
- * `IFinalizer` that surfaces the executor's answer to the client and, on a
- * failed honesty verdict, appends a trailing NOTICE.
- *
- * WHY it re-emits the answer (fixed 2026-07-24, was a notice-only regression):
- * under the DAG coordinator (`@mcp-abap-adt/llm-agent` #166) the interpreter's
- * `onPartial` — the executor's live content AND heartbeats — is routed to the
- * session log ONLY (`dag-coordinator.js`: `interpreterOnPartial`). The
- * FINALIZER's `onPartial` is the SINGLE client-facing content source: it is what
- * `streamProcess()` yields to the SSE client, and what `process()` accumulates
- * into the non-streaming result (`agent.js`: `content += chunk.value.content`).
- * `FinalizerResult.output` is NOT re-yielded by the coordinator. So a finalizer
- * that emits no content leaves BOTH streaming (`/v1/*` WebUI) and non-streaming
- * (`execute_step` / MCP subagent) clients with an empty response.
- *
- * The earlier "notice-only" design assumed the coordinator streamed the
- * executor's content live — true before the 20.x coordinator change, false
- * after it. Hence: emit `interpreterOutput` as content first, then any trailing
- * notice. Emitting it once (the coordinator does not also yield `output`) means
- * no duplication in either mode.
- *
- * NOTE (streaming granularity): this delivers the answer as ONE content delta at
- * finalize time, not token-by-token. Restoring live token-by-token streaming
- * requires the coordinator to forward the interpreter's `onPartial` to the
- * client (upstream). Connection keep-alive during the run is handled at the SSE
- * handler layer (openai-handler / anthropic-handler heartbeat).
+ * `IFinalizer` that opts into live executor content streaming by the DAG
+ * coordinator (llm-agent 30.4.0), then appends a NOTICE on a failed honesty verdict.
+ * Re-emits the answer only when the coordinator says it was not fully streamed
+ * (multi-node plan, partial stream, or sub-plan recovery).
  */
 
 import type {
@@ -40,6 +19,7 @@ import { evaluateGated } from './step-reviewer';
 
 export class NoticeFinalizer implements IFinalizer {
   readonly name = 'notice';
+  readonly streamsInterpreterContent = true;
   readonly model?: string;
 
   constructor(
@@ -48,9 +28,8 @@ export class NoticeFinalizer implements IFinalizer {
   ) {}
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
-    // The executor's answer — the single client-facing content source (see file
-    // header). Empty output → no stray delta.
-    if (input.interpreterOutput) {
+    // Re-emit only when the full answer was not streamed. Skip empty output.
+    if (input.interpreterContentStreamed !== true && input.interpreterOutput) {
       input.onPartial?.({ kind: 'content', delta: input.interpreterOutput });
     }
 
