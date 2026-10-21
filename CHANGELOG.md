@@ -4,9 +4,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.2.0] - 2026-10-21
+
 ### Changed
 
-- **Small talk gets no SAP tools.** The classifier model decides, in the same call that translates the request for tool search, whether answering needs the ABAP system; when it does not, the request is answered without MCP tools and skills. Any doubt or error keeps the tools; execute_step always has them; LLM_AGENT_TOOL_GATE=off ignores the decision while still translating. The first tool search of a request of at least 3 characters waits for one helper-LLM call that classifies and translates, English included. English is returned verbatim; other languages and transliterated text are translated without a language heuristic. Shorter requests skip the call and keep tools. One call per request; later re-selection searches in the same request reuse its decision and search untranslated. Concurrent first searches share the pending decision in request scope, independent of session identity. Hard mode (`LLM_AGENT_MODE=hard`) always keeps tools and skills. `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` bounds factory creation plus chat (default 4000 ms, positive integer; invalid values warn and use the default). Timeout or external abort keeps tools and the original text, is not cached, and clears pending analysis so the next request retries; underlying chat is aborted where supported.
+- **Small talk gets no SAP tools.** At most one helper-model call per
+  request (none for a cached request or one shorter than 3 characters)
+  translates it for tool search and decides whether answering needs the
+  ABAP system. When it does not (small talk, general questions, recall of
+  the conversation), the request is answered without MCP tools and skills,
+  so the prompt is shorter. Follow-ups such as "yes, do it" in an SAP
+  conversation keep their tools. Every doubt keeps the tools: an error, an
+  unclear answer, or a timeout (`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`, default
+  4000). Requests shorter than 3 characters, `execute_step` and hard mode
+  always have them, and `LLM_AGENT_TOOL_GATE=off` turns the gate off.
+  English requests now wait for this call too; German and transliterated
+  requests are now translated for tool search.
 
 ## [8.1.0] - 2026-10-21
 
