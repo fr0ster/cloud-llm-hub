@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Small talk gets no SAP tools.** The classifier model decides, in the same call that translates the request for tool search, whether answering needs the ABAP system; when it does not, the request is answered without MCP tools and skills. Any doubt or error keeps the tools; execute_step always has them; LLM_AGENT_TOOL_GATE=off ignores the decision while still translating. Every request of at least 3 characters waits for one helper-LLM call that classifies and translates (approximately 1 s), English included. English is returned verbatim; other languages and transliterated text are translated without a language heuristic. Shorter requests skip the call and keep tools.
+
 ## [8.1.0] - 2026-10-21
 
 ### Changed

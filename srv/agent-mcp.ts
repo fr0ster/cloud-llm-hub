@@ -90,7 +90,11 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
-import { getRequestHistory, runWithSessionId } from './request-session';
+import {
+  getRequestHistory,
+  runWithSessionId,
+  runWithToolGateBypass,
+} from './request-session';
 import { appendToSession, getSessionHistory } from './session-store';
 
 /**
@@ -390,9 +394,12 @@ async function executeStepRun(
                 // runs alone, no controller. The honesty check the controller's
                 // NoticeFinalizer gives chat runs here instead, with the same
                 // inputs and the same trailing NOTICE.
-                const result = await (
-                  agentHandle.executor ?? agentHandle.agent
-                ).process([...history, { role: 'user', content: task }], opts);
+                const result = await runWithToolGateBypass(() =>
+                  (agentHandle.executor ?? agentHandle.agent).process(
+                    [...history, { role: 'user', content: task }],
+                    opts,
+                  ),
+                );
                 if (result.ok && agentHandle.executor) {
                   const verdict = await evaluateGated({
                     content: result.value.content ?? '',

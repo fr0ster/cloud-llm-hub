@@ -8,8 +8,13 @@
  * only) and `MCP_Developer` (reader + writer collections, each capped at k and
  * concatenated, the same way `capPerCollection` builds it in production).
  *
+ * TOOL_RAG_MEASURE_CLASSIFY=1 evaluates the analyzer on every labeled request
+ * and history follow-up, reporting confusion, critical SAP misses and latency.
+ * History-only cases are excluded from retrieval quality metrics.
+ *
  * Translation defaults off. Set TOOL_RAG_MEASURE_TRANSLATE=1 to measure
- * classifier-model translation before tool search on every backend.
+ * analyzer translation before tool search for every query on every backend,
+ * including English, Latin-script languages and transliterated text.
  *
  * Labels (tools/tool-rag-queries.json), per query:
  *   - `relevant`: every tool that is a correct/useful answer.
@@ -41,23 +46,32 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  type Message,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { loadAgentConfig } from '../srv/agent-config';
 import {
+  createToolQueryAnalyzer,
   getSharedCorpusDocs,
   initProviders,
   loadToolCorpus,
 } from '../srv/agent-manager';
 import { resolveExposition } from '../srv/lib/exposition';
 import { startProviders } from '../srv/lib/providers';
+import { concernsSap } from '../srv/lib/review-signals';
+import { buildSkillsPool } from '../srv/lib/skills-pool';
 
 const CUTS = [5, 10, 15] as const;
 const THRESHOLD_PCTS = [0.25, 0.5, 0.75] as const;
 type Q = {
   q: string;
-  expect: string[];
-  relevant: string[];
-  required: string[][];
+  negative?: boolean;
+  history?: Message[];
+  expect?: string[];
+  relevant?: string[];
+  required?: string[][];
   multi?: boolean;
 };
 
@@ -73,6 +87,11 @@ type Row = {
   ascii: boolean;
   multi: boolean;
   structural: boolean;
+  negative: boolean;
+  sapIdentifier: boolean;
+  topToolScore: number | null;
+  topSkillScore: number | null;
+  skills: Hit[];
   relevant: string[];
   required: string[][];
   visibleRelevant: string[];
@@ -90,6 +109,9 @@ type CutMetrics = {
   p50ms: number | null;
   p95ms: number | null;
 };
+
+const topScore = (hits: Hit[]): number | null =>
+  hits.length ? Math.max(...hits.map((h) => h.score)) : null;
 
 const toolName = (id: unknown) => String(id ?? '').replace(/^tool:/, '');
 const pctOf = (sorted: number[], p: number) =>
@@ -153,7 +175,56 @@ async function main() {
       'utf8',
     ),
   ) as Q[];
+  for (const query of queries) {
+    if (query.negative && (query.relevant?.length || query.required?.length))
+      throw new Error(`Negative query has positive labels: ${query.q}`);
+    if (
+      !query.history &&
+      !query.negative &&
+      (!query.relevant?.length || !query.required?.length)
+    )
+      throw new Error(
+        `Positive query requires relevant and required labels: ${query.q}`,
+      );
+  }
   const config = loadAgentConfig();
+  let classification: Record<string, unknown> | undefined;
+  if (process.env.TOOL_RAG_MEASURE_CLASSIFY === '1') {
+    const analyzer = createToolQueryAnalyzer();
+    const calls = [];
+    for (const query of queries) {
+      const start = performance.now();
+      const result = await analyzer.analyze(query.q, query.history);
+      calls.push({
+        q: query.q,
+        history: query.history,
+        expectedSap: !query.negative,
+        needsAbapSystem: result.needsAbapSystem,
+        ms: performance.now() - start,
+      });
+    }
+    const latency = calls.map((c) => c.ms).sort((a, b) => a - b);
+    classification = {
+      confusionMatrix: {
+        sapTrue: calls.filter((c) => c.expectedSap && c.needsAbapSystem).length,
+        sapFalse: calls.filter((c) => c.expectedSap && !c.needsAbapSystem)
+          .length,
+        negativeTrue: calls.filter((c) => !c.expectedSap && c.needsAbapSystem)
+          .length,
+        negativeFalse: calls.filter((c) => !c.expectedSap && !c.needsAbapSystem)
+          .length,
+      },
+      criticalErrors: calls
+        .filter((c) => c.expectedSap && !c.needsAbapSystem)
+        .map((c) => c.q),
+      latency: { p50: pctOf(latency, 0.5), p95: pctOf(latency, 0.95) },
+      calls,
+    };
+    console.log(
+      'Classifier evaluation',
+      JSON.stringify(classification, null, 2),
+    );
+  }
   const p = await startProviders(config);
   initProviders(p);
   // in-memory (keyword) has no embedder: queries go in as text only.
@@ -166,12 +237,12 @@ async function main() {
   const exposition = new Map(docs.map((d) => [d.name, d.exposition]));
   // A label naming a tool the corpus does not have can never be satisfied —
   // fail loudly instead of reporting it as a retrieval miss.
-  const unknown = queries.flatMap(({ q, relevant, required }) =>
+  const unknown = queries.flatMap(({ q, relevant = [], required = [] }) =>
     [...relevant, ...required.flat()]
       .filter((t) => !exposition.has(t))
       .map((t) => `${t} (in "${q}")`),
   );
-  const notRelevant = queries.flatMap(({ q, relevant, required }) =>
+  const notRelevant = queries.flatMap(({ q, relevant = [], required = [] }) =>
     required
       .flat()
       .filter((t) => !relevant.includes(t))
@@ -186,8 +257,41 @@ async function main() {
     translateQueries: process.env.TOOL_RAG_MEASURE_TRANSLATE === '1',
   });
 
+  // Match the builder's skill documents and write through the production router.
+  // Skill writes embed at runtime, just as agent initialization does.
+  let skillStatus: { available: boolean; count: number; reason?: string };
+  try {
+    if (config.agent.skillRagK <= 0)
+      throw new Error('skillRagK is 0: production skill injection is disabled');
+    const pool = await buildSkillsPool().listSkills();
+    if (!pool.ok) throw pool.error;
+    if (!pool.value.length)
+      throw new Error('The production skill pool is empty');
+    const writer = store.writer();
+    if (!writer)
+      throw new Error('The production RAG store has no skill writer');
+    for (const skill of pool.value) {
+      const result = await writer.upsertRaw(
+        `skill:${skill.name}`,
+        `Skill: ${skill.name}\n${skill.description}`,
+        { name: skill.name },
+      );
+      if (!result.ok) throw result.error;
+    }
+    skillStatus = { available: true, count: pool.value.length };
+  } catch (error) {
+    // Do not publish scores from a partially loaded corpus.
+    skillStatus = { available: false, count: 0, reason: String(error) };
+  }
+
   const rows: Row[] = [];
-  for (const { q, relevant, required, multi } of queries) {
+  for (const {
+    q,
+    relevant = [],
+    required = [],
+    multi,
+    negative = false,
+  } of queries.filter((query) => !query.history)) {
     // biome-ignore lint/suspicious/noControlCharactersInRegex: ASCII range
     const ascii = /^[\x00-\x7f]*$/.test(q);
     for (const role of ROLE_TIERS) {
@@ -195,6 +299,7 @@ async function main() {
       const visible = (t: string) =>
         granted.includes(exposition.get(t) as (typeof granted)[number]);
       const byK: Row['byK'] = {};
+      let skills: Hit[] = [];
       for (const k of CUTS) {
         const t0 = performance.now();
         const r = await store.query(asQuery(q), k, {
@@ -202,6 +307,11 @@ async function main() {
         });
         const ms = performance.now() - t0;
         if (!r.ok) throw r.error;
+        if (k === 15 && skillStatus.available) {
+          skills = r.value
+            .filter((x) => String(x.metadata.id ?? '').startsWith('skill:'))
+            .map((x) => ({ id: String(x.metadata.id), score: x.score }));
+        }
         byK[k] = {
           ms,
           hits: r.value
@@ -214,6 +324,11 @@ async function main() {
         role,
         ascii,
         multi: !!multi,
+        negative,
+        sapIdentifier: concernsSap(q), // No score: evaluates only the identifier regex.
+        topToolScore: topScore(byK[15].hits),
+        topSkillScore: topScore(skills),
+        skills,
         structural: !required.every((g) => g.some(visible)),
         relevant,
         required,
@@ -223,7 +338,7 @@ async function main() {
     }
   }
 
-  const quality = rows.filter((r) => !r.structural);
+  const quality = rows.filter((r) => !r.structural && !r.negative);
   const relScores = quality
     .flatMap((r) =>
       r.byK[15].hits
@@ -266,7 +381,85 @@ async function main() {
     ['single', (r) => !r.multi],
     ['multi', (r) => r.multi],
   ];
+  const positiveRows = rows.filter((r) => !r.negative);
+  const negativeRows = rows.filter((r) => r.negative);
+  const share = (items: Row[], predicate: (r: Row) => boolean) =>
+    items.length ? r3(items.filter(predicate).length / items.length) : null;
+  const scoreSummary = (
+    items: Row[],
+    field: 'topToolScore' | 'topSkillScore',
+  ) => {
+    const scores = items
+      .map((r) => r[field])
+      .filter((s): s is number => s !== null)
+      .sort((a, b) => a - b);
+    return {
+      rows: items.length,
+      scored: scores.length,
+      empty: items.length - scores.length,
+      min: scores.length ? r3(scores[0]) : null,
+      p10: pctOf(scores, 0.1),
+      p50: pctOf(scores, 0.5),
+      max: scores.length ? r3(scores[scores.length - 1]) : null,
+    };
+  };
+  const topScores = {
+    tools: {
+      positives: scoreSummary(positiveRows, 'topToolScore'),
+      negatives: scoreSummary(negativeRows, 'topToolScore'),
+    },
+    skills: skillStatus.available
+      ? {
+          positives: scoreSummary(positiveRows, 'topSkillScore'),
+          negatives: scoreSummary(negativeRows, 'topSkillScore'),
+        }
+      : null,
+  };
+  const sweep = Array.from({ length: 31 }, (_, i) => {
+    const t = (30 + i) / 100;
+    return {
+      t,
+      toolChatClean: share(
+        negativeRows,
+        (r) => r.topToolScore === null || r.topToolScore < t,
+      ),
+      sapReqRecallK15: quality.length
+        ? metrics(quality, (r) => ({
+            ...r.byK[15],
+            hits: r.byK[15].hits.filter((h) => h.score >= t),
+          })).reqRecall
+        : null,
+      sapEmpty: positiveRows.filter(
+        (r) => r.topToolScore === null || r.topToolScore < t,
+      ).length,
+      sapBecameEmpty: positiveRows.filter(
+        (r) => r.topToolScore !== null && r.topToolScore < t,
+      ).length,
+      skillChatClean: skillStatus.available
+        ? share(
+            negativeRows,
+            (r) => r.topSkillScore === null || r.topSkillScore < t,
+          )
+        : null,
+      negativeSapIdentifiers: negativeRows.filter((r) => r.sapIdentifier)
+        .length,
+    };
+  });
   const report = {
+    classification,
+    translation: process.env.TOOL_RAG_MEASURE_TRANSLATE === '1',
+    skills: {
+      ...skillStatus,
+      k: config.agent.skillRagK,
+      evaluation:
+        'No skill relevance labels: top-score distributions only; no skill recall inferred from text.',
+    },
+    thresholdUnits:
+      'query-role pairs; SAP reqRecall excludes structural rows; SAP empty counts include structural rows; null top score means no result',
+    positiveRows: positiveRows.length,
+    negativeRows: negativeRows.length,
+    topScores,
+    sweep,
     backend: config.rag.backends.tools,
     embedder,
     queries: rows.length,
@@ -297,7 +490,30 @@ async function main() {
       }),
     ),
   };
-  console.log(JSON.stringify(report, null, 2));
+  console.log(
+    JSON.stringify(
+      report,
+      (_key, value) => (value === sweep ? undefined : value),
+      2,
+    ),
+  );
+  console.log(
+    'Threshold sweep (query-role pairs; rates 0..1; SAP empty includes structural rows)',
+  );
+  console.table(sweep);
+  console.log(
+    'Top score distributions (empty results excluded from quantiles):',
+  );
+  console.table({
+    'tools positive': topScores.tools.positives,
+    'tools negative': topScores.tools.negatives,
+    ...(topScores.skills
+      ? {
+          'skills positive': topScores.skills.positives,
+          'skills negative': topScores.skills.negatives,
+        }
+      : {}),
+  });
 
   // Per-query failures at K15: a required group nothing satisfied.
   const failures = quality.filter(

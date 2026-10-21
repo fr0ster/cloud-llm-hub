@@ -410,5 +410,116 @@
     "expect": ["CreateProgramUnitTest"],
     "relevant": ["CreateProgramUnitTest", "UpdateProgramUnitTest", "RunProgramUnitTest", "GetUnitTestResult"],
     "required": [["CreateProgramUnitTest", "UpdateProgramUnitTest"], ["RunProgramUnitTest"]]
+  },
+  {"q": "Hello!", "negative": true},
+  {"q": "Привіт!", "negative": true},
+  {"q": "How are you today?", "negative": true},
+  {"q": "Як справи?", "negative": true},
+  {"q": "Tell me a joke", "negative": true},
+  {"q": "Розкажи щось цікаве про котів", "negative": true},
+  {"q": "What can you do?", "negative": true},
+  {"q": "Що ти вмієш?", "negative": true},
+  {"q": "Яке кодове слово я дав?", "negative": true},
+  {"q": "What was the secret word I told you?", "negative": true},
+  {"q": "explain vector search", "negative": true},
+  {"q": "what is a REST API", "negative": true},
+  {"q": "напиши функцію сортування на python", "negative": true},
+  {"q": "Explain the difference between a list and a tuple in Python", "negative": true},
+  {"q": "Як працює рекурсія?", "negative": true},
+  {"q": "Help me write a birthday greeting", "negative": true},
+  {"q": "Дякую за допомогу!", "negative": true},
+  {"q": "What did we discuss earlier?", "negative": true},
+  {
+    "q": "так, зроби це",
+    "history": [
+      {
+        "role": "user",
+        "content": "Read classes ZCL_FIRST and ZCL_SECOND in the SAP system"
+      },
+      {
+        "role": "assistant",
+        "content": "I read both classes. Shall I update the implementation?"
+      }
+    ]
+  },
+  {
+    "q": "а другий?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Read classes ZCL_FIRST and ZCL_SECOND in the SAP system"
+      },
+      {
+        "role": "assistant",
+        "content": "I read both classes. Shall I update the implementation?"
+      }
+    ]
+  },
+  {
+    "q": "покажи ще",
+    "history": [
+      {
+        "role": "user",
+        "content": "Read classes ZCL_FIRST and ZCL_SECOND in the SAP system"
+      },
+      {
+        "role": "assistant",
+        "content": "I read both classes. Shall I update the implementation?"
+      }
+    ]
+  },
+  {
+    "q": "and now activate it",
+    "history": [
+      {
+        "role": "user",
+        "content": "Read classes ZCL_FIRST and ZCL_SECOND in the SAP system"
+      },
+      {
+        "role": "assistant",
+        "content": "I read both classes. Shall I update the implementation?"
+      }
+    ]
+  },
+  {
+    "q": "Tell me another joke",
+    "negative": true,
+    "history": [
+      {
+        "role": "user",
+        "content": "Hello, tell me a joke"
+      },
+      {
+        "role": "assistant",
+        "content": "Why did the chicken cross the road?"
+      }
+    ]
+  },
+  {
+    "q": "What did I just say?",
+    "negative": true,
+    "history": [
+      {
+        "role": "user",
+        "content": "Hello, tell me a joke"
+      },
+      {
+        "role": "assistant",
+        "content": "Why did the chicken cross the road?"
+      }
+    ]
   }
+,
+  {"q": "Zeige die Felder der Tabelle MARA", "expect": ["ReadTable", "GetTable"], "relevant": ["ReadTable", "GetTable", "GetTypeInfo"], "required": [["ReadTable", "GetTable"]]},
+  {"q": "Welche Pakete gibt es in $TMP?", "expect": ["GetPackageContents", "GetPackageTree"], "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"], "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]},
+  {"q": "Zeige den Quellcode der Klasse ZCL_DEMO", "expect": ["ReadClass", "GetClass"], "relevant": ["ReadClass", "GetClass"], "required": [["ReadClass", "GetClass"]]},
+  {"q": "Finde alle Klassen, deren Name mit Z beginnt", "expect": ["SearchObject"], "relevant": ["SearchObject"], "required": [["SearchObject"]]},
+  {"q": "pokazhy korotki dampy za sohodni", "expect": ["RuntimeListFeeds", "RuntimeListDumps"], "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"], "required": [["RuntimeListFeeds"]]},
+  {"q": "znaydy klasy, shcho pochynayutsya na Z", "expect": ["SearchObject"], "relevant": ["SearchObject"], "required": [["SearchObject"]]},
+  {"q": "pokazhy polya tablytsi MARA", "expect": ["ReadTable", "GetTable"], "relevant": ["ReadTable", "GetTable", "GetTypeInfo"], "required": [["ReadTable", "GetTable"]]},
+  {"q": "yaki pakety ye v $TMP?", "expect": ["GetPackageContents", "GetPackageTree"], "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"], "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]},
+  {"q": "Wie geht es dir?", "negative": true},
+  {"q": "Erzaehle mir einen Witz", "negative": true},
+  {"q": "yak spravy?", "negative": true},
+  {"q": "rozkazhy anekdot", "negative": true}
 ]

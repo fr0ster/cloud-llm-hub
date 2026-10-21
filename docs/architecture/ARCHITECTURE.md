@@ -698,6 +698,9 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
+ToolQueryAnalyzer translates the current request and decides whether answering needs the ABAP system in one classifier-model call, using up to six recent user/assistant messages (500 characters each) as decision context. Every request of at least 3 characters waits for this single call (approximately 1 s), English included, before tool search uses its translation. English is returned verbatim; other languages, including transliterated text, are translated with no language heuristic. Shorter requests skip the call and keep tools. A confident negative suppresses both MCP tools and skills; doubts, errors and invalid answers keep them. Results are cached by request and history. Delegated execute_step calls bypass the gate, as do unconfigured analyzers; LLM_AGENT_TOOL_GATE=off still runs the same call for translation but ignores its decision.
+
+
 > This is the flow through the **primary** agent surfaces — `/mcp/agent/stream/http` (`execute_step`), `/v1/chat/completions`, `/v1/messages`. The two `/v1/*` handlers build their per-request connection via `establishRequestConnection` (`request-connection.ts`); `/mcp/agent/stream/http` builds its own via the local `buildConnectionForDestination` in `agent-mcp.ts`. All three then call `getSmartAgent` directly, enter the per-request ALS scope through `runWithRequestConnection` (exported from `agent-manager.ts`), then the chat surfaces converge on the DAG-coordinator controller shown in Step 4, and `execute_step` on its executor (Step 4 explains why).
 
 #### Step 1 — Connection + Agent Handle

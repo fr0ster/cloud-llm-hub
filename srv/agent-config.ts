@@ -184,6 +184,7 @@ export interface AgentConfig {
      * Most `skill:*` entries one RAG query may surface (`LLM_AGENT_SKILL_RAG_K`,
      * default 3; 0 disables skills). Skills and tools compete for one top-K.
      */
+    toolGate?: 'classifier' | 'off';
     skillRagK: number;
     sapRelevanceScore?: number;
 
@@ -571,6 +572,7 @@ export function loadAgentConfig(): AgentConfig {
       ragType,
       historyRecencyWindow,
       ragQueryK,
+      toolGate: parseToolGate(process.env.LLM_AGENT_TOOL_GATE),
       skillRagK: parseSkillRagK(process.env),
       sapRelevanceScore: parseSapRelevanceScore(process.env),
       allowLlmOnlyFallback:
@@ -700,4 +702,12 @@ export function ensureAiCoreCredentials(): void {
     });
     cds.log('agent-config').info('AI Core credentials assembled from env vars');
   }
+}
+
+export function parseToolGate(value: string | undefined): 'classifier' | 'off' {
+  if (value === undefined || value === 'classifier') return 'classifier';
+  if (value === 'off') return 'off';
+  throw new Error(
+    `Invalid LLM_AGENT_TOOL_GATE: ${value}; expected classifier or off`,
+  );
 }

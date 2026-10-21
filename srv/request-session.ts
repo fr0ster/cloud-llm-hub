@@ -35,3 +35,11 @@ export function getRequestSessionId(): string | undefined {
 export function getRequestHistory(): Message[] {
   return als.getStore()?.history ?? [];
 }
+
+const toolGateScope = new AsyncLocalStorage<boolean>();
+export function runWithToolGateBypass<T>(fn: () => T): T {
+  return toolGateScope.run(true, fn);
+}
+export function isToolGateBypassed(): boolean {
+  return toolGateScope.getStore() === true;
+}
