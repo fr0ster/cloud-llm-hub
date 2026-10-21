@@ -8,17 +8,18 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
-- **Small talk gets no SAP tools.** One helper-model call per request
+- **Small talk gets no SAP tools.** At most one helper-model call per
+  request (none for a cached request or one shorter than 3 characters)
   translates it for tool search and decides whether answering needs the
   ABAP system. When it does not (small talk, general questions, recall of
   the conversation), the request is answered without MCP tools and skills,
   so the prompt is shorter. Follow-ups such as "yes, do it" in an SAP
   conversation keep their tools. Every doubt keeps the tools: an error, an
   unclear answer, or a timeout (`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`, default
-  4000). `execute_step` and hard mode always have them, and
-  `LLM_AGENT_TOOL_GATE=off` turns the gate off. English requests now wait
-  for this call too (about +0.5 s); German and transliterated requests are
-  now translated for tool search.
+  4000). Requests shorter than 3 characters, `execute_step` and hard mode
+  always have them, and `LLM_AGENT_TOOL_GATE=off` turns the gate off.
+  English requests now wait for this call too; German and transliterated
+  requests are now translated for tool search.
 
 ## [8.1.0] - 2026-10-21
 
