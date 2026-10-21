@@ -64,6 +64,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- **The chat page says when you have no access.** A user who is signed in
+  but has no MCP role collection used to see "CONNECTING..." forever. The
+  page now shows "ACCESS DENIED — NO MCP ROLE" and which role collection to
+  ask for. An expired sign-in shows "NOT SIGNED IN — RELOAD THE PAGE".
 - **Deploy without naming every model.** `LLM_AGENT_PRESENTATION_MODEL` (read
   by nothing) is gone from `mta.yaml`, and `LLM_AGENT_CLASSIFIER_MODEL` and
   `LLM_AGENT_EMBEDDING_MODEL` default to unset, so an `.mtaext` names only

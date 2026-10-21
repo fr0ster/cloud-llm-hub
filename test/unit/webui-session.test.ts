@@ -8,6 +8,121 @@ const client = readFileSync(
   'utf8',
 );
 
+describe('WebUI bootstrap readiness', () => {
+  function readinessHarness() {
+    const context = {
+      fetch: jest.fn(),
+      setStatus: jest.fn(),
+      lockInput: jest.fn(),
+      setTimeout: jest.fn(),
+      modelSelect: { appendChild: jest.fn(), innerHTML: '', disabled: true },
+      document: {
+        createElement: jest.fn(() => ({})),
+        getElementById: jest.fn(() => ({})),
+      },
+      populateAuxSelect: jest.fn(),
+      classifierSelect: {},
+      destSelect: { appendChild: jest.fn(), innerHTML: '', disabled: true },
+      renderDestinations: jest.fn(),
+      setIdleStatus: jest.fn(),
+      showLoginGate: jest.fn(),
+      unlockInput: jest.fn(),
+      userInput: { focus: jest.fn() },
+      refreshActiveCollections: jest.fn(),
+      loginGateDone: false,
+      ready: false,
+      llmOnlyMode: false,
+      enterLlmOnlyMode: jest.fn(),
+    };
+    const start = html.indexOf('        async function checkReady()');
+    const source = html.slice(
+      start,
+      html.indexOf('        checkReady();', start),
+    );
+    const checkReady = runInNewContext(`${source}\ncheckReady;`, context);
+    return { ...context, checkReady };
+  }
+
+  test.each([
+    [403, 'NO MCP ROLE'],
+    [401, 'NOT SIGNED IN'],
+  ])('shows an actionable error for HTTP %s', async (status, message) => {
+    const ui = readinessHarness();
+    const json = jest.fn().mockRejectedValue(new Error('not JSON'));
+    ui.fetch.mockResolvedValue({ status, json });
+
+    await ui.checkReady();
+
+    expect(ui.fetch).toHaveBeenCalledWith('/v1/models', {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    expect(ui.setStatus).toHaveBeenCalledTimes(1);
+    expect(ui.setStatus).toHaveBeenCalledWith(
+      expect.stringContaining(message),
+      'status-error',
+    );
+    expect(ui.lockInput).toHaveBeenCalledWith('bootstrap');
+    expect(ui.setTimeout).toHaveBeenCalledTimes(1);
+    expect(ui.setTimeout).toHaveBeenCalledWith(ui.checkReady, 30000);
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  test('recovers from access denied on the scheduled retry', async () => {
+    const ui = readinessHarness();
+    ui.fetch.mockResolvedValueOnce(response(403)).mockResolvedValueOnce(
+      response(200, {
+        data: [{ id: 'm' }],
+        _agent_ready: true,
+        _meta: { mcp_destination: 'D' },
+        _destinations: [],
+      }),
+    );
+
+    await ui.checkReady();
+
+    expect(ui.setStatus).toHaveBeenCalledWith(
+      expect.stringContaining('ACCESS DENIED'),
+      'status-error',
+    );
+    expect(ui.lockInput).toHaveBeenCalledWith('bootstrap');
+    expect(ui.unlockInput).not.toHaveBeenCalled();
+    const [retry, delay] = ui.setTimeout.mock.calls[0];
+    expect(delay).toBe(30000);
+    ui.setStatus.mockClear();
+
+    await retry();
+
+    expect(ui.fetch).toHaveBeenCalledTimes(2);
+    expect(ui.unlockInput).toHaveBeenCalledWith('bootstrap');
+    expect(ui.setIdleStatus).toHaveBeenCalledTimes(1);
+    expect(ui.showLoginGate).toHaveBeenCalledTimes(1);
+    expect(ui.setStatus).not.toHaveBeenCalled();
+    expect(ui.setTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['HTTP 500', 'network failure'])(
+    'keeps the connecting retry for %s',
+    async (failure) => {
+      const ui = readinessHarness();
+      if (failure === 'HTTP 500') {
+        ui.fetch.mockResolvedValue(response(500));
+      } else {
+        ui.fetch.mockRejectedValue(new Error('offline'));
+      }
+
+      await ui.checkReady();
+
+      expect(ui.setStatus).toHaveBeenCalledTimes(1);
+      expect(ui.setStatus).toHaveBeenCalledWith(
+        'CONNECTING...',
+        'status-connecting',
+      );
+      expect(ui.setTimeout).toHaveBeenCalledTimes(1);
+      expect(ui.setTimeout).toHaveBeenCalledWith(ui.checkReady, 3000);
+    },
+  );
+});
+
 describe('WebUI extended session protocol', () => {
   test('plain UI sends the session header and opens sessions explicitly', () => {
     expect(html).toContain('x-clh-session');
