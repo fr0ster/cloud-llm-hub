@@ -8,6 +8,68 @@ const client = readFileSync(
   'utf8',
 );
 
+describe('WebUI bootstrap readiness', () => {
+  function readinessHarness() {
+    const context = {
+      fetch: jest.fn(),
+      setStatus: jest.fn(),
+      lockInput: jest.fn(),
+      setTimeout: jest.fn(),
+    };
+    const start = html.indexOf('        async function checkReady()');
+    const source = html.slice(
+      start,
+      html.indexOf('        checkReady();', start),
+    );
+    const checkReady = runInNewContext(`${source}\ncheckReady;`, context);
+    return { ...context, checkReady };
+  }
+
+  test.each([
+    [403, 'NO MCP ROLE'],
+    [401, 'NOT SIGNED IN'],
+  ])('shows an actionable error for HTTP %s', async (status, message) => {
+    const ui = readinessHarness();
+    const json = jest.fn().mockRejectedValue(new Error('not JSON'));
+    ui.fetch.mockResolvedValue({ status, json });
+
+    await ui.checkReady();
+
+    expect(ui.fetch).toHaveBeenCalledWith('/v1/models');
+    expect(ui.setStatus).toHaveBeenCalledTimes(1);
+    expect(ui.setStatus).toHaveBeenCalledWith(
+      expect.stringContaining(message),
+      'status-error',
+    );
+    expect(ui.lockInput).toHaveBeenCalledWith('bootstrap');
+    expect(ui.setTimeout).toHaveBeenCalledTimes(1);
+    expect(ui.setTimeout).toHaveBeenCalledWith(ui.checkReady, 30000);
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  test.each(['HTTP 500', 'network failure'])(
+    'keeps the connecting retry for %s',
+    async (failure) => {
+      const ui = readinessHarness();
+      if (failure === 'HTTP 500') {
+        ui.fetch.mockResolvedValue(response(500));
+      } else {
+        ui.fetch.mockRejectedValue(new Error('offline'));
+      }
+
+      await ui.checkReady();
+
+      expect(ui.setStatus).toHaveBeenCalledTimes(1);
+      expect(ui.setStatus).toHaveBeenCalledWith(
+        'CONNECTING...',
+        'status-connecting',
+      );
+      expect(ui.setTimeout).toHaveBeenCalledTimes(1);
+      expect(ui.setTimeout).toHaveBeenCalledWith(ui.checkReady, 3000);
+    },
+  );
+});
+
 describe('WebUI extended session protocol', () => {
   test('plain UI sends the session header and opens sessions explicitly', () => {
     expect(html).toContain('x-clh-session');

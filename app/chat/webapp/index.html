@@ -1149,6 +1149,18 @@
         async function checkReady() {
             try {
                 const resp = await fetch('/v1/models');
+                if (resp.status === 403) {
+                    setStatus('ACCESS DENIED — NO MCP ROLE. Ask an administrator to assign an "MCP … Access" role collection, then sign in again', 'status-error');
+                    lockInput('bootstrap');
+                    setTimeout(checkReady, 30000);
+                    return;
+                }
+                if (resp.status === 401) {
+                    setStatus('NOT SIGNED IN — RELOAD THE PAGE TO SIGN IN', 'status-error');
+                    lockInput('bootstrap');
+                    setTimeout(checkReady, 30000);
+                    return;
+                }
                 const data = await resp.json();
                 if (data.data && data.data.length > 0) {
                     const meta = data._meta || {};
