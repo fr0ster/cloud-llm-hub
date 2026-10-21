@@ -359,3 +359,16 @@ it('falls back to the agent for an LLM-only handle', async () => {
     process.mockRestore();
   }
 });
+
+it('execute_step scopes the tool gate bypass to the executor call', async () => {
+  const { isToolGateBypassed } = await import('../../srv/request-session');
+  harness.process = async () => {
+    expect(isToolGateBypassed()).toBe(true);
+    return { ok: true, value: { content: 'done' } };
+  };
+  await executeStep(req, caller, {
+    task: 'Read the class',
+    destination: 'DEST',
+  });
+  expect(isToolGateBypassed()).toBe(false);
+});

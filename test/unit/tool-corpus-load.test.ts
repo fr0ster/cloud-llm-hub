@@ -22,7 +22,7 @@ import {
   ToolCorpusMissingError,
 } from '../../srv/agent-manager';
 import { corpusByRole, toolRecordAttributes } from '../../srv/lib/tool-corpus';
-import { ToolQueryTranslator } from '../../srv/lib/tool-query-translator';
+import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 
 const docs = [
   {
@@ -293,8 +293,8 @@ describe('loadToolCorpus, vector backend with a matching bundle', () => {
 
   it('translates in the wrapper by default and disables translation for measurement without backend preprocessors', async () => {
     const translate = jest
-      .spyOn(ToolQueryTranslator.prototype, 'translate')
-      .mockResolvedValue('Create a domain');
+      .spyOn(ToolQueryAnalyzer.prototype, 'analyze')
+      .mockResolvedValue({ text: 'Create a domain', needsAbapSystem: true });
     const query = jest.fn().mockResolvedValue({ ok: true, value: [] });
     const seen: unknown[] = [];
     const build = async (opts?: { translateQueries?: boolean }) => {

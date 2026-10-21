@@ -40,7 +40,7 @@ are a different mechanism and do apply per request.
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDER_URL` | `openai`: `LLM_AGENT_BASE_URL`; `ollama`: `http://localhost:11434` | Embedder base URL |
 | `LLM_AGENT_EMBEDDER_API_KEY` | `openai`: `LLM_AGENT_API_KEY` | Embedder API key. Secret — set with `cf set-env`, never in `.mtaext` |
-| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). Tool search translates non-ASCII queries of at least 15 characters with the classifier model on every backend, caching up to 500 translations; history and collections use the original query |
+| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). Tool search waits for one helper-model call (approximately 1 s) that classifies and translates every request of at least 3 characters, English included, with no language heuristic, caching up to 500 results; history and collections use the original query |
 | `LLM_AGENT_SESSION_RAG_BACKEND` | same as tools | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for the session-history RAG class. A persistent kind keeps the history across restarts (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for user and session collections. `qdrant`, `hana-vector` and `pg-vector` persist them (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_QDRANT_URL` | — | Required when any RAG class above is `qdrant` |
@@ -169,3 +169,12 @@ which makes tool selection keyword-only.
 
 Tool retrieval measurement defaults to untranslated queries. Set `TOOL_RAG_MEASURE_TRANSLATE=1`
 when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-query translation.
+
+### Tool gate
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `LLM_AGENT_TOOL_GATE` | `classifier` | A confident negative closes the gate in smart mode; `off`, hard mode and `execute_step` always keep tools and skills. |
+| `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` | `4000` | Positive integer deadline in milliseconds for factory creation plus chat; invalid values warn and use 4000. Timeout keeps tools. |
+
+`LLM_AGENT_TOOL_GATE` defaults to `classifier`; `off` always offers tools and skills: the same single call still classifies and translates, but its decision is ignored. The first tool search of a request of at least 3 characters waits for this call, English included; English is returned verbatim and all other languages, including transliteration, are translated without a language heuristic. Shorter requests skip the call and keep tools. One call per request; later re-selection searches in the same request reuse its decision and search untranslated. Concurrent first searches share the pending decision in request scope, independent of session identity. Hard mode (`LLM_AGENT_MODE=hard`) always keeps tools and skills. `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` bounds factory creation plus chat (default 4000 ms, positive integer; invalid values warn and use the default). Timeout or external abort keeps tools and the original text, is not cached, and clears pending analysis so the next request retries; underlying chat is aborted where supported. With `classifier`, a confident decision that the ABAP system is unnecessary removes tools and skills. Any doubt or error keeps them, and `execute_step` always bypasses the gate. Other values are rejected.

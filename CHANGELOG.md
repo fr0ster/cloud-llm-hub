@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Small talk gets no SAP tools.** The classifier model decides, in the same call that translates the request for tool search, whether answering needs the ABAP system; when it does not, the request is answered without MCP tools and skills. Any doubt or error keeps the tools; execute_step always has them; LLM_AGENT_TOOL_GATE=off ignores the decision while still translating. The first tool search of a request of at least 3 characters waits for one helper-LLM call that classifies and translates, English included. English is returned verbatim; other languages and transliterated text are translated without a language heuristic. Shorter requests skip the call and keep tools. One call per request; later re-selection searches in the same request reuse its decision and search untranslated. Concurrent first searches share the pending decision in request scope, independent of session identity. Hard mode (`LLM_AGENT_MODE=hard`) always keeps tools and skills. `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` bounds factory creation plus chat (default 4000 ms, positive integer; invalid values warn and use the default). Timeout or external abort keeps tools and the original text, is not cached, and clears pending analysis so the next request retries; underlying chat is aborted where supported.
+
 ## [8.1.0] - 2026-10-21
 
 ### Changed

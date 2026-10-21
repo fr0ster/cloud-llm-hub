@@ -3,9 +3,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Message } from '@mcp-abap-adt/llm-agent';
 import { runWithReviewSignals } from './lib/review-scope';
+import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
 
 const als = new AsyncLocalStorage<{
   sessionId?: string;
+  toolGateDecision?: Promise<ToolQueryAnalysis>;
   /**
    * The conversation BEFORE this request's new user message.
    *
@@ -34,4 +36,27 @@ export function getRequestSessionId(): string | undefined {
 /** The turns preceding this request's new user message; empty when there are none. */
 export function getRequestHistory(): Message[] {
   return als.getStore()?.history ?? [];
+}
+
+const toolGateScope = new AsyncLocalStorage<boolean>();
+export function runWithToolGateBypass<T>(fn: () => T): T {
+  return toolGateScope.run(true, fn);
+}
+export function isToolGateBypassed(): boolean {
+  return toolGateScope.getStore() === true;
+}
+
+/** First search owns analysis; later searches retain their own search text. */
+export async function requestToolGateDecision(
+  text: string,
+  analyze: () => Promise<ToolQueryAnalysis>,
+): Promise<ToolQueryAnalysis> {
+  const scope = als.getStore();
+  if (!scope) return analyze();
+  if (scope.toolGateDecision) {
+    const decision = await scope.toolGateDecision;
+    return { text, needsAbapSystem: decision.needsAbapSystem };
+  }
+  scope.toolGateDecision = analyze();
+  return scope.toolGateDecision;
 }
