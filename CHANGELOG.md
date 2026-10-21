@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-10-21
+
 ### Changed
 
 - **Chat answers stream as they are written.** The chat channels (WebUI, OpenAI/Anthropic API) used to receive the whole answer in one piece at the end; with @mcp-abap-adt/llm-agent 30.4.0 the executor's text streams live, and the honesty NOTICE still follows the answer.
