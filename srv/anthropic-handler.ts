@@ -360,6 +360,10 @@ async function serveMessages(
               if (!chunk.ok && streamError === undefined) {
                 streamError = chunk.error;
               }
+              if (chunk.ok && chunk.value.status) {
+                out.write(`: status ${JSON.stringify(chunk.value.status)}\n\n`);
+                continue;
+              }
               yield chunk;
             }
           })();

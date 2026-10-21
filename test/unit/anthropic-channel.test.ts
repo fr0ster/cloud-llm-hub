@@ -622,3 +622,35 @@ describe('a long session', () => {
     expect(harness.events).toContain('safeStop');
   });
 });
+
+describe('adaptive status SSE', () => {
+  it('emits single-line comments and preserves the first data event and answer', async () => {
+    const status = {
+      stepId: 'create',
+      kind: 'execute',
+      state: 'started',
+      goal: 'line one\nline two',
+    };
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: '', status } };
+      yield { ok: true, value: { content: 'answer' } };
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+    const response = fakeRes();
+    const write = response.write.bind(response);
+    response.write = (text: string) => {
+      expect(response.headersSent).toBe(true);
+      return write(text);
+    };
+    const { res, done } = call(body(true), response);
+    await done;
+    expect(res.body).toContain(`: status ${JSON.stringify(status)}\n\n`);
+    const data = res.body
+      .split('\n')
+      .filter((line: string) => line.startsWith('data: '));
+    const first = JSON.parse(data[0].slice(6));
+    expect(first.type).toBe('message_start');
+    expect(res.body).toContain('answer');
+    expect(res.body).not.toContain('event: status');
+  });
+});

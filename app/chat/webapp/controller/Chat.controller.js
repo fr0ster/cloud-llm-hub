@@ -60,6 +60,16 @@ sap.ui.define([
       this._abortStream = StreamClient.streamChat({
         messages: apiMessages,
 
+        onStatus: function (status) {
+          oModel.setProperty("/statusText", ("STEP " + status.stepId + " · " + status.kind + " · " + status.state +
+            (status.verdict ? " · " + status.verdict : "")).toUpperCase());
+          var message = that._messages[assistantIdx];
+          message.steps = message.steps || [];
+          message.steps.push(status);
+          that._renderChat();
+          that._scrollToBottom();
+        },
+
         onDelta: function (content) {
           that._messages[assistantIdx].content += content;
           oModel.setProperty("/statusText", "STREAMING");
@@ -163,6 +173,20 @@ sap.ui.define([
         content = formatter.markdownToHtml(msg.content);
       }
 
+      var stepsHtml = "";
+      if (msg.steps && msg.steps.length) {
+        var latest = [];
+        msg.steps.forEach(function (step) {
+          var index = latest.findIndex(function (item) { return item.stepId === step.stepId; });
+          if (index < 0) { latest.push(step); } else { latest[index] = step; }
+        });
+        stepsHtml = '<div style="font-size:11px;color:#aaa;margin-bottom:6px">' + latest.map(function (step) {
+          var symbol = step.state === "failed" || step.verdict === "fail" ? "✗" :
+            step.state === "done" ? (step.verdict === "partial" ? "~" : "✓") : "…";
+          return formatter.escapeHtml(step.stepId) + " " + symbol;
+        }).join(" · ") + '</div>';
+      }
+
       var toolsHtml = "";
       if (msg.toolCalls && msg.toolCalls.length) {
         for (var t = 0; t < msg.toolCalls.length; t++) {
@@ -187,7 +211,7 @@ sap.ui.define([
 
       return '<div style="margin:0 0 16px">' +
         '<div style="display:inline-block;max-width:75%;background:#1c1c1c;padding:12px 16px;border-radius:16px 16px 16px 4px;box-shadow:0 1px 2px rgba(0,0,0,0.3);word-wrap:break-word;color:#e0e0e0;font-size:14px;line-height:1.6">' +
-        content + toolsHtml + usageHtml +
+        stepsHtml + content + toolsHtml + usageHtml +
         '</div></div>';
     },
 
