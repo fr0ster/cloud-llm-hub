@@ -12,7 +12,10 @@ export class ToolQueryAnalyzer {
   private readonly cache = new Map<string, ToolQueryAnalysis>();
   private readonly pending = new Map<string, Promise<ToolQueryAnalysis>>();
   private llmPromise?: Promise<ILlm>;
-  constructor(private readonly llm: ILlm | (() => Promise<ILlm>)) {}
+  constructor(
+    private readonly llm: ILlm | (() => Promise<ILlm>),
+    private readonly timeoutMs = 4000,
+  ) {}
 
   async analyze(
     text: string,
@@ -20,6 +23,7 @@ export class ToolQueryAnalyzer {
     options?: CallOptions & { translationOnly?: boolean },
   ): Promise<ToolQueryAnalysis> {
     const fallback = { text, needsAbapSystem: true };
+    if (options?.signal?.aborted) return fallback;
     const translationOnly = options?.translationOnly === true;
     if (text.length < 3) return fallback;
     const context = history
@@ -61,9 +65,42 @@ export class ToolQueryAnalyzer {
     context: unknown[],
     options?: CallOptions & { translationOnly?: boolean },
   ) {
+    const controller = new AbortController();
+    const fallback = { value: { text, needsAbapSystem: true }, valid: false };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop!: () => void;
+    const stopped = new Promise<typeof fallback>((resolve) => {
+      stop = () => {
+        resolve(fallback);
+        controller.abort();
+      };
+      timer = setTimeout(stop, this.timeoutMs);
+      options?.signal?.addEventListener('abort', stop, { once: true });
+      if (options?.signal?.aborted) stop();
+    });
+    try {
+      return await Promise.race([
+        stopped,
+        this.performRequest(text, context, {
+          ...options,
+          signal: controller.signal,
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      options?.signal?.removeEventListener('abort', stop);
+    }
+  }
+
+  private async performRequest(
+    text: string,
+    context: unknown[],
+    options?: CallOptions & { translationOnly?: boolean },
+  ) {
     let value = { text, needsAbapSystem: true };
     try {
       const llm = await this.resolveLlm();
+      if (options?.signal?.aborted) return { value, valid: false };
       const { translationOnly, ...callOptions } = options ?? {};
       const result = await llm.chat(
         [

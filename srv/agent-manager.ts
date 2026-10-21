@@ -106,6 +106,7 @@ import {
   getRequestHistory,
   getRequestSessionId,
   isToolGateBypassed,
+  requestToolGateDecision,
 } from './request-session';
 
 // ---------------------------------------------------------------------------
@@ -200,6 +201,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private readonly queryEmbedder?: IQueryEmbedder,
     private readonly toolGate: 'classifier' | 'off' = getAgentConfig().agent
       .toolGate ?? 'classifier',
+    private readonly agentMode = getAgentConfig().agent.mode,
   ) {}
 
   /** The store a given exposition's entries live in. */
@@ -381,13 +383,15 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       ragFilter?: { namespace?: string; exposition?: string[] };
     },
   ) {
-    const gateEnabled = this.toolGate !== 'off' && !isToolGateBypassed();
+    const gateEnabled =
+      this.agentMode !== 'hard' &&
+      this.toolGate !== 'off' &&
+      !isToolGateBypassed();
+    const analyzer = this.analyzer;
     const decision =
-      this.analyzer && embedding.text
-        ? await this.analyzer.analyze(
-            embedding.text,
-            getRequestHistory(),
-            options,
+      analyzer && embedding.text
+        ? await requestToolGateDecision(embedding.text, () =>
+            analyzer.analyze(embedding.text, getRequestHistory(), options),
           )
         : { text: embedding.text, needsAbapSystem: true };
     if (decision.text !== embedding.text) {
@@ -1197,20 +1201,22 @@ async function createToolsRagStore(
 
 export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
   const config = getAgentConfig();
-  return new ToolQueryAnalyzer(async () =>
-    trackedLlm(
-      await makeHubLlm(
-        {
-          provider: config.llm.provider,
-          apiKey: config.llm.apiKey,
-          baseURL: config.llm.baseUrl,
-          model: config.llm.classifierModel,
-          resourceGroup: config.llm.resourceGroup,
-          whenThrottled: config.llm.whenThrottled,
-        },
-        0.1,
+  return new ToolQueryAnalyzer(
+    async () =>
+      trackedLlm(
+        await makeHubLlm(
+          {
+            provider: config.llm.provider,
+            apiKey: config.llm.apiKey,
+            baseURL: config.llm.baseUrl,
+            model: config.llm.classifierModel,
+            resourceGroup: config.llm.resourceGroup,
+            whenThrottled: config.llm.whenThrottled,
+          },
+          0.1,
+        ),
       ),
-    ),
+    config.agent.toolGateTimeoutMs,
   );
 }
 

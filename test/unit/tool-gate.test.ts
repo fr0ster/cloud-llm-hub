@@ -1,5 +1,5 @@
 ﻿import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
-import { parseToolGate } from '../../srv/agent-config';
+import { parseToolGate, parseToolGateTimeoutMs } from '../../srv/agent-config';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import { getReviewSignals } from '../../srv/lib/review-scope';
 import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
@@ -201,4 +201,134 @@ it.each([
   resolve({ text: 'English translation', needsAbapSystem: true });
   await pending;
   expect(query.mock.calls[0][0].text).toBe('English translation');
+});
+
+it.each(['smart', 'hard'] as const)(
+  '%s mode respects its gate policy',
+  async (mode) => {
+    const { analyzer } = make(response('Hello', false));
+    const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
+    const rag = new ExpositionFilteringRag(
+      { query } as any,
+      undefined,
+      undefined,
+      3,
+      analyzer,
+      undefined,
+      'classifier',
+      mode,
+    );
+    const result = await runWithSessionId('mode', () =>
+      rag.query(new TextOnlyEmbedding('Hello'), 5),
+    );
+    expect(result).toEqual({ ok: true, value: mode === 'hard' ? rows : [] });
+  },
+);
+
+it('shares the first pending decision across parallel searches and keeps later text original', async () => {
+  let resolve!: (value: { text: string; needsAbapSystem: boolean }) => void;
+  const analyze = jest.fn(
+    () =>
+      new Promise<{ text: string; needsAbapSystem: boolean }>((r) => {
+        resolve = r;
+      }),
+  );
+  const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
+  const rag = new ExpositionFilteringRag(
+    { query } as any,
+    { query } as any,
+    { query } as any,
+    3,
+    { analyze } as any,
+  );
+  await runWithSessionId('same-session', async () => {
+    const first = rag.query(new TextOnlyEmbedding('first query'), 5);
+    const parallel = rag.query(new TextOnlyEmbedding('parallel query'), 5);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    resolve({ text: 'translated first', needsAbapSystem: true });
+    await Promise.all([first, parallel]);
+    await rag.query(new TextOnlyEmbedding('reselection query'), 5);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    const texts = query.mock.calls.map(([embedding]) => embedding.text);
+    expect(texts).toContain('translated first');
+    expect(texts).toContain('parallel query');
+    expect(texts).toContain('reselection query');
+  });
+  const next = runWithSessionId('same-session', () =>
+    rag.query(new TextOnlyEmbedding('next request'), 5),
+  );
+  expect(analyze).toHaveBeenCalledTimes(2);
+  resolve({ text: 'next request', needsAbapSystem: true });
+  await next;
+});
+
+it('honours a closed decision on subsequent searches', async () => {
+  const analyze = jest
+    .fn()
+    .mockResolvedValue({ text: 'Hello', needsAbapSystem: false });
+  const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
+  const rag = new ExpositionFilteringRag(
+    { query } as any,
+    undefined,
+    undefined,
+    3,
+    { analyze } as any,
+  );
+  await runWithSessionId('closed', async () => {
+    for (const text of ['first query', 'later query'])
+      expect(await rag.query(new TextOnlyEmbedding(text), 5)).toEqual({
+        ok: true,
+        value: [],
+      });
+  });
+  expect(analyze).toHaveBeenCalledTimes(1);
+  expect(query.mock.calls[1][0].text).toBe('later query');
+});
+
+it('isolates execute_step bypass between concurrent requests', async () => {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const analyze = jest.fn(async () => {
+    await wait;
+    return { text: 'Hello', needsAbapSystem: false };
+  });
+  const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
+  const rag = new ExpositionFilteringRag(
+    { query } as any,
+    undefined,
+    undefined,
+    3,
+    { analyze } as any,
+  );
+  const search = () => rag.query(new TextOnlyEmbedding('Hello'), 5);
+  const bypass = runWithSessionId('shared', () =>
+    runWithToolGateBypass(search),
+  );
+  const normal = runWithSessionId('shared', search);
+  release();
+  expect(await bypass).toEqual({ ok: true, value: rows });
+  expect(await normal).toEqual({ ok: true, value: [] });
+});
+
+it('parses positive gate deadlines and warns on invalid values', () => {
+  const cds = require('@sap/cds');
+  const warning = jest
+    .spyOn(cds.log('agent-config'), 'warn')
+    .mockImplementation(() => {});
+  expect(parseToolGateTimeoutMs(undefined)).toBe(4000);
+  expect(parseToolGateTimeoutMs('125')).toBe(125);
+  for (const value of [
+    '',
+    '0',
+    '-1',
+    '1.5',
+    'invalid',
+    'Infinity',
+    '2147483648',
+  ])
+    expect(parseToolGateTimeoutMs(value)).toBe(4000);
+  expect(warning).toHaveBeenCalledTimes(7);
+  warning.mockRestore();
 });

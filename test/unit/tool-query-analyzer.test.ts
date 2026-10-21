@@ -230,3 +230,72 @@ describe('tool-only query translation', () => {
     },
   );
 });
+
+describe('analyzer deadline', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  it.each(['factory', 'chat'])(
+    'bounds unresolved %s and clears pending for retry',
+    async (stage) => {
+      const chat = jest.fn(
+        (_messages?: any, _tools?: any, _options?: any) =>
+          new Promise<any>(() => {}),
+      );
+      const factory = jest.fn(() =>
+        stage === 'factory'
+          ? new Promise<any>(() => {})
+          : Promise.resolve(llmWith(chat)),
+      );
+      const analyzer = new ToolQueryAnalyzer(factory, 4000);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const pending = analyzer.analyze('original request');
+        let settled = false;
+        void pending.then(() => {
+          settled = true;
+        });
+        await jest.advanceTimersByTimeAsync(3999);
+        expect(settled).toBe(false);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(await pending).toEqual({
+          text: 'original request',
+          needsAbapSystem: true,
+        });
+        expect((analyzer as any).pending.size).toBe(0);
+      }
+      expect(factory).toHaveBeenCalledTimes(2);
+      if (stage === 'chat') {
+        expect(chat).toHaveBeenCalledTimes(2);
+        expect(chat.mock.calls[0][2].signal.aborted).toBe(true);
+      }
+    },
+  );
+  it.each(['factory', 'chat'])(
+    'settles external abort during %s',
+    async (stage) => {
+      const chat = jest.fn(
+        (_messages?: any, _tools?: any, _options?: any) =>
+          new Promise<any>(() => {}),
+      );
+      const factory = jest.fn(() =>
+        stage === 'factory'
+          ? new Promise<any>(() => {})
+          : Promise.resolve(llmWith(chat)),
+      );
+      const analyzer = new ToolQueryAnalyzer(factory);
+      const controller = new AbortController();
+      const pending = analyzer.analyze('original request', [], {
+        signal: controller.signal,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      controller.abort();
+      expect(await pending).toEqual({
+        text: 'original request',
+        needsAbapSystem: true,
+      });
+      expect((analyzer as any).pending.size).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+      if (stage === 'chat')
+        expect(chat.mock.calls[0][2].signal.aborted).toBe(true);
+    },
+  );
+});
