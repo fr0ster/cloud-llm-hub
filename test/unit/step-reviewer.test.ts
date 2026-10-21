@@ -242,125 +242,108 @@ describe('evaluateGated', () => {
     return { chat, streamChat: async function* () {} };
   };
 
-  it('invokes the LLM critic when tool-call count is at/below threshold (suspicious)', async () => {
-    const llm = okLlm(
-      '{"possiblyFake": true, "confidence": "high", "reasons": "claimed create, only read ran"}',
-    );
-    const verdict = await evaluateGated({
-      content: 'Created successfully.',
-      records: [record('ReadDomain', '{"success":true}')],
-      llm: llm as never,
-    });
-    expect(llm.chat).toHaveBeenCalled();
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.issues.some((i) => i.kind === 'unsupported-claim')).toBe(
-        true,
+  it.each([
+    ['chat', 'Hello', undefined, 0, false],
+    ['identifier', 'Read ZDOMAIN', undefined, 0, true],
+    ['score', 'List objects', 0.48, 0, true],
+    ['warmup', 'Hello', undefined, 1000, false],
+  ])(
+    '%s gates review',
+    async (model, request, topToolScore, completionTokens, called) => {
+      const llm = okLlm(
+        '{"possiblyFake":false,"confidence":"low","reasons":"ok"}',
       );
-    }
-  });
-
-  // The case that produced three false notices in a row: a compact create that
-  // activates itself runs exactly ONE tool. At the old threshold that counted as
-  // "near-zero work", the critic was summoned, saw no Activate*, and called a
-  // correct answer fake. One executed tool is evidence; it belongs to the
-  // deterministic check, which reads what the tool reported.
-
-  // No gate any more. The critic answers whether the response delivered what the
-  // user asked, which no tool record can settle, so it runs on every step
-  // whatever ran during it. Tool count used to decide this and was wrong both
-  // ways: at one call it judged every honest single-tool create, at zero it saw
-  // only what the deterministic check already covers.
-  it('runs on every step, however much work was done', async () => {
+      await evaluateGated({
+        content: 'Hello',
+        records: [],
+        llm: llm as never,
+        request,
+        topToolScore,
+        completionTokens,
+        model,
+      });
+      expect(llm.chat).toHaveBeenCalledTimes(called ? 1 : 0);
+    },
+  );
+  it('records skipped steps and detects anomalies after warmup', async () => {
     const llm = okLlm(
-      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
+      '{"possiblyFake":false,"confidence":"low","reasons":"ok"}',
+    );
+    for (let i = 0; i < 20; i++)
+      await evaluateGated({
+        content: 'Hi',
+        request: 'Hi',
+        records: [],
+        llm: llm as never,
+        completionTokens: 100,
+        model: 'warm-model',
+      });
+    expect(llm.chat).not.toHaveBeenCalled();
+    await evaluateGated({
+      content: 'Hi',
+      records: [],
+      llm: llm as never,
+      completionTokens: 1000,
+      model: 'warm-model',
+    });
+    expect(llm.chat).toHaveBeenCalledTimes(1);
+  });
+  it('normal tools skip review while deterministic issues survive', async () => {
+    const llm = okLlm('');
+    const records = [record('ReadDomain', '{"success":true}')];
+    expect(
+      await evaluateGated({
+        content: 'Read successfully.',
+        request: 'Read ZDOMAIN',
+        records,
+        llm: llm as never,
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      (
+        await evaluateGated({
+          content: 'The domain has been activated successfully.',
+          records,
+          llm: llm as never,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(llm.chat).not.toHaveBeenCalled();
+  });
+  it('merges a suspicious critic issue with a deterministic issue', async () => {
+    const llm = okLlm(
+      '{"possiblyFake":true,"confidence":"high","reasons":"wrong task"}',
     );
     const verdict = await evaluateGated({
-      content: 'Read the domain; its type is CHAR 10.',
-      records: Array.from({ length: 7 }, () =>
-        record('ReadDomain', '{"success":true}'),
-      ),
+      content: 'The domain has been activated successfully.',
+      request: 'Activate ZDOMAIN',
+      records: [],
       llm: llm as never,
     });
-    expect(llm.chat).toHaveBeenCalled();
-    expect(verdict.ok).toBe(true);
+    expect(llm.chat).toHaveBeenCalledTimes(1);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok)
+      expect(verdict.issues.map((i) => i.kind)).toEqual([
+        'unverified-write',
+        'unsupported-claim',
+      ]);
   });
-
-  it('fails open when the LLM critic throws — verdict unchanged, no spurious problem', async () => {
+  it('a suspicious critic failure leaves the deterministic verdict intact', async () => {
     const llm = {
       chat: jest.fn(async () => {
-        throw new Error('net');
+        throw new Error('network');
       }),
       streamChat: async function* () {},
     };
-    const verdict = await evaluateGated({
-      content: 'All good, nothing written.',
-      records: [record('ReadDomain', '{"success":true}')],
-      llm: llm as never,
-    });
-    expect(llm.chat).toHaveBeenCalled();
-    expect(verdict).toEqual({ ok: true });
-  });
-
-  it('fails open on timeout — verdict unchanged, no spurious problem', async () => {
-    process.env.LLM_AGENT_STEP_REVIEW_TIMEOUT_MS = '20';
-    const llm = {
-      chat: jest.fn(() => new Promise(() => {})),
-      streamChat: async function* () {},
-    };
-    const verdict = await evaluateGated({
-      content: 'All good, nothing written.',
-      records: [record('ReadDomain', '{"success":true}')],
-      llm: llm as never,
-    });
-    expect(verdict).toEqual({ ok: true });
-  });
-
-  // The gate no longer turns on how much was done: a response ASSERTING a
-  // completed write is what invites the critic, however many tools ran. The
-  // deterministic verdict stands on its own either way.
-  it('surfaces a deterministic write mismatch regardless of the tool-call gate', async () => {
-    const llm = okLlm(
-      '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
-    );
-    const verdict = await evaluateGated({
-      content: 'The domain has been activated successfully.',
-      records: Array.from({ length: 5 }, () =>
-        record('ReadDomain', '{"success":true}'),
-      ),
-      llm: llm as never,
-    });
-    // Consulted, because the response claims an activation to verify — and it
-    // found nothing wrong, so only the deterministic issue remains.
-    expect(llm.chat).toHaveBeenCalled();
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.issues).toEqual([
-        expect.objectContaining({
-          kind: 'unverified-write',
-          claimedOp: 'activated',
-        }),
-      ]);
-    }
-  });
-
-  it('merges LLM-found issues with an existing deterministic issue when both fire', async () => {
-    const llm = okLlm(
-      '{"possiblyFake": true, "confidence": "medium", "reasons": "extra doubt"}',
-    );
-    const verdict = await evaluateGated({
-      content: 'The domain has been activated successfully.',
-      records: [record('ReadDomain', '{"success":true}')],
-      llm: llm as never,
-    });
-    expect(llm.chat).toHaveBeenCalled();
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.issues.map((i) => i.kind).sort()).toEqual([
-        'unsupported-claim',
-        'unverified-write',
-      ]);
-    }
+    expect(
+      await evaluateGated({
+        content: 'I cannot do that.',
+        request: 'Read ZDOMAIN',
+        records: [],
+        llm: llm as never,
+      }),
+    ).toEqual({ ok: true });
+    expect(llm.chat).toHaveBeenCalledTimes(1);
   });
   it('kill switch: returns {ok: true} on a clear write mismatch when disabled, without invoking the LLM critic', async () => {
     process.env.LLM_AGENT_STEP_REVIEW_ENABLED = 'false';

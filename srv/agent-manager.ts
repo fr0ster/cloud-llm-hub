@@ -10,7 +10,7 @@
  * - MCP: Embedded EmbeddableMcpServer (in-process, no HTTP overhead)
  * - RAG: FallbackRag(VectorRag → InMemoryRag) with CircuitBreakerEmbedder
  * - RAG query: the tools store translates a query to English first
- *   (TranslatePreprocessor on the classifier-model LLM); no query expander and
+ *   (ToolQueryTranslator on the classifier-model LLM); no query expander and
  *   no reranker are wired — retrieval is the store's own vector top-K
  * - Resilience: CircuitBreaker for LLM + embedder failures
  * - No tool-result cache: the MCP server owns caching. SessionManager keeps the token budget
@@ -27,8 +27,10 @@ import {
   type CallOptions,
   ClineClientAdapter,
   FallbackLlmCallStrategy,
+  type ILlm,
   type IMcpClient,
   InMemoryRag,
+  type IQueryEmbedder,
   type IQueryEmbedding,
   type IRag,
   type IRagBackendWriter,
@@ -36,9 +38,10 @@ import {
   type IRagProvider,
   type ISubAgent,
   type Message,
+  QueryEmbedding,
   type RagMetadata,
   type RagResult,
-  TranslatePreprocessor,
+  TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DagPlanInterpreter,
@@ -80,6 +83,7 @@ import {
 } from './lib/providers';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
 import { requestSystemContextResolver } from './lib/request-system-context';
+import { recordToolScore } from './lib/review-scope';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import { assertToolAllowed } from './lib/tool-authorization';
 import {
@@ -91,6 +95,7 @@ import {
   type SharedCorpusDoc,
   toolStoreName,
 } from './lib/tool-corpus';
+import { ToolQueryTranslator } from './lib/tool-query-translator';
 
 export type { SharedCorpusDoc } from './lib/tool-corpus';
 export { collectionFor } from './lib/tool-corpus';
@@ -187,6 +192,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private writerStore?: IRag,
     private skillStore?: IRag,
     private readonly skillRagK: number = DEFAULT_SKILL_RAG_K,
+    private readonly translator?: ToolQueryTranslator,
+    private readonly queryEmbedder?: IQueryEmbedder,
   ) {}
 
   /** The store a given exposition's entries live in. */
@@ -368,6 +375,17 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       ragFilter?: { namespace?: string; exposition?: string[] };
     },
   ) {
+    if (this.translator && embedding.text) {
+      const translated = await this.translator.translate(
+        embedding.text,
+        options,
+      );
+      if (translated !== embedding.text) {
+        embedding = this.queryEmbedder
+          ? new QueryEmbedding(translated, this.queryEmbedder, options)
+          : new TextOnlyEmbedding(translated);
+      }
+    }
     const log = cds.log('tool-rag');
     // The caller's exposition, from the request options when the pipeline
     // forwards them and from the request-scoped store when it does not.
@@ -521,6 +539,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       );
     };
     const filtered = result.value.filter(isAllowed);
+    const topTool = filtered.find((row) => !isSkillId(row.metadata.id));
+    if (topTool) recordToolScore(topTool.score);
 
     if (filtered.length < result.value.length) {
       log.debug('RAG tool search filtered by exposition', {
@@ -1023,6 +1043,16 @@ export function getProviders(): Providers {
   return providers;
 }
 
+/**
+ * The query embedder for a search the hub runs itself (a chat's collections):
+ * one embedding of the query, shared by every store searched with it. The chat
+ * controller carries none, since it retrieves nothing.
+ */
+export function getQueryEmbedder(): IQueryEmbedder | undefined {
+  const e = providers?.embedding;
+  return e ? agentQueryEmbedder(e) : undefined;
+}
+
 /** False until server startup has built the providers; requests wait for it. */
 export function isProvidersReady(): boolean {
   return providers !== null;
@@ -1118,58 +1148,57 @@ function toolsStore(
   inner: IRag,
   writer?: IRag,
   skills?: IRag,
+  translator?: ToolQueryTranslator,
+  queryEmbedder?: IQueryEmbedder,
 ): ExpositionFilteringRag {
   return new ExpositionFilteringRag(
     inner,
     writer,
     skills,
     getAgentConfig().agent.skillRagK,
+    translator,
+    queryEmbedder,
   );
 }
 
 /** Create a tools RAG store (one per destination), wrapped to ignore ragFilter */
 async function createToolsRagStore(
-  stores: Providers['stores'] = getProviders().stores,
-  translateQueries = true,
+  stores: Providers['stores'],
+  translateQueries: boolean,
+  queryEmbedder?: IQueryEmbedder,
 ): Promise<ExpositionFilteringRag> {
-  if (stores.backendOf('tools') === 'in-memory') {
-    // Two stores here too. In-memory is the DEFAULT rag type, not a rare
-    // compatibility path — leaving it single-store would mean the isolation
-    // this class exists for does not apply in the common configuration.
-    return toolsStore(new InMemoryRag(), new InMemoryRag());
-  }
-  if (!translateQueries) {
-    const plain = () => stores.create('tools', 'unused');
-    return toolsStore(plain(), plain());
-  }
-
-  const config = getAgentConfig();
-  const helperLlm = trackedLlm(
-    await makeHubLlm(
-      {
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey,
-        baseURL: config.llm.baseUrl,
-        model: config.llm.classifierModel,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
-      },
-      0.1,
-    ),
-  );
-
-  // Enriched text comes pre-built from tool-intents.json, and the vectors from
-  // the build-time bundle (loadToolCorpus); nothing is enriched here.
   // One backend per collection. They are separate stores, not one store with a
   // tag: a tool a role cannot run must not be searchable by that role at all.
   // The name is ignored by the `vector` backend; `qdrant` tool stores are
-  // opened by loadToolCorpus under their fixed role names.
-  const makeBackend = () =>
-    stores.create('tools', 'unused', {
-      queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
-    });
+  // opened by loadToolCorpus under their fixed role names. Queries are
+  // translated by the wrapper, not by a backend preprocessor.
+  const makeBackend = () => stores.create('tools', 'unused');
+  return toolsStore(
+    makeBackend(),
+    makeBackend(),
+    undefined,
+    translateQueries ? createToolQueryTranslator() : undefined,
+    queryEmbedder,
+  );
+}
 
-  return toolsStore(makeBackend(), makeBackend());
+function createToolQueryTranslator(): ToolQueryTranslator {
+  const config = getAgentConfig();
+  return new ToolQueryTranslator(async () =>
+    trackedLlm(
+      await makeHubLlm(
+        {
+          provider: config.llm.provider,
+          apiKey: config.llm.apiKey,
+          baseURL: config.llm.baseUrl,
+          model: config.llm.classifierModel,
+          resourceGroup: config.llm.resourceGroup,
+          whenThrottled: config.llm.whenThrottled,
+        },
+        0.1,
+      ),
+    ),
+  );
 }
 
 /**
@@ -1581,9 +1610,8 @@ export function resetToolCorpusReadersForTest(): void {
  * - qdrant: the role stores whose completion records exist.
  * Anything else is a {@link ToolCorpusMissingError} naming the build step.
  *
- * `translateQueries: false` builds the `vector` store without its query
- * translation, so a measurement compares it with `qdrant` (which has none)
- * on equal terms. The server always keeps the default.
+ * `translateQueries: false` disables tool-query translation for measurement.
+ * The server always keeps the default on every backend.
  */
 export async function loadToolCorpus(
   p: Providers,
@@ -1603,7 +1631,12 @@ export async function loadToolCorpus(
   const backend = p.stores.backendOf('tools');
 
   if (backend === 'in-memory' || !p.embedding) {
-    const store = toolsStore(new InMemoryRag(), new InMemoryRag());
+    const store = toolsStore(
+      new InMemoryRag(),
+      new InMemoryRag(),
+      undefined,
+      opts.translateQueries === false ? undefined : createToolQueryTranslator(),
+    );
     const w = store.writer();
     if (!w) throw new Error('Tool corpus store is not writable (in-memory)');
     let count = 0;
@@ -1644,6 +1677,8 @@ export async function loadToolCorpus(
       p.stores.create('tools', names.reader),
       p.stores.create('tools', names.writer),
       p.stores.createLocal(),
+      opts.translateQueries === false ? undefined : createToolQueryTranslator(),
+      agentQueryEmbedder(p.embedding),
     );
     return { store, count: docs.length };
   }
@@ -1660,6 +1695,7 @@ export async function loadToolCorpus(
   const store = await createToolsRagStore(
     p.stores,
     opts.translateQueries ?? true,
+    agentQueryEmbedder(p.embedding),
   );
   const write = store.writer()?.upsertPrecomputedRaw;
   if (!write)
@@ -2411,7 +2447,7 @@ async function configureDestinationAgentBuilder(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
-  opts?: { skipSkills?: boolean },
+  opts?: { skipSkills?: boolean; skipRetrieval?: boolean },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
     getOrCreateSharedLlms(config);
@@ -2432,6 +2468,7 @@ async function configureDestinationAgentBuilder(
       ragQueryK: config.agent.ragQueryK,
       // Disable classifier — all input treated as action. Ensures tool search always runs.
       classificationEnabled: false,
+      ragTranslateEnabled: false,
     },
     prompts: {
       system: [
@@ -2458,17 +2495,19 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
-    .withMainLlm(mainLlm)
+    .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([mcpAdapter]);
 
   // Tools RAG store for MCP tool selection (auto-vectorized)
-  builder.setToolsRag(toolsRag);
+  if (!opts?.skipRetrieval) builder.setToolsRag(toolsRag);
 
   // Recall of earlier turns. The pipeline already queries `history` on every
   // request; until now nothing wrote to it, so it answered nothing every time.
-  const historyRag = getSharedHistoryRag();
-  if (historyRag) builder.setHistoryRag(historyRag);
+  if (!opts?.skipRetrieval) {
+    const historyRag = getSharedHistoryRag();
+    if (historyRag) builder.setHistoryRag(historyRag);
+  }
 
   // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
   // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
@@ -2490,7 +2529,7 @@ async function configureDestinationAgentBuilder(
 
   // Share embedder across all RAG queries
   const e = getProviders().embedding;
-  if (e) builder.withEmbedder(agentQueryEmbedder(e));
+  if (e && !opts?.skipRetrieval) builder.withEmbedder(agentQueryEmbedder(e));
 
   builder
     .withClassification(false) // Disable classifier — treat all input as action.
@@ -2505,7 +2544,6 @@ async function configureDestinationAgentBuilder(
     // server, which knows what may be cached and for whom.
     .withMetrics(metrics)
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
-    .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter())
     // Consumer-owned seam: tells the tool loop an MCP failure means the
     // destination is unavailable (fail loud) rather than a tool-level error to
@@ -2517,6 +2555,10 @@ async function configureDestinationAgentBuilder(
     // this same shared helper — is the one whose tool loop actually runs
     // tools and needs it.
     .withMcpFailureClassifier(outageClassifier);
+
+  // The builder auto-creates a history store when summarization is enabled,
+  // even without setHistoryRag. Keep that store on the executor alone.
+  if (!opts?.skipRetrieval) builder.withHistorySummarization(20);
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
@@ -2544,14 +2586,23 @@ export async function buildAgentForDestination(
   // just which tool NAMES ran (a name match alone can't tell an activated
   // create from an inactive one).
   const recMcp = new RecordingMcpClient(mcpAdapter);
-  const executorWorker = await buildExecutorWorker(recMcp, toolsRag, config);
+  let executor: SmartAgent | undefined;
+  const executorWorker = await buildExecutorWorker(
+    recMcp,
+    toolsRag,
+    config,
+    (agent) => {
+      executor = agent;
+    },
+  );
 
   // Same shared main LLM the rest of the destination agent uses — no extra
   // provider client stood up just for the critic layer.
   const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms(config);
   const criticLlm = await mainLlmPromise;
 
-  // Controller build skips skills — its tool-loop stage is gated off
+  // Controller build skips retrieval and skills: the DAG coordinator consumes
+  // input/clarification history, not assembled retrieval context. Its tool-loop is gated off
   // whenever the DAG coordinator is active, so the controller never
   // consults the skills pool (see `configureDestinationAgentBuilder`).
   // Only the executor worker above needs the real skill vectorization. The
@@ -2561,7 +2612,7 @@ export async function buildAgentForDestination(
     mcpAdapter,
     toolsRag,
     config,
-    { skipSkills: true },
+    { skipSkills: true, skipRetrieval: true },
   );
 
   builder.withDagCoordinator({
@@ -2588,8 +2639,7 @@ export async function buildAgentForDestination(
   // Expose recMcp on the handle so channel handlers can call
   // `recMcp.dropRequest(traceId)` in their `finally` block — nobody else
   // drops it, so the per-trace bucket would otherwise leak.
-  (handle as SmartAgentHandle & { recMcp?: RecordingMcpClient }).recMcp =
-    recMcp;
+  Object.assign(handle, { recMcp, executor, criticLlm });
 
   // Diagnostic: confirm structured pipeline is active
   // biome-ignore lint/suspicious/noExplicitAny: diagnostic access to private fields
@@ -2610,6 +2660,16 @@ export async function buildAgentForDestination(
 }
 
 /**
+ * A destination handle as `execute_step` reads it: the executor and what its
+ * honesty check needs, when the destination has one (the LLM-only agent has not).
+ */
+export type ExecutorAgentHandle = SmartAgentHandle &
+  (
+    | { executor?: undefined }
+    | { executor: SmartAgent; recMcp: RecordingMcpClient; criticLlm: ILlm }
+  );
+
+/**
  * Build the coordinator-less executor worker — the SAME tool-loop SmartAgent
  * configuration as `buildAgentForDestination` (via the shared
  * `configureDestinationAgentBuilder` helper), MINUS any coordinator. The
@@ -2622,6 +2682,7 @@ export async function buildExecutorWorker(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
+  exposeExecutor?: (agent: SmartAgent) => void,
 ): Promise<ISubAgent> {
   const builder = await configureDestinationAgentBuilder(
     mcpAdapter,
@@ -2630,10 +2691,9 @@ export async function buildExecutorWorker(
   );
 
   const handle = await builder.build();
-  return new SmartAgentSubAgent(
-    'executor',
-    withConversationHistory(handle.agent),
-  );
+  const executor = withConversationHistory(handle.agent);
+  exposeExecutor?.(executor);
+  return new SmartAgentSubAgent('executor', executor);
 }
 
 /**
@@ -2698,6 +2758,7 @@ async function buildLlmOnlyAgent(
       toolReselectPerIteration: false,
       ragQueryK: 0,
       classificationEnabled: false,
+      ragTranslateEnabled: false,
     },
     prompts: {
       system: [

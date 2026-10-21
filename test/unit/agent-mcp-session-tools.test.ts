@@ -267,3 +267,95 @@ it('R19 first execute_step adopts destination', async () => {
   expect(longSessions().get('alice', session)?.destination).toBe('DEST');
   expect(harness.establishCalls).toEqual(['DEST']);
 });
+
+async function directHandle() {
+  const { getSmartAgent } = await import('../../srv/agent-manager');
+  const handle = await getSmartAgent(undefined, 'DEST');
+  const executor = { process: jest.fn(handle.agent.process) };
+  const records = [
+    {
+      call: { id: '', name: 'CreateDomain', arguments: {} },
+      result: { content: '{"success":true,"status":"inactive"}' },
+    },
+  ];
+  const extras = {
+    executor,
+    criticLlm: { chat: jest.fn(), streamChat: async function* () {} },
+    recMcp: {
+      ...(handle as unknown as { recMcp: object }).recMcp,
+      getToolRecords: jest.fn(() => records),
+    },
+  };
+  Object.assign(handle, extras);
+  return { handle, ...extras };
+}
+
+it('runs only the executor and passes its output through verbatim', async () => {
+  const { handle, executor } = await directHandle();
+  const coordinator = jest.spyOn(handle.agent, 'process');
+  harness.process = async () => ({
+    ok: true,
+    value: { content: '  answer\n' },
+  });
+  try {
+    const result = await executeStep(req, caller, { task: 'hello' });
+    expect(result.content[0].text).toBe('  answer\n');
+    expect(executor.process).toHaveBeenCalledTimes(1);
+    expect(coordinator).not.toHaveBeenCalled();
+  } finally {
+    coordinator.mockRestore();
+    Reflect.deleteProperty(handle, 'executor');
+  }
+});
+
+it('appends the canonical notice for a deterministic contradiction', async () => {
+  const { handle, recMcp, criticLlm } = await directHandle();
+  const content = 'The domain was created and activated successfully.';
+  harness.process = async () => ({ ok: true, value: { content } });
+  const { evaluateDeterministic } = await import('../../srv/lib/reviewer-core');
+  const { renderNotice } = await import('../../srv/lib/notify-policy');
+  try {
+    const result = await executeStep(req, caller, {
+      task: 'create the domain',
+    });
+    expect(result.content[0].text).toBe(
+      content +
+        renderNotice(evaluateDeterministic(content, recMcp.getToolRecords())),
+    );
+    expect(recMcp.getToolRecords).toHaveBeenCalledWith(
+      expect.stringMatching(/^agent-step-/),
+    );
+    expect(criticLlm.chat).not.toHaveBeenCalled();
+  } finally {
+    Reflect.deleteProperty(handle, 'executor');
+  }
+});
+
+it('direct executor steps share each prior turn exactly once', async () => {
+  const { handle, executor } = await directHandle();
+  const session = await opened();
+  try {
+    await executeStep(req, caller, { session, task: 'first' });
+    await executeStep(req, caller, { session, task: 'second' });
+    expect(executor.process.mock.calls[1][0]).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: 'second' },
+    ]);
+  } finally {
+    Reflect.deleteProperty(handle, 'executor');
+  }
+});
+
+it('falls back to the agent for an LLM-only handle', async () => {
+  const { getSmartAgent } = await import('../../srv/agent-manager');
+  const handle = await getSmartAgent(undefined, 'DEST');
+  const process = jest.spyOn(handle.agent, 'process');
+  try {
+    const result = await executeStep(req, caller, { task: 'hello' });
+    expect(result.content[0].text).toBe('done');
+    expect(process).toHaveBeenCalledTimes(1);
+  } finally {
+    process.mockRestore();
+  }
+});

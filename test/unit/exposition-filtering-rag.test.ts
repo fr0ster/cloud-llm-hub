@@ -1,4 +1,6 @@
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
+import { getReviewSignals } from '../../srv/lib/review-scope';
+import { runWithSessionId } from '../../srv/request-session';
 
 type Row = { score: number; metadata: Record<string, unknown> };
 
@@ -238,4 +240,24 @@ describe('ExpositionFilteringRag writer — skill re-vectorization dedup', () =>
     await w.upsertRaw('skill:s', 'v2', {});
     expect(upserts).toEqual(['skill:s', 'skill:s']);
   });
+});
+
+test('records top non-skill tool score across searches', async () => {
+  let score = 0.5;
+  const rag = new ExpositionFilteringRag({
+    query: async () => ({
+      ok: true,
+      value: [
+        { score: 0.99, metadata: { id: 'skill:test' } },
+        { score, metadata: { id: 'tool:Read', exposition: 'search' } },
+      ],
+    }),
+  } as never);
+  await runWithSessionId('score', async () => {
+    await rag.query({} as never, 10);
+    score = 0.4;
+    await rag.query({} as never, 10);
+    expect(getReviewSignals()?.topToolScore).toBe(0.5);
+  });
+  await expect(rag.query({} as never, 10)).resolves.toMatchObject({ ok: true });
 });

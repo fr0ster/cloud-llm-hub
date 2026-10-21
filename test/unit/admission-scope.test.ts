@@ -179,7 +179,9 @@ describe('the calls that dispatch are the ones that register', () => {
     // Each construction site passes its result through trackedLlm: directly, or
     // via `.then(trackedLlm)` which the second pattern counts.
     const thenWrapped = src.match(/\.then\(\s*trackedLlm\s*\)/g)?.length ?? 0;
-    expect(wrapped + thenWrapped).toBe(made);
+    // The executor additionally decorates the shared main LLM to capture usage.
+    const usageWrapped = src.match(/trackedLlm\(mainLlm, true\)/g)?.length ?? 0;
+    expect(wrapped + thenWrapped - usageWrapped).toBe(made);
   });
 
   it('tracks the embedded tool dispatch', () => {

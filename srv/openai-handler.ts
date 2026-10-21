@@ -25,6 +25,7 @@ import {
   getCurrentDestination,
   getCurrentModel,
   getDestinationStates,
+  getQueryEmbedder,
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
@@ -590,8 +591,8 @@ async function serveChatCompletions(
     return [];
   })();
 
-  // The destination agent's internal deps: its embedder for the search below,
-  // and its RAG stores, which are swapped in only once admitted (see there).
+  // The destination agent's internal deps: its RAG stores, which are swapped
+  // in only once admitted (see there).
   // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
   const deps = (handle.agent as any).deps;
 
@@ -795,8 +796,9 @@ async function serveChatCompletions(
         const { QueryEmbedding, TextOnlyEmbedding } = await import(
           '@mcp-abap-adt/llm-agent'
         );
-        const embedding = deps.embedder
-          ? new QueryEmbedding(queryText, deps.embedder)
+        const embedder = getQueryEmbedder();
+        const embedding = embedder
+          ? new QueryEmbedding(queryText, embedder)
           : new TextOnlyEmbedding(queryText);
 
         const relevantTexts: string[] = [];

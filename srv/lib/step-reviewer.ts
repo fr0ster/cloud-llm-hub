@@ -1,4 +1,6 @@
 import type { ILlm, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
+import { suspicion, tokenStats } from './review-signals';
 import {
   evaluateDeterministic,
   parseToolOutcome,
@@ -237,27 +239,29 @@ export async function reviewStep(
 }
 
 /**
- * Deterministic-first, LLM-gated verdict for a step's response.
+ * Deterministic-first verdict for a step's response, with the LLM critic run
+ * only on suspicion.
  *
  * Kill switch: when `stepReviewEnabled(process.env)` is false (operator set
  * `LLM_AGENT_STEP_REVIEW_ENABLED` to a non-'true' value), the ENTIRE guard —
- * both the deterministic write-claim check and the LLM critic — is bypassed
- * and `{ ok: true }` is returned unconditionally. Enabled by default.
+ * both checks — is bypassed and `{ ok: true }` is returned unconditionally.
  *
- * Two independent checks, neither standing in for the other.
- *
- * `evaluateDeterministic` (write-claim vs. tool-RESULT ground truth) answers
- * what tools prove: it is authoritative, free, and needs no judgement.
- * `reviewStep` answers the one thing no comparison of tool records can — does
- * the response deliver what the USER asked for — and runs on every step. Per-trace
- * token totals are no longer captured (the reviewer now grounds on tool
- * RESULTS, not the request logger), so the gate is tool-call-count only.
- * Any LLM-found problem is merged in as an `unsupported-claim` issue; a
- * throwing/timed-out critic fails open — the deterministic verdict is
+ * `evaluateDeterministic` (write and read claims vs. tool-RESULT ground truth)
+ * runs on every step: it is authoritative and free. `reviewStep` — does the
+ * response deliver what the user asked — costs one LLM call, so it runs only
+ * when `suspicion()` reports a sign of fabrication: completion tokens far from
+ * this model's recent average, or an SAP request answered without any tool.
+ * An answer that needs no system (a recalled fact, a greeting) is not judged.
+ * Every step's tokens are recorded afterwards, so the average follows normal
+ * traffic. Any LLM-found problem is merged in as an `unsupported-claim` issue;
+ * a throwing/timed-out critic fails open — the deterministic verdict is
  * returned unchanged, never with a fabricated issue.
  */
 export async function evaluateGated(input: {
   content: string;
+  topToolScore?: number;
+  completionTokens?: number;
+  model?: string;
   records: ToolCallRecord[];
   llm: ILlm;
   /** What the USER asked, verbatim. */
@@ -271,17 +275,16 @@ export async function evaluateGated(input: {
 
   const deterministic = evaluateDeterministic(input.content, input.records);
 
-  // No gate. There used to be one, counting tool calls as a proxy for "little
-  // was done, so be suspicious" — and it was wrong in both directions: at one
-  // call it summoned a judge to every honest single-tool create, at zero it
-  // left the critic only the cases the deterministic check already answers for
-  // free. The proxy made sense while the critic reasoned about tools. It no
-  // longer does: the critic answers whether the response delivered what the
-  // user asked, which is worth asking of every step whatever ran during it.
-  //
-  // The cost is one LLM call per step, accepted deliberately. The kill switch
-  // above turns off the whole guard when it is not.
-  // Outcomes, not names — the same ground truth `evaluateDeterministic` reads.
+  const signal = suspicion(input);
+  if (input.model && input.completionTokens !== undefined) {
+    tokenStats(input.model).record(input.completionTokens);
+  }
+  const log = cds.log('step-reviewer');
+  if (!signal.suspicious) {
+    log.info('step review skipped');
+    return deterministic;
+  }
+  log.info('step review triggered', { reasons: signal.reasons });
   const executedTools = input.records.map(parseToolOutcome);
   let review: StepReview | null;
   try {

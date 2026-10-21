@@ -204,7 +204,7 @@ Access to full ABAP ADT capabilities.
 
 ### 7. **Honesty Guard — claim verification against tool results** *(v6.28+)*
 
-Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) runs through an explicit controller: a coordinator-less executor worker plus a **reviewer** that compares what the response claims to have written against the actual tool results.
+Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) runs the executor and a **reviewer** that compares what the response claims to have written against the actual tool results; the chat channels put a controller in front of the executor, `execute_step` (the hub as an external agent's subagent) does not. The LLM part of the review runs only on suspicion.
 
 **Features:**
 

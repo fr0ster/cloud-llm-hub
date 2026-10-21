@@ -19,6 +19,8 @@ const withMcpClients = jest.fn();
 const withMcpFailureClassifier = jest.fn();
 const withToolCache = jest.fn();
 const buildMock = jest.fn();
+const setToolsRag = jest.fn();
+const setHistoryRag = jest.fn();
 
 function makeChainableBuilder() {
   const builder: Record<string, jest.Mock> = {};
@@ -30,7 +32,8 @@ function makeChainableBuilder() {
   builder.withMainLlm = chainable(jest.fn());
   builder.withClassifierLlm = chainable(jest.fn());
   builder.withMcpClients = chainable(withMcpClients);
-  builder.setToolsRag = chainable(jest.fn());
+  builder.setToolsRag = chainable(setToolsRag);
+  builder.setHistoryRag = chainable(setHistoryRag);
   builder.withSkillManager = chainable(withSkillManager);
   builder.withEmbedder = chainable(jest.fn());
   builder.withClassification = chainable(jest.fn());
@@ -69,7 +72,10 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
 }));
 
-import { DagPlanInterpreter } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DagPlanInterpreter,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 // buildAgentForDestination is exported (like buildExecutorWorker) purely so
 // this wiring contract can be driven directly, without going through the
@@ -156,6 +162,124 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(withToolCache).not.toHaveBeenCalled();
   });
 
+  it('disables pipeline translation on the controller and executor builders', async () => {
+    await agentManager.buildAgentForDestination(
+      {} as never,
+      {} as never,
+      config,
+    );
+    const calls = (SmartAgentBuilder as jest.Mock).mock.calls;
+    expect(calls).toHaveLength(2);
+    for (const [options] of calls)
+      expect(options.agent.ragTranslateEnabled).toBe(false);
+  });
+
+  it('keeps tool retrieval and skills on the worker alone', async () => {
+    const toolsRag = {} as never;
+    await agentManager.buildAgentForDestination({} as never, toolsRag, config);
+    expect(setToolsRag).toHaveBeenCalledTimes(1);
+    expect(setToolsRag).toHaveBeenCalledWith(toolsRag);
+    expect(withSkillManager).toHaveBeenCalledTimes(1);
+    const instances = (SmartAgentBuilder as jest.Mock).mock.results.map(
+      (r) => r.value,
+    );
+    expect(instances[0].setToolsRag).toHaveBeenCalledWith(toolsRag);
+    expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
+    expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
+    expect(instances[1].setToolsRag).not.toHaveBeenCalled();
+    expect(instances[1].setHistoryRag).not.toHaveBeenCalled();
+    expect(instances[1].withEmbedder).not.toHaveBeenCalled();
+    expect(instances[1].withSkillManager).not.toHaveBeenCalled();
+    expect(instances[1].withHistorySummarization).not.toHaveBeenCalled();
+  });
+
+  it('runs the real controller with zero retrieval, translation, embedding or LLM calls before planning', async () => {
+    const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');
+    const chat = jest.fn();
+    const streamChat = jest.fn();
+    const embedQuery = jest.fn();
+    const initialize = actual.DefaultPipeline.prototype.initialize;
+    // Inject after builder store auto-creation, so even a lazy fallback
+    // embedding would reach this spy if the pipeline vectorized anything.
+    const pipelineInit = jest
+      .spyOn(actual.DefaultPipeline.prototype, 'initialize')
+      .mockImplementation(function (this: { deps: unknown }, deps: unknown) {
+        return initialize.call(this, {
+          ...(deps as object),
+          embedder: { embedQuery },
+        });
+      });
+    const translate = jest.fn();
+    const query = jest.fn(async () => {
+      await translate();
+      return { ok: true, value: [] };
+    });
+    const listTools = jest.fn(async () => ({
+      ok: true,
+      value: [
+        {
+          name: 'ReadObject',
+          description: 'Read an object',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    }));
+    let reachedCoordinator = false;
+    (SmartAgentBuilder as jest.Mock)
+      .mockImplementationOnce(() => makeChainableBuilder())
+      .mockImplementationOnce((options) => {
+        const builder = new actual.SmartAgentBuilder(options);
+        // Poison dependencies make any unexpected model or embedding use visible.
+        builder.withMainLlm({ chat, streamChat });
+        builder.withMainLlm = () => builder;
+        builder.withClassifierLlm({ chat, streamChat });
+        builder.withClassifierLlm = () => builder;
+        const withDag = builder.withDagCoordinator.bind(builder);
+        builder.withDagCoordinator = (deps: Record<string, unknown>) =>
+          withDag({
+            ...deps,
+            planner: {
+              plan: async () => {
+                reachedCoordinator = true;
+                expect(query).not.toHaveBeenCalled();
+                expect(translate).not.toHaveBeenCalled();
+                expect(embedQuery).not.toHaveBeenCalled();
+                expect(chat).not.toHaveBeenCalled();
+                expect(streamChat).not.toHaveBeenCalled();
+                throw new Error('stop at coordinator boundary');
+              },
+            },
+          });
+        return builder;
+      });
+    const handle = await agentManager.buildAgentForDestination(
+      { listTools } as never,
+      { query } as never,
+      config,
+    );
+    pipelineInit.mockRestore();
+    expect(Object.keys(handle.ragStores)).toEqual([]);
+    const messages = Array.from({ length: 30 }, (_, i) => ({
+      role: i % 2 ? ('assistant' as const) : ('user' as const),
+      content: `Попереднє повідомлення ${i}`,
+    }));
+    await handle.agent.process([
+      ...messages,
+      {
+        role: 'user',
+        content: 'Прочитай об’єкт ZTEST та поясни його призначення',
+      },
+    ]);
+    expect(reachedCoordinator).toBe(true);
+    expect(listTools).toHaveBeenCalledTimes(1);
+    // Assert outside the planner too: the coordinator catches planner errors.
+    expect(query).not.toHaveBeenCalled();
+    expect(translate).not.toHaveBeenCalled();
+    expect(embedQuery).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
   it('never calls withRequestLogger — RecordingRequestLogger is gone', async () => {
     await agentManager.buildAgentForDestination(
       {} as never,
@@ -164,6 +288,55 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     );
 
     expect(withRequestLogger).not.toHaveBeenCalled();
+  });
+
+  it('the real executor still queries tools and history and retains skills', async () => {
+    const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');
+    const { InMemoryRag } = jest.requireActual('@mcp-abap-adt/llm-agent');
+    const toolsRag = new InMemoryRag();
+    const toolsQuery = jest.spyOn(toolsRag, 'query');
+    let workerHandle:
+      | Awaited<ReturnType<typeof agentManager.buildAgentForDestination>>
+      | undefined;
+    let skillsConfigured = false;
+    (SmartAgentBuilder as jest.Mock).mockImplementationOnce((options) => {
+      const builder = new actual.SmartAgentBuilder(options);
+      const build = builder.build.bind(builder);
+      builder.build = async () => {
+        workerHandle = await build();
+        return workerHandle;
+      };
+      const withSkills = builder.withSkillManager.bind(builder);
+      builder.withSkillManager = (skills: unknown) => {
+        skillsConfigured = true;
+        return withSkills(skills);
+      };
+      // Stop after real retrieval and skill selection, before the worker LLM.
+      builder.withAssembler({
+        assemble: async () => ({
+          ok: false,
+          error: new Error('stop after retrieval'),
+        }),
+      });
+      return builder;
+    });
+    const worker = await agentManager.buildExecutorWorker(
+      { listTools: async () => ({ ok: true, value: [] }) } as never,
+      toolsRag,
+      config,
+    );
+    expect(worker.name).toBe('executor');
+    expect(skillsConfigured).toBe(true);
+    expect(workerHandle).toBeDefined();
+    if (!workerHandle) throw new Error('worker was not built');
+    const handle = workerHandle;
+    expect(Object.keys(handle.ragStores).sort()).toEqual(['history', 'tools']);
+    const historyQuery = jest.spyOn(handle.ragStores.history, 'query');
+    await handle.agent.process(
+      'Прочитай об’єкт ZTEST та поясни його призначення',
+    );
+    expect(toolsQuery).toHaveBeenCalled();
+    expect(historyQuery).toHaveBeenCalled();
   });
 
   it('wires a RecordingMcpClient into the worker (withMcpClients) and into the finalizer — same instance', async () => {
@@ -273,6 +446,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     const end = candidates.length ? Math.min(...candidates) : rest.length;
     const body = rest.slice(0, end);
 
+    expect(body).toContain('ragTranslateEnabled: false');
     expect(body).not.toContain('withDagCoordinator');
     expect(body).not.toContain('withCoordinator');
   });

@@ -40,7 +40,7 @@ are a different mechanism and do apply per request.
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDER_URL` | `openai`: `LLM_AGENT_BASE_URL`; `ollama`: `http://localhost:11434` | Embedder base URL |
 | `LLM_AGENT_EMBEDDER_API_KEY` | `openai`: `LLM_AGENT_API_KEY` | Embedder API key. Secret — set with `cf set-env`, never in `.mtaext` |
-| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). `qdrant` does **not** translate queries (`vector` does — one LLM call per non-ASCII query); it relies on a multilingual embedder such as `bge-m3` |
+| `LLM_AGENT_TOOLS_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` (today's behaviour) | `in-memory` \| `vector` \| `qdrant` for the tool-intent RAG class (`hana-vector` and `pg-vector` are refused at startup: the tool corpus on HANA/Postgres is a later project). Tool search translates non-ASCII queries of at least 15 characters with the classifier model on every backend, caching up to 500 translations; history and collections use the original query |
 | `LLM_AGENT_SESSION_RAG_BACKEND` | same as tools | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for the session-history RAG class. A persistent kind keeps the history across restarts (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_RAG_BACKEND` | derived from `LLM_AGENT_RAG_TYPE` | `in-memory` \| `vector` \| `qdrant` \| `hana-vector` \| `pg-vector` for user and session collections. `qdrant`, `hana-vector` and `pg-vector` persist them (see [Persistent RAG collections](#persistent-rag-collections)) |
 | `LLM_AGENT_QDRANT_URL` | — | Required when any RAG class above is `qdrant` |
@@ -57,6 +57,7 @@ are a different mechanism and do apply per request.
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | the capacity | How many callers may wait to be admitted — for a slot, for their own session, or for a retention place. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`. The queue passing three quarters is logged as pressure |
 | `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | unbounded | How many sessions may hold history and session collections. An idle one is evicted — history, collections and their files — to make room: first sessions no caller ever presented (a client keeping no cookie gets one per request), then the least recently used; a session with a pipeline or a RAG operation running is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller. With `/v1/rag/*` in use, set it above the capacity by the number of concurrent uploads |
 | `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS` | provider defaults | Sampling parameters |
+| `LLM_AGENT_SAP_RELEVANCE_SCORE` | `0.48` | Minimum top non-skill tool score for SAP relevance; validated in `0..1` |
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
@@ -65,6 +66,8 @@ All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits
 
 `LLM_AGENT_STEP_REVIEW_ENABLED=false` switches off the honesty controller's
 reviewer (`srv/agent-manager.ts`).
+
+`LLM_AGENT_SAP_RELEVANCE_SCORE` (default `0.48`, range `0..1`) is the minimum top non-skill tool retrieval score that marks a request as SAP-related for step review. SAP identifiers also qualify. The LLM critic runs only for SAP requests without tool calls or anomalous executor completion token counts (outside mean +/- two standard deviations over the last 50 steps per model, after 20 steps). The deterministic check always runs unless `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
 ## Long sessions
 
@@ -163,3 +166,6 @@ which makes tool selection keyword-only.
 - `srv/agent-config.ts` — the single place these variables are read
 - [ARCHITECTURE.md §12](../architecture/ARCHITECTURE.md) — per-variable semantics
 - [Installation Plan](../deployment/INSTALLATION_PLAN.md) — which of these a deployment actually needs
+
+Tool retrieval measurement defaults to untranslated queries. Set `TOOL_RAG_MEASURE_TRANSLATE=1`
+when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-query translation.

@@ -37,6 +37,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import {
   closeDestination,
+  type ExecutorAgentHandle,
   getSmartAgent,
   isDestinationClosed,
   retryAfterForDestination,
@@ -56,12 +57,14 @@ import {
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
+import { renderNotice } from './lib/notify-policy';
 import { bearerToken, computeDumpScope } from './lib/principal';
 import { safeStop } from './lib/request-connection';
 import {
   resolveRequestSystem,
   runWithRequestSystem,
 } from './lib/request-system-context';
+import { getReviewSignals } from './lib/review-scope';
 import { Semaphore } from './lib/semaphore';
 import {
   acquireSessionConnection,
@@ -75,6 +78,7 @@ import {
   takeRevivalNotice,
 } from './lib/session-lifecycle';
 import { recordTurn } from './lib/session-turns';
+import { evaluateGated } from './lib/step-reviewer';
 import { resolveSystemType } from './lib/system-type';
 import {
   destinationClosedText,
@@ -86,7 +90,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
-import { runWithSessionId } from './request-session';
+import { getRequestHistory, runWithSessionId } from './request-session';
 import { appendToSession, getSessionHistory } from './session-store';
 
 /**
@@ -263,7 +267,7 @@ async function executeStepRun(
     }
 
     handle = await getSmartAgent(undefined, targetDestination);
-    const agentHandle = handle;
+    const agentHandle = handle as ExecutorAgentHandle;
 
     // Ephemeral session per call → the executor loads/saves no history.
     // Doubles as the per-trace telemetry id (Verified fact 10): unique per
@@ -369,26 +373,53 @@ async function executeStepRun(
       signal: admitted.signal,
     };
 
+    const history = longSession ? getSessionHistory(sessionId, userId) : [];
     const conn = connection;
     const r = await admitted.run(() => {
       // Admitted, right before the run: this step's responsible person and
       // master system, visible to it alone — see `lib/request-system-context.ts`.
       const system = resolveRequestSystem(req.headers);
       return runWithRequestSystem(system, () =>
-        runWithSessionId(sessionId, () =>
-          runWithRequestConnection(
-            conn,
-            () =>
-              agentHandle.agent.process(
-                [
-                  ...(longSession ? getSessionHistory(sessionId, userId) : []),
-                  { role: 'user', content: task },
-                ],
-                opts,
-              ),
-            dumpScope,
-            exposition,
-          ),
+        runWithSessionId(
+          sessionId,
+          () =>
+            runWithRequestConnection(
+              conn,
+              async () => {
+                // An external agent uses this hub as its subagent: the executor
+                // runs alone, no controller. The honesty check the controller's
+                // NoticeFinalizer gives chat runs here instead, with the same
+                // inputs and the same trailing NOTICE.
+                const result = await (
+                  agentHandle.executor ?? agentHandle.agent
+                ).process([...history, { role: 'user', content: task }], opts);
+                if (result.ok && agentHandle.executor) {
+                  const verdict = await evaluateGated({
+                    content: result.value.content ?? '',
+                    records: agentHandle.recMcp.getToolRecords(traceId),
+                    ...getReviewSignals(),
+                    llm: agentHandle.criticLlm,
+                    request: task,
+                    task,
+                    history: getRequestHistory(),
+                  });
+                  if (!verdict.ok) {
+                    return {
+                      ...result,
+                      value: {
+                        ...result.value,
+                        content:
+                          (result.value.content ?? '') + renderNotice(verdict),
+                      },
+                    };
+                  }
+                }
+                return result;
+              },
+              dumpScope,
+              exposition,
+            ),
+          history,
         ),
       );
     });
@@ -419,14 +450,6 @@ async function executeStepRun(
     // to the agent; whatever the agent produced is exactly what the caller
     // gets. Diagnostics stay server-side in the log below.
     //
-    // The executor-honesty guard now lives in the DAG coordinator's
-    // `NoticeFinalizer` (see `srv/lib/notice-finalizer.ts`), which runs for
-    // EVERY channel (execute_step, /v1/chat, /v1/messages) and already
-    // embeds an `UNVERIFIED_WRITE:`-style notice into `r.value.content`
-    // when the executor's claim outruns the tools it actually ran. The old
-    // execute_step-only wrapper (`assembleReviewedResponse`) is retired —
-    // re-reviewing here would be redundant with (and could double-flag)
-    // what the coordinator already decided.
     const rawContent = r.value.content ?? '';
     log.info('execute_step done', {
       ok: true,

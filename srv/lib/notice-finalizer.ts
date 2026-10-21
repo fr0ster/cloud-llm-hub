@@ -35,6 +35,7 @@ import type {
 import { getRequestHistory } from '../request-session';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
+import { getReviewSignals } from './review-scope';
 import { evaluateGated } from './step-reviewer';
 
 export class NoticeFinalizer implements IFinalizer {
@@ -58,6 +59,7 @@ export class NoticeFinalizer implements IFinalizer {
     const verdict = await evaluateGated({
       content: input.interpreterOutput,
       records,
+      ...getReviewSignals(),
       llm: this.criticLlm,
       // What was asked, and the conversation it was asked in. Both were absent
       // before: the reviewer received an empty task and no earlier turns, so it

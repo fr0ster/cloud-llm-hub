@@ -11,7 +11,7 @@ jest.mock('../../srv/lib/btp-destinations', () => ({
   getAvailableDestinations: async () => [],
 }));
 
-import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import {
   getSmartAgent,
   initProviders,
@@ -22,6 +22,7 @@ import {
   ToolCorpusMissingError,
 } from '../../srv/agent-manager';
 import { corpusByRole, toolRecordAttributes } from '../../srv/lib/tool-corpus';
+import { ToolQueryTranslator } from '../../srv/lib/tool-query-translator';
 
 const docs = [
   {
@@ -290,7 +291,11 @@ describe('loadToolCorpus, vector backend with a matching bundle', () => {
     expect(writes.sort()).toEqual(docs.map((d) => d.id).sort());
   });
 
-  it('translates queries by default; translateQueries:false builds the store without a preprocessor', async () => {
+  it('translates in the wrapper by default and disables translation for measurement without backend preprocessors', async () => {
+    const translate = jest
+      .spyOn(ToolQueryTranslator.prototype, 'translate')
+      .mockResolvedValue('Create a domain');
+    const query = jest.fn().mockResolvedValue({ ok: true, value: [] });
     const seen: unknown[] = [];
     const build = async (opts?: { translateQueries?: boolean }) => {
       const { p } = fakeProviders('vector', { bundle: matchingBundle });
@@ -298,16 +303,23 @@ describe('loadToolCorpus, vector backend with a matching bundle', () => {
         seen.push(
           (o as { queryPreprocessors?: unknown[] })?.queryPreprocessors,
         );
-        return spyStore([], () => ({ ok: true }));
+        return { ...spyStore([], () => ({ ok: true })), query };
       }) as never;
-      await loadToolCorpus(p as never, docs, opts);
+      const { store } = await loadToolCorpus(p as never, docs, opts);
+      await store.query(new TextOnlyEmbedding('Створи домен для таблиці'), 5);
     };
     await build();
     expect(seen).toHaveLength(2);
-    for (const pre of seen) expect(pre).toHaveLength(1);
+    expect(seen).toEqual([undefined, undefined]);
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].text).toBe('Create a domain');
+    query.mockClear();
     seen.length = 0;
     await build({ translateQueries: false });
     expect(seen).toEqual([undefined, undefined]);
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].text).toBe('Створи домен для таблиці');
+    translate.mockRestore();
   });
 
   it('a failed write rejects the load, naming the tool', async () => {
