@@ -186,3 +186,38 @@ it('collection restore and expiry leave h_runs alone', async () => {
   expect(expired.value).toEqual([]);
   expect((await newStore().load('session'))?.runId).toBe('r');
 });
+
+it('provider index tracks save, load, delete and TTL without refreshing savedAt', async () => {
+  const store = new ProviderRunRecordStore(newProvider(), {
+    dimension: DIM,
+    ttlMs: 100,
+  });
+  const scoped = scopedStore(store);
+  const start = Date.now();
+  const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+  try {
+    await scoped.save('indexed', record);
+    expect(store.hasRunRecord('alice', 'indexed')).toBe(true);
+    expect(store.hasRunRecord('bob', 'indexed')).toBe(false);
+    const restored = new ProviderRunRecordStore(newProvider(), {
+      dimension: DIM,
+      ttlMs: 100,
+    });
+    expect(restored.hasRunRecord('alice', 'indexed')).toBe(false);
+    expect(await scopedStore(restored).load('indexed')).toBeDefined();
+    expect(restored.hasRunRecord('alice', 'indexed')).toBe(true);
+    await restored.delete('alice', 'indexed');
+    expect(restored.hasRunRecord('alice', 'indexed')).toBe(false);
+    await scoped.save('indexed', record);
+    now.mockReturnValue(start + 101);
+    expect(store.hasRunRecord('alice', 'indexed')).toBe(false);
+    expect(await scoped.load('indexed')).toBeUndefined();
+    expect(
+      await scopedStore(
+        new ProviderRunRecordStore(newProvider(), { dimension: DIM }),
+      ).load('indexed'),
+    ).toBeUndefined();
+  } finally {
+    now.mockRestore();
+  }
+});

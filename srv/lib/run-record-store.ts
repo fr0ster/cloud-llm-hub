@@ -22,6 +22,7 @@ import { type SessionConfig, sessionConfig } from './session-config';
 
 export const RUN_OUTPUT_CHAR_LIMIT = 4000;
 export type DeletableRunRecordStore = IRunRecordStore & {
+  hasRunRecord(userId: string, sessionId: string): boolean;
   delete(userId: string, sessionId: string): Promise<void>;
 };
 const str = z.string();
@@ -132,6 +133,12 @@ export function runRecordId(userId: string, sessionId: string): string {
     .digest('hex')}`;
 }
 export class MemoryRunRecordStore implements DeletableRunRecordStore {
+  hasRunRecord(userId: string, sessionId: string): boolean {
+    const key = runRecordId(userId, sessionId);
+    const r = this.records.get(key);
+    if (r && Date.now() - r.savedAt > this.ttlMs) this.records.delete(key);
+    return this.records.has(key);
+  }
   private readonly records = new Map<
     string,
     { record: RunRecord; savedAt: number }
@@ -178,6 +185,12 @@ type Opened = {
     Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
 };
 export class ProviderRunRecordStore implements DeletableRunRecordStore {
+  private readonly index = new Map<string, number>();
+  hasRunRecord(userId: string, sessionId: string): boolean {
+    for (const [key, savedAt] of this.index)
+      if (Date.now() - savedAt > this.ttlMs) this.index.delete(key);
+    return this.index.has(runRecordId(userId, sessionId));
+  }
   private opening?: Promise<Opened>;
   private readonly zeroVector: number[];
   private readonly ttlMs: number;
@@ -220,14 +233,17 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
     const userId = owner(sessionId);
     if (!userId) return;
     const text = JSON.stringify(stored(record));
+    const savedAt = Date.now();
     const { writer } = await this.store();
     const r = await writer.upsertPrecomputedRaw(
       runRecordId(userId, sessionId),
       text,
       this.zeroVector,
-      { userId, sessionId, savedAt: Date.now() },
+      { userId, sessionId, savedAt },
     );
     if (!r.ok) throw r.error;
+    this.hasRunRecord(userId, sessionId);
+    this.index.set(runRecordId(userId, sessionId), savedAt);
   }
   async load(sessionId: string): Promise<RunRecord | undefined> {
     const userId = owner(sessionId);
@@ -255,7 +271,9 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
           return undefined;
         }
         try {
-          return stored(schema.parse(JSON.parse(row.text)));
+          const record = stored(schema.parse(JSON.parse(row.text)));
+          this.index.set(row.id, row.metadata.savedAt);
+          return record;
         } catch {
           this.log.warn('Skipped a malformed run record', { id: row.id });
         }
@@ -267,6 +285,7 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
     return undefined;
   }
   async delete(userId: string, sessionId: string): Promise<void> {
+    this.index.delete(runRecordId(userId, sessionId));
     const { writer } = await this.store();
     const r = await writer.deleteByIdRaw(runRecordId(userId, sessionId));
     if (!r.ok) throw r.error;
@@ -310,4 +329,9 @@ export function initializeRunRecordStore(
 export function getRunRecordStore(): DeletableRunRecordStore {
   if (!singleton) singleton = new MemoryRunRecordStore();
   return singleton;
+}
+
+/** Synchronous retention probe; provider records are indexed on save and load. */
+export function hasRunRecord(userId: string, sessionId: string): boolean {
+  return singleton?.hasRunRecord(userId, sessionId) ?? false;
 }

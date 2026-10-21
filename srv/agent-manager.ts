@@ -90,7 +90,8 @@ import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import {
   assertToolAllowed,
-  isReadOnlyExposition,
+  isReadOnlyTool,
+  type ToolEffectAnnotations,
 } from './lib/tool-authorization';
 import {
   bundleFileFor,
@@ -532,11 +533,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // tag is excluded when a role filter is active — otherwise an un-tagged tool
     // (e.g. a group not mapped in getToolExpositionMap) would bypass role-based
     // filtering and reach every role. Every exposed tool must carry an exposition.
-    const allowed = new Set(
-      effectiveExpositions.filter(
-        (e) => !isReadOnlyTools() || isReadOnlyExposition(e),
-      ),
-    );
+    const allowed = new Set(effectiveExpositions);
     const isAllowed = (r: RagResult) => {
       // Skills are instruction TEXT, not callable tools. `exposition` gates tool
       // ACCESS; a skill cannot be invoked, so role-filtering it would only hide
@@ -560,7 +557,14 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         return true;
       }
       return (
-        !!r.metadata.exposition && allowed.has(r.metadata.exposition as string)
+        !!r.metadata.exposition &&
+        allowed.has(r.metadata.exposition as string) &&
+        (!isReadOnlyTools() ||
+          (typeof id === 'string' &&
+            isReadOnlyTool(
+              id.replace(/^tool:/, ''),
+              getToolAnnotations().get(id.replace(/^tool:/, '')),
+            )))
       );
     };
     const filtered = result.value.filter(isAllowed);
@@ -608,6 +612,20 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
 // system). Built once at startup from handler group instances.
 // Used to tag tools in RAG metadata for role-based filtering.
 // ---------------------------------------------------------------------------
+
+let toolAnnotations: Map<string, ToolEffectAnnotations | undefined> | undefined;
+function getToolAnnotations(): Map<string, ToolEffectAnnotations | undefined> {
+  toolAnnotations ??= new Map(
+    new HandlerExporter(getHandlerExporterConfig())
+      .getHandlerEntries()
+      .map((e) => [
+        e.toolDefinition.name,
+        (e.toolDefinition as { annotations?: ToolEffectAnnotations })
+          .annotations,
+      ]),
+  );
+  return toolAnnotations;
+}
 
 let toolExpositionMap: Map<string, string> | null = null;
 
@@ -2286,6 +2304,7 @@ async function buildEmbeddedMcpAdapter(
       name,
       toolExpositionMap?.get(name),
       connectionALS.getStore()?.exposition,
+      getToolAnnotations().get(name),
     );
 
     // Cloud-local tool: NOT in handlerMap, so branch BEFORE the unknown-tool
@@ -2406,6 +2425,9 @@ async function buildEmbeddedMcpAdapter(
     listToolsHandler: async () => {
       const list = entries.map((e) => ({
         name: e.toolDefinition.name,
+        annotations: (
+          e.toolDefinition as { annotations?: ToolEffectAnnotations }
+        ).annotations,
         description: e.toolDefinition.description,
         inputSchema: toJsonSchema(e.toolDefinition.inputSchema),
       }));
@@ -2416,6 +2438,7 @@ async function buildEmbeddedMcpAdapter(
         const def = CLOUD_LOCAL_TOOLS[0];
         list.push({
           name: def.name,
+          annotations: undefined,
           description: def.description ?? '',
           inputSchema: def.inputSchema as ReturnType<typeof toJsonSchema>,
         });

@@ -231,8 +231,11 @@ it('checker writes and unknown tools never reach the MCP adapter, reads work, ex
   expect(inner.callTool).toHaveBeenCalledTimes(2);
 });
 
-it('checker listing uses exposition before annotations and fails closed on unknown effects', async () => {
+it('checker listing uses annotations before names independently of exposition and fails closed on unknown effects', async () => {
   const inner = fakeInner();
+  jest
+    .mocked(inner.callTool)
+    .mockResolvedValue({ ok: true, value: { content: 'ok' } });
   const tools = [
     { name: 'GetTable', description: '', inputSchema: {} },
     {
@@ -252,9 +255,12 @@ it('checker listing uses exposition before annotations and fails closed on unkno
       ],
   );
   const offered = await runWithReadOnlyTools(() => client.listTools());
-  expect(offered.ok && offered.value.map((t) => t.name)).toEqual(['GetTable']);
+  expect(offered.ok && offered.value.map((t) => t.name)).toEqual([
+    'GetTable',
+    'RuntimeRunClass',
+  ]);
   expect(
     await runWithReadOnlyTools(() => client.callTool('RuntimeRunClass', {})),
-  ).toMatchObject({ ok: true, value: { isError: true } });
-  expect(inner.callTool).not.toHaveBeenCalled();
+  ).toMatchObject({ ok: true, value: { content: 'ok' } });
+  expect(inner.callTool).toHaveBeenCalledTimes(1);
 });

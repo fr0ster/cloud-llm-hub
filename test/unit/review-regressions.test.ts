@@ -61,9 +61,18 @@ it('checker blocks writes before dispatch, permits reads, and leaves executor un
   expect(adapter).toHaveBeenCalledTimes(2);
 });
 it('checker offered tools exclude writes even with developer permissions', async () => {
-  const rows = ['readonly', 'high'].map((exposition) => ({
+  const rows = [
+    'GetClass',
+    'GetProgram',
+    'CheckClass',
+    'GetATCFindings',
+    'CreateClass',
+  ].map((name) => ({
     score: 1,
-    metadata: { id: `tool:${exposition}`, exposition },
+    metadata: {
+      id: `tool:${name}`,
+      exposition: 'high',
+    },
   }));
   const rag = new ExpositionFilteringRag({
     query: async () => ({ ok: true, value: rows }),
@@ -75,7 +84,10 @@ it('checker offered tools exclude writes even with developer permissions', async
     }),
   );
   expect(result.ok && result.value.map((r) => r.metadata.id)).toEqual([
-    'tool:readonly',
+    'tool:GetClass',
+    'tool:GetProgram',
+    'tool:CheckClass',
+    'tool:GetATCFindings',
   ]);
 });
 
@@ -114,4 +126,61 @@ it('memory save sweeps expired records even when they are never loaded', async (
   } finally {
     jest.useRealTimers();
   }
+});
+
+it.each([
+  'GetClass',
+  'GetProgram',
+  'CheckClass',
+  'GetATCFindings',
+  'RunATC',
+  'RunUnitTest',
+])('checker allows %s with developer roles', (name) => {
+  runWithReadOnlyTools(() =>
+    expect(() => assertToolAllowed(name, 'high', ['high'])).not.toThrow(),
+  );
+});
+it.each([
+  'CreateClass',
+  'UpdateClass',
+  'ActivateClass',
+  'DeleteClass',
+  'LockClass',
+  'UnlockClass',
+  'Mystery',
+])('checker blocks %s even in readonly exposition', (name) => {
+  runWithReadOnlyTools(() =>
+    expect(() => assertToolAllowed(name, 'readonly', ['readonly'])).toThrow(
+      /read.only/i,
+    ),
+  );
+});
+it('checker effect never bypasses role authorization', () => {
+  runWithReadOnlyTools(() =>
+    expect(() => assertToolAllowed('GetClass', 'high', ['readonly'])).toThrow(
+      /roles grant/,
+    ),
+  );
+});
+
+it('tool annotations take precedence over names in checker scope only', () => {
+  runWithReadOnlyTools(() => {
+    expect(() =>
+      assertToolAllowed('CreateClass', 'high', ['high'], {
+        readOnlyHint: true,
+        destructiveHint: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertToolAllowed('GetClass', 'high', ['high'], { readOnlyHint: false }),
+    ).toThrow(/read.only/i);
+    expect(() =>
+      assertToolAllowed('GetClass', 'high', ['high'], {
+        destructiveHint: true,
+      }),
+    ).toThrow(/read.only/i);
+  });
+  expect(() =>
+    assertToolAllowed('GetClass', 'high', ['high'], { destructiveHint: true }),
+  ).not.toThrow();
 });

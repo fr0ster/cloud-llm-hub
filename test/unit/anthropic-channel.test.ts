@@ -663,3 +663,49 @@ it.each([false, true])(
     expect(harness.seenOptions.at(-1)?.sessionId).toBe('s-1');
   },
 );
+
+it('plain Anthropic release preserves the run for the next request until TTL', async () => {
+  const { getRunRecordStore, initializeRunRecordStore } = await import(
+    '../../srv/lib/run-record-store'
+  );
+  const { loadSessionConfig } = await import('../../srv/lib/session-config');
+  const { runWithSessionId } = await import('../../srv/request-session');
+  initializeRunRecordStore({ ...loadSessionConfig({}), ttlMs: 100 });
+  configure();
+  const store = getRunRecordStore();
+  const previousRuns: unknown[] = [];
+  const record = {
+    runId: 'anthropic-run',
+    request: 'hi',
+    plan: { steps: [], createdAt: 1 },
+    steps: [],
+    outcome: 'answered' as const,
+    finishedAt: 2,
+  };
+  harness.process = async (_messages, opts) => {
+    const sid = opts.sessionId as string;
+    previousRuns.push(await store.load(sid));
+    await store.save(sid, record);
+    return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+  };
+  const now = jest.spyOn(Date, 'now');
+  const start = Date.now();
+  now.mockReturnValue(start);
+  try {
+    await call(body()).done;
+    expect(gatekeeper.sessionIsLive('alice', 's-1')).toBe(true);
+    await handleAnthropicMessages(
+      fakeReq(body(), 's-1', false) as unknown as Request,
+      fakeRes() as unknown as Response,
+    );
+    expect(previousRuns).toEqual([undefined, record]);
+    now.mockReturnValue(start + 101);
+    gatekeeper.forgetEmptySessions();
+    expect(gatekeeper.sessionIsLive('alice', 's-1')).toBe(false);
+    expect(
+      await runWithSessionId('s-1', () => store.load('s-1'), [], 'alice'),
+    ).toBeUndefined();
+  } finally {
+    now.mockRestore();
+  }
+});

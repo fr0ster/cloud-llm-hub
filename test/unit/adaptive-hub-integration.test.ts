@@ -120,6 +120,18 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       ),
       config,
     );
+    const { SessionRetention, isRefusal } = await import(
+      '../../srv/lib/session-retention'
+    );
+    const { hasSessionState, deleteSessionState } = await import(
+      '../../srv/lib/session-state'
+    );
+    const retention = new SessionRetention({
+      hasState: hasSessionState,
+      deleteAll: deleteSessionState,
+    });
+    const lease = retention.lease(userId, sessionId, 'pipeline');
+    if (isRefusal(lease)) throw new Error('unexpected refusal');
     const chunks: string[] = [];
     await runWithSessionId(
       sessionId,
@@ -135,6 +147,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       [],
       userId,
     );
+    lease.release();
+    expect(retention.isKnown(userId, sessionId)).toBe(true);
     return {
       text: chunks.join(''),
       callTool,

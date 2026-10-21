@@ -145,3 +145,30 @@ it('deleteSessionState logs a rejected run-record delete', async () => {
   });
   spy.mockRestore();
 });
+
+it('retains a run-only session until its run record TTL expires', async () => {
+  jest.useFakeTimers();
+  try {
+    const { initializeRunRecordStore } = await import(
+      '../../srv/lib/run-record-store'
+    );
+    const { loadSessionConfig } = await import('../../srv/lib/session-config');
+    initializeRunRecordStore({ ...loadSessionConfig({}), ttlMs: 100 });
+    const store = scopedStore(getRunRecordStore());
+    await store.save(SID, {
+      runId: 'run',
+      request: 'hi',
+      plan: { steps: [], createdAt: 1 },
+      steps: [],
+      outcome: 'answered',
+      finishedAt: 2,
+    });
+    expect(hasSessionState('alice', SID)).toBe(true);
+    expect(hasSessionState('bob', SID)).toBe(false);
+    jest.advanceTimersByTime(101);
+    expect(hasSessionState('alice', SID)).toBe(false);
+    expect(await store.load(SID)).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
+});

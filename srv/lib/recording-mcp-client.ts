@@ -9,7 +9,10 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { isReadOnlyTools } from '../request-session';
 import { isOutageError } from './mcp-outage';
-import { isReadOnlyExposition } from './tool-authorization';
+import {
+  isReadOnlyTool,
+  type ToolEffectAnnotations,
+} from './tool-authorization';
 import { isWriteTool } from './write-guardrail';
 
 /**
@@ -75,7 +78,7 @@ export class RecordingMcpClient implements IMcpClient {
 
   constructor(
     private readonly inner: IMcpClient,
-    private readonly expositionFor?: (name: string) => string | undefined,
+    _expositionFor?: (name: string) => string | undefined,
   ) {
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
@@ -93,12 +96,10 @@ export class RecordingMcpClient implements IMcpClient {
   }
 
   private isReadOnly(tool: McpTool): boolean {
-    const exposition = this.expositionFor?.(tool.name);
-    if (exposition !== undefined) return isReadOnlyExposition(exposition);
-    const annotations = (
-      tool as McpTool & { annotations?: { readOnlyHint?: boolean } }
-    ).annotations;
-    return !isWriteTool(tool.name) && annotations?.readOnlyHint === true;
+    return isReadOnlyTool(
+      tool.name,
+      (tool as McpTool & { annotations?: ToolEffectAnnotations }).annotations,
+    );
   }
 
   async callTool(
@@ -107,18 +108,10 @@ export class RecordingMcpClient implements IMcpClient {
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
     if (isReadOnlyTools()) {
-      const exposition = this.expositionFor?.(name);
-      let allowed =
-        exposition !== undefined && isReadOnlyExposition(exposition);
-      if (exposition === undefined) {
-        const tools = await this.inner.listTools(options);
-        allowed = !!(
-          tools.ok &&
-          tools.value.some(
-            (tool) => tool.name === name && this.isReadOnly(tool),
-          )
-        );
-      }
+      const tools = await this.inner.listTools(options);
+      const allowed =
+        tools.ok &&
+        tools.value.some((tool) => tool.name === name && this.isReadOnly(tool));
       if (!allowed)
         return {
           ok: true,
