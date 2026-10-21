@@ -2740,7 +2740,13 @@ export async function buildAgentForDestination(
       description: CHECKER_DESCRIPTION,
     });
     const checkerRun = checker.run.bind(checker);
-    checker.run = (input) =>
+    // Client-executed (external) tools bypass both MCP guards: the tool loop
+    // hands such calls straight to the client. A checker gets none of them.
+    checker.run = ({
+      externalTools: _tools,
+      externalResults: _results,
+      ...input
+    }) =>
       runWithReadOnlyTools(() =>
         checkerRun({
           ...input,

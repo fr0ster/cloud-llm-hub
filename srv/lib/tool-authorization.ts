@@ -99,6 +99,7 @@ export function isReadOnlyTool(
     /^(Get|Read|Search|Check|List|Find|Describe|Validate)/.test(name) ||
     [
       // Installed runtime handlers only retrieve existing evidence; no execution.
+      'RuntimeAnalyzeProfilerTrace',
       'RuntimeGetDumpById',
       'RuntimeGetProfilerTraceData',
       'RuntimeGetGatewayErrorLog',

@@ -212,10 +212,30 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         });
         await runWithSessionId(
           'adaptive',
-          () => worker.run({ task: 'selected task', history: [] }),
+          () =>
+            worker.run({
+              task: 'selected task',
+              history: [],
+              externalTools: [
+                {
+                  name: 'write_file',
+                  description: 'client tool',
+                  inputSchema: {},
+                } as never,
+              ],
+              externalResults: new Map([['ext:1', 'r']]),
+            }),
           [{ role: 'user', content: 'must not inject this' }],
         );
         const task = workerAgent.process.mock.calls.at(-1)?.[0];
+        // A checker never receives client-executed tools; the executor does.
+        const opts = workerAgent.process.mock.calls.at(-1)?.[1];
+        if (name === 'checker') {
+          expect(opts?.externalTools).toBeUndefined();
+          expect(opts?.externalResults).toBeUndefined();
+        } else {
+          expect(opts?.externalTools).toHaveLength(1);
+        }
         expect(task).toContain('selected task');
         if (name === 'checker')
           expect(task).toContain('You are verifying, not changing');

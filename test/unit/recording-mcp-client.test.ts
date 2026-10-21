@@ -266,6 +266,7 @@ it('checker listing uses annotations before names independently of exposition an
 });
 
 it.each([
+  'RuntimeAnalyzeProfilerTrace',
   'RuntimeGetDumpById',
   'RuntimeGetProfilerTraceData',
   'RuntimeGetGatewayErrorLog',
