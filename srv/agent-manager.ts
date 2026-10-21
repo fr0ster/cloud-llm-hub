@@ -1167,6 +1167,7 @@ function toolsStore(
   skills?: IRag,
   analyzer?: ToolQueryAnalyzer,
   queryEmbedder?: IQueryEmbedder,
+  toolGate?: 'classifier' | 'off',
 ): ExpositionFilteringRag {
   return new ExpositionFilteringRag(
     inner,
@@ -1175,6 +1176,7 @@ function toolsStore(
     getAgentConfig().agent.skillRagK,
     analyzer,
     queryEmbedder,
+    toolGate,
   );
 }
 
@@ -1183,6 +1185,7 @@ async function createToolsRagStore(
   stores: Providers['stores'],
   translateQueries: boolean,
   queryEmbedder?: IQueryEmbedder,
+  toolGate?: 'classifier' | 'off',
 ): Promise<ExpositionFilteringRag> {
   // One backend per collection. They are separate stores, not one store with a
   // tag: a tool a role cannot run must not be searchable by that role at all.
@@ -1196,6 +1199,7 @@ async function createToolsRagStore(
     undefined,
     translateQueries ? createToolQueryAnalyzer() : undefined,
     queryEmbedder,
+    toolGate,
   );
 }
 
@@ -1203,18 +1207,16 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
   const config = getAgentConfig();
   return new ToolQueryAnalyzer(
     async () =>
-      trackedLlm(
-        await makeHubLlm(
-          {
-            provider: config.llm.provider,
-            apiKey: config.llm.apiKey,
-            baseURL: config.llm.baseUrl,
-            model: config.llm.classifierModel,
-            resourceGroup: config.llm.resourceGroup,
-            whenThrottled: config.llm.whenThrottled,
-          },
-          0.1,
-        ),
+      makeHubLlm(
+        {
+          provider: config.llm.provider,
+          apiKey: config.llm.apiKey,
+          baseURL: config.llm.baseUrl,
+          model: config.llm.classifierModel,
+          resourceGroup: config.llm.resourceGroup,
+          whenThrottled: config.llm.whenThrottled,
+        },
+        0.1,
       ),
     config.agent.toolGateTimeoutMs,
   );
@@ -1635,7 +1637,7 @@ export function resetToolCorpusReadersForTest(): void {
 export async function loadToolCorpus(
   p: Providers,
   docs: SharedCorpusDoc[],
-  opts: { translateQueries?: boolean } = {},
+  opts: { translateQueries?: boolean; toolGate?: 'classifier' | 'off' } = {},
 ): Promise<{ store: ExpositionFilteringRag; count: number }> {
   const uncached = docs.filter((x) => !x.cached).map((x) => x.name);
   if (uncached.length) {
@@ -1655,6 +1657,8 @@ export async function loadToolCorpus(
       new InMemoryRag(),
       undefined,
       opts.translateQueries === false ? undefined : createToolQueryAnalyzer(),
+      undefined,
+      opts.toolGate,
     );
     const w = store.writer();
     if (!w) throw new Error('Tool corpus store is not writable (in-memory)');
@@ -1698,6 +1702,7 @@ export async function loadToolCorpus(
       p.stores.createLocal(),
       opts.translateQueries === false ? undefined : createToolQueryAnalyzer(),
       agentQueryEmbedder(p.embedding),
+      opts.toolGate,
     );
     return { store, count: docs.length };
   }
@@ -1715,6 +1720,7 @@ export async function loadToolCorpus(
     p.stores,
     opts.translateQueries ?? true,
     agentQueryEmbedder(p.embedding),
+    opts.toolGate,
   );
   const write = store.writer()?.upsertPrecomputedRaw;
   if (!write)

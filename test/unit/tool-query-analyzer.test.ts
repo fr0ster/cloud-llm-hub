@@ -1,5 +1,9 @@
 import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
+import {
+  createCallRegister,
+  runWithAdmission,
+} from '../../srv/lib/admission-scope';
 import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 
 const original = 'Створи домен для таблиці';
@@ -269,6 +273,68 @@ describe('analyzer deadline', () => {
       }
     },
   );
+  it('drains admission at the deadline when chat ignores abort', async () => {
+    const chat = jest.fn(() => new Promise<any>(() => {}));
+    const analyzer = new ToolQueryAnalyzer(llmWith(chat), 4000);
+    const admission = createCallRegister();
+    const pending = runWithAdmission(admission, () =>
+      analyzer.analyze(original),
+    );
+    let drained = false;
+    const drain = admission.drain().then(() => {
+      drained = true;
+    });
+    await jest.advanceTimersByTimeAsync(3999);
+    expect(drained).toBe(false);
+    expect(admission.outstanding).toBe(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({ text: original, needsAbapSystem: true });
+    await drain;
+    expect(admission.outstanding).toBe(0);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 1])(
+    'isolates abort of waiter %s from shared work',
+    async (index) => {
+      let complete!: (value: any) => void;
+      const chat = jest.fn(
+        () =>
+          new Promise<any>((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const analyzer = new ToolQueryAnalyzer(llmWith(chat));
+      const controllers = [new AbortController(), new AbortController()];
+      const requests = controllers.map((controller) =>
+        analyzer.analyze(original, [], {
+          signal: controller.signal,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      controllers[index].abort();
+      expect(await requests[index]).toEqual({
+        text: original,
+        needsAbapSystem: true,
+      });
+      complete({
+        ok: true,
+        value: {
+          content: JSON.stringify({
+            translation: translated,
+            needsAbapSystem: false,
+          }),
+        },
+      });
+      expect(await requests[1 - index]).toEqual({
+        text: translated,
+        needsAbapSystem: false,
+      });
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
   it.each(['factory', 'chat'])(
     'settles external abort during %s',
     async (stage) => {
@@ -292,6 +358,9 @@ describe('analyzer deadline', () => {
         text: 'original request',
         needsAbapSystem: true,
       });
+      // Detaching the only waiter leaves shared work bounded by its deadline.
+      expect((analyzer as any).pending.size).toBe(1);
+      await jest.advanceTimersByTimeAsync(4000);
       expect((analyzer as any).pending.size).toBe(0);
       expect(jest.getTimerCount()).toBe(0);
       if (stage === 'chat')

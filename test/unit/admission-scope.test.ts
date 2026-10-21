@@ -172,11 +172,19 @@ describe('the calls that dispatch are the ones that register', () => {
     'utf8',
   );
 
-  it('wraps every LLM this service constructs', () => {
-    const made = src.match(/makeHubLlm\(/g)?.length ?? 0;
+  it('wraps LLM calls except the analyzer, which tracks its bounded operation', () => {
+    const analyzerStart = src.indexOf(
+      'export function createToolQueryAnalyzer()',
+    );
+    const analyzerEnd = src.indexOf('\n/**', analyzerStart);
+    const analyzerFactory = src.slice(analyzerStart, analyzerEnd);
+    expect(analyzerFactory.match(/makeHubLlm\(/g)).toHaveLength(1);
+    expect(analyzerFactory).not.toContain('trackedLlm');
+    const otherFactories = src.slice(0, analyzerStart) + src.slice(analyzerEnd);
+    const made = otherFactories.match(/makeHubLlm\(/g)?.length ?? 0;
     const wrapped = src.match(/trackedLlm\(/g)?.length ?? 0;
     expect(made).toBeGreaterThan(0);
-    // Each construction site passes its result through trackedLlm: directly, or
+    // Every other construction passes its result through trackedLlm: directly, or
     // via `.then(trackedLlm)` which the second pattern counts.
     const thenWrapped = src.match(/\.then\(\s*trackedLlm\s*\)/g)?.length ?? 0;
     // The executor additionally decorates the shared main LLM to capture usage.

@@ -14,7 +14,9 @@
  *
  * Translation defaults off. Set TOOL_RAG_MEASURE_TRANSLATE=1 to measure
  * analyzer translation before tool search for every query on every backend,
- * including English, Latin-script languages and transliterated text.
+ * including English, Latin-script languages and transliterated text. Retrieval
+ * always disables the classifier gate regardless of LLM_AGENT_TOOL_GATE;
+ * classification is measured only in the separate classification report.
  *
  * Labels (tools/tool-rag-queries.json), per query:
  *   - `relevant`: every tool that is a correct/useful answer.
@@ -255,6 +257,7 @@ async function main() {
     );
   const { store } = await loadToolCorpus(p, docs, {
     translateQueries: process.env.TOOL_RAG_MEASURE_TRANSLATE === '1',
+    toolGate: 'off',
   });
 
   // Match the builder's skill documents and write through the production router.

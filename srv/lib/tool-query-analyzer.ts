@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CallOptions, ILlm, Message } from '@mcp-abap-adt/llm-agent';
+import { trackCall } from './admission-scope';
 
 const ANALYZE_SYSTEM_PROMPT = `Return strict JSON {"translation": string, "needsAbapSystem": boolean}.
 The "translation" must be English. If the current request is already English, return it verbatim. Translate any other language faithfully to English for tool search, including transliterated text and Latin-script languages (German, Spanish, Ukrainian in Latin letters). Use specific action verbs (search, list, create, read, delete, execute, check). Preserve SAP/ABAP names, identifiers, abbreviations and code verbatim.
@@ -42,7 +43,8 @@ export class ToolQueryAnalyzer {
       return cached;
     }
     const pending = this.pending.get(key);
-    if (pending) return pending;
+    if (pending)
+      return trackCall(this.waitFor(pending, fallback, options?.signal));
     const request = this.request(text, context, options).then(
       ({ value, valid }) => {
         this.pending.delete(key);
@@ -57,7 +59,26 @@ export class ToolQueryAnalyzer {
       },
     );
     this.pending.set(key, request);
-    return request;
+    return trackCall(this.waitFor(request, fallback, options?.signal));
+  }
+
+  private async waitFor(
+    request: Promise<ToolQueryAnalysis>,
+    fallback: ToolQueryAnalysis,
+    signal?: AbortSignal,
+  ): Promise<ToolQueryAnalysis> {
+    if (!signal) return request;
+    if (signal.aborted) return fallback;
+    let onAbort!: () => void;
+    const aborted = new Promise<ToolQueryAnalysis>((resolve) => {
+      onAbort = () => resolve(fallback);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([request, aborted]);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
   }
 
   private async request(
@@ -75,8 +96,8 @@ export class ToolQueryAnalyzer {
         controller.abort();
       };
       timer = setTimeout(stop, this.timeoutMs);
-      options?.signal?.addEventListener('abort', stop, { once: true });
-      if (options?.signal?.aborted) stop();
+      // Caller aborts only detach their waiter; shared work continues until
+      // completion or this deadline, even when every waiter has left.
     });
     try {
       return await Promise.race([
@@ -88,7 +109,6 @@ export class ToolQueryAnalyzer {
       ]);
     } finally {
       clearTimeout(timer);
-      options?.signal?.removeEventListener('abort', stop);
     }
   }
 
