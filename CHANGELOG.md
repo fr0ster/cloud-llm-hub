@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-10-21
+
 ### Breaking
 
 - **Plain API and plain MCP are off by default.** `/v1/chat/completions` and
@@ -128,6 +130,11 @@ All notable changes to this project will be documented in this file. The format 
 - Docs no longer describe the Qdrant and persistent collections as "not yet
   supported" (Plan B); the stale HANA scenario in the extension guide points to
   the real design.
+
+### Security
+
+- **follow-redirects 1.16.1.** The hub and the approuter (#23) move from
+  1.16.0 to 1.16.1, which fixes a high-severity advisory.
 
 ## [7.2.1] - 2026-10-15
 
