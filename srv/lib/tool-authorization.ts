@@ -98,6 +98,13 @@ export function isReadOnlyTool(
   return (
     /^(Get|Read|Search|Check|List|Find|Describe|Validate)/.test(name) ||
     [
+      // Installed runtime handlers only retrieve existing evidence; no execution.
+      'RuntimeGetDumpById',
+      'RuntimeGetProfilerTraceData',
+      'RuntimeGetGatewayErrorLog',
+      'RuntimeListFeeds',
+      'RuntimeListProfilerTraceFiles',
+      'RuntimeListSystemMessages',
       'RunUnitTest',
       'RunATC',
       'RunCdsUnitTest',

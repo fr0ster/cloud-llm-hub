@@ -221,3 +221,41 @@ it('provider index tracks save, load, delete and TTL without refreshing savedAt'
     now.mockRestore();
   }
 });
+
+it('sweeps expired previous-process records without loading sessions and keeps fresh and malformed rows', async () => {
+  const start = Date.now();
+  const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+  try {
+    await newStore().save('expired', record);
+    now.mockReturnValue(start + 101);
+    await newStore().save('fresh', record);
+    const provider = newProvider();
+    const catalog = await provider.describeCollections();
+    if (!catalog.ok) throw catalog.error;
+    const entry = catalog.value.records.find((r) => r.storeName === 'h_runs');
+    if (!entry) throw new Error('missing h_runs');
+    const opened = await provider.openCollection(entry);
+    if (!opened.ok) throw opened.error;
+    const writer = opened.value.rag.writer?.();
+    if (!writer?.upsertPrecomputedRaw) throw new Error('missing writer');
+    await writer.upsertPrecomputedRaw('malformed', '{bad', Array(DIM).fill(0), {
+      savedAt: start,
+    });
+    const warn = jest.fn();
+    const restarted = new ProviderRunRecordStore(newProvider(), {
+      dimension: DIM,
+      ttlMs: 100,
+      log: { warn },
+    });
+    await restarted.sweepExpired(start + 101);
+    const rows = await real.query(
+      `SELECT id FROM "${pgl.schema}"."rag_documents"`,
+    );
+    expect(rows.rows.map((r) => r.id).sort()).toEqual(
+      ['malformed', runRecordId('alice', 'fresh')].sort(),
+    );
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    now.mockRestore();
+  }
+});

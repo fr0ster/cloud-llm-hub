@@ -12,6 +12,7 @@ import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
 import { getRequestSessionId, getRequestUserId } from '../request-session';
 import { ensureRunRecordStore } from './collection-persistence';
+import { guardedTask } from './guarded-task';
 import {
   createCollectionProvider,
   defaultCtors,
@@ -22,6 +23,7 @@ import { type SessionConfig, sessionConfig } from './session-config';
 
 export const RUN_OUTPUT_CHAR_LIMIT = 4000;
 export type DeletableRunRecordStore = IRunRecordStore & {
+  sweepExpired?(now: number): Promise<void>;
   hasRunRecord(userId: string, sessionId: string): boolean;
   delete(userId: string, sessionId: string): Promise<void>;
 };
@@ -185,6 +187,41 @@ type Opened = {
     Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
 };
 export class ProviderRunRecordStore implements DeletableRunRecordStore {
+  async sweepExpired(now: number): Promise<void> {
+    const { scanner, writer } = await this.store();
+    let cursor: string | undefined;
+    do {
+      const page = await scanner.scan({
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (!page.ok) throw page.error;
+      for (const row of page.value.records) {
+        const { userId, sessionId, savedAt } = row.metadata;
+        try {
+          if (
+            typeof userId !== 'string' ||
+            typeof sessionId !== 'string' ||
+            typeof savedAt !== 'number' ||
+            !Number.isFinite(savedAt) ||
+            row.id !== runRecordId(userId, sessionId)
+          )
+            throw new Error('Malformed metadata');
+          schema.parse(JSON.parse(row.text));
+        } catch {
+          this.log.warn('Skipped a malformed run record', { id: row.id });
+          continue;
+        }
+        if (now - (savedAt as number) > this.ttlMs) {
+          const result = await writer.deleteByIdRaw(row.id);
+          if (!result.ok) throw result.error;
+          this.index.delete(row.id);
+        }
+      }
+      if (page.value.cursor !== undefined && page.value.cursor === cursor)
+        throw new Error('run record store scan did not advance');
+      cursor = page.value.cursor;
+    } while (cursor !== undefined);
+  }
   private readonly index = new Map<string, number>();
   hasRunRecord(userId: string, sessionId: string): boolean {
     for (const [key, savedAt] of this.index)
@@ -325,6 +362,20 @@ export function initializeRunRecordStore(
   rag?: RagConfig,
 ): void {
   singleton = createRunRecordStore(cfg, rag);
+  guardedTask('Run-record expiry sweep', cds.log('run-store'), () =>
+    sweepRunRecords(),
+  )();
+}
+let sweeping = false;
+/** Shared by startup and the existing session sweep; skip overlapping passes. */
+export async function sweepRunRecords(): Promise<void> {
+  if (sweeping) return;
+  sweeping = true;
+  try {
+    await singleton?.sweepExpired?.(Date.now());
+  } finally {
+    sweeping = false;
+  }
 }
 export function getRunRecordStore(): DeletableRunRecordStore {
   if (!singleton) singleton = new MemoryRunRecordStore();

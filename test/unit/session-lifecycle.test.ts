@@ -520,3 +520,19 @@ it('session expired while offline deletes its run record', async () => {
   await sweepSessions();
   expect(await scopedStore(getRunRecordStore()).load(s.key)).toBeUndefined();
 });
+
+it('reuses the session timer for durable run-record sweeping', async () => {
+  const stores = await import('../../srv/lib/run-record-store');
+  const { startSessionSweep } = await import('../../srv/lib/session-lifecycle');
+  const sweep = jest.spyOn(stores, 'sweepRunRecords').mockResolvedValue();
+  jest.useFakeTimers();
+  const stop = startSessionSweep(100);
+  try {
+    await jest.advanceTimersByTimeAsync(100);
+    expect(sweep).toHaveBeenCalledTimes(1);
+  } finally {
+    stop();
+    jest.useRealTimers();
+    sweep.mockRestore();
+  }
+});

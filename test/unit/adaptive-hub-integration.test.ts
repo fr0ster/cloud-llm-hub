@@ -10,7 +10,7 @@ import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
-import { runWithSessionId } from '../../srv/request-session';
+import { isReadOnlyTools, runWithSessionId } from '../../srv/request-session';
 
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
@@ -50,7 +50,8 @@ const config: AgentConfig = {
 };
 
 describe('adaptive chat through the real hub build and library pipeline', () => {
-  let scenario: 'hello' | 'throw' | 'invalid';
+  let scenario: 'hello' | 'throw' | 'invalid' | 'check-write';
+  const checkerScopes: boolean[] = [];
   const calls: string[] = [];
   const controllerPrompts: string[] = [];
   const answer = 'I created and activated class ZTEST.';
@@ -64,6 +65,21 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
+      if (scenario === 'check-write')
+        return JSON.stringify({
+          steps: [
+            {
+              id: 'verify',
+              kind: 'check',
+              worker: 'executor',
+              goal: 'verify',
+              targets: [],
+              onPass: 'done',
+              onFail: 'done',
+            },
+            { id: 'done', kind: 'answer', text: 'Verified' },
+          ],
+        });
       return JSON.stringify({
         steps: [{ id: 'hello', kind: 'answer', text: 'Hello!' }],
       });
@@ -86,6 +102,31 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       value: { content: respond(messages), finishReason: 'stop' as const },
     })),
     streamChat: jest.fn(async function* (messages) {
+      if (
+        scenario === 'check-write' &&
+        !messages.some((m) => m.role === 'tool')
+      ) {
+        checkerScopes.push(isReadOnlyTools());
+        yield {
+          ok: true as const,
+          value: {
+            content: '',
+            toolCalls: [{ id: 'write', name: 'CreateClass', arguments: {} }],
+            finishReason: 'tool_calls' as const,
+          },
+        };
+        return;
+      }
+      if (scenario === 'check-write') {
+        yield {
+          ok: true as const,
+          value: {
+            content: JSON.stringify({ verdict: 'pass', reason: 'checked' }),
+            finishReason: 'stop' as const,
+          },
+        };
+        return;
+      }
       yield {
         ok: true as const,
         value: { content: respond(messages), finishReason: 'stop' as const },
@@ -169,6 +210,18 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(result.callTool).not.toHaveBeenCalled();
     expect(result.record?.outcome).toBe('answered');
     expect(result.record?.steps.map((s) => s.kind)).toEqual(['answer']);
+  });
+  it('routes a generated executor check to read-only checker and blocks writes before MCP', async () => {
+    scenario = 'check-write';
+    checkerScopes.length = 0;
+    const result = await run('adaptive-check-write', 'Verify the class');
+    expect(checkerScopes).toEqual([true]);
+    expect(result.callTool).not.toHaveBeenCalled();
+    expect(result.record?.plan.steps[0]).toMatchObject({
+      kind: 'check',
+      worker: 'checker',
+    });
+    expect(result.text).toBe('Verified');
   });
 
   it.each(['throw', 'invalid'] as const)(

@@ -173,9 +173,12 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       const handler = withStepperCoordinator.mock.calls[0][0];
       expect(handler).toBeInstanceOf(AdaptiveCoordinatorHandler);
       const deps = handler.deps;
-      expect(deps.controller).toBeInstanceOf(LlmAdaptiveController);
+      expect(deps.controller).toBeInstanceOf(
+        agentManager.CheckerAdaptiveController,
+      );
+      expect(deps.controller.inner).toBeInstanceOf(LlmAdaptiveController);
       expect(deps.finalizer).toBeInstanceOf(NoticeFinalizer);
-      expect(deps.controller.llm).toBe(deps.finalizer.criticLlm);
+      expect(deps.controller.inner.llm).toBe(deps.finalizer.criticLlm);
       expect(deps.runRecords).toBe(getRunRecordStore());
       expect(deps.budget).toEqual(expectedBudget);
       expect(deps.fallbackWorker).toBe('executor');
@@ -189,7 +192,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       expect(exposed.executor).not.toBe(workerAgent);
       expect(exposed.recMcp).toBe(withMcpClients.mock.calls[0][0][0]);
       expect(exposed.recMcp).toBe(deps.finalizer.recMcp);
-      expect(exposed.criticLlm).toBe(deps.controller.llm);
+      expect(exposed.criticLlm).toBe(deps.controller.inner.llm);
       workerAgent.process.mockResolvedValue({
         ok: true,
         value: { content: 'done' },

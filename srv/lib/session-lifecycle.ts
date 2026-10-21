@@ -38,7 +38,7 @@ import {
   longSessionsIfReady,
   type OpenRefusal,
 } from './long-session';
-import { getRunRecordStore } from './run-record-store';
+import { getRunRecordStore, sweepRunRecords } from './run-record-store';
 import { dropSessionConnection } from './session-connection';
 import { type StoredTurn, turnOwner } from './session-history-rag';
 import type { SessionRecord, SessionRecordStore } from './session-record-store';
@@ -351,6 +351,7 @@ export function startSessionSweep(intervalMs = 60_000): () => void {
   let running = false;
   const timer = setInterval(
     guardedTask('Long-session sweep', log(), async () => {
+      guardedTask('Run-record expiry sweep', log(), () => sweepRunRecords())();
       if (running) return;
       running = true;
       try {

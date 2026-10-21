@@ -153,3 +153,39 @@ it('provider refuses a writer that cannot write zero vectors', async () => {
   ).rejects.toThrow('upsertPrecomputedRaw');
   expect(upsertRaw).not.toHaveBeenCalled();
 });
+
+it('startup schedules a guarded non-blocking durable sweep', async () => {
+  const { initializeRunRecordStore, sweepRunRecords } = await import(
+    '../../srv/lib/run-record-store'
+  );
+  const sweep = jest
+    .spyOn(ProviderRunRecordStore.prototype, 'sweepExpired')
+    .mockRejectedValue(new Error('offline'));
+  const rag: RagConfig = {
+    embedder: null,
+    backends: {
+      tools: 'in-memory',
+      session: 'in-memory',
+      persistent: 'in-memory',
+    },
+    pg: { url: 'postgres://localhost/db', user: 'u', password: 'p' },
+  };
+  try {
+    expect(() =>
+      initializeRunRecordStore(
+        loadSessionConfig({ LLM_AGENT_SESSION_STORE: 'pg-vector' }),
+        rag,
+      ),
+    ).not.toThrow();
+    expect(sweep).toHaveBeenCalledWith(expect.any(Number));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    sweep.mockResolvedValue();
+    await sweepRunRecords();
+    expect(sweep).toHaveBeenCalledTimes(2);
+  } finally {
+    sweep.mockRestore();
+    initializeRunRecordStore(
+      loadSessionConfig({ LLM_AGENT_SESSION_STORE: 'none' }),
+    );
+  }
+});

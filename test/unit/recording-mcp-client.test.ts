@@ -264,3 +264,38 @@ it('checker listing uses annotations before names independently of exposition an
   ).toMatchObject({ ok: true, value: { content: 'ok' } });
   expect(inner.callTool).toHaveBeenCalledTimes(1);
 });
+
+it.each([
+  'RuntimeGetDumpById',
+  'RuntimeGetProfilerTraceData',
+  'RuntimeGetGatewayErrorLog',
+  'RuntimeListFeeds',
+  'RuntimeListProfilerTraceFiles',
+  'RuntimeListSystemMessages',
+])('allows runtime evidence %s in checker scope', async (name) => {
+  const inner = fakeInner();
+  jest.mocked(inner.listTools).mockResolvedValue({
+    ok: true,
+    value: [{ name, description: 'runtime', inputSchema: {} }],
+  });
+  jest
+    .mocked(inner.callTool)
+    .mockResolvedValue({ ok: true, value: { content: 'evidence' } });
+  const client = new RecordingMcpClient(inner);
+  const result = await runWithReadOnlyTools(() => client.callTool(name, {}));
+  expect(result.ok).toBe(true);
+  expect(inner.callTool).toHaveBeenCalledTimes(1);
+});
+
+it('blocks the real runtime execution tool without effect annotations', async () => {
+  const inner = fakeInner();
+  jest.mocked(inner.listTools).mockResolvedValue({
+    ok: true,
+    value: [{ name: 'RuntimeRunProgram', description: '', inputSchema: {} }],
+  });
+  const result = await runWithReadOnlyTools(() =>
+    new RecordingMcpClient(inner).callTool('RuntimeRunProgram', {}),
+  );
+  expect(result).toMatchObject({ ok: true, value: { isError: true } });
+  expect(inner.callTool).not.toHaveBeenCalled();
+});
