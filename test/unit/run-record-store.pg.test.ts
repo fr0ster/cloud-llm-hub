@@ -1,3 +1,6 @@
+import { runRecordId } from '../../srv/lib/run-record-store';
+import { scopedStore } from './helpers/scoped-run-store';
+
 /**
  * The long-session record store over a real PgVectorRagProvider (shared
  * layout) on PGlite: the shared contract, the `h_sessions` catalog record and
@@ -14,10 +17,6 @@ jest.mock(
   }),
   { virtual: true },
 );
-jest.mock('../../srv/request-session', () => ({
-  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
-  getRequestSessionId: () => undefined,
-}));
 
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
@@ -65,8 +64,10 @@ function newProvider(): PgVectorRagProvider {
   });
 }
 
-function newStore(): ProviderRunRecordStore {
-  return new ProviderRunRecordStore(newProvider(), { dimension: DIM });
+function newStore() {
+  return scopedStore(
+    new ProviderRunRecordStore(newProvider(), { dimension: DIM }),
+  );
 }
 
 beforeAll(async () => {
@@ -143,10 +144,12 @@ it.each([
   }),
 ])('malformed row is ignored with a warning: %s', async (text) => {
   const p = newProvider();
-  const store = new ProviderRunRecordStore(p, {
-    dimension: DIM,
-    log: { warn },
-  });
+  const store = scopedStore(
+    new ProviderRunRecordStore(p, {
+      dimension: DIM,
+      log: { warn },
+    }),
+  );
   await store.save('bad', record);
   const catalog = await p.describeCollections();
   if (!catalog.ok) throw catalog.error;
@@ -159,15 +162,15 @@ it.each([
   const writer = opened.value.rag.writer?.();
   if (!writer?.upsertPrecomputedRaw) throw new Error('missing writer');
   const w = await writer.upsertPrecomputedRaw(
-    'run:bad',
+    runRecordId('alice', 'bad'),
     text,
     Array(DIM).fill(0),
-    { sessionId: 'bad' },
+    { userId: 'alice', sessionId: 'bad', savedAt: Date.now() },
   );
   if (!w.ok) throw w.error;
   expect(await store.load('bad')).toBeUndefined();
   expect(warn).toHaveBeenCalledWith('Skipped a malformed run record', {
-    id: 'run:bad',
+    id: runRecordId('alice', 'bad'),
   });
 });
 const warn = jest.fn();

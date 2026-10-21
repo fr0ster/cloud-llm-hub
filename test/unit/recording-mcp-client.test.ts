@@ -1,5 +1,6 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { runWithReadOnlyTools } from '../../srv/request-session';
 
 function fakeInner(): IMcpClient {
   return {
@@ -193,4 +194,67 @@ describe('RecordingMcpClient', () => {
     const client = new RecordingMcpClient(inner);
     expect(client.healthCheck).toBeUndefined();
   });
+});
+
+it('checker writes and unknown tools never reach the MCP adapter, reads work, executor is unaffected', async () => {
+  const inner = fakeInner();
+  const tools = [
+    {
+      name: 'ReadTable',
+      description: '',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'CreateClass',
+      description: '',
+      inputSchema: {},
+      annotations: { readOnlyHint: false },
+    },
+  ];
+  jest.mocked(inner.listTools).mockResolvedValue({ ok: true, value: tools });
+  jest
+    .mocked(inner.callTool)
+    .mockResolvedValue({ ok: true, value: { content: 'ok' } });
+  const client = new RecordingMcpClient(inner);
+  const write = await runWithReadOnlyTools(() =>
+    client.callTool('CreateClass', {}),
+  );
+  expect(write.ok && write.value.isError).toBe(true);
+  const unknown = await runWithReadOnlyTools(() =>
+    client.callTool('MysteryTool', {}),
+  );
+  expect(unknown.ok && unknown.value.isError).toBe(true);
+  expect(inner.callTool).not.toHaveBeenCalled();
+  await runWithReadOnlyTools(() => client.callTool('ReadTable', {}));
+  await client.callTool('CreateClass', {});
+  expect(inner.callTool).toHaveBeenCalledTimes(2);
+});
+
+it('checker listing uses exposition before annotations and fails closed on unknown effects', async () => {
+  const inner = fakeInner();
+  const tools = [
+    { name: 'GetTable', description: '', inputSchema: {} },
+    {
+      name: 'RuntimeRunClass',
+      description: '',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    { name: 'Mystery', description: '', inputSchema: {} },
+  ];
+  jest.mocked(inner.listTools).mockResolvedValue({ ok: true, value: tools });
+  const client = new RecordingMcpClient(
+    inner,
+    (name) =>
+      ({ GetTable: 'readonly', RuntimeRunClass: 'high' })[
+        name as 'GetTable' | 'RuntimeRunClass'
+      ],
+  );
+  const offered = await runWithReadOnlyTools(() => client.listTools());
+  expect(offered.ok && offered.value.map((t) => t.name)).toEqual(['GetTable']);
+  expect(
+    await runWithReadOnlyTools(() => client.callTool('RuntimeRunClass', {})),
+  ).toMatchObject({ ok: true, value: { isError: true } });
+  expect(inner.callTool).not.toHaveBeenCalled();
 });

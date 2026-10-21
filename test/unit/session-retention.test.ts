@@ -381,6 +381,7 @@ describe('the sweep asks first', () => {
     // A's history expired on its own thirty-minute clock.
     f.held.delete('alice/A');
     expect(r.forgetEmpty()).toBe(1);
+    expect(f.log).toContain('delete alice/A');
     expect(r.isKnown('alice', 'A')).toBe(false);
     expect(r.isKnown('bob', 'B')).toBe(true);
     held.release();

@@ -1154,6 +1154,7 @@ async function serveChatCompletions(
                 }),
             ),
           priorTurns,
+          userId,
         ),
       );
       // end runWithSessionId / runWithRequestConnection / pipeline.run
@@ -1258,6 +1259,7 @@ async function serveChatCompletions(
               ),
           ),
         priorTurns,
+        userId,
       ),
     );
 

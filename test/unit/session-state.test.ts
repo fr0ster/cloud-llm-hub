@@ -1,4 +1,5 @@
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
+import { scopedStore } from './helpers/scoped-run-store';
 
 const mockWarn = jest.fn();
 const mockCdsContext: {
@@ -17,12 +18,6 @@ jest.mock(
   }),
   { virtual: true },
 );
-
-jest.mock('../../srv/request-session', () => ({
-  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
-  getRequestSessionId: () => undefined,
-  getRequestHistory: () => [],
-}));
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -125,7 +120,7 @@ describe('no per-session map is keyed by the session alone', () => {
 });
 
 it('deleteSessionState deletes the run record and isolates a new session', async () => {
-  const store = getRunRecordStore();
+  const store = scopedStore(getRunRecordStore());
   await store.save(SID, {
     runId: 'r',
     request: 'hi',

@@ -1,12 +1,9 @@
-import cds from '@sap/cds';
 import {
   forgetSessionDestination,
   getCollectionRegistry,
   isProvidersReady,
 } from '../agent-manager';
 import { clearSession, hasSessionHistory } from '../session-store';
-import { guardedTask } from './guarded-task';
-import { getRunRecordStore } from './run-record-store';
 
 /**
  * Every store keyed by one session, in one place.
@@ -22,9 +19,6 @@ import { getRunRecordStore } from './run-record-store';
  * lease between the decision and the deletion.
  */
 export function deleteSessionState(userId: string, sessionId: string): void {
-  guardedTask('Run record delete', cds.log('run-store'), () =>
-    getRunRecordStore().delete(sessionId),
-  )();
   clearSession(sessionId, userId);
   forgetSessionDestination(userId, sessionId);
   // Before startup has built the providers there is no registry, and so no

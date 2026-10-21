@@ -1,4 +1,5 @@
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
+import { scopedStore } from './helpers/scoped-run-store';
 
 /**
  * What opening, closing and reviving a long session do to the rest of the
@@ -485,7 +486,7 @@ it('R20 direct activity touch extends TTL and updates record without a queued ru
 it('expired long session deletes the run record', async () => {
   setup();
   const s = await open('alice');
-  await getRunRecordStore().save(s.key, {
+  await scopedStore(getRunRecordStore()).save(s.key, {
     runId: 'r',
     request: 'hi',
     plan: { steps: [], createdAt: 1 },
@@ -495,12 +496,12 @@ it('expired long session deletes the run record', async () => {
   });
   now += TTL + 1;
   await sweepSessions();
-  expect(await getRunRecordStore().load(s.key)).toBeUndefined();
+  expect(await scopedStore(getRunRecordStore()).load(s.key)).toBeUndefined();
 });
 it('session expired while offline deletes its run record', async () => {
   setup();
   const s = await open('alice');
-  await getRunRecordStore().save(s.key, {
+  await scopedStore(getRunRecordStore()).save(s.key, {
     runId: 'r',
     request: 'hi',
     plan: { steps: [], createdAt: 1 },
@@ -517,5 +518,5 @@ it('session expired while offline deletes its run record', async () => {
     ttlMs: TTL,
   });
   await sweepSessions();
-  expect(await getRunRecordStore().load(s.key)).toBeUndefined();
+  expect(await scopedStore(getRunRecordStore()).load(s.key)).toBeUndefined();
 });

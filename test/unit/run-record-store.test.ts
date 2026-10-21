@@ -8,6 +8,7 @@ import {
   RUN_OUTPUT_CHAR_LIMIT,
 } from '../../srv/lib/run-record-store';
 import { loadSessionConfig } from '../../srv/lib/session-config';
+import { scopedStore } from './helpers/scoped-run-store';
 
 const record = (runId = 'r'): RunRecord => ({
   runId,
@@ -27,14 +28,14 @@ const record = (runId = 'r'): RunRecord => ({
   finishedAt: 2,
 });
 it('memory store keeps only the last record per session', async () => {
-  const s = new MemoryRunRecordStore(2);
+  const s = scopedStore(new MemoryRunRecordStore(2));
   await s.save('a', record());
   await s.save('a', record('last'));
   expect((await s.load('a'))?.runId).toBe('last');
   expect(await s.load('other')).toBeUndefined();
 });
 it('outputs are cut to 4000 chars on save without mutating the caller', async () => {
-  const s = new MemoryRunRecordStore(2);
+  const s = scopedStore(new MemoryRunRecordStore(2));
   const r = record();
   await s.save('a', r);
   expect((await s.load('a'))?.steps[0].output).toHaveLength(
@@ -46,13 +47,13 @@ it('outputs are cut to 4000 chars on save without mutating the caller', async ()
   expect((await s.load('a'))?.plan.steps).toEqual([]);
 });
 it('delete removes the record', async () => {
-  const s = new MemoryRunRecordStore(2);
+  const s = scopedStore(new MemoryRunRecordStore(2));
   await s.save('a', record());
   await s.delete('a');
   expect(await s.load('a')).toBeUndefined();
 });
 it('memory store is bounded and evicts the oldest saved record', async () => {
-  const s = new MemoryRunRecordStore(2);
+  const s = scopedStore(new MemoryRunRecordStore(2));
   await s.save('a', record());
   await s.save('b', record());
   await s.save('a', record());
@@ -70,8 +71,8 @@ it.each(['none', 'sqlite'])(
       LLM_AGENT_MAX_SESSIONS: '1',
       LLM_AGENT_MAX_SESSIONS_PER_USER: '1',
     });
-    const s = createRunRecordStore(cfg);
-    expect(s).toBeInstanceOf(MemoryRunRecordStore);
+    const s = scopedStore(createRunRecordStore(cfg));
+    expect(createRunRecordStore(cfg)).toBeInstanceOf(MemoryRunRecordStore);
     await s.save('first', record());
     await s.save('second', record());
     expect(await s.load('first')).toBeUndefined();
@@ -145,7 +146,10 @@ it('provider refuses a writer that cannot write zero vectors', async () => {
     createCollection: async () => ({ ok: true, value: { rag, editor: {} } }),
   } as unknown as IRagProvider;
   await expect(
-    new ProviderRunRecordStore(p, { dimension: 4 }).save('a', record()),
+    scopedStore(new ProviderRunRecordStore(p, { dimension: 4 })).save(
+      'a',
+      record(),
+    ),
   ).rejects.toThrow('upsertPrecomputedRaw');
   expect(upsertRaw).not.toHaveBeenCalled();
 });

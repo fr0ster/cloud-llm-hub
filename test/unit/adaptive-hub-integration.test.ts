@@ -52,6 +52,7 @@ const config: AgentConfig = {
 describe('adaptive chat through the real hub build and library pipeline', () => {
   let scenario: 'hello' | 'throw' | 'invalid';
   const calls: string[] = [];
+  const controllerPrompts: string[] = [];
   const answer = 'I created and activated class ZTEST.';
   function respond(messages: Message[]): string {
     const system = messages
@@ -60,6 +61,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       .join('\n');
     if (system.includes('sequential adaptive plan')) {
       calls.push('controller');
+      controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
       return JSON.stringify({
@@ -97,9 +99,10 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   });
   beforeEach(() => {
     calls.length = 0;
+    controllerPrompts.length = 0;
   });
 
-  async function run(sessionId: string, prompt: string) {
+  async function run(sessionId: string, prompt: string, userId = 'alice') {
     const callTool = jest.fn();
     const handle = await buildAgentForDestination(
       {
@@ -118,19 +121,29 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       config,
     );
     const chunks: string[] = [];
-    await runWithSessionId(sessionId, async () => {
-      for await (const chunk of handle.agent.streamProcess(prompt, {
-        sessionId,
-        trace: { traceId: sessionId },
-      })) {
-        expect(chunk.ok).toBe(true);
-        if (chunk.ok) chunks.push(chunk.value.content);
-      }
-    }, []);
+    await runWithSessionId(
+      sessionId,
+      async () => {
+        for await (const chunk of handle.agent.streamProcess(prompt, {
+          sessionId,
+          trace: { traceId: sessionId },
+        })) {
+          expect(chunk.ok).toBe(true);
+          if (chunk.ok) chunks.push(chunk.value.content);
+        }
+      },
+      [],
+      userId,
+    );
     return {
       text: chunks.join(''),
       callTool,
-      record: await getRunRecordStore().load(sessionId),
+      record: await runWithSessionId(
+        sessionId,
+        () => getRunRecordStore().load(sessionId),
+        [],
+        userId,
+      ),
     };
   }
 
@@ -161,4 +174,16 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       expect(result.record?.steps.some((s) => s.kind === 'work')).toBe(true);
     },
   );
+  it('real adaptive pipeline never passes Alice previousRun to Bob with the same session ID', async () => {
+    scenario = 'hello';
+    await run('shared-id', 'Alice private request', 'alice');
+    await run('shared-id', 'Bob request', 'bob');
+    expect(controllerPrompts.at(-1)).toContain('Previous run:\nnull');
+    expect(controllerPrompts.at(-1)).not.toContain('Alice private request');
+    await run('other-id', 'Alice other session', 'alice');
+    expect(controllerPrompts.at(-1)).toContain('Previous run:\nnull');
+    await run('shared-id', 'Alice continuation', 'alice');
+    expect(controllerPrompts.at(-1)).toContain('Alice private request');
+    expect(controllerPrompts.at(-1)).not.toContain('Bob request');
+  });
 });

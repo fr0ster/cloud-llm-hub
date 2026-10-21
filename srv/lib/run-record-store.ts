@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   IRagBackendWriter,
   IRagProvider,
@@ -9,6 +10,7 @@ import { isRagScanner } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
+import { getRequestSessionId, getRequestUserId } from '../request-session';
 import { ensureRunRecordStore } from './collection-persistence';
 import {
   createCollectionProvider,
@@ -20,7 +22,7 @@ import { type SessionConfig, sessionConfig } from './session-config';
 
 export const RUN_OUTPUT_CHAR_LIMIT = 4000;
 export type DeletableRunRecordStore = IRunRecordStore & {
-  delete(sessionId: string): Promise<void>;
+  delete(userId: string, sessionId: string): Promise<void>;
 };
 const str = z.string();
 const num = z.number().finite();
@@ -108,29 +110,66 @@ function stored(record: RunRecord): RunRecord {
     s.output = s.output.slice(0, RUN_OUTPUT_CHAR_LIMIT);
   return copy;
 }
+function owner(sessionId: string): string | undefined {
+  const userId = getRequestUserId();
+  if (
+    !userId ||
+    !getRequestSessionId() ||
+    getRequestSessionId() !== sessionId
+  ) {
+    cds
+      .log('run-store')
+      .debug(
+        'Run record skipped: missing identity/session or mismatched session',
+      );
+    return undefined;
+  }
+  return userId;
+}
+export function runRecordId(userId: string, sessionId: string): string {
+  return `run:${createHash('sha256')
+    .update(JSON.stringify([userId, sessionId]))
+    .digest('hex')}`;
+}
 export class MemoryRunRecordStore implements DeletableRunRecordStore {
-  private readonly records = new Map<string, RunRecord>();
+  private readonly records = new Map<
+    string,
+    { record: RunRecord; savedAt: number }
+  >();
   constructor(
     private readonly maxSessions: number = sessionConfig().maxSessions,
+    private readonly ttlMs: number = sessionConfig().ttlMs,
   ) {
     if (!Number.isInteger(maxSessions) || maxSessions < 1)
       throw new Error('maxSessions must be a positive integer');
   }
   async load(sessionId: string): Promise<RunRecord | undefined> {
-    const r = this.records.get(sessionId);
-    return r && stored(r);
+    const userId = owner(sessionId);
+    if (!userId) return undefined;
+    const key = runRecordId(userId, sessionId);
+    const r = this.records.get(key);
+    if (r && Date.now() - r.savedAt > this.ttlMs) {
+      this.records.delete(key);
+      return undefined;
+    }
+    return r && stored(r.record);
   }
   async save(sessionId: string, record: RunRecord): Promise<void> {
+    const userId = owner(sessionId);
+    if (!userId) return;
     const copy = stored(record);
-    this.records.delete(sessionId);
-    this.records.set(sessionId, copy);
+    for (const [key, value] of this.records)
+      if (Date.now() - value.savedAt > this.ttlMs) this.records.delete(key);
+    const key = runRecordId(userId, sessionId);
+    this.records.delete(key);
+    this.records.set(key, { record: copy, savedAt: Date.now() });
     while (this.records.size > this.maxSessions) {
       const oldest = this.records.keys().next();
       if (!oldest.done) this.records.delete(oldest.value);
     }
   }
-  async delete(sessionId: string): Promise<void> {
-    this.records.delete(sessionId);
+  async delete(userId: string, sessionId: string): Promise<void> {
+    this.records.delete(runRecordId(userId, sessionId));
   }
 }
 type Opened = {
@@ -141,14 +180,17 @@ type Opened = {
 export class ProviderRunRecordStore implements DeletableRunRecordStore {
   private opening?: Promise<Opened>;
   private readonly zeroVector: number[];
+  private readonly ttlMs: number;
   private readonly log: { warn(message: string, detail?: unknown): void };
   constructor(
     private readonly provider: IRagProvider,
     opts: {
       dimension: number;
+      ttlMs?: number;
       log?: { warn(message: string, detail?: unknown): void };
     },
   ) {
+    this.ttlMs = opts.ttlMs ?? sessionConfig().ttlMs;
     this.zeroVector = new Array<number>(opts.dimension).fill(0);
     this.log = opts.log ?? cds.log('run-store');
   }
@@ -175,27 +217,43 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
     return { scanner: r.value, writer: writer as Opened['writer'] };
   }
   async save(sessionId: string, record: RunRecord): Promise<void> {
+    const userId = owner(sessionId);
+    if (!userId) return;
     const text = JSON.stringify(stored(record));
     const { writer } = await this.store();
     const r = await writer.upsertPrecomputedRaw(
-      `run:${sessionId}`,
+      runRecordId(userId, sessionId),
       text,
       this.zeroVector,
-      { sessionId },
+      { userId, sessionId, savedAt: Date.now() },
     );
     if (!r.ok) throw r.error;
   }
   async load(sessionId: string): Promise<RunRecord | undefined> {
+    const userId = owner(sessionId);
+    if (!userId) return undefined;
     const { scanner } = await this.store();
     let cursor: string | undefined;
     do {
       const page = await scanner.scan({
-        filter: { sessionId },
+        filter: { userId, sessionId },
         ...(cursor !== undefined ? { cursor } : {}),
       });
       if (!page.ok) throw page.error;
       for (const row of page.value.records) {
-        if (row.id !== `run:${sessionId}`) continue;
+        if (row.id !== runRecordId(userId, sessionId)) continue;
+        if (
+          row.metadata.userId !== userId ||
+          row.metadata.sessionId !== sessionId
+        )
+          continue;
+        if (
+          typeof row.metadata.savedAt !== 'number' ||
+          Date.now() - row.metadata.savedAt > this.ttlMs
+        ) {
+          await this.delete(userId, sessionId);
+          return undefined;
+        }
         try {
           return stored(schema.parse(JSON.parse(row.text)));
         } catch {
@@ -208,9 +266,9 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
     } while (cursor !== undefined);
     return undefined;
   }
-  async delete(sessionId: string): Promise<void> {
+  async delete(userId: string, sessionId: string): Promise<void> {
     const { writer } = await this.store();
-    const r = await writer.deleteByIdRaw(`run:${sessionId}`);
+    const r = await writer.deleteByIdRaw(runRecordId(userId, sessionId));
     if (!r.ok) throw r.error;
   }
 }
@@ -224,7 +282,7 @@ export function createRunRecordStore(
   ctors: RagCtors = defaultCtors,
 ): DeletableRunRecordStore {
   if (cfg.store !== 'hana-vector' && cfg.store !== 'pg-vector')
-    return new MemoryRunRecordStore(cfg.maxSessions);
+    return new MemoryRunRecordStore(cfg.maxSessions, cfg.ttlMs);
   if (!rag)
     throw new Error('RAG configuration required for persistent run records');
   const provider = createCollectionProvider(
@@ -238,6 +296,7 @@ export function createRunRecordStore(
     throw new Error(`no provider for run record store "${cfg.store}"`);
   return new ProviderRunRecordStore(provider, {
     dimension: PROVIDER_DEFAULT_DIMENSION,
+    ttlMs: cfg.ttlMs,
   });
 }
 let singleton: DeletableRunRecordStore | undefined;

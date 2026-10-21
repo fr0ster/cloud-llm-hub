@@ -1,3 +1,4 @@
+import { isReadOnlyTools } from '../request-session';
 /**
  * Execution-time authorization for MCP tools.
  *
@@ -42,6 +43,11 @@ export function assertToolAllowed(
   toolExposition: string | undefined,
   allowed: readonly ExpositionLevel[] | undefined,
 ): void {
+  if (isReadOnlyTools() && !isReadOnlyExposition(toolExposition)) {
+    throw new ToolAuthorizationError(
+      `Tool "${toolName}" was not executed: checker tools are read-only.`,
+    );
+  }
   if (!allowed || allowed.length === 0) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: the caller's permissions could not be determined. ` +
@@ -62,4 +68,12 @@ export function assertToolAllowed(
         'Asking for it by name does not grant it — a different MCP role is required.',
     );
   }
+}
+
+export function isReadOnlyExposition(exposition: unknown): boolean {
+  return (
+    exposition === 'readonly' ||
+    exposition === 'search' ||
+    exposition === 'system'
+  );
 }

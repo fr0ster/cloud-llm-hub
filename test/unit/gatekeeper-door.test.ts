@@ -10,6 +10,7 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/request-session', () => ({
+  ...jest.requireActual('../../srv/request-session'),
   runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
   getRequestSessionId: () => undefined,
   getRequestHistory: () => [],

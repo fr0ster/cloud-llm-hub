@@ -654,3 +654,12 @@ describe('adaptive status SSE', () => {
     expect(res.body).not.toContain('event: status');
   });
 });
+
+it.each([false, true])(
+  'passes the trusted session to the Anthropic agent (stream=%s)',
+  async (stream) => {
+    configure();
+    await call(body(stream)).done;
+    expect(harness.seenOptions.at(-1)?.sessionId).toBe('s-1');
+  },
+);

@@ -88,7 +88,10 @@ import { requestSystemContextResolver } from './lib/request-system-context';
 import { recordToolScore } from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
-import { assertToolAllowed } from './lib/tool-authorization';
+import {
+  assertToolAllowed,
+  isReadOnlyExposition,
+} from './lib/tool-authorization';
 import {
   bundleFileFor,
   collectionFor,
@@ -108,8 +111,10 @@ import { trackedLlm } from './lib/tracked-llm';
 import {
   getRequestHistory,
   getRequestSessionId,
+  isReadOnlyTools,
   isToolGateBypassed,
   requestToolGateDecision,
+  runWithReadOnlyTools,
 } from './request-session';
 
 // ---------------------------------------------------------------------------
@@ -527,7 +532,11 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // tag is excluded when a role filter is active — otherwise an un-tagged tool
     // (e.g. a group not mapped in getToolExpositionMap) would bypass role-based
     // filtering and reach every role. Every exposed tool must carry an exposition.
-    const allowed = new Set(effectiveExpositions);
+    const allowed = new Set(
+      effectiveExpositions.filter(
+        (e) => !isReadOnlyTools() || isReadOnlyExposition(e),
+      ),
+    );
     const isAllowed = (r: RagResult) => {
       // Skills are instruction TEXT, not callable tools. `exposition` gates tool
       // ACCESS; a skill cannot be invoked, so role-filtering it would only hide
@@ -2618,7 +2627,9 @@ export async function buildAgentForDestination(
   // instance's records to ground its verdict in what actually happened, not
   // just which tool NAMES ran (a name match alone can't tell an activated
   // create from an inactive one).
-  const recMcp = new RecordingMcpClient(mcpAdapter);
+  const recMcp = new RecordingMcpClient(mcpAdapter, (name) =>
+    toolExpositionMap?.get(name),
+  );
   let executor: SmartAgent | undefined;
   let rawExecutor: SmartAgent | undefined;
   const executorWorker = await buildExecutorWorker(
@@ -2656,12 +2667,20 @@ export async function buildAgentForDestination(
     if (!rawExecutor) throw new Error('Executor agent was not built');
     const workers = new Map<string, ISubAgent>([['executor', executorWorker]]);
     // Both workers use the same tool loop and RecordingMcpClient.
-    workers.set(
-      'checker',
-      new SmartAgentSubAgent('checker', rawExecutor, {
-        description: CHECKER_DESCRIPTION,
-      }),
-    );
+    const checker = new SmartAgentSubAgent('checker', rawExecutor, {
+      description: CHECKER_DESCRIPTION,
+    });
+    const checkerRun = checker.run.bind(checker);
+    checker.run = (input) =>
+      runWithReadOnlyTools(() =>
+        checkerRun({
+          ...input,
+          task:
+            'You are verifying, not changing: use only read/check tools; do not create, change, activate or delete objects; return the JSON verdict.\n' +
+            input.task,
+        }),
+      );
+    workers.set('checker', checker);
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
         ([, value]) => value !== undefined,

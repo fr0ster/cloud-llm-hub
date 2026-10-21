@@ -274,6 +274,7 @@ async function serveMessages(
     ...options,
     // After the spread: nothing in `options` may override the admission's signal.
     signal: pipeline.signal,
+    sessionId,
     ragFilter: {
       ...(options as { ragFilter?: Record<string, unknown> })?.ragFilter,
       exposition: callerExposition,
@@ -299,7 +300,7 @@ async function serveMessages(
   const runAgent = <T>(fn: () => Promise<T>): Promise<T> =>
     pipeline.run(() =>
       runWithSessionId(
-        undefined,
+        sessionId,
         () => {
           const connection = requestConnection;
           if (!connection) return fn();
@@ -315,6 +316,7 @@ async function serveMessages(
           );
         },
         priorTurns,
+        userId,
       ),
     );
 

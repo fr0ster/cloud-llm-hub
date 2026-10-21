@@ -1,3 +1,5 @@
+import { isReadOnlyTools } from '../../srv/request-session';
+
 /**
  * Wiring contract for `buildAgentForDestination`: the DAG coordinator
  * (executor worker + reviewer finalizer) must be assembled with a
@@ -201,14 +203,21 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         // Private identity plus behavior: ALS history must never replace the
         // context selected by the controller, including an empty history.
         expect(worker.agent).toBe(workerAgent);
+        workerAgent.process.mockImplementation(async () => {
+          expect(isReadOnlyTools()).toBe(name === 'checker');
+          return { ok: true, value: { content: 'done' } };
+        });
         await runWithSessionId(
           'adaptive',
           () => worker.run({ task: 'selected task', history: [] }),
           [{ role: 'user', content: 'must not inject this' }],
         );
-        expect(workerAgent.process.mock.calls.at(-1)?.[0]).toBe(
-          'selected task',
-        );
+        const task = workerAgent.process.mock.calls.at(-1)?.[0];
+        expect(task).toContain('selected task');
+        if (name === 'checker')
+          expect(task).toContain('You are verifying, not changing');
+        else expect(task).toBe('selected task');
+        expect(isReadOnlyTools()).toBe(false);
       }
     },
   );
