@@ -1148,7 +1148,7 @@
         // Check model availability and agent readiness
         async function checkReady() {
             try {
-                const resp = await fetch('/v1/models');
+                const resp = await fetch('/v1/models', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
                 if (resp.status === 403) {
                     setStatus('ACCESS DENIED — NO MCP ROLE. Ask an administrator to assign an "MCP … Access" role collection, then sign in again', 'status-error');
                     lockInput('bootstrap');
