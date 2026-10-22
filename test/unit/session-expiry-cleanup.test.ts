@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 /**
  * A session that expired while the hub was down: whichever path finds its
  * record (a client presenting the key, or the sweep), everything kept under

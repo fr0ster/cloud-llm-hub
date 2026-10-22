@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 /**
  * The raw route's error path, end to end through `handleStreamHTTP`: a
  * refused request is answered with its own status and a body that names it —

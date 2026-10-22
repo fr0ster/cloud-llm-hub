@@ -18,6 +18,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { config } from 'dotenv';
+import { applyLoggingConfig } from './lib/logging-config';
 
 // Load .env file for LOCAL development only (not in BTP/Cloud Foundry)
 // In BTP, environment variables are set via deployment configuration
@@ -61,6 +62,7 @@ if (isLocal) {
 // Set BEFORE any imports that might load the submodule
 // These flags prevent the submodule from auto-loading .env files
 // All SAP configuration is passed via headers -> extractSapContext -> serverOptions.sapConfig
+applyLoggingConfig();
 process.env.MCP_SKIP_AUTO_START = 'true';
 process.env.MCP_SKIP_ENV_LOAD = 'true';
 process.env.TLS_REJECT_UNAUTHORIZED = '0';

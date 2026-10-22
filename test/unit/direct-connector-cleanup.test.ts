@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 /**
  * A direct (`x-sap-url`) connection on the raw MCP route:
  * - is built for the DECLARED kind — `x-sap-system-type`, else on-premise; the

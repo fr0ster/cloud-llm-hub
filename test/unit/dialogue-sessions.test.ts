@@ -19,7 +19,11 @@ jest.mock('../../srv/lib/background-connection', () => ({
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
 import type { ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
-import { PlannerToolsClient } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  PlannerToolsClient,
+  SmartAgentBuilder,
+  SmartAgentSubAgent,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { runWithRequestConnection } from '../../srv/agent-manager';
 import {
   currentAdmission,
@@ -49,6 +53,7 @@ const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
+let mockGoal = 'read';
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
@@ -66,7 +71,7 @@ jest.mock('../../srv/agent-manager', () => ({
       if (!text.startsWith('[task events]'))
         await new PlannerToolsClient().callTool('delegate_task', {
           worker: 'executor',
-          goal: 'read',
+          goal: mockGoal,
           history: 'all',
         });
       return {
@@ -139,6 +144,7 @@ async function ready(user = 'alice') {
 beforeEach(() => {
   jest.clearAllMocks();
   mockPlannerTurns.length = 0;
+  mockGoal = 'read';
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
 });
@@ -272,6 +278,141 @@ test('ttl cooperatively stops tasks, closes connections, forgets credentials, de
   expect(mockPlannerTurns).toHaveLength(turns);
   await expect(h.session.send('after')).rejects.toThrow('closed');
   expect(mockRelease).toHaveBeenCalledTimes(1);
+});
+
+test('close settles a real SmartAgent continuous tool loop within a few iterations', async () => {
+  let calls = 0;
+  const answer = () => ({
+    ok: true as const,
+    value: {
+      content: '',
+      finishReason: 'tool_calls' as const,
+      toolCalls: [{ id: `call-${calls}`, name: 'read', arguments: {} }],
+    },
+  });
+  const built = await new SmartAgentBuilder({
+    skipModelValidation: true,
+    agent: {
+      maxIterations: 100,
+      classificationEnabled: false,
+      ragTranslateEnabled: false,
+      heartbeatIntervalMs: 1,
+    },
+  })
+    .withMainLlm({
+      model: 'fake',
+      chat: async () => answer(),
+      streamChat: async function* () {
+        yield answer();
+      },
+    })
+    .withMcpClients([
+      {
+        listTools: async () => ({
+          ok: true,
+          value: [
+            {
+              name: 'read',
+              description: 'read',
+              inputSchema: { type: 'object', properties: {} },
+            },
+          ],
+        }),
+        callTool: async () => {
+          calls++;
+          await new Promise((r) => setTimeout(r, 15));
+          return {
+            ok: true,
+            value: { content: [{ type: 'text', text: 'read' }] },
+          };
+        },
+      },
+    ])
+    .build();
+  const worker = new SmartAgentSubAgent('executor', built.agent);
+  mockRun.mockImplementation((input) => worker.run(input));
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => calls >= 2);
+  const atClose = calls;
+  await closeDialogue('alice', 'key', 'explicit');
+  expect(calls - atClose).toBeLessThanOrEqual(2);
+  expect(calls).toBeLessThan(100);
+  expect(h.session.snapshot().tasks[0].state).toBe('stopped');
+});
+
+test('dialogue lifecycle logs contain bounded goals and hashed session keys', async () => {
+  const cds = require('@sap/cds').default;
+  const info = jest.spyOn(cds.log('dialogue'), 'info');
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => h.outbox.replay().length > 0);
+    await closeDialogue('alice', 'key', 'explicit');
+    const entries = info.mock.calls;
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        [
+          'task started',
+          expect.objectContaining({
+            id: 't1',
+            worker: 'executor',
+            goal: 'read',
+          }),
+        ],
+        [
+          'task finished',
+          expect.objectContaining({
+            id: 't1',
+            state: 'done',
+            durationMs: expect.any(Number),
+          }),
+        ],
+        [
+          'stop requested',
+          expect.objectContaining({ id: 'all', reason: 'explicit' }),
+        ],
+        [
+          'session close requested',
+          expect.objectContaining({
+            keyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+            reason: 'explicit',
+          }),
+        ],
+        ['close progress', expect.objectContaining({ tasksRemaining: 0 })],
+        [
+          'close finished',
+          expect.objectContaining({ durationMs: expect.any(Number) }),
+        ],
+      ]),
+    );
+    expect(JSON.stringify(entries)).not.toContain('"key"');
+  } finally {
+    info.mockRestore();
+  }
+});
+
+test('lifecycle goal logging redacts credentials before truncation and omits outputs', async () => {
+  const cds = require('@sap/cds').default;
+  const info = jest.spyOn(cds.log('dialogue'), 'info');
+  mockGoal =
+    'password=SECRET_SENTINEL Bearer TOKEN_SENTINEL ' + 'x'.repeat(300);
+  mockRun.mockResolvedValue({ output: 'OUTPUT_SENTINEL'.repeat(100) });
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => h.outbox.replay().length > 0);
+    const started = info.mock.calls.find(
+      (entry: unknown[]) => entry[0] === 'task started',
+    );
+    if (!started) throw new Error('task start was not logged');
+    expect((started[1] as { goal: string }).goal).toHaveLength(120);
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(
+      /SECRET_SENTINEL|TOKEN_SENTINEL|OUTPUT_SENTINEL/,
+    );
+  } finally {
+    info.mockRestore();
+  }
 });
 test('shutdown preserves state; ttl deletes it', async () => {
   const h = await dialogueFor('alice', 'key', 'TEST');

@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 /**
  * The raw MCP route (`/mcp/stream/http`) runs its tool calls inside the
  * request's system scope, like the agent channels.

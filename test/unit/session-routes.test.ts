@@ -168,6 +168,42 @@ describe('POST /v1/session', () => {
 });
 
 describe('closing', () => {
+  it('responds while cleanup is pending and immediately refuses new turns', async () => {
+    const { body } = await openOne();
+    const registry = longSessions();
+    const original = registry.close.bind(registry);
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const close = jest
+      .spyOn(registry, 'close')
+      .mockImplementation(async (...args) => {
+        await original(...args);
+        await gate;
+      });
+    try {
+      const response = await Promise.race([
+        fetch(`${base}/v1/session`, {
+          method: 'DELETE',
+          headers: { [SESSION_HEADER]: body.session },
+        }),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error('HTTP close waited for cleanup')),
+            500,
+          ),
+        ),
+      ]);
+      expect(response.status).toBe(204);
+      expect(close).toHaveBeenCalled();
+      expect((await chat({ [SESSION_HEADER]: body.session })).status).toBe(404);
+    } finally {
+      settle();
+      await new Promise((resolve) => setImmediate(resolve));
+      close.mockRestore();
+    }
+  });
   it('event channel requires an owned long session after the middleware chain', async () => {
     expect((await fetch(`${base}/v1/session/events`)).status).toBe(404);
     const { body } = await openOne();

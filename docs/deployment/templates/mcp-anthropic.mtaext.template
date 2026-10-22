@@ -13,6 +13,9 @@ extends: cloud-llm-hub
 version: 1.0.0
 
 parameters:
+  # Hub logging; sap-cloud-sdk=error silences SDK basic-auth warnings.
+  LLM_AGENT_LOG_LEVEL: "info"
+  LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"
   # LLM Provider
   LLM_AGENT_PROVIDER: "anthropic"
   # LLM_AGENT_BASE_URL: "https://api.anthropic.com"  # default, override if needed

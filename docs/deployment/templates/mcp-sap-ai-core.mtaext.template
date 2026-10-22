@@ -13,6 +13,9 @@ extends: cloud-llm-hub
 version: 1.0.0
 
 parameters:
+  # Hub logging; sap-cloud-sdk=error silences SDK basic-auth warnings.
+  LLM_AGENT_LOG_LEVEL: "info"
+  LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"
   # LLM Model Configuration
   LLM_AGENT_MODEL: "anthropic--claude-4.5-sonnet"  # Model deployed in AI Launchpad
   LLM_AGENT_TEMPERATURE: "0.7"

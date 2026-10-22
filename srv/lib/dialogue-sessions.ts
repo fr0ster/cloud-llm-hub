@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   IConcurrencyPool,
   ILlm,
@@ -68,6 +68,18 @@ interface LiveHandle extends DialogueHandle {
   stop(): void;
 }
 const handles = new Map<string, Promise<LiveHandle>>();
+const log = () => cds.log('dialogue');
+const keyHash = (key: string) => createHash('sha256').update(key).digest('hex');
+function logGoal(goal: string): string {
+  return goal
+    .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
+    .replace(
+      /\b(?:password|passwd|authorization|cookie|token|api[-_]?key|secret|x-sap-password)\b\s*[=:]\s*(?:"[^"]*"|'[^']*'|\S+)/gi,
+      '[redacted]',
+    )
+    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, 'https://[redacted]@')
+    .slice(0, 120);
+}
 const creationListeners = new Map<
   string,
   Set<(handle: DialogueHandle) => void>
@@ -216,6 +228,7 @@ async function open(
     lease: ConnectionLease;
     pipeline: PipelineSession;
     traceId: string;
+    taskId: string;
   }>();
   const workers = new Map<string, ISubAgent>();
   for (const [name, worker] of destinationHandle.workers) {
@@ -226,6 +239,16 @@ async function open(
       async run(input) {
         const ctx = scope.getStore();
         if (!ctx) throw new Error('Background task context unavailable');
+        input.stopSignal?.addEventListener(
+          'abort',
+          () => {
+            log().info('stop requested', {
+              id: ctx.taskId,
+              reason: 'cooperative stop',
+            });
+          },
+          { once: true },
+        );
         return runWithRequestSystem(ctx.lease.system, () =>
           runWithSessionId(
             key,
@@ -336,6 +359,12 @@ async function open(
         pool: sharedExecutorPool(),
         baseInput: () => ({ sessionId: key }),
         async wrapRun(task, run) {
+          const startedAt = Date.now();
+          log().info('task started', {
+            id: task.id,
+            worker: task.worker,
+            goal: logGoal(task.goal),
+          });
           let lease: ConnectionLease | undefined;
           let pipeline: PipelineSession | undefined;
           let healthy = false;
@@ -361,6 +390,7 @@ async function open(
                   lease: acquiredLease,
                   pipeline: admission.admitted,
                   traceId,
+                  taskId: task.id,
                 },
                 run,
               ),
@@ -391,6 +421,18 @@ async function open(
                     });
                   }
                   emitTask({ ...task, state });
+                  log().info('task finished', {
+                    id: task.id,
+                    state,
+                    durationMs: Date.now() - startedAt,
+                  });
+                  if (stopped)
+                    log().info('close progress', {
+                      keyHash: keyHash(key),
+                      tasksRemaining: [...taskStates.values()].filter(
+                        (s) => s === 'running' || s === 'queued',
+                      ).length,
+                    });
                 }
               }
             }
@@ -453,11 +495,21 @@ export function closeDialogue(
   const inFlight = closing.get(id);
   if (inFlight) return inFlight;
   const pending = handles.get(id);
+  const startedAt = Date.now();
+  log().info('session close requested', { keyHash: keyHash(key), reason });
+  log().info('stop requested', { id: 'all', reason });
   const close = (async () => {
     try {
       const h = await pending;
       if (h) {
         h.stop();
+        log().info('close progress', {
+          keyHash: keyHash(key),
+          tasksRemaining: h.session
+            .snapshot()
+            .tasks.filter((t) => t.state === 'running' || t.state === 'queued')
+            .length,
+        });
         try {
           await h.session.close();
         } finally {
@@ -479,6 +531,10 @@ export function closeDialogue(
             .warn('Dialogue state deletion failed; TTL sweep will retry');
         }
       }
+      log().info('close finished', {
+        keyHash: keyHash(key),
+        durationMs: Date.now() - startedAt,
+      });
     }
   })();
   closing.set(id, close);

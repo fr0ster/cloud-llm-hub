@@ -26,6 +26,28 @@ are a different mechanism and do apply per request.
 
 ## Variables
 
+### Logging
+
+Logging applies to every deployment, including MCP-only. Configuration is
+validated during environment bootstrap, before destinations initialise;
+invalid levels or malformed comma-list entries fail startup.
+
+| Variable | Default | Meaning / example |
+|----------|---------|-------------------|
+| `LLM_AGENT_LOG_LEVEL` | `info` | Default for hub CAP (`cds.log`) loggers: `error`, `warn`, `info`, or `debug`. For example, `warn` reduces routine hub output. |
+| `LLM_AGENT_LOG_LEVELS` | empty | Comma-separated `name=level` overrides, for example `sap-cloud-sdk=error,smart-pipeline=warn,tool-rag=info`. Names other than `sap-cloud-sdk` are CAP logger ids. |
+
+Set `LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"` in your `.mtaext` to silence
+the SDK warning "You are connecting to an On-Premise system using basic
+authentication..." while retaining SDK errors. The special name applies the
+installed SDK's `setGlobalLogLevel` API to all SDK contexts (whose emitted
+logger name is `sap-cloud-sdk-logger`); its level is independent of the CAP
+default. Templates show this override. Restart/restage after changing logging
+environment variables. For more detail in dialogue lifecycle logs, keep
+`dialogue=info` when lowering the hub default, for example
+`sap-cloud-sdk=error,dialogue=info`. Lifecycle logs contain task ids, bounded
+goals, states, durations and hashed session keys, and omit task outputs.
+
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `LLM_AGENT_PROVIDER` | `sap-ai-sdk` | `sap-ai-sdk`, `openai`, `anthropic` or `deepseek` |

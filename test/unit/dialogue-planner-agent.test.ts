@@ -11,6 +11,12 @@ import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 
+test('verification always belongs to the checker', () => {
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'Delegate every verification or check step to the checker worker, never to the executor; the checker only reads and checks.',
+  );
+});
+
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
   makeHubLlm: jest.fn(),

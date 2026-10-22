@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 const mockCdsContext: { user?: { id: string; is: (role: string) => boolean } } =
   {};
 jest.mock(

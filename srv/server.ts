@@ -41,6 +41,7 @@ import {
   handleDialogueAck,
   handleDialogueEvents,
 } from './lib/dialogue-events-handler';
+import { closeDialogue } from './lib/dialogue-sessions';
 import { initializeDialogueStore } from './lib/dialogue-store';
 import {
   formatErrorMessage,
@@ -411,8 +412,8 @@ export async function handleOpenSession(
  * DELETE /v1/session, and POST /v1/session/close for `sendBeacon`.
  *
  * A long session is closed for good (`explicit`): its ABAP session, history,
- * session collections, destination and record. Answered once the session is
- * gone; a cleanup that failed is logged, and the session is gone all the same.
+ * session collections, destination and record. Respond after requesting close;
+ * cooperative task settlement and cleanup run in the background.
  * Without a long session: the clear-chat of before.
  */
 export async function handleCloseSession(
@@ -421,13 +422,13 @@ export async function handleCloseSession(
 ): Promise<void> {
   const s = (req as LongSessionRequest).longSession;
   if (s) {
-    try {
-      await longSessionsIfReady()?.close(s.userId, s.key, 'explicit');
-    } catch (err) {
-      cds.log('session').warn('long session cleanup failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    guardedTask('long session cleanup', cds.log('session'), () =>
+      Promise.all([
+        // Start stopping even if the registry is waiting for an active turn.
+        closeDialogue(s.userId, s.key, 'explicit', false),
+        longSessionsIfReady()?.close(s.userId, s.key, 'explicit'),
+      ]),
+    )();
     // The cookie named the closed session: clear it, so that a later plain
     // request is not refused for a key that is gone.
     if (resolveSessionId(req) === s.key)
