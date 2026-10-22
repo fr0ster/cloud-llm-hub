@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.5.0] - 2026-10-23
+
+### Added
+
+- **Dialogue workers use the hub's RAG collections.** In dialogue mode the
+  executor can call `rag_add`, `rag_correct`, `rag_deprecate` and the new
+  `rag_list`; the hub runs them itself, scoped to the dialogue session and
+  user, and records the calls for the reviewer. The checker gets `rag_list`
+  only, so it can read stored results back. Before, these tools existed only
+  as client tools in `body.tools`, which a background worker cannot call.
+- **The WebUI renders markdown tables.**
+
+### Changed
+
+- **Dialogue prompts keep analysis read-only.** Storing results means the hub
+  RAG collection, never objects in the SAP system; reading and analysis tasks
+  do not create, change, activate or run SAP objects unless the user asked;
+  a check reads stored results back; a worker stops after the same failure
+  twice; the planner asks when storage or change is ambiguous.
+
 ## [8.4.1] - 2026-10-23
 
 ### Fixed
