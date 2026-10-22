@@ -13,6 +13,9 @@ extends: cloud-llm-hub
 version: 1.0.0
 
 parameters:
+  # Hub logging; sap-cloud-sdk=error silences SDK basic-auth warnings.
+  LLM_AGENT_LOG_LEVEL: "info"
+  LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"
   # LLM Provider
   LLM_AGENT_PROVIDER: "openai"
 
@@ -36,6 +39,9 @@ parameters:
   LLM_AGENT_MODE: "smart"
   LLM_AGENT_MAX_ITERATIONS: "20"
   LLM_AGENT_CHAT_COORDINATOR: "adaptive"
+  LLM_AGENT_DIALOGUE_EXECUTORS: "3"
+  LLM_AGENT_DIALOGUE_EXECUTOR_POOL: "6"
+  LLM_AGENT_DIALOGUE_MAX_TASKS: "50"
   LLM_AGENT_PLAN_MAX_STEPS: ""
   LLM_AGENT_PLAN_MAX_REVISIONS: ""
   LLM_AGENT_PLAN_MAX_DURATION_MS: ""

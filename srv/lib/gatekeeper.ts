@@ -144,6 +144,35 @@ export async function admitPipeline(
   };
 }
 
+let backgroundShutdown = new AbortController();
+
+/** Retain and register background work without taking any Door capacity. */
+export async function admitBackground(
+  userId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<PipelineAdmission> {
+  if (signal?.aborted || backgroundShutdown.signal.aborted)
+    return { closed: true };
+  const lease = theRetention().lease(userId, sessionId, 'pipeline');
+  if (isRefusal(lease)) return { closed: true };
+  const register = createCallRegister();
+  let released = false;
+  return {
+    admitted: {
+      signal: backgroundShutdown.signal,
+      run: (fn) => runWithAdmission(register, fn),
+      drain: () => register.drain(),
+      release: () => {
+        if (!released) {
+          released = true;
+          lease.release();
+        }
+      },
+    },
+  };
+}
+
 /**
  * Whether a presented cookie still names a session.
  *
@@ -225,12 +254,15 @@ export function forgetEmptySessions(): number {
  * register, because the process is exiting.
  */
 export function shutdownGatekeeper(): void {
+  backgroundShutdown.abort(new Error('shutdown'));
   theDoor()?.abortAll(new Error('shutdown'));
 }
 
 /** Test seam. */
 export function resetGatekeeperForTest(): void {
   door?.abortAll(new Error('test reset'));
+  backgroundShutdown.abort();
+  backgroundShutdown = new AbortController();
   door = undefined;
   retention = undefined;
 }

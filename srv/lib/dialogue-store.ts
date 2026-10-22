@@ -1,0 +1,463 @@
+import { createHash } from 'node:crypto';
+import type {
+  DialogueState,
+  IDialogueStateStore,
+  IRagBackendWriter,
+  IRagProvider,
+  IRagScanner,
+  PlannerMessage,
+} from '@mcp-abap-adt/llm-agent';
+import { isRagScanner } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
+import { z } from 'zod';
+import type { RagConfig } from '../agent-config';
+import { dialogueMaxTasks } from '../agent-config';
+import { ensureDialogueStore } from './collection-persistence';
+import { guardedTask } from './guarded-task';
+import {
+  createCollectionProvider,
+  defaultCtors,
+  PROVIDER_DEFAULT_DIMENSION,
+  type RagCtors,
+} from './rag-provider-factory';
+import { type SessionConfig, sessionConfig } from './session-config';
+
+export type HubDialogueState = DialogueState & { outbox?: PlannerMessage[] };
+
+export const DIALOGUE_BYTE_LIMIT = 2 * 1024 * 1024;
+export interface DialogueStoreBackend {
+  load(
+    userId: string,
+    sessionId: string,
+  ): Promise<HubDialogueState | undefined>;
+  save(
+    userId: string,
+    sessionId: string,
+    state: HubDialogueState,
+  ): Promise<void>;
+  delete(userId: string, sessionId: string): Promise<void>;
+  hasDialogueState(userId: string, sessionId: string): boolean;
+  sweepExpired(now: number): Promise<void>;
+}
+const str = z.string();
+const num = z.number().finite();
+const message = z.object({
+  role: z.enum(['user', 'assistant', 'system', 'tool']),
+  content: str.max(20000).nullable(),
+  tool_call_id: str.optional(),
+  tool_calls: z
+    .array(
+      z.object({
+        id: str,
+        type: z.literal('function'),
+        function: z.object({ name: str, arguments: str }),
+      }),
+    )
+    .optional(),
+});
+const schema = z.object({
+  conversation: z.array(message).max(200),
+  plan: str.optional(),
+  tasks: z
+    .array(
+      z.object({
+        id: str,
+        worker: str,
+        goal: str,
+        state: z.enum([
+          'queued',
+          'running',
+          'done',
+          'failed',
+          'stopped',
+          'interrupted',
+        ]),
+        output: str.optional(),
+        error: str.optional(),
+        createdAt: num,
+        startedAt: num.optional(),
+        finishedAt: num.optional(),
+      }),
+    )
+    .superRefine((tasks, ctx) => {
+      if (tasks.length > dialogueMaxTasks())
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Dialogue task limit exceeded',
+        });
+    }),
+  pending: z.array(
+    z.object({
+      id: str,
+      text: str,
+      createdAt: num,
+      trigger: z.enum(['user', 'event']),
+    }),
+  ),
+  savedAt: num,
+});
+function stored(record: HubDialogueState): HubDialogueState {
+  const text = JSON.stringify(record);
+  if (Buffer.byteLength(text, 'utf8') > DIALOGUE_BYTE_LIMIT)
+    throw new Error('Dialogue state exceeds 2 MB');
+  const raw = JSON.parse(text);
+  const state = schema.parse(raw.state ?? raw);
+  const outbox = raw.outbox;
+  if (outbox === undefined) return state;
+  const parsed = schema.shape.pending.parse(outbox);
+  return parsed.length ? { ...state, outbox: parsed } : state;
+}
+function encode(
+  record: HubDialogueState,
+  log: { warn(message: string): void },
+): HubDialogueState | undefined {
+  try {
+    return stored(record);
+  } catch {
+    log.warn('Skipped malformed or oversized dialogue state');
+    return undefined;
+  }
+}
+export function dialogueId(userId: string, sessionId: string): string {
+  return `dialogue:${createHash('sha256')
+    .update(JSON.stringify([userId, sessionId]))
+    .digest('hex')}`;
+}
+export class MemoryDialogueStore implements DialogueStoreBackend {
+  hasDialogueState(userId: string, sessionId: string): boolean {
+    const key = dialogueId(userId, sessionId);
+    const r = this.records.get(key);
+    if (r && Date.now() - r.savedAt > this.ttlMs) this.records.delete(key);
+    return this.records.has(key);
+  }
+  private readonly records = new Map<
+    string,
+    { record: HubDialogueState; savedAt: number }
+  >();
+  constructor(
+    private readonly maxSessions: number = sessionConfig().maxSessions,
+    private readonly ttlMs: number = sessionConfig().ttlMs,
+  ) {
+    if (!Number.isInteger(maxSessions) || maxSessions < 1)
+      throw new Error('maxSessions must be a positive integer');
+  }
+  async sweepExpired(now: number): Promise<void> {
+    for (const [key, value] of this.records)
+      if (now - value.savedAt > this.ttlMs) this.records.delete(key);
+  }
+  async load(
+    userId: string,
+    sessionId: string,
+  ): Promise<HubDialogueState | undefined> {
+    const key = dialogueId(userId, sessionId);
+    const r = this.records.get(key);
+    if (r && Date.now() - r.savedAt > this.ttlMs) {
+      this.records.delete(key);
+      return undefined;
+    }
+    return r && stored(r.record);
+  }
+  async save(
+    userId: string,
+    sessionId: string,
+    record: HubDialogueState,
+  ): Promise<void> {
+    const copy = encode(record, cds.log('dialogue-store'));
+    if (!copy) return;
+    for (const [key, value] of this.records)
+      if (Date.now() - value.savedAt > this.ttlMs) this.records.delete(key);
+    const key = dialogueId(userId, sessionId);
+    this.records.delete(key);
+    this.records.set(key, { record: copy, savedAt: Date.now() });
+    while (this.records.size > this.maxSessions) {
+      const oldest = this.records.keys().next();
+      if (!oldest.done) this.records.delete(oldest.value);
+    }
+  }
+  async delete(userId: string, sessionId: string): Promise<void> {
+    this.records.delete(dialogueId(userId, sessionId));
+  }
+}
+type Opened = {
+  scanner: IRagScanner;
+  writer: IRagBackendWriter &
+    Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
+};
+export class ProviderDialogueStore implements DialogueStoreBackend {
+  async sweepExpired(now: number): Promise<void> {
+    const { scanner, writer } = await this.store();
+    let cursor: string | undefined;
+    do {
+      const page = await scanner.scan({
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (!page.ok) throw page.error;
+      for (const row of page.value.records) {
+        const { userId, sessionId, savedAt } = row.metadata;
+        try {
+          if (
+            typeof userId !== 'string' ||
+            typeof sessionId !== 'string' ||
+            typeof savedAt !== 'number' ||
+            !Number.isFinite(savedAt) ||
+            row.id !== dialogueId(userId, sessionId)
+          )
+            throw new Error('Malformed metadata');
+          if (Buffer.byteLength(row.text, 'utf8') > DIALOGUE_BYTE_LIMIT)
+            throw new Error('Dialogue state exceeds 2 MB');
+          stored(JSON.parse(row.text));
+        } catch {
+          this.index.delete(row.id);
+          this.log.warn('Skipped a malformed dialogue state', { id: row.id });
+          continue;
+        }
+        if (now - (savedAt as number) > this.ttlMs) {
+          const result = await writer.deleteByIdRaw(row.id);
+          if (!result.ok) throw result.error;
+          this.index.delete(row.id);
+        }
+      }
+      if (page.value.cursor !== undefined && page.value.cursor === cursor)
+        throw new Error('dialogue state store scan did not advance');
+      cursor = page.value.cursor;
+    } while (cursor !== undefined);
+  }
+  private readonly index = new Map<string, number>();
+  hasDialogueState(userId: string, sessionId: string): boolean {
+    for (const [key, savedAt] of this.index)
+      if (Date.now() - savedAt > this.ttlMs) this.index.delete(key);
+    return this.index.has(dialogueId(userId, sessionId));
+  }
+  private opening?: Promise<Opened>;
+  private readonly zeroVector: number[];
+  private readonly ttlMs: number;
+  private readonly log: { warn(message: string, detail?: unknown): void };
+  constructor(
+    private readonly provider: IRagProvider,
+    opts: {
+      dimension: number;
+      ttlMs?: number;
+      log?: { warn(message: string, detail?: unknown): void };
+    },
+  ) {
+    this.ttlMs = opts.ttlMs ?? sessionConfig().ttlMs;
+    this.zeroVector = new Array<number>(opts.dimension).fill(0);
+    this.log = opts.log ?? cds.log('dialogue-store');
+  }
+  private store(): Promise<Opened> {
+    if (!this.opening) {
+      const run = this.open().catch((err) => {
+        if (this.opening === run) this.opening = undefined;
+        throw err;
+      });
+      this.opening = run;
+    }
+    return this.opening;
+  }
+  private async open(): Promise<Opened> {
+    const r = await ensureDialogueStore(this.provider);
+    if (!r.ok) throw r.error;
+    const writer = r.value.writer?.();
+    if (!writer?.upsertPrecomputedRaw)
+      throw new Error(
+        'dialogue state store requires upsertPrecomputedRaw; records are never embedded',
+      );
+    if (!isRagScanner(r.value))
+      throw new Error('dialogue state store cannot be scanned');
+    return { scanner: r.value, writer: writer as Opened['writer'] };
+  }
+  async save(
+    userId: string,
+    sessionId: string,
+    record: HubDialogueState,
+  ): Promise<void> {
+    const copy = encode(record, this.log);
+    if (!copy) return;
+    const { outbox, ...state } = copy;
+    const text = JSON.stringify({ state, outbox: outbox ?? [] });
+    const savedAt = Date.now();
+    const { writer } = await this.store();
+    const r = await writer.upsertPrecomputedRaw(
+      dialogueId(userId, sessionId),
+      text,
+      this.zeroVector,
+      { userId, sessionId, savedAt },
+    );
+    if (!r.ok) throw r.error;
+    this.hasDialogueState(userId, sessionId);
+    this.index.set(dialogueId(userId, sessionId), savedAt);
+  }
+  async load(
+    userId: string,
+    sessionId: string,
+  ): Promise<HubDialogueState | undefined> {
+    const { scanner } = await this.store();
+    let cursor: string | undefined;
+    do {
+      const page = await scanner.scan({
+        filter: { userId, sessionId },
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (!page.ok) throw page.error;
+      for (const row of page.value.records) {
+        if (row.id !== dialogueId(userId, sessionId)) continue;
+        if (
+          row.metadata.userId !== userId ||
+          row.metadata.sessionId !== sessionId
+        )
+          continue;
+        if (
+          typeof row.metadata.savedAt !== 'number' ||
+          !Number.isFinite(row.metadata.savedAt)
+        ) {
+          this.log.warn('Skipped a malformed dialogue state', { id: row.id });
+          this.index.delete(row.id);
+          return undefined;
+        }
+        if (Date.now() - row.metadata.savedAt > this.ttlMs) {
+          await this.delete(userId, sessionId);
+          return undefined;
+        }
+        try {
+          if (Buffer.byteLength(row.text, 'utf8') > DIALOGUE_BYTE_LIMIT)
+            throw new Error('Dialogue state exceeds 2 MB');
+          const record = stored(JSON.parse(row.text));
+          this.index.set(row.id, row.metadata.savedAt);
+          return record;
+        } catch {
+          this.index.delete(row.id);
+          this.log.warn('Skipped a malformed dialogue state', { id: row.id });
+        }
+      }
+      if (page.value.cursor !== undefined && page.value.cursor === cursor)
+        throw new Error('dialogue state store scan did not advance');
+      cursor = page.value.cursor;
+    } while (cursor !== undefined);
+    return undefined;
+  }
+  async delete(userId: string, sessionId: string): Promise<void> {
+    this.index.delete(dialogueId(userId, sessionId));
+    const { writer } = await this.store();
+    const r = await writer.deleteByIdRaw(dialogueId(userId, sessionId));
+    if (!r.ok) throw r.error;
+  }
+}
+const neverEmbedded = async (): Promise<never> => {
+  throw new Error('dialogue states are never embedded');
+};
+export function createDialogueStoreBackend(
+  cfg: SessionConfig,
+  rag?: RagConfig,
+  env: Record<string, string | undefined> = process.env,
+  ctors: RagCtors = defaultCtors,
+): DialogueStoreBackend {
+  if (cfg.store !== 'hana-vector' && cfg.store !== 'pg-vector')
+    return new MemoryDialogueStore(cfg.maxSessions, cfg.ttlMs);
+  if (!rag)
+    throw new Error(
+      'RAG configuration required for persistent dialogue states',
+    );
+  const provider = createCollectionProvider(
+    rag,
+    { retrieval: { embedDocument: neverEmbedded, embedQuery: neverEmbedded } },
+    env,
+    ctors,
+    cfg.store,
+  );
+  if (!provider)
+    throw new Error(`no provider for dialogue state store "${cfg.store}"`);
+  return new ProviderDialogueStore(provider, {
+    dimension: PROVIDER_DEFAULT_DIMENSION,
+    ttlMs: cfg.ttlMs,
+  });
+}
+let singleton: DialogueStoreBackend | undefined;
+/** Startup initializes this alongside the session record store. */
+export function initializeDialogueStore(
+  cfg: SessionConfig,
+  rag?: RagConfig,
+): void {
+  touches.clear();
+  singleton = createDialogueStoreBackend(cfg, rag);
+  guardedTask(
+    'Dialogue-state expiry sweep',
+    cds.log('dialogue-store'),
+    () => sweepDialogueStates(),
+    { errorTypeOnly: true },
+  )();
+}
+let sweeping = false;
+/** Shared by startup and the existing session sweep; skip overlapping passes. */
+export async function sweepDialogueStates(): Promise<void> {
+  if (sweeping) return;
+  sweeping = true;
+  try {
+    await singleton?.sweepExpired?.(Date.now());
+  } finally {
+    sweeping = false;
+  }
+}
+export function getDialogueStoreBackend(): DialogueStoreBackend {
+  if (!singleton) singleton = new MemoryDialogueStore();
+  return singleton;
+}
+
+/** Synchronous retention probe; provider records are indexed on save and load. */
+export function hasDialogueState(userId: string, sessionId: string): boolean {
+  return singleton?.hasDialogueState(userId, sessionId) ?? false;
+}
+
+/** Bind identity once; library ids cannot select another session. */
+export function createDialogueStateStore(
+  userId: string,
+  key: string,
+): IDialogueStateStore {
+  const matches = (id: string): boolean => {
+    if (id === key) return true;
+    cds
+      .log('dialogue-store')
+      .debug('Dialogue state skipped: mismatched session');
+    return false;
+  };
+  return {
+    load: async (id) =>
+      matches(id) ? getDialogueStoreBackend().load(userId, key) : undefined,
+    save: async (id, state) => {
+      if (matches(id)) await getDialogueStoreBackend().save(userId, key, state);
+    },
+    delete: async (id) => {
+      if (matches(id)) await deleteDialogueState(userId, key);
+    },
+  };
+}
+export async function deleteDialogueState(
+  userId: string,
+  key: string,
+): Promise<void> {
+  touches.delete(dialogueId(userId, key));
+  await getDialogueStoreBackend().delete(userId, key);
+}
+
+const touches = new Map<string, number>();
+export async function touchDialogueState(
+  userId: string,
+  key: string,
+  refresh?: () => Promise<void>,
+): Promise<void> {
+  const id = dialogueId(userId, key);
+  const now = Date.now();
+  if (now - (touches.get(id) ?? -Infinity) < 60_000) return;
+  touches.set(id, now);
+  try {
+    if (refresh) {
+      await refresh();
+      return;
+    }
+    const backend = getDialogueStoreBackend();
+    const state = await backend.load(userId, key);
+    if (state) await backend.save(userId, key, state);
+  } catch (error) {
+    touches.delete(id);
+    throw error;
+  }
+}

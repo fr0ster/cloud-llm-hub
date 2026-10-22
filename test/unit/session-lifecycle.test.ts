@@ -1,3 +1,9 @@
+const deleteDialogueState = jest.fn(async () => {});
+jest.mock('../../srv/lib/dialogue-store', () => ({
+  deleteDialogueState: () => deleteDialogueState(),
+  sweepDialogueStates: async () => {},
+}));
+
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { scopedStore } from './helpers/scoped-run-store';
 
@@ -20,6 +26,13 @@ jest.mock(
 const deleteSession = jest.fn(async (_u: string, _s: string) => {});
 jest.mock('../../srv/lib/gatekeeper', () => ({
   deleteSession: (u: string, s: string) => deleteSession(u, s),
+}));
+
+const touchDialogue = jest.fn(async () => {});
+const closeDialogue = jest.fn(async (_u: string, _k: string, _r: string) => {});
+jest.mock('../../srv/lib/dialogue-sessions', () => ({
+  touchDialogue: () => touchDialogue(),
+  closeDialogue: (u: string, k: string, r: string) => closeDialogue(u, k, r),
 }));
 
 const dropSessionConnection = jest.fn(async (_s: unknown) => {});
@@ -71,6 +84,62 @@ import {
 } from '../../srv/session-store';
 
 const TTL = 60_000;
+test.each([false, true])(
+  'open waits for same-user close settlement (reject=%s)',
+  async (reject) => {
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve, rejectClose) => {
+      settle = () =>
+        reject ? rejectClose(new Error('cleanup failed')) : resolve();
+    });
+    const registry = new LongSessionRegistry(
+      { ttlMs: TTL, maxSessions: 2, maxPerUser: 1, queueLength: 1 },
+      { onClose: () => gate },
+    );
+    setLongSessionsForTest(registry);
+    const old = registry.open('alice', { key: 'old' });
+    expect('refused' in old).toBe(false);
+    const closing = registry.close('alice', 'old', 'explicit').catch(() => {});
+    let done = false;
+    const opening = openSession('alice').then((s) => {
+      done = true;
+      return s;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(done).toBe(false);
+    expect('refused' in (await openSession('bob'))).toBe(false);
+    settle();
+    await closing;
+    expect('refused' in (await opening)).toBe(false);
+    expect(registry.size('alice')).toBe(1);
+  },
+);
+
+test('open falls through to the cap after 15 seconds of pending close', async () => {
+  jest.useFakeTimers();
+  try {
+    const registry = new LongSessionRegistry(
+      { ttlMs: TTL, maxSessions: 2, maxPerUser: 1, queueLength: 1 },
+      { onClose: () => new Promise(() => {}) },
+    );
+    setLongSessionsForTest(registry);
+    registry.open('alice', { key: 'old' });
+    void registry.close('alice', 'old', 'explicit');
+    let done = false;
+    const opening = openSession('alice').then((s) => {
+      done = true;
+      return s;
+    });
+    await jest.advanceTimersByTimeAsync(14_999);
+    expect(done).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await opening).toEqual({ refused: 'SESSION_LIMIT' });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 let now = 1_000_000;
 
 function fakeRecords() {
@@ -118,6 +187,7 @@ beforeEach(() => {
   forgetOwner.mockReset().mockResolvedValue(true);
   deleteSession.mockClear();
   dropSessionConnection.mockClear();
+  closeDialogue.mockClear();
   listTurns.mockReset().mockResolvedValue([]);
   setSessionDestination.mockClear();
   providersReady = true;
@@ -169,6 +239,18 @@ describe('open', () => {
 });
 
 describe('close', () => {
+  it.each(['explicit', 'ttl', 'shutdown'] as const)(
+    'closes dialogue before the request connection on %s',
+    async (reason) => {
+      const s = await open('alice', 'DEV');
+      await longSessions().close('alice', s.key, reason);
+      expect(closeDialogue).toHaveBeenCalledWith('alice', s.key, reason);
+      expect(closeDialogue.mock.invocationCallOrder[0]).toBeLessThan(
+        dropSessionConnection.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
   it('explicit close deletes history, collections, destination and the record', async () => {
     const s = await open('alice', 'DEV');
     await longSessions().close('alice', s.key, 'explicit');
@@ -535,4 +617,20 @@ it('reuses the session timer for durable run-record sweeping', async () => {
     jest.useRealTimers();
     sweep.mockRestore();
   }
+});
+
+it('provider dialogue delete failure does not skip real close hook teardown', async () => {
+  const s = (await openSession(
+    'alice',
+  )) as import('../../srv/lib/long-session').LongSession;
+  deleteDialogueState.mockRejectedValueOnce(
+    new Error('provider delete failed'),
+  );
+  await longSessions().close('alice', s.key, 'explicit');
+  expect(dropSessionConnection).toHaveBeenCalledWith(s);
+  expect(deleteSession).toHaveBeenCalledWith('alice', s.key);
+  expect(records.store.put).toHaveBeenCalledWith(
+    expect.objectContaining({ key: s.key, closedAt: now }),
+  );
+  expect(await resolveSession('alice', s.key)).toBeUndefined();
 });

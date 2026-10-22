@@ -1,3 +1,4 @@
+import { lookupDialogue } from './lib/dialogue-sessions';
 /**
  * Anthropic Messages API handler for SmartAgent.
  *
@@ -20,7 +21,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
-import { isAiCoreConfigured } from './agent-config';
+import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   closeDestination,
   getCurrentDestination,
@@ -32,6 +33,7 @@ import {
   runWithRequestConnection,
 } from './agent-manager';
 import { detachedSink } from './lib/detached-sink';
+import { dialogueChat } from './lib/dialogue-chat';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
@@ -47,6 +49,7 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
+import { extractText } from './lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -129,6 +132,9 @@ async function serveMessages(
   s?: LongSession,
 ): Promise<void> {
   const log = cds.log('anthropic-handler');
+  const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
+  const useDialogue = dialogueMode && !!s;
+  if (dialogueMode && !s) res.setHeader('x-clh-coordinator', 'adaptive');
   const { messages, stream, options, context } = normalized;
 
   log.info('Messages request', {
@@ -152,6 +158,36 @@ async function serveMessages(
     s?.destination ||
     getCurrentDestination(userId, sessionId);
 
+  if (useDialogue && s) {
+    const handle = await lookupDialogue(userId, s.key);
+    try {
+      await handle?.factory.assertPrincipal(req.headers, destination);
+    } catch (error) {
+      res.status(409).json({
+        error: {
+          type: 'conflict',
+          code: 'DIALOGUE_PRINCIPAL_FIXED',
+          message: (error as Error).message,
+        },
+      });
+      return;
+    }
+  }
+  if (
+    useDialogue &&
+    s?.destination !== undefined &&
+    s.destination !== destination
+  ) {
+    res.status(409).json({
+      error: {
+        type: 'conflict',
+        code: 'DIALOGUE_DESTINATION_FIXED',
+        message:
+          'The dialogue destination is fixed for the lifetime of the session',
+      },
+    });
+    return;
+  }
   // A closed destination refuses before anything is built for it. Connecting
   // first would CSRF-fetch against the system that is down and answer
   // `401 sap_credentials_failed` from inside `establishRequestConnection`, so
@@ -182,7 +218,7 @@ async function serveMessages(
     | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
     | undefined;
   let requestDumpScope: import('./lib/principal').DumpScope | undefined;
-  if (destination) {
+  if (destination && !useDialogue) {
     const established = s
       ? await acquireSessionConnection(s, req, res, destination)
       : await establishRequestConnection(req, res, destination);
@@ -268,6 +304,20 @@ async function serveMessages(
     await releaseRequestConnection(requestConnection, s);
     return;
   }
+
+  const chatAgent =
+    useDialogue && s
+      ? dialogueChat(
+          req,
+          userId,
+          s,
+          destination,
+          extractText(
+            messages.filter((m) => m.role === 'user').at(-1)?.content,
+          ),
+          res,
+        )
+      : handle.agent;
 
   const agentOpts = {
     stream,
@@ -356,7 +406,7 @@ async function serveMessages(
         // untouched either way.
         let streamError: unknown;
         await runAgent(async () => {
-          const source = handle.agent.streamProcess(messages, agentOpts);
+          const source = chatAgent.streamProcess(messages, agentOpts);
           const observed = (async function* () {
             for await (const chunk of source) {
               if (!chunk.ok && streamError === undefined) {
@@ -442,9 +492,7 @@ async function serveMessages(
     }
 
     // --- Non-streaming ---
-    const result = await runAgent(() =>
-      handle.agent.process(messages, agentOpts),
-    );
+    const result = await runAgent(() => chatAgent.process(messages, agentOpts));
 
     if (result.ok) {
       out.json(200, adapter.formatResult(result.value, context));

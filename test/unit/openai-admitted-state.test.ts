@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 /**
  * What `/v1/chat/completions` changes about shared state, and when.
  *

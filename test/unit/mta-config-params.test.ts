@@ -7,6 +7,8 @@ import { load } from 'js-yaml';
 // LLM_AGENT_PG_PASSWORD) go through
 // .env → cf set-env (tools/deploy.sh), never through mta.yaml.
 const CARRIED = [
+  'LLM_AGENT_LOG_LEVEL',
+  'LLM_AGENT_LOG_LEVELS',
   'LLM_AGENT_EMBEDDER',
   'LLM_AGENT_EMBEDDING_MODEL',
   'LLM_AGENT_EMBEDDER_URL',
@@ -60,7 +62,11 @@ it('every deployment template documents the new parameters', () => {
     .readdirSync(dir)
     .filter((n) => n.endsWith('.mtaext.template'))) {
     const text = fs.readFileSync(path.join(dir, f), 'utf8');
-    for (const name of NEW) {
+    for (const name of [
+      ...NEW,
+      'LLM_AGENT_LOG_LEVEL',
+      'LLM_AGENT_LOG_LEVELS',
+    ]) {
       expect([
         f,
         name,

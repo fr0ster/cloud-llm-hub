@@ -282,6 +282,8 @@ export function fakeReq(body: unknown, sessionId = 's-1', minted = true) {
  */
 export function fakeRes(opts: { throwOnWriteAfter?: number } = {}) {
   const closeListeners: Array<() => void> = [];
+  const finishListeners: Array<() => void> = [];
+  let disconnected = false;
   let writeCount = 0;
   const r = {
     statusCode: 200,
@@ -306,6 +308,7 @@ export function fakeRes(opts: { throwOnWriteAfter?: number } = {}) {
       r.body = JSON.stringify(b);
       r.headersSent = true;
       r.writableEnded = true;
+      if (!disconnected) for (const fn of finishListeners) fn();
       return r;
     },
     write(c: string) {
@@ -322,14 +325,17 @@ export function fakeRes(opts: { throwOnWriteAfter?: number } = {}) {
     end(c?: string) {
       if (c) r.body += c;
       r.writableEnded = true;
+      if (!disconnected) for (const fn of finishListeners) fn();
       return r;
     },
     on(event: string, fn: () => void) {
       if (event === 'close') closeListeners.push(fn);
+      if (event === 'finish') finishListeners.push(fn);
       return r;
     },
     /** The client goes away before the response ends. */
     disconnect() {
+      disconnected = true;
       for (const fn of closeListeners) fn();
     },
   };

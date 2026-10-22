@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in dialogue planner.** `LLM_AGENT_CHAT_COORDINATOR=dialogue` selects a
+  long-session planner for OpenAI/Anthropic chat, with background executor and
+  read-only checker subagents. Defaults: 3 concurrent tasks per session, 6
+  hub-wide, 50 task records per session, configurable through
+  `LLM_AGENT_DIALOGUE_EXECUTORS`, `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` and
+  `LLM_AGENT_DIALOGUE_MAX_TASKS`.
+  Requests without a long session fall back to adaptive with
+  `x-clh-coordinator: adaptive`. Without an events subscriber, outbox planner
+  messages prefix the next response; `GET /v1/session/events` supplies live planner messages and task
+  states to the WebUI, with a heartbeat that keeps the session alive.
+  Adaptive remains the default; the agent MCP path is unchanged.
+
+### Fixed
+
+- Dialogue principal/client changes return 409 `DIALOGUE_PRINCIPAL_FIXED` in both
+  chat APIs. Secret rotation retires connections; removing credentials preserves
+  the binding and prevents new connections until credentials return.
+- Chat alone creates dialogue handles and binds their destination. Earlier events
+  streams attach on creation; acknowledgements before creation are 204 no-ops.
+- Each outbox subscriber receives messages in order through its own cursor,
+  including messages whose persistence failed, before later prefix acknowledgements.
+
+- Dialogue planner events remain in a persisted hub outbox until acknowledged.
+  SSE includes stable IDs, cursor replay and task snapshots; the WebUI deduplicates,
+  acknowledges after rendering and restores task progress on reconnect. Chat only
+  includes outbox messages without a subscriber and removes them after successful
+  response completion, retaining them after failure or disconnect.
+- Long-session activity, including SSE heartbeats, refreshes dialogue persistence
+  every 60 seconds so active sessions retain their dialogue state across restart.
+- Planner instructions state the configured per-session executor limit at build time.
+
+- Dialogue workers bypass MCP Door capacity while retaining leases, call draining
+  and shutdown cancellation. Chat admission remains unchanged.
+- Dialogue destination changes return 409 `DIALOGUE_DESTINATION_FIXED`.
+  Credential changes retire idle connections and close leased connections on release.
+- Dialogue deletion failures no longer skip session teardown; the TTL sweep retries them.
+- Persisted task limits follow `LLM_AGENT_DIALOGUE_MAX_TASKS`, including values above 50.
+- Connection-opening errors use fixed credential-free messages and categorized diagnostics.
+
 ## [8.3.1] - 2026-10-22
 
 ### Fixed

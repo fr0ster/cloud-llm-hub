@@ -15,10 +15,15 @@ export function guardedTask(
   name: string,
   log: TaskLog,
   run: () => unknown,
+  opts: { errorTypeOnly?: boolean } = {},
 ): () => void {
+  // errorTypeOnly: for work whose errors may carry user text or credentials
+  // (dialogue cleanup), log the error's type, never its message.
   const report = (err: unknown) =>
     log.warn(`${name} failed`, {
-      error: err instanceof Error ? err.message : String(err),
+      ...(opts.errorTypeOnly
+        ? { errorType: err instanceof Error ? err.name : typeof err }
+        : { error: err instanceof Error ? err.message : String(err) }),
     });
   return () => {
     try {

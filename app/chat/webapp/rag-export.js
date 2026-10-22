@@ -44,9 +44,7 @@
       entry.docs.push(doc);
     }
     for (const entry of groups.values()) {
-      entry.docs.sort(
-        (a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex,
-      );
+      entry.docs.sort((a, b) => a.metadata.chunkIndex - b.metadata.chunkIndex);
 
       // Preserve the old integrity checks, but attach warnings to this
       // upload-specific entry instead of warningsBySource.
@@ -54,7 +52,9 @@
       for (const d of entry.docs) {
         const i = d.metadata.chunkIndex;
         if (seen.has(i)) {
-          entry.warnings.push('⚠ ' + entry.source + ': duplicate chunk index ' + i);
+          entry.warnings.push(
+            '⚠ ' + entry.source + ': duplicate chunk index ' + i,
+          );
         }
         seen.add(i);
       }
@@ -65,7 +65,13 @@
       for (let i = 0; i <= max; i += 1) if (!present.has(i)) missing.push(i);
       if (missing.length) {
         entry.warnings.push(
-          '⚠ ' + entry.source + ': ' + missing.length + ' chunks missing (indices ' + missing.join(',') + ')',
+          '⚠ ' +
+            entry.source +
+            ': ' +
+            missing.length +
+            ' chunks missing (indices ' +
+            missing.join(',') +
+            ')',
         );
       }
 
@@ -78,11 +84,20 @@
       );
       if (totals.length > 1) {
         entry.warnings.push(
-          '⚠ ' + entry.source + ': inconsistent totalChunks (' + totals.join(' vs ') + ')',
+          '⚠ ' +
+            entry.source +
+            ': inconsistent totalChunks (' +
+            totals.join(' vs ') +
+            ')',
         );
       } else if (totals.length === 1 && totals[0] !== entry.docs.length) {
         entry.warnings.push(
-          '⚠ ' + entry.source + ': expected ' + totals[0] + ' chunks, found ' + entry.docs.length,
+          '⚠ ' +
+            entry.source +
+            ': expected ' +
+            totals[0] +
+            ' chunks, found ' +
+            entry.docs.length,
         );
       }
     }
@@ -135,11 +150,13 @@
     if (!Array.isArray(group) || group.length === 0) {
       throw new Error('reassembleSource: group cannot be empty');
     }
-    const docs = group.slice().sort(
-      (a, b) =>
-        ((a.metadata && a.metadata.chunkIndex) || 0) -
-        ((b.metadata && b.metadata.chunkIndex) || 0),
-    );
+    const docs = group
+      .slice()
+      .sort(
+        (a, b) =>
+          ((a.metadata && a.metadata.chunkIndex) || 0) -
+          ((b.metadata && b.metadata.chunkIndex) || 0),
+      );
     const body = docs.map((d) => d.text).join('\n\n');
     const description =
       docs[0] && docs[0].metadata && docs[0].metadata.description;
@@ -171,5 +188,10 @@
       },
     };
   }
-  return { groupChunksBySource, safeSourceExportName, reassembleSource, groupKey };
+  return {
+    groupChunksBySource,
+    safeSourceExportName,
+    reassembleSource,
+    groupKey,
+  };
 });

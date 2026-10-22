@@ -12,6 +12,9 @@ extends: cloud-llm-hub
 version: 1.0.0
 
 parameters:
+  # Hub logging; sap-cloud-sdk=error silences SDK basic-auth warnings.
+  LLM_AGENT_LOG_LEVEL: "info"
+  LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"
   # MCP Configuration — SAP system destination(s)
   LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"        # BTP destination name
 

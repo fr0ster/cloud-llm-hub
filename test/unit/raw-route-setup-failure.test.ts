@@ -1,3 +1,8 @@
+// Bootstrap logging is tested with real CAP in logging-config.test.ts.
+jest.mock('../../srv/lib/logging-config', () => ({
+  applyLoggingConfig: jest.fn(),
+}));
+
 /**
  * The raw route's server setup ends what it opened on every exit path:
  * - a caller with no MCP role is refused before any connection is built, so

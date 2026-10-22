@@ -26,6 +26,28 @@ are a different mechanism and do apply per request.
 
 ## Variables
 
+### Logging
+
+Logging applies to every deployment, including MCP-only. Configuration is
+validated during environment bootstrap, before destinations initialise;
+invalid levels or malformed comma-list entries fail startup.
+
+| Variable | Default | Meaning / example |
+|----------|---------|-------------------|
+| `LLM_AGENT_LOG_LEVEL` | `info` | Default for hub CAP (`cds.log`) loggers: `error`, `warn`, `info`, or `debug`. For example, `warn` reduces routine hub output. |
+| `LLM_AGENT_LOG_LEVELS` | empty | Comma-separated `name=level` overrides, for example `sap-cloud-sdk=error,smart-pipeline=warn,tool-rag=info`. Names other than `sap-cloud-sdk` are CAP logger ids. |
+
+Set `LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"` in your `.mtaext` to silence
+the SDK warning "You are connecting to an On-Premise system using basic
+authentication..." while retaining SDK errors. The special name applies the
+installed SDK's `setGlobalLogLevel` API to all SDK contexts (whose emitted
+logger name is `sap-cloud-sdk-logger`); its level is independent of the CAP
+default. Templates show this override. Restart/restage after changing logging
+environment variables. For more detail in dialogue lifecycle logs, keep
+`dialogue=info` when lowering the hub default, for example
+`sap-cloud-sdk=error,dialogue=info`. Lifecycle logs contain task ids, workers,
+goal sizes, states, durations and hashed session keys. They never contain goal text, task outputs or error text, since a goal may carry whatever the user typed.
+
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `LLM_AGENT_PROVIDER` | `sap-ai-sdk` | `sap-ai-sdk`, `openai`, `anthropic` or `deepseek` |
@@ -174,10 +196,15 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` plans per request; `fixed` restores the previous one-step DAG. Unset or empty selects `adaptive`; other values reject startup. |
+| `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` plans per request; `fixed` restores the previous one-step DAG; `dialogue` selects the long-session dialogue planner. Unset or empty selects `adaptive`; other values reject startup. |
+| `LLM_AGENT_DIALOGUE_EXECUTORS` | `3` | Maximum concurrent background tasks (executor and checker) and pooled ABAP connections per dialogue session (positive integer). |
+| `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` | `6` | Hub-wide concurrent dialogue background tasks, including checker tasks (positive integer). |
+| `LLM_AGENT_DIALOGUE_MAX_TASKS` | `50` | Maximum task records per dialogue session (positive integer); persistence validates against this configured limit. |
 | `LLM_AGENT_PLAN_MAX_STEPS` | library: `20` | Optional positive integer step limit. |
 | `LLM_AGENT_PLAN_MAX_REVISIONS` | library: `3` | Optional positive integer revision limit. |
 | `LLM_AGENT_PLAN_MAX_DURATION_MS` | library: `300000` | Optional positive integer duration limit in milliseconds. |
+
+Opt in with `LLM_AGENT_CHAT_COORDINATOR=dialogue`. Only long-session requests use the dialogue planner; requests without a long session fall back to adaptive and return `x-clh-coordinator: adaptive`. The hard-mode planner uses the shared main LLM (`LLM_AGENT_MODEL`), control tools and background executor/checker subagents; it has no retrieval or skills sources of its own. Each session has a connection factory refreshed by dialogue chat requests and a bounded connection pool; credentials remain in memory. Dialogue limits default to 3 / 6 / 50 when unset or blank and otherwise require positive safe integers written as decimal digits; malformed values reject startup. Pending planner messages appear as `**Planner:**` paragraphs at the start of the next response. The WebUI instead subscribes to `GET /v1/session/events` for live planner messages and task states; channel delivery consumes pending messages, and its 15-second heartbeat keeps the session alive. Close/TTL ends tasks and deletes state; shutdown preserves the last saved state on HANA/PostgreSQL for lazy revival, with queued/running tasks marked interrupted and no restored credentials until the next dialogue chat request. Adaptive remains the default, and the agent MCP `execute_step` path is unchanged. See [Dialogue planner architecture](../architecture/ARCHITECTURE.md#dialogue-planner-two-pipelines-and-background-tasks) for context, persistence limits and event semantics.
 
 Unset or blank budget fields remain undefined so the library applies its defaults. Values must otherwise be positive safe integers written as decimal digits; malformed values reject startup. Budgets apply to adaptive execution; elapsed time is checked between steps, not as a timeout on planning or an in-flight worker call. These settings apply to the chat path; `execute_step` retains its existing behavior. Run records keep only the latest run per authenticated user and session, with each step output limited to 4000 characters. With a HANA or PG session store they use the dedicated `h_runs` hub store; otherwise they stay in memory, bounded by `LLM_AGENT_MAX_SESSIONS`. Run-record load/save requires a matching trusted request session and authenticated user; requests without either keep no run record. Both Anthropic paths forward the trusted session. Closing, forgetting or expiring a session deletes its owner-scoped run record, including plain-session history expiry. Records also expire after `LLM_AGENT_SESSION_TTL_MS` from their save time; memory saves sweep expired records. Persistent h_runs records are swept at startup and every minute by the session cleanup timer, including records left by previous processes. Sweeps run in the background with failure logging and leave malformed rows intact with a warning.
 

@@ -123,3 +123,50 @@ describe('chat coordinator configuration', () => {
     });
   });
 });
+
+describe('dialogue configuration', () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    for (const k of [
+      'LLM_AGENT_CHAT_COORDINATOR',
+      'LLM_AGENT_DIALOGUE_EXECUTORS',
+      'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
+      'LLM_AGENT_DIALOGUE_MAX_TASKS',
+    ])
+      delete process.env[k];
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+  it('accepts dialogue with default limits', () => {
+    process.env.LLM_AGENT_CHAT_COORDINATOR = 'dialogue';
+    expect(loadAgentConfig().agent).toMatchObject({
+      chatCoordinator: 'dialogue',
+      dialogue: { executors: 3, executorPool: 6, maxTasks: 50 },
+    });
+  });
+  it('reads limits and rejects malformed values', () => {
+    for (const name of [
+      'LLM_AGENT_DIALOGUE_EXECUTORS',
+      'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
+      'LLM_AGENT_DIALOGUE_MAX_TASKS',
+    ])
+      process.env[name] = '8';
+    expect(loadAgentConfig().agent).toHaveProperty('dialogue', {
+      executors: 8,
+      executorPool: 8,
+      maxTasks: 8,
+    });
+    for (const name of [
+      'LLM_AGENT_DIALOGUE_EXECUTORS',
+      'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
+      'LLM_AGENT_DIALOGUE_MAX_TASKS',
+    ]) {
+      for (const bad of ['x', '0', '-1', '1.5']) {
+        process.env[name] = bad;
+        expect(() => loadAgentConfig()).toThrow(name);
+      }
+      process.env[name] = '8';
+    }
+  });
+});

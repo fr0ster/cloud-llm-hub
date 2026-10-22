@@ -1,4 +1,4 @@
-import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ISubAgent, Message } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
@@ -31,6 +31,7 @@ const config: AgentConfig = {
   },
   mcp: { destination: 'TEST', systemDestinations: {} },
   agent: {
+    dialogue: { executors: 3, executorPool: 6, maxTasks: 50 },
     chatCoordinator: 'adaptive',
     mode: 'smart',
     maxIterations: 10,
@@ -226,6 +227,47 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(result.text).toBe('Verified');
   });
 
+  it('dialogue exposes the same raw executor and read-only checker workers', async () => {
+    scenario = 'check-write';
+    checkerScopes.length = 0;
+    const callTool = jest.fn();
+    const handle = (await buildAgentForDestination(
+      {
+        listTools: async () => ({ ok: true, value: [] }),
+        callTool,
+      } as never,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      {
+        ...config,
+        agent: { ...config.agent, chatCoordinator: 'dialogue' },
+      },
+    )) as Awaited<ReturnType<typeof buildAgentForDestination>> & {
+      workers: Map<string, ISubAgent>;
+    };
+    expect([...handle.workers.keys()]).toEqual(['executor', 'checker']);
+    const checker = handle.workers.get('checker');
+    if (!checker) throw new Error('checker missing');
+    await runWithSessionId(
+      'dialogue-checker',
+      () =>
+        checker.run({
+          task: 'Verify the class',
+          sessionId: 'dialogue-checker',
+          externalTools: [
+            {
+              name: 'CreateClass',
+              description: 'write',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          externalResults: new Map([['external', 'untrusted']]),
+        }),
+      [],
+      'alice',
+    );
+    expect(checkerScopes).toEqual([true]);
+    expect(callTool).not.toHaveBeenCalled();
+  });
   it.each(['throw', 'invalid'] as const)(
     'falls back after %s planning and appends the honesty notice',
     async (failure) => {

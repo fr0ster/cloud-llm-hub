@@ -29,6 +29,8 @@ import {
   hasSessionHistory,
   SESSION_MAX_MESSAGES,
 } from '../session-store';
+import { closeDialogue, touchDialogue } from './dialogue-sessions';
+import { deleteDialogueState, sweepDialogueStates } from './dialogue-store';
 import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
 import {
@@ -114,6 +116,11 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   reviving.clear();
   return {
     async onClose(s, reason) {
+      try {
+        await closeDialogue(s.userId, s.key, reason, false);
+      } catch {
+        log().warn('Dialogue shutdown failed');
+      }
       await dropSessionConnection(s);
       if (reason === 'shutdown') return;
       closed.set(slot(s.userId, s.key), s.lastActivity + longSessions().ttlMs);
@@ -122,6 +129,9 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
       await records?.delete(s.userId, s.key);
     },
     onTouch(s) {
+      void touchDialogue(s.userId, s.key).catch(() =>
+        log().warn('Dialogue touch failed'),
+      );
       void records?.touch(recordOf(s)).catch((err) =>
         log().warn('session record write failed', {
           key: s.key,
@@ -141,7 +151,9 @@ export async function openSession(
   userId: string,
   destination?: string,
 ): Promise<LongSession | OpenRefusal> {
-  const s = longSessions().open(userId, { destination });
+  const registry = longSessions();
+  await registry.awaitUserCloses(userId);
+  const s = registry.open(userId, { destination });
   if ('refused' in s) return s;
   if (destination !== undefined)
     setSessionDestination(userId, s.key, destination);
@@ -238,6 +250,11 @@ async function markClosed(record: SessionRecord): Promise<void> {
 async function cleanupSession(userId: string, key: string): Promise<void> {
   await getRunRecordStore().delete(userId, key);
   await deleteSession(userId, key);
+  try {
+    await deleteDialogueState(userId, key);
+  } catch {
+    log().warn('Dialogue state deletion failed; TTL sweep will retry');
+  }
   if (!isProvidersReady()) return;
   const forgotten = await getSharedHistoryRag()?.forgetOwner(
     turnOwner(userId, key),
@@ -351,6 +368,14 @@ export function startSessionSweep(intervalMs = 60_000): () => void {
   let running = false;
   const timer = setInterval(
     guardedTask('Long-session sweep', log(), async () => {
+      guardedTask(
+        'Dialogue-state expiry sweep',
+        log(),
+        () => sweepDialogueStates(),
+        {
+          errorTypeOnly: true,
+        },
+      )();
       guardedTask('Run-record expiry sweep', log(), () => sweepRunRecords())();
       if (running) return;
       running = true;
