@@ -1,5 +1,6 @@
 {
   "authenticationMethod": "route",
+  "welcomeFile": "/chat/webapp/index.html",
   "logout": {
     "logoutEndpoint": "/logout",
     "logoutPage": "/chat/webapp/logged-out.html"
