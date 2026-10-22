@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The root URL opens the chat.** The approuter redirects `/` to
+  `/chat/webapp/index.html` (`welcomeFile`), so the WebUI no longer needs its full path.
+
 ## [8.3.0] - 2026-10-22
 
 ### Added
