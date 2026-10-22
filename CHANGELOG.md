@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.3.1] - 2026-10-22
+
 ### Fixed
 
 - **The root URL opens the chat.** The approuter redirects `/` to
