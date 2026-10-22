@@ -33,7 +33,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 jest.mock('../../srv/lib/dialogue-sessions', () => ({
-  dialogueFor: jest.fn(async () => ({
+  onDialogueCreated: jest.fn(() => () => {}),
+  lookupDialogue: jest.fn(async () => ({
     session: {
       takePending,
       snapshot: () => ({
@@ -50,8 +51,12 @@ jest.mock('../../srv/lib/dialogue-sessions', () => ({
         ),
       ack,
     },
-    subscribe: (fn: any) => {
+    subscribe: (fn: any, cursor?: string) => {
       listener = fn;
+      for (const message of pending.slice(
+        (cursor ? pending.findIndex((m) => m.id === cursor) : -1) + 1,
+      ))
+        fn({ kind: 'message', message });
       return unsubscribe;
     },
   })),
@@ -161,9 +166,29 @@ test('failed SSE write retains message for reconnect and cleans subscriber', asy
     throw new Error('EPIPE');
   });
   await handleDialogueEvents(req as any, broken as any);
-  expect(unsubscribe).toHaveBeenCalled();
+  expect(unsubscribe).not.toHaveBeenCalled();
   const next = response();
   await handleDialogueEvents(req as any, next as any);
   expect(next.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
   next.emit('close');
+});
+
+test('events before chat stays open and attaches to creation; ack never creates', async () => {
+  const sessions = jest.requireMock('../../srv/lib/dialogue-sessions');
+  sessions.lookupDialogue.mockResolvedValueOnce(undefined);
+  const res = response();
+  const req = { longSession: { userId: 'alice', key: 'ls-a' } };
+  await handleDialogueEvents(req as any, res as any);
+  expect(res.flushHeaders).toHaveBeenCalled();
+  expect(res.write).toHaveBeenCalledWith('event: tasks\ndata: []\n\n');
+  const attach = sessions.onDialogueCreated.mock.calls.at(-1)[2];
+  const handle = await sessions.lookupDialogue();
+  attach(handle);
+  expect(res.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
+  sessions.lookupDialogue.mockResolvedValueOnce(undefined);
+  const ackRes = response();
+  await handleDialogueAck({ ...req, body: { id: 'm1' } } as any, ackRes as any);
+  expect(ackRes.status).toHaveBeenCalledWith(204);
+  expect(ack).not.toHaveBeenCalled();
+  res.emit('close');
 });

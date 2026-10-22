@@ -50,11 +50,11 @@ it('copies only the allow-list, refreshes latest headers and redacts inspection'
   expect(builder.mock.calls[0]).toEqual([
     { headers, userId: 'u', destination: 'D', exposition: [] },
   ]);
-  factory.refresh({ headers: { authorization: 'latest' } }, 'E');
+  factory.refresh({ headers: { ...headers, authorization: 'latest' } }, 'E');
   await factory.open();
   expect(builder.mock.calls[1]).toEqual([
     {
-      headers: { authorization: 'latest' },
+      headers: { ...headers, authorization: 'latest' },
       userId: 'u',
       destination: 'E',
       exposition: [],
@@ -266,9 +266,51 @@ it('keeps identical bindings and retires when credentials are removed', async ()
   expect(
     (same.connection as unknown as { close: jest.Mock }).close,
   ).toHaveBeenCalledTimes(1);
-  const fresh = await pool.acquire();
-  expect(fresh.version).toBeGreaterThan(same.version);
-  expect(fresh.connection).not.toBe(same.connection);
-  await fresh.release(true);
+  await expect(pool.acquire()).rejects.toThrow(NoCredentialsError);
   await pool.closeAll();
+});
+
+it.each(['x-sap-login', 'x-sap-client'])(
+  'rejects changes to fixed basic principal: %s',
+  (field) => {
+    const { factory } = setup();
+    const version = factory.version;
+    expect(() =>
+      factory.refresh({ headers: { ...headers, [field]: 'OTHER' } }, 'D'),
+    ).toThrow('principal is fixed');
+    expect(factory.version).toBe(version);
+  },
+);
+it('binds token subject while allowing secret rotation and credential removal', async () => {
+  const token = (sub: string, nonce: number) =>
+    `Bearer e30.${Buffer.from(JSON.stringify({ sub, nonce })).toString('base64url')}.sig`;
+  const factory = new SessionConnectionFactory('u', 'key');
+  factory.refresh({ headers: { authorization: token('alice', 1) } }, 'D');
+  factory.refresh({ headers: { authorization: token('alice', 2) } }, 'D');
+  expect(() =>
+    factory.refresh({ headers: { authorization: token('bob', 3) } }, 'D'),
+  ).toThrow('principal is fixed');
+  factory.refresh({ headers: {} }, 'D');
+  await expect(factory.open()).rejects.toThrow(NoCredentialsError);
+  expect(() =>
+    factory.refresh({ headers: { authorization: token('bob', 4) } }, 'D'),
+  ).toThrow('principal is fixed');
+});
+
+it('basic password rotation retains the principal and rejects switching after removal', async () => {
+  const { factory, builder } = setup();
+  const version = factory.version;
+  factory.refresh(
+    { headers: { ...headers, 'x-sap-password': 'rotated' } },
+    'D',
+  );
+  expect(factory.version).toBeGreaterThan(version);
+  await factory.open();
+  expect(builder.mock.calls[0][0].headers['x-sap-password']).toBe('rotated');
+  factory.refresh({ headers: {} }, 'D');
+  expect(() =>
+    factory.refresh({ headers: { ...headers, 'x-sap-login': 'OTHER' } }, 'D'),
+  ).toThrow('principal is fixed');
+  factory.refresh({ headers }, 'D');
+  expect(factory.hasCredentials()).toBe(true);
 });

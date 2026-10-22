@@ -35,6 +35,7 @@ import {
   touchDialogueState,
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
+import { longSessionsIfReady } from './long-session';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { runWithRequestSystem } from './request-system-context';
@@ -53,19 +54,61 @@ export type DialogueEvent =
       task: Pick<TaskRecord, 'id' | 'worker' | 'goal' | 'state'>;
     };
 export interface DialogueHandle {
+  destination: string;
   session: DialogueSession;
   outbox: DialogueOutbox;
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
   pool: SessionConnectionPool;
-  subscribe(fn: (e: DialogueEvent) => void): () => void;
+  subscribe(fn: (e: DialogueEvent) => void, cursor?: string): () => void;
 }
 interface LiveHandle extends DialogueHandle {
   planner: SmartAgent;
   stop(): void;
 }
 const handles = new Map<string, Promise<LiveHandle>>();
+const creationListeners = new Map<
+  string,
+  Set<(handle: DialogueHandle) => void>
+>();
+export function lookupDialogue(
+  userId: string,
+  key: string,
+  destination?: string,
+): Promise<DialogueHandle | undefined> {
+  return Promise.resolve(handles.get(slot(userId, key))).then((handle) => {
+    if (
+      handle &&
+      destination !== undefined &&
+      handle.destination !== destination
+    )
+      throw destinationFixed();
+    return handle;
+  });
+}
+function destinationFixed() {
+  return Object.assign(
+    new Error(
+      'The dialogue destination is fixed for the lifetime of the session',
+    ),
+    { code: 'DIALOGUE_DESTINATION_FIXED', statusCode: 409 },
+  );
+}
+export function onDialogueCreated(
+  userId: string,
+  key: string,
+  fn: (handle: DialogueHandle) => void,
+): () => void {
+  const id = slot(userId, key);
+  const listeners = creationListeners.get(id) ?? new Set();
+  creationListeners.set(id, listeners);
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+    if (!listeners.size) creationListeners.delete(id);
+  };
+}
 const closing = new Map<string, Promise<void>>();
 let executorPool: IConcurrencyPool | undefined;
 export function sharedExecutorPool(): IConcurrencyPool {
@@ -85,8 +128,29 @@ export function dialogueFor(
   if (closing.has(id))
     return Promise.reject(new Error('dialogue session closing'));
   const existing = handles.get(id);
-  if (existing) return existing;
-  const opening = open(userId, key, destination);
+  if (existing)
+    return lookupDialogue(userId, key, destination) as Promise<DialogueHandle>;
+  const registry = longSessionsIfReady();
+  const session = registry?.get(userId, key);
+  if (session) {
+    if (
+      session.destination !== undefined &&
+      session.destination !== destination
+    )
+      return Promise.reject(destinationFixed());
+    session.destination = destination;
+    registry?.touch(userId, key);
+  }
+  const opening = open(userId, key, destination).then((handle) => {
+    for (const fn of creationListeners.get(id) ?? []) {
+      try {
+        fn(handle);
+      } catch {
+        /* Observer isolation. */
+      }
+    }
+    return handle;
+  });
   handles.set(id, opening);
   void opening.catch(() => {
     if (handles.get(id) === opening) handles.delete(id);
@@ -337,9 +401,6 @@ async function open(
         if (stopped) return;
         void outbox
           .add([message, ...(session?.takePending() ?? [])])
-          .then(() => {
-            emit({ kind: 'message', message });
-          })
           .catch(() => {
             /* Retain in memory and retry persistence on next save. */
           });
@@ -355,6 +416,7 @@ async function open(
   const send = session.send.bind(session);
   session.send = (...args) => send(...args).finally(drainPending);
   return {
+    destination,
     session,
     outbox,
     drainPending,
@@ -367,9 +429,15 @@ async function open(
       lifetime.abort();
       subscribers.clear();
     },
-    subscribe(fn) {
-      if (!stopped) subscribers.add(fn);
+    subscribe(fn, cursor) {
+      if (stopped) return () => {};
+      subscribers.add(fn);
+      const unsubscribeMessages = outbox.subscribe(
+        (message) => fn({ kind: 'message', message }),
+        cursor,
+      );
       return () => {
+        unsubscribeMessages();
         subscribers.delete(fn);
       };
     },

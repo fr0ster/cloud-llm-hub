@@ -58,6 +58,45 @@ export class NoCredentialsError extends Error {
   }
 }
 export class SessionConnectionFactory {
+  #principal?: string;
+  assertPrincipal(
+    headers: Record<string, string | string[] | undefined>,
+  ): string | undefined {
+    const value = (name: string) => {
+      const v = headers[name];
+      return Array.isArray(v) ? v[0] : v;
+    };
+    const login = value('x-sap-login')?.trim();
+    const token = value('authorization')?.replace(/^Bearer\s+/i, '');
+    let subject = cds.context?.user?.id ?? this.#userId;
+    if (token) {
+      try {
+        subject =
+          JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
+            .sub ?? subject;
+      } catch {
+        /* Auth middleware owns validation. */
+      }
+    }
+    const principal =
+      login && value('x-sap-password')
+        ? JSON.stringify(['basic', login, value('x-sap-client')?.trim() ?? ''])
+        : token
+          ? JSON.stringify([
+              'jwt',
+              subject,
+              value('x-sap-client')?.trim() ?? '',
+            ])
+          : undefined;
+    if (principal && this.#principal && principal !== this.#principal)
+      throw Object.assign(
+        new Error(
+          'The dialogue principal is fixed for the lifetime of the session',
+        ),
+        { code: 'DIALOGUE_PRINCIPAL_FIXED', statusCode: 409 },
+      );
+    return principal;
+  }
   #snapshot?: ConnectionSnapshot;
   #fingerprint?: string;
   version = 0;
@@ -95,6 +134,12 @@ export class SessionConnectionFactory {
       const value = Array.isArray(raw) ? raw[0] : raw;
       if (value !== undefined) headers[name] = value;
     }
+    const principal = this.assertPrincipal(headers);
+    if (!principal) {
+      this.forget();
+      return;
+    }
+    this.#principal ??= principal;
     this.#exposition = resolveExpositionForUser(req.user ?? cds.context?.user);
     this.#snapshot = {
       headers,

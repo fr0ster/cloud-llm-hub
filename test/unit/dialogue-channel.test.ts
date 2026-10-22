@@ -29,6 +29,7 @@ jest.mock('../../srv/lib/ai-core-models', () => ({
 }));
 jest.mock('../../srv/lib/dialogue-sessions', () => ({
   dialogueFor: jest.fn(),
+  lookupDialogue: jest.fn(async () => undefined),
 }));
 
 import type { Request, Response } from 'express';
@@ -277,3 +278,36 @@ it('failed chat write retains outbox', async () => {
   );
   expect(ack).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  'principal conflict rejects before refresh/send (anthropic=%s)',
+  async (anthropic) => {
+    const { lookupDialogue } = jest.requireMock(
+      '../../srv/lib/dialogue-sessions',
+    );
+    lookupDialogue.mockResolvedValueOnce({
+      factory: {
+        assertPrincipal() {
+          throw new Error('The dialogue principal is fixed');
+        },
+      },
+    });
+    const req = fakeReq(
+      {
+        model: 'm',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      session.key,
+    ) as unknown as Request & { longSession: LongSession };
+    req.longSession = session;
+    const res = fakeRes();
+    await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+      req,
+      res as unknown as Response,
+    );
+    expect(res.body).toContain('DIALOGUE_PRINCIPAL_FIXED');
+    expect(refresh).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  },
+);

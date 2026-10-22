@@ -1,3 +1,4 @@
+import { lookupDialogue } from './lib/dialogue-sessions';
 /**
  * Anthropic Messages API handler for SmartAgent.
  *
@@ -157,6 +158,21 @@ async function serveMessages(
     s?.destination ||
     getCurrentDestination(userId, sessionId);
 
+  if (useDialogue && s) {
+    const handle = await lookupDialogue(userId, s.key);
+    try {
+      handle?.factory.assertPrincipal(req.headers);
+    } catch (error) {
+      res.status(409).json({
+        error: {
+          type: 'conflict',
+          code: 'DIALOGUE_PRINCIPAL_FIXED',
+          message: (error as Error).message,
+        },
+      });
+      return;
+    }
+  }
   if (
     useDialogue &&
     s?.destination !== undefined &&

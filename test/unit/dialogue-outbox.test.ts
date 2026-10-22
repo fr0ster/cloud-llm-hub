@@ -55,3 +55,27 @@ test('failed durable acknowledgement retains prefix and concurrent additions sur
   await added;
   expect(outbox.replay()).toEqual([two]);
 });
+
+test('delivers failed persistence prefixes in order with independent tab cursors', async () => {
+  let fail = true;
+  const box = new DialogueOutbox([], async () => {
+    if (fail) throw new Error('offline');
+  });
+  const a = { id: 'a', text: 'A', createdAt: 1, trigger: 'event' as const };
+  const b = { ...a, id: 'b' };
+  const first: string[] = [],
+    second: string[] = [];
+  box.subscribe((m) => {
+    first.push(m.id);
+  });
+  await expect(box.add([a])).rejects.toThrow('offline');
+  box.subscribe((m) => {
+    second.push(m.id);
+  }, 'a');
+  fail = false;
+  await box.add([b]);
+  expect(first).toEqual(['a', 'b']);
+  expect(second).toEqual(['b']);
+  await box.ack('b');
+  expect(box.replay()).toEqual([]);
+});

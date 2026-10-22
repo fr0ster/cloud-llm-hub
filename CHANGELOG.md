@@ -20,6 +20,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Dialogue principal/client changes return 409 `DIALOGUE_PRINCIPAL_FIXED` in both
+  chat APIs. Secret rotation retires connections; removing credentials preserves
+  the binding and prevents new connections until credentials return.
+- Chat alone creates dialogue handles and binds their destination. Earlier events
+  streams attach on creation; acknowledgements before creation are 204 no-ops.
+- Each outbox subscriber receives messages in order through its own cursor,
+  including messages whose persistence failed, before later prefix acknowledgements.
+
 - Dialogue planner events remain in a persisted hub outbox until acknowledged.
   SSE includes stable IDs, cursor replay and task snapshots; the WebUI deduplicates,
   acknowledges after rendering and restores task progress on reconnect. Chat only

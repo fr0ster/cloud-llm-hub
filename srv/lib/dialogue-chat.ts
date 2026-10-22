@@ -40,7 +40,6 @@ export function dialogueChat(
       { headers: req.headers, user: cds.context?.user },
       destination,
     );
-    session.destination = destination;
     setSessionDestination(userId, session.key, destination);
     await handle.drainPending();
     const messages = handle.hasSubscribers() ? [] : handle.outbox.replay();

@@ -906,3 +906,23 @@ For the full list of available tools, see the ABAP ADT MCP server documentation 
 
 **Last Updated:** 2026-04-08
 **API Version:** 2.3
+
+### Dialogue session binding and delivery
+
+The first dialogue chat creates the handle and binds the effective destination to
+its long session. Opening `/v1/session/events` first sends an empty tasks snapshot
+and heartbeats, then attaches automatically when chat creates the handle. An ack
+before handle creation returns 204 without creating one.
+
+Both chat APIs reject destination changes with 409 `DIALOGUE_DESTINATION_FIXED`
+and SAP principal/client changes with 409 `DIALOGUE_PRINCIPAL_FIXED`, using
+`{ "error": { "type": "conflict", "code": "...", "message": "..." } }`.
+The first credential refresh binds basic login plus client or token subject/user
+plus client. New secrets for that principal retire old connections. Removing
+credentials retains the binding but leaves background work without credentials
+until that principal supplies them again.
+
+Each events subscriber has its own last emitted message cursor. Pending messages
+are emitted in outbox order even when persistence fails; persistence retries on
+the serialized save path. Acknowledgements remove the prefix through a known ID.
+Reconnects can pass `Last-Event-ID` to skip the rendered prefix.

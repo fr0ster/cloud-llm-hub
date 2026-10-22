@@ -1,3 +1,4 @@
+import { lookupDialogue } from './lib/dialogue-sessions';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -443,6 +444,21 @@ async function serveChatCompletions(
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(userId, sessionId);
   const destAfter = requestedDestination || s?.destination || destBefore;
+  if (useDialogue && s) {
+    const handle = await lookupDialogue(userId, s.key);
+    try {
+      handle?.factory.assertPrincipal(req.headers);
+    } catch (error) {
+      res.status(409).json({
+        error: {
+          type: 'conflict',
+          code: 'DIALOGUE_PRINCIPAL_FIXED',
+          message: (error as Error).message,
+        },
+      });
+      return;
+    }
+  }
   if (
     useDialogue &&
     s?.destination !== undefined &&

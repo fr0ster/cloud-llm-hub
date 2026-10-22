@@ -1,7 +1,11 @@
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { getAgentConfig } from '../agent-config';
-import { dialogueFor } from './dialogue-sessions';
+import {
+  type DialogueHandle,
+  lookupDialogue,
+  onDialogueCreated,
+} from './dialogue-sessions';
 import { longSessionsIfReady } from './long-session';
 import type { LongSessionRequest } from './session-connection';
 
@@ -31,21 +35,15 @@ export async function handleDialogueEvents(
   }
   let closed = false;
   let unsubscribe = () => {};
+  let unlisten = () => {};
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   const cleanup = () => {
     closed = true;
     unsubscribe();
+    unlisten();
     clearInterval(heartbeat);
   };
   res.once('close', cleanup);
-  const handle = await dialogueFor(
-    userId,
-    session.key,
-    session.destination ?? config.mcp.destination ?? '',
-  );
-  if (closed) return;
-  await handle.drainPending();
-  if (closed) return;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -61,25 +59,36 @@ export async function handleDialogueEvents(
       cleanup();
     }
   };
-  unsubscribe = handle.subscribe((event) => {
-    if (event.kind === 'message')
-      send('message', event.message, event.message.id);
-    else send('task', event.task);
-  });
-  send(
-    'tasks',
-    handle.session.snapshot().tasks.map(({ id, worker, goal, state }) => ({
-      id,
-      worker,
-      goal,
-      state,
-    })),
-  );
-  const cursor = req.headers?.['last-event-id'];
-  for (const message of handle.outbox.replay(
-    typeof cursor === 'string' ? cursor : undefined,
-  ))
-    send('message', message, message.id);
+  let attached = false;
+  const attach = (handle: DialogueHandle) => {
+    if (closed || attached) return;
+    attached = true;
+    send(
+      'tasks',
+      handle.session.snapshot().tasks.map(({ id, worker, goal, state }) => ({
+        id,
+        worker,
+        goal,
+        state,
+      })),
+    );
+    if (closed) return;
+    const cursor = req.headers?.['last-event-id'];
+    const detach = handle.subscribe(
+      (event) => {
+        if (event.kind === 'message')
+          send('message', event.message, event.message.id);
+        else send('task', event.task);
+      },
+      typeof cursor === 'string' ? cursor : undefined,
+    );
+    unsubscribe = detach;
+    if (closed) detach();
+  };
+  unlisten = onDialogueCreated(userId, session.key, attach);
+  const handle = await lookupDialogue(userId, session.key);
+  if (handle) attach(handle);
+  else if (!attached) send('tasks', []);
   if (closed) return;
   heartbeat = setInterval(() => {
     if (closed) return;
@@ -118,11 +127,7 @@ export async function handleDialogueAck(
     res.status(400).json({ error: { message: 'Message id required' } });
     return;
   }
-  const handle = await dialogueFor(
-    userId,
-    session.key,
-    session.destination ?? config.mcp.destination ?? '',
-  );
-  await handle.outbox.ack(req.body.id);
+  const handle = await lookupDialogue(userId, session.key);
+  await handle?.outbox.ack(req.body.id);
   res.status(204).end();
 }

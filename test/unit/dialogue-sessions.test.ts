@@ -1,4 +1,7 @@
-import { LongSessionRegistry } from '../../srv/lib/long-session';
+import {
+  LongSessionRegistry,
+  setLongSessionsForTest,
+} from '../../srv/lib/long-session';
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 
 jest.mock('../../srv/lib/background-connection', () => ({
@@ -19,6 +22,8 @@ import {
   closeDialogue,
   type DialogueEvent,
   dialogueFor,
+  lookupDialogue,
+  onDialogueCreated,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
 import {
@@ -111,7 +116,10 @@ async function ready(user = 'alice') {
     reset: jest.fn(),
   } as unknown as IAbapConnection & { close: jest.Mock };
   h.factory.refresh(
-    { headers: {}, user: { is: (role) => role === 'MCP_Reader' } },
+    {
+      headers: { authorization: 'Bearer test' },
+      user: { is: (role) => role === 'MCP_Reader' },
+    },
     'TEST',
   );
   jest.spyOn(h.factory, 'open').mockResolvedValue({
@@ -403,4 +411,42 @@ test('legacy library pending migrates to hub outbox on opening and leaves librar
   expect((await dialogueFor('alice', 'key', 'TEST')).outbox.replay()).toEqual([
     message,
   ]);
+});
+
+test('binds handle destination and rejects later mismatched lookups', async () => {
+  const h = await dialogueFor('alice', 'key', 'B');
+  expect(h.destination).toBe('B');
+  await expect(dialogueFor('alice', 'key', 'A')).rejects.toMatchObject({
+    code: 'DIALOGUE_DESTINATION_FIXED',
+  });
+});
+
+test('creation listener waits for chat destination B and normal registry touch persists it', async () => {
+  const onTouch = jest.fn();
+  const registry = new LongSessionRegistry(
+    { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+    { onClose: async () => {}, onTouch },
+  );
+  const session = registry.open('alice', { key: 'key' });
+  setLongSessionsForTest(registry);
+  const created = jest.fn();
+  const unsubscribe = onDialogueCreated('alice', 'key', created);
+  try {
+    expect(await lookupDialogue('alice', 'key')).toBeUndefined();
+    expect(created).not.toHaveBeenCalled();
+    const handle = await dialogueFor('alice', 'key', 'B');
+    expect(handle.destination).toBe('B');
+    expect(session).toMatchObject({ destination: 'B' });
+    expect(onTouch).toHaveBeenLastCalledWith(session);
+    expect(created).toHaveBeenCalledWith(handle);
+    expect(
+      jest.requireMock('../../srv/agent-manager').getSmartAgent,
+    ).toHaveBeenCalledWith(undefined, 'B');
+    await expect(lookupDialogue('alice', 'key', 'A')).rejects.toMatchObject({
+      code: 'DIALOGUE_DESTINATION_FIXED',
+    });
+  } finally {
+    unsubscribe();
+    setLongSessionsForTest(undefined);
+  }
 });

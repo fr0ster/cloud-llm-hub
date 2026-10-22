@@ -2,6 +2,34 @@ import type { PlannerMessage } from '@mcp-abap-adt/llm-agent';
 
 /** Delivery ownership belongs to the hub, independently of library pending. */
 export class DialogueOutbox {
+  private subscribers = new Set<{
+    fn: (message: PlannerMessage) => void;
+    cursor?: string;
+  }>();
+  subscribe(
+    fn: (message: PlannerMessage) => void,
+    cursor?: string,
+  ): () => void {
+    const subscriber = { fn, cursor };
+    this.subscribers.add(subscriber);
+    this.emit();
+    return () => {
+      this.subscribers.delete(subscriber);
+    };
+  }
+  private emit(): void {
+    for (const subscriber of this.subscribers) {
+      for (const message of this.replay(subscriber.cursor)) {
+        if (!this.subscribers.has(subscriber)) break;
+        try {
+          subscriber.fn(message);
+          subscriber.cursor = message.id;
+        } catch {
+          break;
+        }
+      }
+    }
+  }
   private messages: PlannerMessage[];
   private writes = Promise.resolve();
   private seen = new Set<string>();
@@ -17,7 +45,10 @@ export class DialogueOutbox {
     return this.messages.slice(index + 1);
   }
   private write(run: () => Promise<void>): Promise<void> {
-    const result = this.writes.catch(() => {}).then(run);
+    const result = this.writes
+      .catch(() => {})
+      .then(run)
+      .finally(() => this.emit());
     this.writes = result;
     return result;
   }
@@ -28,6 +59,7 @@ export class DialogueOutbox {
         this.seen.add(message.id);
       }
     }
+    this.emit();
     return this.write(() => this.persist(this.replay()));
   }
   ack(id: string): Promise<void> {
