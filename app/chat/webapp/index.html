@@ -52,6 +52,10 @@
 
         pre code { display: block; background: #2d2d2d; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; color: #e0e0e0; }
         code { background: #383838; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
+        .markdown-table { border-collapse: collapse; margin: 10px 0; color: #e0e0e0; font-size: 14px; white-space: normal; }
+        .markdown-table th, .markdown-table td { border: 1px solid #555; padding: 6px 10px; }
+        .markdown-table th { background: #2d2d2d; color: #00bfff; }
+        .markdown-table tbody tr:nth-child(even) { background: #252525; }
 
         /* File artifact cards */
         .file-card { margin: 12px 0; background: #0c0c0c; border: 1px solid #333; border-left: 4px solid #00bfff; border-radius: 4px; overflow: hidden; }
@@ -1242,6 +1246,27 @@
                     // Links
                     t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#00bfff">$1</a>');
                     // Line breaks
+                    // Cells already passed through escaping and inline markdown above.
+                    const lines = t.split('\n');
+                    const cells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+                    const rendered = [];
+                    for (let i = 0; i < lines.length; i++) {
+                        const header = cells(lines[i]);
+                        const separator = i + 1 < lines.length ? cells(lines[i + 1]) : [];
+                        if (lines[i].includes('|') && separator.length === header.length && separator.every(c => /^:?-{3,}:?$/.test(c))) {
+                            const align = separator.map(c => c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : 'left');
+                            const row = (values, tag) => '<tr>' + header.map((_, n) => '<' + tag + ' style="text-align:' + align[n] + '">' + (values[n] || '') + '</' + tag + '>').join('') + '</tr>';
+                            let table = '<table class="markdown-table"><thead>' + row(header, 'th') + '</thead><tbody>';
+                            i += 2;
+                            while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+                                table += row(cells(lines[i]), 'td');
+                                i++;
+                            }
+                            i--;
+                            rendered.push(table + '</tbody></table>');
+                        } else rendered.push(lines[i]);
+                    }
+                    t = rendered.join('\n');
                     t = t.replace(/\n\n/g, '<br><br>');
                     t = t.replace(/\n/g, '<br>');
                     html += t;

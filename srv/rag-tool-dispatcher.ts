@@ -11,8 +11,8 @@
  * skills and tutorials stay human-readable — `id: "business-requirements"`
  * instead of UUIDs the caller would have to track.
  *
- * Server does not auto-inject these into chat requests — the client decides
- * when to surface them (e.g. tutorial/skill-driven flows).
+ * Clients decide when to surface write tools in ordinary chat requests.
+ * Dialogue workers dispatch them locally and also get `rag_list` for readback.
  */
 import { randomUUID } from 'node:crypto';
 import cds from '@sap/cds';
@@ -21,7 +21,7 @@ import { normalizeLogicalId, resolveByName } from './collection-ids';
 import { CollectionBackendError } from './lib/collection-persistence';
 import type { CollectionRegistry } from './rag-collections';
 import { sessionCollectionTtlMs } from './rag-collections';
-import { getRequestSessionId } from './request-session';
+import { getRequestSessionId, getRequestUserId } from './request-session';
 
 const ragAddSchema = z.object({
   collection: z.string(),
@@ -44,6 +44,16 @@ const ragDeprecateSchema = z.object({
 });
 
 const TOOL_DEFS = [
+  {
+    name: 'rag_list' as const,
+    description:
+      'Read records and their text from a hub RAG collection to verify stored results. Use offset and limit to page through all records.',
+    schema: z.object({
+      collection: z.string(),
+      offset: z.number().int().nonnegative().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
+  },
   {
     name: 'rag_add' as const,
     description:
@@ -74,8 +84,8 @@ export function getRagToolNames(): RagToolName[] {
   return TOOL_DEFS.map((t) => t.name);
 }
 
-/** Returns OpenAI-format tool definitions for body.tools. */
-export function buildRagToolSchemas(): Array<{
+/** OpenAI-format definitions. Readback is opt-in for server-side workers. */
+export function buildRagToolSchemas(includeRead = false): Array<{
   type: 'function';
   function: {
     name: string;
@@ -83,14 +93,16 @@ export function buildRagToolSchemas(): Array<{
     parameters: Record<string, unknown>;
   };
 }> {
-  return TOOL_DEFS.map((t) => ({
-    type: 'function' as const,
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: z.toJSONSchema(t.schema) as Record<string, unknown>,
-    },
-  }));
+  return TOOL_DEFS.filter((t) => includeRead || t.name !== 'rag_list').map(
+    (t) => ({
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: z.toJSONSchema(t.schema) as Record<string, unknown>,
+      },
+    }),
+  );
 }
 
 type DispatchResult =
@@ -113,11 +125,30 @@ export async function dispatchRagTool(
   }
   const args = parsed.data as Record<string, unknown>;
 
-  const userId = () => cds.context?.user?.id ?? 'anonymous';
+  const userId = () =>
+    getRequestUserId() ?? cds.context?.user?.id ?? 'anonymous';
   const sessionId = () => getRequestSessionId();
 
   try {
     switch (name as RagToolName) {
+      case 'rag_list': {
+        const physical = await resolveByName(
+          registry,
+          args.collection as string,
+          userId(),
+          sessionId(),
+          false,
+        );
+        const result = physical
+          ? await registry.listDocuments(physical, {
+              offset: args.offset as number | undefined,
+              limit: args.limit as number | undefined,
+            })
+          : null;
+        return result
+          ? { ok: true, ...result }
+          : { ok: false, error: 'Collection not found' };
+      }
       case 'rag_add': {
         const sid = sessionId();
         let physical: string | undefined;
