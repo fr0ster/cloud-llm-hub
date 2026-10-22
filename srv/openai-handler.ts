@@ -38,6 +38,7 @@ import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
 import { CollectionBackendError } from './lib/collection-persistence';
 import { detachedSink } from './lib/detached-sink';
+import { dialogueChat } from './lib/dialogue-chat';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
@@ -303,6 +304,9 @@ async function serveChatCompletions(
   s?: LongSession,
 ): Promise<void> {
   const log = cds.log('openai-handler');
+  const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
+  const useDialogue = dialogueMode && !!s;
+  if (dialogueMode && !s) res.setHeader('x-clh-coordinator', 'adaptive');
 
   // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
@@ -476,7 +480,7 @@ async function serveChatCompletions(
     return;
   }
 
-  if (destAfter) {
+  if (destAfter && !useDialogue) {
     const established = s
       ? await acquireSessionConnection(s, req, res, destAfter)
       : await establishRequestConnection(req, res, destAfter);
@@ -590,6 +594,17 @@ async function serveChatCompletions(
     if (Array.isArray(bodyCollections)) return bodyCollections;
     return [];
   })();
+
+  const chatAgent =
+    useDialogue && s
+      ? dialogueChat(
+          req,
+          userId,
+          s,
+          destAfter,
+          extractText(userMessages[userMessages.length - 1].content),
+        )
+      : handle.agent;
 
   // The destination agent's internal deps: its RAG stores, which are swapped
   // in only once admitted (see there).
@@ -954,7 +969,7 @@ async function serveChatCompletions(
               // here, not before the queue wait — see `inRequestSystem`.
               () =>
                 inRequestSystem(async () => {
-                  const stream = handle.agent.streamProcess(
+                  const stream = chatAgent.streamProcess(
                     normalizedMessages,
                     opts,
                   );
@@ -1255,7 +1270,7 @@ async function serveChatCompletions(
             // Admitted — see `inRequestSystem`.
             () =>
               inRequestSystem(async () =>
-                handle.agent.process(normalizedMessages, opts),
+                chatAgent.process(normalizedMessages, opts),
               ),
           ),
         priorTurns,
