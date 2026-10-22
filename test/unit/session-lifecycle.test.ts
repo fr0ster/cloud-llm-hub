@@ -1,3 +1,9 @@
+const deleteDialogueState = jest.fn(async () => {});
+jest.mock('../../srv/lib/dialogue-store', () => ({
+  deleteDialogueState: () => deleteDialogueState(),
+  sweepDialogueStates: async () => {},
+}));
+
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { scopedStore } from './helpers/scoped-run-store';
 
@@ -553,4 +559,20 @@ it('reuses the session timer for durable run-record sweeping', async () => {
     jest.useRealTimers();
     sweep.mockRestore();
   }
+});
+
+it('provider dialogue delete failure does not skip real close hook teardown', async () => {
+  const s = (await openSession(
+    'alice',
+  )) as import('../../srv/lib/long-session').LongSession;
+  deleteDialogueState.mockRejectedValueOnce(
+    new Error('provider delete failed'),
+  );
+  await longSessions().close('alice', s.key, 'explicit');
+  expect(dropSessionConnection).toHaveBeenCalledWith(s);
+  expect(deleteSession).toHaveBeenCalledWith('alice', s.key);
+  expect(records.store.put).toHaveBeenCalledWith(
+    expect.objectContaining({ key: s.key, closedAt: now }),
+  );
+  expect(await resolveSession('alice', s.key)).toBeUndefined();
 });

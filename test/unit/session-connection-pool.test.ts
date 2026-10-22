@@ -155,7 +155,7 @@ it('bounds simultaneous opens and replaces a failed open for the next waiter', a
         fail = reject;
       }),
   );
-  const first = expect(pool.acquire()).rejects.toThrow('failed');
+  const first = expect(pool.acquire()).rejects.toThrow('SAP connection failed');
   fail(new Error('failed'));
   await first;
   const second = pool.acquire();
@@ -206,4 +206,69 @@ it('captures principal exposition as metadata, ignores forged headers, copies it
   expect(factory.exposition).toEqual([]);
   factory.forget();
   expect(factory.exposition).toEqual([]);
+});
+
+it('retires idle and leased connections when credentials change', async () => {
+  const { pool, factory, builder } = setup(2);
+  const idle = await pool.acquire();
+  const busy = await pool.acquire();
+  await idle.release(true);
+  factory.refresh(
+    { headers: { ...headers, authorization: 'Bearer renewed' } },
+    'D',
+  );
+  await Promise.resolve();
+  expect(
+    (idle.connection as unknown as { close: jest.Mock }).close,
+  ).toHaveBeenCalledTimes(1);
+  expect(
+    (busy.connection as unknown as { close: jest.Mock }).close,
+  ).not.toHaveBeenCalled();
+  await busy.release(true);
+  expect(
+    (busy.connection as unknown as { close: jest.Mock }).close,
+  ).toHaveBeenCalledTimes(1);
+  const next = await pool.acquire();
+  expect(next.connection).not.toBe(idle.connection);
+  expect(builder.mock.calls[2][0].headers.authorization).toBe('Bearer renewed');
+  await next.release(true);
+  await pool.closeAll();
+});
+it.each([401, 403, 500])(
+  'sanitizes connection opening failures (%s)',
+  async (status) => {
+    const { pool, builder } = setup();
+    builder.mockRejectedValueOnce(
+      Object.assign(
+        new Error('password=sentinel Bearer sentinel Authorization: sentinel'),
+        { status },
+      ),
+    );
+    await expect(pool.acquire()).rejects.toThrow(
+      status === 500
+        ? 'SAP connection failed'
+        : 'SAP connection failed: authentication rejected',
+    );
+    await pool.closeAll();
+  },
+);
+
+it('keeps identical bindings and retires when credentials are removed', async () => {
+  const { pool, factory } = setup();
+  const first = await pool.acquire();
+  await first.release(true);
+  factory.refresh({ headers: { ...headers } }, 'D');
+  const same = await pool.acquire();
+  expect(same.connection).toBe(first.connection);
+  expect(same.version).toBe(first.version);
+  await same.release(true);
+  factory.refresh({ headers: {} }, 'D');
+  expect(
+    (same.connection as unknown as { close: jest.Mock }).close,
+  ).toHaveBeenCalledTimes(1);
+  const fresh = await pool.acquire();
+  expect(fresh.version).toBeGreaterThan(same.version);
+  expect(fresh.connection).not.toBe(same.connection);
+  await fresh.release(true);
+  await pool.closeAll();
 });

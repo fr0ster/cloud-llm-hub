@@ -157,6 +157,21 @@ async function serveMessages(
     s?.destination ||
     getCurrentDestination(userId, sessionId);
 
+  if (
+    useDialogue &&
+    s?.destination !== undefined &&
+    s.destination !== destination
+  ) {
+    res.status(409).json({
+      error: {
+        type: 'conflict',
+        code: 'DIALOGUE_DESTINATION_FIXED',
+        message:
+          'The dialogue destination is fixed for the lifetime of the session',
+      },
+    });
+    return;
+  }
   // A closed destination refuses before anything is built for it. Connecting
   // first would CSRF-fetch against the system that is down and answer
   // `401 sap_credentials_failed` from inside `establishRequestConnection`, so

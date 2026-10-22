@@ -10,6 +10,7 @@ import { isRagScanner } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
+import { dialogueMaxTasks } from '../agent-config';
 import { ensureDialogueStore } from './collection-persistence';
 import { guardedTask } from './guarded-task';
 import {
@@ -68,7 +69,13 @@ const schema = z.object({
         finishedAt: num.optional(),
       }),
     )
-    .max(50),
+    .superRefine((tasks, ctx) => {
+      if (tasks.length > dialogueMaxTasks())
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Dialogue task limit exceeded',
+        });
+    }),
   pending: z.array(
     z.object({
       id: str,

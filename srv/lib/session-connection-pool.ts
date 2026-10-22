@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { inspect } from 'node:util';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
@@ -58,6 +59,18 @@ export class NoCredentialsError extends Error {
 }
 export class SessionConnectionFactory {
   #snapshot?: ConnectionSnapshot;
+  #fingerprint?: string;
+  version = 0;
+  private listeners = new Set<() => void>();
+  onBindingChange(fn: () => void): void {
+    this.listeners.add(fn);
+  }
+  private bind(fingerprint: string | undefined): void {
+    if (fingerprint === this.#fingerprint) return;
+    this.#fingerprint = fingerprint;
+    this.version++;
+    for (const fn of this.listeners) fn();
+  }
   #builder: Builder;
   #userId: string;
   #exposition: ExpositionLevel[] = [];
@@ -89,6 +102,11 @@ export class SessionConnectionFactory {
       destination,
       exposition: [...this.#exposition],
     };
+    this.bind(
+      createHash('sha256')
+        .update(JSON.stringify([destination, headers]))
+        .digest('hex'),
+    );
   }
   get exposition(): ExpositionLevel[] {
     return [...this.#exposition];
@@ -98,14 +116,45 @@ export class SessionConnectionFactory {
   }
   async open(): Promise<BackgroundConnection> {
     if (!this.#snapshot) throw new NoCredentialsError();
-    return this.#builder({
-      ...this.#snapshot,
-      headers: { ...this.#snapshot.headers },
-      exposition: [...(this.#snapshot.exposition ?? [])],
-    });
+    try {
+      return await this.#builder({
+        ...this.#snapshot,
+        headers: { ...this.#snapshot.headers },
+        exposition: [...(this.#snapshot.exposition ?? [])],
+      });
+    } catch (error) {
+      if (error instanceof NoCredentialsError) throw error;
+      const e = error as {
+        name?: unknown;
+        code?: unknown;
+        status?: unknown;
+        statusCode?: unknown;
+        message?: unknown;
+        response?: { status?: unknown };
+      };
+      const status = e?.status ?? e?.statusCode ?? e?.response?.status;
+      const auth =
+        status === 401 ||
+        status === 403 ||
+        /auth|unauthorized|forbidden|credential|logon/i.test(
+          `${String(e?.code ?? '')} ${String(e?.message ?? '')}`,
+        );
+      // Allow-list diagnostic categories: connector-controlled strings can contain credentials.
+      cds.log('background-connection').warn('SAP connection opening failed', {
+        errorClass: error instanceof Error ? 'Error' : 'Unknown',
+        status: typeof status === 'number' ? status : undefined,
+        code: auth ? 'AUTH_REJECTED' : 'CONNECTION_FAILED',
+      });
+      throw new Error(
+        auth
+          ? 'SAP connection failed: authentication rejected'
+          : 'SAP connection failed',
+      );
+    }
   }
   forget(): void {
     this.#snapshot = undefined;
+    this.bind(undefined);
     this.#exposition = [];
   }
   toJSON() {
@@ -116,11 +165,13 @@ export class SessionConnectionFactory {
   }
 }
 export interface ConnectionLease extends BackgroundConnection {
+  version: number;
   release(healthy: boolean): Promise<void>;
 }
 interface Entry {
   value: BackgroundConnection;
   busy: boolean;
+  version: number;
 }
 interface Waiter {
   resolve: (lease: ConnectionLease) => void;
@@ -140,6 +191,16 @@ export class SessionConnectionPool {
   ) {
     if (!Number.isInteger(max) || max < 1)
       throw new Error('max must be a positive integer');
+    factory.onBindingChange(() => this.retire());
+  }
+  retire(): void {
+    for (const entry of this.#entries) {
+      if (!entry.busy) {
+        this.#entries.delete(entry);
+        void safeStop(entry.value.connection);
+      }
+    }
+    this.#pump();
   }
   acquire(signal?: AbortSignal): Promise<ConnectionLease> {
     if (this.#closed)
@@ -174,11 +235,12 @@ export class SessionConnectionPool {
     let released = false;
     return {
       ...entry.value,
+      version: entry.version,
       release: async (healthy) => {
         if (released) return;
         released = true;
         if (this.#closed) return;
-        if (!healthy) {
+        if (!healthy || entry.version !== this.factory.version) {
           await safeStop(entry.value.connection);
           this.#entries.delete(entry);
         } else entry.busy = false;
@@ -200,15 +262,16 @@ export class SessionConnectionPool {
       )
         return;
       // Keep the waiter queued (including its abort listener) while opening.
+      const version = this.factory.version;
       const pending = this.factory
         .open()
         .then(
           async (value) => {
-            if (this.#closed) {
+            if (this.#closed || version !== this.factory.version) {
               await safeStop(value.connection);
               return;
             }
-            this.#entries.add({ value, busy: false });
+            this.#entries.add({ value, busy: false, version });
           },
           (error) => {
             this.#take()?.reject(

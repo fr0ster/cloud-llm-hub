@@ -51,3 +51,27 @@ describe('shutdown', () => {
     );
   });
 });
+
+it('background admissions bypass the real Door and abort on shutdown', async () => {
+  process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '1';
+  clearGatekeeperConfig();
+  gatekeeper.resetGatekeeperForTest();
+  const workers = await Promise.all(
+    Array.from({ length: 3 }, () =>
+      gatekeeper.admitBackground('u', 'dialogue'),
+    ),
+  );
+  const chat = await gatekeeper.admitPipeline('u', 'dialogue');
+  expect('admitted' in chat).toBe(true);
+  if ('admitted' in chat) chat.admitted.release();
+  const mcp = await gatekeeper.admitPipeline('mcp', 'step');
+  expect('admitted' in mcp).toBe(true);
+  gatekeeper.shutdownGatekeeper();
+  for (const worker of workers) {
+    if (!('admitted' in worker)) throw new Error('refused');
+    expect(worker.admitted.signal?.aborted).toBe(true);
+    await worker.admitted.drain();
+    worker.admitted.release();
+  }
+  if ('admitted' in mcp) mcp.admitted.release();
+});

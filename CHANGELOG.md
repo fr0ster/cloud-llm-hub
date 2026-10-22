@@ -11,12 +11,22 @@ All notable changes to this project will be documented in this file. The format 
   read-only checker subagents. Defaults: 3 concurrent tasks per session, 6
   hub-wide, 50 task records per session, configurable through
   `LLM_AGENT_DIALOGUE_EXECUTORS`, `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` and
-  `LLM_AGENT_DIALOGUE_MAX_TASKS` (persisted snapshots still cap tasks at 50).
+  `LLM_AGENT_DIALOGUE_MAX_TASKS`.
   Requests without a long session fall back to adaptive with
   `x-clh-coordinator: adaptive`. Pending planner messages prefix the next
   response; `GET /v1/session/events` supplies live planner messages and task
   states to the WebUI, with a heartbeat that keeps the session alive.
   Adaptive remains the default; the agent MCP path is unchanged.
+
+### Fixed
+
+- Dialogue workers bypass MCP Door capacity while retaining leases, call draining
+  and shutdown cancellation. Chat admission remains unchanged.
+- Dialogue destination changes return 409 `DIALOGUE_DESTINATION_FIXED`.
+  Credential changes retire idle connections and close leased connections on release.
+- Dialogue deletion failures no longer skip session teardown; the TTL sweep retries them.
+- Persisted task limits follow `LLM_AGENT_DIALOGUE_MAX_TASKS`, including values above 50.
+- Connection-opening errors use fixed credential-free messages and categorized diagnostics.
 
 ## [8.3.1] - 2026-10-22
 

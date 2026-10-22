@@ -210,3 +210,25 @@ for (const anthropic of [false, true])
         );
     });
   }
+
+it.each([false, true])(
+  'rejects changed dialogue destination before refresh (anthropic=%s)',
+  async (anthropic) => {
+    session.destination = 'ORIGINAL';
+    const req = fakeReq(
+      { messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 },
+      session.key,
+    ) as unknown as Request & { longSession: LongSession };
+    req.longSession = session;
+    req.headers['x-sap-destination'] = 'OTHER';
+    const res = fakeRes();
+    await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+      req,
+      res as unknown as Response,
+    );
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toContain('DIALOGUE_DESTINATION_FIXED');
+    expect(refresh).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  },
+);

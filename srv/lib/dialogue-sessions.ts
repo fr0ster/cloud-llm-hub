@@ -30,7 +30,7 @@ import {
   createDialogueStateStore,
   deleteDialogueState,
 } from './dialogue-store';
-import { admitPipeline, type PipelineSession } from './gatekeeper';
+import { admitBackground, type PipelineSession } from './gatekeeper';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { runWithRequestSystem } from './request-system-context';
@@ -236,7 +236,11 @@ async function open(
           try {
             const acquiredLease = await pool.acquire(lifetime.signal);
             lease = acquiredLease;
-            const admission = await admitPipeline(userId, key, lifetime.signal);
+            const admission = await admitBackground(
+              userId,
+              key,
+              lifetime.signal,
+            );
             if (!('admitted' in admission))
               throw new Error(
                 'Background task admission refused: session closed or unavailable',
@@ -317,6 +321,7 @@ export function closeDialogue(
   userId: string,
   key: string,
   reason: 'explicit' | 'ttl' | 'shutdown',
+  deleteState = true,
 ): Promise<void> {
   const id = slot(userId, key);
   const inFlight = closing.get(id);
@@ -339,7 +344,15 @@ export function closeDialogue(
       }
     } finally {
       handles.delete(id);
-      if (reason !== 'shutdown') await deleteDialogueState(userId, key);
+      if (reason !== 'shutdown' && deleteState) {
+        try {
+          await deleteDialogueState(userId, key);
+        } catch {
+          cds
+            .log('dialogue-sessions')
+            .warn('Dialogue state deletion failed; TTL sweep will retry');
+        }
+      }
     }
   })();
   closing.set(id, close);

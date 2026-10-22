@@ -1,3 +1,8 @@
+jest.mock('../../srv/lib/background-connection', () => ({
+  buildConnectionForDestination: jest.fn(),
+  dumpScopeForConnection: jest.fn(),
+}));
+
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
 import type { ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
@@ -28,6 +33,7 @@ const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
+  ...jest.requireActual('../../srv/agent-config'),
   getAgentConfig: () => ({
     ...jest.requireActual('../../srv/agent-config').getAgentConfig(),
     agent: { dialogue: { executors: 2, executorPool: 1, maxTasks: 50 } },
@@ -73,7 +79,7 @@ jest.mock('../../srv/agent-manager', () => ({
   runWithRequestConnection: jest.fn((_c: unknown, fn: () => unknown) => fn()),
 }));
 jest.mock('../../srv/lib/gatekeeper', () => ({
-  admitPipeline: jest.fn(async () => ({
+  admitBackground: jest.fn(async () => ({
     admitted: {
       run: (fn: () => unknown) => runWithAdmission(mockRegister, fn),
       drain: () => mockDrain(),
@@ -282,4 +288,35 @@ test('worker failures close unhealthy connections and release admission and pool
   expect(h.session.snapshot().tasks[0].state).toBe('failed');
   const release = await sharedExecutorPool().acquire();
   release();
+});
+
+test('builder secrets never reach task error, planner input, persistence or logs', async () => {
+  const cds = require('@sap/cds').default;
+  const warning = jest.spyOn(cds.log('background-connection'), 'warn');
+  const builder =
+    require('../../srv/lib/background-connection').buildConnectionForDestination;
+  builder.mockRejectedValueOnce(
+    new Error(
+      'password=PASS_SENTINEL Bearer TOKEN_SENTINEL Authorization: HEADER_SENTINEL',
+    ),
+  );
+  const h = await dialogueFor('alice', 'key', 'TEST');
+  h.factory.refresh({ headers: { authorization: 'Bearer request' } }, 'TEST');
+  await h.session.send('go');
+  await until(() => h.session.snapshot().pending.length > 0);
+  expect(h.session.snapshot().tasks[0].error).toMatch(/^SAP connection failed/);
+  const saved = await require('../../srv/lib/dialogue-store')
+    .createDialogueStateStore('alice', 'key')
+    .load('key');
+  expect(saved).toBeDefined();
+  expect(warning).toHaveBeenCalled();
+  expect(
+    JSON.stringify([
+      h.session.snapshot(),
+      mockPlannerTurns,
+      saved,
+      warning.mock.calls,
+    ]),
+  ).not.toMatch(/PASS_SENTINEL|TOKEN_SENTINEL|HEADER_SENTINEL/);
+  warning.mockRestore();
 });

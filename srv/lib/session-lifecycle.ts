@@ -116,7 +116,11 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   reviving.clear();
   return {
     async onClose(s, reason) {
-      await closeDialogue(s.userId, s.key, reason);
+      try {
+        await closeDialogue(s.userId, s.key, reason, false);
+      } catch {
+        log().warn('Dialogue shutdown failed');
+      }
       await dropSessionConnection(s);
       if (reason === 'shutdown') return;
       closed.set(slot(s.userId, s.key), s.lastActivity + longSessions().ttlMs);
@@ -239,9 +243,13 @@ async function markClosed(record: SessionRecord): Promise<void> {
  * outcome checked, so a failed delete keeps the closed record for a retry.
  */
 async function cleanupSession(userId: string, key: string): Promise<void> {
-  await deleteDialogueState(userId, key);
   await getRunRecordStore().delete(userId, key);
   await deleteSession(userId, key);
+  try {
+    await deleteDialogueState(userId, key);
+  } catch {
+    log().warn('Dialogue state deletion failed; TTL sweep will retry');
+  }
   if (!isProvidersReady()) return;
   const forgotten = await getSharedHistoryRag()?.forgetOwner(
     turnOwner(userId, key),

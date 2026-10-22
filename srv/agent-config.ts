@@ -591,9 +591,7 @@ export function loadAgentConfig(): AgentConfig {
             process.env,
             'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
           ) ?? 6,
-        maxTasks:
-          readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_MAX_TASKS') ??
-          50,
+        maxTasks: dialogueMaxTasks(),
       },
       planBudget: {
         maxSteps: readPositiveIntFrom(process.env, 'LLM_AGENT_PLAN_MAX_STEPS'),
@@ -775,4 +773,9 @@ export function parseChatCoordinator(
   throw new Error(
     `Invalid LLM_AGENT_CHAT_COORDINATOR: ${value}; expected adaptive, fixed or dialogue`,
   );
+}
+
+/** Shared task limit for TaskBoard and persisted dialogue validation. */
+export function dialogueMaxTasks(): number {
+  return readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_MAX_TASKS') ?? 50;
 }

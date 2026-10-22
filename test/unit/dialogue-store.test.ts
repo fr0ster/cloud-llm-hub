@@ -74,3 +74,25 @@ it.each([
   await s.save('k', value as DialogueState);
   expect(await s.load('k')).toBeUndefined();
 });
+
+it('persists and restores the configured task boundary of 60', async () => {
+  const config = require('../../srv/agent-config');
+  const spy = jest.spyOn(config, 'dialogueMaxTasks').mockReturnValue(60);
+  try {
+    const store = createDialogueStateStore('alice', 'boundary');
+    const value = {
+      ...state,
+      tasks: Array.from({ length: 60 }, (_, i) => ({
+        id: String(i),
+        worker: 'executor',
+        goal: 'read',
+        state: 'done' as const,
+        createdAt: 1,
+      })),
+    };
+    await store.save('boundary', value);
+    expect((await store.load('boundary'))?.tasks).toHaveLength(60);
+  } finally {
+    spy.mockRestore();
+  }
+});
