@@ -4,6 +4,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 import {
   buildAgentForDestination,
   ExpositionFilteringRag,
+  HUB_ADAPTIVE_CONTROLLER_SYSTEM,
   initProviders,
 } from '../../srv/agent-manager';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
@@ -207,6 +208,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     const result = await run('adaptive-hello', 'Hello');
     expect(result.text).toBe('Hello!');
     expect(calls).toEqual(['controller']);
+    expect(controllerPrompts[0]).toContain(HUB_ADAPTIVE_CONTROLLER_SYSTEM);
     expect(result.callTool).not.toHaveBeenCalled();
     expect(result.record?.outcome).toBe('answered');
     expect(result.record?.steps.map((s) => s.kind)).toEqual(['answer']);

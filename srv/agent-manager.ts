@@ -46,6 +46,7 @@ import {
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  ADAPTIVE_CONTROLLER_SYSTEM,
   AdaptiveCoordinatorHandler,
   DagPlanInterpreter,
   InMemoryMetrics,
@@ -113,17 +114,26 @@ export { collectionFor } from './lib/tool-corpus';
 import { buildToolExpositionMap } from './lib/tool-exposition-map';
 import { trackedLlm } from './lib/tracked-llm';
 import {
+  getAdaptivePrefetch,
   getRequestHistory,
   getRequestSessionId,
   isReadOnlyTools,
   isToolGateBypassed,
   requestToolGateDecision,
   runWithReadOnlyTools,
+  startAdaptivePrefetch,
 } from './request-session';
+
+export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
+  ADAPTIVE_CONTROLLER_SYSTEM +
+  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
 /** Keep generated verification steps inside the hub's checker tool scope. */
 export class CheckerAdaptiveController implements IAdaptiveController {
-  constructor(private readonly inner: IAdaptiveController) {}
+  constructor(
+    private readonly inner: IAdaptiveController,
+    private readonly prefetch?: (text: string, signal?: AbortSignal) => void,
+  ) {}
   get name() {
     return this.inner.name;
   }
@@ -146,6 +156,7 @@ export class CheckerAdaptiveController implements IAdaptiveController {
     });
   }
   async plan(input: Parameters<IAdaptiveController['plan']>[0]) {
+    this.prefetch?.(input.request, input.signal);
     const result = await this.inner.plan(input);
     return {
       ...result,
@@ -258,6 +269,21 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       .toolGate ?? 'classifier',
     private readonly agentMode = getAgentConfig().agent.mode,
   ) {}
+
+  /** Share the query analyzer and its configured deadline with adaptive planning. */
+  prefetchAdaptive(text: string, signal?: AbortSignal): void {
+    const analyzer = this.analyzer;
+    if (
+      !analyzer ||
+      this.agentMode === 'hard' ||
+      this.toolGate === 'off' ||
+      isToolGateBypassed()
+    )
+      return;
+    startAdaptivePrefetch(text, () =>
+      analyzer.analyze(text, getRequestHistory(), { signal }),
+    );
+  }
 
   /** The store a given exposition's entries live in. */
   private storeFor(exposition: string | undefined): IRag {
@@ -443,8 +469,10 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       this.toolGate !== 'off' &&
       !isToolGateBypassed();
     const analyzer = this.analyzer;
-    const decision =
-      analyzer && embedding.text
+    const prefetch = getAdaptivePrefetch();
+    const decision = prefetch
+      ? { ...(await prefetch), needsAbapSystem: true }
+      : analyzer && embedding.text
         ? await requestToolGateDecision(embedding.text, () =>
             analyzer.analyze(embedding.text, getRequestHistory(), options),
           )
@@ -2764,7 +2792,10 @@ export async function buildAgentForDestination(
     builder.withStepperCoordinator(
       new AdaptiveCoordinatorHandler({
         controller: new CheckerAdaptiveController(
-          new LlmAdaptiveController(criticLlm),
+          new LlmAdaptiveController(criticLlm, {
+            systemPrompt: HUB_ADAPTIVE_CONTROLLER_SYSTEM,
+          }),
+          (text, signal) => toolsRag.prefetchAdaptive(text, signal),
         ),
         workers,
         finalizer: new NoticeFinalizer(recMcp, criticLlm),

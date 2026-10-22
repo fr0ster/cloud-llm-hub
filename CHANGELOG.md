@@ -16,6 +16,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- **Adaptive latency and language.** Tool-gate analysis overlaps planning; workers reuse its translation and keep tools available. Controller goals, questions, notes and checks follow the request language.
+
 - **Chat defaults to adaptive coordination.** The controller plans each
   request, with instructions to answer small talk itself and use one executor
   step for simple work. Set `LLM_AGENT_CHAT_COORDINATOR=fixed` to return to

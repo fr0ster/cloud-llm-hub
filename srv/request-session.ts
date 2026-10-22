@@ -8,6 +8,7 @@ import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
 const als = new AsyncLocalStorage<{
   sessionId?: string;
   userId?: string;
+  adaptivePrefetch?: Promise<ToolQueryAnalysis>;
   toolGateDecision?: Promise<ToolQueryAnalysis>;
   /**
    * The conversation BEFORE this request's new user message.
@@ -75,4 +76,25 @@ export function runWithReadOnlyTools<T>(fn: () => T): T {
 }
 export function isReadOnlyTools(): boolean {
   return readOnlyTools.getStore() === true;
+}
+
+/** Start once per request; attach rejection handling before leaving it unused. */
+export function startAdaptivePrefetch(
+  text: string,
+  analyze: () => Promise<ToolQueryAnalysis>,
+): void {
+  const scope = als.getStore();
+  if (!scope || scope.adaptivePrefetch) return;
+  try {
+    scope.adaptivePrefetch = analyze().catch(() => ({
+      text,
+      needsAbapSystem: true,
+    }));
+  } catch {
+    scope.adaptivePrefetch = Promise.resolve({ text, needsAbapSystem: true });
+  }
+}
+
+export function getAdaptivePrefetch(): Promise<ToolQueryAnalysis> | undefined {
+  return als.getStore()?.adaptivePrefetch;
 }
