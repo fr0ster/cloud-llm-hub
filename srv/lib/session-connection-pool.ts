@@ -23,6 +23,7 @@ import {
   resolveRequestSystem,
 } from './request-system-context';
 import { compare } from './session-connection';
+import { cachedSystemIdentity } from './system-identity-cache';
 
 export interface ConnectionSnapshot {
   headers: Record<string, string>;
@@ -65,6 +66,11 @@ export class NoCredentialsError extends Error {
 }
 export class SessionConnectionFactory {
   #principal?: CredentialBinding;
+  #environment = new Map<
+    string,
+    { systemType?: string; sapClient?: string; login?: string }
+  >();
+  #identity?: { responsible?: string; masterSystem?: string };
   #authenticationTypes = new Map<string, string | undefined>();
   async assertPrincipal(
     headers: Record<string, string | string[] | undefined>,
@@ -87,6 +93,11 @@ export class SessionConnectionFactory {
         bearerToken(normalized.authorization),
       );
       authenticationType = resolved.authenticationType;
+      this.#environment.set(destination, {
+        systemType: resolved.systemType,
+        sapClient: resolved.sapConfig?.client,
+        login: resolved.username,
+      });
       this.#authenticationTypes.set(destination, authenticationType);
     }
     const principal = readRequestCredential(
@@ -170,17 +181,37 @@ export class SessionConnectionFactory {
   get exposition(): ExpositionLevel[] {
     return [...this.#exposition];
   }
+  /** Explicit allow-list: connection credentials must never reach the planner. */
+  environment(destination: string): string[] {
+    const headers = this.#snapshot?.headers ?? {};
+    const known = this.#environment.get(destination);
+    return [
+      `System type: ${headers['x-sap-system-type'] || known?.systemType || 'onprem'}`,
+      `SAP login: ${this.#identity?.responsible || this.#principal?.sapLogin || known?.login || 'unknown'}`,
+      ...(headers['x-sap-client'] || known?.sapClient
+        ? [`SAP client: ${headers['x-sap-client'] || known?.sapClient}`]
+        : []),
+      ...(headers['x-sap-master-system']
+        ? [`SAP system id: ${headers['x-sap-master-system']}`]
+        : []),
+      ...(this.#identity?.masterSystem
+        ? [`SAP system id: ${this.#identity.masterSystem}`]
+        : []),
+    ];
+  }
   hasCredentials(): boolean {
     return this.#snapshot !== undefined;
   }
   async open(): Promise<BackgroundConnection> {
     if (!this.#snapshot) throw new NoCredentialsError();
     try {
-      return await this.#builder({
+      const built = await this.#builder({
         ...this.#snapshot,
         headers: { ...this.#snapshot.headers },
         exposition: [...(this.#snapshot.exposition ?? [])],
       });
+      this.#identity = cachedSystemIdentity(built.connection) ?? undefined;
+      return built;
     } catch (error) {
       if (error instanceof NoCredentialsError) throw error;
       const e = error as {
@@ -213,6 +244,7 @@ export class SessionConnectionFactory {
   }
   forget(): void {
     this.#snapshot = undefined;
+    this.#identity = undefined;
     this.bind(undefined);
     this.#exposition = [];
   }

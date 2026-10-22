@@ -41,6 +41,14 @@ async function setup(max = 1) {
   await factory.refresh({ headers }, 'D');
   return { builder, factory, pool: new SessionConnectionPool(factory, max) };
 }
+it('planner environment includes only known public connection identity', async () => {
+  const { factory } = await setup();
+  const environment = factory.environment('D').join('\n');
+  expect(environment).toContain('USER');
+  expect(environment).toContain('100');
+  expect(environment).toContain('DEV');
+  expect(environment).not.toMatch(/secret|Bearer|password|authorization/);
+});
 it('requires credentials after restart and forget', async () => {
   const factory = new SessionConnectionFactory('u', 'key');
   await expect(factory.open()).rejects.toThrow(new NoCredentialsError());

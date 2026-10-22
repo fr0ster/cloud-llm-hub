@@ -311,3 +311,76 @@ it.each([false, true])(
     expect(send).not.toHaveBeenCalled();
   },
 );
+
+it.each(['before', 'before\n'])(
+  'separates resumed planner content after tools (%j)',
+  async (before) => {
+    send.mockImplementation(async (_text: string, options: any) => {
+      const { plannerWithParagraphs } = await import(
+        '../../srv/lib/dialogue-planner-content'
+      );
+      const result = await plannerWithParagraphs({
+        process: async (_input, opts) => {
+          opts.onPartial?.({ kind: 'content', delta: before });
+          opts.onPartial?.({
+            kind: 'mcp-call',
+            source: { stepperId: 's', name: 'tool' },
+            tool: 'test',
+          });
+          opts.onPartial?.({ kind: 'content', delta: 'after' });
+          return { ok: true, value: { content: before + 'after' } };
+        },
+      }).process([], options);
+      return { text: result.ok ? result.value.content : '' };
+    });
+    const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
+    const res = fakeRes();
+    const agent = dialogueChat(
+      fakeReq({}, session.key) as unknown as Request,
+      'alice',
+      session,
+      'SAP',
+      'hi',
+      res as unknown as Response,
+    );
+    let text = '';
+    for await (const chunk of agent.streamProcess([]))
+      if (chunk.ok) text += chunk.value.content || '';
+    expect(text).toContain(
+      // A tool boundary always yields a paragraph break (two newlines).
+      before + (before.endsWith('\n') ? '\n' : '\n\n') + 'after',
+    );
+  },
+);
+
+for (const anthropic of [false, true])
+  for (const stream of [false, true]) {
+    it(`destination-free long session uses adaptive (anthropic=${anthropic}, stream=${stream})`, async () => {
+      const req = fakeReq(
+        {
+          model: 'm',
+          max_tokens: 100,
+          stream,
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+        session.key,
+      ) as unknown as Request & { longSession: LongSession };
+      req.longSession = session;
+      delete req.headers['x-sap-destination'];
+      harness.sessionDestinations.set(
+        JSON.stringify(['alice', session.key]),
+        '',
+      );
+      const res = fakeRes();
+      await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+        req,
+        res as unknown as Response,
+      );
+      expect(res.headers['x-clh-coordinator']).toBe('adaptive');
+      expect(harness.events).toContain('pipeline');
+      expect(send).not.toHaveBeenCalled();
+      expect(res.body).not.toContain(
+        'Destination executor workers unavailable',
+      );
+    });
+  }

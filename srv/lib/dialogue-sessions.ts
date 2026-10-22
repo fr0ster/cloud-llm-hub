@@ -28,6 +28,10 @@ import {
 } from '../request-session';
 import { DialogueOutbox } from './dialogue-outbox';
 import {
+  plannerWithEnvironment,
+  plannerWithParagraphs,
+} from './dialogue-planner-content';
+import {
   createDialogueStateStore,
   deleteDialogueState,
   getDialogueStoreBackend,
@@ -46,6 +50,7 @@ import {
   SessionConnectionPool,
 } from './session-connection-pool';
 import { evaluateGated } from './step-reviewer';
+import { cachedSystemIdentity } from './system-identity-cache';
 
 export type DialogueEvent =
   | { kind: 'message'; message: PlannerMessage }
@@ -177,6 +182,31 @@ async function open(
     throw new Error('Destination executor workers unavailable');
   const planner = await buildPlannerAgent(config);
   const factory = new SessionConnectionFactory(userId, key);
+  const turnPlanner = plannerWithEnvironment(
+    plannerWithParagraphs(planner),
+    () => {
+      const connection = longSessionsIfReady()?.get(userId, key)?.connection;
+      const identity = connection
+        ? cachedSystemIdentity(connection)
+        : undefined;
+      return [
+        'Environment',
+        `Destination: ${destination}`,
+        ...factory.environment(destination),
+        ...(identity?.masterSystem
+          ? [`SAP system id: ${identity.masterSystem}`]
+          : []),
+        ...(identity?.responsible
+          ? [`SAP login: ${identity.responsible}`]
+          : []),
+        'Available workers:',
+        ...[...destinationHandle.workers].map(
+          ([name, worker]) => `${name}: ${worker.description}`,
+        ),
+        `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
+      ].join('\n');
+    },
+  );
   const pool = new SessionConnectionPool(
     factory,
     config.agent.dialogue.executors,
@@ -320,7 +350,7 @@ async function open(
       planner: {
         async process(input, options) {
           try {
-            return await planner.process(input, options);
+            return await turnPlanner.process(input, options);
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
           }

@@ -25,6 +25,7 @@ import {
   getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
+  getDestinationDiscoveryState,
   getDestinationStates,
   getQueryEmbedder,
   getSmartAgent,
@@ -306,8 +307,6 @@ async function serveChatCompletions(
 ): Promise<void> {
   const log = cds.log('openai-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
-  const useDialogue = dialogueMode && !!s;
-  if (dialogueMode && !s) res.setHeader('x-clh-coordinator', 'adaptive');
 
   // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
@@ -444,6 +443,9 @@ async function serveChatCompletions(
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(userId, sessionId);
   const destAfter = requestedDestination || s?.destination || destBefore;
+  const useDialogue = dialogueMode && !!s && !!destAfter;
+  if (dialogueMode && !useDialogue)
+    res.setHeader('x-clh-coordinator', 'adaptive');
   if (useDialogue && s) {
     const handle = await lookupDialogue(userId, s.key);
     try {
@@ -948,7 +950,7 @@ async function serveChatCompletions(
     if (body.stream) {
       out.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
         'X-SAP-Active-Destination': destAfter,
         ...invalidToolsHeader,
@@ -1451,6 +1453,7 @@ export async function handleModels(
       _active_model: activeModel,
       _active_destination: getCurrentDestination(),
       _destinations: getDestinationStates(),
+      _destination_discovery: getDestinationDiscoveryState(),
       _meta: {
         temperature: config.llm.temperature,
         max_tokens: config.llm.maxTokens,

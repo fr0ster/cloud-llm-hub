@@ -1,81 +1,103 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
-function load(path: string, dependencies: unknown[] = []) {
-  let result: any;
-  runInNewContext(readFileSync(path, 'utf8'), {
-    sap: {
-      ui: {
-        define: (_: unknown, factory: (...args: any[]) => unknown) => {
-          result = factory(...dependencies);
-        },
-      },
-    },
-    console,
-  });
-  return result;
-}
-
-const clientPath = 'app/chat/webapp/util/StreamClient.js';
-test('status comments call onStatus; malformed and ordinary comments are ignored', () => {
-  const client = load(clientPath);
-  const onStatus = jest.fn();
-  const onDelta = jest.fn();
-  client._processSSE(
-    ': heartbeat {}\n: keep-alive\n: status broken\n: status {"stepId":"a","state":"started"}\ndata: {"choices":[{"delta":{"content":"answer"}}]}',
-    { onStatus, onDelta },
+const html = readFileSync('app/chat/webapp/index.html', 'utf8');
+test('standalone status parser keeps latest states and escapes labels', () => {
+  const source = html.slice(
+    html.indexOf('        function stepSymbol('),
+    html.indexOf('        // Dialogue events'),
   );
-  expect(onStatus).toHaveBeenCalledTimes(1);
-  expect(onStatus).toHaveBeenCalledWith({ stepId: 'a', state: 'started' });
-  expect(onDelta).toHaveBeenCalledWith('answer');
-  expect(() => client._processSSE(': status {}', {})).not.toThrow();
+  const api = runInNewContext(
+    source + ';({parseStepStatus, renderStepTrail})',
+    {
+      escapeHtml: (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    },
+  );
+  const steps = new Map();
+  for (const line of [
+    ': status broken',
+    ': heartbeat',
+    ': status {"stepId":"<a>","state":"started"}',
+    ': status {"stepId":"<a>","state":"done"}',
+    ': status {"stepId":"b","state":"done","verdict":"fail"}',
+  ]) {
+    const status = api.parseStepStatus(line);
+    if (status) steps.set(status.stepId, status);
+  }
+  expect(steps.size).toBe(2);
+  expect(api.renderStepTrail(steps)).toContain('&lt;a&gt; ✓ · b ✗');
 });
 
-test('controller records status, uppercases the label and renders latest step states above text safely', () => {
-  let options: any;
-  const formatter = {
-    escapeHtml: (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    markdownToHtml: (s: string) => s,
-  };
-  const controller = load('app/chat/webapp/controller/Chat.controller.js', [
-    { extend: (_: string, value: unknown) => value },
-    {},
+test.each([
+  ['started', undefined, '\u2026'],
+  ['done', undefined, '\u2713'],
+  ['failed', undefined, '\u2717'],
+  ['done', 'fail', '\u2717'],
+  ['done', 'partial', '~'],
+])('status icon %s %s', (state, verdict, symbol) => {
+  const source = html.slice(
+    html.indexOf('        function stepSymbol('),
+    html.indexOf('        // Dialogue events'),
+  );
+  const api = runInNewContext(source + ';({stepSymbol})');
+  expect(api.stepSymbol({ state, verdict })).toBe(symbol);
+});
+
+test('chat reader parses fragmented CRLF status comments and retains trail with answer', async () => {
+  const helper = html.slice(
+    html.indexOf('        function stepSymbol('),
+    html.indexOf('        // Dialogue events'),
+  );
+  const start = html.indexOf(
+    '                const reader = response.body.getReader();',
+  );
+  const pump = html.slice(
+    start,
+    html.indexOf('                stopTimer();', start),
+  );
+  const wire =
+    ': status {"stepId":"<step>","kind":"execute","state":"started"}\r\n\r\n: status broken\r\n\r\n: status {"stepId":"<step>","kind":"execute","state":"done"}\r\n\r\ndata: {"choices":[{"delta":{"content":"answer"}}]}\r\n\r\n';
+  const chunks = [wire.slice(0, 19), wire.slice(19, 80), wire.slice(80)];
+  const node = { innerHTML: '' };
+  let answer = '';
+  const setStatus = jest.fn();
+  await runInNewContext(
+    helper +
+      ';(async () => { let phase, assistantContent = "", usage; const stepStates = new Map(), externalToolCalls = [], toolCalls = [], toolCallNames = new Set();' +
+      pump +
+      '})()',
     {
-      streamChat: (value: unknown) => {
-        options = value;
+      TextDecoder,
+      response: {
+        body: {
+          getReader: () => ({
+            read: async () =>
+              chunks.length
+                ? { value: new TextEncoder().encode(chunks.shift()) }
+                : { done: true },
+          }),
+        },
       },
+      thinkingId: 'answer',
+      setStatus,
+      escapeHtml: (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+      document: { getElementById: () => node },
+      chatWindow: {},
+      createFileParser: () => ({
+        process: (text: string) => {
+          answer += text;
+        },
+        render: () => ({ html: answer }),
+      }),
     },
-    formatter,
-  ]);
-  const setProperty = jest.fn();
-  const el = { innerHTML: '' };
-  controller._messages = [];
-  controller.getView = () => ({
-    getModel: () => ({
-      getProperty: (key: string) => (key === '/inputValue' ? 'hello' : false),
-      setProperty,
-    }),
-  });
-  controller._getChatWindow = () => el;
-  controller._scrollToBottom = jest.fn();
-  controller.onSendMessage();
-  const events = [
-    { stepId: '<create>', kind: 'execute', state: 'started' },
-    { stepId: '<create>', kind: 'execute', state: 'done' },
-    { stepId: 'check', kind: 'check', state: 'done', verdict: 'fail' },
-  ];
-  events.forEach((event) => {
-    options.onStatus(event);
-  });
-  expect(setProperty).toHaveBeenLastCalledWith(
-    '/statusText',
-    'STEP CHECK · CHECK · DONE · FAIL',
   );
-  expect(controller._messages[1].steps).toEqual(events);
-  options.onDelta('answer');
-  expect(el.innerHTML).toContain('&lt;create&gt; ✓ · check ✗');
-  expect(el.innerHTML.indexOf('&lt;create&gt;')).toBeLessThan(
-    el.innerHTML.indexOf('answer'),
+  expect(setStatus).toHaveBeenLastCalledWith(
+    'STEP <STEP> \u00b7 EXECUTE \u00b7 DONE',
+    'status-connecting',
   );
-  expect(el.innerHTML).not.toContain('<create>');
+  expect(node.innerHTML).toContain('&lt;step&gt; \u2713');
+  expect(node.innerHTML).toContain('AGENT:</b> answer');
+  expect(node.innerHTML.indexOf('&lt;step&gt;')).toBeLessThan(
+    node.innerHTML.indexOf('answer'),
+  );
 });

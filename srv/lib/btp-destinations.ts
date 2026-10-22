@@ -161,8 +161,8 @@ async function listFromBtp(): Promise<SapDestination[]> {
     cacheTimestamp = Date.now();
     return cachedDestinations;
   } catch (err) {
-    log.warn('Failed to fetch destinations, using env var fallback', {
-      error: err instanceof Error ? err.message : String(err),
+    log.info('Failed to fetch destinations, using env var fallback', {
+      errorType: err instanceof Error ? err.name : typeof err,
     });
 
     // Fallback: return only the configured destination

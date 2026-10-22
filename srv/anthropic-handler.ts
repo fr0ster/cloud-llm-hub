@@ -133,8 +133,6 @@ async function serveMessages(
 ): Promise<void> {
   const log = cds.log('anthropic-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
-  const useDialogue = dialogueMode && !!s;
-  if (dialogueMode && !s) res.setHeader('x-clh-coordinator', 'adaptive');
   const { messages, stream, options, context } = normalized;
 
   log.info('Messages request', {
@@ -158,6 +156,9 @@ async function serveMessages(
     s?.destination ||
     getCurrentDestination(userId, sessionId);
 
+  const useDialogue = dialogueMode && !!s && !!destination;
+  if (dialogueMode && !useDialogue)
+    res.setHeader('x-clh-coordinator', 'adaptive');
   if (useDialogue && s) {
     const handle = await lookupDialogue(userId, s.key);
     try {
@@ -375,7 +376,7 @@ async function serveMessages(
     if (stream) {
       out.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
       });
 

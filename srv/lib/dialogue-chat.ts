@@ -103,8 +103,10 @@ export function dialogueChat(
           trace: opts?.trace,
           onPartial(chunk) {
             if (chunk.kind === 'content') {
-              streamed += chunk.delta;
-              push({ ok: true, value: { content: chunk.delta } });
+              if (!chunk.delta) return;
+              const content = chunk.delta;
+              streamed += content;
+              push({ ok: true, value: { content } });
             }
           },
         })

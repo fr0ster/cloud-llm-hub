@@ -257,7 +257,7 @@
 ### Task 7: WebUI on the extended protocol
 
 **Files:**
-- Modify: `app/chat/webapp/index.html` (login gate `submitLoginGate` :430, `sendMessage` :1513-1545, `clearChat` :1352, LOGOUT :305, `ragFetch` :1878), `app/chat/webapp/util/StreamClient.js`, `app/chat/webapp/controller/Chat.controller.js:114`
+- Modify: `app/chat/webapp/index.html` (login gate `submitLoginGate` :430, `sendMessage` :1513-1545, `clearChat` :1352, LOGOUT :305, `ragFetch` :1878)
 - Test: `test/unit/webui-session.test.ts` (static checks on the HTML/JS, the pattern of existing UI tests if any; otherwise string assertions on the files)
 
 **Behaviour:**
@@ -268,9 +268,9 @@
 - LOGOUT: `DELETE /v1/session` before clearing storage.
 - `pagehide`: `navigator.sendBeacon('/v1/session/close')` (cookie carries the key).
 - Notice header `x-clh-session-notice`: `revived` → "Сесію відновлено після перезапуску сервісу"; `abap_session_renewed` → "З'єднання з SAP оновлено: стан відладки та локи втрачено".
-- UI5 variant (`StreamClient.js`): opens a session on the first chat and sends the header; `Chat.controller.js` clear → DELETE with the header.
+- The standalone `index.html` owns session creation, headers and clear. The unused UI5 variant was removed.
 
-- [ ] **Step 1:** Write the failing test asserting: `index.html` contains `x-clh-session`, `sendBeacon('/v1/session/close'`, `method: 'POST'` to `/v1/session`, and handles `SESSION_NOT_FOUND`; `StreamClient.js` sends `x-clh-session`.
+- [ ] **Step 1:** Write the failing test asserting: `index.html` contains `x-clh-session`, `sendBeacon('/v1/session/close'`, `method: 'POST'` to `/v1/session`, and handles `SESSION_NOT_FOUND`.
 - [ ] **Step 2:** → FAIL. **Step 3:** Implement. **Step 4:** → PASS; open the UI locally with `npm run dev:local` if it runs, otherwise note it as verified on the deployment (Task 8).
 - [ ] **Step 5:** Commit `feat(webui): long sessions over the extended protocol`.
 

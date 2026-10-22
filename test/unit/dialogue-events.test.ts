@@ -83,6 +83,12 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
   };
   const res = response();
   await handleDialogueEvents(req as any, res as any);
+  // The approuter compresses responses unless they say no-transform, and a
+  // compressed SSE stream is buffered: nothing would reach the browser live.
+  expect(res.setHeader).toHaveBeenCalledWith(
+    'Cache-Control',
+    'no-cache, no-transform',
+  );
   expect(res.write).toHaveBeenCalledWith(
     'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123}\n\n',
   );

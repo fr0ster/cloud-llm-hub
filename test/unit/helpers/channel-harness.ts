@@ -161,7 +161,7 @@ export function agentManagerMock() {
     getCurrentDestination: (userId?: string, sessionId?: string) =>
       (userId &&
         sessionId &&
-        harness.sessionDestinations.get(JSON.stringify([userId, sessionId]))) ||
+        harness.sessionDestinations.get(JSON.stringify([userId, sessionId]))) ??
       'DEST',
     setSessionDestination: (
       userId: string,
