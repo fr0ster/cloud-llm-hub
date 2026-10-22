@@ -10,13 +10,13 @@ All notable changes to this project will be documented in this file. The format 
 
 - **Adaptive chat plans.** The chat path (`/v1/chat/completions`,
   `/v1/messages`) runs on llm-agent 30.5.0's adaptive plan coordinator. One
-  controller call plans each request: small talk is answered by the controller
-  itself, simple requests take one executor step, and complex tasks get steps
-  with checks, verdict branches, revisions and clarification questions. A failed
+  controller call plans each request. The controller is instructed to answer
+  small talk itself and to use one executor step for simple requests; plans can
+  hold checks, verdict branches, revisions and clarification questions. A failed
   plan call falls back to one executor step; the honesty notice runs as before.
   Optional budget: `LLM_AGENT_PLAN_MAX_STEPS`, `LLM_AGENT_PLAN_MAX_REVISIONS`,
   `LLM_AGENT_PLAN_MAX_DURATION_MS`.
-- **Read-only checker.** Check steps always run on a checker worker that cannot
+- **Read-only checker.** Tool-based checks run on a checker worker that cannot
   change the system: write-capable and unknown tools are filtered out and
   refused at dispatch, and it gets no client-executed tools.
 - **Run records.** The latest run per authenticated user and session feeds the
@@ -32,7 +32,7 @@ All notable changes to this project will be documented in this file. The format 
 - **Chat defaults to adaptive coordination.** Set
   `LLM_AGENT_CHAT_COORDINATOR=fixed` to return to the 8.2.0 one-step path. The
   agent MCP `execute_step` path is unchanged.
-- **Dependencies:** `@mcp-abap-adt/*` 30.5.0.
+- **Dependencies:** the `@mcp-abap-adt` llm-agent, LLM-provider and RAG packages 30.5.0.
 
 ## [8.2.0] - 2026-10-21
 
