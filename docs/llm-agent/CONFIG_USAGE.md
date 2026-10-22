@@ -45,8 +45,8 @@ logger name is `sap-cloud-sdk-logger`); its level is independent of the CAP
 default. Templates show this override. Restart/restage after changing logging
 environment variables. For more detail in dialogue lifecycle logs, keep
 `dialogue=info` when lowering the hub default, for example
-`sap-cloud-sdk=error,dialogue=info`. Lifecycle logs contain task ids, bounded
-goals, states, durations and hashed session keys, and omit task outputs.
+`sap-cloud-sdk=error,dialogue=info`. Lifecycle logs contain task ids, workers,
+goal sizes, states, durations and hashed session keys. They never contain goal text, task outputs or error text, since a goal may carry whatever the user typed.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

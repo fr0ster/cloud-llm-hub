@@ -341,7 +341,7 @@ test('close settles a real SmartAgent continuous tool loop within a few iteratio
   expect(h.session.snapshot().tasks[0].state).toBe('stopped');
 });
 
-test('dialogue lifecycle logs contain bounded goals and hashed session keys', async () => {
+test('dialogue lifecycle logs contain goal sizes and hashed session keys', async () => {
   const cds = require('@sap/cds').default;
   const info = jest.spyOn(cds.log('dialogue'), 'info');
   try {
@@ -357,7 +357,7 @@ test('dialogue lifecycle logs contain bounded goals and hashed session keys', as
           expect.objectContaining({
             id: 't1',
             worker: 'executor',
-            goal: 'read',
+            goalChars: 'read'.length,
           }),
         ],
         [
@@ -392,12 +392,16 @@ test('dialogue lifecycle logs contain bounded goals and hashed session keys', as
   }
 });
 
-test('lifecycle goal logging redacts credentials before truncation and omits outputs', async () => {
+test('lifecycle logs carry no goal text, task output or error text', async () => {
   const cds = require('@sap/cds').default;
   const info = jest.spyOn(cds.log('dialogue'), 'info');
+  const warn = jest.spyOn(cds.log('dialogue-sessions'), 'warn');
   mockGoal =
-    'password=SECRET_SENTINEL Bearer TOKEN_SENTINEL ' + 'x'.repeat(300);
+    '{"password":"SENTINEL with spaces"} password=abc,SENTINEL Bearer SENTINEL https://u:SENTINEL@host';
   mockRun.mockResolvedValue({ output: 'OUTPUT_SENTINEL'.repeat(100) });
+  mockDrop.mockImplementationOnce(() => {
+    throw new Error('password=abc;SENTINEL');
+  });
   try {
     const { h } = await ready();
     await h.session.send('go');
@@ -406,75 +410,17 @@ test('lifecycle goal logging redacts credentials before truncation and omits out
       (entry: unknown[]) => entry[0] === 'task started',
     );
     if (!started) throw new Error('task start was not logged');
-    expect((started[1] as { goal: string }).goal).toHaveLength(120);
-    expect(JSON.stringify(info.mock.calls)).not.toMatch(
-      /SECRET_SENTINEL|TOKEN_SENTINEL|OUTPUT_SENTINEL/,
+    expect(started[1]).toEqual(
+      expect.objectContaining({ goalChars: mockGoal.length }),
     );
-  } finally {
-    info.mockRestore();
-  }
-});
-test.each([
-  ['{"password":"SENTINEL"}', '{"password":"[redacted]"}'],
-  ['{ "api_key" : "SENTINEL with spaces" }', '{ "api_key" : "[redacted]" }'],
-  ["'secret' = 'SENTINEL with spaces'", "'secret' = '[redacted]'"],
-  ['password: SENTINEL', 'password: [redacted]'],
-  ['Authorization: Bearer SENTINEL.abc', 'Authorization: [redacted]'],
-  ['"authorization": "Basic SENTINEL abc"', '"authorization": "[redacted]"'],
-  ['?token=SENTINEL&x=1', '?token=[redacted]&x=1'],
-  ['https://u:SENTINEL@host', 'https://[redacted]@host'],
-  ...[
-    'password',
-    'passwd',
-    'pwd',
-    'secret',
-    'client_secret',
-    'token',
-    'access_token',
-    'refresh_token',
-    'api_key',
-    'apikey',
-    'api-key',
-    'authorization',
-    'x-sap-password',
-  ].flatMap((name) =>
-    ['', '"', "'", '`'].map((quote) => [
-      `${quote}${name.toUpperCase()}${quote} = ${quote}SENTINEL${quote}`,
-      `${quote}${name.toUpperCase()}${quote} = ${quote}[redacted]${quote}`,
-    ]),
-  ),
-])('lifecycle redacts values in %s', async (goal, expected) => {
-  const cds = require('@sap/cds').default;
-  const info = jest.spyOn(cds.log('dialogue'), 'info');
-  mockGoal = goal;
-  try {
-    const { h } = await ready();
-    await h.session.send('go');
-    await until(() => h.outbox.replay().length > 0);
-    expect(info).toHaveBeenCalledWith(
-      'task started',
-      expect.objectContaining({ goal: expected }),
-    );
-    expect(JSON.stringify(info.mock.calls)).not.toContain('SENTINEL');
-  } finally {
-    info.mockRestore();
-  }
-});
-
-test('lifecycle redacts free-text cleanup errors', async () => {
-  const cds = require('@sap/cds').default;
-  const warn = jest.spyOn(cds.log('dialogue-sessions'), 'warn');
-  mockDrop.mockImplementationOnce(() => {
-    throw new Error('{"password": "SENTINEL with spaces"}');
-  });
-  try {
-    const { h } = await ready();
-    await h.session.send('go');
-    await until(() => h.outbox.replay().length > 0);
+    expect(started[1]).not.toHaveProperty('goal');
     expect(warn).toHaveBeenCalledWith('dropRequest failed', {
-      error: '{"password": "[redacted]"}',
+      errorType: 'Error',
     });
+    const logged = JSON.stringify([info.mock.calls, warn.mock.calls]);
+    expect(logged).not.toMatch(/SENTINEL|OUTPUT_SENTINEL/);
   } finally {
+    info.mockRestore();
     warn.mockRestore();
   }
 });

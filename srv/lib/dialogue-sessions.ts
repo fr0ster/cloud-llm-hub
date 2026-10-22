@@ -70,20 +70,6 @@ interface LiveHandle extends DialogueHandle {
 const handles = new Map<string, Promise<LiveHandle>>();
 const log = () => cds.log('dialogue');
 const keyHash = (key: string) => createHash('sha256').update(key).digest('hex');
-function logGoal(goal: string): string {
-  return goal
-    .replace(
-      /(?<![\w-])(["'`]?\b(?:password|passwd|pwd|secret|client_secret|token|access_token|refresh_token|api[-_]?key|authorization|cookie|x-sap-password)\b["'`]?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|(?:Bearer|Basic)\s+[^\s&,;\]}]+|[^\s&,;\]}]+)/gi,
-      (_match, prefix: string) => {
-        const value = _match.slice(prefix.length);
-        const quote = /^["'`]/.test(value) ? value[0] : '';
-        return `${prefix}${quote}[redacted]${quote}`;
-      },
-    )
-    .replace(/\b(Bearer|Basic)(\s+)[^\s"'`&,;\]}]+/gi, '$1$2[redacted]')
-    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1[redacted]@')
-    .slice(0, 120);
-}
 const creationListeners = new Map<
   string,
   Set<(handle: DialogueHandle) => void>
@@ -247,7 +233,7 @@ async function open(
           'abort',
           () => {
             log().info('stop requested', {
-              id: logGoal(ctx.taskId),
+              id: ctx.taskId,
               reason: 'cooperative stop',
             });
           },
@@ -364,10 +350,13 @@ async function open(
         baseInput: () => ({ sessionId: key }),
         async wrapRun(task, run) {
           const startedAt = Date.now();
+          // No free text from goals or errors reaches the logs: a goal may carry
+          // whatever the user typed, credentials included. Ids correlate with
+          // the task events the WebUI shows.
           log().info('task started', {
-            id: logGoal(task.id),
-            worker: logGoal(task.worker),
-            goal: logGoal(task.goal),
+            id: task.id,
+            worker: task.worker,
+            goalChars: task.goal.length,
           });
           let lease: ConnectionLease | undefined;
           let pipeline: PipelineSession | undefined;
@@ -420,14 +409,13 @@ async function open(
                     destinationHandle.recMcp.dropRequest(traceId);
                   } catch (error) {
                     cds.log('dialogue-sessions').warn('dropRequest failed', {
-                      error: logGoal(
-                        error instanceof Error ? error.message : String(error),
-                      ),
+                      errorType:
+                        error instanceof Error ? error.name : typeof error,
                     });
                   }
                   emitTask({ ...task, state });
                   log().info('task finished', {
-                    id: logGoal(task.id),
+                    id: task.id,
                     state,
                     durationMs: Date.now() - startedAt,
                   });
