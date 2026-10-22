@@ -18,7 +18,7 @@
  * - LLM_AGENT_MCP_DESTINATION: Destination name for MCP/ABAP connection (required)
  * - LLM_AGENT_MCP_ENDPOINT: MCP proxy endpoint URL (optional, defaults to local)
  * - LLM_AGENT_MODE: SmartAgent mode: 'smart' | 'pass' | 'hard' (default: 'smart')
- * - LLM_AGENT_CHAT_COORDINATOR: 'adaptive' | 'fixed' (default: 'adaptive')
+ * - LLM_AGENT_CHAT_COORDINATOR: 'adaptive' | 'fixed' | 'dialogue' (default: 'adaptive')
  * - LLM_AGENT_PLAN_MAX_STEPS / MAX_REVISIONS / MAX_DURATION_MS: optional positive integers
  *   (library defaults: 20 / 3 / 300000)
  * - LLM_AGENT_MAX_ITERATIONS: Max tool loop iterations (default: 10)
@@ -171,7 +171,8 @@ export interface AgentConfig {
   agent: {
     /** Agent mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only) */
     mode: SmartAgentMode;
-    chatCoordinator: 'adaptive' | 'fixed';
+    chatCoordinator: 'adaptive' | 'fixed' | 'dialogue';
+    dialogue: { executors: number; executorPool: number; maxTasks: number };
     planBudget?: {
       maxSteps?: number;
       maxRevisions?: number;
@@ -582,6 +583,18 @@ export function loadAgentConfig(): AgentConfig {
       chatCoordinator: parseChatCoordinator(
         process.env.LLM_AGENT_CHAT_COORDINATOR,
       ),
+      dialogue: {
+        executors:
+          readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_EXECUTORS') ?? 3,
+        executorPool:
+          readPositiveIntFrom(
+            process.env,
+            'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
+          ) ?? 6,
+        maxTasks:
+          readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_MAX_TASKS') ??
+          50,
+      },
       planBudget: {
         maxSteps: readPositiveIntFrom(process.env, 'LLM_AGENT_PLAN_MAX_STEPS'),
         maxRevisions: readPositiveIntFrom(
@@ -755,11 +768,11 @@ export function parseToolGateTimeoutMs(value: string | undefined): number {
 
 export function parseChatCoordinator(
   value: string | undefined,
-): 'adaptive' | 'fixed' {
+): 'adaptive' | 'fixed' | 'dialogue' {
   if (value === undefined || value === '' || value === 'adaptive')
     return 'adaptive';
-  if (value === 'fixed') return 'fixed';
+  if (value === 'fixed' || value === 'dialogue') return value;
   throw new Error(
-    `Invalid LLM_AGENT_CHAT_COORDINATOR: ${value}; expected adaptive or fixed`,
+    `Invalid LLM_AGENT_CHAT_COORDINATOR: ${value}; expected adaptive, fixed or dialogue`,
   );
 }

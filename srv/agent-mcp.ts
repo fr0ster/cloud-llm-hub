@@ -1,7 +1,3 @@
-import {
-  bindSystemIdentity,
-  warmSystemIdentity,
-} from './lib/system-identity-cache';
 /**
  * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes
  * tools for an external planner (e.g. Claude Code):
@@ -27,7 +23,6 @@ import {
 import './env-setup';
 
 import { randomUUID } from 'node:crypto';
-import type { SapConfig } from '@mcp-abap-adt/connection';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import type { Message } from '@mcp-abap-adt/llm-agent';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -43,8 +38,10 @@ import {
   retryAfterForDestination,
   runWithRequestConnection,
 } from './agent-manager';
-import { createConnection } from './connections/connectionFactory';
-import { resolveDestinationSapConfig } from './connections/destinationResolver';
+import {
+  buildConnectionForDestination,
+  dumpScopeForConnection,
+} from './lib/background-connection';
 import { getAvailableDestinations } from './lib/btp-destinations';
 import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
@@ -58,7 +55,8 @@ import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import { renderNotice } from './lib/notify-policy';
-import { bearerToken, computeDumpScope } from './lib/principal';
+import type { DumpScope } from './lib/principal';
+
 import { safeStop } from './lib/request-connection';
 import {
   resolveRequestSystem,
@@ -79,7 +77,6 @@ import {
 } from './lib/session-lifecycle';
 import { recordTurn } from './lib/session-turns';
 import { evaluateGated } from './lib/step-reviewer';
-import { resolveSystemType } from './lib/system-type';
 import {
   destinationClosedText,
   executeStepDoorRefusal,
@@ -105,6 +102,8 @@ import { appendToSession, getSessionHistory } from './session-store';
  * set, this route counts against the shared door instead and the semaphore is
  * not taken — two caps on one resource would each be wrong about the other.
  */
+export { buildConnectionForDestination } from './lib/background-connection';
+
 const EXEC_STEP_MAX_CONCURRENCY = 2;
 const execStepSemaphore = new Semaphore(EXEC_STEP_MAX_CONCURRENCY);
 
@@ -307,7 +306,7 @@ async function executeStepRun(
     pipeline = admission.admitted;
     const admitted = pipeline;
 
-    let dumpScope: ReturnType<typeof computeDumpScope>;
+    let dumpScope: DumpScope | undefined;
     let notice: string | undefined;
     if (longSession) {
       let refusal = '';
@@ -331,25 +330,7 @@ async function executeStepRun(
     } else {
       const built = await buildConnectionForDestination(req, targetDestination);
       connection = built.connection;
-      const { resolved, sapConfig, sapLogin, sapClient, usedBasicOverride } =
-        built;
-
-      // Stable, non-reversible principal + system scope for the principal-scoped
-      // cloud-local tools (GetDumpSection's buffer key). Shared with the chat
-      // paths via computeDumpScope so the tool has a principal wherever it can
-      // be RAG-selected. Fails closed (undefined) for an anonymous caller. The
-      // raw login never enters a key/log; jwtSub is null on this path.
-      dumpScope = computeDumpScope({
-        cdsUserId: userId,
-        usedBasicOverride,
-        sapLogin,
-        destinationAuthType: sapConfig.authType,
-        resolvedUsername: resolved.username,
-        destinationName: resolved.destinationName,
-        rawClient: sapClient,
-        resolvedClient: resolved.sapConfig.client,
-        jwtSub: null,
-      });
+      dumpScope = dumpScopeForConnection(built, userId);
     }
 
     const opts = {
@@ -510,102 +491,6 @@ async function executeStepRun(
     pipeline?.release();
     releaseSemaphore?.();
   }
-}
-
-/**
- * Build the per-request SAP connection for a chosen destination, using the
- * credentials carried in the request headers (set by the auth proxy or the
- * client). Mirrors the fail-closed per-request policy used by the other
- * channels; throws on a missing/invalid credential instead of writing a
- * response (the caller turns it into an MCP tool error).
- */
-interface BuiltConnection {
-  connection: IAbapConnection;
-  resolved: Awaited<ReturnType<typeof resolveDestinationSapConfig>>;
-  sapConfig: SapConfig;
-  sapLogin: string | undefined;
-  sapClient: string | undefined;
-  // True iff the basic-auth override was actually applied (login AND password
-  // both present). The password itself is NOT returned — only this flag.
-  usedBasicOverride: boolean;
-}
-
-export async function buildConnectionForDestination(
-  req: Request,
-  destination: string,
-): Promise<BuiltConnection> {
-  const sapLogin = (req.headers['x-sap-login'] as string | undefined)?.trim();
-  const sapPassword = req.headers['x-sap-password'] as string | undefined;
-  const sapClient = (req.headers['x-sap-client'] as string | undefined)?.trim();
-
-  const resolved = await resolveDestinationSapConfig(
-    destination,
-    bearerToken(req.headers.authorization),
-  );
-
-  if (
-    resolved.authenticationType === 'PrincipalPropagation' &&
-    (sapLogin || sapPassword)
-  ) {
-    cds
-      .log('agent-mcp')
-      .debug(
-        'Ignoring x-sap-login/x-sap-password because the destination uses principal propagation',
-      );
-  }
-  // The declared kind, by the one rule (`lib/system-type.ts`): an unknown
-  // value is refused before any connection is built. Logged like the other
-  // channels; lib 16's HandlerExporter takes no per-destination kind, so the
-  // embedded handlers run it as on-premise.
-  const systemType = resolveSystemType(req.headers, resolved.systemType);
-  cds.log('agent-mcp').info('execute_step connection', {
-    destination,
-    systemType,
-  });
-
-  const requiresUserCredentials =
-    ((resolved.proxyType ?? '').toLowerCase() === 'onpremise' &&
-      resolved.authenticationType !== 'PrincipalPropagation') ||
-    resolved.authenticationType === 'NoAuthentication';
-  if (requiresUserCredentials && (!sapLogin || !sapPassword)) {
-    throw new Error(
-      `Destination "${destination}" requires your SAP username and password (x-sap-login / x-sap-password).`,
-    );
-  }
-
-  const usedBasicOverride =
-    resolved.authenticationType !== 'PrincipalPropagation' &&
-    !!(sapLogin && sapPassword);
-  const sapConfig: SapConfig = { ...resolved.sapConfig };
-  if (usedBasicOverride) {
-    sapConfig.authType = 'basic';
-    sapConfig.username = sapLogin;
-    sapConfig.password = sapPassword;
-    sapConfig.jwtToken = undefined;
-  }
-  if (sapClient) sapConfig.client = sapClient;
-
-  const conn = createConnection({
-    sapConfig,
-    destinationName: resolved.destinationName,
-  });
-  await conn.connect();
-  bindSystemIdentity(conn, {
-    systemType,
-    sapConfig,
-    destinationName: resolved.destinationName,
-    authenticationType: resolved.authenticationType,
-    jwt: bearerToken(req.headers.authorization),
-  });
-  await warmSystemIdentity(conn, systemType);
-  return {
-    connection: conn,
-    resolved,
-    sapConfig,
-    sapLogin,
-    sapClient,
-    usedBasicOverride,
-  };
 }
 
 /**
