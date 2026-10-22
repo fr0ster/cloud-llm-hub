@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.4.1] - 2026-10-23
+
+### Fixed
+
+- **The WebUI shows the dialogue and step progress.** The approuter serves the
+  standalone `app/chat/webapp/index.html`; the 8.3.0 step-status trail and the
+  8.4.0 dialogue UI had been built into an unused UI5 app beside it. They now
+  live in `index.html`: live planner messages (rendered as markdown), the task
+  list and the step status. The unused UI5 files are removed.
+- **Streams through the approuter arrive live.** Chat, Anthropic and dialogue
+  event streams send `Cache-Control: no-cache, no-transform`, so the
+  approuter's compression no longer buffers them.
+- **Planner text before and after a tool call is separated** by a paragraph.
+- **Dialogue mode without a destination** falls back to `adaptive`; after CLR the
+  WebUI asks to connect to SAP when no destination is connected.
+- **SAP destinations are found right after start** (retries at 0, 5, 10 and
+  20 s, then the usual interval) instead of after a minute, and the WebUI
+  shows "discovering" meanwhile instead of "no destinations configured".
+- **The WebUI chat timer** includes the time before the request is sent.
+
+### Changed
+
+- **The dialogue planner is told its environment** (destination, system type,
+  SAP login and client when known, workers and limits) in every turn.
+
 ## [8.4.0] - 2026-10-22
 
 ### Added
