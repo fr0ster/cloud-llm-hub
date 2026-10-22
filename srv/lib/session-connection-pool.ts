@@ -1,9 +1,15 @@
 import { inspect } from 'node:util';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
+import cds from '@sap/cds';
 import {
   buildConnectionForDestination,
   dumpScopeForConnection,
 } from './background-connection';
+import {
+  type ExpositionLevel,
+  type RoleBearer,
+  resolveExpositionForUser,
+} from './exposition';
 import type { DumpScope } from './principal';
 import { safeStop } from './request-connection';
 import {
@@ -15,6 +21,7 @@ export interface ConnectionSnapshot {
   headers: Record<string, string>;
   userId: string;
   destination: string;
+  exposition?: ExpositionLevel[];
 }
 export interface BackgroundConnection {
   connection: IAbapConnection;
@@ -53,6 +60,7 @@ export class SessionConnectionFactory {
   #snapshot?: ConnectionSnapshot;
   #builder: Builder;
   #userId: string;
+  #exposition: ExpositionLevel[] = [];
   constructor(
     userId: string,
     _key: string,
@@ -62,7 +70,10 @@ export class SessionConnectionFactory {
     this.#builder = options.builder ?? build;
   }
   refresh(
-    req: { headers: Record<string, string | string[] | undefined> },
+    req: {
+      headers: Record<string, string | string[] | undefined>;
+      user?: RoleBearer;
+    },
     destination: string,
   ): void {
     const headers: Record<string, string> = {};
@@ -71,7 +82,16 @@ export class SessionConnectionFactory {
       const value = Array.isArray(raw) ? raw[0] : raw;
       if (value !== undefined) headers[name] = value;
     }
-    this.#snapshot = { headers, userId: this.#userId, destination };
+    this.#exposition = resolveExpositionForUser(req.user ?? cds.context?.user);
+    this.#snapshot = {
+      headers,
+      userId: this.#userId,
+      destination,
+      exposition: [...this.#exposition],
+    };
+  }
+  get exposition(): ExpositionLevel[] {
+    return [...this.#exposition];
   }
   hasCredentials(): boolean {
     return this.#snapshot !== undefined;
@@ -81,10 +101,12 @@ export class SessionConnectionFactory {
     return this.#builder({
       ...this.#snapshot,
       headers: { ...this.#snapshot.headers },
+      exposition: [...(this.#snapshot.exposition ?? [])],
     });
   }
   forget(): void {
     this.#snapshot = undefined;
+    this.#exposition = [];
   }
   toJSON() {
     return { type: 'SessionConnectionFactory', redacted: true };

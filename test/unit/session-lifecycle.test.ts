@@ -22,6 +22,11 @@ jest.mock('../../srv/lib/gatekeeper', () => ({
   deleteSession: (u: string, s: string) => deleteSession(u, s),
 }));
 
+const closeDialogue = jest.fn(async (_u: string, _k: string, _r: string) => {});
+jest.mock('../../srv/lib/dialogue-sessions', () => ({
+  closeDialogue: (u: string, k: string, r: string) => closeDialogue(u, k, r),
+}));
+
 const dropSessionConnection = jest.fn(async (_s: unknown) => {});
 jest.mock('../../srv/lib/session-connection', () => ({
   dropSessionConnection: (s: unknown) => dropSessionConnection(s),
@@ -118,6 +123,7 @@ beforeEach(() => {
   forgetOwner.mockReset().mockResolvedValue(true);
   deleteSession.mockClear();
   dropSessionConnection.mockClear();
+  closeDialogue.mockClear();
   listTurns.mockReset().mockResolvedValue([]);
   setSessionDestination.mockClear();
   providersReady = true;
@@ -169,6 +175,18 @@ describe('open', () => {
 });
 
 describe('close', () => {
+  it.each(['explicit', 'ttl', 'shutdown'] as const)(
+    'closes dialogue before the request connection on %s',
+    async (reason) => {
+      const s = await open('alice', 'DEV');
+      await longSessions().close('alice', s.key, reason);
+      expect(closeDialogue).toHaveBeenCalledWith('alice', s.key, reason);
+      expect(closeDialogue.mock.invocationCallOrder[0]).toBeLessThan(
+        dropSessionConnection.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
   it('explicit close deletes history, collections, destination and the record', async () => {
     const s = await open('alice', 'DEV');
     await longSessions().close('alice', s.key, 'explicit');

@@ -48,12 +48,17 @@ it('copies only the allow-list, refreshes latest headers and redacts inspection'
   req.headers.authorization = 'changed';
   await factory.open();
   expect(builder.mock.calls[0]).toEqual([
-    { headers, userId: 'u', destination: 'D' },
+    { headers, userId: 'u', destination: 'D', exposition: [] },
   ]);
   factory.refresh({ headers: { authorization: 'latest' } }, 'E');
   await factory.open();
   expect(builder.mock.calls[1]).toEqual([
-    { headers: { authorization: 'latest' }, userId: 'u', destination: 'E' },
+    {
+      headers: { authorization: 'latest' },
+      userId: 'u',
+      destination: 'E',
+      exposition: [],
+    },
   ]);
   for (const rendered of [
     JSON.stringify(factory),
@@ -176,4 +181,29 @@ it('opens at most max connections for concurrent acquisitions', async () => {
   await next.release(true);
   await second.release(true);
   await pool.closeAll();
+});
+
+it('captures principal exposition as metadata, ignores forged headers, copies it and refreshes roles', async () => {
+  const { factory, builder } = setup();
+  factory.refresh(
+    {
+      headers: { ...headers, 'x-exposition': 'high' },
+      user: { is: (role) => role === 'MCP_Reader' },
+    },
+    'D',
+  );
+  await factory.open();
+  expect(builder.mock.calls[0][0].exposition).toEqual([
+    'readonly',
+    'search',
+    'system',
+  ]);
+  expect(builder.mock.calls[0][0].headers).toEqual(headers);
+  const copy = factory.exposition;
+  copy.push('high');
+  expect(factory.exposition).not.toContain('high');
+  factory.refresh({ headers, user: { is: () => false } }, 'D');
+  expect(factory.exposition).toEqual([]);
+  factory.forget();
+  expect(factory.exposition).toEqual([]);
 });

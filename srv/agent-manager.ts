@@ -49,8 +49,10 @@ import {
   ADAPTIVE_CONTROLLER_SYSTEM,
   AdaptiveCoordinatorHandler,
   DagPlanInterpreter,
+  DIALOGUE_PLANNER_SYSTEM,
   InMemoryMetrics,
   LlmAdaptiveController,
+  PlannerToolsClient,
   SessionManager,
   type SmartAgent,
   SmartAgentBuilder,
@@ -2681,6 +2683,74 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
+export const HUB_DIALOGUE_PLANNER_SYSTEM =
+  DIALOGUE_PLANNER_SYSTEM +
+  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
+
+const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
+export async function buildPlannerAgent(
+  config: AgentConfig,
+): Promise<SmartAgent> {
+  const llm = await getOrCreateSharedLlms(config).mainLlm;
+  // Pipeline stages retain the LLM supplied at build time. A stable forwarding
+  // client makes the existing getSmartAgent hot-swap reach those stages too.
+  const model = { current: llm };
+  const forwardingLlm = new Proxy(llm, {
+    get(_target, property) {
+      const value = Reflect.get(model.current, property);
+      return typeof value === 'function' ? value.bind(model.current) : value;
+    },
+  });
+  const handle = await new SmartAgentBuilder({
+    skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
+    agent: {
+      maxIterations: config.agent.maxIterations,
+      classificationEnabled: false,
+    },
+    prompts: { system: HUB_DIALOGUE_PLANNER_SYSTEM },
+  })
+    .withMainLlm(forwardingLlm)
+    .withMcpClients([new PlannerToolsClient()])
+    .withClassification(false)
+    .withMode('hard')
+    .build();
+  plannerAgents.set(handle.agent, model);
+  return handle.agent;
+}
+export function releasePlannerAgent(agent: SmartAgent): void {
+  plannerAgents.delete(agent);
+}
+
+function destinationWorkers(
+  executor: ISubAgent,
+  rawExecutor: SmartAgent,
+): Map<string, ISubAgent> {
+  // Both workers use the same tool loop and RecordingMcpClient.
+  const checker = new SmartAgentSubAgent('checker', rawExecutor, {
+    description: CHECKER_DESCRIPTION,
+  });
+  const checkerRun = checker.run.bind(checker);
+  // Client-executed (external) tools bypass both MCP guards: the tool loop
+  // hands such calls straight to the client. A checker gets none of them.
+  checker.run = ({
+    externalTools: _tools,
+    externalResults: _results,
+    ...input
+  }) =>
+    runWithReadOnlyTools(() =>
+      checkerRun({
+        ...input,
+        task:
+          'You are verifying, not changing: use only read/check tools; do not create, change, activate or delete objects; return the JSON verdict.\n' +
+          input.task,
+      }),
+    );
+  return new Map([
+    ['executor', executor],
+    ['checker', checker],
+  ]);
+}
+
 export const EXECUTOR_DESCRIPTION =
   "ABAP executor with the SAP system's tools: reads, searches, creates, changes and activates ABAP objects; returns what it did and found.";
 export const CHECKER_DESCRIPTION =
@@ -2739,31 +2809,9 @@ export async function buildAgentForDestination(
     { skipSkills: true, skipRetrieval: true },
   );
 
-  if (config.agent.chatCoordinator === 'adaptive') {
-    // The worker wraps the raw agent; execute_step keeps the history proxy.
-    if (!rawExecutor) throw new Error('Executor agent was not built');
-    const workers = new Map<string, ISubAgent>([['executor', executorWorker]]);
-    // Both workers use the same tool loop and RecordingMcpClient.
-    const checker = new SmartAgentSubAgent('checker', rawExecutor, {
-      description: CHECKER_DESCRIPTION,
-    });
-    const checkerRun = checker.run.bind(checker);
-    // Client-executed (external) tools bypass both MCP guards: the tool loop
-    // hands such calls straight to the client. A checker gets none of them.
-    checker.run = ({
-      externalTools: _tools,
-      externalResults: _results,
-      ...input
-    }) =>
-      runWithReadOnlyTools(() =>
-        checkerRun({
-          ...input,
-          task:
-            'You are verifying, not changing: use only read/check tools; do not create, change, activate or delete objects; return the JSON verdict.\n' +
-            input.task,
-        }),
-      );
-    workers.set('checker', checker);
+  if (!rawExecutor) throw new Error('Executor agent was not built');
+  const workers = destinationWorkers(executorWorker, rawExecutor);
+  if (config.agent.chatCoordinator !== 'fixed') {
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
         ([, value]) => value !== undefined,
@@ -2809,7 +2857,13 @@ export async function buildAgentForDestination(
   // Expose recMcp on the handle so channel handlers can call
   // `recMcp.dropRequest(traceId)` in their `finally` block — nobody else
   // drops it, so the per-trace bucket would otherwise leak.
-  Object.assign(handle, { recMcp, executor, criticLlm });
+  if (!rawExecutor) throw new Error('Executor agent was not built');
+  Object.assign(handle, {
+    recMcp,
+    executor,
+    criticLlm,
+    workers,
+  });
 
   // Diagnostic: confirm structured pipeline is active
   // biome-ignore lint/suspicious/noExplicitAny: diagnostic access to private fields
@@ -3015,6 +3069,7 @@ export async function getSmartAgent(
       // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
       (handle.agent as any).deps.mainLlm = newLlm;
     }
+    for (const model of plannerAgents.values()) model.current = newLlm;
     sharedMainLlm = newLlmPromise;
     currentModel = requestedModel;
 

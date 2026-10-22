@@ -29,7 +29,8 @@ import {
   hasSessionHistory,
   SESSION_MAX_MESSAGES,
 } from '../session-store';
-import { sweepDialogueStates } from './dialogue-store';
+import { closeDialogue } from './dialogue-sessions';
+import { deleteDialogueState, sweepDialogueStates } from './dialogue-store';
 import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
 import {
@@ -115,6 +116,7 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   reviving.clear();
   return {
     async onClose(s, reason) {
+      await closeDialogue(s.userId, s.key, reason);
       await dropSessionConnection(s);
       if (reason === 'shutdown') return;
       closed.set(slot(s.userId, s.key), s.lastActivity + longSessions().ttlMs);
@@ -237,6 +239,7 @@ async function markClosed(record: SessionRecord): Promise<void> {
  * outcome checked, so a failed delete keeps the closed record for a retry.
  */
 async function cleanupSession(userId: string, key: string): Promise<void> {
+  await deleteDialogueState(userId, key);
   await getRunRecordStore().delete(userId, key);
   await deleteSession(userId, key);
   if (!isProvidersReady()) return;
