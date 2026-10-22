@@ -948,7 +948,7 @@ async function serveChatCompletions(
     if (body.stream) {
       out.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive',
         'X-SAP-Active-Destination': destAfter,
         ...invalidToolsHeader,
