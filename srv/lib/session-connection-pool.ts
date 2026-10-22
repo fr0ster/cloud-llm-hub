@@ -2,21 +2,27 @@ import { createHash } from 'node:crypto';
 import { inspect } from 'node:util';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
+import type { Request } from 'express';
+import { resolveDestinationSapConfig } from '../connections/destinationResolver';
 import {
   buildConnectionForDestination,
   dumpScopeForConnection,
 } from './background-connection';
+import { userDependentAuthenticationTypes } from './destination-authentication';
 import {
   type ExpositionLevel,
   type RoleBearer,
   resolveExpositionForUser,
 } from './exposition';
+import type { CredentialBinding } from './long-session';
 import type { DumpScope } from './principal';
-import { safeStop } from './request-connection';
+import { bearerToken } from './principal';
+import { readRequestCredential, safeStop } from './request-connection';
 import {
   type RequestSystem,
   resolveRequestSystem,
 } from './request-system-context';
+import { compare } from './session-connection';
 
 export interface ConnectionSnapshot {
   headers: Record<string, string>;
@@ -58,37 +64,42 @@ export class NoCredentialsError extends Error {
   }
 }
 export class SessionConnectionFactory {
-  #principal?: string;
-  assertPrincipal(
+  #principal?: CredentialBinding;
+  #userDependent = new Map<string, boolean>();
+  async assertPrincipal(
     headers: Record<string, string | string[] | undefined>,
-  ): string | undefined {
-    const value = (name: string) => {
-      const v = headers[name];
-      return Array.isArray(v) ? v[0] : v;
-    };
-    const login = value('x-sap-login')?.trim();
-    const token = value('authorization')?.replace(/^Bearer\s+/i, '');
-    let subject = cds.context?.user?.id ?? this.#userId;
-    if (token) {
-      try {
-        subject =
-          JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
-            .sub ?? subject;
-      } catch {
-        /* Auth middleware owns validation. */
-      }
+    destination = this.#snapshot?.destination,
+  ): Promise<CredentialBinding> {
+    const normalized = Object.fromEntries(
+      Object.entries(headers).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value[0] : value,
+      ]),
+    );
+    // Like a held session binding, retain the resolved authentication mode.
+    // Keep it per destination so a different destination resolves independently.
+    let userDependent = destination
+      ? this.#userDependent.get(destination)
+      : undefined;
+    if (destination && userDependent === undefined) {
+      const resolved = await resolveDestinationSapConfig(
+        destination,
+        bearerToken(normalized.authorization),
+      );
+      userDependent = userDependentAuthenticationTypes.has(
+        resolved.authenticationType ?? '',
+      );
+      this.#userDependent.set(destination, userDependent);
     }
-    const principal =
-      login && value('x-sap-password')
-        ? JSON.stringify(['basic', login, value('x-sap-client')?.trim() ?? ''])
-        : token
-          ? JSON.stringify([
-              'jwt',
-              subject,
-              value('x-sap-client')?.trim() ?? '',
-            ])
-          : undefined;
-    if (principal && this.#principal && principal !== this.#principal)
+    const principal = readRequestCredential(
+      { headers: normalized } as Request,
+      { userDependent },
+    );
+    if (
+      principal.kind !== 'none' &&
+      this.#principal &&
+      ['missing', 'mismatch'].includes(compare(this.#principal, principal))
+    )
       throw Object.assign(
         new Error(
           'The dialogue principal is fixed for the lifetime of the session',
@@ -121,21 +132,21 @@ export class SessionConnectionFactory {
     this.#userId = userId;
     this.#builder = options.builder ?? build;
   }
-  refresh(
+  async refresh(
     req: {
       headers: Record<string, string | string[] | undefined>;
       user?: RoleBearer;
     },
     destination: string,
-  ): void {
+  ): Promise<void> {
     const headers: Record<string, string> = {};
     for (const name of allowedHeaders) {
       const raw = req.headers[name];
       const value = Array.isArray(raw) ? raw[0] : raw;
       if (value !== undefined) headers[name] = value;
     }
-    const principal = this.assertPrincipal(headers);
-    if (!principal) {
+    const principal = await this.assertPrincipal(headers, destination);
+    if (principal.kind === 'none') {
       this.forget();
       return;
     }

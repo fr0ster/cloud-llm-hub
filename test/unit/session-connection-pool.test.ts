@@ -1,3 +1,12 @@
+import cds from '@sap/cds';
+import { resolveDestinationSapConfig } from '../../srv/connections/destinationResolver';
+
+jest.mock('../../srv/connections/destinationResolver', () => ({
+  resolveDestinationSapConfig: jest.fn(async () => ({
+    authenticationType: 'BasicAuthentication',
+  })),
+}));
+
 import { inspect } from 'node:util';
 import {
   NoCredentialsError,
@@ -15,7 +24,7 @@ const headers = {
   'x-sap-responsible': 'OWNER',
   'x-sap-master-system': 'DEV',
 };
-function setup(max = 1) {
+async function setup(max = 1) {
   const builder = jest.fn(
     async (
       _snapshot: import('../../srv/lib/session-connection-pool').ConnectionSnapshot,
@@ -29,7 +38,7 @@ function setup(max = 1) {
     }),
   );
   const factory = new SessionConnectionFactory('u', 'key', { builder });
-  factory.refresh({ headers }, 'D');
+  await factory.refresh({ headers }, 'D');
   return { builder, factory, pool: new SessionConnectionPool(factory, max) };
 }
 it('requires credentials after restart and forget', async () => {
@@ -40,17 +49,20 @@ it('requires credentials after restart and forget', async () => {
   );
 });
 it('copies only the allow-list, refreshes latest headers and redacts inspection', async () => {
-  const { factory, builder } = setup();
+  const { factory, builder } = await setup();
   const req = {
     headers: { ...headers, cookie: 'private', 'x-other': 'private' },
   };
-  factory.refresh(req, 'D');
+  await factory.refresh(req, 'D');
   req.headers.authorization = 'changed';
   await factory.open();
   expect(builder.mock.calls[0]).toEqual([
     { headers, userId: 'u', destination: 'D', exposition: [] },
   ]);
-  factory.refresh({ headers: { ...headers, authorization: 'latest' } }, 'E');
+  await factory.refresh(
+    { headers: { ...headers, authorization: 'latest' } },
+    'E',
+  );
   await factory.open();
   expect(builder.mock.calls[1]).toEqual([
     {
@@ -69,7 +81,7 @@ it('copies only the allow-list, refreshes latest headers and redacts inspection'
     expect(rendered).not.toMatch(/secret|latest|authorization|password/);
 });
 it('caps connections, serves FIFO and reuses healthy leases', async () => {
-  const { pool, builder } = setup();
+  const { pool, builder } = await setup();
   const first = await pool.acquire();
   const order: number[] = [];
   const second = pool.acquire().then((x) => {
@@ -92,7 +104,7 @@ it('caps connections, serves FIFO and reuses healthy leases', async () => {
   await pool.closeAll();
 });
 it('closes unhealthy connections and stops all leases, rejects waiters, forgets', async () => {
-  const { pool, factory, builder } = setup();
+  const { pool, factory, builder } = await setup();
   const a = await pool.acquire();
   await a.release(false);
   expect(
@@ -111,7 +123,7 @@ it('closes unhealthy connections and stops all leases, rejects waiters, forgets'
   await expect(pool.acquire()).rejects.toThrow('closed');
 });
 it('removes aborted waiters without blocking the queue', async () => {
-  const { pool } = setup();
+  const { pool } = await setup();
   const a = await pool.acquire();
   const controller = new AbortController();
   const waiting = expect(pool.acquire(controller.signal)).rejects.toThrow();
@@ -123,7 +135,7 @@ it('removes aborted waiters without blocking the queue', async () => {
   await pool.closeAll();
 });
 it('closes a connection that finishes opening after closeAll', async () => {
-  const { factory, builder, pool } = setup(2);
+  const { factory, builder, pool } = await setup(2);
   let finish!: (value: Awaited<ReturnType<typeof builder>>) => void;
   builder.mockImplementationOnce(
     () =>
@@ -147,7 +159,7 @@ it('closes a connection that finishes opening after closeAll', async () => {
   expect(factory.hasCredentials()).toBe(false);
 });
 it('bounds simultaneous opens and replaces a failed open for the next waiter', async () => {
-  const { builder, pool } = setup(2);
+  const { builder, pool } = await setup(2);
   let fail!: (error: Error) => void;
   builder.mockImplementationOnce(
     () =>
@@ -164,7 +176,7 @@ it('bounds simultaneous opens and replaces a failed open for the next waiter', a
   await pool.closeAll();
 });
 it('opens at most max connections for concurrent acquisitions', async () => {
-  const { pool, builder } = setup(2);
+  const { pool, builder } = await setup(2);
   const first = await pool.acquire();
   const second = await pool.acquire();
   let acquired = false;
@@ -184,8 +196,8 @@ it('opens at most max connections for concurrent acquisitions', async () => {
 });
 
 it('captures principal exposition as metadata, ignores forged headers, copies it and refreshes roles', async () => {
-  const { factory, builder } = setup();
-  factory.refresh(
+  const { factory, builder } = await setup();
+  await factory.refresh(
     {
       headers: { ...headers, 'x-exposition': 'high' },
       user: { is: (role) => role === 'MCP_Reader' },
@@ -202,18 +214,18 @@ it('captures principal exposition as metadata, ignores forged headers, copies it
   const copy = factory.exposition;
   copy.push('high');
   expect(factory.exposition).not.toContain('high');
-  factory.refresh({ headers, user: { is: () => false } }, 'D');
+  await factory.refresh({ headers, user: { is: () => false } }, 'D');
   expect(factory.exposition).toEqual([]);
   factory.forget();
   expect(factory.exposition).toEqual([]);
 });
 
 it('retires idle and leased connections when credentials change', async () => {
-  const { pool, factory, builder } = setup(2);
+  const { pool, factory, builder } = await setup(2);
   const idle = await pool.acquire();
   const busy = await pool.acquire();
   await idle.release(true);
-  factory.refresh(
+  await factory.refresh(
     { headers: { ...headers, authorization: 'Bearer renewed' } },
     'D',
   );
@@ -237,7 +249,7 @@ it('retires idle and leased connections when credentials change', async () => {
 it.each([401, 403, 500])(
   'sanitizes connection opening failures (%s)',
   async (status) => {
-    const { pool, builder } = setup();
+    const { pool, builder } = await setup();
     builder.mockRejectedValueOnce(
       Object.assign(
         new Error('password=sentinel Bearer sentinel Authorization: sentinel'),
@@ -254,15 +266,15 @@ it.each([401, 403, 500])(
 );
 
 it('keeps identical bindings and retires when credentials are removed', async () => {
-  const { pool, factory } = setup();
+  const { pool, factory } = await setup();
   const first = await pool.acquire();
   await first.release(true);
-  factory.refresh({ headers: { ...headers } }, 'D');
+  await factory.refresh({ headers: { ...headers } }, 'D');
   const same = await pool.acquire();
   expect(same.connection).toBe(first.connection);
   expect(same.version).toBe(first.version);
   await same.release(true);
-  factory.refresh({ headers: {} }, 'D');
+  await factory.refresh({ headers: {} }, 'D');
   expect(
     (same.connection as unknown as { close: jest.Mock }).close,
   ).toHaveBeenCalledTimes(1);
@@ -272,45 +284,101 @@ it('keeps identical bindings and retires when credentials are removed', async ()
 
 it.each(['x-sap-login', 'x-sap-client'])(
   'rejects changes to fixed basic principal: %s',
-  (field) => {
-    const { factory } = setup();
+  async (field) => {
+    const { factory } = await setup();
     const version = factory.version;
-    expect(() =>
+    await expect(
       factory.refresh({ headers: { ...headers, [field]: 'OTHER' } }, 'D'),
-    ).toThrow('principal is fixed');
+    ).rejects.toMatchObject({
+      code: 'DIALOGUE_PRINCIPAL_FIXED',
+      statusCode: 409,
+    });
     expect(factory.version).toBe(version);
   },
 );
-it('binds token subject while allowing secret rotation and credential removal', async () => {
+it('binds authenticated user while allowing secret rotation and credential removal', async () => {
   const token = (sub: string, nonce: number) =>
     `Bearer e30.${Buffer.from(JSON.stringify({ sub, nonce })).toString('base64url')}.sig`;
   const factory = new SessionConnectionFactory('u', 'key');
-  factory.refresh({ headers: { authorization: token('alice', 1) } }, 'D');
-  factory.refresh({ headers: { authorization: token('alice', 2) } }, 'D');
-  expect(() =>
+  cds.context = { user: new cds.User('alice') } as typeof cds.context;
+  await factory.refresh({ headers: { authorization: token('alice', 1) } }, 'D');
+  await factory.refresh({ headers: { authorization: token('alice', 2) } }, 'D');
+  cds.context = { user: new cds.User('bob') } as typeof cds.context;
+  await expect(
     factory.refresh({ headers: { authorization: token('bob', 3) } }, 'D'),
-  ).toThrow('principal is fixed');
-  factory.refresh({ headers: {} }, 'D');
+  ).rejects.toMatchObject({
+    code: 'DIALOGUE_PRINCIPAL_FIXED',
+    statusCode: 409,
+  });
+  await factory.refresh({ headers: {} }, 'D');
   await expect(factory.open()).rejects.toThrow(NoCredentialsError);
-  expect(() =>
+  await expect(
     factory.refresh({ headers: { authorization: token('bob', 4) } }, 'D'),
-  ).toThrow('principal is fixed');
+  ).rejects.toMatchObject({
+    code: 'DIALOGUE_PRINCIPAL_FIXED',
+    statusCode: 409,
+  });
 });
 
 it('basic password rotation retains the principal and rejects switching after removal', async () => {
-  const { factory, builder } = setup();
+  const { factory, builder, pool } = await setup();
+  const old = await pool.acquire();
+  await old.release(true);
   const version = factory.version;
-  factory.refresh(
+  await factory.refresh(
     { headers: { ...headers, 'x-sap-password': 'rotated' } },
     'D',
   );
   expect(factory.version).toBeGreaterThan(version);
   await factory.open();
-  expect(builder.mock.calls[0][0].headers['x-sap-password']).toBe('rotated');
-  factory.refresh({ headers: {} }, 'D');
-  expect(() =>
+  expect(builder.mock.calls[1][0].headers['x-sap-password']).toBe('rotated');
+  expect(
+    (old.connection as unknown as { close: jest.Mock }).close,
+  ).toHaveBeenCalledTimes(1);
+  await factory.refresh({ headers: {} }, 'D');
+  await expect(
     factory.refresh({ headers: { ...headers, 'x-sap-login': 'OTHER' } }, 'D'),
-  ).toThrow('principal is fixed');
-  factory.refresh({ headers }, 'D');
+  ).rejects.toMatchObject({
+    code: 'DIALOGUE_PRINCIPAL_FIXED',
+    statusCode: 409,
+  });
+  await factory.refresh({ headers }, 'D');
   expect(factory.hasCredentials()).toBe(true);
+  await pool.closeAll();
+});
+
+it('uses the authenticated JWT user for PrincipalPropagation despite changed or removed SAP headers', async () => {
+  jest.mocked(resolveDestinationSapConfig).mockResolvedValue({
+    destinationName: 'PP',
+    sapConfig: { url: 'https://sap', authType: 'basic' },
+    authenticationType: 'PrincipalPropagation',
+  });
+  jest.mocked(resolveDestinationSapConfig).mockClear();
+  cds.context = { user: new cds.User('alice') } as typeof cds.context;
+  const factory = new SessionConnectionFactory('alice', 'key');
+  await factory.refresh({ headers }, 'PP');
+  await expect(
+    factory.refresh(
+      {
+        headers: {
+          ...headers,
+          'x-sap-login': 'OTHER',
+          'x-sap-password': 'other',
+        },
+      },
+      'PP',
+    ),
+  ).resolves.toBeUndefined();
+  await expect(
+    factory.refresh(
+      { headers: { authorization: 'Bearer renewed', 'x-sap-client': '100' } },
+      'PP',
+    ),
+  ).resolves.toBeUndefined();
+  expect(resolveDestinationSapConfig).toHaveBeenCalledTimes(1);
+  cds.context = { user: new cds.User('bob') } as typeof cds.context;
+  await expect(factory.refresh({ headers }, 'PP')).rejects.toMatchObject({
+    code: 'DIALOGUE_PRINCIPAL_FIXED',
+    statusCode: 409,
+  });
 });

@@ -161,7 +161,7 @@ async function serveMessages(
   if (useDialogue && s) {
     const handle = await lookupDialogue(userId, s.key);
     try {
-      handle?.factory.assertPrincipal(req.headers);
+      await handle?.factory.assertPrincipal(req.headers, destination);
     } catch (error) {
       res.status(409).json({
         error: {

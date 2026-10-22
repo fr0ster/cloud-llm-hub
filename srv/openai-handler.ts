@@ -447,7 +447,7 @@ async function serveChatCompletions(
   if (useDialogue && s) {
     const handle = await lookupDialogue(userId, s.key);
     try {
-      handle?.factory.assertPrincipal(req.headers);
+      await handle?.factory.assertPrincipal(req.headers, destAfter);
     } catch (error) {
       res.status(409).json({
         error: {

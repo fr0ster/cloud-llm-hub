@@ -1,3 +1,9 @@
+jest.mock('../../srv/connections/destinationResolver', () => ({
+  resolveDestinationSapConfig: jest.fn(async () => ({
+    authenticationType: 'BasicAuthentication',
+  })),
+}));
+
 import {
   LongSessionRegistry,
   setLongSessionsForTest,
@@ -115,7 +121,7 @@ async function ready(user = 'alice') {
     close: jest.fn(),
     reset: jest.fn(),
   } as unknown as IAbapConnection & { close: jest.Mock };
-  h.factory.refresh(
+  await h.factory.refresh(
     {
       headers: { authorization: 'Bearer test' },
       user: { is: (role) => role === 'MCP_Reader' },
@@ -315,7 +321,10 @@ test('builder secrets never reach task error, planner input, persistence or logs
     ),
   );
   const h = await dialogueFor('alice', 'key', 'TEST');
-  h.factory.refresh({ headers: { authorization: 'Bearer request' } }, 'TEST');
+  await h.factory.refresh(
+    { headers: { authorization: 'Bearer request' } },
+    'TEST',
+  );
   await h.session.send('go');
   await until(() => h.outbox.replay().length > 0);
   expect(h.session.snapshot().tasks[0].error).toMatch(/^SAP connection failed/);

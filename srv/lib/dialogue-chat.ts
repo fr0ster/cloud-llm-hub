@@ -36,7 +36,7 @@ export function dialogueChat(
   });
   const open = async () => {
     const handle = await dialogueFor(userId, session.key, destination);
-    handle.factory.refresh(
+    await handle.factory.refresh(
       { headers: req.headers, user: cds.context?.user },
       destination,
     );

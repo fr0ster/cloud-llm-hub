@@ -51,7 +51,10 @@ export type SessionConnectionResult =
 type Verdict = 'same' | 'renew' | 'missing' | 'mismatch';
 
 /** How this request's credential stands to the one the connection holds. */
-function compare(bound: CredentialBinding, now: CredentialBinding): Verdict {
+export function compare(
+  bound: CredentialBinding,
+  now: CredentialBinding,
+): Verdict {
   // The connection was opened with a credential this request does not carry.
   if (now.kind === 'none' && bound.kind !== 'none') return 'missing';
   if (bound.kind === 'basic' && now.kind === 'jwt') return 'missing';
