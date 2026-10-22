@@ -7,8 +7,8 @@ import { resolveDestinationSapConfig } from '../connections/destinationResolver'
 import {
   buildConnectionForDestination,
   dumpScopeForConnection,
+  usesBackgroundBasicOverride,
 } from './background-connection';
-import { userDependentAuthenticationTypes } from './destination-authentication';
 import {
   type ExpositionLevel,
   type RoleBearer,
@@ -65,7 +65,7 @@ export class NoCredentialsError extends Error {
 }
 export class SessionConnectionFactory {
   #principal?: CredentialBinding;
-  #userDependent = new Map<string, boolean>();
+  #authenticationTypes = new Map<string, string | undefined>();
   async assertPrincipal(
     headers: Record<string, string | string[] | undefined>,
     destination = this.#snapshot?.destination,
@@ -78,22 +78,25 @@ export class SessionConnectionFactory {
     );
     // Like a held session binding, retain the resolved authentication mode.
     // Keep it per destination so a different destination resolves independently.
-    let userDependent = destination
-      ? this.#userDependent.get(destination)
+    let authenticationType = destination
+      ? this.#authenticationTypes.get(destination)
       : undefined;
-    if (destination && userDependent === undefined) {
+    if (destination && !this.#authenticationTypes.has(destination)) {
       const resolved = await resolveDestinationSapConfig(
         destination,
         bearerToken(normalized.authorization),
       );
-      userDependent = userDependentAuthenticationTypes.has(
-        resolved.authenticationType ?? '',
-      );
-      this.#userDependent.set(destination, userDependent);
+      authenticationType = resolved.authenticationType;
+      this.#authenticationTypes.set(destination, authenticationType);
     }
     const principal = readRequestCredential(
       { headers: normalized } as Request,
-      { userDependent },
+      {
+        userDependent: !usesBackgroundBasicOverride(
+          authenticationType,
+          normalized,
+        ),
+      },
     );
     if (
       principal.kind !== 'none' &&

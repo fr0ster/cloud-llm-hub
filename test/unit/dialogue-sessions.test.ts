@@ -11,6 +11,7 @@ import {
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 
 jest.mock('../../srv/lib/background-connection', () => ({
+  ...jest.requireActual('../../srv/lib/background-connection'),
   buildConnectionForDestination: jest.fn(),
   dumpScopeForConnection: jest.fn(),
 }));

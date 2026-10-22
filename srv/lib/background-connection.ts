@@ -22,6 +22,18 @@ interface BuiltConnection {
   usedBasicOverride: boolean;
 }
 
+/** Whether the background connection authenticates with the SAP basic headers. */
+export function usesBackgroundBasicOverride(
+  authenticationType: string | undefined,
+  headers: Pick<Request, 'headers'>['headers'],
+): boolean {
+  const sapLogin = (headers['x-sap-login'] as string | undefined)?.trim();
+  const sapPassword = headers['x-sap-password'] as string | undefined;
+  return (
+    authenticationType !== 'PrincipalPropagation' && !!(sapLogin && sapPassword)
+  );
+}
+
 /**
  * Build the per-request SAP connection for a chosen destination, using the
  * credentials carried in the request headers (set by the auth proxy or the
@@ -72,9 +84,10 @@ export async function buildConnectionForDestination(
     );
   }
 
-  const usedBasicOverride =
-    resolved.authenticationType !== 'PrincipalPropagation' &&
-    !!(sapLogin && sapPassword);
+  const usedBasicOverride = usesBackgroundBasicOverride(
+    resolved.authenticationType,
+    req.headers,
+  );
   const sapConfig: SapConfig = { ...resolved.sapConfig };
   if (usedBasicOverride) {
     sapConfig.authType = 'basic';

@@ -282,9 +282,25 @@ it('keeps identical bindings and retires when credentials are removed', async ()
   await pool.closeAll();
 });
 
-it.each(['x-sap-login', 'x-sap-client'])(
-  'rejects changes to fixed basic principal: %s',
-  async (field) => {
+it.each(
+  [
+    'BasicAuthentication',
+    'NoAuthentication',
+    'OAuth2SAMLBearerAssertion',
+  ].flatMap((authenticationType) =>
+    ['x-sap-login', 'x-sap-client'].map((field) => ({
+      authenticationType,
+      field,
+    })),
+  ),
+)(
+  'rejects changes to fixed basic principal: $authenticationType $field',
+  async ({ authenticationType, field }) => {
+    jest.mocked(resolveDestinationSapConfig).mockResolvedValueOnce({
+      destinationName: 'D',
+      sapConfig: { url: 'https://sap', authType: 'basic' },
+      authenticationType,
+    });
     const { factory } = await setup();
     const version = factory.version;
     await expect(
@@ -320,32 +336,44 @@ it('binds authenticated user while allowing secret rotation and credential remov
   });
 });
 
-it('basic password rotation retains the principal and rejects switching after removal', async () => {
-  const { factory, builder, pool } = await setup();
-  const old = await pool.acquire();
-  await old.release(true);
-  const version = factory.version;
-  await factory.refresh(
-    { headers: { ...headers, 'x-sap-password': 'rotated' } },
-    'D',
-  );
-  expect(factory.version).toBeGreaterThan(version);
-  await factory.open();
-  expect(builder.mock.calls[1][0].headers['x-sap-password']).toBe('rotated');
-  expect(
-    (old.connection as unknown as { close: jest.Mock }).close,
-  ).toHaveBeenCalledTimes(1);
-  await factory.refresh({ headers: {} }, 'D');
-  await expect(
-    factory.refresh({ headers: { ...headers, 'x-sap-login': 'OTHER' } }, 'D'),
-  ).rejects.toMatchObject({
-    code: 'DIALOGUE_PRINCIPAL_FIXED',
-    statusCode: 409,
-  });
-  await factory.refresh({ headers }, 'D');
-  expect(factory.hasCredentials()).toBe(true);
-  await pool.closeAll();
-});
+it.each([
+  'BasicAuthentication',
+  'NoAuthentication',
+  'OAuth2SAMLBearerAssertion',
+])(
+  'basic password rotation retains the principal and rejects switching after removal: %s',
+  async (authenticationType) => {
+    jest.mocked(resolveDestinationSapConfig).mockResolvedValueOnce({
+      destinationName: 'D',
+      sapConfig: { url: 'https://sap', authType: 'basic' },
+      authenticationType,
+    });
+    const { factory, builder, pool } = await setup();
+    const old = await pool.acquire();
+    await old.release(true);
+    const version = factory.version;
+    await factory.refresh(
+      { headers: { ...headers, 'x-sap-password': 'rotated' } },
+      'D',
+    );
+    expect(factory.version).toBeGreaterThan(version);
+    await factory.open();
+    expect(builder.mock.calls[1][0].headers['x-sap-password']).toBe('rotated');
+    expect(
+      (old.connection as unknown as { close: jest.Mock }).close,
+    ).toHaveBeenCalledTimes(1);
+    await factory.refresh({ headers: {} }, 'D');
+    await expect(
+      factory.refresh({ headers: { ...headers, 'x-sap-login': 'OTHER' } }, 'D'),
+    ).rejects.toMatchObject({
+      code: 'DIALOGUE_PRINCIPAL_FIXED',
+      statusCode: 409,
+    });
+    await factory.refresh({ headers }, 'D');
+    expect(factory.hasCredentials()).toBe(true);
+    await pool.closeAll();
+  },
+);
 
 it('uses the authenticated JWT user for PrincipalPropagation despite changed or removed SAP headers', async () => {
   jest.mocked(resolveDestinationSapConfig).mockResolvedValue({
