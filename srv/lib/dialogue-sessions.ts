@@ -27,7 +27,10 @@ import {
   runWithToolGateBypass,
 } from '../request-session';
 import { DialogueOutbox } from './dialogue-outbox';
-import { plannerWithParagraphs } from './dialogue-planner-content';
+import {
+  plannerWithEnvironment,
+  plannerWithParagraphs,
+} from './dialogue-planner-content';
 import {
   createDialogueStateStore,
   deleteDialogueState,
@@ -47,6 +50,7 @@ import {
   SessionConnectionPool,
 } from './session-connection-pool';
 import { evaluateGated } from './step-reviewer';
+import { cachedSystemIdentity } from './system-identity-cache';
 
 export type DialogueEvent =
   | { kind: 'message'; message: PlannerMessage }
@@ -177,8 +181,32 @@ async function open(
   if (!destinationHandle.workers)
     throw new Error('Destination executor workers unavailable');
   const planner = await buildPlannerAgent(config);
-  const turnPlanner = plannerWithParagraphs(planner);
   const factory = new SessionConnectionFactory(userId, key);
+  const turnPlanner = plannerWithEnvironment(
+    plannerWithParagraphs(planner),
+    () => {
+      const connection = longSessionsIfReady()?.get(userId, key)?.connection;
+      const identity = connection
+        ? cachedSystemIdentity(connection)
+        : undefined;
+      return [
+        'Environment',
+        `Destination: ${destination}`,
+        ...factory.environment(destination),
+        ...(identity?.masterSystem
+          ? [`SAP system id: ${identity.masterSystem}`]
+          : []),
+        ...(identity?.responsible
+          ? [`SAP login: ${identity.responsible}`]
+          : []),
+        'Available workers:',
+        ...[...destinationHandle.workers].map(
+          ([name, worker]) => `${name}: ${worker.description}`,
+        ),
+        `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
+      ].join('\n');
+    },
+  );
   const pool = new SessionConnectionPool(
     factory,
     config.agent.dialogue.executors,

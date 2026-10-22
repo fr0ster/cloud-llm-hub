@@ -1,5 +1,34 @@
 import type { PlannerAgent } from '@mcp-abap-adt/llm-agent-libs';
-import { plannerWithParagraphs } from '../../srv/lib/dialogue-planner-content';
+import {
+  plannerWithEnvironment,
+  plannerWithParagraphs,
+} from '../../srv/lib/dialogue-planner-content';
+
+test('environment reaches user and event turns without changing persisted conversation', async () => {
+  const process = jest.fn(async () => ({
+    ok: true as const,
+    value: { content: 'ok' },
+  }));
+  const planner = plannerWithEnvironment(
+    { process },
+    () => 'Destination: DEV\nLogin: USER',
+  );
+  for (const content of ['which system?', '[events]\ntask completed']) {
+    const conversation = [{ role: 'user' as const, content }];
+    await planner.process(conversation, {});
+    expect(process.mock.calls.at(-1)).toEqual([
+      [
+        {
+          role: 'user',
+          content: '[environment]\nDestination: DEV\nLogin: USER',
+        },
+        ...conversation,
+      ],
+      {},
+    ]);
+    expect(conversation).toEqual([{ role: 'user', content }]);
+  }
+});
 
 test.each([undefined, jest.fn()])(
   'planner assembles tool boundaries for event and streamed turns',

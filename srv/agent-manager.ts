@@ -1,3 +1,4 @@
+import { watchDestinations } from './lib/destination-watch';
 /**
  * Agent Manager - SmartAgent lifecycle management
  *
@@ -3231,6 +3232,7 @@ export async function initSmartAgents(): Promise<void> {
     warmFirst: destName,
   });
 
+  discoveringDestinations = false;
   startDestinationWarmup();
 }
 
@@ -3268,6 +3270,14 @@ function startDestinationWarmup(): void {
  * them in /v1/models and opens the login gate. Interval:
  * LLM_AGENT_DESTINATION_WATCH_MS (default 60 s).
  */
+let discoveringDestinations = true;
+export function getDestinationDiscoveryState():
+  | 'discovering'
+  | 'none'
+  | 'available' {
+  if (getDestinationStates().length) return 'available';
+  return discoveringDestinations ? 'discovering' : 'none';
+}
 function watchForDestinations(): void {
   const log = cds.log('agent-manager');
   const intervalMs =
@@ -3275,28 +3285,29 @@ function watchForDestinations(): void {
       ? Number(process.env.LLM_AGENT_DESTINATION_WATCH_MS)
       : 60_000;
   log.info('Waiting for SAP destinations', { intervalMs });
-  let checking = false;
-  const timer = setInterval(async () => {
-    if (checking) return;
-    checking = true;
-    try {
-      clearDestinationsCache();
-      const found = await getAvailableDestinations();
-      if (found.length === 0) return;
-      clearInterval(timer);
-      log.info('SAP destinations appeared — switching to working mode', {
-        destinations: found.map((d) => d.name),
-      });
-      startDestinationWarmup();
-    } catch (err) {
-      log.warn('Destination watch failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      checking = false;
-    }
-  }, intervalMs);
-  timer.unref();
+  watchDestinations(
+    async () => {
+      try {
+        clearDestinationsCache();
+        const found = await getAvailableDestinations();
+        if (!found.length) return false;
+        log.info('SAP destinations appeared; switching to working mode', {
+          destinations: found.map((d) => d.name),
+        });
+        startDestinationWarmup();
+        return true;
+      } catch (err) {
+        log.info('Destination watch failed', {
+          errorType: err instanceof Error ? err.name : typeof err,
+        });
+        return false;
+      }
+    },
+    () => {
+      discoveringDestinations = false;
+    },
+    intervalMs,
+  );
 }
 
 /**

@@ -53,6 +53,7 @@ const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
+const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
@@ -66,6 +67,10 @@ jest.mock('../../srv/agent-manager', () => ({
   releasePlannerAgent: jest.fn(),
   buildPlannerAgent: jest.fn(async () => ({
     process: async (messages: { content: string }[]) => {
+      mockEnvironments.push(
+        messages.find((m) => m.content.startsWith('[environment]'))?.content ??
+          '',
+      );
       const text = messages.at(-1)?.content ?? '';
       mockPlannerTurns.push(text);
       if (!text.startsWith('[task events]'))
@@ -144,6 +149,7 @@ async function ready(user = 'alice') {
 beforeEach(() => {
   jest.clearAllMocks();
   mockPlannerTurns.length = 0;
+  mockEnvironments.length = 0;
   mockGoal = 'read';
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
@@ -173,6 +179,14 @@ test('missing credentials become a task outcome and wake the planner', async () 
   expect(h.outbox.replay()[0].text).toContain('no SAP credentials yet');
   expect(mockRun).not.toHaveBeenCalled();
   expect(mockDrop).toHaveBeenCalledTimes(1);
+  expect(mockEnvironments.length).toBeGreaterThanOrEqual(2);
+  for (const environment of mockEnvironments) {
+    expect(environment).toContain('Destination: TEST');
+    expect(environment).toContain('Concurrency limit: 2');
+    expect(environment).toContain('executor:');
+    expect(environment).not.toMatch(/Bearer|password|secret/);
+  }
+  expect(JSON.stringify(h.session.snapshot())).not.toContain('[environment]');
 });
 test('delegated worker has system, session, owner, task history, admission, connection and a unique trace; all holds release', async () => {
   const { h, connection } = await ready();

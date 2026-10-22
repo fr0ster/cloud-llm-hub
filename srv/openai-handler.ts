@@ -25,6 +25,7 @@ import {
   getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
+  getDestinationDiscoveryState,
   getDestinationStates,
   getQueryEmbedder,
   getSmartAgent,
@@ -1452,6 +1453,7 @@ export async function handleModels(
       _active_model: activeModel,
       _active_destination: getCurrentDestination(),
       _destinations: getDestinationStates(),
+      _destination_discovery: getDestinationDiscoveryState(),
       _meta: {
         temperature: config.llm.temperature,
         max_tokens: config.llm.maxTokens,

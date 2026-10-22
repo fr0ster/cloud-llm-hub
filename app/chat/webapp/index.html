@@ -510,6 +510,7 @@
         // No MCP destination configured and none in the subaccount: chat goes to
         // the LLM only, and the status says the hub is waiting for destinations.
         let llmOnlyMode = false;
+        let destinationDiscovery = 'discovering';
 
         // ---------------------------------------------------------------
         // Login gate — after sign-in the whole chat is locked until the user
@@ -650,15 +651,28 @@
             void runActiveProbe();
         }
 
+        function destinationWaitingText(state) {
+            return state === 'discovering'
+                ? { status: 'DISCOVERING DESTINATIONS…', message: 'Looking for SAP destinations…' }
+                : { status: 'NO DESTINATIONS', message: 'No SAP destinations are configured in this subaccount — waiting for destinations.' };
+        }
+        function updateDestinationDiscovery(state) {
+            destinationDiscovery = state || 'none';
+            const text = destinationWaitingText(destinationDiscovery);
+            const sap = document.getElementById('sap-status');
+            if (sap) { sap.textContent = text.status; sap.style.color = '#ffaa33'; }
+            const line = document.getElementById('destination-waiting');
+            if (line) line.textContent = text.message;
+        }
         function enterLlmOnlyMode() {
             loginGateDone = true;
             hideLoginGate();
             unlockInput('login-gate');
             const sap = document.getElementById('sap-status');
-            if (sap) { sap.textContent = 'NO DESTINATIONS'; sap.style.color = '#ffaa33'; }
+            if (sap) { sap.textContent = destinationWaitingText(destinationDiscovery).status; sap.style.color = '#ffaa33'; }
             const diag = document.getElementById('dest-diag');
             if (diag) diag.style.display = 'none';
-            chatWindow.innerHTML = '<div class="message"><b>> SYSTEM:</b> No SAP destinations are configured in this subaccount — waiting for destinations. '
+            chatWindow.innerHTML = '<div class="message"><b>> SYSTEM:</b> <span id="destination-waiting">' + destinationWaitingText(destinationDiscovery).message + '</span> '
                 + 'Until then answers come from SAP AI Core only, without access to SAP systems. '
                 + 'For full functionality (ABAP tools), add an HTTP(S) destination to the ABAP system through the Cloud Connector (ProxyType OnPremise) in the subaccount — it is picked up automatically.</div>';
             chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -1304,6 +1318,7 @@
                     // LLM-only mode: no MCP destination configured and none in the
                     // subaccount. There is nothing to pick in the login gate, so skip
                     // it, say so honestly in the status, and chat with the LLM only.
+                    destinationDiscovery = data._destination_discovery || 'none';
                     llmOnlyMode = !meta.mcp_destination && destinations.length === 0;
                     setIdleStatus();
                     if (llmOnlyMode) {
@@ -1339,6 +1354,8 @@
                 if (destinations.length > 0) {
                     renderDestinations(destinations, activeDest);
                     if (llmOnlyMode) leaveLlmOnlyMode();
+                } else if (llmOnlyMode) {
+                    updateDestinationDiscovery(data._destination_discovery);
                 }
             } catch (e) { /* ignore */ }
         }, 15000);
@@ -1632,6 +1649,7 @@
             if (!ready) return;
             const text = userInput.value.trim();
             if (!text) return;
+            const t0 = Date.now();
             const selectedDest = getSelectedDestination();
 
             inputHistory.push(text);
@@ -1654,12 +1672,11 @@
             let externalToolCalls = [];
             const toolCallNames = new Set();
             let usage = null;
-            const t0 = Date.now();
 
             // Single timer for elapsed seconds in status bar
             const elapsed = () => ((Date.now() - t0) / 1000).toFixed(0);
             let phase = 'PROCESSING';
-            setStatus(`${phase} 0s`, 'status-connecting');
+            setStatus(`${phase} ${elapsed()}s`, 'status-connecting');
             const timer = setInterval(() => {
                 const cls = phase === 'STREAMING' ? 'status-streaming' : 'status-connecting';
                 setStatus(`${phase} ${elapsed()}s`, cls);
