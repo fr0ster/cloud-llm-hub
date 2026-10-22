@@ -32,9 +32,10 @@ export function plannerWithParagraphs(planner: PlannerAgent): PlannerAgent {
             return;
           }
           if (!chunk.delta) return;
-          const delta =
-            (interrupted && content && !content.endsWith('\n') ? '\n\n' : '') +
-            chunk.delta;
+          // A tool boundary always becomes a paragraph break: top the
+          // already-emitted trailing newlines up to two.
+          const pad = interrupted && content ? paragraphPad(content) : '';
+          const delta = pad + chunk.delta;
           interrupted = false;
           content += delta;
           options.onPartial?.({ ...chunk, delta });
@@ -45,4 +46,10 @@ export function plannerWithParagraphs(planner: PlannerAgent): PlannerAgent {
         : result;
     },
   };
+}
+
+/** Newlines needed after `text` so the next content starts a new paragraph. */
+function paragraphPad(text: string): string {
+  const trailing = /\n*$/.exec(text)?.[0].length ?? 0;
+  return '\n'.repeat(Math.max(0, 2 - trailing));
 }

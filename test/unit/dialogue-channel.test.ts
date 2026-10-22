@@ -347,7 +347,8 @@ it.each(['before', 'before\n'])(
     for await (const chunk of agent.streamProcess([]))
       if (chunk.ok) text += chunk.value.content || '';
     expect(text).toContain(
-      before + (before.endsWith('\n') ? '' : '\n\n') + 'after',
+      // A tool boundary always yields a paragraph break (two newlines).
+      before + (before.endsWith('\n') ? '\n' : '\n\n') + 'after',
     );
   },
 );
