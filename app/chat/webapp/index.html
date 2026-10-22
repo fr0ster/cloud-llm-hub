@@ -30,6 +30,7 @@
         button { background: #1a1a1a; color: #00ff00; border: 2px solid #333; cursor: pointer; padding: 0 30px; font-weight: bold; font-size: 16px; border-radius: 6px; }
         button:hover:not(:disabled) { background: #00ff00; color: #000; }
         button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
+        .dialogue-task { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #clear-btn { color: #ff5555; border-color: #552222; padding: 0 15px; font-size: 13px; }
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
         #export-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
@@ -432,7 +433,7 @@
             const rendered = new Set();
             let tasks = [];
             function renderTasks() {
-                document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div>' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');
+                document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div class="dialogue-task" title="' + escapeHtml(String(task.goal || '')) + '">' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');
             }
             async function connect() {
                 if (stopped) return;
@@ -468,7 +469,7 @@
                                 if (!id || typeof parsed.text !== 'string') continue;
                                 if (!rendered.has(id)) {
                                     const node = document.createElement('div'); node.className = 'message';
-                                    node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + escapeHtml(parsed.text).replace(/\n/g, '<br>') + '</span>';
+                                    node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(parsed.text) + '</span>';
                                     chatWindow.appendChild(node); chatWindow.scrollTop = chatWindow.scrollHeight;
                                     conversationHistory.push({ role: 'assistant', content: parsed.text });
                                     rendered.add(id); lastId = id;
@@ -1219,6 +1220,8 @@
                     // Bold / italic
                     t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
                     t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+                    // Horizontal rules
+                    t = t.replace(/^---+\s*$/gm, '<hr>');
                     // Lists
                     t = t.replace(/^[\-\*] (.+)$/gm, '&bull; $1<br>');
                     t = t.replace(/^\d+\. (.+)$/gm, '&bull; $1<br>');
@@ -1527,7 +1530,16 @@
         }
 
         async function clearChat() {
-            try { await closeSession(); await ensureSession(); }
+            try {
+                await closeSession();
+                if (!connectedDestination && !llmOnlyMode) {
+                    loginGateDone = false;
+                    lockInput('login-gate');
+                    showLoginGate();
+                } else {
+                    await ensureSession();
+                }
+            }
             catch (error) { showSessionNotice(error.message); return; }
             Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];

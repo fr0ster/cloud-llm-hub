@@ -325,3 +325,33 @@ test('R24 failed HTTP delete forgets key and logs', async () => {
   await expect(ui.closeSession()).resolves.toBeUndefined();
   expect(ui.values.has('clh.session')).toBe(false);
 });
+
+test.each([false, true])(
+  'CLR requires SAP gate unless LLM-only mode (%s)',
+  async (llmOnlyMode) => {
+    const context = {
+      closeSession: jest.fn(),
+      ensureSession: jest.fn(),
+      showSessionNotice: jest.fn(),
+      fileArtifacts: {},
+      conversationHistory: ['old'],
+      chatWindow: { innerHTML: 'old' },
+      connectedDestination: '',
+      loginGateDone: true,
+      llmOnlyMode,
+      lockInput: jest.fn(),
+      showLoginGate: jest.fn(),
+    };
+    const source = html.slice(
+      html.indexOf('        async function clearChat()'),
+      html.indexOf('        function exportSessionLog()'),
+    );
+    await runInNewContext(source + ';clearChat()', context);
+    expect(context.showLoginGate).toHaveBeenCalledTimes(llmOnlyMode ? 0 : 1);
+    expect(context.ensureSession).toHaveBeenCalledTimes(llmOnlyMode ? 1 : 0);
+    if (!llmOnlyMode) {
+      expect(context.loginGateDone).toBe(false);
+      expect(context.lockInput).toHaveBeenCalledWith('login-gate');
+    }
+  },
+);

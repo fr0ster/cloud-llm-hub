@@ -316,10 +316,22 @@ it.each(['before', 'before\n'])(
   'separates resumed planner content after tools (%j)',
   async (before) => {
     send.mockImplementation(async (_text: string, options: any) => {
-      options.onPartial({ kind: 'content', delta: before });
-      options.onPartial({ kind: 'tool_call', name: 'test' });
-      options.onPartial({ kind: 'content', delta: 'after' });
-      return { text: before + 'after' };
+      const { plannerWithParagraphs } = await import(
+        '../../srv/lib/dialogue-planner-content'
+      );
+      const result = await plannerWithParagraphs({
+        process: async (_input, opts) => {
+          opts.onPartial?.({ kind: 'content', delta: before });
+          opts.onPartial?.({
+            kind: 'mcp-call',
+            source: { stepperId: 's', name: 'tool' },
+            tool: 'test',
+          });
+          opts.onPartial?.({ kind: 'content', delta: 'after' });
+          return { ok: true, value: { content: before + 'after' } };
+        },
+      }).process([], options);
+      return { text: result.ok ? result.value.content : '' };
     });
     const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
     const res = fakeRes();
@@ -339,3 +351,35 @@ it.each(['before', 'before\n'])(
     );
   },
 );
+
+for (const anthropic of [false, true])
+  for (const stream of [false, true]) {
+    it(`destination-free long session uses adaptive (anthropic=${anthropic}, stream=${stream})`, async () => {
+      const req = fakeReq(
+        {
+          model: 'm',
+          max_tokens: 100,
+          stream,
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+        session.key,
+      ) as unknown as Request & { longSession: LongSession };
+      req.longSession = session;
+      delete req.headers['x-sap-destination'];
+      harness.sessionDestinations.set(
+        JSON.stringify(['alice', session.key]),
+        '',
+      );
+      const res = fakeRes();
+      await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+        req,
+        res as unknown as Response,
+      );
+      expect(res.headers['x-clh-coordinator']).toBe('adaptive');
+      expect(harness.events).toContain('pipeline');
+      expect(send).not.toHaveBeenCalled();
+      expect(res.body).not.toContain(
+        'Destination executor workers unavailable',
+      );
+    });
+  }

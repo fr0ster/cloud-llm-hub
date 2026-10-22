@@ -27,6 +27,7 @@ import {
   runWithToolGateBypass,
 } from '../request-session';
 import { DialogueOutbox } from './dialogue-outbox';
+import { plannerWithParagraphs } from './dialogue-planner-content';
 import {
   createDialogueStateStore,
   deleteDialogueState,
@@ -176,6 +177,7 @@ async function open(
   if (!destinationHandle.workers)
     throw new Error('Destination executor workers unavailable');
   const planner = await buildPlannerAgent(config);
+  const turnPlanner = plannerWithParagraphs(planner);
   const factory = new SessionConnectionFactory(userId, key);
   const pool = new SessionConnectionPool(
     factory,
@@ -320,7 +322,7 @@ async function open(
       planner: {
         async process(input, options) {
           try {
-            return await planner.process(input, options);
+            return await turnPlanner.process(input, options);
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
           }

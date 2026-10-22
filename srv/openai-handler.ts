@@ -306,8 +306,6 @@ async function serveChatCompletions(
 ): Promise<void> {
   const log = cds.log('openai-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
-  const useDialogue = dialogueMode && !!s;
-  if (dialogueMode && !s) res.setHeader('x-clh-coordinator', 'adaptive');
 
   // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
@@ -444,6 +442,9 @@ async function serveChatCompletions(
   // Track destination before/after to detect switches
   const destBefore = getCurrentDestination(userId, sessionId);
   const destAfter = requestedDestination || s?.destination || destBefore;
+  const useDialogue = dialogueMode && !!s && !!destAfter;
+  if (dialogueMode && !useDialogue)
+    res.setHeader('x-clh-coordinator', 'adaptive');
   if (useDialogue && s) {
     const handle = await lookupDialogue(userId, s.key);
     try {

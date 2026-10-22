@@ -92,7 +92,6 @@ export function dialogueChat(
       let wake: (() => void) | undefined;
       let finished = false;
       let streamed = '';
-      let interrupted = false;
       let failure: OrchestratorError | undefined;
       const push = (chunk: Result<{ content: string }, OrchestratorError>) => {
         queue.push(chunk);
@@ -105,15 +104,9 @@ export function dialogueChat(
           onPartial(chunk) {
             if (chunk.kind === 'content') {
               if (!chunk.delta) return;
-              const content =
-                (interrupted && streamed && !streamed.endsWith('\n')
-                  ? '\n\n'
-                  : '') + chunk.delta;
-              interrupted = false;
+              const content = chunk.delta;
               streamed += content;
               push({ ok: true, value: { content } });
-            } else {
-              interrupted = true;
             }
           },
         })

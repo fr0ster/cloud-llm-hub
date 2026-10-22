@@ -38,8 +38,13 @@ function harness() {
     html.indexOf('        function stepSymbol('),
     html.indexOf('        // Input history'),
   );
+  const markdown = html.slice(
+    html.indexOf('        function markdownToHtml('),
+    html.indexOf('        // Check model availability'),
+  );
   const api = runInNewContext(
-    source +
+    markdown +
+      source +
       ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents})',
     context,
   );
@@ -150,4 +155,42 @@ test('new session cancels pending reader and ignores late data; clear removes ta
   ui.list.innerHTML = 'tasks';
   ui.stopDialogueEvents();
   expect(ui.list.innerHTML).toBe('');
+});
+
+test('planner markdown uses the streamed answer renderer and escapes HTML', async () => {
+  const ui = harness();
+  const text = '**bold**\n## Heading\n- item\n---\n<img src=x onerror="bad()">';
+  ui.fetch.mockImplementation(async (url: string) =>
+    url.endsWith('/ack')
+      ? { ok: true }
+      : stream(`id: formatted\ndata: ${JSON.stringify({ text })}\n\n`),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.nodes[0].innerHTML).toContain('<strong>bold</strong>');
+  expect(ui.nodes[0].innerHTML).toContain('font-size:15px');
+  expect(ui.nodes[0].innerHTML).toContain('&bull; item');
+  expect(ui.nodes[0].innerHTML).toContain('<hr>');
+  expect(ui.nodes[0].innerHTML).toContain('&lt;img');
+  expect(ui.nodes[0].innerHTML).not.toContain('<img');
+  subscription.stop();
+});
+
+test('tasks have a single line class and an escaped full goal title', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(
+    stream(
+      `event: tasks\ndata: ${JSON.stringify([{ id: 't', goal: 'long <goal> "quoted"', state: 'done' }])}\n\n`,
+    ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.list.innerHTML).toContain('class="dialogue-task"');
+  expect(ui.list.innerHTML).toContain(
+    'title="long &lt;goal&gt; &quot;quoted&quot;"',
+  );
+  expect(html).toMatch(
+    /\.dialogue-task\s*\{[^}]*white-space:\s*nowrap;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis/s,
+  );
+  subscription.stop();
 });
