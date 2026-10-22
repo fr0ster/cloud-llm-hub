@@ -4,36 +4,35 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.3.0] - 2026-10-22
+
 ### Added
 
-- **Adaptive chat plans.** Executor and checker workers support checks,
-  verdict branches, revisions and clarification questions. Optional plan budgets
-  bound execution; failed planning falls back to one executor step. The latest
-  run is retained per authenticated user and session (HANA/PG `h_runs` for vector session stores,
-  memory otherwise) and deleted with the session.
-- **Chat step progress.** Both streaming protocols send `: status {json}`
-  SSE comments; the WebUI shows the current status and a compact step trail.
+- **Adaptive chat plans.** The chat path (`/v1/chat/completions`,
+  `/v1/messages`) runs on llm-agent 30.5.0's adaptive plan coordinator. One
+  controller call plans each request: small talk is answered by the controller
+  itself, simple requests take one executor step, and complex tasks get steps
+  with checks, verdict branches, revisions and clarification questions. A failed
+  plan call falls back to one executor step; the honesty notice runs as before.
+  Optional budget: `LLM_AGENT_PLAN_MAX_STEPS`, `LLM_AGENT_PLAN_MAX_REVISIONS`,
+  `LLM_AGENT_PLAN_MAX_DURATION_MS`.
+- **Read-only checker.** Check steps always run on a checker worker that cannot
+  change the system: write-capable and unknown tools are filtered out and
+  refused at dispatch, and it gets no client-executed tools.
+- **Run records.** The latest run per authenticated user and session feeds the
+  next turn's plan. Stored in `h_runs` on HANA/PostgreSQL when the session store
+  is persistent, in memory otherwise; deleted with the session or when it
+  expires, and swept after restarts.
+- **Chat step progress.** Both streaming protocols send `: status {json}` SSE
+  comment lines, which standard clients skip; the WebUI shows the current step
+  and a step trail.
 
 ### Changed
 
-- **Adaptive step language.** The controller writes step goals, questions, notes and check goals in the request's language.
-
-- **Chat defaults to adaptive coordination.** The controller plans each
-  request, with instructions to answer small talk itself and use one executor
-  step for simple work. Set `LLM_AGENT_CHAT_COORDINATOR=fixed` to return to
-  the previous one-step DAG. The agent MCP `execute_step` path is unchanged.
-
-### Fixed
-
-- **Run-record isolation.** Bind load/save to the authenticated request user and
-  matching request session; missing scope disables persistence. Anthropic forwards
-  the trusted session in both processing paths. Provider rows use owner-scoped
-  hashed IDs and verify owner metadata.
-- **Read-only checker.** Verification instructions, filtered tools and invocation
-  enforcement prevent checker writes, including explicit tool calls by name.
-- **Plain-session expiry.** History expiry and retention forgetting remove run
-  records. Save timestamps enforce the session TTL on load; memory saves sweep
-  expired records.
+- **Chat defaults to adaptive coordination.** Set
+  `LLM_AGENT_CHAT_COORDINATOR=fixed` to return to the 8.2.0 one-step path. The
+  agent MCP `execute_step` path is unchanged.
+- **Dependencies:** `@mcp-abap-adt/*` 30.5.0.
 
 ## [8.2.0] - 2026-10-21
 
