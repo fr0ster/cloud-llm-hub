@@ -72,12 +72,16 @@ const log = () => cds.log('dialogue');
 const keyHash = (key: string) => createHash('sha256').update(key).digest('hex');
 function logGoal(goal: string): string {
   return goal
-    .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
     .replace(
-      /\b(?:password|passwd|authorization|cookie|token|api[-_]?key|secret|x-sap-password)\b\s*[=:]\s*(?:"[^"]*"|'[^']*'|\S+)/gi,
-      '[redacted]',
+      /(?<![\w-])(["'`]?\b(?:password|passwd|pwd|secret|client_secret|token|access_token|refresh_token|api[-_]?key|authorization|cookie|x-sap-password)\b["'`]?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|(?:Bearer|Basic)\s+[^\s&,;\]}]+|[^\s&,;\]}]+)/gi,
+      (_match, prefix: string) => {
+        const value = _match.slice(prefix.length);
+        const quote = /^["'`]/.test(value) ? value[0] : '';
+        return `${prefix}${quote}[redacted]${quote}`;
+      },
     )
-    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, 'https://[redacted]@')
+    .replace(/\b(Bearer|Basic)(\s+)[^\s"'`&,;\]}]+/gi, '$1$2[redacted]')
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1[redacted]@')
     .slice(0, 120);
 }
 const creationListeners = new Map<
@@ -243,7 +247,7 @@ async function open(
           'abort',
           () => {
             log().info('stop requested', {
-              id: ctx.taskId,
+              id: logGoal(ctx.taskId),
               reason: 'cooperative stop',
             });
           },
@@ -361,8 +365,8 @@ async function open(
         async wrapRun(task, run) {
           const startedAt = Date.now();
           log().info('task started', {
-            id: task.id,
-            worker: task.worker,
+            id: logGoal(task.id),
+            worker: logGoal(task.worker),
             goal: logGoal(task.goal),
           });
           let lease: ConnectionLease | undefined;
@@ -416,13 +420,14 @@ async function open(
                     destinationHandle.recMcp.dropRequest(traceId);
                   } catch (error) {
                     cds.log('dialogue-sessions').warn('dropRequest failed', {
-                      error:
+                      error: logGoal(
                         error instanceof Error ? error.message : String(error),
+                      ),
                     });
                   }
                   emitTask({ ...task, state });
                   log().info('task finished', {
-                    id: task.id,
+                    id: logGoal(task.id),
                     state,
                     durationMs: Date.now() - startedAt,
                   });

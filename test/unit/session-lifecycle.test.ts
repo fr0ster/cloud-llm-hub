@@ -84,6 +84,62 @@ import {
 } from '../../srv/session-store';
 
 const TTL = 60_000;
+test.each([false, true])(
+  'open waits for same-user close settlement (reject=%s)',
+  async (reject) => {
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve, rejectClose) => {
+      settle = () =>
+        reject ? rejectClose(new Error('cleanup failed')) : resolve();
+    });
+    const registry = new LongSessionRegistry(
+      { ttlMs: TTL, maxSessions: 2, maxPerUser: 1, queueLength: 1 },
+      { onClose: () => gate },
+    );
+    setLongSessionsForTest(registry);
+    const old = registry.open('alice', { key: 'old' });
+    expect('refused' in old).toBe(false);
+    const closing = registry.close('alice', 'old', 'explicit').catch(() => {});
+    let done = false;
+    const opening = openSession('alice').then((s) => {
+      done = true;
+      return s;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(done).toBe(false);
+    expect('refused' in (await openSession('bob'))).toBe(false);
+    settle();
+    await closing;
+    expect('refused' in (await opening)).toBe(false);
+    expect(registry.size('alice')).toBe(1);
+  },
+);
+
+test('open falls through to the cap after 15 seconds of pending close', async () => {
+  jest.useFakeTimers();
+  try {
+    const registry = new LongSessionRegistry(
+      { ttlMs: TTL, maxSessions: 2, maxPerUser: 1, queueLength: 1 },
+      { onClose: () => new Promise(() => {}) },
+    );
+    setLongSessionsForTest(registry);
+    registry.open('alice', { key: 'old' });
+    void registry.close('alice', 'old', 'explicit');
+    let done = false;
+    const opening = openSession('alice').then((s) => {
+      done = true;
+      return s;
+    });
+    await jest.advanceTimersByTimeAsync(14_999);
+    expect(done).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await opening).toEqual({ refused: 'SESSION_LIMIT' });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 let now = 1_000_000;
 
 function fakeRecords() {

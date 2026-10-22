@@ -151,7 +151,9 @@ export async function openSession(
   userId: string,
   destination?: string,
 ): Promise<LongSession | OpenRefusal> {
-  const s = longSessions().open(userId, { destination });
+  const registry = longSessions();
+  await registry.awaitUserCloses(userId);
+  const s = registry.open(userId, { destination });
   if ('refused' in s) return s;
   if (destination !== undefined)
     setSessionDestination(userId, s.key, destination);

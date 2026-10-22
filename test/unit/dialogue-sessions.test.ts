@@ -414,6 +414,71 @@ test('lifecycle goal logging redacts credentials before truncation and omits out
     info.mockRestore();
   }
 });
+test.each([
+  ['{"password":"SENTINEL"}', '{"password":"[redacted]"}'],
+  ['{ "api_key" : "SENTINEL with spaces" }', '{ "api_key" : "[redacted]" }'],
+  ["'secret' = 'SENTINEL with spaces'", "'secret' = '[redacted]'"],
+  ['password: SENTINEL', 'password: [redacted]'],
+  ['Authorization: Bearer SENTINEL.abc', 'Authorization: [redacted]'],
+  ['"authorization": "Basic SENTINEL abc"', '"authorization": "[redacted]"'],
+  ['?token=SENTINEL&x=1', '?token=[redacted]&x=1'],
+  ['https://u:SENTINEL@host', 'https://[redacted]@host'],
+  ...[
+    'password',
+    'passwd',
+    'pwd',
+    'secret',
+    'client_secret',
+    'token',
+    'access_token',
+    'refresh_token',
+    'api_key',
+    'apikey',
+    'api-key',
+    'authorization',
+    'x-sap-password',
+  ].flatMap((name) =>
+    ['', '"', "'", '`'].map((quote) => [
+      `${quote}${name.toUpperCase()}${quote} = ${quote}SENTINEL${quote}`,
+      `${quote}${name.toUpperCase()}${quote} = ${quote}[redacted]${quote}`,
+    ]),
+  ),
+])('lifecycle redacts values in %s', async (goal, expected) => {
+  const cds = require('@sap/cds').default;
+  const info = jest.spyOn(cds.log('dialogue'), 'info');
+  mockGoal = goal;
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => h.outbox.replay().length > 0);
+    expect(info).toHaveBeenCalledWith(
+      'task started',
+      expect.objectContaining({ goal: expected }),
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toContain('SENTINEL');
+  } finally {
+    info.mockRestore();
+  }
+});
+
+test('lifecycle redacts free-text cleanup errors', async () => {
+  const cds = require('@sap/cds').default;
+  const warn = jest.spyOn(cds.log('dialogue-sessions'), 'warn');
+  mockDrop.mockImplementationOnce(() => {
+    throw new Error('{"password": "SENTINEL with spaces"}');
+  });
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => h.outbox.replay().length > 0);
+    expect(warn).toHaveBeenCalledWith('dropRequest failed', {
+      error: '{"password": "[redacted]"}',
+    });
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 test('shutdown preserves state; ttl deletes it', async () => {
   const h = await dialogueFor('alice', 'key', 'TEST');
   await h.session.send('go');

@@ -117,6 +117,25 @@ export class LongSessionRegistry {
     return session;
   }
 
+  /** Give this user's in-flight cleanup up to 15 seconds before admission. */
+  async awaitUserCloses(userId: string): Promise<void> {
+    const pending = [...this.entries.values()].flatMap((entry) =>
+      entry.session.userId === userId && entry.closing ? [entry.closing] : [],
+    );
+    if (!pending.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(pending),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 15_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** No touch. Undefined once `close` has started. */
   get(userId: string, key: string): LongSession | undefined {
     const entry = this.entries.get(slot(userId, key));
