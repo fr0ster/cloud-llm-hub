@@ -114,26 +114,17 @@ export { collectionFor } from './lib/tool-corpus';
 import { buildToolExpositionMap } from './lib/tool-exposition-map';
 import { trackedLlm } from './lib/tracked-llm';
 import {
-  getAdaptivePrefetch,
   getRequestHistory,
   getRequestSessionId,
   isReadOnlyTools,
   isToolGateBypassed,
   requestToolGateDecision,
   runWithReadOnlyTools,
-  startAdaptivePrefetch,
 } from './request-session';
-
-export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
-  ADAPTIVE_CONTROLLER_SYSTEM +
-  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
 /** Keep generated verification steps inside the hub's checker tool scope. */
 export class CheckerAdaptiveController implements IAdaptiveController {
-  constructor(
-    private readonly inner: IAdaptiveController,
-    private readonly prefetch?: (text: string, signal?: AbortSignal) => void,
-  ) {}
+  constructor(private readonly inner: IAdaptiveController) {}
   get name() {
     return this.inner.name;
   }
@@ -156,7 +147,6 @@ export class CheckerAdaptiveController implements IAdaptiveController {
     });
   }
   async plan(input: Parameters<IAdaptiveController['plan']>[0]) {
-    this.prefetch?.(input.request, input.signal);
     const result = await this.inner.plan(input);
     return {
       ...result,
@@ -269,21 +259,6 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       .toolGate ?? 'classifier',
     private readonly agentMode = getAgentConfig().agent.mode,
   ) {}
-
-  /** Share the query analyzer and its configured deadline with adaptive planning. */
-  prefetchAdaptive(text: string, signal?: AbortSignal): void {
-    const analyzer = this.analyzer;
-    if (
-      !analyzer ||
-      this.agentMode === 'hard' ||
-      this.toolGate === 'off' ||
-      isToolGateBypassed()
-    )
-      return;
-    startAdaptivePrefetch(text, () =>
-      analyzer.analyze(text, getRequestHistory(), { signal }),
-    );
-  }
 
   /** The store a given exposition's entries live in. */
   private storeFor(exposition: string | undefined): IRag {
@@ -469,10 +444,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       this.toolGate !== 'off' &&
       !isToolGateBypassed();
     const analyzer = this.analyzer;
-    const prefetch = getAdaptivePrefetch();
-    const decision = prefetch
-      ? { ...(await prefetch), needsAbapSystem: true }
-      : analyzer && embedding.text
+    const decision =
+      analyzer && embedding.text
         ? await requestToolGateDecision(embedding.text, () =>
             analyzer.analyze(embedding.text, getRequestHistory(), options),
           )
@@ -2701,6 +2674,13 @@ async function configureDestinationAgentBuilder(
   return builder;
 }
 
+/** The library's controller prompt plus the hub's language rule: step goals,
+ *  questions and notes reach the user (WebUI step trail), so they follow the
+ *  request's language. */
+export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
+  ADAPTIVE_CONTROLLER_SYSTEM +
+  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
+
 export const EXECUTOR_DESCRIPTION =
   "ABAP executor with the SAP system's tools: reads, searches, creates, changes and activates ABAP objects; returns what it did and found.";
 export const CHECKER_DESCRIPTION =
@@ -2795,7 +2775,6 @@ export async function buildAgentForDestination(
           new LlmAdaptiveController(criticLlm, {
             systemPrompt: HUB_ADAPTIVE_CONTROLLER_SYSTEM,
           }),
-          (text, signal) => toolsRag.prefetchAdaptive(text, signal),
         ),
         workers,
         finalizer: new NoticeFinalizer(recMcp, criticLlm),

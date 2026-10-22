@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
-- **Adaptive latency and language.** Tool-gate analysis overlaps planning; workers reuse its translation and keep tools available. Controller goals, questions, notes and checks follow the request language.
+- **Adaptive step language.** The controller writes step goals, questions, notes and check goals in the request's language.
 
 - **Chat defaults to adaptive coordination.** The controller plans each
   request, with instructions to answer small talk itself and use one executor
