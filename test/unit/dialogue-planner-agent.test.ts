@@ -89,6 +89,11 @@ test('hard planner sends all five control tools, hub prompt, and follows getSmar
     );
     expect(new Set(first.tools.flat()).size).toBe(5);
     expect(first.messages.join('\n')).toContain(HUB_DIALOGUE_PLANNER_SYSTEM);
+    // Hub notes are not the user, and the library's fixed default is replaced.
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+      'notes come from the hub, not from the user',
+    );
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain('(default: 3');
     expect(first.messages.join('\n')).toContain(
       'At most 7 tasks may run at the same time in this session; run fewer when steps are not independent.',
     );

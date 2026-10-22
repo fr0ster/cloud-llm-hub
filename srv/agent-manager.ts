@@ -2688,7 +2688,8 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
     'Respect the configured concurrency limit (default: 3 running tasks per session).',
     '',
   ) +
-  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
+  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
+  '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
 
 const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
 export async function buildPlannerAgent(
