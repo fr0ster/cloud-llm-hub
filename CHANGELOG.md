@@ -4,46 +4,48 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.4.0] - 2026-10-22
+
 ### Added
 
-- **Opt-in dialogue planner.** `LLM_AGENT_CHAT_COORDINATOR=dialogue` selects a
-  long-session planner for OpenAI/Anthropic chat, with background executor and
-  read-only checker subagents. Defaults: 3 concurrent tasks per session, 6
-  hub-wide, 50 task records per session, configurable through
-  `LLM_AGENT_DIALOGUE_EXECUTORS`, `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` and
-  `LLM_AGENT_DIALOGUE_MAX_TASKS`.
-  Requests without a long session fall back to adaptive with
-  `x-clh-coordinator: adaptive`. Without an events subscriber, outbox planner
-  messages prefix the next response; `GET /v1/session/events` supplies live planner messages and task
-  states to the WebUI, with a heartbeat that keeps the session alive.
-  Adaptive remains the default; the agent MCP path is unchanged.
+- **Opt-in dialogue planner.** `LLM_AGENT_CHAT_COORDINATOR=dialogue` gives
+  long-session chat (OpenAI and Anthropic APIs) a planner that leads the
+  dialogue and delegates work to executor and read-only checker subagents in
+  the background. The user's messages never wait for an executor. Requests
+  without a long session are served by `adaptive`
+  (`x-clh-coordinator: adaptive`). `adaptive` stays the default, and the agent
+  MCP path is unchanged.
+  - Limits are deploy parameters: `LLM_AGENT_DIALOGUE_EXECUTORS` (3 per
+    session), `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` (6 hub-wide),
+    `LLM_AGENT_DIALOGUE_MAX_TASKS` (50). The planner is told the configured
+    limit.
+  - Each background task gets its own ABAP connection from a per-session pool.
+    SAP credentials are held in memory only. The SAP principal and destination
+    are fixed for the dialogue (409 `DIALOGUE_PRINCIPAL_FIXED` /
+    `DIALOGUE_DESTINATION_FIXED`); credential rotation retires pooled
+    connections. Background tasks are admitted outside the MCP admission door.
+  - Dialogue state lives in `h_dialogue` (HANA/PostgreSQL, memory otherwise) and
+    follows the long session's lifetime. After a restart, running tasks are
+    reported as interrupted.
+  - Planner messages wait in an outbox until delivered. Standard clients get
+    them at the start of the next response; `GET /v1/session/events` (SSE, with
+    ids, replay, `POST /v1/session/events/ack` and task snapshots) delivers them
+    live to the WebUI, which shows them and a task list. The open channel keeps
+    the session alive.
+  - Lifecycle logs (logger `dialogue`) carry ids, workers, goal sizes, states
+    and durations, never goal text, task outputs, error text or credentials.
+- **Log levels.** `LLM_AGENT_LOG_LEVEL` (default `info`) and
+  `LLM_AGENT_LOG_LEVELS` (per logger, e.g. `sap-cloud-sdk=error,dialogue=info`;
+  `sap-cloud-sdk` sets the SAP Cloud SDK's level) are deploy parameters.
 
-### Fixed
+### Changed
 
-- Dialogue principal/client changes return 409 `DIALOGUE_PRINCIPAL_FIXED` in both
-  chat APIs. Secret rotation retires connections; removing credentials preserves
-  the binding and prevents new connections until credentials return.
-- Chat alone creates dialogue handles and binds their destination. Earlier events
-  streams attach on creation; acknowledgements before creation are 204 no-ops.
-- Each outbox subscriber receives messages in order through its own cursor,
-  including messages whose persistence failed, before later prefix acknowledgements.
-
-- Dialogue planner events remain in a persisted hub outbox until acknowledged.
-  SSE includes stable IDs, cursor replay and task snapshots; the WebUI deduplicates,
-  acknowledges after rendering and restores task progress on reconnect. Chat only
-  includes outbox messages without a subscriber and removes them after successful
-  response completion, retaining them after failure or disconnect.
-- Long-session activity, including SSE heartbeats, refreshes dialogue persistence
-  every 60 seconds so active sessions retain their dialogue state across restart.
-- Planner instructions state the configured per-session executor limit at build time.
-
-- Dialogue workers bypass MCP Door capacity while retaining leases, call draining
-  and shutdown cancellation. Chat admission remains unchanged.
-- Dialogue destination changes return 409 `DIALOGUE_DESTINATION_FIXED`.
-  Credential changes retire idle connections and close leased connections on release.
-- Dialogue deletion failures no longer skip session teardown; the TTL sweep retries them.
-- Persisted task limits follow `LLM_AGENT_DIALOGUE_MAX_TASKS`, including values above 50.
-- Connection-opening errors use fixed credential-free messages and categorized diagnostics.
+- Closing a long session (`DELETE /v1/session`, `POST /v1/session/close`)
+  answers at once while cleanup completes in the background; opening a session
+  waits up to 15 s for the same user's pending closes before applying the
+  session cap.
+- Dependencies: the `@mcp-abap-adt` llm-agent, LLM-provider and RAG packages
+  30.6.0.
 
 ## [8.3.1] - 2026-10-22
 
