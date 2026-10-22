@@ -17,6 +17,9 @@ sap.ui.define([
     onInit: function () {
       console.log("[Chat] Controller v3 initialized");
       var that = this;
+      this._messages = [];
+      this._eventGeneration = 0;
+      this._startEvents();
       StreamClient.getModels()
         .then(function (data) {
           var oModel = that.getView().getModel();
@@ -28,6 +31,38 @@ sap.ui.define([
           var oModel = that.getView().getModel();
           if (oModel) { oModel.setProperty("/modelName", "unavailable"); }
         });
+    },
+
+    _startEvents: function () {
+      var that = this;
+      var generation = this._eventGeneration;
+      StreamClient._ensureSession().then(function () {
+        if (generation === that._eventGeneration) { that._subscribeEvents(); }
+      }).catch(function (err) { MessageToast.show(err.message); });
+    },
+
+    _subscribeEvents: function () {
+      var that = this;
+      this._dialogueTasks = [];
+      this._unsubscribeEvents = StreamClient.subscribeEvents({
+        onMessage: function (message) {
+          that._messages.push({ role: "assistant", type: "assistant", content: message.text, planner: true });
+          that._renderChat();
+          that._scrollToBottom();
+        },
+        onTask: function (task) {
+          var index = that._dialogueTasks.findIndex(function (item) { return item.id === task.id; });
+          var item = { id: task.id, goal: task.goal, state: task.state,
+            icon: task.state === "done" ? "✓" : task.state === "failed" ? "✗" : task.state === "stopped" ? "■" : "…" };
+          if (index < 0) { that._dialogueTasks.push(item); } else { that._dialogueTasks[index] = item; }
+          that.getView().getModel().setProperty("/dialogueTasks", that._dialogueTasks.slice());
+        }
+      });
+    },
+
+    onExit: function () {
+      this._eventGeneration++;
+      if (this._unsubscribeEvents) { this._unsubscribeEvents(); this._unsubscribeEvents = null; }
     },
 
     _getChatWindow: function () {
@@ -122,7 +157,10 @@ sap.ui.define([
     },
 
     onClearHistory: function () {
+      this.onExit();
       var oModel = this.getView().getModel();
+      this._dialogueTasks = [];
+      oModel.setProperty("/dialogueTasks", []);
       this._messages = [];
       oModel.setProperty("/statusText", "IDLE");
       if (this._abortStream) {
@@ -130,7 +168,11 @@ sap.ui.define([
         this._abortStream = null;
         oModel.setProperty("/busy", false);
       }
-      StreamClient.closeSession().catch(function (err) {
+      var that = this;
+      var generation = this._eventGeneration;
+      StreamClient.closeSession().then(function () {
+        if (generation === that._eventGeneration) { that._startEvents(); }
+      }).catch(function (err) {
         MessageToast.show(err.message);
       });
       this._renderChat();
@@ -170,7 +212,7 @@ sap.ui.define([
       if (!msg.content) {
         content = '<span style="color:#888;font-style:italic">Agent is processing...</span>';
       } else {
-        content = formatter.markdownToHtml(msg.content);
+        content = msg.planner ? formatter.escapeHtml(msg.content) : formatter.markdownToHtml(msg.content);
       }
 
       var stepsHtml = "";

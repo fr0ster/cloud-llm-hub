@@ -41,6 +41,7 @@ jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
   ensureAiCoreCredentials: () => {},
   getAgentConfig: () => ({
+    agent: { chatCoordinator: 'adaptive' },
     rag: { backends: { session: 'vector' } },
     mcp: { destination: '' },
   }),
@@ -167,6 +168,27 @@ describe('POST /v1/session', () => {
 });
 
 describe('closing', () => {
+  it('event channel requires an owned long session after the middleware chain', async () => {
+    expect((await fetch(`${base}/v1/session/events`)).status).toBe(404);
+    const { body } = await openOne();
+    user.id = 'bob';
+    expect(
+      (
+        await fetch(`${base}/v1/session/events`, {
+          headers: { [SESSION_HEADER]: body.session },
+        })
+      ).status,
+    ).toBe(404);
+    user.id = 'alice';
+    // The test config uses the default coordinator, so an owned key reaches 409.
+    expect(
+      (
+        await fetch(`${base}/v1/session/events`, {
+          headers: { [SESSION_HEADER]: body.session },
+        })
+      ).status,
+    ).toBe(409);
+  });
   it('DELETE /v1/session with the header closes the long session → 204', async () => {
     const { body } = await openOne();
     const res = await fetch(`${base}/v1/session`, {

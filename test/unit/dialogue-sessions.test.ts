@@ -196,6 +196,8 @@ test('subscribers receive task events and messages; delivered messages leave pen
   const { h } = await ready();
   const events: DialogueEvent[] = [];
   const unsubscribe = h.subscribe((e) => events.push(e));
+  const secondTab: DialogueEvent[] = [];
+  const unsubscribeSecond = h.subscribe((e) => secondTab.push(e));
   await h.session.send('go');
   await until(() => events.some((e) => e.kind === 'message'));
   expect(events).toEqual(
@@ -211,6 +213,8 @@ test('subscribers receive task events and messages; delivered messages leave pen
     ]),
   );
   expect(h.session.takePending()).toEqual([]);
+  expect(secondTab).toEqual(events);
+  unsubscribeSecond();
   unsubscribe();
   const count = events.length;
   await h.session.send('again');

@@ -8,6 +8,71 @@ sap.ui.define([], function () {
   return {
     _sessionOpening: null,
 
+    subscribeEvents: function (options) {
+      var that = this;
+      var stopped = false;
+      var delay = 1000;
+      var timer;
+      var controller;
+      var reader;
+      function connect() {
+        if (stopped) { return; }
+        controller = new AbortController();
+        that._sessionFetch(that._getBaseUrl() + "/v1/session/events", {
+          method: "GET", headers: { Accept: "text/event-stream" }, signal: controller.signal
+        }).then(async function (response) {
+          if (stopped) { return; }
+          // The default adaptive coordinator has no event channel.
+          if (response.status === 409) { stopped = true; return; }
+          if (!response.ok) { throw new Error("HTTP " + response.status); }
+          reader = response.body.getReader();
+          var decoder = new TextDecoder();
+          var buffer = "";
+          try {
+            while (!stopped) {
+              var chunk = await reader.read();
+              if (chunk.done) { break; }
+              delay = 1000;
+              buffer += decoder.decode(chunk.value, { stream: true });
+              var boundary;
+              while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+                var frame = buffer.slice(0, boundary.index);
+                buffer = buffer.slice(boundary.index + boundary[0].length);
+                var event = "message";
+                var data = [];
+                frame.split(/\r?\n/).forEach(function (line) {
+                  if (line.indexOf("event:") === 0) { event = line.slice(6).trim(); }
+                  if (line.indexOf("data:") === 0) { data.push(line.slice(5).trimStart()); }
+                });
+                if (!data.length || stopped) { continue; }
+                var parsed;
+                try { parsed = JSON.parse(data.join("\n")); } catch (e) { continue; }
+                if (event === "message" && options.onMessage) { options.onMessage(parsed); }
+                if (event === "task" && options.onTask) { options.onTask(parsed); }
+              }
+            }
+          } finally {
+            reader.releaseLock();
+            reader = null;
+          }
+        }).catch(function (err) {
+          if (!stopped && options.onError) { options.onError(err); }
+        }).finally(function () {
+          if (!stopped) {
+            timer = setTimeout(connect, delay);
+            delay = Math.min(delay * 2, 30000);
+          }
+        });
+      }
+      connect();
+      return function () {
+        stopped = true;
+        clearTimeout(timer);
+        if (controller) { controller.abort(); }
+        if (reader) { reader.cancel().catch(function () {}); }
+      };
+    },
+
     _ensureSession: function () {
       var that = this;
       if (this._sessionOpening) { return this._sessionOpening; }

@@ -30,6 +30,11 @@
     </content>
 
     <footer>
+      <Toolbar height="auto">
+      <VBox width="100%">
+      <VBox items="{/dialogueTasks}" class="sapUiTinyMargin">
+        <items><Text text="{icon} {id}: {goal} ({state})" wrapping="true" /></items>
+      </VBox>
       <Toolbar>
         <Input
           id="chatInput"
@@ -52,6 +57,8 @@
           press=".onClearHistory"
           tooltip="Clear chat"
         />
+      </Toolbar>
+      </VBox>
       </Toolbar>
     </footer>
   </Page>
