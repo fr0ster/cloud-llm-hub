@@ -1,20 +1,38 @@
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import { type ILlm, InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
+  buildAgentForDestination,
   buildPlannerAgent,
+  CHECKER_DESCRIPTION,
+  EXECUTOR_DESCRIPTION,
+  ExpositionFilteringRag,
   getSmartAgent,
   HUB_DIALOGUE_PLANNER_SYSTEM,
+  HUB_DIALOGUE_STORAGE_RULES,
   initProviders,
   releasePlannerAgent,
 } from '../../srv/agent-manager';
+import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-tools';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import { runWithSessionId } from '../../srv/request-session';
 
 test('verification always belongs to the checker', () => {
+  for (const rule of HUB_DIALOGUE_STORAGE_RULES.split('\n')) {
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
+  }
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'The checker can read stored hub RAG records with rag_list; use it to verify stored results.',
+  );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
     'Delegate every verification or check step to the checker worker, never to the executor; the checker only reads and checks.',
   );
+});
+
+test('shared worker descriptions do not advertise dialogue RAG tools', () => {
+  expect(EXECUTOR_DESCRIPTION).not.toContain('rag_');
+  expect(CHECKER_DESCRIPTION).not.toContain('rag_');
 });
 
 jest.mock('../../srv/lib/llm-factory', () => ({
@@ -111,4 +129,52 @@ test('hard planner sends all five control tools, hub prompt, and follows getSmar
   } finally {
     releasePlannerAgent(planner);
   }
+});
+
+test('dialogue tool-loop offers hub storage to executor and only readback to checker', async () => {
+  const model = llm('worker');
+  jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+  const dialogueConfig: AgentConfig = {
+    ...config,
+    agent: { ...config.agent, chatCoordinator: 'dialogue', skillRagK: 0 },
+  };
+  initProviders(await startProviders(dialogueConfig));
+  await getSmartAgent('worker');
+  const handle = await buildAgentForDestination(
+    {
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: jest.fn(),
+    } as never,
+    new ExpositionFilteringRag(new InMemoryRag()),
+    dialogueConfig,
+  );
+  const workers = (
+    handle as typeof handle & {
+      workers: ReadonlyMap<string, import('@mcp-abap-adt/llm-agent').ISubAgent>;
+    }
+  ).workers;
+  for (const name of ['executor', 'checker']) {
+    model.tools.length = 0;
+    await runWithSessionId(
+      'dialogue-1',
+      () =>
+        runWithDialogueRagTools(() =>
+          workers.get(name)?.run({
+            task: 'Read stored analysis from the hub collection',
+            history: [],
+          }),
+        ),
+      [],
+      'alice',
+    );
+    expect([...new Set(model.tools.flat())].sort()).toEqual(
+      name === 'executor'
+        ? ['rag_add', 'rag_correct', 'rag_deprecate', 'rag_list']
+        : ['rag_list'],
+    );
+  }
+  expect(model.messages.join('\n')).toContain(HUB_DIALOGUE_STORAGE_RULES);
+  expect(model.messages.join('\n')).toContain(
+    'If a step fails twice the same way, stop and report to the planner instead of retrying.',
+  );
 });

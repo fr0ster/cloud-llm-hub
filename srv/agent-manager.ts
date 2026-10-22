@@ -77,6 +77,10 @@ import { destinationRequiresCredentials } from './lib/destination-authentication
 
 export { destinationRequiresCredentials } from './lib/destination-authentication';
 
+import {
+  DialogueRagMcpClient,
+  withDialogueRagTools,
+} from './lib/dialogue-rag-tools';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
 import {
@@ -2583,6 +2587,12 @@ async function configureDestinationAgentBuilder(
     prompts: {
       system: [
         'Use MCP tools when they can accomplish the task. Answer or fulfill requests when possible.',
+        ...(config.agent.chatCoordinator === 'dialogue'
+          ? [
+              HUB_DIALOGUE_STORAGE_RULES,
+              'If a step fails twice the same way, stop and report to the planner instead of retrying.',
+            ]
+          : []),
         'When an action is impossible with available tools — say so and do not attempt it.',
         "Respond in the user's language. Code and object names always in English.",
       ].join('\n'),
@@ -2610,7 +2620,12 @@ async function configureDestinationAgentBuilder(
     .withMcpClients([mcpAdapter]);
 
   // Tools RAG store for MCP tool selection (auto-vectorized)
-  if (!opts?.skipRetrieval) builder.setToolsRag(toolsRag);
+  if (!opts?.skipRetrieval)
+    builder.setToolsRag(
+      config.agent.chatCoordinator === 'dialogue'
+        ? withDialogueRagTools(toolsRag)
+        : toolsRag,
+    );
 
   // Recall of earlier turns. The pipeline already queries `history` on every
   // request; until now nothing wrote to it, so it answered nothing every time.
@@ -2684,12 +2699,22 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
+export const HUB_DIALOGUE_STORAGE_RULES = [
+  "Storing, collecting or remembering results means the hub's RAG collection (rag_add), never objects in the SAP system.",
+  'Do not create, change, activate or run objects in the SAP system unless the user asked for that change. Reading and analysis tasks only read.',
+  "When a step's outcome is stored, the check step reads it back (records exist and match), not just that a tool exists.",
+  "When the user's wording is ambiguous about where or how to store or change something, ask the user.",
+].join('\n');
+
 export const HUB_DIALOGUE_PLANNER_SYSTEM =
   DIALOGUE_PLANNER_SYSTEM.replace(
     'Respect the configured concurrency limit (default: 3 running tasks per session).',
     '',
   ) +
+  '\n' +
+  HUB_DIALOGUE_STORAGE_RULES +
   '\nDelegate every verification or check step to the checker worker, never to the executor; the checker only reads and checks.' +
+  '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
   '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
 
@@ -2784,8 +2809,11 @@ export async function buildAgentForDestination(
   // instance's records to ground its verdict in what actually happened, not
   // just which tool NAMES ran (a name match alone can't tell an activated
   // create from an inactive one).
-  const recMcp = new RecordingMcpClient(mcpAdapter, (name) =>
-    toolExpositionMap?.get(name),
+  const recMcp = new RecordingMcpClient(
+    config.agent.chatCoordinator === 'dialogue'
+      ? new DialogueRagMcpClient(mcpAdapter, getCollectionRegistry)
+      : mcpAdapter,
+    (name) => toolExpositionMap?.get(name),
   );
   let executor: SmartAgent | undefined;
   let rawExecutor: SmartAgent | undefined;

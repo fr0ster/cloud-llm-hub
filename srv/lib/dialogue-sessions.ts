@@ -31,6 +31,7 @@ import {
   plannerWithEnvironment,
   plannerWithParagraphs,
 } from './dialogue-planner-content';
+import { runWithDialogueRagTools } from './dialogue-rag-tools';
 import {
   createDialogueStateStore,
   deleteDialogueState,
@@ -277,11 +278,13 @@ async function open(
                 ctx.lease.connection,
                 async () => {
                   const result = await runWithToolGateBypass(() =>
-                    worker.run({
-                      ...input,
-                      trace: { traceId: ctx.traceId },
-                      signal: ctx.pipeline.signal,
-                    }),
+                    runWithDialogueRagTools(() =>
+                      worker.run({
+                        ...input,
+                        trace: { traceId: ctx.traceId },
+                        signal: ctx.pipeline.signal,
+                      }),
+                    ),
                   );
                   if (
                     result.errorClass === 'epicfail' ||

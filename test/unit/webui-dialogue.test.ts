@@ -45,7 +45,7 @@ function harness() {
   const api = runInNewContext(
     markdown +
       source +
-      ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents})',
+      ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml})',
     context,
   );
   return { ...context, ...api, nodes, list, timers };
@@ -67,6 +67,26 @@ function stream(text: string) {
     },
   };
 }
+test('markdown tables render aligned headers, escaped cells and inline markdown', () => {
+  const ui = harness();
+  const result = ui.markdownToHtml(
+    '| Result | Count | Note |\n| :--- | ---: | :---: |\n| **stored** | `2` | <script>x</script> |\n\nAfter',
+  );
+  expect(result).toContain(
+    '<table class="markdown-table"><thead><tr><th style="text-align:left">Result</th>',
+  );
+  expect(result).toContain('<th style="text-align:right">Count</th>');
+  expect(result).toContain('<th style="text-align:center">Note</th>');
+  expect(result).toContain(
+    '<td style="text-align:left"><strong>stored</strong></td>',
+  );
+  expect(result).toContain('<td style="text-align:right"><code>2</code></td>');
+  expect(result).toContain('&lt;script&gt;x&lt;/script&gt;');
+  expect(result).not.toContain('<script>');
+  expect(
+    ui.markdownToHtml('```text\n| A | B |\n| --- | --- |\n```'),
+  ).not.toContain('<table');
+});
 test('standalone renders before ack, dedupes replay, sends cursor and handles task snapshots/updates safely', async () => {
   const ui = harness();
   const message =

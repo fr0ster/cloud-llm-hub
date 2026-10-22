@@ -96,6 +96,7 @@ export function isReadOnlyTool(
   )
     return false;
   return (
+    name === 'rag_list' ||
     /^(Get|Read|Search|Check|List|Find|Describe|Validate)/.test(name) ||
     [
       // Installed runtime handlers only retrieve existing evidence; no execution.
