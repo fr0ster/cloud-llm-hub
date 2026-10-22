@@ -29,6 +29,7 @@ import {
   hasSessionHistory,
   SESSION_MAX_MESSAGES,
 } from '../session-store';
+import { sweepDialogueStates } from './dialogue-store';
 import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
 import {
@@ -351,6 +352,9 @@ export function startSessionSweep(intervalMs = 60_000): () => void {
   let running = false;
   const timer = setInterval(
     guardedTask('Long-session sweep', log(), async () => {
+      guardedTask('Dialogue-state expiry sweep', log(), () =>
+        sweepDialogueStates(),
+      )();
       guardedTask('Run-record expiry sweep', log(), () => sweepRunRecords())();
       if (running) return;
       running = true;

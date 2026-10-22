@@ -38,6 +38,7 @@ import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { getAvailableDestinations } from './lib/btp-destinations';
 import { restoreHealth } from './lib/collection-persistence';
+import { initializeDialogueStore } from './lib/dialogue-store';
 import {
   formatErrorMessage,
   httpErrorText,
@@ -488,6 +489,7 @@ cds.on('bootstrap', (app: Application) => {
   // Logged here, not in agent-config.ts, which session-config imports.
   const sessions = sessionConfig();
   initializeRunRecordStore(sessions, getAgentConfig().rag);
+  initializeDialogueStore(sessions, getAgentConfig().rag);
 
   const log = cds.log('mcp-proxy/bootstrap');
   log.info('Long-session configuration', { ...sessions });

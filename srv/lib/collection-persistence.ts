@@ -663,7 +663,8 @@ export function createCollectionPersistence(
           // The long-session records: the hub's, never a session collection.
           if (
             isSessionRecordStore(rec, prefix) ||
-            isRunRecordStore(rec, prefix)
+            isRunRecordStore(rec, prefix) ||
+            isDialogueStore(rec, prefix)
           )
             continue;
           const decoded = decodeRecord(rec, prefix);
@@ -696,7 +697,8 @@ export function createCollectionPersistence(
           if (
             isHistoryRecord(rec, prefix) ||
             isSessionRecordStore(rec, prefix) ||
-            isRunRecordStore(rec, prefix)
+            isRunRecordStore(rec, prefix) ||
+            isDialogueStore(rec, prefix)
           )
             continue;
           const decoded = decodeRecord(rec, prefix);
@@ -1006,6 +1008,27 @@ export function ensureRunRecordStore(
     collectionName: RUN_RECORD_STORE_NAME,
     source: 'runs',
     label: 'run record store',
+  });
+}
+
+export const DIALOGUE_STORE_NAME = 'h_dialogue';
+export function isDialogueStore(
+  rec: RagCollectionRecord,
+  prefix?: string,
+): boolean {
+  return isHubStoreRecord(
+    rec,
+    prefix ? `${prefix}_h_dialogue` : DIALOGUE_STORE_NAME,
+  );
+}
+export function ensureDialogueStore(
+  provider: IRagProvider,
+): Promise<Result<IRag, RagError>> {
+  return ensureHubStore(provider, {
+    storeName: DIALOGUE_STORE_NAME,
+    collectionName: DIALOGUE_STORE_NAME,
+    source: 'dialogue',
+    label: 'dialogue state store',
   });
 }
 
