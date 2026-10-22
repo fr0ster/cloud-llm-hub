@@ -1,3 +1,4 @@
+import { isReadOnlyTools } from '../request-session';
 /**
  * Execution-time authorization for MCP tools.
  *
@@ -41,7 +42,13 @@ export function assertToolAllowed(
   toolName: string,
   toolExposition: string | undefined,
   allowed: readonly ExpositionLevel[] | undefined,
+  annotations?: ToolEffectAnnotations,
 ): void {
+  if (isReadOnlyTools() && !isReadOnlyTool(toolName, annotations)) {
+    throw new ToolAuthorizationError(
+      `Tool "${toolName}" was not executed: checker tools are read-only.`,
+    );
+  }
   if (!allowed || allowed.length === 0) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: the caller's permissions could not be determined. ` +
@@ -62,4 +69,49 @@ export function assertToolAllowed(
         'Asking for it by name does not grant it — a different MCP role is required.',
     );
   }
+}
+
+export function isReadOnlyExposition(exposition: unknown): boolean {
+  return (
+    exposition === 'readonly' ||
+    exposition === 'search' ||
+    exposition === 'system'
+  );
+}
+
+export interface ToolEffectAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+}
+
+/** Effect classification for checker scope only; role groups remain independent. */
+export function isReadOnlyTool(
+  name: string,
+  annotations?: ToolEffectAnnotations,
+): boolean {
+  if (annotations?.readOnlyHint === true) return true;
+  if (
+    annotations?.destructiveHint === true ||
+    annotations?.readOnlyHint === false
+  )
+    return false;
+  return (
+    /^(Get|Read|Search|Check|List|Find|Describe|Validate)/.test(name) ||
+    [
+      // Installed runtime handlers only retrieve existing evidence; no execution.
+      'RuntimeAnalyzeProfilerTrace',
+      'RuntimeGetDumpById',
+      'RuntimeGetProfilerTraceData',
+      'RuntimeGetGatewayErrorLog',
+      'RuntimeListFeeds',
+      'RuntimeListProfilerTraceFiles',
+      'RuntimeListSystemMessages',
+      'RunUnitTest',
+      'RunATC',
+      'RunCdsUnitTest',
+      'RunProgramUnitTest',
+      'RunFunctionGroupUnitTest',
+      'RunFunctionModuleUnitTest',
+    ].includes(name)
+  );
 }

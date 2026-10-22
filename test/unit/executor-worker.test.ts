@@ -72,6 +72,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 import { buildExecutorWorker, initProviders } from '../../srv/agent-manager';
 import { startProviders } from '../../srv/lib/providers';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import { runWithSessionId } from '../../srv/request-session';
 
 const config: AgentConfig = {
   llm: {
@@ -86,6 +87,7 @@ const config: AgentConfig = {
   },
   mcp: { destination: 'TEST_DEST', systemDestinations: {} },
   agent: {
+    chatCoordinator: 'fixed',
     mode: 'smart',
     maxIterations: 10,
     ragType: 'in-memory',
@@ -136,6 +138,47 @@ describe('buildExecutorWorker', () => {
     await buildExecutorWorker({} as never, {} as never, config);
     expect(withToolCache).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    'injectHistory=%s preserves the proxied handle and selects worker history',
+    async (injectHistory) => {
+      const expose = jest.fn();
+      fakeAgent.process.mockResolvedValue({
+        ok: true,
+        value: { content: 'done' },
+      });
+      const worker = await buildExecutorWorker(
+        {} as never,
+        {} as never,
+        config,
+        expose,
+        { injectHistory },
+      );
+      const history = [{ role: 'user' as const, content: 'previous' }];
+      const [executor, raw] = expose.mock.calls[0];
+      expect(raw).toBe(fakeAgent);
+      expect(executor).not.toBe(fakeAgent);
+      await runWithSessionId(
+        'worker',
+        () => worker.run({ task: 'task', history: [] }),
+        history,
+      );
+      expect(fakeAgent.process.mock.calls.at(-1)?.[0]).toEqual(
+        injectHistory
+          ? [...history, { role: 'user', content: 'task' }]
+          : 'task',
+      );
+      await runWithSessionId(
+        'worker',
+        () => executor.process('direct'),
+        history,
+      );
+      expect(fakeAgent.process.mock.calls.at(-1)?.[0]).toEqual([
+        ...history,
+        { role: 'user', content: 'direct' },
+      ]);
+    },
+  );
 
   it('never enables a coordinator — plain tool-loop, no self-recursion', async () => {
     await buildExecutorWorker({} as never, {} as never, config);

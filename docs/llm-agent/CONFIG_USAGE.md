@@ -170,6 +170,19 @@ which makes tool selection keyword-only.
 Tool retrieval measurement defaults to untranslated queries. Set `TOOL_RAG_MEASURE_TRANSLATE=1`
 when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-query translation.
 
+### Chat coordinator
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` plans per request; `fixed` restores the previous one-step DAG. Unset or empty selects `adaptive`; other values reject startup. |
+| `LLM_AGENT_PLAN_MAX_STEPS` | library: `20` | Optional positive integer step limit. |
+| `LLM_AGENT_PLAN_MAX_REVISIONS` | library: `3` | Optional positive integer revision limit. |
+| `LLM_AGENT_PLAN_MAX_DURATION_MS` | library: `300000` | Optional positive integer duration limit in milliseconds. |
+
+Unset or blank budget fields remain undefined so the library applies its defaults. Values must otherwise be positive safe integers written as decimal digits; malformed values reject startup. Budgets apply to adaptive execution; elapsed time is checked between steps, not as a timeout on planning or an in-flight worker call. These settings apply to the chat path; `execute_step` retains its existing behavior. Run records keep only the latest run per authenticated user and session, with each step output limited to 4000 characters. With a HANA or PG session store they use the dedicated `h_runs` hub store; otherwise they stay in memory, bounded by `LLM_AGENT_MAX_SESSIONS`. Run-record load/save requires a matching trusted request session and authenticated user; requests without either keep no run record. Both Anthropic paths forward the trusted session. Closing, forgetting or expiring a session deletes its owner-scoped run record, including plain-session history expiry. Records also expire after `LLM_AGENT_SESSION_TTL_MS` from their save time; memory saves sweep expired records. Persistent h_runs records are swept at startup and every minute by the session cleanup timer, including records left by previous processes. Sweeps run in the background with failure logging and leave malformed rows intact with a warning.
+
+Planning and revision route every check targeting a worker other than self to the checker; work steps keep their assigned worker. Checker workers are verification-only: request-local enforcement filters out write tools and rejects attempted writes before the MCP adapter, even for developers. Effect checks are independent of exposition-based role permissions. MCP read-only/destructive annotations take precedence, then read/check name prefixes and the installed RunUnitTest/RunATC family are allowed. The installed RuntimeGetDumpById, RuntimeGetProfilerTraceData, RuntimeGetGatewayErrorLog, RuntimeListFeeds, RuntimeListProfilerTraceFiles and RuntimeListSystemMessages evidence readers are also allowed; runtime execution remains blocked. Executor steps retain their normal permissions. No new setting is required.
+
 ### Tool gate
 
 | Variable | Default | Meaning |
@@ -178,3 +191,5 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 | `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` | `4000` | Positive integer deadline in milliseconds for factory creation plus chat; invalid values warn and use 4000. Timeout keeps tools. |
 
 `LLM_AGENT_TOOL_GATE` defaults to `classifier`; `off` always offers tools and skills: the same single call still classifies and translates, but its decision is ignored. The first tool search of a request of at least 3 characters waits for this call, English included; English is returned verbatim and all other languages, including transliteration, are translated without a language heuristic. Shorter requests skip the call and keep tools. One call per request; later re-selection searches in the same request reuse its decision and search untranslated. Concurrent first searches share the pending decision in request scope, independent of session identity. Hard mode (`LLM_AGENT_MODE=hard`) always keeps tools and skills. `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` bounds factory creation plus chat (default 4000 ms, positive integer; invalid values warn and use the default). Timeout or external abort keeps tools and the original text, is not cached, and clears pending analysis so the next request retries; underlying chat is aborted where supported. With `classifier`, a confident decision that the ABAP system is unnecessary removes tools and skills. Any doubt or error keeps them, and `execute_step` always bypasses the gate. Other values are rejected.
+
+Unexpired run records count as retention state even without chat history, preserving plain Anthropic sessions across release. The synchronous owner/session index uses the record save timestamp and session TTL; reads do not extend it. Provider save/load populates the index, while deletion and expiry remove entries.

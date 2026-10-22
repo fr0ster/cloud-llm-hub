@@ -68,3 +68,58 @@ describe('agent config: settings read at the point of use before', () => {
     });
   });
 });
+
+describe('chat coordinator configuration', () => {
+  const saved = { ...process.env };
+  const names = [
+    'LLM_AGENT_CHAT_COORDINATOR',
+    'LLM_AGENT_PLAN_MAX_STEPS',
+    'LLM_AGENT_PLAN_MAX_REVISIONS',
+    'LLM_AGENT_PLAN_MAX_DURATION_MS',
+  ];
+  beforeEach(() => {
+    process.env = { ...saved };
+    for (const name of names) delete process.env[name];
+  });
+  afterAll(() => {
+    process.env = saved;
+    clearAgentConfig();
+  });
+  it('chatCoordinator defaults to adaptive', () => {
+    expect(loadAgentConfig().agent).toHaveProperty(
+      'chatCoordinator',
+      'adaptive',
+    );
+  });
+  it('LLM_AGENT_CHAT_COORDINATOR=fixed is read', () => {
+    process.env.LLM_AGENT_CHAT_COORDINATOR = 'fixed';
+    expect(loadAgentConfig().agent).toHaveProperty('chatCoordinator', 'fixed');
+  });
+  it('invalid LLM_AGENT_CHAT_COORDINATOR throws', () => {
+    process.env.LLM_AGENT_CHAT_COORDINATOR = 'wrong';
+    expect(() => loadAgentConfig()).toThrow('LLM_AGENT_CHAT_COORDINATOR');
+  });
+  it('plan budget env vars are read and malformed values throw', () => {
+    const vars = names.slice(1);
+    for (const name of vars) process.env[name] = '7';
+    expect(loadAgentConfig().agent).toHaveProperty('planBudget', {
+      maxSteps: 7,
+      maxRevisions: 7,
+      maxDurationMs: 7,
+    });
+    for (const name of vars) {
+      for (const bad of ['x', '0', '-1', '1.5']) {
+        process.env[name] = bad;
+        expect(() => loadAgentConfig()).toThrow(name);
+      }
+      process.env[name] = '7';
+    }
+  });
+  it('unset plan budget leaves planBudget fields undefined', () => {
+    expect(loadAgentConfig().agent).toHaveProperty('planBudget', {
+      maxSteps: undefined,
+      maxRevisions: undefined,
+      maxDurationMs: undefined,
+    });
+  });
+});

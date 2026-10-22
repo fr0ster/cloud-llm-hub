@@ -257,13 +257,13 @@ export class SessionRetention {
   /** Drop entries with no lease and nothing held. Returns how many went. */
   forgetEmpty(): number {
     let n = 0;
-    for (const [key, e] of [...this.entries]) {
+    for (const e of [...this.entries.values()]) {
       if (
         e.leases.size === 0 &&
         !e.closing &&
         !this.stores.hasState(e.userId, e.sessionId)
       ) {
-        this.entries.delete(key);
+        this.startClose(e).catch(() => {});
         n++;
       }
     }
@@ -319,7 +319,7 @@ export class SessionRetention {
       return;
     }
     if (!this.stores.hasState(e.userId, e.sessionId)) {
-      this.entries.delete(keyOf(e.userId, e.sessionId));
+      this.startClose(e).catch(() => {});
     }
   }
 

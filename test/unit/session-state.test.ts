@@ -1,3 +1,7 @@
+import { getRunRecordStore } from '../../srv/lib/run-record-store';
+import { scopedStore } from './helpers/scoped-run-store';
+
+const mockWarn = jest.fn();
 const mockCdsContext: {
   user?: { id: string; is?: (role: string) => boolean };
 } = {};
@@ -6,7 +10,7 @@ jest.mock(
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: () => ({ info() {}, warn: mockWarn, error() {}, debug() {} }),
       get context() {
         return mockCdsContext;
       },
@@ -14,12 +18,6 @@ jest.mock(
   }),
   { virtual: true },
 );
-
-jest.mock('../../srv/request-session', () => ({
-  runWithSessionId: (_sid: unknown, fn: () => unknown) => fn(),
-  getRequestSessionId: () => undefined,
-  getRequestHistory: () => [],
-}));
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -119,4 +117,58 @@ describe('no per-session map is keyed by the session alone', () => {
       /lastDestinationBySession\.(get|set|delete)\(\s*sessionId\s*[,)]/,
     );
   });
+});
+
+it('deleteSessionState deletes the run record and isolates a new session', async () => {
+  const store = scopedStore(getRunRecordStore());
+  await store.save(SID, {
+    runId: 'r',
+    request: 'hi',
+    plan: { steps: [], createdAt: 1 },
+    steps: [],
+    outcome: 'answered',
+    finishedAt: 2,
+  });
+  deleteSessionState('alice', SID);
+  await Promise.resolve();
+  expect(await store.load(SID)).toBeUndefined();
+  expect(await store.load('new-session')).toBeUndefined();
+});
+it('deleteSessionState logs a rejected run-record delete', async () => {
+  const spy = jest
+    .spyOn(getRunRecordStore(), 'delete')
+    .mockRejectedValueOnce(new Error('offline'));
+  expect(() => deleteSessionState('alice', 'failed-delete')).not.toThrow();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(mockWarn).toHaveBeenCalledWith('Run record delete failed', {
+    error: 'offline',
+  });
+  spy.mockRestore();
+});
+
+it('retains a run-only session until its run record TTL expires', async () => {
+  jest.useFakeTimers();
+  try {
+    const { initializeRunRecordStore } = await import(
+      '../../srv/lib/run-record-store'
+    );
+    const { loadSessionConfig } = await import('../../srv/lib/session-config');
+    initializeRunRecordStore({ ...loadSessionConfig({}), ttlMs: 100 });
+    const store = scopedStore(getRunRecordStore());
+    await store.save(SID, {
+      runId: 'run',
+      request: 'hi',
+      plan: { steps: [], createdAt: 1 },
+      steps: [],
+      outcome: 'answered',
+      finishedAt: 2,
+    });
+    expect(hasSessionState('alice', SID)).toBe(true);
+    expect(hasSessionState('bob', SID)).toBe(false);
+    jest.advanceTimersByTime(101);
+    expect(hasSessionState('alice', SID)).toBe(false);
+    expect(await store.load(SID)).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
 });

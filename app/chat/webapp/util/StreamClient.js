@@ -154,6 +154,13 @@ sap.ui.define([], function () {
       var lines = text.split("\n");
       for (var i = 0; i < lines.length; i++) {
         var line = lines[i].trim();
+        if (line.indexOf(": status ") === 0) {
+          try {
+            var status = JSON.parse(line.substring(9));
+            if (options.onStatus) { options.onStatus(status); }
+          } catch (e) { /* malformed status JSON */ }
+          continue;
+        }
         if (!line || line.charAt(0) === ":") { continue; }
         if (line === "data: [DONE]") { return; }
         if (line.indexOf("data: ") === 0) {

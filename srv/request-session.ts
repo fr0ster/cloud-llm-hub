@@ -7,6 +7,7 @@ import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
 
 const als = new AsyncLocalStorage<{
   sessionId?: string;
+  userId?: string;
   toolGateDecision?: Promise<ToolQueryAnalysis>;
   /**
    * The conversation BEFORE this request's new user message.
@@ -25,8 +26,11 @@ export function runWithSessionId<T>(
   sessionId: string | undefined,
   fn: () => T,
   history?: Message[],
+  userId?: string,
 ): T {
-  return als.run({ sessionId, history }, () => runWithReviewSignals(fn));
+  return als.run({ sessionId, history, userId }, () =>
+    runWithReviewSignals(fn),
+  );
 }
 
 export function getRequestSessionId(): string | undefined {
@@ -59,4 +63,16 @@ export async function requestToolGateDecision(
   }
   scope.toolGateDecision = analyze();
   return scope.toolGateDecision;
+}
+
+export function getRequestUserId(): string | undefined {
+  const userId = als.getStore()?.userId;
+  return userId && userId !== 'anonymous' ? userId : undefined;
+}
+const readOnlyTools = new AsyncLocalStorage<boolean>();
+export function runWithReadOnlyTools<T>(fn: () => T): T {
+  return readOnlyTools.run(true, fn);
+}
+export function isReadOnlyTools(): boolean {
+  return readOnlyTools.getStore() === true;
 }

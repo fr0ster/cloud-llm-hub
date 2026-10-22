@@ -427,6 +427,7 @@ async function executeStepRun(
               exposition,
             ),
           history,
+          userId,
         ),
       );
     });

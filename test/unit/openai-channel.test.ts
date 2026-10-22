@@ -47,6 +47,7 @@ import {
   openAiDoorRefusal,
 } from '../../srv/lib/throttle-surfacing';
 import { handleChatCompletions } from '../../srv/openai-handler';
+import { clearSession, getSessionHistory } from '../../srv/session-store';
 import {
   deferred,
   fakeReq,
@@ -575,5 +576,42 @@ describe('a long session', () => {
     configure();
     await call(body()).done;
     expect(harness.events).toContain('safeStop');
+  });
+});
+
+describe('adaptive status SSE', () => {
+  it('emits single-line comments and preserves the first data event and answer', async () => {
+    const status = {
+      stepId: 'create',
+      kind: 'execute',
+      state: 'started',
+      goal: 'line one\nline two',
+    };
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: '', status } };
+      yield { ok: true, value: { content: 'answer' } };
+      yield { ok: true, value: { finishReason: 'stop' } };
+    };
+    clearSession('s-status', 'alice');
+    const { res, done } = call(body(true), fakeRes(), 's-status');
+    await done;
+    expect(getSessionHistory('s-status', 'alice')).toEqual([
+      expect.objectContaining({ role: 'user', content: 'hi' }),
+      expect.objectContaining({ role: 'assistant', content: 'answer' }),
+    ]);
+    expect(
+      JSON.stringify(getSessionHistory('s-status', 'alice')),
+    ).not.toContain('stepId');
+    expect(res.body).toContain(`: status ${JSON.stringify(status)}\n\n`);
+    const data = res.body
+      .split('\n')
+      .filter((line: string) => line.startsWith('data: '));
+    const first = JSON.parse(data[0].slice(6));
+    expect(first.choices[0].delta.role).toBe('assistant');
+    expect(res.body.indexOf(': status ')).toBeLessThan(
+      res.body.indexOf('data: '),
+    );
+    expect(res.body).toContain('answer');
+    expect(res.body).not.toContain('event: status');
   });
 });

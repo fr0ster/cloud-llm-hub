@@ -38,6 +38,7 @@ import {
   longSessionsIfReady,
   type OpenRefusal,
 } from './long-session';
+import { getRunRecordStore, sweepRunRecords } from './run-record-store';
 import { dropSessionConnection } from './session-connection';
 import { type StoredTurn, turnOwner } from './session-history-rag';
 import type { SessionRecord, SessionRecordStore } from './session-record-store';
@@ -235,6 +236,7 @@ async function markClosed(record: SessionRecord): Promise<void> {
  * outcome checked, so a failed delete keeps the closed record for a retry.
  */
 async function cleanupSession(userId: string, key: string): Promise<void> {
+  await getRunRecordStore().delete(userId, key);
   await deleteSession(userId, key);
   if (!isProvidersReady()) return;
   const forgotten = await getSharedHistoryRag()?.forgetOwner(
@@ -349,6 +351,7 @@ export function startSessionSweep(intervalMs = 60_000): () => void {
   let running = false;
   const timer = setInterval(
     guardedTask('Long-session sweep', log(), async () => {
+      guardedTask('Run-record expiry sweep', log(), () => sweepRunRecords())();
       if (running) return;
       running = true;
       try {

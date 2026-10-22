@@ -927,8 +927,11 @@ export function registerRagRoutes(
         return;
       }
       try {
-        const result = await runWithSessionId(sid, () =>
-          dispatchRagTool(registry, name, req.body ?? {}),
+        const result = await runWithSessionId(
+          sid,
+          () => dispatchRagTool(registry, name, req.body ?? {}),
+          undefined,
+          getUserId(),
         );
         json(res, result.ok ? 200 : (result.status ?? 400), result);
       } finally {

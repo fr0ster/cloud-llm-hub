@@ -10,7 +10,10 @@
  */
 
 import type { Message } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import { getSharedHistoryRag, isProvidersReady } from './agent-manager';
+import { guardedTask } from './lib/guarded-task';
+import { getRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
 import { turnOwner } from './lib/session-history-rag';
 
@@ -50,7 +53,11 @@ setInterval(() => {
   const ttlMs = sessionConfig().ttlMs;
   for (const [id, entry] of sessionStore) {
     if (now - entry.lastAccess > ttlMs) {
+      // Only this cache and the run record expire here. The recall store may
+      // hold a live long session's persisted history; its lifecycle owns that.
       sessionStore.delete(id);
+      const [userId, sessionId] = JSON.parse(id) as [string, string];
+      deleteRunRecord(userId, sessionId);
     }
   }
 }, SESSION_CLEANUP_INTERVAL_MS).unref();
@@ -89,9 +96,16 @@ export function appendToSession(
   }
 }
 
+function deleteRunRecord(userId: string, sessionId: string): void {
+  guardedTask('Run record delete', cds.log('run-store'), () =>
+    getRunRecordStore().delete(userId, sessionId),
+  )();
+}
+
 /** Clear session history for a specific user */
 export function clearSession(sessionId: string, userId: string): void {
   sessionStore.delete(sessionStoreKey(sessionId, userId));
+  deleteRunRecord(userId, sessionId);
   // The recall store holds the same conversation in another shape. Clearing one
   // and leaving the other would let a cleared session keep answering from turns
   // the user believes they deleted. Before startup has built the providers

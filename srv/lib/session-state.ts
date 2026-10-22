@@ -4,6 +4,7 @@ import {
   isProvidersReady,
 } from '../agent-manager';
 import { clearSession, hasSessionHistory } from '../session-store';
+import { hasRunRecord } from './run-record-store';
 
 /**
  * Every store keyed by one session, in one place.
@@ -28,13 +29,14 @@ export function deleteSessionState(userId: string, sessionId: string): void {
 }
 
 /**
- * Whether this session still holds memory worth bounding: turns, or session
+ * Whether this session still holds memory worth bounding: turns, unexpired run records, or session
  * collections. The destination name is deliberately not counted — a few bytes
  * that would keep a session retained after everything else had gone.
  */
 export function hasSessionState(userId: string, sessionId: string): boolean {
   return (
     hasSessionHistory(sessionId, userId) ||
+    hasRunRecord(userId, sessionId) ||
     (isProvidersReady() &&
       getCollectionRegistry().hasSessionCollections(userId, sessionId))
   );

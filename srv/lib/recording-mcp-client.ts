@@ -7,7 +7,12 @@ import type {
   Result,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { isReadOnlyTools } from '../request-session';
 import { isOutageError } from './mcp-outage';
+import {
+  isReadOnlyTool,
+  type ToolEffectAnnotations,
+} from './tool-authorization';
 import { isWriteTool } from './write-guardrail';
 
 /**
@@ -71,15 +76,30 @@ export class RecordingMcpClient implements IMcpClient {
     options?: CallOptions,
   ) => Promise<Result<boolean, McpError>>;
 
-  constructor(private readonly inner: IMcpClient) {
+  constructor(
+    private readonly inner: IMcpClient,
+    _expositionFor?: (name: string) => string | undefined,
+  ) {
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
         inner.healthCheck?.(options) as Promise<Result<boolean, McpError>>;
     }
   }
 
-  listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
-    return this.inner.listTools(options);
+  async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
+    const result = await this.inner.listTools(options);
+    if (!isReadOnlyTools() || !result.ok) return result;
+    return {
+      ok: true,
+      value: result.value.filter((tool) => this.isReadOnly(tool)),
+    };
+  }
+
+  private isReadOnly(tool: McpTool): boolean {
+    return isReadOnlyTool(
+      tool.name,
+      (tool as McpTool & { annotations?: ToolEffectAnnotations }).annotations,
+    );
   }
 
   async callTool(
@@ -87,6 +107,20 @@ export class RecordingMcpClient implements IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (isReadOnlyTools()) {
+      const tools = await this.inner.listTools(options);
+      const allowed =
+        tools.ok &&
+        tools.value.some((tool) => tool.name === name && this.isReadOnly(tool));
+      if (!allowed)
+        return {
+          ok: true,
+          value: {
+            content: `Tool "${name}" was not executed: checker tools are read-only.`,
+            isError: true,
+          },
+        };
+    }
     const traceId = options?.trace?.traceId;
     // Opened BEFORE the call, so "sent, unanswered" is a state the error path
     // can read rather than an absence it has to infer. Written after the await,

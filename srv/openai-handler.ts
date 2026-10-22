@@ -1018,6 +1018,10 @@ async function serveChatCompletions(
                         );
                         continue;
                       }
+                      if (v.status) {
+                        out.write(`: status ${JSON.stringify(v.status)}\n\n`);
+                        continue;
+                      }
                       if (v.usage) {
                         lastUsage = {
                           prompt_tokens: v.usage.promptTokens,
@@ -1150,6 +1154,7 @@ async function serveChatCompletions(
                 }),
             ),
           priorTurns,
+          userId,
         ),
       );
       // end runWithSessionId / runWithRequestConnection / pipeline.run
@@ -1254,6 +1259,7 @@ async function serveChatCompletions(
               ),
           ),
         priorTurns,
+        userId,
       ),
     );
 
