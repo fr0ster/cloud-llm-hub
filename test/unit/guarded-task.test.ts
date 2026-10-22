@@ -51,3 +51,22 @@ describe('a periodic task cannot take the process down', () => {
     expect(warnings).toEqual([]);
   });
 });
+
+test('errorTypeOnly logs the error type, never its message', async () => {
+  const warn = jest.fn();
+  guardedTask(
+    't',
+    { warn },
+    () => {
+      throw new TypeError('password=SENTINEL');
+    },
+    { errorTypeOnly: true },
+  )();
+  guardedTask('p', { warn }, () => Promise.reject(new Error('SENTINEL')), {
+    errorTypeOnly: true,
+  })();
+  await new Promise((r) => setImmediate(r));
+  expect(warn).toHaveBeenCalledWith('t failed', { errorType: 'TypeError' });
+  expect(warn).toHaveBeenCalledWith('p failed', { errorType: 'Error' });
+  expect(JSON.stringify(warn.mock.calls)).not.toContain('SENTINEL');
+});

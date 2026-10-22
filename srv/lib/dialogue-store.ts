@@ -379,8 +379,11 @@ export function initializeDialogueStore(
 ): void {
   touches.clear();
   singleton = createDialogueStoreBackend(cfg, rag);
-  guardedTask('Dialogue-state expiry sweep', cds.log('dialogue-store'), () =>
-    sweepDialogueStates(),
+  guardedTask(
+    'Dialogue-state expiry sweep',
+    cds.log('dialogue-store'),
+    () => sweepDialogueStates(),
+    { errorTypeOnly: true },
   )();
 }
 let sweeping = false;

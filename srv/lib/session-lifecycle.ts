@@ -368,8 +368,13 @@ export function startSessionSweep(intervalMs = 60_000): () => void {
   let running = false;
   const timer = setInterval(
     guardedTask('Long-session sweep', log(), async () => {
-      guardedTask('Dialogue-state expiry sweep', log(), () =>
-        sweepDialogueStates(),
+      guardedTask(
+        'Dialogue-state expiry sweep',
+        log(),
+        () => sweepDialogueStates(),
+        {
+          errorTypeOnly: true,
+        },
       )();
       guardedTask('Run-record expiry sweep', log(), () => sweepRunRecords())();
       if (running) return;

@@ -422,12 +422,16 @@ export async function handleCloseSession(
 ): Promise<void> {
   const s = (req as LongSessionRequest).longSession;
   if (s) {
-    guardedTask('long session cleanup', cds.log('session'), () =>
-      Promise.all([
-        // Start stopping even if the registry is waiting for an active turn.
-        closeDialogue(s.userId, s.key, 'explicit', false),
-        longSessionsIfReady()?.close(s.userId, s.key, 'explicit'),
-      ]),
+    guardedTask(
+      'long session cleanup',
+      cds.log('session'),
+      () =>
+        Promise.all([
+          // Start stopping even if the registry is waiting for an active turn.
+          closeDialogue(s.userId, s.key, 'explicit', false),
+          longSessionsIfReady()?.close(s.userId, s.key, 'explicit'),
+        ]),
+      { errorTypeOnly: true },
     )();
     // The cookie named the closed session: clear it, so that a later plain
     // request is not refused for a key that is gone.
