@@ -311,3 +311,31 @@ it.each([false, true])(
     expect(send).not.toHaveBeenCalled();
   },
 );
+
+it.each(['before', 'before\n'])(
+  'separates resumed planner content after tools (%j)',
+  async (before) => {
+    send.mockImplementation(async (_text: string, options: any) => {
+      options.onPartial({ kind: 'content', delta: before });
+      options.onPartial({ kind: 'tool_call', name: 'test' });
+      options.onPartial({ kind: 'content', delta: 'after' });
+      return { text: before + 'after' };
+    });
+    const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
+    const res = fakeRes();
+    const agent = dialogueChat(
+      fakeReq({}, session.key) as unknown as Request,
+      'alice',
+      session,
+      'SAP',
+      'hi',
+      res as unknown as Response,
+    );
+    let text = '';
+    for await (const chunk of agent.streamProcess([]))
+      if (chunk.ok) text += chunk.value.content || '';
+    expect(text).toContain(
+      before + (before.endsWith('\n') ? '' : '\n\n') + 'after',
+    );
+  },
+);

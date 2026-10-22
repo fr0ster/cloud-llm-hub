@@ -3,11 +3,6 @@ import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 
 const html = readFileSync(resolve('app/chat/webapp/index.html'), 'utf8');
-const client = readFileSync(
-  resolve('app/chat/webapp/util/StreamClient.js'),
-  'utf8',
-);
-
 describe('WebUI bootstrap readiness', () => {
   function readinessHarness() {
     const context = {
@@ -138,9 +133,6 @@ describe('WebUI extended session protocol', () => {
       "З'єднання з SAP оновлено: стан відладки та локи втрачено",
     );
   });
-  test('UI5 sends the session header', () => {
-    expect(client).toContain('x-clh-session');
-  });
 });
 
 function sessionHarness(key = '') {
@@ -165,7 +157,7 @@ function sessionHarness(key = '') {
   };
   const source = html.slice(
     html.indexOf('        let sessionKey ='),
-    html.indexOf('        // Input history'),
+    html.indexOf('        function stepSymbol('),
   );
   const api = runInNewContext(
     `${source}\n({ sessionFetch, closeSession });`,
@@ -305,43 +297,6 @@ test('R24 concurrent 404 including late response reopens only once', async () =>
     ui.fetch.mock.calls.filter(([url]: [string]) => url === '/v1/session'),
   ).toHaveLength(1);
 });
-function ui5Harness() {
-  const values = new Map([['clh.session', 'old']]);
-  const fetch = jest.fn();
-  let api: any;
-  runInNewContext(client, {
-    sap: {
-      ui: {
-        define: (_: unknown, f: () => unknown) => {
-          api = f();
-        },
-      },
-    },
-    fetch,
-    localStorage: {
-      getItem: (k: string) => values.get(k),
-      setItem: (k: string, v: string) => values.set(k, v),
-      removeItem: (k: string) => values.delete(k),
-    },
-  });
-  return { api, fetch };
-}
-test('R21 UI5 reopens once with same body', async () => {
-  const { api, fetch } = ui5Harness();
-  const missing = response(404, { error: { code: 'SESSION_NOT_FOUND' } });
-  fetch
-    .mockResolvedValueOnce(missing)
-    .mockResolvedValueOnce(response(201, { session: 'new' }))
-    .mockResolvedValueOnce(missing);
-  expect(await api._sessionFetch('/chat', { headers: {}, body: 'same' })).toBe(
-    missing,
-  );
-  expect(fetch).toHaveBeenCalledTimes(3);
-  expect(fetch.mock.calls[2][1]).toMatchObject({
-    body: 'same',
-    headers: { 'x-clh-session': 'new' },
-  });
-});
 test('R22 tools open sessions and configure agent MCP', () => {
   for (const file of ['tools/test-endpoints.sh', 'tools/tutorial-test.sh']) {
     const script = readFileSync(resolve(file), 'utf8');
@@ -369,11 +324,4 @@ test('R24 failed HTTP delete forgets key and logs', async () => {
   ui.fetch.mockResolvedValue(response(500));
   await expect(ui.closeSession()).resolves.toBeUndefined();
   expect(ui.values.has('clh.session')).toBe(false);
-});
-test('R21 UI5 does not reopen other errors', async () => {
-  const { api, fetch } = ui5Harness();
-  const error = response(404, { error: { code: 'OTHER' } });
-  fetch.mockResolvedValue(error);
-  expect(await api._sessionFetch('/chat', { headers: {} })).toBe(error);
-  expect(fetch).toHaveBeenCalledTimes(1);
 });

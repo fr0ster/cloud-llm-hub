@@ -294,6 +294,7 @@
           </form>
         </div>
         <div id="chat-window"></div>
+        <div id="dialogue-tasks" style="font-size:11px;color:#888;max-height:100px;overflow:auto"></div>
         <div class="input-area">
             <input type="text" id="user-input" autocomplete="off" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
                    onkeydown="handleInputKeydown(event)">
@@ -336,7 +337,7 @@
         async function ensureSession() {
             if (sessionOpening) return sessionOpening;
             sessionKey = localStorage.getItem('clh.session') || '';
-            if (sessionKey) return;
+            if (sessionKey) { if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey); return; }
             sessionOpening = (async () => {
                 const response = await fetch('/v1/session', {
                     method: 'POST',
@@ -347,11 +348,13 @@
                 if (!response.ok) throw new Error(data.error?.message || 'HTTP ' + response.status);
                 sessionKey = data.session;
                 localStorage.setItem('clh.session', sessionKey);
+                if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey);
             })();
             try { await sessionOpening; } finally { sessionOpening = null; }
         }
 
         async function closeSession() {
+            if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
             try {
                 if (sessionOpening) await sessionOpening;
                 sessionKey = localStorage.getItem('clh.session') || '';
@@ -402,6 +405,91 @@
             catch (error) { console.warn('Session close failed', error); }
             try { localStorage.clear(); sessionStorage.clear(); } catch {}
             window.location.replace('/logout');
+        }
+
+        function stepSymbol(step) {
+            return step.state === 'failed' || step.verdict === 'fail' ? '✗' : step.state === 'partial' || step.verdict === 'partial' ? '~' : step.state === 'done' ? '✓' : step.state === 'stopped' ? '■' : '…';
+        }
+        function parseStepStatus(line) {
+            if (!line.startsWith(': status ')) return null;
+            try { const status = JSON.parse(line.slice(9)); return status && typeof status.stepId === 'string' ? status : null; } catch (error) { return null; }
+        }
+        function renderStepTrail(steps) {
+            return steps.size ? '<div class="step-trail" style="color:#888;font-size:11px">' + [...steps.values()].map(step => escapeHtml(step.stepId) + ' ' + stepSymbol(step)).join(' · ') + '</div>' : '';
+        }
+        // Dialogue events
+        let dialogueSubscription = null;
+        function stopDialogueEvents() {
+            dialogueSubscription?.stop(); dialogueSubscription = null;
+            document.getElementById('dialogue-tasks').innerHTML = '';
+        }
+        function startDialogueEvents(key) {
+            if (dialogueSubscription?.key === key) return;
+            stopDialogueEvents(); dialogueSubscription = subscribeDialogueEvents(key);
+        }
+        function subscribeDialogueEvents(key) {
+            let stopped = false, delay = 1000, timer, controller, reader, lastId;
+            const rendered = new Set();
+            let tasks = [];
+            function renderTasks() {
+                document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div>' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');
+            }
+            async function connect() {
+                if (stopped) return;
+                controller = new AbortController();
+                try {
+                    const response = await fetch('/v1/session/events', { method: 'GET', signal: controller.signal, headers: { ...sessionHeaders(), 'x-clh-session': key, Accept: 'text/event-stream', ...(lastId ? { 'Last-Event-ID': lastId } : {}) } });
+                    if (stopped) return;
+                    if (response.status === 409) { stopped = true; return; }
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (!stopped) {
+                        const chunk = await reader.read();
+                        if (stopped || chunk.done) break;
+                        buffer += decoder.decode(chunk.value, { stream: true });
+                        let boundary;
+                        while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+                            const frame = buffer.slice(0, boundary.index);
+                            buffer = buffer.slice(boundary.index + boundary[0].length);
+                            let event = 'message', id;
+                            const data = [];
+                            for (const line of frame.split(/\r?\n/)) {
+                                if (line.startsWith('event:')) event = line.slice(6).trim();
+                                if (line.startsWith('id:')) id = line.slice(3).trim();
+                                if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+                            }
+                            let parsed;
+                            try { parsed = JSON.parse(data.join('\n')); } catch (error) { continue; }
+                            delay = 1000;
+                            if (event === 'message') {
+                                id = id || parsed.id;
+                                if (!id || typeof parsed.text !== 'string') continue;
+                                if (!rendered.has(id)) {
+                                    const node = document.createElement('div'); node.className = 'message';
+                                    node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + escapeHtml(parsed.text).replace(/\n/g, '<br>') + '</span>';
+                                    chatWindow.appendChild(node); chatWindow.scrollTop = chatWindow.scrollHeight;
+                                    conversationHistory.push({ role: 'assistant', content: parsed.text });
+                                    rendered.add(id); lastId = id;
+                                }
+                                void fetch('/v1/session/events/ack', { method: 'POST', headers: { ...sessionHeaders(), 'x-clh-session': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {});
+                            } else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderTasks(); }
+                            else if (event === 'task' && parsed.id) {
+                                const index = tasks.findIndex(task => task.id === parsed.id);
+                                if (index < 0) tasks.push(parsed); else tasks[index] = { ...tasks[index], ...parsed };
+                                renderTasks();
+                            }
+                        }
+                    }
+                } catch (error) { /* Reconnect transient network failures. */ }
+                finally {
+                    if (reader) { reader.releaseLock(); reader = null; }
+                    if (!stopped) { timer = setTimeout(connect, delay); delay = Math.min(delay * 2, 30000); }
+                }
+            }
+            void connect();
+            return { key, stop() { stopped = true; clearTimeout(timer); controller?.abort(); if (reader) void reader.cancel().catch(() => {}); } };
         }
 
         // Input history (Up/Down arrow navigation like terminal)
@@ -1548,6 +1636,7 @@
             chatWindow.innerHTML += `<div class="message" id="${thinkingId}"><span class="thinking">> SYSTEM: AGENT IS PROCESSING...</span></div>`;
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
+            const stepStates = new Map();
             let assistantContent = '';
             let toolCalls = [];
             let externalToolCalls = [];
@@ -1648,12 +1737,20 @@
                     if (done) break;
 
                     buffer += decoder.decode(value, { stream: true });
-                    const parts = buffer.split('\n\n');
+                    const parts = buffer.split(/\r?\n\r?\n/);
                     buffer = parts.pop() || '';
 
                     for (const part of parts) {
                         for (const line of part.split('\n')) {
                             const trimmed = line.trim();
+                            const status = parseStepStatus(trimmed);
+                            if (status) {
+                                stepStates.set(status.stepId, status);
+                                phase = ('STEP ' + status.stepId + ' · ' + (status.kind || '') + ' · ' + status.state + (status.verdict ? ' · ' + status.verdict : '')).toUpperCase();
+                                setStatus(phase, 'status-connecting');
+                                const el = document.getElementById(thinkingId);
+                                if (el) el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + fileParser.render().html + '</span>';
+                            }
                             if (!trimmed || trimmed.charAt(0) === ':') continue;
                             if (trimmed === 'data: [DONE]') continue;
                             if (!trimmed.startsWith('data: ')) continue;
@@ -1681,7 +1778,7 @@
                                     const el = document.getElementById(thinkingId);
                                     if (el) {
                                         const { html } = fileParser.render();
-                                        el.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + html + '</span>';
+                                        el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + html + '</span>';
                                         chatWindow.scrollTop = chatWindow.scrollHeight;
                                     }
                                 }
@@ -1818,7 +1915,7 @@
                     }
 
                     placeholder.innerHTML = `
-                        <span class="agent"><b>> AGENT:</b> ${finalHtml || '<em style="color:#888">No response</em>'}</span>
+                        ${renderStepTrail(stepStates)}<span class="agent"><b>> AGENT:</b> ${finalHtml || '<em style="color:#888">No response</em>'}</span>
                         ${fileCardsHtml}${ragOpsHtml}${toolsHtml}${usageHtml}
                     `;
                     placeholder.className = 'message';
@@ -1831,7 +1928,7 @@
                 const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
                 const placeholder = document.getElementById(thinkingId);
                 if (placeholder) {
-                    placeholder.innerHTML = `<span style="color:#ff5555"><b>> ERROR:</b> ${escapeHtml(e.message)}</span>
+                    placeholder.innerHTML = `${renderStepTrail(stepStates)}<span style="color:#ff5555"><b>> ERROR:</b> ${escapeHtml(e.message)}</span>
                         <div class="stats-bar"><span>TIME: <span class="val">${durationSec}s</span></span></div>`;
                     placeholder.className = 'message';
                 }
