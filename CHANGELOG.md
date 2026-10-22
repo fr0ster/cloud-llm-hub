@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in dialogue planner.** `LLM_AGENT_CHAT_COORDINATOR=dialogue` selects a
+  long-session planner for OpenAI/Anthropic chat, with background executor and
+  read-only checker subagents. Defaults: 3 concurrent tasks per session, 6
+  hub-wide, 50 task records per session, configurable through
+  `LLM_AGENT_DIALOGUE_EXECUTORS`, `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` and
+  `LLM_AGENT_DIALOGUE_MAX_TASKS` (persisted snapshots still cap tasks at 50).
+  Requests without a long session fall back to adaptive with
+  `x-clh-coordinator: adaptive`. Pending planner messages prefix the next
+  response; `GET /v1/session/events` supplies live planner messages and task
+  states to the WebUI, with a heartbeat that keeps the session alive.
+  Adaptive remains the default; the agent MCP path is unchanged.
+
 ## [8.3.1] - 2026-10-22
 
 ### Fixed
