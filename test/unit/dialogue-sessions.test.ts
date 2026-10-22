@@ -1,3 +1,6 @@
+import { LongSessionRegistry } from '../../srv/lib/long-session';
+import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
+
 jest.mock('../../srv/lib/background-connection', () => ({
   buildConnectionForDestination: jest.fn(),
   dumpScopeForConnection: jest.fn(),
@@ -18,7 +21,10 @@ import {
   dialogueFor,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
-import { hasDialogueState } from '../../srv/lib/dialogue-store';
+import {
+  getDialogueStoreBackend,
+  hasDialogueState,
+} from '../../srv/lib/dialogue-store';
 import { evaluateGated } from '../../srv/lib/step-reviewer';
 import {
   getRequestHistory,
@@ -139,11 +145,11 @@ test('isolates owners and shares concurrent opens', async () => {
 test('missing credentials become a task outcome and wake the planner', async () => {
   const h = await dialogueFor('alice', 'key', 'TEST');
   await h.session.send('go');
-  await until(() => h.session.snapshot().pending.length > 0);
+  await until(() => h.outbox.replay().length > 0);
   expect(h.session.snapshot().tasks[0].error).toContain(
     "no SAP credentials yet; they arrive with the user's next message",
   );
-  expect(h.session.takePending()[0].text).toContain('no SAP credentials yet');
+  expect(h.outbox.replay()[0].text).toContain('no SAP credentials yet');
   expect(mockRun).not.toHaveBeenCalled();
   expect(mockDrop).toHaveBeenCalledTimes(1);
 });
@@ -160,7 +166,7 @@ test('delegated worker has system, session, owner, task history, admission, conn
     return { output: 'read done' };
   });
   await h.session.send('go');
-  await until(() => h.session.snapshot().pending.length > 0);
+  await until(() => h.outbox.replay().length > 0);
   expect(runWithRequestConnection).toHaveBeenCalledWith(
     connection,
     expect.any(Function),
@@ -194,11 +200,11 @@ test('honesty notice reaches task output and planner', async () => {
     ],
   });
   await h.session.send('go');
-  await until(() => h.session.snapshot().pending.length > 0);
+  await until(() => h.outbox.replay().length > 0);
   expect(h.session.snapshot().tasks[0].output).toContain('UNVERIFIED_WRITE:');
-  expect(h.session.takePending()[0].text).toContain('UNVERIFIED_WRITE:');
+  expect(h.outbox.replay()[0].text).toContain('UNVERIFIED_WRITE:');
 });
-test('subscribers receive task events and messages; delivered messages leave pending, unsubscribed ones remain', async () => {
+test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
   const unsubscribe = h.subscribe((e) => events.push(e));
@@ -224,7 +230,7 @@ test('subscribers receive task events and messages; delivered messages leave pen
   unsubscribe();
   const count = events.length;
   await h.session.send('again');
-  await until(() => h.session.snapshot().pending.length > 0);
+  await until(() => h.outbox.replay().length > 0);
   expect(events).toHaveLength(count);
 });
 test('ttl cooperatively stops tasks, closes connections, forgets credentials, deletes state and prevents event turns', async () => {
@@ -282,7 +288,7 @@ test('worker failures close unhealthy connections and release admission and pool
   const { h, connection } = await ready();
   mockRun.mockRejectedValue(new Error('worker failed'));
   await h.session.send('go');
-  await until(() => h.session.snapshot().pending.length > 0);
+  await until(() => h.outbox.replay().length > 0);
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(mockRelease).toHaveBeenCalledTimes(1);
   expect(h.session.snapshot().tasks[0].state).toBe('failed');
@@ -303,7 +309,7 @@ test('builder secrets never reach task error, planner input, persistence or logs
   const h = await dialogueFor('alice', 'key', 'TEST');
   h.factory.refresh({ headers: { authorization: 'Bearer request' } }, 'TEST');
   await h.session.send('go');
-  await until(() => h.session.snapshot().pending.length > 0);
+  await until(() => h.outbox.replay().length > 0);
   expect(h.session.snapshot().tasks[0].error).toMatch(/^SAP connection failed/);
   const saved = await require('../../srv/lib/dialogue-store')
     .createDialogueStateStore('alice', 'key')
@@ -319,4 +325,82 @@ test('builder secrets never reach task error, planner input, persistence or logs
     ]),
   ).not.toMatch(/PASS_SENTINEL|TOKEN_SENTINEL|HEADER_SENTINEL/);
   warning.mockRestore();
+});
+
+test('unacknowledged outbox survives shutdown/reopen; either tab can acknowledge', async () => {
+  const { h } = await ready();
+  const tab1: DialogueEvent[] = [];
+  const tab2: DialogueEvent[] = [];
+  h.subscribe((e) => tab1.push(e));
+  h.subscribe((e) => tab2.push(e));
+  await h.session.send('go');
+  await until(() => tab1.some((e) => e.kind === 'message'));
+  expect(tab2).toEqual(tab1);
+  const messages = h.outbox.replay();
+  expect(messages.length).toBeGreaterThan(0);
+  await closeDialogue('alice', 'key', 'shutdown');
+  const restored = await dialogueFor('alice', 'key', 'TEST');
+  expect(restored.outbox.replay()).toEqual(messages);
+  await restored.outbox.ack(messages[messages.length - 1].id);
+  expect(restored.outbox.replay()).toEqual([]);
+  await closeDialogue('alice', 'key', 'shutdown');
+  expect((await dialogueFor('alice', 'key', 'TEST')).outbox.replay()).toEqual(
+    [],
+  );
+});
+
+test('heartbeat activity maintains dialogue beyond TTL and restart restores state', async () => {
+  const h = await dialogueFor('alice', 'key', 'TEST');
+  await h.session.send('go');
+  await until(() => h.outbox.replay().length > 0);
+  const state = h.session.snapshot();
+  const ttl = require('../../srv/lib/session-config').sessionConfig().ttlMs;
+  const registry = new LongSessionRegistry(
+    { ttlMs: ttl, maxSessions: 10, maxPerUser: 10, queueLength: 2 },
+    { onClose: async () => {}, onTouch: lifecycleHooks().onTouch },
+    () => Date.now(),
+  );
+  registry.open('alice', { key: 'key' });
+  const now = jest.spyOn(Date, 'now');
+  const start = Date.now();
+  try {
+    for (let elapsed = 60_000; elapsed <= ttl + 120_000; elapsed += 60_000) {
+      now.mockReturnValue(start + elapsed);
+      registry.touch('alice', 'key');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(registry.has('alice', 'key')).toBe(true);
+      await getDialogueStoreBackend().sweepExpired(Date.now());
+    }
+    expect(hasDialogueState('alice', 'key')).toBe(true);
+    await closeDialogue('alice', 'key', 'shutdown');
+    const restored = await dialogueFor('alice', 'key', 'TEST');
+    expect(restored.session.snapshot().conversation).toEqual(
+      state.conversation,
+    );
+    expect(restored.session.snapshot().tasks).toEqual(state.tasks);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+test('legacy library pending migrates to hub outbox on opening and leaves library state empty', async () => {
+  const message = {
+    id: 'legacy',
+    text: 'old pending',
+    createdAt: 1,
+    trigger: 'event' as const,
+  };
+  await getDialogueStoreBackend().save('alice', 'key', {
+    conversation: [],
+    tasks: [],
+    pending: [message],
+    savedAt: Date.now(),
+  });
+  const h = await dialogueFor('alice', 'key', 'TEST');
+  expect(h.session.snapshot().pending).toEqual([]);
+  expect(h.outbox.replay()).toEqual([message]);
+  await closeDialogue('alice', 'key', 'shutdown');
+  expect((await dialogueFor('alice', 'key', 'TEST')).outbox.replay()).toEqual([
+    message,
+  ]);
 });

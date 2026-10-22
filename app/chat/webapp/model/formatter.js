@@ -1,5 +1,5 @@
 sap.ui.define([], function () {
-  "use strict";
+  'use strict';
 
   return {
     /**
@@ -7,14 +7,16 @@ sap.ui.define([], function () {
      * Supports: headings, bold, italic, code blocks, inline code, lists, links.
      */
     markdownToHtml: function (text) {
-      if (!text) { return ""; }
+      if (!text) {
+        return '';
+      }
 
       function _escapeHtml(str) {
         return str
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
       }
 
       // Split into completed code blocks and non-code segments
@@ -34,7 +36,10 @@ sap.ui.define([], function () {
         var openFence = remainder.match(/```(\w*)\n([\s\S]*)$/);
         if (openFence) {
           if (openFence.index > 0) {
-            parts.push({ type: 'text', value: remainder.slice(0, openFence.index) });
+            parts.push({
+              type: 'text',
+              value: remainder.slice(0, openFence.index),
+            });
           }
           parts.push({ type: 'code', value: openFence[2] });
         } else {
@@ -46,21 +51,39 @@ sap.ui.define([], function () {
       for (var i = 0; i < parts.length; i++) {
         var part = parts[i];
         if (part.type === 'code') {
-          html += '<pre style="background:#2d2d2d;padding:12px;border-radius:4px;overflow-x:auto;font-size:13px"><code>' +
-            _escapeHtml(part.value) + '</code></pre>';
+          html +=
+            '<pre style="background:#2d2d2d;padding:12px;border-radius:4px;overflow-x:auto;font-size:13px"><code>' +
+            _escapeHtml(part.value) +
+            '</code></pre>';
         } else {
           var t = _escapeHtml(part.value);
           t = t.replace(/`([^`]+)`/g, function (_m, code) {
-            return '<code style="background:#383838;padding:2px 4px;border-radius:3px;font-size:13px">' + code + '</code>';
+            return (
+              '<code style="background:#383838;padding:2px 4px;border-radius:3px;font-size:13px">' +
+              code +
+              '</code>'
+            );
           });
-          t = t.replace(/^### (.+)$/gm, '<strong style="font-size:14px">$1</strong><br>');
-          t = t.replace(/^## (.+)$/gm, '<strong style="font-size:15px">$1</strong><br>');
-          t = t.replace(/^# (.+)$/gm, '<strong style="font-size:16px">$1</strong><br>');
+          t = t.replace(
+            /^### (.+)$/gm,
+            '<strong style="font-size:14px">$1</strong><br>',
+          );
+          t = t.replace(
+            /^## (.+)$/gm,
+            '<strong style="font-size:15px">$1</strong><br>',
+          );
+          t = t.replace(
+            /^# (.+)$/gm,
+            '<strong style="font-size:16px">$1</strong><br>',
+          );
           t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
           t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
           t = t.replace(/^[\-\*] (.+)$/gm, '&bull; $1<br>');
           t = t.replace(/^\d+\. (.+)$/gm, '&bull; $1<br>');
-          t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+          t = t.replace(
+            /\[([^\]]+)\]\(([^)]+)\)/g,
+            '<a href="$2" target="_blank">$1</a>',
+          );
           t = t.replace(/\n\n/g, '<br><br>');
           t = t.replace(/\n/g, '<br>');
           html += t;
@@ -73,20 +96,24 @@ sap.ui.define([], function () {
      * Escape HTML special characters.
      */
     escapeHtml: function (str) {
-      if (!str) { return ""; }
+      if (!str) {
+        return '';
+      }
       return str
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     },
 
     /**
      * Format tool call arguments as readable text.
      */
     formatToolArgs: function (args) {
-      if (!args) { return ""; }
-      if (typeof args === "string") {
+      if (!args) {
+        return '';
+      }
+      if (typeof args === 'string') {
         try {
           args = JSON.parse(args);
         } catch (e) {
@@ -94,6 +121,6 @@ sap.ui.define([], function () {
         }
       }
       return JSON.stringify(args, null, 2);
-    }
+    },
   };
 });

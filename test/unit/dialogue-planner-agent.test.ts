@@ -28,7 +28,7 @@ const config: AgentConfig = {
   },
   mcp: { destination: '', systemDestinations: {} },
   agent: {
-    dialogue: { executors: 3, executorPool: 6, maxTasks: 50 },
+    dialogue: { executors: 7, executorPool: 6, maxTasks: 50 },
     chatCoordinator: 'adaptive',
     mode: 'smart',
     maxIterations: 10,
@@ -89,6 +89,9 @@ test('hard planner sends all five control tools, hub prompt, and follows getSmar
     );
     expect(new Set(first.tools.flat()).size).toBe(5);
     expect(first.messages.join('\n')).toContain(HUB_DIALOGUE_PLANNER_SYSTEM);
+    expect(first.messages.join('\n')).toContain(
+      'At most 7 tasks may run at the same time in this session; run fewer when steps are not independent.',
+    );
     jest.mocked(makeHubLlm).mockResolvedValue(second.agent);
     await getSmartAgent('second');
     const swapped = await planner.process([{ role: 'user', content: 'again' }]);

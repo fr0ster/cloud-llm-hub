@@ -26,9 +26,13 @@ import {
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
+import { DialogueOutbox } from './dialogue-outbox';
 import {
   createDialogueStateStore,
   deleteDialogueState,
+  getDialogueStoreBackend,
+  type HubDialogueState,
+  touchDialogueState,
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { renderNotice } from './notify-policy';
@@ -50,6 +54,9 @@ export type DialogueEvent =
     };
 export interface DialogueHandle {
   session: DialogueSession;
+  outbox: DialogueOutbox;
+  hasSubscribers(): boolean;
+  drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
   pool: SessionConnectionPool;
   subscribe(fn: (e: DialogueEvent) => void): () => void;
@@ -204,6 +211,32 @@ async function open(
     });
   }
   const store = createDialogueStateStore(userId, key);
+  const backend = getDialogueStoreBackend();
+  let savedState: HubDialogueState | undefined;
+  try {
+    savedState = await backend.load(userId, key);
+  } catch (error) {
+    releasePlannerAgent(planner);
+    await pool.closeAll();
+    throw error;
+  }
+  let saving = Promise.resolve();
+  const persist = (
+    outboxMessages: PlannerMessage[] = outbox.replay(),
+  ): Promise<void> => {
+    const state = session?.snapshot() ?? savedState;
+    if (!state) return Promise.resolve();
+    const row = { ...state, pending: [], outbox: outboxMessages };
+    saving = saving.catch(() => {}).then(() => backend.save(userId, key, row));
+    return saving;
+  };
+  const outbox: DialogueOutbox = new DialogueOutbox(
+    savedState?.outbox ?? [],
+    (messages) => persist(messages),
+  );
+  const drainPending = async () => {
+    await outbox.add(session?.takePending() ?? []);
+  };
   try {
     session = await DialogueSession.open({
       id: key,
@@ -218,7 +251,19 @@ async function open(
       },
       // Library close always deletes. The hub owns deletion by close reason:
       // shutdown preserves the last saved state for revival.
-      store: { ...store, delete: async () => {} },
+      store: {
+        ...store,
+        load: async () => {
+          if (!savedState) return undefined;
+          const { outbox: _outbox, ...state } = savedState;
+          return state;
+        },
+        save: async (_id, state) => {
+          savedState = state;
+          await outbox.add(state.pending);
+        },
+        delete: async () => {},
+      },
       board: {
         workers,
         maxConcurrent: config.agent.dialogue.executors,
@@ -289,18 +334,31 @@ async function open(
         },
       },
       onMessage(message) {
-        if (stopped || !subscribers.size) return;
-        emit({ kind: 'message', message });
-        session?.takePending();
+        if (stopped) return;
+        void outbox
+          .add([message, ...(session?.takePending() ?? [])])
+          .then(() => {
+            emit({ kind: 'message', message });
+          })
+          .catch(() => {
+            /* Retain in memory and retry persistence on next save. */
+          });
       },
     });
+    await drainPending();
   } catch (error) {
+    await session?.close();
     releasePlannerAgent(planner);
     await pool.closeAll();
     throw error;
   }
+  const send = session.send.bind(session);
+  session.send = (...args) => send(...args).finally(drainPending);
   return {
     session,
+    outbox,
+    drainPending,
+    hasSubscribers: () => subscribers.size > 0,
     factory,
     pool,
     planner,
@@ -358,4 +416,21 @@ export function closeDialogue(
   closing.set(id, close);
   void close.finally(() => closing.delete(id)).catch(() => {});
   return close;
+}
+
+export async function touchDialogue(
+  userId: string,
+  key: string,
+): Promise<void> {
+  const pending = handles.get(slot(userId, key));
+  await touchDialogueState(
+    userId,
+    key,
+    pending
+      ? async () => {
+          const handle = await pending;
+          await handle.drainPending();
+        }
+      : undefined,
+  );
 }

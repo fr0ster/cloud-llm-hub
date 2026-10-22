@@ -1,5 +1,8 @@
 import { EventEmitter } from 'node:events';
-import { handleDialogueEvents } from '../../srv/lib/dialogue-events-handler';
+import {
+  handleDialogueAck,
+  handleDialogueEvents,
+} from '../../srv/lib/dialogue-events-handler';
 
 jest.mock('@sap/cds', () => ({
   __esModule: true,
@@ -15,9 +18,38 @@ const pending = [{ id: 'm1', text: 'hello', createdAt: 123 }];
 let listener: (e: any) => void;
 const unsubscribe = jest.fn();
 const takePending = jest.fn(() => pending.splice(0));
+const ack = jest.fn(async (id: string) => {
+  const index = pending.findIndex((m) => m.id === id);
+  if (index >= 0) pending.splice(0, index + 1);
+});
+let taskState = 'running';
+beforeEach(() => {
+  pending.splice(0, pending.length, {
+    id: 'm1',
+    text: 'hello',
+    createdAt: 123,
+  });
+  taskState = 'running';
+  jest.clearAllMocks();
+});
 jest.mock('../../srv/lib/dialogue-sessions', () => ({
   dialogueFor: jest.fn(async () => ({
-    session: { takePending },
+    session: {
+      takePending,
+      snapshot: () => ({
+        tasks: [
+          { id: 'task', worker: 'executor', goal: 'read', state: taskState },
+        ],
+      }),
+    },
+    drainPending: async () => {},
+    outbox: {
+      replay: (after?: string) =>
+        pending.slice(
+          (after ? pending.findIndex((m) => m.id === after) : -1) + 1,
+        ),
+      ack,
+    },
     subscribe: (fn: any) => {
       listener = fn;
       return unsubscribe;
@@ -39,7 +71,7 @@ function response() {
     end: jest.fn(),
   });
 }
-test('pending once across reconnect, live messages/tasks, heartbeat and disconnect cleanup', async () => {
+test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and disconnect cleanup', async () => {
   jest.useFakeTimers();
   const req = {
     longSession: { userId: 'alice', key: 'ls-a', destination: 'DEV' },
@@ -47,7 +79,7 @@ test('pending once across reconnect, live messages/tasks, heartbeat and disconne
   const res = response();
   await handleDialogueEvents(req as any, res as any);
   expect(res.write).toHaveBeenCalledWith(
-    'event: message\ndata: {"id":"m1","text":"hello","createdAt":123}\n\n',
+    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123}\n\n',
   );
   listener({
     kind: 'task',
@@ -73,8 +105,8 @@ test('pending once across reconnect, live messages/tasks, heartbeat and disconne
   expect(jest.getTimerCount()).toBe(0);
   const again = response();
   await handleDialogueEvents(req as any, again as any);
-  expect(again.write).not.toHaveBeenCalled();
-  expect(takePending()).toEqual([]); // next chat sees no delivered pending
+  expect(again.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
+  expect(again.write.mock.calls[0][0]).toContain('event: tasks');
   again.emit('close');
   jest.useRealTimers();
 });
@@ -86,3 +118,52 @@ test.each([undefined, { userId: 'bob', key: 'ls-a' }])(
     expect(res.status).toHaveBeenCalledWith(404);
   },
 );
+
+test('Last-Event-ID skips rendered prefix, ack removes it, ownership is enforced', async () => {
+  const req = {
+    headers: { 'last-event-id': 'm1' },
+    longSession: { userId: 'alice', key: 'ls-a' },
+    body: { id: 'm1' },
+  };
+  const res = response();
+  await handleDialogueEvents(req as any, res as any);
+  expect(res.write).toHaveBeenCalledTimes(1); // snapshot only
+  await handleDialogueAck(req as any, response() as any);
+  expect(pending).toEqual([]);
+  expect(ack).toHaveBeenCalledWith('m1');
+  const denied = response();
+  await handleDialogueAck(
+    { ...req, longSession: { userId: 'bob', key: 'ls-a' } } as any,
+    denied as any,
+  );
+  expect(denied.status).toHaveBeenCalledWith(404);
+  res.emit('close');
+});
+test.each(['running', 'done'])(
+  'reconnect snapshots current %s tasks before replay',
+  async (state) => {
+    taskState = state;
+    const res = response();
+    await handleDialogueEvents(
+      { longSession: { userId: 'alice', key: 'ls-a' } } as any,
+      res as any,
+    );
+    expect(res.write.mock.calls[0][0]).toContain('event: tasks');
+    expect(res.write.mock.calls[0][0]).toContain(`"state":"${state}"`);
+    expect(res.write.mock.calls[1][0]).toContain('id: m1');
+    res.emit('close');
+  },
+);
+test('failed SSE write retains message for reconnect and cleans subscriber', async () => {
+  const req = { longSession: { userId: 'alice', key: 'ls-a' } };
+  const broken = response();
+  broken.write.mockImplementation(() => {
+    throw new Error('EPIPE');
+  });
+  await handleDialogueEvents(req as any, broken as any);
+  expect(unsubscribe).toHaveBeenCalled();
+  const next = response();
+  await handleDialogueEvents(req as any, next as any);
+  expect(next.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
+  next.emit('close');
+});

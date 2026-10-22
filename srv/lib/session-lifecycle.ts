@@ -29,7 +29,7 @@ import {
   hasSessionHistory,
   SESSION_MAX_MESSAGES,
 } from '../session-store';
-import { closeDialogue } from './dialogue-sessions';
+import { closeDialogue, touchDialogue } from './dialogue-sessions';
 import { deleteDialogueState, sweepDialogueStates } from './dialogue-store';
 import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
@@ -129,6 +129,9 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
       await records?.delete(s.userId, s.key);
     },
     onTouch(s) {
+      void touchDialogue(s.userId, s.key).catch(() =>
+        log().warn('Dialogue touch failed'),
+      );
       void records?.touch(recordOf(s)).catch((err) =>
         log().warn('session record write failed', {
           key: s.key,

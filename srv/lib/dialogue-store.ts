@@ -5,6 +5,7 @@ import type {
   IRagBackendWriter,
   IRagProvider,
   IRagScanner,
+  PlannerMessage,
 } from '@mcp-abap-adt/llm-agent';
 import { isRagScanner } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -21,10 +22,19 @@ import {
 } from './rag-provider-factory';
 import { type SessionConfig, sessionConfig } from './session-config';
 
+export type HubDialogueState = DialogueState & { outbox?: PlannerMessage[] };
+
 export const DIALOGUE_BYTE_LIMIT = 2 * 1024 * 1024;
 export interface DialogueStoreBackend {
-  load(userId: string, sessionId: string): Promise<DialogueState | undefined>;
-  save(userId: string, sessionId: string, state: DialogueState): Promise<void>;
+  load(
+    userId: string,
+    sessionId: string,
+  ): Promise<HubDialogueState | undefined>;
+  save(
+    userId: string,
+    sessionId: string,
+    state: HubDialogueState,
+  ): Promise<void>;
   delete(userId: string, sessionId: string): Promise<void>;
   hasDialogueState(userId: string, sessionId: string): boolean;
   sweepExpired(now: number): Promise<void>;
@@ -86,16 +96,21 @@ const schema = z.object({
   ),
   savedAt: num,
 });
-function stored(record: DialogueState): DialogueState {
+function stored(record: HubDialogueState): HubDialogueState {
   const text = JSON.stringify(record);
   if (Buffer.byteLength(text, 'utf8') > DIALOGUE_BYTE_LIMIT)
     throw new Error('Dialogue state exceeds 2 MB');
-  return schema.parse(JSON.parse(text));
+  const raw = JSON.parse(text);
+  const state = schema.parse(raw.state ?? raw);
+  const outbox = raw.outbox;
+  if (outbox === undefined) return state;
+  const parsed = schema.shape.pending.parse(outbox);
+  return parsed.length ? { ...state, outbox: parsed } : state;
 }
 function encode(
-  record: DialogueState,
+  record: HubDialogueState,
   log: { warn(message: string): void },
-): DialogueState | undefined {
+): HubDialogueState | undefined {
   try {
     return stored(record);
   } catch {
@@ -117,7 +132,7 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
   }
   private readonly records = new Map<
     string,
-    { record: DialogueState; savedAt: number }
+    { record: HubDialogueState; savedAt: number }
   >();
   constructor(
     private readonly maxSessions: number = sessionConfig().maxSessions,
@@ -133,7 +148,7 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
   async load(
     userId: string,
     sessionId: string,
-  ): Promise<DialogueState | undefined> {
+  ): Promise<HubDialogueState | undefined> {
     const key = dialogueId(userId, sessionId);
     const r = this.records.get(key);
     if (r && Date.now() - r.savedAt > this.ttlMs) {
@@ -145,7 +160,7 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
   async save(
     userId: string,
     sessionId: string,
-    record: DialogueState,
+    record: HubDialogueState,
   ): Promise<void> {
     const copy = encode(record, cds.log('dialogue-store'));
     if (!copy) return;
@@ -254,11 +269,12 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
   async save(
     userId: string,
     sessionId: string,
-    record: DialogueState,
+    record: HubDialogueState,
   ): Promise<void> {
     const copy = encode(record, this.log);
     if (!copy) return;
-    const text = JSON.stringify(copy);
+    const { outbox, ...state } = copy;
+    const text = JSON.stringify({ state, outbox: outbox ?? [] });
     const savedAt = Date.now();
     const { writer } = await this.store();
     const r = await writer.upsertPrecomputedRaw(
@@ -274,7 +290,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
   async load(
     userId: string,
     sessionId: string,
-  ): Promise<DialogueState | undefined> {
+  ): Promise<HubDialogueState | undefined> {
     const { scanner } = await this.store();
     let cursor: string | undefined;
     do {
@@ -361,6 +377,7 @@ export function initializeDialogueStore(
   cfg: SessionConfig,
   rag?: RagConfig,
 ): void {
+  touches.clear();
   singleton = createDialogueStoreBackend(cfg, rag);
   guardedTask('Dialogue-state expiry sweep', cds.log('dialogue-store'), () =>
     sweepDialogueStates(),
@@ -414,5 +431,30 @@ export async function deleteDialogueState(
   userId: string,
   key: string,
 ): Promise<void> {
+  touches.delete(dialogueId(userId, key));
   await getDialogueStoreBackend().delete(userId, key);
+}
+
+const touches = new Map<string, number>();
+export async function touchDialogueState(
+  userId: string,
+  key: string,
+  refresh?: () => Promise<void>,
+): Promise<void> {
+  const id = dialogueId(userId, key);
+  const now = Date.now();
+  if (now - (touches.get(id) ?? -Infinity) < 60_000) return;
+  touches.set(id, now);
+  try {
+    if (refresh) {
+      await refresh();
+      return;
+    }
+    const backend = getDialogueStoreBackend();
+    const state = await backend.load(userId, key);
+    if (state) await backend.save(userId, key, state);
+  } catch (error) {
+    touches.delete(id);
+    throw error;
+  }
 }

@@ -75,6 +75,11 @@ test('controller renders escaped planner messages and task list and unsubscribes
   c._subscribeEvents();
   callbacks.onMessage({ text: '<img onerror=bad>', id: 'm' });
   expect(c._renderMessage(c._messages[0])).toContain('&lt;img onerror=bad&gt;');
+  callbacks.onTasks([
+    { id: 'old', worker: 'executor', goal: 'running', state: 'running' },
+  ]);
+  callbacks.onTasks([]);
+  expect(c._dialogueTasks).toEqual([]);
   callbacks.onTask({ id: '<t>', goal: '<goal>', state: 'done' });
   expect(model.setProperty).toHaveBeenCalledWith('/dialogueTasks', [
     { id: '<t>', goal: '<goal>', state: 'done', icon: '✓' },
@@ -106,5 +111,52 @@ test('event reconnect backs off from 1s to 30s and stops retrying on unsubscribe
   client.subscribeEvents({ onError });
   await jest.advanceTimersByTimeAsync(0);
   expect(jest.getTimerCount()).toBe(0);
+  jest.useRealTimers();
+});
+
+test('event client deduplicates IDs, acknowledges after rendering and reconnects with last rendered ID', async () => {
+  jest.useFakeTimers();
+  const client = load('app/chat/webapp/util/StreamClient.js');
+  let connections = 0;
+  const render = jest.fn();
+  const snapshot = jest.fn();
+  client._sessionFetch = jest.fn(async (url: string, opts: any) => {
+    if (url.endsWith('/ack')) {
+      expect(render).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'm1' }),
+      );
+      expect(JSON.parse(opts.body)).toEqual({ id: 'm1' });
+      return { ok: true };
+    }
+    connections++;
+    if (connections === 2) expect(opts.headers['Last-Event-ID']).toBe('m1');
+    let sent = false;
+    return {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (sent) return { done: true };
+            sent = true;
+            return {
+              done: false,
+              value: new TextEncoder().encode(
+                'event: tasks\ndata: []\n\nid: m1\nevent: message\ndata: {"id":"m1","text":"hello"}\n\n',
+              ),
+            };
+          },
+          releaseLock() {},
+          cancel: async () => {},
+        }),
+      },
+    };
+  });
+  const stop = client.subscribeEvents({ onMessage: render, onTasks: snapshot });
+  await jest.advanceTimersByTimeAsync(0);
+  await jest.advanceTimersByTimeAsync(1000);
+  expect(connections).toBe(2);
+  expect(render).toHaveBeenCalledTimes(1);
+  expect(snapshot).toHaveBeenCalledTimes(2);
+  stop();
   jest.useRealTimers();
 });

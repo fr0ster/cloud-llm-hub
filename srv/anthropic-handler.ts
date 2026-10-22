@@ -299,6 +299,7 @@ async function serveMessages(
           extractText(
             messages.filter((m) => m.role === 'user').at(-1)?.content,
           ),
+          res,
         )
       : handle.agent;
 

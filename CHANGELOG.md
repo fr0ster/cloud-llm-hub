@@ -13,12 +13,21 @@ All notable changes to this project will be documented in this file. The format 
   `LLM_AGENT_DIALOGUE_EXECUTORS`, `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` and
   `LLM_AGENT_DIALOGUE_MAX_TASKS`.
   Requests without a long session fall back to adaptive with
-  `x-clh-coordinator: adaptive`. Pending planner messages prefix the next
-  response; `GET /v1/session/events` supplies live planner messages and task
+  `x-clh-coordinator: adaptive`. Without an events subscriber, outbox planner
+  messages prefix the next response; `GET /v1/session/events` supplies live planner messages and task
   states to the WebUI, with a heartbeat that keeps the session alive.
   Adaptive remains the default; the agent MCP path is unchanged.
 
 ### Fixed
+
+- Dialogue planner events remain in a persisted hub outbox until acknowledged.
+  SSE includes stable IDs, cursor replay and task snapshots; the WebUI deduplicates,
+  acknowledges after rendering and restores task progress on reconnect. Chat only
+  includes outbox messages without a subscriber and removes them after successful
+  response completion, retaining them after failure or disconnect.
+- Long-session activity, including SSE heartbeats, refreshes dialogue persistence
+  every 60 seconds so active sessions retain their dialogue state across restart.
+- Planner instructions state the configured per-session executor limit at build time.
 
 - Dialogue workers bypass MCP Door capacity while retaining leases, call draining
   and shutdown cancellation. Chat admission remains unchanged.

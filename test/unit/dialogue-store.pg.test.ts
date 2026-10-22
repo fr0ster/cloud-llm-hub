@@ -267,3 +267,23 @@ it('equal session keys remain isolated across owners after restart', async () =>
   expect(await restored.load('alice', 'same')).toBeUndefined();
   expect((await restored.load('bob', 'same'))?.plan).toBe('bob');
 });
+
+it('persists hub outbox with state and restores it through a new provider', async () => {
+  const outbox = [
+    {
+      id: 'stable',
+      text: 'delivered later',
+      createdAt: 123,
+      trigger: 'event' as const,
+    },
+  ];
+  await new ProviderDialogueStore(newProvider(), { dimension: DIM }).save(
+    'alice',
+    'replay',
+    { ...record, outbox },
+  );
+  const restored = await new ProviderDialogueStore(newProvider(), {
+    dimension: DIM,
+  }).load('alice', 'replay');
+  expect(restored).toEqual({ ...record, outbox });
+});

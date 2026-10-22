@@ -37,7 +37,10 @@ import { handleAnthropicMessages } from './anthropic-handler';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { getAvailableDestinations } from './lib/btp-destinations';
 import { restoreHealth } from './lib/collection-persistence';
-import { handleDialogueEvents } from './lib/dialogue-events-handler';
+import {
+  handleDialogueAck,
+  handleDialogueEvents,
+} from './lib/dialogue-events-handler';
 import { initializeDialogueStore } from './lib/dialogue-store';
 import {
   formatErrorMessage,
@@ -871,6 +874,7 @@ cds.on('bootstrap', (app: Application) => {
   // POST /v1/session — open a long session. DELETE /v1/session and
   // POST /v1/session/close (sendBeacon) — close it, or clear a plain session.
   app.get('/v1/session/events', handleDialogueEvents as never);
+  app.post('/v1/session/events/ack', handleDialogueAck as never);
   app.post('/v1/session', handleOpenSession as never);
   app.delete('/v1/session', handleCloseSession as never);
   app.post('/v1/session/close', handleCloseSession as never);

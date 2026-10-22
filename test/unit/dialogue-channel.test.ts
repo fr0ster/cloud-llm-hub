@@ -55,6 +55,8 @@ import {
 
 let session: LongSession;
 const refresh = jest.fn();
+const ack = jest.fn(async () => {});
+let subscribed = false;
 const send = jest.fn();
 beforeEach(() => {
   process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '4';
@@ -62,6 +64,8 @@ beforeEach(() => {
   resetGatekeeperForTest();
   harness.reset();
   refresh.mockClear();
+  ack.mockClear();
+  subscribed = false;
   send.mockReset();
   const registry = new LongSessionRegistry(
     { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
@@ -71,6 +75,15 @@ beforeEach(() => {
   session = registry.open('alice', {}) as LongSession;
   jest.mocked(dialogueFor).mockResolvedValue({
     factory: { refresh },
+    drainPending: async () => {},
+    hasSubscribers: () => subscribed,
+    outbox: {
+      replay: () => [
+        { id: 'one', text: 'one' },
+        { id: 'two', text: 'two' },
+      ],
+      ack,
+    },
     session: { takePending: () => [{ text: 'one' }, { text: 'two' }], send },
   } as never);
   send.mockImplementation(async (_text, opts) => {
@@ -130,6 +143,7 @@ for (const anthropic of [false, true])
             : payload.choices[0].message.content,
         ).toBe(visible);
       }
+      expect(ack).toHaveBeenCalledWith('two');
       const history = getSessionHistory(session.key, 'alice');
       expect(history).toHaveLength(anthropic ? 0 : 2);
       if (!anthropic) expect(history[1].content).toBe(visible);
@@ -174,6 +188,7 @@ it('disconnect mid-answer completes and stores visible text once', async () => {
   res.disconnect();
   gate.resolve();
   await done;
+  expect(ack).not.toHaveBeenCalled();
   expect(getSessionHistory(session.key, 'alice').map((m) => m.content)).toEqual(
     ['hi', visible],
   );
@@ -198,6 +213,7 @@ for (const anthropic of [false, true])
         req,
         res as unknown as Response,
       );
+      expect(ack).not.toHaveBeenCalled();
       expect(res.body).toContain('planner failed');
       if (stream)
         expect(res.body).toContain(anthropic ? 'event: error' : 'server_error');
@@ -232,3 +248,32 @@ it.each([false, true])(
     expect(send).not.toHaveBeenCalled();
   },
 );
+
+it.each([false, true])(
+  'active subscriber excludes outbox from chat (stream=%s)',
+  async (stream) => {
+    subscribed = true;
+    const req = fakeReq(
+      { stream, messages: [{ role: 'user', content: 'hi' }] },
+      session.key,
+    ) as unknown as Request & { longSession: LongSession };
+    req.longSession = session;
+    const res = fakeRes();
+    await handleChatCompletions(req, res as unknown as Response);
+    expect(res.body).toContain('answer');
+    expect(res.body).not.toContain('**Planner:**');
+    expect(ack).not.toHaveBeenCalled();
+  },
+);
+it('failed chat write retains outbox', async () => {
+  const req = fakeReq(
+    { stream: true, messages: [{ role: 'user', content: 'hi' }] },
+    session.key,
+  ) as unknown as Request & { longSession: LongSession };
+  req.longSession = session;
+  await handleChatCompletions(
+    req,
+    fakeRes({ throwOnWriteAfter: 0 }) as unknown as Response,
+  );
+  expect(ack).not.toHaveBeenCalled();
+});

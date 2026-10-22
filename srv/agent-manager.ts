@@ -2684,7 +2684,10 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
 export const HUB_DIALOGUE_PLANNER_SYSTEM =
-  DIALOGUE_PLANNER_SYSTEM +
+  DIALOGUE_PLANNER_SYSTEM.replace(
+    'Respect the configured concurrency limit (default: 3 running tasks per session).',
+    '',
+  ) +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
 const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
@@ -2707,7 +2710,11 @@ export async function buildPlannerAgent(
       maxIterations: config.agent.maxIterations,
       classificationEnabled: false,
     },
-    prompts: { system: HUB_DIALOGUE_PLANNER_SYSTEM },
+    prompts: {
+      system:
+        HUB_DIALOGUE_PLANNER_SYSTEM +
+        `\nAt most ${config.agent.dialogue.executors} tasks may run at the same time in this session; run fewer when steps are not independent.`,
+    },
   })
     .withMainLlm(forwardingLlm)
     .withMcpClients([new PlannerToolsClient()])

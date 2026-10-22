@@ -618,6 +618,7 @@ async function serveChatCompletions(
           s,
           destAfter,
           extractText(userMessages[userMessages.length - 1].content),
+          res,
         )
       : handle.agent;
 

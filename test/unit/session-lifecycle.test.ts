@@ -28,8 +28,10 @@ jest.mock('../../srv/lib/gatekeeper', () => ({
   deleteSession: (u: string, s: string) => deleteSession(u, s),
 }));
 
+const touchDialogue = jest.fn(async () => {});
 const closeDialogue = jest.fn(async (_u: string, _k: string, _r: string) => {});
 jest.mock('../../srv/lib/dialogue-sessions', () => ({
+  touchDialogue: () => touchDialogue(),
   closeDialogue: (u: string, k: string, r: string) => closeDialogue(u, k, r),
 }));
 

@@ -7,7 +7,7 @@ import type {
   SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { setSessionDestination } from '../agent-manager';
 import { dialogueFor } from './dialogue-sessions';
 import type { LongSession } from './long-session';
@@ -19,6 +19,7 @@ export function dialogueChat(
   session: LongSession,
   destination: string,
   lastUserText: string,
+  response: Response,
 ): {
   process(
     messages: Message[],
@@ -29,6 +30,10 @@ export function dialogueChat(
     opts?: AgentCallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>;
 } {
+  let disconnected = response.destroyed && !response.writableFinished;
+  response.on('close', () => {
+    disconnected = true;
+  });
   const open = async () => {
     const handle = await dialogueFor(userId, session.key, destination);
     handle.factory.refresh(
@@ -37,21 +42,36 @@ export function dialogueChat(
     );
     session.destination = destination;
     setSessionDestination(userId, session.key, destination);
-    const pending = handle.session
-      .takePending()
-      .map((m) => `**Planner:** ${m.text}`)
-      .join('\n\n');
-    return { handle, prefix: pending ? `${pending}\n\n` : '' };
+    await handle.drainPending();
+    const messages = handle.hasSubscribers() ? [] : handle.outbox.replay();
+    const pending = messages.map((m) => `**Planner:** ${m.text}`).join('\n\n');
+    let successful = false;
+    response.on('finish', () => {
+      if (successful && !disconnected && messages.length)
+        void handle.outbox
+          .ack(messages[messages.length - 1].id)
+          .catch(() => {});
+    });
+    return {
+      handle,
+      prefix: pending ? `${pending}\n\n` : '',
+      complete: () => {
+        successful = true;
+      },
+    };
   };
 
   return {
     async process(_messages, opts) {
       try {
-        const { handle, prefix } = await open();
-        const answer = await handle.session.send(lastUserText, {
-          signal: opts?.signal,
-          trace: opts?.trace,
-        });
+        const { handle, prefix, complete } = await open();
+        const answer = await handle.session
+          .send(lastUserText, {
+            signal: opts?.signal,
+            trace: opts?.trace,
+          })
+          .finally(() => handle.drainPending());
+        complete();
         return {
           ok: true,
           value: {
@@ -66,7 +86,7 @@ export function dialogueChat(
       }
     },
     async *streamProcess(_messages, opts) {
-      const { handle, prefix } = await open();
+      const { handle, prefix, complete } = await open();
       if (prefix) yield { ok: true, value: { content: prefix } };
       // Callback deltas must reach the socket while send is still running.
       const queue: Array<Result<{ content: string }, OrchestratorError>> = [];
@@ -111,7 +131,9 @@ export function dialogueChat(
           });
       }
       await sending;
+      await handle.drainPending();
       if (failure) throw failure;
+      complete();
       yield { ok: true, value: { content: '', finishReason: 'stop' } };
     },
   };

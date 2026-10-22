@@ -7,9 +7,11 @@ import type { DialogueState } from '@mcp-abap-adt/llm-agent';
 import {
   createDialogueStateStore,
   deleteDialogueState,
+  getDialogueStoreBackend,
   hasDialogueState,
   initializeDialogueStore,
   MemoryDialogueStore,
+  touchDialogueState,
 } from '../../srv/lib/dialogue-store';
 import { loadSessionConfig } from '../../srv/lib/session-config';
 
@@ -94,5 +96,25 @@ it('persists and restores the configured task boundary of 60', async () => {
     expect((await store.load('boundary'))?.tasks).toHaveLength(60);
   } finally {
     spy.mockRestore();
+  }
+});
+
+it('dialogue activity touches persistence at most once per 60 seconds', async () => {
+  const backend = getDialogueStoreBackend();
+  await backend.save('alice', 'touch', state);
+  const save = jest.spyOn(backend, 'save');
+  const start = Date.now();
+  const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+  try {
+    await touchDialogueState('alice', 'touch');
+    now.mockReturnValue(start + 59_999);
+    await touchDialogueState('alice', 'touch');
+    expect(save).toHaveBeenCalledTimes(1);
+    now.mockReturnValue(start + 60_000);
+    await touchDialogueState('alice', 'touch');
+    expect(save).toHaveBeenCalledTimes(2);
+  } finally {
+    now.mockRestore();
+    save.mockRestore();
   }
 });
