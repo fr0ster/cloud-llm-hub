@@ -2,7 +2,10 @@ import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { parseToolResultMaxChars } from '../../srv/agent-config';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { parseToolOutcome } from '../../srv/lib/reviewer-core';
+import {
+  evaluateDeterministic,
+  parseToolOutcome,
+} from '../../srv/lib/reviewer-core';
 import { buildReviewMessages } from '../../srv/lib/step-reviewer';
 import {
   capToolResult,
@@ -10,6 +13,62 @@ import {
 } from '../../srv/lib/tool-result-cap';
 
 const notice = '[result truncated: 5 of 6 characters shown.';
+
+test.each([
+  { success: false, status: 'inactive', error: 'Create rejected' },
+  { success: true, status: 'active', error: undefined },
+])('preserves complete envelope facts across truncation: %j', async (facts) => {
+  const content = JSON.stringify({ padding: 'x'.repeat(1000), ...facts });
+  const worker = new RecordingMcpClient(
+    {
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: async () => ({
+        ok: true,
+        value: { content, isError: false },
+      }),
+    },
+    undefined,
+    50,
+  );
+  const result = await worker.callTool(
+    'CreateClass',
+    {},
+    { trace: { traceId: 'create' } },
+  );
+  const records = worker.getToolRecords('create');
+  expect(result.ok && result.value.content).toBe(records[0].result.content);
+  expect(records[0].result.content).toBe(
+    capToolResult({ content }, 50).result.content,
+  );
+  expect(() => JSON.parse(records[0].result.content as string)).toThrow();
+  const outcome = parseToolOutcome(records[0]);
+  expect(outcome).toMatchObject({
+    name: 'CreateClass',
+    ok: facts.success,
+    status: facts.status,
+    truncation: {
+      truncated: true,
+      originalLength: content.length,
+      keptLength: 50,
+    },
+  });
+  expect(outcome.error).toBe(facts.error);
+  expect(evaluateDeterministic('I created the class.', records).ok).toBe(
+    facts.success,
+  );
+  expect(evaluateDeterministic('I activated the class.', records).ok).toBe(
+    facts.success,
+  );
+  const messages = buildReviewMessages({
+    task: 'create and activate',
+    content: 'done',
+    executedTools: records.map(parseToolOutcome),
+  });
+  expect(messages[1].content).toContain(
+    facts.success ? 'active' : 'Create rejected',
+  );
+});
+
 test('cap keeps exactly the allowed prefix, appends paging notice and preserves isError', () => {
   const capped = capToolResult({ content: 'abcdef', isError: true }, 5);
   expect(capped.result.content).toContain(`abcde\n${notice}`);

@@ -57,6 +57,12 @@ export type ToolOutcome = {
   error?: string;
 };
 
+/** Facts parsed before model-visible content is capped. */
+export type RecordedToolCall = ToolCallRecord & {
+  outcome?: Omit<ToolOutcome, 'name' | 'truncation'>;
+  truncation?: ToolResultTruncation;
+};
+
 /** Best-effort envelope extraction from `McpToolResult.content`, robust to the
  *  shapes the MCP client adapter actually produces:
  *   - a JSON string → parsed;
@@ -108,9 +114,9 @@ function parseEnvelope(content: unknown): Record<string, unknown> {
  *  field is treated as success (many read tools carry no envelope at all). */
 export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
   const name = record.call.name;
-  const truncation = (
-    record as ToolCallRecord & { truncation?: ToolResultTruncation }
-  ).truncation;
+  const { outcome, truncation } = record as RecordedToolCall;
+  if (outcome)
+    return { ...outcome, name, ...(truncation ? { truncation } : {}) };
   const mcpError = record.result.isError === true;
   const envelope = parseEnvelope(record.result.content);
   const envelopeSuccess = envelope.success;

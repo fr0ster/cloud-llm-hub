@@ -10,11 +10,12 @@ import type {
 import { parseToolResultMaxChars } from '../agent-config';
 import { isReadOnlyTools } from '../request-session';
 import { isOutageError } from './mcp-outage';
+import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
 import {
   isReadOnlyTool,
   type ToolEffectAnnotations,
 } from './tool-authorization';
-import { capToolResult, type ToolResultTruncation } from './tool-result-cap';
+import { capToolResult } from './tool-result-cap';
 import { isWriteTool } from './write-guardrail';
 
 /**
@@ -65,8 +66,7 @@ function isTransportFailure(error: unknown): boolean {
  * ONLY per-`requestId` delta — there is deliberately NO cumulative/session
  * bucket. A call made without a `trace.traceId` retains nothing.
  *
- * Deliberately dumb: it does NOT parse or interpret `McpToolResult.content` —
- * that belongs to the reviewer (a later step). It caps oversized model-visible
+ * Preserves the reviewer's outcome facts before capping oversized model-visible
  * content and otherwise forwards the inner client's `Result` unchanged;
  * never swallows or reshapes errors.
  */
@@ -149,9 +149,8 @@ export class RecordingMcpClient implements IMcpClient {
     // colon, which looks like a formatting bug rather than the true state
     // ("no answer has arrived"). This is read ONLY while unanswered — the
     // very next line below always overwrites it once one arrives.
-    const record: ToolCallRecord & {
+    const record: RecordedToolCall & {
       answered?: boolean;
-      truncation?: ToolResultTruncation;
     } = {
       call: { id: '', name, arguments: args },
       result: { content: 'no answer yet', isError: true },
@@ -161,12 +160,17 @@ export class RecordingMcpClient implements IMcpClient {
 
     let res = await this.inner.callTool(name, args, options);
     if (res.ok) {
+      const { ok, status, error } = parseToolOutcome({
+        call: record.call,
+        result: res.value,
+      });
       const capped = capToolResult(
         res.value,
         this.maxChars,
         this.knownNames.has(name) ? name : undefined,
       );
       if (capped.truncation) {
+        record.outcome = { ok, status, error };
         record.truncation = capped.truncation;
         res = { ...res, value: capped.result };
       }
