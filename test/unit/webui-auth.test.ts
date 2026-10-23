@@ -100,6 +100,93 @@ test('passes JSON and event streams through without consuming their bodies', asy
   expect(ui.notices).toHaveLength(0);
 });
 
+test.each([
+  'SAP_CREDENTIALS_REQUIRED',
+  'SAP_CREDENTIALS_FAILED',
+  'sap_credentials_failed',
+  'SAP_USER_TOKEN_REQUIRED',
+  'SESSION_CREDENTIAL_MISMATCH',
+  'TOOL_FORBIDDEN',
+  'DESTINATION_RESOLUTION_FAILED',
+])(
+  'passes structured hub error %s through with its body intact',
+  async (code) => {
+    for (const status of [401, 403]) {
+      for (const field of ['type', 'code']) {
+        const ui = harness();
+        const body = { error: { [field]: code, message: 'SAP refused' } };
+        const response = new Response(JSON.stringify(body), {
+          status,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        });
+        ui.fetch.mockResolvedValue(response);
+        expect(await ui.hubFetch('/v1/chat/completions')).toBe(response);
+        expect(response.bodyUsed).toBe(false);
+        expect(await response.json()).toEqual(body);
+        expect(ui.signedOut()).toBe(false);
+        expect(ui.stopDialogueEvents).not.toHaveBeenCalled();
+        expect(ui.notices).toHaveLength(0);
+      }
+    }
+  },
+);
+
+test.each([
+  ['application/json', '{"error":{"code":"UNKNOWN"}}'],
+  ['application/json', '{"error":"Unauthorized"}'],
+  ['application/json', 'invalid JSON'],
+  ['text/html', '{"error":{"type":"SAP_CREDENTIALS_REQUIRED"}}'],
+])('unrecognized 401 (%s, %s) signs out', async (contentType, body) => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(
+    new Response(body, {
+      status: 401,
+      headers: { 'Content-Type': contentType },
+    }),
+  );
+  await expect(ui.hubFetch('/v1/models')).rejects.toThrow('Sign in again');
+  expect(ui.signedOut()).toBe(true);
+});
+
+test.each([
+  'SAP_CREDENTIALS_REQUIRED',
+  'SAP_CREDENTIALS_FAILED',
+  'sap_credentials_failed',
+])(
+  'SAP 401 %s reaches sendMessage recovery and reopens the gate',
+  async (type) => {
+    const ui = harness();
+    const body = { error: { type, message: 'SAP refused' } };
+    ui.fetch.mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const response = await ui.hubFetch('/v1/chat/completions');
+    const start = html.indexOf(
+      '                if (!response.ok) {',
+      html.indexOf('        async function sendMessage()'),
+    );
+    const end = html.indexOf('                const reader =', start);
+    const context = {
+      response,
+      loginGateDone: true,
+      lockInput: jest.fn(),
+      showLoginGate: jest.fn(),
+      destinationUsesConfiguredAuth: () => false,
+      getSelectedDestination: () => 'SAP',
+    };
+    await expect(
+      runInNewContext(`(async () => { ${html.slice(start, end)} })()`, context),
+    ).rejects.toThrow('SAP refused');
+    expect(context.loginGateDone).toBe(false);
+    expect(context.showLoginGate).toHaveBeenCalledTimes(1);
+    expect(context.lockInput).toHaveBeenCalledWith('login-gate');
+    expect(ui.signedOut()).toBe(false);
+  },
+);
+
 test('all hub calls use the guard and events cannot reconnect while signed out', () => {
   expect(html.match(/\bfetch\(/g)).toHaveLength(1);
   expect(html).toContain(

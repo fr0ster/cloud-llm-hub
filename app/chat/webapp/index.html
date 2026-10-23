@@ -360,7 +360,16 @@
             if (hubSignedOut) throw new Error(signInMessage);
             const response = await fetch(url, { ...opts, redirect: 'manual', headers: { 'X-Requested-With': 'XMLHttpRequest', ...opts.headers } });
             const contentType = response.headers?.get('content-type') || '';
-            if (hubSignedOut || response.status === 401 || (response.status >= 300 && response.status < 400) || response.type === 'opaqueredirect' ||
+            let structuredHubError = false;
+            if ((response.status === 401 || response.status === 403) && /\bapplication\/(?:[\w.-]+\+)?json\b/i.test(contentType)) {
+                // Inspect a copy so sendMessage/connect can still read and recover
+                // from SAP errors using the original response body.
+                const data = await response.clone().json().catch(() => null);
+                const codes = ['SAP_CREDENTIALS_REQUIRED', 'SAP_CREDENTIALS_FAILED', 'sap_credentials_failed',
+                    'SAP_USER_TOKEN_REQUIRED', 'SESSION_CREDENTIAL_MISMATCH', 'TOOL_FORBIDDEN', 'DESTINATION_RESOLUTION_FAILED'];
+                structuredHubError = codes.includes(data?.error?.type) || codes.includes(data?.error?.code);
+            }
+            if (hubSignedOut || (response.status === 401 && !structuredHubError) || (response.status >= 300 && response.status < 400) || response.type === 'opaqueredirect' ||
                 (response.redirected && response.url && !new URL(response.url, window.location.href).pathname.startsWith('/v1/')) ||
                 /text\/html|application\/xhtml/i.test(contentType)) {
                 showHubSignIn();
@@ -1836,7 +1845,7 @@
                                 (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED' && destinationUsesConfiguredAuth(getSelectedDestination() || connectedDestination))) {
                                 throw new Error(platformSessionExpired());
                             }
-                            if (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED') {
+                            if (['SAP_CREDENTIALS_REQUIRED', 'SAP_CREDENTIALS_FAILED', 'sap_credentials_failed'].includes(errJson.error.type || errJson.error.code)) {
                                 loginGateDone = false;
                                 lockInput('login-gate');
                                 showLoginGate();
