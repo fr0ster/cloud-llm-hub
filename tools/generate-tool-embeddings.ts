@@ -20,7 +20,7 @@
  * embedding calls.
  *
  * Usage:
- *   npx tsx tools/generate-tool-embeddings.ts [--mtaext <file>]
+ *   npx tsx tools/generate-tool-embeddings.ts [--mtaext <file>] [--aicore-key <file>]
  *
  * Loads `.env` (secrets such as LLM_AGENT_API_KEY), then the `parameters` of
  * the given `.mtaext` — those win, because that is what the deployed app runs
@@ -36,7 +36,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { config as loadDotenv } from 'dotenv';
 import { load as loadYaml } from 'js-yaml';
-import { type AgentConfig, loadAgentConfig } from '../srv/agent-config';
+import {
+  type AgentConfig,
+  aiCoreServiceKeyFromEnv,
+  loadAgentConfig,
+} from '../srv/agent-config';
 import {
   getSharedCorpusDocs,
   loadToolEmbeddingBundle,
@@ -259,6 +263,7 @@ export async function buildQdrantStores(
 
   const existing = await p.stores.listStores('tools', 'tools-');
   if (!existing.ok) throw existing.error;
+  requireBuildCredentials(config);
   await checkCanary(embedder);
   for (const role of todo) {
     const expected = roles[role].length;
@@ -352,21 +357,85 @@ export function toolBuildConfig(config: AgentConfig): AgentConfig {
   };
 }
 
-export function loadTargetConfig(argv: string[]): AgentConfig {
-  const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
-  if (fs.existsSync(defaultEnvPath)) {
-    const defaultEnv = JSON.parse(fs.readFileSync(defaultEnvPath, 'utf-8'));
-    if (defaultEnv.VCAP_SERVICES && !process.env.VCAP_SERVICES) {
-      process.env.VCAP_SERVICES = JSON.stringify(defaultEnv.VCAP_SERVICES);
+export function resolveAiCoreCredentials(
+  env: NodeJS.ProcessEnv,
+  services: Record<string, Array<{ credentials?: unknown }>> = {},
+  keyFile?: string,
+): void {
+  let key = env.AICORE_SERVICE_KEY;
+  if (!key) {
+    const binding = services.aicore?.[0] ?? services['ai-core']?.[0];
+    if (binding?.credentials) key = JSON.stringify(binding.credentials);
+  }
+  if (key) env.AICORE_SERVICE_KEY = key;
+  // Reuse the runtime mapping. Remove AI Core bindings below so runtime
+  // readers cannot override the selected key with a lower-priority binding.
+  const vcap = env.VCAP_SERVICES;
+  delete env.VCAP_SERVICES;
+  env.AICORE_SERVICE_KEY ||= aiCoreServiceKeyFromEnv(env);
+  if (!env.AICORE_SERVICE_KEY) delete env.AICORE_SERVICE_KEY;
+  if (!env.AICORE_SERVICE_KEY && keyFile) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw new Error();
+      env.AICORE_SERVICE_KEY = JSON.stringify(parsed);
+    } catch {
+      throw new Error(
+        'Could not read AI Core service key JSON from --aicore-key file',
+      );
     }
   }
-  loadDotenv({ quiet: true });
+  if (vcap) {
+    let bindings: Record<string, unknown>;
+    try {
+      bindings = JSON.parse(vcap);
+    } catch {
+      throw new Error('Could not read VCAP_SERVICES as JSON');
+    }
+    delete bindings.aicore;
+    delete bindings['ai-core'];
+    env.VCAP_SERVICES = JSON.stringify(bindings);
+  }
+}
+
+export function requireBuildCredentials(config: AgentConfig): void {
+  if (
+    config.rag.embedder?.kind === 'sap-ai-core' &&
+    !process.env.AICORE_SERVICE_KEY
+  ) {
+    throw new Error(
+      'AI Core credentials required to regenerate tool vectors: set AICORE_SERVICE_KEY, provide default-env.json VCAP_SERVICES, set AICORE_CLIENT_ID, AICORE_CLIENT_SECRET, AICORE_AUTH_URL and AICORE_BASE_URL in the repo .env, or use --aicore-key <file>.',
+    );
+  }
+}
+
+export function loadTargetConfig(argv: string[]): AgentConfig {
+  const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
+  let services = {};
+  if (!process.env.AICORE_SERVICE_KEY && fs.existsSync(defaultEnvPath)) {
+    try {
+      services =
+        JSON.parse(fs.readFileSync(defaultEnvPath, 'utf8')).VCAP_SERVICES ?? {};
+    } catch {
+      throw new Error(
+        'Could not read default-env.json service bindings as JSON',
+      );
+    }
+  }
+  loadDotenv({ path: path.resolve(__dirname, '../.env'), quiet: true });
   const at = argv.indexOf('--mtaext');
   if (at >= 0) {
     const file = argv[at + 1];
-    if (!file) throw new Error('--mtaext needs a file');
+    if (!file || file.startsWith('--'))
+      throw new Error('--mtaext needs a file');
     applyMtaext(file, process.env);
   }
+  const keyAt = argv.indexOf('--aicore-key');
+  const keyFile = keyAt >= 0 ? argv[keyAt + 1] : undefined;
+  if (keyAt >= 0 && (!keyFile || keyFile.startsWith('--')))
+    throw new Error('--aicore-key needs a file');
+  resolveAiCoreCredentials(process.env, services, keyFile);
   return loadAgentConfig();
 }
 
@@ -421,6 +490,7 @@ async function main() {
       console.log(`Nothing to build: ${decision.reason}`);
       return;
     case 'build-bundle':
+      requireBuildCredentials(config);
       await buildBundle(p, docs, decision.file, opts);
       return;
     case 'build-qdrant': {

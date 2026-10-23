@@ -750,20 +750,28 @@ export function isAiCoreConfigured(): boolean {
 export function ensureAiCoreCredentials(): void {
   if (isAiCoreConfigured()) return;
 
-  const authUrl = process.env.AICORE_AUTH_URL;
-  const clientId = process.env.AICORE_CLIENT_ID;
-  const clientSecret = process.env.AICORE_CLIENT_SECRET;
-  const baseUrl = process.env.AICORE_BASE_URL;
+  const key = aiCoreServiceKeyFromEnv(process.env);
+  if (key) process.env.AICORE_SERVICE_KEY = key;
+}
 
-  if (authUrl && clientId && clientSecret && baseUrl) {
-    process.env.AICORE_SERVICE_KEY = JSON.stringify({
-      clientid: clientId,
-      clientsecret: clientSecret,
-      url: authUrl,
-      serviceurls: { AI_API_URL: baseUrl },
-    });
-    cds.log('agent-config').info('AI Core credentials assembled from env vars');
-  }
+/** Shared mapping for local deployment tools and runtime configuration. */
+export function aiCoreServiceKeyFromEnv(
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  const {
+    AICORE_AUTH_URL: url,
+    AICORE_CLIENT_ID: clientid,
+    AICORE_CLIENT_SECRET: clientsecret,
+    AICORE_BASE_URL: baseUrl,
+  } = env;
+  return url && clientid && clientsecret && baseUrl
+    ? JSON.stringify({
+        clientid,
+        clientsecret,
+        url,
+        serviceurls: { AI_API_URL: baseUrl },
+      })
+    : undefined;
 }
 
 export function parseToolGate(value: string | undefined): 'classifier' | 'off' {

@@ -44,6 +44,7 @@ test('chat elapsed time includes synchronous transcript rendering before the req
     source + '\nstopTimer(); setStatus(elapsed()); }; sendMessage();',
     {
       ready: true,
+      hubSignedOut: false,
       userInput: { value: 'hello' },
       getSelectedDestination: () => 'DEV',
       inputHistory: [],

@@ -26,6 +26,8 @@ import {
   applyMtaext,
   decideToolBuild,
   loadTargetConfig,
+  requireBuildCredentials,
+  resolveAiCoreCredentials,
   toolBuildConfig,
 } from '../../tools/generate-tool-embeddings';
 
@@ -243,5 +245,75 @@ describe('decideToolBuild', () => {
       action: 'build-qdrant',
     });
     expect(reader).not.toHaveBeenCalled();
+  });
+});
+
+describe('deployment AI Core credentials (no network)', () => {
+  const individual = {
+    AICORE_CLIENT_ID: 'client',
+    AICORE_CLIENT_SECRET: 'secret',
+    AICORE_AUTH_URL: 'https://auth.invalid',
+    AICORE_BASE_URL: 'https://api.invalid',
+  };
+  it.each(['aicore', 'ai-core'])(
+    'prefers an explicit key over %s bindings and individual variables',
+    (label) => {
+      const env = {
+        ...individual,
+        AICORE_SERVICE_KEY: '{"clientid":"explicit"}',
+        VCAP_SERVICES: JSON.stringify({
+          [label]: [{ credentials: { clientid: 'binding' } }],
+        }),
+      };
+      resolveAiCoreCredentials(
+        env,
+        { [label]: [{ credentials: { clientid: 'default' } }] },
+        'unused-file',
+      );
+      expect(JSON.parse(env.AICORE_SERVICE_KEY).clientid).toBe('explicit');
+      expect(JSON.parse(env.VCAP_SERVICES)[label]).toBeUndefined();
+    },
+  );
+  it('prefers default-env bindings over individual variables and a key file', () => {
+    const env: NodeJS.ProcessEnv = { ...individual };
+    resolveAiCoreCredentials(
+      env,
+      { aicore: [{ credentials: { clientid: 'binding' } }] },
+      'unused-file',
+    );
+    expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe(
+      'binding',
+    );
+  });
+  it('reuses the runtime mapping before trying the file', () => {
+    const env: NodeJS.ProcessEnv = { ...individual };
+    resolveAiCoreCredentials(env, {}, 'unused-file');
+    expect(JSON.parse(env.AICORE_SERVICE_KEY as string)).toEqual({
+      clientid: 'client',
+      clientsecret: 'secret',
+      url: individual.AICORE_AUTH_URL,
+      serviceurls: { AI_API_URL: individual.AICORE_BASE_URL },
+    });
+  });
+  it('uses the optional file last and never includes malformed contents in errors', () => {
+    const file = path.join(dir, 'key.json');
+    fs.writeFileSync(file, '{"clientid":"file"}');
+    const env: NodeJS.ProcessEnv = {};
+    resolveAiCoreCredentials(env, {}, file);
+    expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe('file');
+    fs.writeFileSync(file, 'secret malformed JSON');
+    expect(() => resolveAiCoreCredentials({}, {}, file)).toThrow(
+      'Could not read AI Core service key JSON from --aicore-key file',
+    );
+  });
+  it('allows missing credentials until regeneration and names every option', () => {
+    resolveAiCoreCredentials({}, {});
+    delete process.env.AICORE_SERVICE_KEY;
+    process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    process.env.LLM_AGENT_EMBEDDER = 'sap-ai-core';
+    const config = loadAgentConfig();
+    expect(() => requireBuildCredentials(config)).toThrow(
+      /AICORE_SERVICE_KEY.*default-env.json.*AICORE_CLIENT_ID.*--aicore-key/,
+    );
   });
 });
