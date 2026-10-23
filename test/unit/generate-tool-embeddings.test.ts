@@ -26,6 +26,7 @@ import {
   applyMtaext,
   decideToolBuild,
   loadTargetConfig,
+  reportBuildError,
   requireBuildCredentials,
   resolveAiCoreCredentials,
   toolBuildConfig,
@@ -256,6 +257,44 @@ describe('deployment AI Core credentials (no network)', () => {
     AICORE_BASE_URL: 'https://api.invalid',
   };
   it.each(['aicore', 'ai-core'])(
+    'uses environment %s credentials before every fallback and preserves other bindings',
+    (label) => {
+      const credentials = {
+        clientid: 'environment',
+        clientsecret: 'env-secret',
+      };
+      const hana = [{ credentials: { host: 'hana.invalid' } }];
+      const env: NodeJS.ProcessEnv = {
+        ...individual,
+        VCAP_SERVICES: JSON.stringify({ [label]: [{ credentials }], hana }),
+      };
+      resolveAiCoreCredentials(
+        env,
+        {
+          aicore: [{ credentials: { clientid: 'fallback' } }],
+        },
+        'unused-file',
+      );
+      expect(JSON.parse(env.AICORE_SERVICE_KEY as string)).toEqual(credentials);
+      expect(JSON.parse(env.VCAP_SERVICES as string)).toEqual({ hana });
+    },
+  );
+  it.each(['aicore', 'ai-core'])(
+    'uses environment-only %s credentials',
+    (label) => {
+      const env: NodeJS.ProcessEnv = {
+        VCAP_SERVICES: JSON.stringify({
+          [label]: [{ credentials: { clientid: 'environment-only' } }],
+        }),
+      };
+      resolveAiCoreCredentials(env);
+      expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe(
+        'environment-only',
+      );
+      expect(JSON.parse(env.VCAP_SERVICES as string)).toEqual({});
+    },
+  );
+  it.each(['aicore', 'ai-core'])(
     'prefers an explicit key over %s bindings and individual variables',
     (label) => {
       const env = {
@@ -274,16 +313,24 @@ describe('deployment AI Core credentials (no network)', () => {
       expect(JSON.parse(env.VCAP_SERVICES)[label]).toBeUndefined();
     },
   );
-  it('prefers default-env bindings over individual variables and a key file', () => {
-    const env: NodeJS.ProcessEnv = { ...individual };
-    resolveAiCoreCredentials(
-      env,
-      { aicore: [{ credentials: { clientid: 'binding' } }] },
-      'unused-file',
-    );
-    expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe(
-      'binding',
-    );
+  it.each(['aicore', 'ai-core'])(
+    'prefers default-env %s bindings over individual variables and a key file',
+    (label) => {
+      const env: NodeJS.ProcessEnv = { ...individual };
+      resolveAiCoreCredentials(
+        env,
+        { [label]: [{ credentials: { clientid: 'binding' } }] },
+        'unused-file',
+      );
+      expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe(
+        'binding',
+      );
+    },
+  );
+  it('rejects malformed environment VCAP without disclosing its contents', () => {
+    expect(() =>
+      resolveAiCoreCredentials({ VCAP_SERVICES: 'private malformed value' }),
+    ).toThrow('Could not read VCAP_SERVICES as JSON');
   });
   it('reuses the runtime mapping before trying the file', () => {
     const env: NodeJS.ProcessEnv = { ...individual };
@@ -315,5 +362,47 @@ describe('deployment AI Core credentials (no network)', () => {
     expect(() => requireBuildCredentials(config)).toThrow(
       /AICORE_SERVICE_KEY.*default-env.json.*AICORE_CLIENT_ID.*--aicore-key/,
     );
+  });
+});
+
+describe('CLI error reporting', () => {
+  it('redacts selected credentials in a thrown embedding error and keeps its type and diagnostic', async () => {
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const env = {
+        AICORE_SERVICE_KEY: JSON.stringify({
+          clientid: 'selected-client',
+          clientsecret: 'selected/secret+value',
+          tokens: { access_token: 'selected-token' },
+        }),
+      };
+      await Promise.reject(
+        new TypeError(
+          'Embedding failed (401): selected/secret+value selected-client selected-token selected%2Fsecret%2Bvalue',
+        ),
+      ).catch((err) => reportBuildError(err, env));
+      expect(output).toHaveBeenCalledWith(
+        'TypeError: Embedding failed (401): [REDACTED] [REDACTED] [REDACTED] [REDACTED]',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('redacts known credential fields even when their values are not in the selected key', () => {
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      reportBuildError(
+        new Error(
+          '401 {"clientsecret":"other-secret","access_token":"other-token"} api_key=private-key',
+        ),
+        {},
+      );
+      expect(output).toHaveBeenCalledWith(
+        'Error: 401 {"clientsecret":[REDACTED],"access_token":[REDACTED]} api_key=[REDACTED]',
+      );
+    } finally {
+      output.mockRestore();
+    }
   });
 });

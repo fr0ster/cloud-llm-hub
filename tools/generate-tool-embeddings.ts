@@ -362,41 +362,90 @@ export function resolveAiCoreCredentials(
   services: Record<string, Array<{ credentials?: unknown }>> = {},
   keyFile?: string,
 ): void {
+  let bindings: Record<string, Array<{ credentials?: unknown }>> = {};
+  if (env.VCAP_SERVICES) {
+    try {
+      bindings = JSON.parse(env.VCAP_SERVICES);
+      if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings))
+        throw new Error();
+    } catch {
+      throw new Error('Could not read VCAP_SERVICES as JSON');
+    }
+  }
   let key = env.AICORE_SERVICE_KEY;
   if (!key) {
-    const binding = services.aicore?.[0] ?? services['ai-core']?.[0];
-    if (binding?.credentials) key = JSON.stringify(binding.credentials);
+    for (const source of [bindings, services]) {
+      const binding = source.aicore?.[0] ?? source['ai-core']?.[0];
+      if (binding?.credentials) {
+        key = JSON.stringify(binding.credentials);
+        break;
+      }
+    }
   }
-  if (key) env.AICORE_SERVICE_KEY = key;
-  // Reuse the runtime mapping. Remove AI Core bindings below so runtime
-  // readers cannot override the selected key with a lower-priority binding.
-  const vcap = env.VCAP_SERVICES;
-  delete env.VCAP_SERVICES;
-  env.AICORE_SERVICE_KEY ||= aiCoreServiceKeyFromEnv(env);
-  if (!env.AICORE_SERVICE_KEY) delete env.AICORE_SERVICE_KEY;
-  if (!env.AICORE_SERVICE_KEY && keyFile) {
+  key ||= aiCoreServiceKeyFromEnv(env);
+  if (!key && keyFile) {
     try {
       const parsed = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
         throw new Error();
-      env.AICORE_SERVICE_KEY = JSON.stringify(parsed);
+      key = JSON.stringify(parsed);
     } catch {
       throw new Error(
         'Could not read AI Core service key JSON from --aicore-key file',
       );
     }
   }
-  if (vcap) {
-    let bindings: Record<string, unknown>;
-    try {
-      bindings = JSON.parse(vcap);
-    } catch {
-      throw new Error('Could not read VCAP_SERVICES as JSON');
-    }
+  if (key) env.AICORE_SERVICE_KEY = key;
+  else delete env.AICORE_SERVICE_KEY;
+  // Resolve first, then remove bindings so runtime readers cannot override
+  // the selected key with a lower-priority account. Preserve other services.
+  if (env.VCAP_SERVICES) {
     delete bindings.aicore;
     delete bindings['ai-core'];
     env.VCAP_SERVICES = JSON.stringify(bindings);
   }
+}
+
+/** Keep downstream diagnostics useful without disclosing authentication data. */
+export function reportBuildError(
+  err: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const credentialField =
+    /^(?:client[_-]?id|client[_-]?secret|.*token|password|api[_-]?key|authorization)$/i;
+  const secrets = new Set<string>();
+  function collect(value: unknown): void {
+    if (!value || typeof value !== 'object') return;
+    for (const [field, item] of Object.entries(value)) {
+      if (credentialField.test(field) && typeof item === 'string' && item)
+        secrets.add(item);
+      else collect(item);
+    }
+  }
+  for (const [field, value] of Object.entries(env)) {
+    if (value && /(?:SECRET|TOKEN|PASSWORD|API_KEY|CLIENT_ID)$/.test(field))
+      secrets.add(value);
+  }
+  try {
+    collect(JSON.parse(env.AICORE_SERVICE_KEY ?? '{}'));
+  } catch {
+    // Invalid key JSON must not prevent reporting the original failure.
+  }
+  let message =
+    err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+    for (const value of [
+      secret,
+      encodeURIComponent(secret),
+      JSON.stringify(secret).slice(1, -1),
+    ])
+      message = message.split(value).join('[REDACTED]');
+  }
+  message = message.replace(
+    /(["']?(?:client[_-]?id|client[_-]?secret|[\w-]*token|password|api[_-]?key|authorization)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi,
+    '$1[REDACTED]',
+  );
+  console.error(message);
 }
 
 export function requireBuildCredentials(config: AgentConfig): void {
@@ -504,7 +553,7 @@ async function main() {
 
 if (require.main === module) {
   main().catch((err) => {
-    console.error(err instanceof Error ? err.message : err);
+    reportBuildError(err);
     process.exit(1);
   });
 }
