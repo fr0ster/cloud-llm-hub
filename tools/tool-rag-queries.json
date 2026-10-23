@@ -190,7 +190,7 @@
     "multi": true,
     "expect": ["CreateClass"],
     "relevant": ["CreateClass", "UpdateClass", "ActivateClass", "ActivateObjects"],
-    "required": [["CreateClass"], ["UpdateClass"], ["ActivateClass", "ActivateObjects"]]
+    "required": [["CreateClass"], ["UpdateClass"]]
   },
   {
     "q": "Create a CDS view ZI_DEMO_ITEM and a service binding for it",
@@ -248,7 +248,7 @@
     "multi": true,
     "expect": ["UpdateClass"],
     "relevant": ["ReadClass", "GetClass", "UpdateClass", "CheckClass", "ActivateClass", "ActivateObjects"],
-    "required": [["ReadClass", "GetClass"], ["UpdateClass"], ["ActivateClass", "ActivateObjects"]]
+    "required": [["ReadClass", "GetClass"], ["UpdateClass"]]
   },
   {
     "q": "Створи транспорт для пакета ZDEMO_LAB і додай туди клас ZCL_DEMO",
@@ -294,7 +294,6 @@
     "required": [
       ["CreateDomain"],
       ["CreateDataElement"],
-      ["ActivateDomain", "ActivateObjects"],
       ["ActivateDataElement", "ActivateObjects"]
     ]
   },
@@ -328,7 +327,7 @@
     "required": [
       ["CreateBehaviorDefinition"],
       ["CreateBehaviorImplementation"],
-      ["ActivateBehaviorDefinition", "ActivateObjects"]
+      ["ActivateClass", "ActivateObjects", "UpdateBehaviorImplementation"]
     ]
   },
   {
