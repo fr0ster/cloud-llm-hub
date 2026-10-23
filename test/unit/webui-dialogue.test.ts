@@ -107,6 +107,62 @@ test('markdown tables render aligned headers, escaped cells and inline markdown'
     ui.markdownToHtml('```text\n| A | B |\n| --- | --- |\n```'),
   ).not.toContain('<table');
 });
+test.each([
+  'javascript:alert%281%29',
+  'JaVaScRiPt:alert%281%29',
+  '  javascript:alert%281%29',
+  'java\nscript:alert%281%29',
+  'java\t\u0000script:alert%281%29',
+  'jav&#x61;script:alert%281%29',
+  'jav&#97;script&colon;alert%281%29',
+  'java&NewLine;script:alert%281%29',
+  '%6aavascript%3aalert%281%29',
+  '%256aavascript%253aalert%281%29',
+  'jav&amp;#x61;script:alert%281%29',
+  'data:text/html,bad',
+  'vbscript:bad',
+  'ftp://example.com',
+  'example.com',
+])('markdown rejects unsafe link destination %j', (destination) => {
+  expect(harness().markdownToHtml(`[run](${destination})`)).toBe('run');
+});
+
+test.each([
+  'http://example.com',
+  'https://example.com/?a=1&b=2',
+  'HTTPS://example.com',
+  'mailto:user@example.com',
+  '/plans/1',
+  '#plan',
+])(
+  'markdown allows link destination %j with safe new-tab attributes',
+  (destination) => {
+    const ui = harness();
+    const result = ui.markdownToHtml(`[open](${destination})`);
+    expect(result).toContain(`<a href="${ui.escapeHtml(destination)}"`);
+    expect(result).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(result).toContain('>open</a>');
+  },
+);
+
+test('plan text and planner messages reject unsafe markdown links', async () => {
+  const ui = harness();
+  const text = '[run](javascript:alert%281%29)';
+  ui.fetch.mockImplementation(async (url: string) =>
+    url.endsWith('/ack')
+      ? { ok: true }
+      : stream(
+          `event: plan\ndata: ${JSON.stringify({ text })}\n\nid: unsafe\ndata: ${JSON.stringify({ text })}\n\n`,
+        ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.planText.innerHTML).toBe('run');
+  expect(ui.nodes[0].innerHTML).toContain('run');
+  expect(ui.nodes[0].innerHTML).not.toContain('<a ');
+  subscription.stop();
+});
+
 test('standalone renders before ack, dedupes replay, sends cursor and handles task snapshots/updates safely', async () => {
   const ui = harness();
   const message =

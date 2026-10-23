@@ -1216,6 +1216,26 @@
         function markdownToHtml(text) {
             if (!text) return '';
 
+            function safeLink(label, destination) {
+                // Decode repeatedly for validation, preserving URL escaping in href.
+                let normalized = destination;
+                const entities = { amp: '&', colon: ':', tab: '\t', newline: '\n' };
+                for (;;) {
+                    const decoded = normalized
+                        .replace(/&(#x[0-9a-f]+|#\d+|amp|colon|tab|newline);?/gi, (_, code) => {
+                            if (code[0] !== '#') return entities[code.toLowerCase()];
+                            const value = code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+                            return value <= 0x10ffff ? String.fromCodePoint(value) : '\ufffd';
+                        })
+                        .replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+                    if (decoded === normalized) break;
+                    normalized = decoded;
+                }
+                normalized = normalized.replace(/[\s\u0000-\u001f\u007f-\u009f]/g, '');
+                if (!/^(?:https?:|mailto:|\/|#)/i.test(normalized)) return label;
+                return '<a href="' + destination + '" target="_blank" rel="noopener noreferrer" style="color:#00bfff">' + label + '</a>';
+            }
+
             // Split into completed code blocks and non-code segments
             const parts = [];
             const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
@@ -1263,7 +1283,7 @@
                     t = t.replace(/^[\-\*] (.+)$/gm, '&bull; $1<br>');
                     t = t.replace(/^\d+\. (.+)$/gm, '&bull; $1<br>');
                     // Links
-                    t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#00bfff">$1</a>');
+                    t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, destination) => safeLink(label, destination));
                     // Line breaks
                     // Cells already passed through escaping and inline markdown above.
                     const lines = t.split('\n');
