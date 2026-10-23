@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.7.0] - 2026-10-23
+
+### Added
+
+- **`LLM_AGENT_TOOL_RESULT_MAX_CHARS`** (default `60000`, `0` disables). A
+  tool result longer than the cap is cut and gets a notice telling the model to
+  narrow the request and page through the rest, instead of overflowing the
+  model context (a single dump list reached ~500K characters). Covers the chat
+  agent, dialogue workers, hub-local `rag_*` tools and the planner. The
+  reviewer keeps the outcome read from the full result; one content-free log
+  line per truncation.
+
+### Changed
+
+- **`rag_list` is compact by default:** ids, titles, lengths and tags, with
+  paging; pass `id` to read one record in full.
+- **Planner planning rules:** a step states the result, not the way; each step
+  is the smallest result that can be checked on its own; to process all items
+  of a kind, first a step returns only their identifiers page by page, then one
+  step per item, then a count check.
+
 ## [8.6.1] - 2026-10-23
 
 ### Fixed
