@@ -2717,6 +2717,9 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   ) +
   '\n' +
   HUB_DIALOGUE_STORAGE_RULES +
+  '\nStart every turn by calling list_tasks; report tasks only as list_tasks returns them.' +
+  '\nA task exists only after delegate_task has returned its id; never name a task id that list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.' +
+  '\nWhen the plan has a next step and no task is running, delegate it in this same turn; never end a turn with a promise to start work later.' +
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
   '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +

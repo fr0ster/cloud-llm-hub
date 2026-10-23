@@ -45,6 +45,15 @@ test('planner prepares a complete brief and discloses narrowed scope', () => {
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
 });
 
+test('planner grounds task reports in tool results and delegates the next step immediately', () => {
+  for (const rule of [
+    'Start every turn by calling list_tasks; report tasks only as list_tasks returns them.',
+    'A task exists only after delegate_task has returned its id; never name a task id that list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.',
+    'When the plan has a next step and no task is running, delegate it in this same turn; never end a turn with a promise to start work later.',
+  ])
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM.split('\n')).toContain(rule);
+});
+
 test('shared worker descriptions do not advertise dialogue RAG tools', () => {
   expect(EXECUTOR_DESCRIPTION).not.toContain('rag_');
   expect(CHECKER_DESCRIPTION).not.toContain('rag_');
