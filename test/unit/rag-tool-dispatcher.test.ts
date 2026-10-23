@@ -244,3 +244,67 @@ describe('dispatchRagTool — collection resolution', () => {
     expect(await reg.findActiveByCanonicalKey(physical, 'note-del')).toBeNull();
   });
 });
+
+test('rag_list returns compact titles, length and tags; id reads full text; paging is bounded', async () => {
+  asUser('alice');
+  mockSessionId = undefined;
+  const reg = new CollectionRegistry();
+  const text = `  ${'a'.repeat(130)}  \nsecret full body`;
+  await dispatchRagTool(reg, 'rag_add', {
+    collection: 'compact',
+    id: 'one',
+    text,
+    tags: ['analysis'],
+  });
+  await dispatchRagTool(reg, 'rag_add', {
+    collection: 'compact',
+    id: 'two',
+    text: 'Second\nbody',
+  });
+  expect(
+    await dispatchRagTool(reg, 'rag_list', { collection: 'compact', limit: 1 }),
+  ).toEqual({
+    ok: true,
+    total: 2,
+    documents: [
+      {
+        id: 'one',
+        title: 'a'.repeat(120),
+        length: text.length,
+        tags: ['analysis'],
+      },
+    ],
+  });
+  expect(
+    await dispatchRagTool(reg, 'rag_list', {
+      collection: 'compact',
+      offset: 1,
+      limit: 1,
+    }),
+  ).toEqual({
+    ok: true,
+    total: 2,
+    documents: [{ id: 'two', title: 'Second', length: 11 }],
+  });
+  expect(
+    await dispatchRagTool(reg, 'rag_list', {
+      collection: 'compact',
+      id: 'one',
+    }),
+  ).toEqual({
+    ok: true,
+    document: { id: 'one', text, tags: ['analysis'] },
+  });
+  expect(
+    await dispatchRagTool(reg, 'rag_list', {
+      collection: 'compact',
+      id: 'missing',
+    }),
+  ).toMatchObject({ ok: false });
+  expect(
+    await dispatchRagTool(reg, 'rag_list', {
+      collection: 'compact',
+      limit: 201,
+    }),
+  ).toMatchObject({ ok: false });
+});

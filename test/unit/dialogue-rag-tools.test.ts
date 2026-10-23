@@ -89,7 +89,13 @@ test('local dispatch binds session/user, persists results, reads them back and r
           { trace: { traceId: 'task-1' } },
         );
         expect(read.ok && JSON.parse(String(read.value.content))).toMatchObject(
-          { ok: true, total: 1, documents: [{ text: 'Analysis persisted' }] },
+          {
+            ok: true,
+            total: 1,
+            documents: [
+              { id: 'dump-1', title: 'Analysis persisted', length: 18 },
+            ],
+          },
         );
       });
     });
@@ -134,4 +140,35 @@ test('hub tools remain selectable with an empty SAP search and checker selection
   expect(checker.ok && checker.value.map((r) => r.metadata.id)).toEqual([
     'tool:rag_list',
   ]);
+});
+
+test('dialogue local rag_list full read is capped and reviewer records the visible prefix', async () => {
+  const { registry, inner } = setup();
+  const client = new RecordingMcpClient(
+    new DialogueRagMcpClient(inner, () => registry),
+    undefined,
+    100,
+  );
+  await inWorker(async () => {
+    await client.callTool('rag_add', {
+      collection: 'results',
+      id: 'large',
+      text: 'x'.repeat(1000),
+    });
+    const result = await client.callTool(
+      'rag_list',
+      { collection: 'results', id: 'large' },
+      { trace: { traceId: 'large' } },
+    );
+    expect(result.ok && result.value.content).toContain(
+      '[result truncated: 100 of',
+    );
+    expect(result.ok && result.value.isError).toBe(false);
+    expect(client.getToolRecords('large')[0].result).toEqual(
+      result.ok && result.value,
+    );
+    expect(client.getToolRecords('large')[0]).toMatchObject({
+      truncation: { truncated: true, keptLength: 100 },
+    });
+  });
 });

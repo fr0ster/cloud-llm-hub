@@ -192,6 +192,7 @@ export interface AgentConfig {
 
     /** Maximum tool loop iterations */
     maxIterations: number;
+    toolResultMaxChars?: number;
 
     /** RAG backend type */
     ragType: RagType;
@@ -617,6 +618,7 @@ export function loadAgentConfig(): AgentConfig {
         ),
       },
       maxIterations,
+      toolResultMaxChars: parseToolResultMaxChars(),
       ragType,
       historyRecencyWindow,
       ragQueryK,
@@ -651,6 +653,7 @@ export function loadAgentConfig(): AgentConfig {
     chatCoordinator: config.agent.chatCoordinator,
     planBudget: config.agent.planBudget,
     maxIterations: config.agent.maxIterations,
+    toolResultMaxChars: config.agent.toolResultMaxChars,
     ragType: config.agent.ragType,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
     gatekeeper: describeGatekeeperConfig(gatekeeper),
@@ -790,4 +793,18 @@ export function parseChatCoordinator(
 /** Shared task limit for TaskBoard and persisted dialogue validation. */
 export function dialogueMaxTasks(): number {
   return readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_MAX_TASKS') ?? 50;
+}
+
+/** Maximum serialized tool-result characters; zero disables the safety net. */
+export function parseToolResultMaxChars(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.LLM_AGENT_TOOL_RESULT_MAX_CHARS?.trim();
+  if (!raw) return 60000;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value))
+    throw new Error(
+      'Invalid LLM_AGENT_TOOL_RESULT_MAX_CHARS: expected an integer, 0 or more',
+    );
+  return value;
 }

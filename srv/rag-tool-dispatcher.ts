@@ -47,9 +47,10 @@ const TOOL_DEFS = [
   {
     name: 'rag_list' as const,
     description:
-      'Read records and their text from a hub RAG collection to verify stored results. Use offset and limit to page through all records.',
+      'List record ids, titles, text lengths and tags from a hub RAG collection. Use offset and limit (default 50, maximum 200) to page. Pass id to read one record in full.',
     schema: z.object({
       collection: z.string(),
+      id: z.string().optional(),
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().min(1).max(200).optional(),
     }),
@@ -139,14 +140,39 @@ export async function dispatchRagTool(
           sessionId(),
           false,
         );
-        const result = physical
-          ? await registry.listDocuments(physical, {
-              offset: args.offset as number | undefined,
-              limit: args.limit as number | undefined,
-            })
-          : null;
+        if (!physical) return { ok: false, error: 'Collection not found' };
+        if (args.id !== undefined) {
+          const doc =
+            (await registry.findActiveByCanonicalKey(
+              physical,
+              args.id as string,
+            )) ?? (await registry.getDocument(physical, args.id as string));
+          return doc
+            ? {
+                ok: true,
+                document: {
+                  id: doc.metadata?.canonicalKey ?? doc.id,
+                  text: doc.text,
+                  ...(doc.metadata?.tags ? { tags: doc.metadata.tags } : {}),
+                },
+              }
+            : { ok: false, error: 'Record not found' };
+        }
+        const result = await registry.listDocuments(physical, {
+          offset: args.offset as number | undefined,
+          limit: (args.limit as number | undefined) ?? 50,
+        });
         return result
-          ? { ok: true, ...result }
+          ? {
+              ok: true,
+              total: result.total,
+              documents: result.documents.map((doc) => ({
+                id: doc.metadata?.canonicalKey ?? doc.id,
+                title: doc.text.split(/\r?\n/, 1)[0].trim().slice(0, 120),
+                length: doc.text.length,
+                ...(doc.metadata?.tags ? { tags: doc.metadata.tags } : {}),
+              })),
+            }
           : { ok: false, error: 'Collection not found' };
       }
       case 'rag_add': {

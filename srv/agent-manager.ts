@@ -1,4 +1,5 @@
 import { watchDestinations } from './lib/destination-watch';
+import { withToolResultCap } from './lib/tool-result-cap';
 /**
  * Agent Manager - SmartAgent lifecycle management
  *
@@ -2621,7 +2622,11 @@ async function configureDestinationAgentBuilder(
   })
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
-    .withMcpClients([mcpAdapter]);
+    .withMcpClients([
+      mcpAdapter instanceof RecordingMcpClient
+        ? mcpAdapter
+        : withToolResultCap(mcpAdapter, config.agent.toolResultMaxChars),
+    ]);
 
   // Tools RAG store for MCP tool selection (auto-vectorized)
   if (!opts?.skipRetrieval)
@@ -2717,6 +2722,9 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   ) +
   '\n' +
   HUB_DIALOGUE_STORAGE_RULES +
+  '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
+  '\nMake each step the smallest result that can be checked on its own: one object, one fact or one stored record.' +
+  '\nTo process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.' +
   '\nStart every turn by calling list_tasks; report tasks only as list_tasks returns them.' +
   '\nA task exists only after delegate_task has returned its id; never name a task id that list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.' +
   '\nWhen the plan has a next step that is ready to run (no open question for the user, its inputs known) and no task is running, delegate it in this same turn; never end a turn with a promise to start work later. If the step needs a decision from the user, ask instead.' +
@@ -2756,7 +2764,12 @@ export async function buildPlannerAgent(
     },
   })
     .withMainLlm(forwardingLlm)
-    .withMcpClients([new PlannerToolsClient()])
+    .withMcpClients([
+      withToolResultCap(
+        new PlannerToolsClient(),
+        config.agent.toolResultMaxChars,
+      ),
+    ])
     .withClassification(false)
     .withMode('hard')
     .build();
@@ -2825,6 +2838,7 @@ export async function buildAgentForDestination(
       ? new DialogueRagMcpClient(mcpAdapter, getCollectionRegistry)
       : mcpAdapter,
     (name) => toolExpositionMap?.get(name),
+    config.agent.toolResultMaxChars,
   );
   let executor: SmartAgent | undefined;
   let rawExecutor: SmartAgent | undefined;

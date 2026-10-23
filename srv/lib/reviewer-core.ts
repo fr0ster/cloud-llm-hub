@@ -13,6 +13,7 @@
  */
 
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import type { ToolResultTruncation } from './tool-result-cap';
 import {
   claimedWriteOps,
   claimsCompletedRead,
@@ -51,8 +52,15 @@ export type ReviewVerdict = { ok: true } | { ok: false; issues: ReviewIssue[] };
 export type ToolOutcome = {
   name: string;
   ok: boolean;
+  truncation?: ToolResultTruncation;
   status?: string;
   error?: string;
+};
+
+/** Facts parsed before model-visible content is capped. */
+export type RecordedToolCall = ToolCallRecord & {
+  outcome?: Omit<ToolOutcome, 'name' | 'truncation'>;
+  truncation?: ToolResultTruncation;
 };
 
 /** Best-effort envelope extraction from `McpToolResult.content`, robust to the
@@ -106,6 +114,9 @@ function parseEnvelope(content: unknown): Record<string, unknown> {
  *  field is treated as success (many read tools carry no envelope at all). */
 export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
   const name = record.call.name;
+  const { outcome, truncation } = record as RecordedToolCall;
+  if (outcome)
+    return { ...outcome, name, ...(truncation ? { truncation } : {}) };
   const mcpError = record.result.isError === true;
   const envelope = parseEnvelope(record.result.content);
   const envelopeSuccess = envelope.success;
@@ -113,7 +124,8 @@ export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
     typeof envelope.status === 'string' ? envelope.status : undefined;
   const ok = !mcpError && envelopeSuccess !== false;
 
-  if (ok) return { name, ok: true, status };
+  if (ok)
+    return { name, ok: true, status, ...(truncation ? { truncation } : {}) };
 
   const contentText =
     typeof record.result.content === 'string'
@@ -123,7 +135,13 @@ export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
     (typeof envelope.error === 'string' && envelope.error) ||
     (typeof envelope.message === 'string' && envelope.message) ||
     contentText;
-  return { name, ok: false, status, error };
+  return {
+    name,
+    ok: false,
+    status,
+    error,
+    ...(truncation ? { truncation } : {}),
+  };
 }
 
 const CREATE_TOOL = /^(?:Handler)?Create/i;
