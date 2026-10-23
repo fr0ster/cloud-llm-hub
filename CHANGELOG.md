@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.0.1] - 2026-10-23
+
+### Fixed
+
+- **The deploy finds AI Core credentials for tool vectors.** When the tool
+  vectors must be regenerated, `tools/generate-tool-embeddings.ts` resolves AI
+  Core credentials in order: `AICORE_SERVICE_KEY`, `VCAP_SERVICES` in the
+  environment, `default-env.json`, the repo `.env` `AICORE_*` variables, and
+  `--aicore-key <file>`; it fails with one clear message when none is
+  available. Errors from AI Core, the network or the SDK print only the error
+  type, a short code, the HTTP status, the host and a fixed hint, never the
+  message, stack, body or headers; configuration errors print in full with
+  values masked.
+- **The WebUI asks to sign in again when the approuter session expired**
+  instead of showing a JSON parse error; it stops reconnecting the events
+  channel and keeps the typed input. Structured hub 401/403 errors (SAP
+  credentials missing or rejected) still open the SAP login.
+
 ## [9.0.0] - 2026-10-23
 
 ### Changed
