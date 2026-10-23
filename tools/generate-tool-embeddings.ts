@@ -47,6 +47,7 @@ import {
   planBundleLoad,
   type ToolEmbeddingBundle,
 } from '../srv/agent-manager';
+import { BuildValidationError } from '../srv/lib/build-validation-error';
 import {
   type EmbedderFingerprint,
   type Providers,
@@ -142,12 +143,12 @@ function cosine(a: number[], b: number[]): number {
 const round6 = (v: number[]) => v.map((x) => Math.round(x * 1e6) / 1e6);
 
 /** Generation-time canary determinism check (NOT a runtime load-path call). */
-async function checkCanary(embedder: IEmbedder): Promise<number[]> {
+export async function checkCanary(embedder: IEmbedder): Promise<number[]> {
   const canaryVector = round6(await embedWithRetry(embedder, CANARY));
   const canaryVector2 = round6(await embedWithRetry(embedder, CANARY));
   const cos = cosine(canaryVector, canaryVector2);
   if (cos < 0.9999) {
-    throw new Error(
+    throw new BuildValidationError(
       `ABORT: canary embeddings non-deterministic (cosine ${cos.toFixed(6)}) — ` +
         'embedder unstable; the built vectors would not match at runtime.',
     );
@@ -182,7 +183,7 @@ export async function buildBundle(
   file: string,
   opts: BuildOptions,
 ): Promise<string> {
-  if (!p.embedding) throw new Error('no embedder configured');
+  if (!p.embedding) throw new BuildValidationError('no embedder configured');
   const { embedder, fingerprint } = p.embedding;
   const coreVersion = readCoreVersion();
   const output = path.resolve(__dirname, '../srv', file);
@@ -235,8 +236,11 @@ export async function buildQdrantStores(
   opts: BuildOptions,
 ): Promise<ToolRole[]> {
   const q = config.rag.qdrant;
-  if (!q) throw new Error('tools are on qdrant but no Qdrant is configured');
-  if (!p.embedding) throw new Error('no embedder configured');
+  if (!q)
+    throw new BuildValidationError(
+      'tools are on qdrant but no Qdrant is configured',
+    );
+  if (!p.embedding) throw new BuildValidationError('no embedder configured');
   const { embedder, retrieval, fingerprint: fp } = p.embedding;
   const roles = corpusByRole(docs);
   const provider = toolCatalogProvider(q, retrieval);
@@ -272,7 +276,9 @@ export async function buildQdrantStores(
     // An empty role would never create its store, so nothing could be counted
     // or recorded; say so instead of failing on a missing collection.
     if (expected === 0)
-      throw new Error(`${role}: the corpus has no ${role} tools`);
+      throw new BuildValidationError(
+        `${role}: the corpus has no ${role} tools`,
+      );
 
     // Replace: the record first, then the store (deleteCollection's order), so
     // an interrupted replace never leaves a record over a partial store.
@@ -290,7 +296,7 @@ export async function buildQdrantStores(
       .create('tools', name)
       .writer?.()?.upsertPrecomputedRaw;
     if (!write)
-      throw new Error(
+      throw new BuildValidationError(
         `${role}: the tools store cannot take precomputed vectors`,
       );
     opts.log(`${role}: embedding ${expected} tool docs into ${collection}...`);
@@ -314,7 +320,7 @@ export async function buildQdrantStores(
     const count = await p.stores.countPoints('tools', name);
     if (!count.ok) throw count.error;
     if (count.value !== expected)
-      throw new Error(
+      throw new BuildValidationError(
         `${role}: ${collection} holds ${count.value} points, expected ${expected}`,
       );
     const rec = await provider.createCollection(collection, {
@@ -411,9 +417,6 @@ export function resolveAiCoreCredentials(
     env.VCAP_SERVICES = JSON.stringify(bindings);
   }
 }
-
-/** Only locally constructed, fixed validation messages may be printed verbatim. */
-class BuildValidationError extends Error {}
 
 /** Downstream messages, stacks, bodies and headers are never diagnostics. */
 export function reportBuildError(err: unknown): void {
@@ -577,9 +580,18 @@ async function main() {
   }
 }
 
-if (require.main === module) {
-  main().catch((err) => {
+/** Installed only by the CLI; imports leave the host process untouched. */
+export function installCliErrorHandlers(): (err: unknown) => never {
+  const fail = (err: unknown): never => {
     reportBuildError(err);
     process.exit(1);
-  });
+  };
+  process.on('unhandledRejection', fail);
+  process.on('uncaughtException', fail);
+  return fail;
+}
+
+if (require.main === module) {
+  const fail = installCliErrorHandlers();
+  main().catch(fail);
 }

@@ -29,6 +29,7 @@
 import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import { BuildValidationError } from './lib/build-validation-error';
 import { readPositiveIntFrom } from './lib/env-int';
 import {
   describeGatekeeperConfig,
@@ -105,7 +106,9 @@ export function parseContextCapture(
 ): 'off' | 'stats' {
   const value = env.LLM_AGENT_CONTEXT_CAPTURE?.trim() || 'off';
   if (value !== 'off' && value !== 'stats')
-    throw new Error('Invalid LLM_AGENT_CONTEXT_CAPTURE: expected off or stats');
+    throw new BuildValidationError(
+      'Invalid LLM_AGENT_CONTEXT_CAPTURE: expected off or stats',
+    );
   return value;
 }
 
@@ -278,19 +281,19 @@ export function parseRagConfig(
     const name = CLASS_VARS[cls];
     const raw = set(env, name);
     if (raw !== undefined && !BACKENDS.includes(raw as RagBackendKind)) {
-      throw new Error(
+      throw new BuildValidationError(
         `Invalid ${name}: expected one of ${BACKENDS.join(', ')}, got ${JSON.stringify(raw)}`,
       );
     }
     if (raw !== undefined && ragType === 'in-memory' && raw !== 'in-memory') {
-      throw new Error(
+      throw new BuildValidationError(
         `LLM_AGENT_RAG_TYPE=in-memory and ${name}=${raw} contradict each other`,
       );
     }
     backends[cls] = (raw as RagBackendKind | undefined) ?? legacy;
   }
   if (backends.tools === 'hana-vector' || backends.tools === 'pg-vector') {
-    throw new Error(
+    throw new BuildValidationError(
       `${CLASS_VARS.tools}=${backends.tools} is not supported yet: the tool corpus on HANA/Postgres is a later project; use in-memory, vector or qdrant`,
     );
   }
@@ -299,14 +302,14 @@ export function parseRagConfig(
   const kindRaw = set(env, 'LLM_AGENT_EMBEDDER');
   if (!needsEmbedder) {
     if (kindRaw !== undefined) {
-      throw new Error(
+      throw new BuildValidationError(
         'LLM_AGENT_EMBEDDER is set, but every RAG class is in-memory, so nothing would use it',
       );
     }
     return { embedder: null, backends };
   }
   if (kindRaw !== undefined && !EMBEDDERS.includes(kindRaw as EmbedderKind)) {
-    throw new Error(
+    throw new BuildValidationError(
       `Invalid LLM_AGENT_EMBEDDER: expected one of ${EMBEDDERS.join(', ')}, got ${JSON.stringify(kindRaw)}`,
     );
   }
@@ -330,7 +333,7 @@ export function parseRagConfig(
     };
   } else {
     if (!model)
-      throw new Error(
+      throw new BuildValidationError(
         'LLM_AGENT_EMBEDDER=ollama needs LLM_AGENT_EMBEDDING_MODEL (no default model)',
       );
     embedder = {
@@ -348,7 +351,7 @@ export function parseRagConfig(
   if (Object.values(backends).includes('qdrant')) {
     const url = set(env, 'LLM_AGENT_QDRANT_URL');
     if (!url)
-      throw new Error(
+      throw new BuildValidationError(
         'A RAG class uses qdrant, but LLM_AGENT_QDRANT_URL is not set',
       );
     const apiKey = set(env, 'LLM_AGENT_QDRANT_API_KEY');
@@ -366,7 +369,7 @@ export function parseRagConfig(
   if (Object.values(backends).includes('pg-vector')) {
     const url = set(env, 'LLM_AGENT_PG_URL');
     if (!url)
-      throw new Error(
+      throw new BuildValidationError(
         'A RAG class uses pg-vector, but LLM_AGENT_PG_URL is not set',
       );
     const user = set(env, 'LLM_AGENT_PG_USER');
@@ -386,7 +389,7 @@ export function parseSapRelevanceScore(env: NodeJS.ProcessEnv): number {
   const raw = set(env, 'LLM_AGENT_SAP_RELEVANCE_SCORE');
   const score = raw === undefined ? 0.48 : Number(raw);
   if (!Number.isFinite(score) || score < 0 || score > 1) {
-    throw new Error(
+    throw new BuildValidationError(
       'Invalid LLM_AGENT_SAP_RELEVANCE_SCORE: expected a number in 0..1',
     );
   }
@@ -450,25 +453,25 @@ export function parseDestinationConfig(
   const source = set(env, 'LLM_AGENT_DESTINATION_SOURCE') ?? 'btp';
   if (source === 'btp') return { source };
   if (source !== 'env') {
-    throw new Error(
+    throw new BuildValidationError(
       `Invalid LLM_AGENT_DESTINATION_SOURCE: expected btp or env, got ${JSON.stringify(source)}`,
     );
   }
   const raw = set(env, 'destinations');
   if (!raw)
-    throw new Error(
+    throw new BuildValidationError(
       'LLM_AGENT_DESTINATION_SOURCE=env needs the Cloud SDK `destinations` variable',
     );
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (e) {
-    throw new Error(
-      `The \`destinations\` variable is not valid JSON: ${(e as Error).message}`,
+  } catch {
+    throw new BuildValidationError(
+      'The `destinations` variable is not valid JSON',
     );
   }
   if (!Array.isArray(parsed) || parsed.length === 0) {
-    throw new Error(
+    throw new BuildValidationError(
       'The `destinations` variable must be a JSON array with at least one destination',
     );
   }
@@ -477,7 +480,9 @@ export function parseDestinationConfig(
     const name = pick(o, 'name', 'Name');
     const url = pick(o, 'url', 'URL');
     if (!name || !url)
-      throw new Error(`destinations[${i}] needs a name and a url`);
+      throw new BuildValidationError(
+        `destinations[${i}] needs a name and a url`,
+      );
     const sapClient = pick(o, 'sapClient', 'sap-client');
     // Checked here so a typo stops the start, not the first request.
     const systemType = parseSystemType(
@@ -700,7 +705,7 @@ function readThrottleMaxWaitMs(): number {
   }
   const n = Number(raw);
   if (!Number.isSafeInteger(n) || n < 0) {
-    throw new Error(
+    throw new BuildValidationError(
       `Invalid LLM_AGENT_THROTTLE_MAX_WAIT_MS: expected a whole number of milliseconds, 0 or more, got ${JSON.stringify(raw)}`,
     );
   }
@@ -777,7 +782,7 @@ export function aiCoreServiceKeyFromEnv(
 export function parseToolGate(value: string | undefined): 'classifier' | 'off' {
   if (value === undefined || value === 'classifier') return 'classifier';
   if (value === 'off') return 'off';
-  throw new Error(
+  throw new BuildValidationError(
     `Invalid LLM_AGENT_TOOL_GATE: ${value}; expected classifier or off`,
   );
 }
@@ -799,7 +804,7 @@ export function parseChatCoordinator(
   if (value === undefined || value === '' || value === 'adaptive')
     return 'adaptive';
   if (value === 'fixed' || value === 'dialogue') return value;
-  throw new Error(
+  throw new BuildValidationError(
     `Invalid LLM_AGENT_CHAT_COORDINATOR: ${value}; expected adaptive, fixed or dialogue`,
   );
 }
@@ -817,7 +822,7 @@ export function parseToolResultMaxChars(
   if (!raw) return 60000;
   const value = Number(raw);
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value))
-    throw new Error(
+    throw new BuildValidationError(
       'Invalid LLM_AGENT_TOOL_RESULT_MAX_CHARS: expected an integer, 0 or more',
     );
   return value;
@@ -829,6 +834,8 @@ export function dialogueMaxCorrections(): number {
   if (raw === undefined || raw.trim() === '') return 2;
   const value = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN;
   if (!Number.isSafeInteger(value) || value < 0)
-    throw new Error(`Invalid ${name}: expected a nonnegative whole number`);
+    throw new BuildValidationError(
+      `Invalid ${name}: expected a nonnegative whole number`,
+    );
   return value;
 }

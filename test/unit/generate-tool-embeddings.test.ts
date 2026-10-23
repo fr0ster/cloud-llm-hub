@@ -24,7 +24,9 @@ import { createCollectionProvider } from '../../srv/lib/rag-provider-factory';
 import type { SharedCorpusDoc } from '../../srv/lib/tool-corpus';
 import {
   applyMtaext,
+  checkCanary,
   decideToolBuild,
+  installCliErrorHandlers,
   loadTargetConfig,
   reportBuildError,
   requireBuildCredentials,
@@ -505,6 +507,99 @@ describe('CLI error reporting', () => {
       }
       expect(output).toHaveBeenCalledWith(
         'Error: Could not read AI Core service key JSON from --aicore-key file',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+});
+
+describe('CLI fatal handlers and trusted diagnostics', () => {
+  it.each(['unhandledRejection', 'uncaughtException'] as const)(
+    'sanitizes %s and exits unsuccessfully',
+    (event) => {
+      const on = jest.spyOn(process, 'on').mockReturnValue(process);
+      const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('exit sentinel');
+      });
+      try {
+        const fail = installCliErrorHandlers();
+        expect(on).toHaveBeenCalledWith(event, fail);
+        const handler = on.mock.calls.find(([name]) => name === event)?.[1];
+        const error = Object.assign(new Error('private-message'), {
+          stack: 'private-stack',
+          code: 'ECONNRESET',
+          response: { status: 401, data: 'private-body' },
+          config: {
+            url: 'https://user:password@api.invalid/path?secret=value',
+          },
+        });
+        expect(() => handler?.(error)).toThrow('exit sentinel');
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(output).toHaveBeenCalledTimes(1);
+        expect(output).toHaveBeenCalledWith(
+          'Error code=ECONNRESET status=401 host=api.invalid: AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials',
+        );
+      } finally {
+        on.mockRestore();
+        output.mockRestore();
+        exit.mockRestore();
+      }
+    },
+  );
+
+  it('prints the local unused embedder configuration diagnostic verbatim', () => {
+    process.env.LLM_AGENT_EMBEDDER = 'sap-ai-core';
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        loadAgentConfig();
+        throw new Error('expected config to fail');
+      } catch (error) {
+        reportBuildError(error);
+      }
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        'Error: LLM_AGENT_EMBEDDER is set, but every RAG class is in-memory, so nothing would use it',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('prints the local canary diagnostic verbatim', async () => {
+    const embedder = {
+      embed: jest
+        .fn()
+        .mockResolvedValueOnce({ vector: [1, 0] })
+        .mockResolvedValueOnce({ vector: [0, 1] }),
+    };
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await checkCanary(embedder as never).catch(reportBuildError);
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        'Error: ABORT: canary embeddings non-deterministic (cosine 0.000000) \u2014 embedder unstable; the built vectors would not match at runtime.',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('keeps downstream canary failures sanitized', async () => {
+    const error = Object.assign(new Error('private SDK message'), {
+      code: 'ECONNRESET',
+      response: { status: 401, data: 'private response' },
+      config: { url: 'https://user:password@api.invalid/path?token=secret' },
+    });
+    const embedder = { embed: jest.fn().mockRejectedValue(error) };
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await checkCanary(embedder as never).catch(reportBuildError);
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        'Error code=ECONNRESET status=401 host=api.invalid: AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials',
       );
     } finally {
       output.mockRestore();
