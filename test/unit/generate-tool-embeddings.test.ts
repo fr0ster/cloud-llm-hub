@@ -45,8 +45,8 @@ const RAG_VARS = [
 
 const docs: SharedCorpusDoc[] = [
   {
-    id: 'tool:ReadClass',
-    name: 'ReadClass',
+    id: 'tool:GetClass',
+    name: 'GetClass',
     text: 'read a class',
     exposition: 'readonly',
     cached: true,
@@ -205,7 +205,7 @@ describe('decideToolBuild', () => {
     );
   });
 
-  it('default AI Core config with the committed bundle: skip', () => {
+  it('default AI Core config rebuilds a bundle with a stale tool description', () => {
     applyMtaext(mtaext({ LLM_AGENT_RAG_TYPE: 'vector' }), process.env);
     const config = loadAgentConfig();
     expect(config.rag.embedder?.kind).toBe('sap-ai-core');
@@ -213,12 +213,14 @@ describe('decideToolBuild', () => {
     const d = decideToolBuild(
       config,
       fp,
-      getSharedCorpusDocs(),
+      getSharedCorpusDocs().map((doc, index) =>
+        index === 0 ? { ...doc, text: `${doc.text} changed schema` } : doc,
+      ),
       loadToolEmbeddingBundle,
     );
     expect(d).toEqual({
-      action: 'skip',
-      reason: 'tool-embeddings.json already matches',
+      action: 'build-bundle',
+      file: 'tool-embeddings.json',
     });
   });
 

@@ -7,7 +7,7 @@
  * once (`beginTeardown`), whatever the connection is doing. Called from a
  * client-abort listener in the middle of a write chain, it would refuse the
  * chain's next request (UNLOCK, activate) and log the session off, leaving the
- * object locked. A client disconnect ends nothing here: `endSession()` first
+ * object locked. A client disconnect ends nothing here: `closeHubSession()` first
  * waits for the critical section (`beginCriticalSection` …
  * `endCriticalSection`, which lib enters around every lock) to end, then
  * disconnects. No deadline on the wait — the write in between is short, and
@@ -96,9 +96,13 @@ export class HubOnPremConnector extends AdtOnPremConnector<
     }
   }
 
+  override async disconnect(): Promise<void> {
+    await endAfterSections(this.gate, () => super.disconnect());
+  }
+
   /** Log the session off — after any open critical section has ended. */
-  async endSession(): Promise<void> {
-    await endAfterSections(this.gate, () => this.disconnect());
+  async closeHubSession(): Promise<void> {
+    await this.disconnect();
   }
 }
 
@@ -123,8 +127,12 @@ export class HubCloudConnector extends AdtCloudConnector<
     }
   }
 
+  override async disconnect(): Promise<void> {
+    await endAfterSections(this.gate, () => super.disconnect());
+  }
+
   /** Log the session off — after any open critical section has ended. */
-  async endSession(): Promise<void> {
-    await endAfterSections(this.gate, () => this.disconnect());
+  async closeHubSession(): Promise<void> {
+    await this.disconnect();
   }
 }

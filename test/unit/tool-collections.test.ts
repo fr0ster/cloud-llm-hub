@@ -125,7 +125,7 @@ describe('role-scoped tool collections', () => {
     // \$TMP) must not take the read tools' places.
     const reader = fakeStore();
     const writer = fakeStore();
-    for (const id of ['GetPackageContents', 'GetPackageTree', 'ReadClass']) {
+    for (const id of ['GetPackageContents', 'GetPackageTree', 'GetClass']) {
       reader.rows.push({
         score: 0.4,
         metadata: { id: `tool:${id}`, exposition: 'readonly' },

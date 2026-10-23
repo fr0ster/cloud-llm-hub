@@ -10,7 +10,7 @@
  *   PROBE_OBJECT_URI=/sap/bc/adt/oo/classes/zcl_demo_probe \
  *   npx tsx tools/probe-direct-session.ts
  */
-import { getTimeout } from '@mcp-abap-adt/connection';
+
 import { createConnection } from '../srv/connections';
 import type { CloudSdkAbapConnection } from '../srv/connections/CloudSdkAbapConnection';
 import { resolveDestinationSapConfig } from '../srv/connections/destinationResolver';
@@ -42,7 +42,7 @@ async function main() {
       // Required by IAbapRequestOptions but not read by CloudSdkAbapConnection's
       // makeAdtRequest (no deadline is applied there); the library's own
       // constant fills the type without adding new timeout behavior.
-      timeout: getTimeout('default'),
+      timeout: 0,
     });
     statuses.lock = lock.status;
     handle = /<LOCK_HANDLE>([^<]+)</.exec(String(lock.data))?.[1];
@@ -52,7 +52,7 @@ async function main() {
       await conn.makeAdtRequest({
         url: uri,
         method: 'GET',
-        timeout: getTimeout('default'),
+        timeout: 0,
       })
     ).status;
   } finally {
@@ -64,7 +64,7 @@ async function main() {
           await conn.makeAdtRequest({
             url: `${uri}?_action=UNLOCK&lockHandle=${encodeURIComponent(handle)}`,
             method: 'POST',
-            timeout: getTimeout('default'),
+            timeout: 0,
           })
         ).status;
       }

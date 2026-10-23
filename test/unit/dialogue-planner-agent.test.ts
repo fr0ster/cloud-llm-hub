@@ -231,7 +231,7 @@ test.each(['adaptive', 'dialogue'] as const)(
   '%s tool loop sends capped text to the model',
   async (coordinator) => {
     const seen: string[] = [];
-    const name = coordinator === 'dialogue' ? 'rag_list' : 'ReadTable';
+    const name = coordinator === 'dialogue' ? 'rag_list' : 'GetTable';
     const modelName = `cap-${coordinator}`;
     const response: ILlm['chat'] = async (messages, tools) => {
       const results = messages.filter((m) => m.role === 'tool');
@@ -283,7 +283,7 @@ test.each(['adaptive', 'dialogue'] as const)(
       listTools: async () => ({
         ok: true as const,
         value: [
-          { name: 'ReadTable', description: 'Read table', inputSchema: {} },
+          { name: 'GetTable', description: 'Read table', inputSchema: {} },
         ],
       }),
       callTool: async () => ({

@@ -110,7 +110,7 @@ describe('an unreachable system survives the embedded transport', () => {
       },
     });
     const adapter = new McpClientAdapter(wrapper);
-    const result = await adapter.callTool('ReadClass', {});
+    const result = await adapter.callTool('GetClass', {});
     expect(result.ok).toBe(false);
     if (!result.ok) {
       // The predicate a handler will actually use. `isUnavailable` would be

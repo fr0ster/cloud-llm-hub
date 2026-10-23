@@ -12,6 +12,7 @@
  */
 
 import {
+  BackgroundRunHandlersGroup,
   HighLevelHandlersGroup,
   ReadOnlyHandlersGroup,
   SearchHandlersGroup,
@@ -64,6 +65,7 @@ export function buildToolExpositionMap(
     { name: 'high', group: new HighLevelHandlersGroup(ctx) },
     { name: 'search', group: new SearchHandlersGroup(ctx) },
     { name: 'system', group: new SystemHandlersGroup(ctx) },
+    { name: 'readonly', group: new BackgroundRunHandlersGroup(ctx) },
   ];
 
   const map = new Map<string, ExpositionLevel>();
@@ -83,6 +85,7 @@ export function buildToolExpositionMap(
     if (map.has(tool)) map.set(tool, level);
   }
 
+  map.set('DiscardBackgroundRun', 'high');
   return map;
 }
 

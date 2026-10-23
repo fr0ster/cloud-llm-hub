@@ -62,7 +62,7 @@ describe('an unanswered write', () => {
     };
     const rec = new RecordingMcpClient(client as never);
     await rec
-      .callTool('ReadClass', { name: 'ZCL_X' }, {
+      .callTool('GetClass', { name: 'ZCL_X' }, {
         trace: { traceId: 't4' },
       } as never)
       .catch(() => undefined);
@@ -170,7 +170,7 @@ describe('unanswered() against the real McpClientAdapter', () => {
       throw new Error('socket hang up');
     });
     const rec = new RecordingMcpClient(adapter);
-    await rec.callTool('ReadClass', {}, {
+    await rec.callTool('GetClass', {}, {
       trace: { traceId: 'ta-read' },
     } as never);
     expect(rec.unanswered('ta-read')).toHaveLength(0);

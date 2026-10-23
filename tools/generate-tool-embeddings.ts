@@ -390,6 +390,20 @@ async function main() {
     process.exit(1);
   }
 
+  // Reviewable regeneration inputs when an embedder is unavailable. No vectors
+  // are relabelled: the previous bundle remains stale until a real build succeeds.
+  const inputAt = process.argv.indexOf('--inputs-only');
+  if (inputAt >= 0) {
+    const output = process.argv[inputAt + 1];
+    if (!output) throw new Error('--inputs-only needs an output file');
+    fs.writeFileSync(
+      output,
+      `${JSON.stringify({ coreVersion: readCoreVersion(), docs }, null, 2)}\n`,
+    );
+    console.log(`Wrote ${docs.length} inputs to ${output}`);
+    return;
+  }
+
   const p = await startProviders(toolBuildConfig(config));
   const decision = decideToolBuild(
     config,

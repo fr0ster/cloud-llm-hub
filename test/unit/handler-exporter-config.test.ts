@@ -8,7 +8,7 @@ import { lowLevelOnlyTools } from './helpers/low-level-tools';
 describe('getHandlerExporterConfig', () => {
   it('serves read-only, high-level, search and system — never low-level', () => {
     const c = getHandlerExporterConfig();
-    expect(c.includeLowLevel).toBe(false);
+    expect(c.includeDebug).toBe(false);
     expect(c.includeHighLevel).toBe(true);
     expect(c.includeReadOnly).toBe(true);
     expect(c.includeSystem).toBe(true);
@@ -21,7 +21,7 @@ describe('getHandlerExporterConfig', () => {
     try {
       process.env.LLM_AGENT_INCLUDE_LOW_LEVEL = 'true';
       process.env.LLM_AGENT_INCLUDE_COMPACT = 'true';
-      expect(getHandlerExporterConfig().includeLowLevel).toBe(false);
+      expect(getHandlerExporterConfig().includeDebug).toBe(false);
     } finally {
       process.env = saved;
     }

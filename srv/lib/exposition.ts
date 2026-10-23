@@ -91,8 +91,6 @@ export const SYSTEM_TOOLS_THAT_WRITE: Readonly<
 > = {
   RuntimeRunClass: 'high',
   RuntimeRunProgram: 'high',
-  RuntimeRunClassWithProfiling: 'high',
-  RuntimeRunProgramWithProfiling: 'high',
   RuntimeCreateProfilerTraceParameters: 'high',
 };
 

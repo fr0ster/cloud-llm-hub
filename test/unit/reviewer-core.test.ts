@@ -206,7 +206,7 @@ describe('evaluateDeterministic (result-based)', () => {
   it('flags an unverified delete when no delete tool ran', () => {
     const content = 'The table entry was deleted successfully.';
     const verdict = evaluateDeterministic(content, [
-      record('ReadTable', '{"success":true}'),
+      record('GetTable', '{"success":true}'),
     ]);
     expect(verdict.ok).toBe(false);
     if (verdict.ok) throw new Error('unreachable');

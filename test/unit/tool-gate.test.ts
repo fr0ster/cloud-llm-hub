@@ -92,7 +92,7 @@ it('translation-only mode calls the model for ASCII and short text', async () =>
 });
 
 const rows = [
-  { score: 0.8, metadata: { id: 'ReadClass', exposition: 'readonly' } },
+  { score: 0.8, metadata: { id: 'GetClass', exposition: 'readonly' } },
   { score: 0.9, metadata: { id: 'skill:read' } },
 ];
 it.each(['closed', 'true', 'bypass', 'off', 'unconfigured'])(

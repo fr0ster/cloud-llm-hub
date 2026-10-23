@@ -5,6 +5,7 @@ import type { Request } from 'express';
 import { createConnection } from '../connections/connectionFactory';
 import { resolveDestinationSapConfig } from '../connections/destinationResolver';
 import { bearerToken, computeDumpScope } from './principal';
+import { safeStop } from './request-connection';
 import {
   bindSystemIdentity,
   warmSystemIdentity,
@@ -101,7 +102,12 @@ export async function buildConnectionForDestination(
     sapConfig,
     destinationName: resolved.destinationName,
   });
-  await conn.connect();
+  try {
+    await conn.connect();
+  } catch (error) {
+    await safeStop(conn);
+    throw error;
+  }
   bindSystemIdentity(conn, {
     systemType,
     sapConfig,

@@ -779,3 +779,32 @@ it('should use direct connection for sapConfig', async () => {
 **Version:** 1.0  
 **Last Updated:** December 1, 2025  
 **Author:** AI Assistant
+
+
+### v20 embedded agent dispatch
+
+The agent transport creates handler groups for each tool call and binds them to
+that request's authenticated connection. Groups are never shared across calls,
+including while the system-context resolver awaits. Basic authentication and
+principal propagation both use the connection established for the caller.
+
+Agent long reads run on that request connection, tracked until completion by
+`trackCall`, without a hub timeout or v20 fresh-session orchestration. In
+20.1.0, `runLongCall` is internal (`dist/lib/longCall`) and is not re-exported
+by any public package entry point; its internal fresh-connection registry also
+requires server orchestration rather than the agent's per-call connection.
+The hub therefore omits `timeout` and the upstream dedicated-session/timeout
+advice from agent schemas and descriptions (including the RAG corpus). Any
+explicit `timeout`, including null or zero, returns an
+`agent_timeout_unavailable` tool error before handler execution. Use raw MCP
+for cancellable long reads. The raw MCP
+transport uses v20 orchestration and a request-bound fresh-connection factory
+with the same destination, client and credentials. Request cleanup runs
+`dispose()`, then `terminalClose()` even if disposal fails, then `safeStop()` on
+the injected connection.
+
+The hub has no background-run store. Agent `RuntimeRunClass` and
+`RuntimeRunProgram` calls reject `background: true` with
+`background_runs_unavailable`; their agent discovery schemas omit that option.
+Both transports enforce `assertToolAllowed`; raw `tools/list` is filtered by the
+same policy applied before `tools/call` dispatch.
