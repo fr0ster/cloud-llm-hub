@@ -409,101 +409,102 @@ describe('deployment AI Core credentials (no network)', () => {
 });
 
 describe('CLI error reporting', () => {
+  const hint =
+    'AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials';
+
+  it('prints only safe metadata from a downstream embedding failure', async () => {
+    const secrets = [
+      'url-user',
+      'url-password',
+      'lowercase-secret',
+      '??????',
+      'percent%2fsecret',
+      'percent%2Fsecret',
+      'header-token',
+      'multiline-token',
+      'body-secret',
+      'stack-secret',
+      'query-secret',
+    ];
+    const payload = `${secrets.join(' ')}\nAuthorization:\n Bearer multiline-token`;
+    const error = Object.assign(new TypeError(payload), {
+      code: 'ECONNREFUSED',
+      stack: 'stack-secret',
+      config: {
+        url: 'https://url-user:url-password@api.invalid:443/private-path?token=query-secret',
+      },
+      response: {
+        status: 401,
+        data: payload,
+        headers: { Authorization: payload },
+      },
+      headers: { Authorization: payload },
+    });
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await Promise.reject(error).catch(reportBuildError);
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        `TypeError code=ECONNREFUSED status=401 host=api.invalid: ${hint}`,
+      );
+      const line = output.mock.calls[0][0] as string;
+      for (const secret of [...secrets, 'private-path', 'Authorization'])
+        expect(line).not.toContain(secret);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
   it.each([
-    ['Authorization: Bearer header-token', 'Authorization: [REDACTED]'],
-    [
-      'Proxy-Authorization: Basic proxy-token',
-      'Proxy-Authorization: [REDACTED]',
-    ],
-    [
-      'Authorization: Digest username="private", response="private-response"',
-      'Authorization: [REDACTED]',
-    ],
-    [
-      'request Bearer anywhere-token rejected',
-      'request Bearer [REDACTED] rejected',
-    ],
-    [
-      'request Basic anywhere-basic rejected',
-      'request Basic [REDACTED] rejected',
-    ],
-    [
-      JSON.stringify({ clientsecret: 'prefix"secret-suffix' }),
-      '{"clientsecret":[REDACTED]}',
-    ],
-    [
-      JSON.stringify({ access_token: 'prefix\\"token-suffix' }),
-      '{"access_token":[REDACTED]}',
-    ],
-  ])('redacts %s and retains diagnostics', (input, redacted) => {
+    new Error('private-message'),
+    'private-string',
+    {
+      name: 'secret\nname',
+      code: 'lowercase-secret',
+      status: '401',
+      config: { url: 'invalid url' },
+    },
+  ])('omits unsafe or unavailable metadata', (error) => {
     const output = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      reportBuildError(
-        new TypeError(`HTTP 401\n${input}\nEmbedding request rejected`),
-        {},
-      );
+      reportBuildError(error);
+      expect(output).toHaveBeenCalledWith(`Error: ${hint}`);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('preserves the fixed missing credentials validation message', () => {
+    delete process.env.AICORE_SERVICE_KEY;
+    process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    process.env.LLM_AGENT_EMBEDDER = 'sap-ai-core';
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        requireBuildCredentials(loadAgentConfig());
+      } catch (error) {
+        reportBuildError(error);
+      }
       expect(output).toHaveBeenCalledWith(
-        `TypeError: HTTP 401\n${redacted}\nEmbedding request rejected`,
+        expect.stringMatching(
+          /^Error: AI Core credentials required to regenerate tool vectors:/,
+        ),
       );
     } finally {
       output.mockRestore();
     }
   });
 
-  it('redacts every selected key string value in raw, JSON and URL forms', () => {
-    const secret = 'custom/secret"suffix';
+  it('preserves the fixed malformed key file validation message', () => {
     const output = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      reportBuildError(
-        new Error(
-          `HTTP 403 ${secret} ${JSON.stringify(secret)} ${encodeURIComponent(secret)} denied`,
-        ),
-        {
-          AICORE_SERVICE_KEY: JSON.stringify({ nested: { custom: secret } }),
-        },
-      );
+      try {
+        resolveAiCoreCredentials({}, {}, path.join(dir, 'missing-key.json'));
+      } catch (error) {
+        reportBuildError(error);
+      }
       expect(output).toHaveBeenCalledWith(
-        'Error: HTTP 403 [REDACTED] "[REDACTED]" [REDACTED] denied',
-      );
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it('redacts selected credentials in a thrown embedding error and keeps its type and diagnostic', async () => {
-    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const env = {
-        AICORE_SERVICE_KEY: JSON.stringify({
-          clientid: 'selected-client',
-          clientsecret: 'selected/secret+value',
-          tokens: { access_token: 'selected-token' },
-        }),
-      };
-      await Promise.reject(
-        new TypeError(
-          'Embedding failed (401): selected/secret+value selected-client selected-token selected%2Fsecret%2Bvalue',
-        ),
-      ).catch((err) => reportBuildError(err, env));
-      expect(output).toHaveBeenCalledWith(
-        'TypeError: Embedding failed (401): [REDACTED] [REDACTED] [REDACTED] [REDACTED]',
-      );
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it('redacts known credential fields even when their values are not in the selected key', () => {
-    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      reportBuildError(
-        new Error(
-          '401 {"clientsecret":"other-secret","access_token":"other-token"} api_key=private-key',
-        ),
-        {},
-      );
-      expect(output).toHaveBeenCalledWith(
-        'Error: 401 {"clientsecret":[REDACTED],"access_token":[REDACTED]} api_key=[REDACTED]',
+        'Error: Could not read AI Core service key JSON from --aicore-key file',
       );
     } finally {
       output.mockRestore();

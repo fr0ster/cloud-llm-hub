@@ -371,7 +371,7 @@ export function resolveAiCoreCredentials(
       if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings))
         throw new Error();
     } catch {
-      throw new Error('Could not read VCAP_SERVICES as JSON');
+      throw new BuildValidationError('Could not read VCAP_SERVICES as JSON');
     }
   }
   let key = env.AICORE_SERVICE_KEY;
@@ -396,7 +396,7 @@ export function resolveAiCoreCredentials(
         throw new Error();
       key = JSON.stringify(parsed);
     } catch {
-      throw new Error(
+      throw new BuildValidationError(
         'Could not read AI Core service key JSON from --aicore-key file',
       );
     }
@@ -412,56 +412,64 @@ export function resolveAiCoreCredentials(
   }
 }
 
-/** Keep downstream diagnostics useful without disclosing authentication data. */
-export function reportBuildError(
-  err: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  const secrets = new Set<string>();
-  function collect(value: unknown): void {
-    if (!value || typeof value !== 'object') return;
-    for (const item of Object.values(value)) {
-      if (typeof item === 'string' && item) secrets.add(item);
-      else collect(item);
+/** Only locally constructed, fixed validation messages may be printed verbatim. */
+class BuildValidationError extends Error {}
+
+/** Downstream messages, stacks, bodies and headers are never diagnostics. */
+export function reportBuildError(err: unknown): void {
+  if (err instanceof BuildValidationError) {
+    console.error(`${err.name}: ${err.message}`);
+    return;
+  }
+  const error = (err && typeof err === 'object' ? err : {}) as {
+    name?: unknown;
+    code?: unknown;
+    status?: unknown;
+    response?: { status?: unknown };
+    config?: { url?: unknown; baseURL?: unknown };
+    request?: { host?: unknown; hostname?: unknown };
+  };
+  const name =
+    typeof error.name === 'string' &&
+    /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+      ? error.name
+      : 'Error';
+  const fields = [name];
+  if (
+    typeof error.code === 'string' &&
+    /^[A-Z][A-Z0-9_]{0,31}$/.test(error.code)
+  )
+    fields.push(`code=${error.code}`);
+  const status = error.response?.status ?? error.status;
+  if (
+    typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+  )
+    fields.push(`status=${status}`);
+  const target =
+    error.config?.url ?? error.request?.hostname ?? error.request?.host;
+  if (typeof target === 'string') {
+    try {
+      const base = error.config?.baseURL;
+      const url = new URL(
+        typeof base === 'string' ||
+          target.includes('://') ||
+          target.startsWith('/')
+          ? target
+          : `https://${target}`,
+        typeof base === 'string' ? base : undefined,
+      );
+      if (url.protocol === 'http:' || url.protocol === 'https:')
+        fields.push(`host=${url.hostname}`);
+    } catch {
+      // An invalid request URL is omitted, never echoed.
     }
   }
-  for (const [field, value] of Object.entries(env)) {
-    if (value && /(?:SECRET|TOKEN|PASSWORD|API_KEY|CLIENT_ID)$/.test(field))
-      secrets.add(value);
-  }
-  try {
-    collect(JSON.parse(env.AICORE_SERVICE_KEY ?? '{}'));
-  } catch {
-    // Invalid key JSON must not prevent reporting the original failure.
-  }
-  let message =
-    err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-  // Consume quoted strings as a whole, including escaped quotes and slashes.
-  message = message.replace(
-    /(["']?(?:client[_-]?id|client[_-]?secret|[\w-]*token|password|api[_-]?key|(?:proxy-)?authorization)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi,
-    '$1[REDACTED]',
+  console.error(
+    `${fields.join(' ')}: AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials`,
   );
-  message = message.replace(
-    /(\b(?:proxy-)?authorization\s*[:=]\s*)(?!\[REDACTED\])[^\r\n]+/gi,
-    '$1[REDACTED]',
-  );
-  message = message.replace(
-    /\b(bearer|basic)\s+[^\s,"';}\]]+/gi,
-    '$1 [REDACTED]',
-  );
-  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
-    for (const value of [
-      secret,
-      encodeURIComponent(secret),
-      JSON.stringify(secret).slice(1, -1),
-    ])
-      message = message.split(value).join('[REDACTED]');
-  }
-  message = message.replace(
-    /(["']?(?:client[_-]?id|client[_-]?secret|[\w-]*token|password|api[_-]?key|(?:proxy-)?authorization)["']?\s*[:=]\s*)(?:\[REDACTED\]|[^\s,;}]+)/gi,
-    '$1[REDACTED]',
-  );
-  console.error(message);
 }
 
 export function requireBuildCredentials(config: AgentConfig): void {
@@ -469,7 +477,7 @@ export function requireBuildCredentials(config: AgentConfig): void {
     config.rag.embedder?.kind === 'sap-ai-core' &&
     !process.env.AICORE_SERVICE_KEY
   ) {
-    throw new Error(
+    throw new BuildValidationError(
       'AI Core credentials required to regenerate tool vectors: set AICORE_SERVICE_KEY, provide default-env.json VCAP_SERVICES, set AICORE_CLIENT_ID, AICORE_CLIENT_SECRET, AICORE_AUTH_URL and AICORE_BASE_URL in the repo .env, or use --aicore-key <file>.',
     );
   }
@@ -484,7 +492,7 @@ export function loadTargetConfig(argv: string[]): AgentConfig {
         JSON.parse(fs.readFileSync(defaultEnvPath, 'utf8')).VCAP_SERVICES ?? {}
       );
     } catch {
-      throw new Error(
+      throw new BuildValidationError(
         'Could not read default-env.json service bindings as JSON',
       );
     }
@@ -494,13 +502,13 @@ export function loadTargetConfig(argv: string[]): AgentConfig {
   if (at >= 0) {
     const file = argv[at + 1];
     if (!file || file.startsWith('--'))
-      throw new Error('--mtaext needs a file');
+      throw new BuildValidationError('--mtaext needs a file');
     applyMtaext(file, process.env);
   }
   const keyAt = argv.indexOf('--aicore-key');
   const keyFile = keyAt >= 0 ? argv[keyAt + 1] : undefined;
   if (keyAt >= 0 && (!keyFile || keyFile.startsWith('--')))
-    throw new Error('--aicore-key needs a file');
+    throw new BuildValidationError('--aicore-key needs a file');
   resolveAiCoreCredentials(process.env, services, keyFile);
   return loadAgentConfig();
 }
@@ -530,7 +538,8 @@ async function main() {
   const inputAt = process.argv.indexOf('--inputs-only');
   if (inputAt >= 0) {
     const output = process.argv[inputAt + 1];
-    if (!output) throw new Error('--inputs-only needs an output file');
+    if (!output)
+      throw new BuildValidationError('--inputs-only needs an output file');
     fs.writeFileSync(
       output,
       `${JSON.stringify({ coreVersion: readCoreVersion(), docs }, null, 2)}\n`,
