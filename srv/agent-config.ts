@@ -99,11 +99,22 @@ export type DestinationConfig =
   | { source: 'btp' }
   | { source: 'env'; destinations: EnvDestination[] };
 
+/** Content-free context telemetry; disabled unless explicitly selected. */
+export function parseContextCapture(
+  env: NodeJS.ProcessEnv = process.env,
+): 'off' | 'stats' {
+  const value = env.LLM_AGENT_CONTEXT_CAPTURE?.trim() || 'off';
+  if (value !== 'off' && value !== 'stats')
+    throw new Error('Invalid LLM_AGENT_CONTEXT_CAPTURE: expected off or stats');
+  return value;
+}
+
 export interface AgentConfig {
   /**
    * LLM Configuration
    */
   llm: {
+    contextCapture?: 'off' | 'stats';
     /** LLM provider: 'sap-ai-sdk' (default), 'openai', 'anthropic', 'deepseek' */
     provider: LlmProvider;
 
@@ -563,6 +574,7 @@ export function loadAgentConfig(): AgentConfig {
 
   const config: AgentConfig = {
     llm: {
+      contextCapture: parseContextCapture(),
       provider,
       model,
       classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL || model,

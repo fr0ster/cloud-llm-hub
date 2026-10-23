@@ -30,6 +30,21 @@ test('verification always belongs to the checker', () => {
   );
 });
 
+test('planner prepares a complete brief and discloses narrowed scope', () => {
+  for (const rule of [
+    'Every delegate_task is a brief: goal says what to achieve in one or two sentences',
+    'what not to touch, where results are stored, priority order, scope',
+    'ids, names, values',
+    'the done criterion, and what to return',
+    'The worker sees only the brief and its own tool results, not the dialogue',
+    'Pass history only when',
+    'when a step lists many items, split it',
+    'sampling, a subset, a different order',
+    'tell the user in your reply',
+  ])
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
+});
+
 test('shared worker descriptions do not advertise dialogue RAG tools', () => {
   expect(EXECUTOR_DESCRIPTION).not.toContain('rag_');
   expect(CHECKER_DESCRIPTION).not.toContain('rag_');

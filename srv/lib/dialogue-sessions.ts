@@ -26,6 +26,7 @@ import {
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
+import { runWithContextCapture } from './context-capture';
 import { DialogueOutbox } from './dialogue-outbox';
 import {
   plannerWithEnvironment,
@@ -279,11 +280,20 @@ async function open(
                 async () => {
                   const result = await runWithToolGateBypass(() =>
                     runWithDialogueRagTools(() =>
-                      worker.run({
-                        ...input,
-                        trace: { traceId: ctx.traceId },
-                        signal: ctx.pipeline.signal,
-                      }),
+                      runWithContextCapture(
+                        {
+                          component:
+                            name === 'checker' ? 'checker' : 'executor',
+                          taskId: ctx.taskId,
+                          sessionKey: key,
+                        },
+                        () =>
+                          worker.run({
+                            ...input,
+                            trace: { traceId: ctx.traceId },
+                            signal: ctx.pipeline.signal,
+                          }),
+                      ),
                     ),
                   );
                   if (
@@ -353,7 +363,10 @@ async function open(
       planner: {
         async process(input, options) {
           try {
-            return await turnPlanner.process(input, options);
+            return await runWithContextCapture(
+              { component: 'planner', sessionKey: key },
+              () => turnPlanner.process(input, options),
+            );
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
           }
@@ -418,7 +431,11 @@ async function open(
                   traceId,
                   taskId: task.id,
                 },
-                run,
+                () =>
+                  runWithContextCapture(
+                    { component: 'other', taskId: task.id, sessionKey: key },
+                    run,
+                  ),
               ),
             );
             healthy =

@@ -1293,6 +1293,7 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
     async () =>
       makeHubLlm(
         {
+          contextCapture: config.llm.contextCapture,
           provider: config.llm.provider,
           apiKey: config.llm.apiKey,
           baseURL: config.llm.baseUrl,
@@ -2517,9 +2518,11 @@ function getOrCreateSharedLlms(config: AgentConfig): {
     const mainModel = getCurrentModel();
     sharedMainLlm = makeHubLlm(
       {
+        contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
+        component: 'chat',
         model: mainModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -2532,6 +2535,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
     const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(
       {
+        contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
@@ -2713,6 +2717,10 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   ) +
   '\n' +
   HUB_DIALOGUE_STORAGE_RULES +
+  "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
+  "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
+  '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +
+  "\nWhen you narrow the user's scope (sampling, a subset, a different order), tell the user in your reply." +
   '\nDelegate every verification or check step to the checker worker, never to the executor; the checker only reads and checks.' +
   '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
@@ -3091,9 +3099,11 @@ export async function getSmartAgent(
   if (requestedModel && requestedModel !== activeModel) {
     const newLlmPromise = makeHubLlm(
       {
+        contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
+        component: 'chat',
         model: requestedModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
