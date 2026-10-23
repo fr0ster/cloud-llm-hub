@@ -109,7 +109,12 @@ const config: AgentConfig = {
   },
   mcp: { destination: 'TEST_DEST', systemDestinations: {} },
   agent: {
-    dialogue: { executors: 3, executorPool: 6, maxTasks: 50 },
+    dialogue: {
+      executors: 3,
+      executorPool: 6,
+      maxTasks: 50,
+      maxCorrections: 2,
+    },
     chatCoordinator: 'fixed',
     mode: 'smart',
     maxIterations: 10,

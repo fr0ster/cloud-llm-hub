@@ -1,5 +1,8 @@
 import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
-import { sessionCollectionId } from '../../srv/collection-ids';
+import {
+  sessionCollectionId,
+  userCollectionId,
+} from '../../srv/collection-ids';
 import {
   DialogueRagMcpClient,
   runWithDialogueRagTools,
@@ -33,6 +36,75 @@ const inWorker = <T>(fn: () => T) =>
     [],
     'alice',
   );
+
+test('worker collections persist across sessions, isolate users and allow explicit scratch scope', async () => {
+  const { client, registry } = setup();
+  await inWorker(async () => {
+    await client.callTool('rag_add', {
+      collection: 'results',
+      id: 'saved',
+      text: 'Keep',
+    });
+    await client.callTool('rag_add', {
+      collection: 'results',
+      scope: 'session',
+      id: 'scratch',
+      text: 'Temporary',
+    });
+  });
+  expect(
+    await registry.getCollection(userCollectionId('results', 'alice')),
+  ).toMatchObject({ owner: 'alice', scope: 'user' });
+  expect(
+    await registry.getCollection(
+      sessionCollectionId('results', 'alice', 'dialogue-1'),
+    ),
+  ).toMatchObject({
+    owner: 'alice',
+    scope: 'session',
+    sessionId: 'dialogue-1',
+  });
+  const call = (
+    user: string,
+    session: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    runWithSessionId(
+      session,
+      () => runWithDialogueRagTools(() => client.callTool(name, args)),
+      [],
+      user,
+    );
+  // The persistent collection wins even when this session has scratch data of the same name.
+  for (const session of ['dialogue-1', 'dialogue-2']) {
+    const read = await call('alice', session, 'rag_list', {
+      collection: 'results',
+      id: 'saved',
+    });
+    expect(read.ok && JSON.parse(String(read.value.content))).toMatchObject({
+      ok: true,
+      document: { text: 'Keep' },
+    });
+  }
+  const denied = await call('bob', 'dialogue-1', 'rag_list', {
+    collection: 'results',
+  });
+  expect(denied.ok && denied.value.isError).toBe(true);
+  const corrected = await call('alice', 'dialogue-2', 'rag_correct', {
+    collection: 'results',
+    id: 'saved',
+    newText: 'Updated',
+    reason: 'Update',
+  });
+  expect(corrected.ok && corrected.value.isError).toBe(false);
+  const removed = await call('alice', 'dialogue-2', 'rag_deprecate', {
+    collection: 'results',
+    id: 'saved',
+    reason: 'Retire',
+  });
+  expect(removed.ok && removed.value.isError).toBe(false);
+});
 
 test('executor sees four hub tools; checker sees only rag_list and cannot write', async () => {
   const { client, registry, inner } = setup();
@@ -99,18 +171,19 @@ test('local dispatch binds session/user, persists results, reads them back and r
         );
       });
     });
-    expect(spy).toHaveBeenCalledWith(registry, 'rag_add', expect.any(Object));
+    expect(spy).toHaveBeenCalledWith(registry, 'rag_add', expect.any(Object), {
+      defaultScope: 'user',
+    });
     expect(client.getToolRecords('task-1').map((r) => r.call.name)).toEqual([
       'rag_add',
       'rag_list',
     ]);
     const meta = await registry.getCollection(
-      sessionCollectionId('results', 'alice', 'dialogue-1'),
+      userCollectionId('results', 'alice'),
     );
     expect(meta).toMatchObject({
-      scope: 'session',
+      scope: 'user',
       owner: 'alice',
-      sessionId: 'dialogue-1',
     });
     const outside = await client.callTool('rag_add', {
       collection: 'results',

@@ -58,6 +58,7 @@ const message = z.object({
 const schema = z.object({
   conversation: z.array(message).max(200),
   plan: str.optional(),
+  planStatus: z.enum(['active', 'waiting_user', 'done']).optional(),
   tasks: z
     .array(
       z.object({

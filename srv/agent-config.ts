@@ -183,7 +183,12 @@ export interface AgentConfig {
     /** Agent mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only) */
     mode: SmartAgentMode;
     chatCoordinator: 'adaptive' | 'fixed' | 'dialogue';
-    dialogue: { executors: number; executorPool: number; maxTasks: number };
+    dialogue: {
+      executors: number;
+      executorPool: number;
+      maxTasks: number;
+      maxCorrections: number;
+    };
     planBudget?: {
       maxSteps?: number;
       maxRevisions?: number;
@@ -605,6 +610,7 @@ export function loadAgentConfig(): AgentConfig {
             'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
           ) ?? 6,
         maxTasks: dialogueMaxTasks(),
+        maxCorrections: dialogueMaxCorrections(),
       },
       planBudget: {
         maxSteps: readPositiveIntFrom(process.env, 'LLM_AGENT_PLAN_MAX_STEPS'),
@@ -806,5 +812,15 @@ export function parseToolResultMaxChars(
     throw new Error(
       'Invalid LLM_AGENT_TOOL_RESULT_MAX_CHARS: expected an integer, 0 or more',
     );
+  return value;
+}
+
+export function dialogueMaxCorrections(): number {
+  const name = 'LLM_AGENT_DIALOGUE_MAX_CORRECTIONS';
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return 2;
+  const value = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`Invalid ${name}: expected a nonnegative whole number`);
   return value;
 }

@@ -60,7 +60,14 @@ jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
   getAgentConfig: () => ({
     ...jest.requireActual('../../srv/agent-config').getAgentConfig(),
-    agent: { dialogue: { executors: 2, executorPool: 1, maxTasks: 50 } },
+    agent: {
+      dialogue: {
+        executors: 2,
+        executorPool: 1,
+        maxTasks: 50,
+        maxCorrections: 2,
+      },
+    },
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
@@ -71,7 +78,10 @@ jest.mock('../../srv/agent-manager', () => ({
         messages.find((m) => m.content.startsWith('[environment]'))?.content ??
           '',
       );
-      const text = messages.at(-1)?.content ?? '';
+      const input = messages.at(-1)?.content ?? '';
+      const text = input.includes('[task events]')
+        ? input.slice(input.indexOf('[task events]'))
+        : input;
       mockPlannerTurns.push(text);
       if (!text.startsWith('[task events]'))
         await new PlannerToolsClient().callTool('delegate_task', {

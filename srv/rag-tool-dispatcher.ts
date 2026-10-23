@@ -28,6 +28,7 @@ const ragAddSchema = z.object({
   text: z.string(),
   id: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  scope: z.enum(['user', 'session']).optional(),
 });
 
 const ragCorrectSchema = z.object({
@@ -58,7 +59,7 @@ const TOOL_DEFS = [
   {
     name: 'rag_add' as const,
     description:
-      'Add a new document to a RAG collection. Pass `id` to make the record addressable later (e.g. "business-requirements"); omit it to let the system assign a UUID. Errors if an active record with the given id already exists in the collection.',
+      'Add a new document to a RAG collection. Scope user is persistent across sessions; scope session is temporary scratch storage and requires a session. Dialogue workers default to user scope; client calls keep their existing session-aware default. Pass `id` to make the record addressable later (e.g. "business-requirements"); omit it to let the system assign a UUID. Errors if an active record with the given id already exists in the collection.',
     schema: ragAddSchema,
   },
   {
@@ -115,6 +116,7 @@ export async function dispatchRagTool(
   registry: CollectionRegistry,
   name: string,
   rawArgs: unknown,
+  options?: { defaultScope: 'user' },
 ): Promise<DispatchResult> {
   const schema = argSchemaByName[name];
   if (!schema) {
@@ -139,6 +141,7 @@ export async function dispatchRagTool(
           userId(),
           sessionId(),
           false,
+          options?.defaultScope,
         );
         if (!physical) return { ok: false, error: 'Collection not found' };
         if (args.id !== undefined) {
@@ -185,6 +188,8 @@ export async function dispatchRagTool(
             userId(),
             sid,
             true,
+            (args.scope as 'user' | 'session' | undefined) ??
+              options?.defaultScope,
           );
         } catch (err) {
           return { ok: false, error: (err as Error).message };
@@ -246,6 +251,7 @@ export async function dispatchRagTool(
           userId(),
           sessionId(),
           false,
+          options?.defaultScope,
         );
         if (!physical) {
           return {
@@ -287,6 +293,7 @@ export async function dispatchRagTool(
           userId(),
           sessionId(),
           false,
+          options?.defaultScope,
         );
         if (!physical) {
           return {

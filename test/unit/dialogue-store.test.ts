@@ -26,6 +26,18 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it.each(['active', 'waiting_user', 'done'] as const)(
+  'round trips plan status %s',
+  async (planStatus) => {
+    const store = createDialogueStateStore('alice', 'status');
+    await store.save('status', { ...state, plan: 'Work', planStatus });
+    expect(await store.load('status')).toEqual({
+      ...state,
+      plan: 'Work',
+      planStatus,
+    });
+  },
+);
 it('round trips with explicit owners, isolates equal keys, and deletes', async () => {
   const a = createDialogueStateStore('alice', 'same');
   const b = createDialogueStateStore('bob', 'same');
