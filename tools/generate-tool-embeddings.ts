@@ -516,8 +516,41 @@ export function loadTargetConfig(argv: string[]): AgentConfig {
   return loadAgentConfig();
 }
 
+/** The only trusted-error boundary: configuration is entirely local. */
+export function loadBuildConfiguration(argv: string[]): {
+  config: AgentConfig;
+  providerConfig: AgentConfig;
+} {
+  try {
+    const config = loadTargetConfig(argv);
+    return { config, providerConfig: toolBuildConfig(config) };
+  } catch (error) {
+    // Validators echo rejected values as JSON after `got`. Those values may
+    // be credentials accidentally assigned to the wrong variable. YAML errors
+    // can include entire source lines, including unrelated secret parameters.
+    const message =
+      error instanceof Error
+        ? error.name === 'YAMLException'
+          ? 'Could not read --mtaext configuration as YAML'
+          : error.message
+              .replace(/\bgot [\s\S]*/g, 'got [REDACTED]')
+              .replace(
+                /^(Invalid LLM_AGENT_(?:TOOL_GATE|CHAT_COORDINATOR): )[\s\S]*(; expected)/,
+                '$1[REDACTED]$2',
+              )
+              .replace(
+                /((?:invalid log level|malformed entry) ")[\s\S]*("; expected)/,
+                '$1[REDACTED]$2',
+              )
+        : 'Could not load build configuration';
+    throw new BuildValidationError(message);
+  }
+}
+
 async function main() {
-  const config = loadTargetConfig(process.argv.slice(2));
+  const { config, providerConfig } = loadBuildConfiguration(
+    process.argv.slice(2),
+  );
   console.log('effective config', {
     ragBackends: config.rag.backends,
     embedder: config.rag.embedder?.kind,
@@ -551,7 +584,7 @@ async function main() {
     return;
   }
 
-  const p = await startProviders(toolBuildConfig(config));
+  const p = await startProviders(providerConfig);
   const decision = decideToolBuild(
     config,
     p.embedding?.fingerprint ?? null,

@@ -19,6 +19,7 @@ import {
   getSharedCorpusDocs,
   loadToolEmbeddingBundle,
 } from '../../srv/agent-manager';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import { type Embedding, embedderFingerprint } from '../../srv/lib/providers';
 import { createCollectionProvider } from '../../srv/lib/rag-provider-factory';
 import type { SharedCorpusDoc } from '../../srv/lib/tool-corpus';
@@ -27,6 +28,7 @@ import {
   checkCanary,
   decideToolBuild,
   installCliErrorHandlers,
+  loadBuildConfiguration,
   loadTargetConfig,
   reportBuildError,
   requireBuildCredentials,
@@ -411,6 +413,50 @@ describe('deployment AI Core credentials (no network)', () => {
 });
 
 describe('CLI error reporting', () => {
+  it.each([
+    ['LLM_GATEKEEPER_QUEUE_LENGTH', '1', 'a queue needs a door'],
+    [
+      'LLM_GATEKEEPER_QUEUE_LENGTH',
+      'credential-secret',
+      'positive whole number',
+    ],
+    ['LLM_AGENT_TOOL_GATE', 'credential-secret', 'expected classifier or off'],
+    ['LLM_AGENT_EMBEDDER', 'credential-secret', 'expected one of'],
+  ])('reports local %s validation safely', (name, value, diagnostic) => {
+    clearGatekeeperConfig();
+    delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+    delete process.env.LLM_GATEKEEPER_QUEUE_LENGTH;
+    if (name === 'LLM_AGENT_EMBEDDER')
+      process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    const file = mtaext({ [name]: value });
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        loadBuildConfiguration(['--mtaext', file]);
+        throw new Error('expected configuration failure');
+      } catch (error) {
+        reportBuildError(error);
+      }
+      expect(output).toHaveBeenCalledTimes(1);
+      const line = output.mock.calls[0][0] as string;
+      expect(line).toContain(name);
+      expect(line).toContain(diagnostic);
+      expect(line).not.toContain('credential-secret');
+      expect(line).not.toContain('AI Core embedding request failed');
+    } finally {
+      clearGatekeeperConfig();
+      output.mockRestore();
+    }
+  });
+
+  it('withholds source excerpts from malformed configuration YAML', () => {
+    const file = path.join(dir, 'invalid.mtaext');
+    fs.writeFileSync(file, 'parameters: [credential-secret');
+    expect(() => loadBuildConfiguration(['--mtaext', file])).toThrow(
+      'Could not read --mtaext configuration as YAML',
+    );
+  });
+
   const hint =
     'AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials';
 
