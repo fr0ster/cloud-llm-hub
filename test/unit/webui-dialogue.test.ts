@@ -8,6 +8,9 @@ const flush = async () => {
 function harness() {
   const nodes: any[] = [];
   const list = { innerHTML: '' };
+  const plan = { hidden: true, open: false };
+  const planText = { innerHTML: '' };
+  const planStatus = { textContent: '' };
   const timers: Array<{ fn: () => Promise<void>; delay: number }> = [];
   const fetch = jest.fn();
   const context = {
@@ -27,7 +30,15 @@ function harness() {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;'),
-    document: { getElementById: () => list, createElement: () => ({}) },
+    document: {
+      getElementById: (id: string) =>
+        ({
+          'dialogue-plan': plan,
+          'dialogue-plan-text': planText,
+          'dialogue-plan-status': planStatus,
+        })[id] ?? list,
+      createElement: () => ({}),
+    },
     chatWindow: {
       appendChild: (node: any) => nodes.push(node),
       scrollTop: 0,
@@ -48,7 +59,16 @@ function harness() {
       ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml})',
     context,
   );
-  return { ...context, ...api, nodes, list, timers };
+  return {
+    ...context,
+    ...api,
+    nodes,
+    list,
+    timers,
+    plan,
+    planText,
+    planStatus,
+  };
 }
 function stream(text: string) {
   let first = true;
@@ -213,4 +233,50 @@ test('tasks have a single line class and an escaped full goal title', async () =
     /\.dialogue-task\s*\{[^}]*white-space:\s*nowrap;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis/s,
   );
   subscription.stop();
+});
+
+test('plan panel renders escaped markdown, updates live, preserves collapse and clears on reset', async () => {
+  const ui = harness();
+  const frame = (text: string, status: string) =>
+    `event: plan\ndata: ${JSON.stringify({ text, status })}\n\n`;
+  ui.fetch
+    .mockResolvedValueOnce(
+      stream(frame('**First**\n<script>bad()</script>', 'active')),
+    )
+    .mockResolvedValueOnce(stream(frame('Second', 'waiting_user')))
+    .mockResolvedValue({ status: 409 });
+  ui.startDialogueEvents('key');
+  await flush();
+  expect(ui.plan.hidden).toBe(false);
+  expect(ui.plan.open).toBe(true);
+  expect(ui.planText.innerHTML).toContain('<strong>First</strong>');
+  expect(ui.planText.innerHTML).toContain('&lt;script&gt;');
+  expect(ui.planText.innerHTML).not.toContain('<script>');
+  expect(ui.planStatus.textContent).toBe('active');
+  ui.plan.open = false;
+  await ui.timers[0].fn();
+  await flush();
+  expect(ui.planText.innerHTML).toBe('Second');
+  expect(ui.planStatus.textContent).toBe('waiting for you');
+  expect(ui.plan.open).toBe(false);
+  ui.startDialogueEvents('new');
+  expect(ui.plan.hidden).toBe(true);
+  expect(ui.planText.innerHTML).toBe('');
+  expect(ui.planStatus.textContent).toBe('');
+  ui.stopDialogueEvents();
+});
+
+test('long plans start collapsed and done status is visible', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(
+    stream(
+      `event: plan\ndata: ${JSON.stringify({ text: Array(9).fill('line').join('\n'), status: 'done' })}\n\n`,
+    ),
+  );
+  ui.startDialogueEvents('key');
+  await flush();
+  expect(ui.plan.open).toBe(false);
+  expect(ui.planStatus.textContent).toBe('done');
+  ui.stopDialogueEvents();
+  expect(ui.plan.hidden).toBe(true);
 });
