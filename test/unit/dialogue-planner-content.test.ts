@@ -1,8 +1,55 @@
-import type { PlannerAgent } from '@mcp-abap-adt/llm-agent-libs';
+import type { StreamChunk } from '@mcp-abap-adt/llm-agent';
+import {
+  DialogueSession,
+  type PlannerAgent,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
   plannerWithEnvironment,
   plannerWithParagraphs,
 } from '../../srv/lib/dialogue-planner-content';
+
+test('wrappers preserve paragraph content when DialogueSession buffers content partials', async () => {
+  const seen: StreamChunk[] = [];
+  const planner: PlannerAgent = {
+    async process(_input, options) {
+      options.onPartial?.({ kind: 'content', delta: 'Before.' });
+      options.onPartial?.({
+        kind: 'mcp-call',
+        source: { stepperId: 's', name: 'tool' },
+        tool: 'list_tasks',
+      });
+      options.onPartial?.({ kind: 'content', delta: 'After.' });
+      return { ok: true, value: { content: 'Before.After.' } };
+    },
+  };
+  const session = await DialogueSession.open({
+    id: 'buffered',
+    planner: plannerWithEnvironment(
+      plannerWithParagraphs(planner),
+      () => 'Hub',
+    ),
+    board: { workers: new Map(), maxConcurrent: 1 },
+  });
+  try {
+    const reply = await session.send('hello', {
+      onPartial: (chunk) => seen.push(chunk),
+    });
+    expect(reply.text).toBe('Before.\n\nAfter.');
+    expect(seen.map((chunk) => chunk.kind)).toEqual([
+      'mcp-call',
+      'content',
+      'content',
+    ]);
+    expect(
+      seen
+        .filter((chunk) => chunk.kind === 'content')
+        .map((chunk) => chunk.delta)
+        .join(''),
+    ).toBe(reply.text);
+  } finally {
+    await session.close();
+  }
+});
 
 test('environment reaches user and event turns without changing persisted conversation', async () => {
   const process = jest.fn(async () => ({

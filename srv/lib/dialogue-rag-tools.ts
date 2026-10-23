@@ -76,7 +76,9 @@ export class DialogueRagMcpClient implements IMcpClient {
       };
     }
     // The background task already holds session admission and binds session/user ALS.
-    const result = await dispatchRagTool(this.registry(), name, args);
+    const result = await dispatchRagTool(this.registry(), name, args, {
+      defaultScope: 'user',
+    });
     return {
       ok: true,
       value: { content: JSON.stringify(result), isError: !result.ok },

@@ -75,6 +75,8 @@ export interface CollectionLookup {
  * Resolve a bare LOGICAL name to the caller's own physical id.
  * - read (forWrite=false): the caller's private if it exists, else undefined.
  * - write (forWrite=true): the caller's private (create-if-absent).
+ * - preference: dialogue reads prefer user collections; explicit writes target
+ *   exactly the requested scope. Unspecified callers keep session-first lookup.
  * Never returns another user's collection. Rejects names containing `__`.
  */
 export async function resolveByName(
@@ -83,17 +85,26 @@ export async function resolveByName(
   userId: string,
   sessionId: string | undefined,
   forWrite: boolean,
+  preference?: 'user' | 'session',
 ): Promise<string | undefined> {
   // No anonymous-owned collections (spec non-goal): an unauthenticated caller has
   // no private namespace, so they can neither create nor reach one by name.
   if (!userId || userId === 'anonymous') return undefined;
   const logical = normalizeLogicalId(name); // throws on `__`
+  const up = userCollectionId(logical, userId);
+  if (preference === 'user') {
+    if (forWrite || (await reg.getCollection(up))) return up;
+  }
+  if (preference === 'session' && forWrite) {
+    return sessionId
+      ? sessionCollectionId(logical, userId, sessionId)
+      : undefined;
+  }
   // session shadows user: check the session collection first.
   const sp = sessionId
     ? sessionCollectionId(logical, userId, sessionId)
     : undefined;
   if (sp && (await reg.getCollection(sp))) return sp;
-  const up = userCollectionId(logical, userId);
   if (await reg.getCollection(up)) return up;
   if (forWrite) return sp ?? up; // default write: session if in a session, else user
   return undefined;

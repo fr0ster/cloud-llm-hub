@@ -132,6 +132,7 @@ describe('dialogue configuration', () => {
       'LLM_AGENT_DIALOGUE_EXECUTORS',
       'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
       'LLM_AGENT_DIALOGUE_MAX_TASKS',
+      'LLM_AGENT_DIALOGUE_MAX_CORRECTIONS',
     ])
       delete process.env[k];
   });
@@ -142,7 +143,12 @@ describe('dialogue configuration', () => {
     process.env.LLM_AGENT_CHAT_COORDINATOR = 'dialogue';
     expect(loadAgentConfig().agent).toMatchObject({
       chatCoordinator: 'dialogue',
-      dialogue: { executors: 3, executorPool: 6, maxTasks: 50 },
+      dialogue: {
+        executors: 3,
+        executorPool: 6,
+        maxTasks: 50,
+        maxCorrections: 2,
+      },
     });
   });
   it('reads limits and rejects malformed values', () => {
@@ -156,6 +162,7 @@ describe('dialogue configuration', () => {
       executors: 8,
       executorPool: 8,
       maxTasks: 8,
+      maxCorrections: 2,
     });
     for (const name of [
       'LLM_AGENT_DIALOGUE_EXECUTORS',
@@ -167,6 +174,18 @@ describe('dialogue configuration', () => {
         expect(() => loadAgentConfig()).toThrow(name);
       }
       process.env[name] = '8';
+    }
+  });
+  it('reads correction limits including zero and rejects malformed limits', () => {
+    for (const raw of ['0', '3']) {
+      process.env.LLM_AGENT_DIALOGUE_MAX_CORRECTIONS = raw;
+      expect(loadAgentConfig().agent.dialogue.maxCorrections).toBe(Number(raw));
+    }
+    for (const raw of ['-1', '1.5', 'x', '1e3', '9007199254740992']) {
+      process.env.LLM_AGENT_DIALOGUE_MAX_CORRECTIONS = raw;
+      expect(() => loadAgentConfig()).toThrow(
+        'LLM_AGENT_DIALOGUE_MAX_CORRECTIONS',
+      );
     }
   });
 });

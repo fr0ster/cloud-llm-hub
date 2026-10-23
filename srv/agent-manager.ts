@@ -2710,6 +2710,7 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
 
 export const HUB_DIALOGUE_STORAGE_RULES = [
   "Storing, collecting or remembering results means the hub's RAG collection (rag_add), never objects in the SAP system.",
+  'Results the user asks to keep go to a persistent user collection with rag_add scope user; scratch data may use scope session.',
   'Do not create, change, activate or run objects in the SAP system unless the user asked for that change. Reading and analysis tasks only read.',
   "When a step's outcome is stored, the check step reads it back (records exist and match), not just that a tool exists.",
   "When the user's wording is ambiguous about where or how to store or change something, ask the user.",
@@ -2725,8 +2726,9 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
   '\nMake each step the smallest result that can be checked on its own: one object, one fact or one stored record.' +
   '\nTo process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.' +
-  '\nStart every turn by calling list_tasks; report tasks only as list_tasks returns them.' +
-  '\nA task exists only after delegate_task has returned its id; never name a task id that list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.' +
+  '\nWhen you ask the user, set the plan status waiting_user with update_plan; when the request is complete, set it done.' +
+  '\nStart every turn by calling list_tasks; report tasks only as [tasks] / list_tasks show them.' +
+  '\nA task exists only after delegate_task has returned its id; never name a task id that [tasks], list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.' +
   '\nWhen the plan has a next step that is ready to run (no open question for the user, its inputs known) and no task is running, delegate it in this same turn; never end a turn with a promise to start work later. If the step needs a decision from the user, ask instead.' +
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +

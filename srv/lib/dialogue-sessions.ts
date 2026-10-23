@@ -387,6 +387,7 @@ async function open(
         },
         delete: async () => {},
       },
+      maxCorrections: config.agent.dialogue.maxCorrections,
       board: {
         workers,
         maxConcurrent: config.agent.dialogue.executors,

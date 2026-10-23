@@ -201,6 +201,7 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 | `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` plans per request; `fixed` restores the previous one-step DAG; `dialogue` selects the long-session dialogue planner. Unset or empty selects `adaptive`; other values reject startup. |
 | `LLM_AGENT_DIALOGUE_EXECUTORS` | `3` | Maximum concurrent background tasks (executor and checker) and pooled ABAP connections per dialogue session (positive integer). |
 | `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` | `6` | Hub-wide concurrent dialogue background tasks, including checker tasks (positive integer). |
+| `LLM_AGENT_DIALOGUE_MAX_CORRECTIONS` | `2` | Maximum end-of-turn corrective turns (nonnegative integer); `0` disables corrections. |
 | `LLM_AGENT_DIALOGUE_MAX_TASKS` | `50` | Maximum task records per dialogue session (positive integer); persistence validates against this configured limit. |
 | `LLM_AGENT_PLAN_MAX_STEPS` | library: `20` | Optional positive integer step limit. |
 | `LLM_AGENT_PLAN_MAX_REVISIONS` | library: `3` | Optional positive integer revision limit. |

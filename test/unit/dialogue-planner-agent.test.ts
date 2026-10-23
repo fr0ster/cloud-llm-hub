@@ -38,6 +38,7 @@ test('verification always belongs to the checker', () => {
 
 test('planner prepares a complete brief and discloses narrowed scope', () => {
   for (const rule of [
+    'When you ask the user, set the plan status waiting_user with update_plan; when the request is complete, set it done.',
     'Every delegate_task is a brief: goal says what to achieve in one or two sentences',
     'what not to touch, where results are stored, priority order, scope',
     'ids, names, values',
@@ -53,8 +54,8 @@ test('planner prepares a complete brief and discloses narrowed scope', () => {
 
 test('planner grounds task reports in tool results and delegates the next step immediately', () => {
   for (const rule of [
-    'Start every turn by calling list_tasks; report tasks only as list_tasks returns them.',
-    'A task exists only after delegate_task has returned its id; never name a task id that list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.',
+    'Start every turn by calling list_tasks; report tasks only as [tasks] / list_tasks show them.',
+    'A task exists only after delegate_task has returned its id; never name a task id that [tasks], list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.',
     'When the plan has a next step that is ready to run (no open question for the user, its inputs known) and no task is running, delegate it in this same turn; never end a turn with a promise to start work later. If the step needs a decision from the user, ask instead.',
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM.split('\n')).toContain(rule);
@@ -82,7 +83,12 @@ const config: AgentConfig = {
   },
   mcp: { destination: '', systemDestinations: {} },
   agent: {
-    dialogue: { executors: 7, executorPool: 6, maxTasks: 50 },
+    dialogue: {
+      executors: 7,
+      executorPool: 6,
+      maxTasks: 50,
+      maxCorrections: 2,
+    },
     chatCoordinator: 'adaptive',
     mode: 'smart',
     maxIterations: 10,
