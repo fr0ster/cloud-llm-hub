@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.0.0] - 2026-10-23
+
+### Changed
+
+- **`@mcp-abap-adt/lib` 20.1.0** (from 16.0.0), with `connection` 19.1,
+  `interfaces-adt-connection` 3 and `auth-providers` 6. Connectors follow the
+  connection 19 contracts (timeout required, one connection instance per SAP
+  session); outage tags survive the new failure rendering. The embedded MCP
+  server gets a request-bound fresh connection for listed long reads
+  (`RuntimeListFeeds`, `SearchObject`, `GetWhereUsed`, …) and closes it with
+  the request.
+- **Tools follow lib 20.1:** `Read<Type>` became `Get<Type>` with
+  `part: source | metadata`; `*WithProfiling` became `profile: true`; the
+  low-level group and `GetSession` are gone; new tools include
+  `UpdatePackage`, `DeletePackage`, `SortAndCompressTransportTask`,
+  `MoveTransportObjects`, unit-test reads and `GetFunctionInclude`. Tool
+  intents and the tool embedding bundle are regenerated for 20.1.0.
+- **One tool policy for the agent and the raw MCP route,** for listing and
+  calling. `Get<Type>` is a reader tool, so readers read code and metadata;
+  developers keep reader plus writer tools. New write tools are classified as
+  writes. `background: true` and an explicit `timeout` are rejected on the
+  agent path (no background store; long-call orchestration is not exported).
+
+### Added
+
+- **The WebUI shows the dialogue planner's plan** and its status (active,
+  waiting for you, done) in a collapsible panel next to the task list, updated
+  live; the plan text is never logged.
+
+### Fixed
+
+- **Concurrent agent calls of different users** could run on another user's
+  connection with lib 20's handler wrappers; handler groups are now per call.
+- **Rendered markdown allows only safe link schemes** (http, https, mailto,
+  relative); other destinations show as text.
+
+### Removed
+
+- **BREAKING:** readers no longer get `RuntimeRunClass`, `RuntimeRunProgram` or
+  profiler-trace creation through the raw MCP route; running code is a
+  developer action.
+
 ## [8.8.0] - 2026-10-23
 
 ### Changed
