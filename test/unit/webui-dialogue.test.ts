@@ -15,6 +15,8 @@ function harness() {
   const fetch = jest.fn();
   const context = {
     fetch,
+    hubFetch: fetch,
+    hubSignedOut: false,
     AbortController,
     TextDecoder,
     setTimeout: (fn: () => Promise<void>, delay: number) => {
@@ -56,7 +58,7 @@ function harness() {
   const api = runInNewContext(
     markdown +
       source +
-      ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml})',
+      ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -335,4 +337,16 @@ test('long plans start collapsed and done status is visible', async () => {
   expect(ui.planStatus.textContent).toBe('done');
   ui.stopDialogueEvents();
   expect(ui.plan.hidden).toBe(true);
+});
+
+test('signed-out event responses stop the reconnect loop', async () => {
+  const ui = harness();
+  ui.fetch.mockImplementation(async () => {
+    ui.signOut();
+    throw new Error('Sign in again');
+  });
+  ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.fetch).toHaveBeenCalledTimes(1);
+  expect(ui.timers).toHaveLength(0);
 });

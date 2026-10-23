@@ -5,8 +5,11 @@ import { runInNewContext } from 'node:vm';
 const html = readFileSync(resolve('app/chat/webapp/index.html'), 'utf8');
 describe('WebUI bootstrap readiness', () => {
   function readinessHarness() {
+    const fetch = jest.fn();
     const context = {
-      fetch: jest.fn(),
+      fetch,
+      hubFetch: fetch,
+      hubSignedOut: false,
       setStatus: jest.fn(),
       lockInput: jest.fn(),
       setTimeout: jest.fn(),
@@ -38,29 +41,29 @@ describe('WebUI bootstrap readiness', () => {
     return { ...context, checkReady };
   }
 
-  test.each([
-    [403, 'NO MCP ROLE'],
-    [401, 'NOT SIGNED IN'],
-  ])('shows an actionable error for HTTP %s', async (status, message) => {
-    const ui = readinessHarness();
-    const json = jest.fn().mockRejectedValue(new Error('not JSON'));
-    ui.fetch.mockResolvedValue({ status, json });
+  test.each([[403, 'NO MCP ROLE']])(
+    'shows an actionable error for HTTP %s',
+    async (status, message) => {
+      const ui = readinessHarness();
+      const json = jest.fn().mockRejectedValue(new Error('not JSON'));
+      ui.fetch.mockResolvedValue({ status, json });
 
-    await ui.checkReady();
+      await ui.checkReady();
 
-    expect(ui.fetch).toHaveBeenCalledWith('/v1/models', {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    });
-    expect(ui.setStatus).toHaveBeenCalledTimes(1);
-    expect(ui.setStatus).toHaveBeenCalledWith(
-      expect.stringContaining(message),
-      'status-error',
-    );
-    expect(ui.lockInput).toHaveBeenCalledWith('bootstrap');
-    expect(ui.setTimeout).toHaveBeenCalledTimes(1);
-    expect(ui.setTimeout).toHaveBeenCalledWith(ui.checkReady, 30000);
-    expect(json).not.toHaveBeenCalled();
-  });
+      expect(ui.fetch).toHaveBeenCalledWith('/v1/models', {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      expect(ui.setStatus).toHaveBeenCalledTimes(1);
+      expect(ui.setStatus).toHaveBeenCalledWith(
+        expect.stringContaining(message),
+        'status-error',
+      );
+      expect(ui.lockInput).toHaveBeenCalledWith('bootstrap');
+      expect(ui.setTimeout).toHaveBeenCalledTimes(1);
+      expect(ui.setTimeout).toHaveBeenCalledWith(ui.checkReady, 30000);
+      expect(json).not.toHaveBeenCalled();
+    },
+  );
 
   test('recovers from access denied on the scheduled retry', async () => {
     const ui = readinessHarness();
@@ -121,7 +124,7 @@ describe('WebUI bootstrap readiness', () => {
 describe('WebUI extended session protocol', () => {
   test('plain UI sends the session header and opens sessions explicitly', () => {
     expect(html).toContain('x-clh-session');
-    expect(html).toMatch(/fetch\('\/v1\/session',\s*\{\s*method: 'POST'/);
+    expect(html).toMatch(/hubFetch\('\/v1\/session',\s*\{\s*method: 'POST'/);
     expect(html).toContain("localStorage.setItem('clh.session'");
   });
   test('R15 plain UI keeps sessions on pagehide and recovers by error code', () => {
@@ -141,6 +144,8 @@ function sessionHarness(key = '') {
   const fetch = jest.fn();
   const context = {
     fetch,
+    hubFetch: fetch,
+    hubSignedOut: false,
     localStorage: {
       getItem: (name: string) => values.get(name),
       setItem: (name: string, value: string) => values.set(name, value),

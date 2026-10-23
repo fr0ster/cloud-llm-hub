@@ -336,6 +336,48 @@
         const destinationMeta = {};
         // Latest destination list from the server, used to populate the login gate.
         let gateDestinations = [];
+        userInput.value = sessionStorage.getItem('clh.draft') || userInput.value;
+        sessionStorage.removeItem('clh.draft');
+        let hubSignedOut = false;
+        const signInMessage = 'Your session has expired. Sign in again to continue.';
+        function showHubSignIn() {
+            if (hubSignedOut) return;
+            hubSignedOut = true;
+            if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
+            const notice = document.createElement('div');
+            notice.className = 'message';
+            notice.textContent = signInMessage + ' ';
+            const action = document.createElement('button');
+            action.textContent = 'Sign in again';
+            action.onclick = () => {
+                sessionStorage.setItem('clh.draft', userInput.value);
+                window.location.reload();
+            };
+            notice.appendChild(action);
+            chatWindow.appendChild(notice);
+        }
+        async function hubFetch(url, opts = {}) {
+            if (hubSignedOut) throw new Error(signInMessage);
+            const response = await fetch(url, { ...opts, redirect: 'manual', headers: { 'X-Requested-With': 'XMLHttpRequest', ...opts.headers } });
+            const contentType = response.headers?.get('content-type') || '';
+            let structuredHubError = false;
+            if ((response.status === 401 || response.status === 403) && /\bapplication\/(?:[\w.-]+\+)?json\b/i.test(contentType)) {
+                // Inspect a copy so sendMessage/connect can still read and recover
+                // from SAP errors using the original response body.
+                const data = await response.clone().json().catch(() => null);
+                const codes = ['SAP_CREDENTIALS_REQUIRED', 'SAP_CREDENTIALS_FAILED', 'sap_credentials_failed',
+                    'SAP_USER_TOKEN_REQUIRED', 'SESSION_CREDENTIAL_MISMATCH', 'TOOL_FORBIDDEN', 'DESTINATION_RESOLUTION_FAILED'];
+                structuredHubError = codes.includes(data?.error?.type) || codes.includes(data?.error?.code);
+            }
+            if (hubSignedOut || (response.status === 401 && !structuredHubError) || (response.status >= 300 && response.status < 400) || response.type === 'opaqueredirect' ||
+                (response.redirected && response.url && !new URL(response.url, window.location.href).pathname.startsWith('/v1/')) ||
+                /text\/html|application\/xhtml/i.test(contentType)) {
+                showHubSignIn();
+                throw new Error(signInMessage);
+            }
+            return response;
+        }
+
         let sessionKey = localStorage.getItem('clh.session') || '';
         let sessionOpening = null;
 
@@ -349,7 +391,7 @@
             sessionKey = localStorage.getItem('clh.session') || '';
             if (sessionKey) { if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey); return; }
             sessionOpening = (async () => {
-                const response = await fetch('/v1/session', {
+                const response = await hubFetch('/v1/session', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', ...sessionHeaders() },
                     body: JSON.stringify({ destination: connectedDestination || undefined })
@@ -369,7 +411,7 @@
                 if (sessionOpening) await sessionOpening;
                 sessionKey = localStorage.getItem('clh.session') || '';
                 if (!sessionKey) return;
-                const response = await fetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
+                const response = await hubFetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
                 if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
             } catch (error) {
                 console.warn('Session close failed', error);
@@ -389,7 +431,7 @@
 
         async function sessionFetch(url, opts = {}) {
             await ensureSession();
-            const request = () => fetch(url, { ...opts, headers: { ...opts.headers, ...sessionHeaders() } });
+            const request = () => hubFetch(url, { ...opts, headers: { ...opts.headers, ...sessionHeaders() } });
             const requestedKey = localStorage.getItem('clh.session');
             let response = await request();
             if (response.status === 404) {
@@ -437,6 +479,7 @@
             document.getElementById('dialogue-plan-status').textContent = '';
         }
         function startDialogueEvents(key) {
+            if (hubSignedOut) return;
             if (dialogueSubscription?.key === key) return;
             stopDialogueEvents(); dialogueSubscription = subscribeDialogueEvents(key);
         }
@@ -458,11 +501,11 @@
                 document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div class="dialogue-task" title="' + escapeHtml(String(task.goal || '')) + '">' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');
             }
             async function connect() {
-                if (stopped) return;
+                if (stopped || hubSignedOut) return;
                 controller = new AbortController();
                 try {
-                    const response = await fetch('/v1/session/events', { method: 'GET', signal: controller.signal, headers: { ...sessionHeaders(), 'x-clh-session': key, Accept: 'text/event-stream', ...(lastId ? { 'Last-Event-ID': lastId } : {}) } });
-                    if (stopped) return;
+                    const response = await hubFetch('/v1/session/events', { method: 'GET', signal: controller.signal, headers: { ...sessionHeaders(), 'x-clh-session': key, Accept: 'text/event-stream', ...(lastId ? { 'Last-Event-ID': lastId } : {}) } });
+                    if (stopped || hubSignedOut) return;
                     if (response.status === 409) { stopped = true; return; }
                     if (!response.ok) throw new Error('HTTP ' + response.status);
                     reader = response.body.getReader();
@@ -496,7 +539,7 @@
                                     conversationHistory.push({ role: 'assistant', content: parsed.text });
                                     rendered.add(id); lastId = id;
                                 }
-                                void fetch('/v1/session/events/ack', { method: 'POST', headers: { ...sessionHeaders(), 'x-clh-session': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {});
+                                void hubFetch('/v1/session/events/ack', { method: 'POST', headers: { ...sessionHeaders(), 'x-clh-session': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {});
                             } else if (event === 'plan') { renderPlan(parsed); }
                             else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderTasks(); }
                             else if (event === 'task' && parsed.id) {
@@ -509,7 +552,7 @@
                 } catch (error) { /* Reconnect transient network failures. */ }
                 finally {
                     if (reader) { reader.releaseLock(); reader = null; }
-                    if (!stopped) { timer = setTimeout(connect, delay); delay = Math.min(delay * 2, 30000); }
+                    if (!stopped && !hubSignedOut) { timer = setTimeout(connect, delay); delay = Math.min(delay * 2, 30000); }
                 }
             }
             void connect();
@@ -1316,16 +1359,11 @@
 
         // Check model availability and agent readiness
         async function checkReady() {
+            if (hubSignedOut) return;
             try {
-                const resp = await fetch('/v1/models', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                const resp = await hubFetch('/v1/models', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
                 if (resp.status === 403) {
                     setStatus('ACCESS DENIED — NO MCP ROLE. Ask an administrator to assign an "MCP … Access" role collection, then sign in again', 'status-error');
-                    lockInput('bootstrap');
-                    setTimeout(checkReady, 30000);
-                    return;
-                }
-                if (resp.status === 401) {
-                    setStatus('NOT SIGNED IN — RELOAD THE PAGE TO SIGN IN', 'status-error');
                     lockInput('bootstrap');
                     setTimeout(checkReady, 30000);
                     return;
@@ -1402,6 +1440,7 @@
                     return;
                 }
             } catch (e) { /* retry */ }
+            if (hubSignedOut) return;
             setStatus('CONNECTING...', 'status-connecting');
             setTimeout(checkReady, 3000);
         }
@@ -1411,7 +1450,7 @@
         setInterval(async () => {
             if (!ready) return;
             try {
-                const resp = await fetch('/v1/models');
+                const resp = await hubFetch('/v1/models');
                 const data = await resp.json();
                 const destinations = data._destinations || [];
                 const activeDest = data._active_destination || '';
@@ -1455,7 +1494,7 @@
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 12000);
             try {
-                const resp = await fetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', {
+                const resp = await hubFetch('/odata/v4/mcp-proxy/ProbeActiveDestination()', {
                     headers: { Accept: 'application/json', 'X-SAP-Destination': dest, ...getSapCredHeaders() },
                     signal: controller.signal,
                 });
@@ -1502,7 +1541,7 @@
             btn.disabled = true;
             btn.textContent = 'DIAG…';
             try {
-                const resp = await fetch('/odata/v4/mcp-proxy/DiagnoseDestinations()', {
+                const resp = await hubFetch('/odata/v4/mcp-proxy/DiagnoseDestinations()', {
                     headers: { Accept: 'application/json' },
                 });
                 if (!resp.ok) {
@@ -1577,7 +1616,7 @@
             destRefreshBtn.disabled = true;
             destRefreshBtn.textContent = '...';
             try {
-                const resp = await fetch('/v1/destinations/refresh', { method: 'POST' });
+                const resp = await hubFetch('/v1/destinations/refresh', { method: 'POST' });
                 const data = await resp.json();
                 const destinations = data.destinations || [];
                 if (destinations.length > 0) {
@@ -1710,7 +1749,7 @@
         }
 
         async function sendMessage() {
-            if (!ready) return;
+            if (!ready || hubSignedOut) return;
             const text = userInput.value.trim();
             if (!text) return;
             const t0 = Date.now();
@@ -1806,7 +1845,7 @@
                                 (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED' && destinationUsesConfiguredAuth(getSelectedDestination() || connectedDestination))) {
                                 throw new Error(platformSessionExpired());
                             }
-                            if (errJson.error.type === 'SAP_CREDENTIALS_REQUIRED') {
+                            if (['SAP_CREDENTIALS_REQUIRED', 'SAP_CREDENTIALS_FAILED', 'sap_credentials_failed'].includes(errJson.error.type || errJson.error.code)) {
                                 loginGateDone = false;
                                 lockInput('login-gate');
                                 showLoginGate();
@@ -2018,6 +2057,12 @@
 
             } catch (e) {
                 stopTimer();
+                if (hubSignedOut) {
+                    if (!userInput.value) userInput.value = text;
+                    document.getElementById(thinkingId)?.remove();
+                    unlockInput('chat-pending');
+                    return;
+                }
                 const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
                 const placeholder = document.getElementById(thinkingId);
                 if (placeholder) {

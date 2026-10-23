@@ -20,7 +20,7 @@
  * embedding calls.
  *
  * Usage:
- *   npx tsx tools/generate-tool-embeddings.ts [--mtaext <file>]
+ *   npx tsx tools/generate-tool-embeddings.ts [--mtaext <file>] [--aicore-key <file>]
  *
  * Loads `.env` (secrets such as LLM_AGENT_API_KEY), then the `parameters` of
  * the given `.mtaext` — those win, because that is what the deployed app runs
@@ -36,13 +36,18 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { config as loadDotenv } from 'dotenv';
 import { load as loadYaml } from 'js-yaml';
-import { type AgentConfig, loadAgentConfig } from '../srv/agent-config';
+import {
+  type AgentConfig,
+  aiCoreServiceKeyFromEnv,
+  loadAgentConfig,
+} from '../srv/agent-config';
 import {
   getSharedCorpusDocs,
   loadToolEmbeddingBundle,
   planBundleLoad,
   type ToolEmbeddingBundle,
 } from '../srv/agent-manager';
+import { BuildValidationError } from '../srv/lib/build-validation-error';
 import {
   type EmbedderFingerprint,
   type Providers,
@@ -138,12 +143,12 @@ function cosine(a: number[], b: number[]): number {
 const round6 = (v: number[]) => v.map((x) => Math.round(x * 1e6) / 1e6);
 
 /** Generation-time canary determinism check (NOT a runtime load-path call). */
-async function checkCanary(embedder: IEmbedder): Promise<number[]> {
+export async function checkCanary(embedder: IEmbedder): Promise<number[]> {
   const canaryVector = round6(await embedWithRetry(embedder, CANARY));
   const canaryVector2 = round6(await embedWithRetry(embedder, CANARY));
   const cos = cosine(canaryVector, canaryVector2);
   if (cos < 0.9999) {
-    throw new Error(
+    throw new BuildValidationError(
       `ABORT: canary embeddings non-deterministic (cosine ${cos.toFixed(6)}) — ` +
         'embedder unstable; the built vectors would not match at runtime.',
     );
@@ -178,7 +183,7 @@ export async function buildBundle(
   file: string,
   opts: BuildOptions,
 ): Promise<string> {
-  if (!p.embedding) throw new Error('no embedder configured');
+  if (!p.embedding) throw new BuildValidationError('no embedder configured');
   const { embedder, fingerprint } = p.embedding;
   const coreVersion = readCoreVersion();
   const output = path.resolve(__dirname, '../srv', file);
@@ -231,8 +236,11 @@ export async function buildQdrantStores(
   opts: BuildOptions,
 ): Promise<ToolRole[]> {
   const q = config.rag.qdrant;
-  if (!q) throw new Error('tools are on qdrant but no Qdrant is configured');
-  if (!p.embedding) throw new Error('no embedder configured');
+  if (!q)
+    throw new BuildValidationError(
+      'tools are on qdrant but no Qdrant is configured',
+    );
+  if (!p.embedding) throw new BuildValidationError('no embedder configured');
   const { embedder, retrieval, fingerprint: fp } = p.embedding;
   const roles = corpusByRole(docs);
   const provider = toolCatalogProvider(q, retrieval);
@@ -259,6 +267,7 @@ export async function buildQdrantStores(
 
   const existing = await p.stores.listStores('tools', 'tools-');
   if (!existing.ok) throw existing.error;
+  requireBuildCredentials(config);
   await checkCanary(embedder);
   for (const role of todo) {
     const expected = roles[role].length;
@@ -267,7 +276,9 @@ export async function buildQdrantStores(
     // An empty role would never create its store, so nothing could be counted
     // or recorded; say so instead of failing on a missing collection.
     if (expected === 0)
-      throw new Error(`${role}: the corpus has no ${role} tools`);
+      throw new BuildValidationError(
+        `${role}: the corpus has no ${role} tools`,
+      );
 
     // Replace: the record first, then the store (deleteCollection's order), so
     // an interrupted replace never leaves a record over a partial store.
@@ -285,7 +296,7 @@ export async function buildQdrantStores(
       .create('tools', name)
       .writer?.()?.upsertPrecomputedRaw;
     if (!write)
-      throw new Error(
+      throw new BuildValidationError(
         `${role}: the tools store cannot take precomputed vectors`,
       );
     opts.log(`${role}: embedding ${expected} tool docs into ${collection}...`);
@@ -309,7 +320,7 @@ export async function buildQdrantStores(
     const count = await p.stores.countPoints('tools', name);
     if (!count.ok) throw count.error;
     if (count.value !== expected)
-      throw new Error(
+      throw new BuildValidationError(
         `${role}: ${collection} holds ${count.value} points, expected ${expected}`,
       );
     const rec = await provider.createCollection(collection, {
@@ -352,26 +363,194 @@ export function toolBuildConfig(config: AgentConfig): AgentConfig {
   };
 }
 
-export function loadTargetConfig(argv: string[]): AgentConfig {
-  const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
-  if (fs.existsSync(defaultEnvPath)) {
-    const defaultEnv = JSON.parse(fs.readFileSync(defaultEnvPath, 'utf-8'));
-    if (defaultEnv.VCAP_SERVICES && !process.env.VCAP_SERVICES) {
-      process.env.VCAP_SERVICES = JSON.stringify(defaultEnv.VCAP_SERVICES);
+export function resolveAiCoreCredentials(
+  env: NodeJS.ProcessEnv,
+  services:
+    | Record<string, Array<{ credentials?: unknown }>>
+    | (() => Record<string, Array<{ credentials?: unknown }>>) = {},
+  keyFile?: string,
+): void {
+  let bindings: Record<string, Array<{ credentials?: unknown }>> = {};
+  if (env.VCAP_SERVICES) {
+    try {
+      bindings = JSON.parse(env.VCAP_SERVICES);
+      if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings))
+        throw new Error();
+    } catch {
+      throw new BuildValidationError('Could not read VCAP_SERVICES as JSON');
     }
   }
-  loadDotenv({ quiet: true });
+  let key = env.AICORE_SERVICE_KEY;
+  if (!key) {
+    for (const getSource of [
+      () => bindings,
+      () => (typeof services === 'function' ? services() : services),
+    ]) {
+      const source = getSource();
+      const binding = source.aicore?.[0] ?? source['ai-core']?.[0];
+      if (binding?.credentials) {
+        key = JSON.stringify(binding.credentials);
+        break;
+      }
+    }
+  }
+  key ||= aiCoreServiceKeyFromEnv(env);
+  if (!key && keyFile) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw new Error();
+      key = JSON.stringify(parsed);
+    } catch {
+      throw new BuildValidationError(
+        'Could not read AI Core service key JSON from --aicore-key file',
+      );
+    }
+  }
+  if (key) env.AICORE_SERVICE_KEY = key;
+  else delete env.AICORE_SERVICE_KEY;
+  // Resolve first, then remove bindings so runtime readers cannot override
+  // the selected key with a lower-priority account. Preserve other services.
+  if (env.VCAP_SERVICES) {
+    delete bindings.aicore;
+    delete bindings['ai-core'];
+    env.VCAP_SERVICES = JSON.stringify(bindings);
+  }
+}
+
+/** Downstream messages, stacks, bodies and headers are never diagnostics. */
+export function reportBuildError(err: unknown): void {
+  if (err instanceof BuildValidationError) {
+    console.error(`${err.name}: ${err.message}`);
+    return;
+  }
+  const error = (err && typeof err === 'object' ? err : {}) as {
+    name?: unknown;
+    code?: unknown;
+    status?: unknown;
+    response?: { status?: unknown };
+    config?: { url?: unknown; baseURL?: unknown };
+    request?: { host?: unknown; hostname?: unknown };
+  };
+  const name =
+    typeof error.name === 'string' &&
+    /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+      ? error.name
+      : 'Error';
+  const fields = [name];
+  if (
+    typeof error.code === 'string' &&
+    /^[A-Z][A-Z0-9_]{0,31}$/.test(error.code)
+  )
+    fields.push(`code=${error.code}`);
+  const status = error.response?.status ?? error.status;
+  if (
+    typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+  )
+    fields.push(`status=${status}`);
+  const target =
+    error.config?.url ?? error.request?.hostname ?? error.request?.host;
+  if (typeof target === 'string') {
+    try {
+      const base = error.config?.baseURL;
+      const url = new URL(
+        typeof base === 'string' ||
+          target.includes('://') ||
+          target.startsWith('/')
+          ? target
+          : `https://${target}`,
+        typeof base === 'string' ? base : undefined,
+      );
+      if (url.protocol === 'http:' || url.protocol === 'https:')
+        fields.push(`host=${url.hostname}`);
+    } catch {
+      // An invalid request URL is omitted, never echoed.
+    }
+  }
+  console.error(
+    `${fields.join(' ')}: AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials`,
+  );
+}
+
+export function requireBuildCredentials(config: AgentConfig): void {
+  if (
+    config.rag.embedder?.kind === 'sap-ai-core' &&
+    !process.env.AICORE_SERVICE_KEY
+  ) {
+    throw new BuildValidationError(
+      'AI Core credentials required to regenerate tool vectors: set AICORE_SERVICE_KEY, provide default-env.json VCAP_SERVICES, set AICORE_CLIENT_ID, AICORE_CLIENT_SECRET, AICORE_AUTH_URL and AICORE_BASE_URL in the repo .env, or use --aicore-key <file>.',
+    );
+  }
+}
+
+export function loadTargetConfig(argv: string[]): AgentConfig {
+  const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
+  const services = () => {
+    if (!fs.existsSync(defaultEnvPath)) return {};
+    try {
+      return (
+        JSON.parse(fs.readFileSync(defaultEnvPath, 'utf8')).VCAP_SERVICES ?? {}
+      );
+    } catch {
+      throw new BuildValidationError(
+        'Could not read default-env.json service bindings as JSON',
+      );
+    }
+  };
+  loadDotenv({ path: path.resolve(__dirname, '../.env'), quiet: true });
   const at = argv.indexOf('--mtaext');
   if (at >= 0) {
     const file = argv[at + 1];
-    if (!file) throw new Error('--mtaext needs a file');
+    if (!file || file.startsWith('--'))
+      throw new BuildValidationError('--mtaext needs a file');
     applyMtaext(file, process.env);
   }
+  const keyAt = argv.indexOf('--aicore-key');
+  const keyFile = keyAt >= 0 ? argv[keyAt + 1] : undefined;
+  if (keyAt >= 0 && (!keyFile || keyFile.startsWith('--')))
+    throw new BuildValidationError('--aicore-key needs a file');
+  resolveAiCoreCredentials(process.env, services, keyFile);
   return loadAgentConfig();
 }
 
+/** The only trusted-error boundary: configuration is entirely local. */
+export function loadBuildConfiguration(argv: string[]): {
+  config: AgentConfig;
+  providerConfig: AgentConfig;
+} {
+  try {
+    const config = loadTargetConfig(argv);
+    return { config, providerConfig: toolBuildConfig(config) };
+  } catch (error) {
+    // Validators echo rejected values as JSON after `got`. Those values may
+    // be credentials accidentally assigned to the wrong variable. YAML errors
+    // can include entire source lines, including unrelated secret parameters.
+    const message =
+      error instanceof Error
+        ? error.name === 'YAMLException'
+          ? 'Could not read --mtaext configuration as YAML'
+          : error.message
+              .replace(/\bgot [\s\S]*/g, 'got [REDACTED]')
+              .replace(
+                /^(Invalid LLM_AGENT_(?:TOOL_GATE|CHAT_COORDINATOR): )[\s\S]*(; expected)/,
+                '$1[REDACTED]$2',
+              )
+              .replace(
+                /((?:invalid log level|malformed entry) ")[\s\S]*("; expected)/,
+                '$1[REDACTED]$2',
+              )
+        : 'Could not load build configuration';
+    throw new BuildValidationError(message);
+  }
+}
+
 async function main() {
-  const config = loadTargetConfig(process.argv.slice(2));
+  const { config, providerConfig } = loadBuildConfiguration(
+    process.argv.slice(2),
+  );
   console.log('effective config', {
     ragBackends: config.rag.backends,
     embedder: config.rag.embedder?.kind,
@@ -395,7 +574,8 @@ async function main() {
   const inputAt = process.argv.indexOf('--inputs-only');
   if (inputAt >= 0) {
     const output = process.argv[inputAt + 1];
-    if (!output) throw new Error('--inputs-only needs an output file');
+    if (!output)
+      throw new BuildValidationError('--inputs-only needs an output file');
     fs.writeFileSync(
       output,
       `${JSON.stringify({ coreVersion: readCoreVersion(), docs }, null, 2)}\n`,
@@ -404,7 +584,7 @@ async function main() {
     return;
   }
 
-  const p = await startProviders(toolBuildConfig(config));
+  const p = await startProviders(providerConfig);
   const decision = decideToolBuild(
     config,
     p.embedding?.fingerprint ?? null,
@@ -421,6 +601,7 @@ async function main() {
       console.log(`Nothing to build: ${decision.reason}`);
       return;
     case 'build-bundle':
+      requireBuildCredentials(config);
       await buildBundle(p, docs, decision.file, opts);
       return;
     case 'build-qdrant': {
@@ -432,9 +613,18 @@ async function main() {
   }
 }
 
-if (require.main === module) {
-  main().catch((err) => {
-    console.error(err instanceof Error ? err.message : err);
+/** Installed only by the CLI; imports leave the host process untouched. */
+export function installCliErrorHandlers(): (err: unknown) => never {
+  const fail = (err: unknown): never => {
+    reportBuildError(err);
     process.exit(1);
-  });
+  };
+  process.on('unhandledRejection', fail);
+  process.on('uncaughtException', fail);
+  return fail;
+}
+
+if (require.main === module) {
+  const fail = installCliErrorHandlers();
+  main().catch(fail);
 }

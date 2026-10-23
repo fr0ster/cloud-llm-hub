@@ -19,13 +19,20 @@ import {
   getSharedCorpusDocs,
   loadToolEmbeddingBundle,
 } from '../../srv/agent-manager';
+import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import { type Embedding, embedderFingerprint } from '../../srv/lib/providers';
 import { createCollectionProvider } from '../../srv/lib/rag-provider-factory';
 import type { SharedCorpusDoc } from '../../srv/lib/tool-corpus';
 import {
   applyMtaext,
+  checkCanary,
   decideToolBuild,
+  installCliErrorHandlers,
+  loadBuildConfiguration,
   loadTargetConfig,
+  reportBuildError,
+  requireBuildCredentials,
+  resolveAiCoreCredentials,
   toolBuildConfig,
 } from '../../tools/generate-tool-embeddings';
 
@@ -110,6 +117,49 @@ describe('applyMtaext', () => {
 });
 
 describe('loadTargetConfig', () => {
+  it.each(['explicit', 'aicore', 'ai-core'])(
+    'does not read malformed default-env.json with %s environment credentials',
+    (source) => {
+      delete process.env.AICORE_SERVICE_KEY;
+      delete process.env.VCAP_SERVICES;
+      const credentials = {
+        clientid: 'higher-priority',
+        clientsecret: 'secret',
+      };
+      if (source === 'explicit')
+        process.env.AICORE_SERVICE_KEY = JSON.stringify(credentials);
+      else
+        process.env.VCAP_SERVICES = JSON.stringify({
+          [source]: [{ credentials }],
+        });
+      const defaultPath = path.resolve(__dirname, '../../default-env.json');
+      const nativeFs = jest.requireActual<typeof fs>('node:fs');
+      const read = nativeFs.readFileSync;
+      const exists = nativeFs.existsSync;
+      const existsSpy = jest
+        .spyOn(nativeFs, 'existsSync')
+        .mockImplementation((file) => file === defaultPath || exists(file));
+      const readSpy = jest
+        .spyOn(nativeFs, 'readFileSync')
+        .mockImplementation(((file: fs.PathOrFileDescriptor, options: never) =>
+          file === defaultPath
+            ? '{malformed'
+            : read(file, options)) as typeof read);
+      try {
+        expect(() => loadTargetConfig([])).not.toThrow();
+        expect(JSON.parse(process.env.AICORE_SERVICE_KEY as string)).toEqual(
+          credentials,
+        );
+        expect(readSpy.mock.calls.some(([file]) => file === defaultPath)).toBe(
+          false,
+        );
+      } finally {
+        readSpy.mockRestore();
+        existsSpy.mockRestore();
+      }
+    },
+  );
+
   it('applies --mtaext before loadAgentConfig, so the file wins over the environment', () => {
     process.env.LLM_AGENT_RAG_TYPE = 'vector';
     process.env.LLM_AGENT_EMBEDDING_MODEL = 'model-a';
@@ -243,5 +293,362 @@ describe('decideToolBuild', () => {
       action: 'build-qdrant',
     });
     expect(reader).not.toHaveBeenCalled();
+  });
+});
+
+describe('deployment AI Core credentials (no network)', () => {
+  const individual = {
+    AICORE_CLIENT_ID: 'client',
+    AICORE_CLIENT_SECRET: 'secret',
+    AICORE_AUTH_URL: 'https://auth.invalid',
+    AICORE_BASE_URL: 'https://api.invalid',
+  };
+  it.each(['aicore', 'ai-core'])(
+    'uses environment %s credentials before every fallback and preserves other bindings',
+    (label) => {
+      const credentials = {
+        clientid: 'environment',
+        clientsecret: 'env-secret',
+      };
+      const hana = [{ credentials: { host: 'hana.invalid' } }];
+      const env: NodeJS.ProcessEnv = {
+        ...individual,
+        VCAP_SERVICES: JSON.stringify({ [label]: [{ credentials }], hana }),
+      };
+      resolveAiCoreCredentials(
+        env,
+        {
+          aicore: [{ credentials: { clientid: 'fallback' } }],
+        },
+        'unused-file',
+      );
+      expect(JSON.parse(env.AICORE_SERVICE_KEY as string)).toEqual(credentials);
+      expect(JSON.parse(env.VCAP_SERVICES as string)).toEqual({ hana });
+    },
+  );
+  it.each(['aicore', 'ai-core'])(
+    'uses environment-only %s credentials',
+    (label) => {
+      const env: NodeJS.ProcessEnv = {
+        VCAP_SERVICES: JSON.stringify({
+          [label]: [{ credentials: { clientid: 'environment-only' } }],
+        }),
+      };
+      resolveAiCoreCredentials(env);
+      expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe(
+        'environment-only',
+      );
+      expect(JSON.parse(env.VCAP_SERVICES as string)).toEqual({});
+    },
+  );
+  it.each(['aicore', 'ai-core'])(
+    'prefers an explicit key over %s bindings and individual variables',
+    (label) => {
+      const env = {
+        ...individual,
+        AICORE_SERVICE_KEY: '{"clientid":"explicit"}',
+        VCAP_SERVICES: JSON.stringify({
+          [label]: [{ credentials: { clientid: 'binding' } }],
+        }),
+      };
+      resolveAiCoreCredentials(
+        env,
+        { [label]: [{ credentials: { clientid: 'default' } }] },
+        'unused-file',
+      );
+      expect(JSON.parse(env.AICORE_SERVICE_KEY).clientid).toBe('explicit');
+      expect(JSON.parse(env.VCAP_SERVICES)[label]).toBeUndefined();
+    },
+  );
+  it.each(['aicore', 'ai-core'])(
+    'prefers default-env %s bindings over individual variables and a key file',
+    (label) => {
+      const env: NodeJS.ProcessEnv = { ...individual };
+      resolveAiCoreCredentials(
+        env,
+        { [label]: [{ credentials: { clientid: 'binding' } }] },
+        'unused-file',
+      );
+      expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe(
+        'binding',
+      );
+    },
+  );
+  it('rejects malformed environment VCAP without disclosing its contents', () => {
+    expect(() =>
+      resolveAiCoreCredentials({ VCAP_SERVICES: 'private malformed value' }),
+    ).toThrow('Could not read VCAP_SERVICES as JSON');
+  });
+  it('reuses the runtime mapping before trying the file', () => {
+    const env: NodeJS.ProcessEnv = { ...individual };
+    resolveAiCoreCredentials(env, {}, 'unused-file');
+    expect(JSON.parse(env.AICORE_SERVICE_KEY as string)).toEqual({
+      clientid: 'client',
+      clientsecret: 'secret',
+      url: individual.AICORE_AUTH_URL,
+      serviceurls: { AI_API_URL: individual.AICORE_BASE_URL },
+    });
+  });
+  it('uses the optional file last and never includes malformed contents in errors', () => {
+    const file = path.join(dir, 'key.json');
+    fs.writeFileSync(file, '{"clientid":"file"}');
+    const env: NodeJS.ProcessEnv = {};
+    resolveAiCoreCredentials(env, {}, file);
+    expect(JSON.parse(env.AICORE_SERVICE_KEY as string).clientid).toBe('file');
+    fs.writeFileSync(file, 'secret malformed JSON');
+    expect(() => resolveAiCoreCredentials({}, {}, file)).toThrow(
+      'Could not read AI Core service key JSON from --aicore-key file',
+    );
+  });
+  it('allows missing credentials until regeneration and names every option', () => {
+    resolveAiCoreCredentials({}, {});
+    delete process.env.AICORE_SERVICE_KEY;
+    process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    process.env.LLM_AGENT_EMBEDDER = 'sap-ai-core';
+    const config = loadAgentConfig();
+    expect(() => requireBuildCredentials(config)).toThrow(
+      /AICORE_SERVICE_KEY.*default-env.json.*AICORE_CLIENT_ID.*--aicore-key/,
+    );
+  });
+});
+
+describe('CLI error reporting', () => {
+  it.each([
+    ['LLM_GATEKEEPER_QUEUE_LENGTH', '1', 'a queue needs a door'],
+    [
+      'LLM_GATEKEEPER_QUEUE_LENGTH',
+      'credential-secret',
+      'positive whole number',
+    ],
+    ['LLM_AGENT_TOOL_GATE', 'credential-secret', 'expected classifier or off'],
+    ['LLM_AGENT_EMBEDDER', 'credential-secret', 'expected one of'],
+  ])('reports local %s validation safely', (name, value, diagnostic) => {
+    clearGatekeeperConfig();
+    delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
+    delete process.env.LLM_GATEKEEPER_QUEUE_LENGTH;
+    if (name === 'LLM_AGENT_EMBEDDER')
+      process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    const file = mtaext({ [name]: value });
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        loadBuildConfiguration(['--mtaext', file]);
+        throw new Error('expected configuration failure');
+      } catch (error) {
+        reportBuildError(error);
+      }
+      expect(output).toHaveBeenCalledTimes(1);
+      const line = output.mock.calls[0][0] as string;
+      expect(line).toContain(name);
+      expect(line).toContain(diagnostic);
+      expect(line).not.toContain('credential-secret');
+      expect(line).not.toContain('AI Core embedding request failed');
+    } finally {
+      clearGatekeeperConfig();
+      output.mockRestore();
+    }
+  });
+
+  it('withholds source excerpts from malformed configuration YAML', () => {
+    const file = path.join(dir, 'invalid.mtaext');
+    fs.writeFileSync(file, 'parameters: [credential-secret');
+    expect(() => loadBuildConfiguration(['--mtaext', file])).toThrow(
+      'Could not read --mtaext configuration as YAML',
+    );
+  });
+
+  const hint =
+    'AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials';
+
+  it('prints only safe metadata from a downstream embedding failure', async () => {
+    const secrets = [
+      'url-user',
+      'url-password',
+      'lowercase-secret',
+      '??????',
+      'percent%2fsecret',
+      'percent%2Fsecret',
+      'header-token',
+      'multiline-token',
+      'body-secret',
+      'stack-secret',
+      'query-secret',
+    ];
+    const payload = `${secrets.join(' ')}\nAuthorization:\n Bearer multiline-token`;
+    const error = Object.assign(new TypeError(payload), {
+      code: 'ECONNREFUSED',
+      stack: 'stack-secret',
+      config: {
+        url: 'https://url-user:url-password@api.invalid:443/private-path?token=query-secret',
+      },
+      response: {
+        status: 401,
+        data: payload,
+        headers: { Authorization: payload },
+      },
+      headers: { Authorization: payload },
+    });
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await Promise.reject(error).catch(reportBuildError);
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        `TypeError code=ECONNREFUSED status=401 host=api.invalid: ${hint}`,
+      );
+      const line = output.mock.calls[0][0] as string;
+      for (const secret of [...secrets, 'private-path', 'Authorization'])
+        expect(line).not.toContain(secret);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it.each([
+    new Error('private-message'),
+    'private-string',
+    {
+      name: 'secret\nname',
+      code: 'lowercase-secret',
+      status: '401',
+      config: { url: 'invalid url' },
+    },
+  ])('omits unsafe or unavailable metadata', (error) => {
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      reportBuildError(error);
+      expect(output).toHaveBeenCalledWith(`Error: ${hint}`);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('preserves the fixed missing credentials validation message', () => {
+    delete process.env.AICORE_SERVICE_KEY;
+    process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    process.env.LLM_AGENT_EMBEDDER = 'sap-ai-core';
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        requireBuildCredentials(loadAgentConfig());
+      } catch (error) {
+        reportBuildError(error);
+      }
+      expect(output).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^Error: AI Core credentials required to regenerate tool vectors:/,
+        ),
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('preserves the fixed malformed key file validation message', () => {
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        resolveAiCoreCredentials({}, {}, path.join(dir, 'missing-key.json'));
+      } catch (error) {
+        reportBuildError(error);
+      }
+      expect(output).toHaveBeenCalledWith(
+        'Error: Could not read AI Core service key JSON from --aicore-key file',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+});
+
+describe('CLI fatal handlers and trusted diagnostics', () => {
+  it.each(['unhandledRejection', 'uncaughtException'] as const)(
+    'sanitizes %s and exits unsuccessfully',
+    (event) => {
+      const on = jest.spyOn(process, 'on').mockReturnValue(process);
+      const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('exit sentinel');
+      });
+      try {
+        const fail = installCliErrorHandlers();
+        expect(on).toHaveBeenCalledWith(event, fail);
+        const handler = on.mock.calls.find(([name]) => name === event)?.[1];
+        const error = Object.assign(new Error('private-message'), {
+          stack: 'private-stack',
+          code: 'ECONNRESET',
+          response: { status: 401, data: 'private-body' },
+          config: {
+            url: 'https://user:password@api.invalid/path?secret=value',
+          },
+        });
+        expect(() => handler?.(error)).toThrow('exit sentinel');
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(output).toHaveBeenCalledTimes(1);
+        expect(output).toHaveBeenCalledWith(
+          'Error code=ECONNRESET status=401 host=api.invalid: AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials',
+        );
+      } finally {
+        on.mockRestore();
+        output.mockRestore();
+        exit.mockRestore();
+      }
+    },
+  );
+
+  it('prints the local unused embedder configuration diagnostic verbatim', () => {
+    process.env.LLM_AGENT_EMBEDDER = 'sap-ai-core';
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      try {
+        loadAgentConfig();
+        throw new Error('expected config to fail');
+      } catch (error) {
+        reportBuildError(error);
+      }
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        'Error: LLM_AGENT_EMBEDDER is set, but every RAG class is in-memory, so nothing would use it',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('prints the local canary diagnostic verbatim', async () => {
+    const embedder = {
+      embed: jest
+        .fn()
+        .mockResolvedValueOnce({ vector: [1, 0] })
+        .mockResolvedValueOnce({ vector: [0, 1] }),
+    };
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await checkCanary(embedder as never).catch(reportBuildError);
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        'Error: ABORT: canary embeddings non-deterministic (cosine 0.000000) \u2014 embedder unstable; the built vectors would not match at runtime.',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('keeps downstream canary failures sanitized', async () => {
+    const error = Object.assign(new Error('private SDK message'), {
+      code: 'ECONNRESET',
+      response: { status: 401, data: 'private response' },
+      config: { url: 'https://user:password@api.invalid/path?token=secret' },
+    });
+    const embedder = { embed: jest.fn().mockRejectedValue(error) };
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await checkCanary(embedder as never).catch(reportBuildError);
+      expect(output).toHaveBeenCalledTimes(1);
+      expect(output).toHaveBeenCalledWith(
+        'Error code=ECONNRESET status=401 host=api.invalid: AI Core embedding request failed; check the AI Core credentials and network; details withheld because they can contain credentials',
+      );
+    } finally {
+      output.mockRestore();
+    }
   });
 });

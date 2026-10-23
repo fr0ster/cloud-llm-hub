@@ -153,3 +153,12 @@ git switch deploy/<subaccount> && tools/deploy.sh
 ## Quick Links
 
 - [Back to Documentation Index](../README.md)
+
+Tool vectors are checked before deployment and regenerated only when stale.
+AI Core credentials are resolved in this order: existing `AICORE_SERVICE_KEY`
+(JSON), `default-env.json` `VCAP_SERVICES` (`aicore` or `ai-core`), the repo
+`.env` variables `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, `AICORE_AUTH_URL`
+and `AICORE_BASE_URL`, then an optional JSON service key file:
+`npx tsx tools/generate-tool-embeddings.ts --mtaext <descriptor> --aicore-key <file>`.
+Run that command before `tools/deploy.sh` when using a key file; deployment
+will reuse the generated vectors. Credential values are never printed.
