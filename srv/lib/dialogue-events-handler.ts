@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { getAgentConfig } from '../agent-config';
 import {
   type DialogueHandle,
+  dialoguePlan,
   lookupDialogue,
   onDialogueCreated,
 } from './dialogue-sessions';
@@ -73,11 +74,15 @@ export async function handleDialogueEvents(
       })),
     );
     if (closed) return;
+    const plan = dialoguePlan(handle.session.snapshot());
+    if (plan) send('plan', plan);
+    if (closed) return;
     const cursor = req.headers?.['last-event-id'];
     const detach = handle.subscribe(
       (event) => {
         if (event.kind === 'message')
           send('message', event.message, event.message.id);
+        else if (event.kind === 'plan') send('plan', event.plan);
         else send('task', event.task);
       },
       typeof cursor === 'string' ? cursor : undefined,

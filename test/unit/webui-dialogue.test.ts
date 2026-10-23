@@ -8,6 +8,9 @@ const flush = async () => {
 function harness() {
   const nodes: any[] = [];
   const list = { innerHTML: '' };
+  const plan = { hidden: true, open: false };
+  const planText = { innerHTML: '' };
+  const planStatus = { textContent: '' };
   const timers: Array<{ fn: () => Promise<void>; delay: number }> = [];
   const fetch = jest.fn();
   const context = {
@@ -27,7 +30,15 @@ function harness() {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;'),
-    document: { getElementById: () => list, createElement: () => ({}) },
+    document: {
+      getElementById: (id: string) =>
+        ({
+          'dialogue-plan': plan,
+          'dialogue-plan-text': planText,
+          'dialogue-plan-status': planStatus,
+        })[id] ?? list,
+      createElement: () => ({}),
+    },
     chatWindow: {
       appendChild: (node: any) => nodes.push(node),
       scrollTop: 0,
@@ -48,7 +59,16 @@ function harness() {
       ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml})',
     context,
   );
-  return { ...context, ...api, nodes, list, timers };
+  return {
+    ...context,
+    ...api,
+    nodes,
+    list,
+    timers,
+    plan,
+    planText,
+    planStatus,
+  };
 }
 function stream(text: string) {
   let first = true;
@@ -87,6 +107,62 @@ test('markdown tables render aligned headers, escaped cells and inline markdown'
     ui.markdownToHtml('```text\n| A | B |\n| --- | --- |\n```'),
   ).not.toContain('<table');
 });
+test.each([
+  'javascript:alert%281%29',
+  'JaVaScRiPt:alert%281%29',
+  '  javascript:alert%281%29',
+  'java\nscript:alert%281%29',
+  'java\t\u0000script:alert%281%29',
+  'jav&#x61;script:alert%281%29',
+  'jav&#97;script&colon;alert%281%29',
+  'java&NewLine;script:alert%281%29',
+  '%6aavascript%3aalert%281%29',
+  '%256aavascript%253aalert%281%29',
+  'jav&amp;#x61;script:alert%281%29',
+  'data:text/html,bad',
+  'vbscript:bad',
+  'ftp://example.com',
+  'example.com',
+])('markdown rejects unsafe link destination %j', (destination) => {
+  expect(harness().markdownToHtml(`[run](${destination})`)).toBe('run');
+});
+
+test.each([
+  'http://example.com',
+  'https://example.com/?a=1&b=2',
+  'HTTPS://example.com',
+  'mailto:user@example.com',
+  '/plans/1',
+  '#plan',
+])(
+  'markdown allows link destination %j with safe new-tab attributes',
+  (destination) => {
+    const ui = harness();
+    const result = ui.markdownToHtml(`[open](${destination})`);
+    expect(result).toContain(`<a href="${ui.escapeHtml(destination)}"`);
+    expect(result).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(result).toContain('>open</a>');
+  },
+);
+
+test('plan text and planner messages reject unsafe markdown links', async () => {
+  const ui = harness();
+  const text = '[run](javascript:alert%281%29)';
+  ui.fetch.mockImplementation(async (url: string) =>
+    url.endsWith('/ack')
+      ? { ok: true }
+      : stream(
+          `event: plan\ndata: ${JSON.stringify({ text })}\n\nid: unsafe\ndata: ${JSON.stringify({ text })}\n\n`,
+        ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.planText.innerHTML).toBe('run');
+  expect(ui.nodes[0].innerHTML).toContain('run');
+  expect(ui.nodes[0].innerHTML).not.toContain('<a ');
+  subscription.stop();
+});
+
 test('standalone renders before ack, dedupes replay, sends cursor and handles task snapshots/updates safely', async () => {
   const ui = harness();
   const message =
@@ -213,4 +289,50 @@ test('tasks have a single line class and an escaped full goal title', async () =
     /\.dialogue-task\s*\{[^}]*white-space:\s*nowrap;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis/s,
   );
   subscription.stop();
+});
+
+test('plan panel renders escaped markdown, updates live, preserves collapse and clears on reset', async () => {
+  const ui = harness();
+  const frame = (text: string, status: string) =>
+    `event: plan\ndata: ${JSON.stringify({ text, status })}\n\n`;
+  ui.fetch
+    .mockResolvedValueOnce(
+      stream(frame('**First**\n<script>bad()</script>', 'active')),
+    )
+    .mockResolvedValueOnce(stream(frame('Second', 'waiting_user')))
+    .mockResolvedValue({ status: 409 });
+  ui.startDialogueEvents('key');
+  await flush();
+  expect(ui.plan.hidden).toBe(false);
+  expect(ui.plan.open).toBe(true);
+  expect(ui.planText.innerHTML).toContain('<strong>First</strong>');
+  expect(ui.planText.innerHTML).toContain('&lt;script&gt;');
+  expect(ui.planText.innerHTML).not.toContain('<script>');
+  expect(ui.planStatus.textContent).toBe('active');
+  ui.plan.open = false;
+  await ui.timers[0].fn();
+  await flush();
+  expect(ui.planText.innerHTML).toBe('Second');
+  expect(ui.planStatus.textContent).toBe('waiting for you');
+  expect(ui.plan.open).toBe(false);
+  ui.startDialogueEvents('new');
+  expect(ui.plan.hidden).toBe(true);
+  expect(ui.planText.innerHTML).toBe('');
+  expect(ui.planStatus.textContent).toBe('');
+  ui.stopDialogueEvents();
+});
+
+test('long plans start collapsed and done status is visible', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(
+    stream(
+      `event: plan\ndata: ${JSON.stringify({ text: Array(9).fill('line').join('\n'), status: 'done' })}\n\n`,
+    ),
+  );
+  ui.startDialogueEvents('key');
+  await flush();
+  expect(ui.plan.open).toBe(false);
+  expect(ui.planStatus.textContent).toBe('done');
+  ui.stopDialogueEvents();
+  expect(ui.plan.hidden).toBe(true);
 });

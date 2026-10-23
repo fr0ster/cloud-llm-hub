@@ -56,10 +56,24 @@ import { cachedSystemIdentity } from './system-identity-cache';
 
 export type DialogueEvent =
   | { kind: 'message'; message: PlannerMessage }
+  | { kind: 'plan'; plan: DialoguePlan }
   | {
       kind: 'task';
       task: Pick<TaskRecord, 'id' | 'worker' | 'goal' | 'state'>;
     };
+export interface DialoguePlan {
+  text: string;
+  status: 'active' | 'waiting_user' | 'done';
+}
+
+/** Absent plans emit nothing; session reset clears the WebUI locally. */
+export function dialoguePlan(
+  state: ReturnType<DialogueSession['snapshot']>,
+): DialoguePlan | undefined {
+  return state.plan === undefined
+    ? undefined
+    : { text: state.plan, status: state.planStatus ?? 'active' };
+}
 export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
@@ -228,6 +242,17 @@ async function open(
     }
   };
   const taskStates = new Map<string, TaskRecord['state']>();
+  let lastPlan: DialoguePlan | undefined;
+  const emitPlan = () => {
+    if (!session) return;
+    const plan = dialoguePlan(session.snapshot());
+    if (
+      plan &&
+      (plan.text !== lastPlan?.text || plan.status !== lastPlan?.status)
+    )
+      emit({ kind: 'plan', plan });
+    lastPlan = plan;
+  };
   const emitTask = (
     task: Pick<TaskRecord, 'id' | 'worker' | 'goal' | 'state'>,
   ) => {
@@ -369,6 +394,7 @@ async function open(
             );
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
+            emitPlan();
           }
         },
       },
@@ -499,6 +525,7 @@ async function open(
     await pool.closeAll();
     throw error;
   }
+  lastPlan = dialoguePlan(session.snapshot());
   const send = session.send.bind(session);
   session.send = (...args) => send(...args).finally(drainPending);
   return {

@@ -23,6 +23,7 @@ const ack = jest.fn(async (id: string) => {
   if (index >= 0) pending.splice(0, index + 1);
 });
 let taskState = 'running';
+let planState: { plan?: string; planStatus?: string } = {};
 beforeEach(() => {
   pending.splice(0, pending.length, {
     id: 'm1',
@@ -30,14 +31,20 @@ beforeEach(() => {
     createdAt: 123,
   });
   taskState = 'running';
+  planState = {};
   jest.clearAllMocks();
 });
 jest.mock('../../srv/lib/dialogue-sessions', () => ({
+  dialoguePlan: (state: { plan?: string; planStatus?: string }) =>
+    state.plan === undefined
+      ? undefined
+      : { text: state.plan, status: state.planStatus ?? 'active' },
   onDialogueCreated: jest.fn(() => () => {}),
   lookupDialogue: jest.fn(async () => ({
     session: {
       takePending,
       snapshot: () => ({
+        ...planState,
         tasks: [
           { id: 'task', worker: 'executor', goal: 'read', state: taskState },
         ],
@@ -198,3 +205,23 @@ test('events before chat stays open and attaches to creation; ack never creates'
   expect(ack).not.toHaveBeenCalled();
   res.emit('close');
 });
+
+test.each([undefined, 'waiting_user', 'done'])(
+  'plan snapshot defaults status and live updates use the same SSE event (%s)',
+  async (status) => {
+    planState = { plan: 'Private plan', planStatus: status };
+    const res = response();
+    await handleDialogueEvents(
+      { longSession: { userId: 'alice', key: 'ls-a' } } as any,
+      res as any,
+    );
+    expect(res.write).toHaveBeenCalledWith(
+      `event: plan\ndata: ${JSON.stringify({ text: 'Private plan', status: status ?? 'active' })}\n\n`,
+    );
+    listener({ kind: 'plan', plan: { text: 'Revised', status: 'done' } });
+    expect(res.write).toHaveBeenLastCalledWith(
+      'event: plan\ndata: {"text":"Revised","status":"done"}\n\n',
+    );
+    res.emit('close');
+  },
+);

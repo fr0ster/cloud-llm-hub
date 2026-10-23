@@ -33,6 +33,7 @@ import {
   closeDialogue,
   type DialogueEvent,
   dialogueFor,
+  dialoguePlan,
   lookupDialogue,
   onDialogueCreated,
   sharedExecutorPool,
@@ -55,6 +56,9 @@ const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
+let mockPlan:
+  | { plan: string; status?: 'active' | 'waiting_user' | 'done' }
+  | undefined;
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
@@ -83,6 +87,10 @@ jest.mock('../../srv/agent-manager', () => ({
         ? input.slice(input.indexOf('[task events]'))
         : input;
       mockPlannerTurns.push(text);
+      if (mockPlan) {
+        await new PlannerToolsClient().callTool('update_plan', mockPlan);
+        return { ok: true, value: { content: 'Plan updated' } };
+      }
       if (!text.startsWith('[task events]'))
         await new PlannerToolsClient().callTool('delegate_task', {
           worker: 'executor',
@@ -161,6 +169,7 @@ beforeEach(() => {
   mockPlannerTurns.length = 0;
   mockEnvironments.length = 0;
   mockGoal = 'read';
+  mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
 });
@@ -635,4 +644,27 @@ test('creation listener waits for chat destination B and normal registry touch p
     unsubscribe();
     setLongSessionsForTest(undefined);
   }
+});
+
+test('plan events emit only when text or status changes after planner turns', async () => {
+  const { h } = await ready();
+  expect(dialoguePlan(h.session.snapshot())).toBeUndefined();
+  expect(dialoguePlan({ ...h.session.snapshot(), plan: 'Legacy' })).toEqual({
+    text: 'Legacy',
+    status: 'active',
+  });
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  mockPlan = { plan: 'Read records', status: 'waiting_user' };
+  await h.session.send('first');
+  await h.session.send('same');
+  mockPlan = { plan: 'Read records', status: 'done' };
+  await h.session.send('status');
+  mockPlan = { plan: 'Finished reading', status: 'done' };
+  await h.session.send('text');
+  expect(events.filter((event) => event.kind === 'plan')).toEqual([
+    { kind: 'plan', plan: { text: 'Read records', status: 'waiting_user' } },
+    { kind: 'plan', plan: { text: 'Read records', status: 'done' } },
+    { kind: 'plan', plan: { text: 'Finished reading', status: 'done' } },
+  ]);
 });
