@@ -359,7 +359,9 @@ export function toolBuildConfig(config: AgentConfig): AgentConfig {
 
 export function resolveAiCoreCredentials(
   env: NodeJS.ProcessEnv,
-  services: Record<string, Array<{ credentials?: unknown }>> = {},
+  services:
+    | Record<string, Array<{ credentials?: unknown }>>
+    | (() => Record<string, Array<{ credentials?: unknown }>>) = {},
   keyFile?: string,
 ): void {
   let bindings: Record<string, Array<{ credentials?: unknown }>> = {};
@@ -374,7 +376,11 @@ export function resolveAiCoreCredentials(
   }
   let key = env.AICORE_SERVICE_KEY;
   if (!key) {
-    for (const source of [bindings, services]) {
+    for (const getSource of [
+      () => bindings,
+      () => (typeof services === 'function' ? services() : services),
+    ]) {
+      const source = getSource();
       const binding = source.aicore?.[0] ?? source['ai-core']?.[0];
       if (binding?.credentials) {
         key = JSON.stringify(binding.credentials);
@@ -411,14 +417,11 @@ export function reportBuildError(
   err: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const credentialField =
-    /^(?:client[_-]?id|client[_-]?secret|.*token|password|api[_-]?key|authorization)$/i;
   const secrets = new Set<string>();
   function collect(value: unknown): void {
     if (!value || typeof value !== 'object') return;
-    for (const [field, item] of Object.entries(value)) {
-      if (credentialField.test(field) && typeof item === 'string' && item)
-        secrets.add(item);
+    for (const item of Object.values(value)) {
+      if (typeof item === 'string' && item) secrets.add(item);
       else collect(item);
     }
   }
@@ -433,6 +436,19 @@ export function reportBuildError(
   }
   let message =
     err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  // Consume quoted strings as a whole, including escaped quotes and slashes.
+  message = message.replace(
+    /(["']?(?:client[_-]?id|client[_-]?secret|[\w-]*token|password|api[_-]?key|(?:proxy-)?authorization)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi,
+    '$1[REDACTED]',
+  );
+  message = message.replace(
+    /(\b(?:proxy-)?authorization\s*[:=]\s*)(?!\[REDACTED\])[^\r\n]+/gi,
+    '$1[REDACTED]',
+  );
+  message = message.replace(
+    /\b(bearer|basic)\s+[^\s,"';}\]]+/gi,
+    '$1 [REDACTED]',
+  );
   for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
     for (const value of [
       secret,
@@ -442,7 +458,7 @@ export function reportBuildError(
       message = message.split(value).join('[REDACTED]');
   }
   message = message.replace(
-    /(["']?(?:client[_-]?id|client[_-]?secret|[\w-]*token|password|api[_-]?key|authorization)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi,
+    /(["']?(?:client[_-]?id|client[_-]?secret|[\w-]*token|password|api[_-]?key|(?:proxy-)?authorization)["']?\s*[:=]\s*)(?:\[REDACTED\]|[^\s,;}]+)/gi,
     '$1[REDACTED]',
   );
   console.error(message);
@@ -461,17 +477,18 @@ export function requireBuildCredentials(config: AgentConfig): void {
 
 export function loadTargetConfig(argv: string[]): AgentConfig {
   const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
-  let services = {};
-  if (!process.env.AICORE_SERVICE_KEY && fs.existsSync(defaultEnvPath)) {
+  const services = () => {
+    if (!fs.existsSync(defaultEnvPath)) return {};
     try {
-      services =
-        JSON.parse(fs.readFileSync(defaultEnvPath, 'utf8')).VCAP_SERVICES ?? {};
+      return (
+        JSON.parse(fs.readFileSync(defaultEnvPath, 'utf8')).VCAP_SERVICES ?? {}
+      );
     } catch {
       throw new Error(
         'Could not read default-env.json service bindings as JSON',
       );
     }
-  }
+  };
   loadDotenv({ path: path.resolve(__dirname, '../.env'), quiet: true });
   const at = argv.indexOf('--mtaext');
   if (at >= 0) {

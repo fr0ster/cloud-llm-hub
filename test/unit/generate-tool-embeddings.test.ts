@@ -113,6 +113,49 @@ describe('applyMtaext', () => {
 });
 
 describe('loadTargetConfig', () => {
+  it.each(['explicit', 'aicore', 'ai-core'])(
+    'does not read malformed default-env.json with %s environment credentials',
+    (source) => {
+      delete process.env.AICORE_SERVICE_KEY;
+      delete process.env.VCAP_SERVICES;
+      const credentials = {
+        clientid: 'higher-priority',
+        clientsecret: 'secret',
+      };
+      if (source === 'explicit')
+        process.env.AICORE_SERVICE_KEY = JSON.stringify(credentials);
+      else
+        process.env.VCAP_SERVICES = JSON.stringify({
+          [source]: [{ credentials }],
+        });
+      const defaultPath = path.resolve(__dirname, '../../default-env.json');
+      const nativeFs = jest.requireActual<typeof fs>('node:fs');
+      const read = nativeFs.readFileSync;
+      const exists = nativeFs.existsSync;
+      const existsSpy = jest
+        .spyOn(nativeFs, 'existsSync')
+        .mockImplementation((file) => file === defaultPath || exists(file));
+      const readSpy = jest
+        .spyOn(nativeFs, 'readFileSync')
+        .mockImplementation(((file: fs.PathOrFileDescriptor, options: never) =>
+          file === defaultPath
+            ? '{malformed'
+            : read(file, options)) as typeof read);
+      try {
+        expect(() => loadTargetConfig([])).not.toThrow();
+        expect(JSON.parse(process.env.AICORE_SERVICE_KEY as string)).toEqual(
+          credentials,
+        );
+        expect(readSpy.mock.calls.some(([file]) => file === defaultPath)).toBe(
+          false,
+        );
+      } finally {
+        readSpy.mockRestore();
+        existsSpy.mockRestore();
+      }
+    },
+  );
+
   it('applies --mtaext before loadAgentConfig, so the file wins over the environment', () => {
     process.env.LLM_AGENT_RAG_TYPE = 'vector';
     process.env.LLM_AGENT_EMBEDDING_MODEL = 'model-a';
@@ -366,6 +409,67 @@ describe('deployment AI Core credentials (no network)', () => {
 });
 
 describe('CLI error reporting', () => {
+  it.each([
+    ['Authorization: Bearer header-token', 'Authorization: [REDACTED]'],
+    [
+      'Proxy-Authorization: Basic proxy-token',
+      'Proxy-Authorization: [REDACTED]',
+    ],
+    [
+      'Authorization: Digest username="private", response="private-response"',
+      'Authorization: [REDACTED]',
+    ],
+    [
+      'request Bearer anywhere-token rejected',
+      'request Bearer [REDACTED] rejected',
+    ],
+    [
+      'request Basic anywhere-basic rejected',
+      'request Basic [REDACTED] rejected',
+    ],
+    [
+      JSON.stringify({ clientsecret: 'prefix"secret-suffix' }),
+      '{"clientsecret":[REDACTED]}',
+    ],
+    [
+      JSON.stringify({ access_token: 'prefix\\"token-suffix' }),
+      '{"access_token":[REDACTED]}',
+    ],
+  ])('redacts %s and retains diagnostics', (input, redacted) => {
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      reportBuildError(
+        new TypeError(`HTTP 401\n${input}\nEmbedding request rejected`),
+        {},
+      );
+      expect(output).toHaveBeenCalledWith(
+        `TypeError: HTTP 401\n${redacted}\nEmbedding request rejected`,
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('redacts every selected key string value in raw, JSON and URL forms', () => {
+    const secret = 'custom/secret"suffix';
+    const output = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      reportBuildError(
+        new Error(
+          `HTTP 403 ${secret} ${JSON.stringify(secret)} ${encodeURIComponent(secret)} denied`,
+        ),
+        {
+          AICORE_SERVICE_KEY: JSON.stringify({ nested: { custom: secret } }),
+        },
+      );
+      expect(output).toHaveBeenCalledWith(
+        'Error: HTTP 403 [REDACTED] "[REDACTED]" [REDACTED] denied',
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
   it('redacts selected credentials in a thrown embedding error and keeps its type and diagnostic', async () => {
     const output = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {
