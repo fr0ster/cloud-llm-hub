@@ -202,7 +202,7 @@ export class RecordingMcpClient implements IMcpClient {
   /**
    * Writes dispatched under this trace that never received an answer.
    *
-   * Writes only. An unanswered `ReadClass` is a lost answer and nothing more;
+   * Writes only. An unanswered `GetClass` is a lost answer and nothing more;
    * reporting it as possibly-applied would teach a planner to distrust reads
    * and to re-check objects nothing touched. `isWriteTool` is the same
    * classifier the write guardrail already uses, so the two cannot drift.

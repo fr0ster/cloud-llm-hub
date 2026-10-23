@@ -21,7 +21,7 @@
  * Labels (tools/tool-rag-queries.json), per query:
  *   - `relevant`: every tool that is a correct/useful answer.
  *   - `required`: AND of OR-groups — each group is one step the query needs,
- *     listing the interchangeable tools for it (e.g. ReadClass | GetClass).
+ *     listing the interchangeable tools for it (e.g. GetClass | GetClass).
  *   - `expect`: legacy any-one-of list, kept for compatibility, unused here.
  * A (query, role) pair where some required group has NO tool the role can see
  * is STRUCTURAL: no retrieval can answer it, so it is counted apart and left

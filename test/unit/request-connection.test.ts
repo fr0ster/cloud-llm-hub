@@ -263,7 +263,11 @@ test.each(['cloud', 'onprem'])(
     const makeAdtRequest = jest
       .fn()
       .mockRejectedValueOnce(new TypeError('private backend details'))
-      .mockResolvedValue({ data: { userName: 'RETRIED', systemID: 'DEV' } });
+      .mockResolvedValue({
+        status: 200,
+        data: { userName: 'RETRIED', systemID: 'DEV' },
+        headers: {},
+      });
     mockCreateConnection.mockReturnValueOnce({
       connect: mockConnect,
       makeAdtRequest,

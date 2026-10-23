@@ -1,3 +1,14 @@
+const systemAnswer = (
+  info: { userName?: string; systemID?: string } | null,
+) => ({
+  ok: true as const,
+  getResult: () => ({
+    value: info
+      ? { present: true as const, info }
+      : { present: false as const },
+  }),
+});
+
 import { getSystemInformation as lookup } from '@mcp-abap-adt/adt-clients/core';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { withResolvedSystemContext } from '@mcp-abap-adt/lib/request-context';
@@ -20,6 +31,7 @@ import {
 } from '@mcp-abap-adt/lib/utils';
 import {
   requestSystemContextResolver,
+  requestSystemContextRules,
   resolveRequestSystem,
   runWithRequestSystem,
 } from '../../srv/lib/request-system-context';
@@ -127,7 +139,7 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
       getSystemInformation,
     );
     // The observable responsible on-premise stays the UPPERCASED login.
-    expect(seen?.userName).toBe('DEVELOPER');
+    expect(seen?.userName).toBeUndefined();
   });
 
   it('x-sap-responsible overrides the login', async () => {
@@ -147,7 +159,7 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
       resolveRequestSystem({ 'x-sap-login': 'developer' }),
       getSystemInformation,
     );
-    expect(seen?.userName).toBe('DEVELOPER');
+    expect(seen?.userName).toBeUndefined();
   });
 
   it('outside a run, lib sees the process values', async () => {
@@ -180,14 +192,14 @@ describe('lazy resolver', () => {
   it('resolves on-premise user and master system', async () => {
     jest
       .mocked(lookup)
-      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+      .mockResolvedValue(systemAnswer({ userName: 'USER', systemID: 'DEV' }));
     await expect(requestSystemContextResolver(connection())).resolves.toEqual({
       responsible: 'USER',
       masterSystem: 'DEV',
     });
   });
   it.each([null, {}])('returns null for missing user (%s)', async (info) => {
-    jest.mocked(lookup).mockResolvedValue(info as never);
+    jest.mocked(lookup).mockResolvedValue(systemAnswer(info));
     await expect(
       requestSystemContextResolver(connection()),
     ).resolves.toBeNull();
@@ -215,7 +227,7 @@ describe('lazy resolver', () => {
     'keeps a systemID-only %s identity and applies request precedence',
     async (systemType) => {
       const conn = declaredConnection(systemType);
-      jest.mocked(lookup).mockResolvedValue({ systemID: 'DEV' });
+      jest.mocked(lookup).mockResolvedValue(systemAnswer({ systemID: 'DEV' }));
       await warmSystemIdentity(conn, systemType);
       expect(await requestSystemContextResolver(conn)).toEqual({
         masterSystem: 'DEV',
@@ -231,12 +243,12 @@ describe('lazy resolver', () => {
               conn,
               getSystemInformation,
               requestSystemContextResolver,
+              undefined,
+              requestSystemContextRules,
             ),
         );
-        expect(info?.systemID).toBe('DEV');
-        expect(info?.userName).toBe(
-          responsible ? 'OWNER' : systemType === 'cloud' ? undefined : 'ALICE',
-        );
+        expect(info?.systemID).toBe(systemType === 'cloud' ? undefined : 'DEV');
+        expect(info?.userName).toBe('ALICE');
       }
       expect(lookup).toHaveBeenCalledTimes(1);
     },
@@ -245,7 +257,7 @@ describe('lazy resolver', () => {
     'keeps a userName-only %s identity',
     async (systemType) => {
       const conn = declaredConnection(systemType);
-      jest.mocked(lookup).mockResolvedValue({ userName: 'USER' });
+      jest.mocked(lookup).mockResolvedValue(systemAnswer({ userName: 'USER' }));
       await expect(requestSystemContextResolver(conn)).resolves.toEqual({
         responsible: 'USER',
       });
@@ -264,9 +276,11 @@ describe('lazy resolver', () => {
           conn,
           getSystemInformation,
           requestSystemContextResolver,
+          undefined,
+          requestSystemContextRules,
         ),
       );
-      expect(info?.userName).toBeUndefined();
+      expect(info?.userName).toBe('HINT');
       expect(lookup).toHaveBeenCalledTimes(3);
     },
   );
@@ -274,7 +288,7 @@ describe('lazy resolver', () => {
     'applies declared %s semantics to an empty lookup',
     async (systemType) => {
       const conn = declaredConnection(systemType);
-      jest.mocked(lookup).mockResolvedValue(null as never);
+      jest.mocked(lookup).mockResolvedValue(systemAnswer(null));
       expect(await requestSystemContextResolver(conn)).toEqual(
         systemType === 'cloud' ? {} : null,
       );
@@ -283,9 +297,11 @@ describe('lazy resolver', () => {
           conn,
           getSystemInformation,
           requestSystemContextResolver,
+          undefined,
+          requestSystemContextRules,
         ),
       );
-      expect(info?.userName).toBe(systemType === 'cloud' ? undefined : 'HINT');
+      expect(info?.userName).toBe('HINT');
     },
   );
   it('keeps declared on-premise fallback after warm-up and resolver failures', async () => {
@@ -297,6 +313,8 @@ describe('lazy resolver', () => {
         conn,
         getSystemInformation,
         requestSystemContextResolver,
+        undefined,
+        requestSystemContextRules,
       ),
     );
     expect(info?.userName).toBe('HINT');
@@ -312,14 +330,14 @@ describe('lazy resolver', () => {
     await expect(requestSystemContextResolver(conn)).rejects.toThrow(
       'lookup failed',
     );
-    jest.mocked(lookup).mockResolvedValue(null as never);
+    jest.mocked(lookup).mockResolvedValue(systemAnswer(null));
     await expect(requestSystemContextResolver(conn)).resolves.toEqual({});
   });
   it('lib keeps explicit responsible and memoizes lazily', async () => {
     const conn = connection();
     jest
       .mocked(lookup)
-      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+      .mockResolvedValue(systemAnswer({ userName: 'USER', systemID: 'DEV' }));
     await runWithRequestSystem(
       { responsible: 'STATED', login: 'HINT' },
       async () => {
@@ -329,6 +347,8 @@ describe('lazy resolver', () => {
             conn,
             getSystemInformation,
             requestSystemContextResolver,
+            undefined,
+            requestSystemContextRules,
           );
           expect(info?.userName).toBe('STATED');
         }
@@ -339,12 +359,16 @@ describe('lazy resolver', () => {
   it.each([true, false])('lib applies user then login (%s)', async (found) => {
     jest
       .mocked(lookup)
-      .mockResolvedValue(found ? { userName: 'USER', systemID: 'DEV' } : null);
+      .mockResolvedValue(
+        systemAnswer(found ? { userName: 'USER', systemID: 'DEV' } : null),
+      );
     const info = await runWithRequestSystem({ login: 'HINT' }, () =>
       withResolvedSystemContext(
         connection(),
         getSystemInformation,
         requestSystemContextResolver,
+        undefined,
+        requestSystemContextRules,
       ),
     );
     expect(info?.userName).toBe(found ? 'USER' : 'HINT');

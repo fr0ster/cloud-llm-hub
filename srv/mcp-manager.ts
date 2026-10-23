@@ -17,7 +17,6 @@ import {
   HEADER_SAP_PASSWORD,
 } from '@mcp-abap-adt/interfaces-network';
 import { EmbeddableMcpServer } from '@mcp-abap-adt/lib/embeddable';
-import { ReadVsGetDedupStrategy } from '@mcp-abap-adt/lib/handlers';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
@@ -37,10 +36,13 @@ import { loggerAdapter } from './lib/logger';
 import { safeStop } from './lib/request-connection';
 import {
   requestSystemContextResolver,
+  requestSystemContextRules,
   resolveRequestSystem,
   runWithRequestSystem,
 } from './lib/request-system-context';
 import { resolveSystemType, type SystemType } from './lib/system-type';
+import { assertToolAllowed } from './lib/tool-authorization';
+import { buildToolExpositionMap } from './lib/tool-exposition-map';
 
 interface SapContext {
   sapConfig: SapConfig;
@@ -412,7 +414,17 @@ export async function createMCPServerForRequest(
         exposition,
         systemType,
         systemContextResolver: requestSystemContextResolver,
-        readOnlyDedupStrategy: new ReadVsGetDedupStrategy(),
+        systemContextRules: requestSystemContextRules,
+        // A transport belongs to one HTTP request; the hub owns session teardown.
+        transportCloseEndsSession: false,
+        // Return an unconnected NEW instance: v20 connects and closes it.
+        freshConnection: async () =>
+          destination
+            ? createConnection({
+                sapConfig: { ...sapConfig },
+                destinationName: destination.destinationName,
+              })
+            : createConnection({ sapConfig: { ...sapConfig }, systemType }),
       });
 
       // Create NEW transport for this request
@@ -423,6 +435,38 @@ export async function createMCPServerForRequest(
         allowedHosts: undefined,
         enableDnsRebindingProtection: false,
       });
+
+      const policyMap = buildToolExpositionMap();
+      const allowedTool = (name: string) => {
+        assertToolAllowed(name, policyMap.get(name), exposition);
+      };
+      // Filter the protocol result at the hub boundary; calls are checked below
+      // before dispatch, including names omitted from tools/list.
+      const send = transport.send.bind(transport);
+      transport.send = async (message, options) => {
+        if (
+          'result' in message &&
+          message.result &&
+          'tools' in message.result &&
+          Array.isArray(message.result.tools)
+        ) {
+          message = {
+            ...message,
+            result: {
+              ...message.result,
+              tools: message.result.tools.filter((tool: { name: string }) => {
+                try {
+                  allowedTool(tool.name);
+                  return true;
+                } catch {
+                  return false;
+                }
+              }),
+            },
+          };
+        }
+        return send(message, options);
+      };
 
       // Connect transport to MCP server
       await mcpServer.connect(transport);
@@ -451,17 +495,55 @@ export async function createMCPServerForRequest(
         // End the server-side ADT session (releases a left-open edit-lock):
         // closeSession + reset for a destination connection, endSession (the
         // logoff, after any LOCK..UNLOCK) for a direct connector. Never throws.
-        await safeStop(connection);
+        try {
+          await mcpServer.dispose();
+        } finally {
+          try {
+            await mcpServer.terminalClose();
+          } finally {
+            await safeStop(connection);
+          }
+        }
       };
 
       const handle = (
         httpReq: IncomingMessage,
         res: ServerResponse,
         body: unknown,
-      ): Promise<void> =>
-        runWithRequestSystem(resolveRequestSystem(httpReq.headers), () =>
+      ): Promise<void> => {
+        const rpc = body as {
+          method?: string;
+          id?: string | number;
+          params?: { name?: string };
+        };
+        if (rpc?.method === 'tools/call') {
+          try {
+            allowedTool(rpc.params?.name ?? '');
+          } catch (error) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: rpc.id ?? null,
+                result: {
+                  isError: true,
+                  content: [
+                    {
+                      type: 'text',
+                      text:
+                        error instanceof Error ? error.message : String(error),
+                    },
+                  ],
+                },
+              }),
+            );
+            return Promise.resolve();
+          }
+        }
+        return runWithRequestSystem(resolveRequestSystem(httpReq.headers), () =>
           transport.handleRequest(httpReq, res, body),
         );
+      };
 
       return {
         server: mcpServer,

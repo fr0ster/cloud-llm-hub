@@ -22,7 +22,9 @@ import { SYSTEM_TOOLS_THAT_WRITE } from '../../srv/lib/exposition';
 
 /** Reader-level tools that legitimately use a non-GET method. */
 const KNOWN_NON_GET_READS: Record<string, string> = {
-  GetVirtualFoldersLow:
+  ListTransports:
+    'Transport search uses a POST query body without changing transports.',
+  GetVirtualFolders:
     'ADT virtual-folder search takes its query in a POST body; it reads.',
 };
 

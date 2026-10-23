@@ -104,9 +104,9 @@ describe('per-request telemetry lifecycle (RecordingMcpClient)', () => {
     const client = new RecordingMcpClient(fakeInner());
     const traceId = 't1';
 
-    await client.callTool('ReadTable', {}, { trace: { traceId } });
+    await client.callTool('GetTable', {}, { trace: { traceId } });
     expect(client.getToolRecords(traceId).map((r) => r.call.name)).toEqual([
-      'ReadTable',
+      'GetTable',
     ]);
 
     client.dropRequest(traceId);
@@ -117,11 +117,11 @@ describe('per-request telemetry lifecycle (RecordingMcpClient)', () => {
   test('two concurrent traceIds do not cross-contaminate, and dropping one leaves the other intact', async () => {
     const client = new RecordingMcpClient(fakeInner());
 
-    await client.callTool('ReadTable', {}, { trace: { traceId: 't1' } });
+    await client.callTool('GetTable', {}, { trace: { traceId: 't1' } });
     await client.callTool('GetObject', {}, { trace: { traceId: 't2' } });
 
     expect(client.getToolRecords('t1').map((r) => r.call.name)).toEqual([
-      'ReadTable',
+      'GetTable',
     ]);
     expect(client.getToolRecords('t2').map((r) => r.call.name)).toEqual([
       'GetObject',

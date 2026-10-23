@@ -1,3 +1,4 @@
+import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { watchDestinations } from './lib/destination-watch';
 import { withToolResultCap } from './lib/tool-result-cap';
 /**
@@ -96,7 +97,10 @@ import {
   type Providers,
 } from './lib/providers';
 import { RecordingMcpClient } from './lib/recording-mcp-client';
-import { requestSystemContextResolver } from './lib/request-system-context';
+import {
+  requestSystemContextResolver,
+  requestSystemContextRules,
+} from './lib/request-system-context';
 import { recordToolScore } from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
@@ -1417,10 +1421,14 @@ function toolParamNames(inputSchema: unknown): string {
  */
 export function baseToolText(t: ToolDocInput): string {
   const paramNames = toolParamNames(t.inputSchema);
+  const search = toolSearchText(t.name);
   return [
     `Tool: ${t.name}`,
     `Description: ${t.description}`,
     paramNames ? `Parameters: ${paramNames}` : '',
+    search
+      ? `Keywords: ${search.keywords.join(', ')}\nIntent: ${search.semantic}`
+      : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -1470,7 +1478,7 @@ export function buildToolDocs(tools: ToolDocInput[]): {
   // recall). Appended to both cached and uncached text.
   const toolNameSet = new Set(basicEntries.map((t) => t.name));
   for (const t of entries) {
-    const m = t.name.match(/^(Create|Update|Read)(.+)$/);
+    const m = t.name.match(/^(Create|Update|Get)(.+)$/);
     if (!m) continue;
     const [, verb, object] = m;
     const objWords = object.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
@@ -1489,7 +1497,7 @@ export function buildToolDocs(tools: ToolDocInput[]): {
         hints.push(
           `Also used after create ${objWords} (Create${object}) to add implementation.`,
         );
-    } else if (verb === 'Read') {
+    } else if (verb === 'Get') {
       if (toolNameSet.has(`Update${object}`))
         hints.push(
           `Use to inspect current ${objWords} before update (Update${object}), or verify after create (Create${object}).`,
@@ -1525,9 +1533,10 @@ export function buildToolDocs(tools: ToolDocInput[]): {
 export function getHandlerExporterConfig() {
   return {
     systemContextResolver: requestSystemContextResolver,
+    systemContextRules: requestSystemContextRules,
     includeReadOnly: true,
     includeHighLevel: true,
-    includeLowLevel: false,
+    includeDebug: false,
     includeSystem: true,
     includeSearch: true,
     logger: loggerAdapter,
@@ -1539,8 +1548,11 @@ function listToolDefsFromExporter(): ToolDocInput[] {
   const exporter = new HandlerExporter(getHandlerExporterConfig());
   const coreTools = exporter.getHandlerEntries().map((e) => ({
     name: e.toolDefinition.name,
-    description: e.toolDefinition.description,
-    inputSchema: e.toolDefinition.inputSchema,
+    description: agentToolDescription(e.toolDefinition.description),
+    inputSchema: agentToolSchema(
+      e.toolDefinition.name,
+      toJsonSchema(e.toolDefinition.inputSchema),
+    ),
   }));
   return mergeCloudLocalTools(coreTools);
 }
@@ -2291,7 +2303,27 @@ export function clearDestinationStatesForTest(): void {
  * then wraps them in MCPClientWrapper with `transport: 'embedded'`.
  * Connection is resolved from BTP Destination and injected as handler context.
  */
-async function buildEmbeddedMcpAdapter(
+function agentToolSchema(
+  name: string,
+  schema: ReturnType<typeof toJsonSchema>,
+) {
+  const copy = structuredClone(schema);
+  if (copy.properties) {
+    delete (copy.properties as Record<string, unknown>).timeout;
+    if (name === 'RuntimeRunClass' || name === 'RuntimeRunProgram')
+      delete (copy.properties as Record<string, unknown>).background;
+  }
+  if (Array.isArray(copy.required))
+    copy.required = copy.required.filter((key) => key !== 'timeout');
+  return copy;
+}
+
+function agentToolDescription(description: string | undefined) {
+  // v20 appends this advice for its server-only long-call orchestration.
+  return description?.split(' Runs on an ABAP session of its own.')[0];
+}
+
+export async function buildEmbeddedMcpAdapter(
   destinationName: string,
 ): Promise<McpClientAdapter> {
   const log = cds.log('agent-manager');
@@ -2311,29 +2343,7 @@ async function buildEmbeddedMcpAdapter(
 
   const entries = exporter.getHandlerEntries();
 
-  // Handler context with a placeholder connection. Every actual tool call below
-  // must receive a per-request connection via connectionALS.
-  const context: HandlerContext = {
-    connection:
-      null as unknown as import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection,
-    logger: loggerAdapter,
-  };
-
-  // Inject real connection into handler groups so closure-based handlers (handler.length === 1)
-  // use our connection instead of dummyContext (connection: null).
-  // HandlerExporter creates groups with dummyContext; BaseMcpServer.registerHandlers() fixes this
-  // by setting group.context before calling, but we bypass that — so we do it here.
-  // biome-ignore lint/suspicious/noExplicitAny: accessing private handlerGroups field
-  const handlerGroups = (exporter as any).handlerGroups as Array<{
-    context: HandlerContext;
-  }>;
-  if (handlerGroups) {
-    for (const group of handlerGroups) {
-      group.context = context;
-    }
-  }
-
-  // Build handler map (handlers now use updated group.context via closure)
+  // Cache tool names for discovery; dispatch creates call-local handlers.
   const handlerMap = new Map(
     entries.map((e) => [e.toolDefinition.name, e.handler]),
   );
@@ -2358,7 +2368,7 @@ async function buildEmbeddedMcpAdapter(
     // destination, so without this check any caller could reach any tool.
     assertToolAllowed(
       name,
-      toolExpositionMap?.get(name),
+      getToolExpositionMap().get(name),
       connectionALS.getStore()?.exposition,
       getToolAnnotations().get(name),
     );
@@ -2390,9 +2400,20 @@ async function buildEmbeddedMcpAdapter(
       );
     }
 
-    const handler = handlerMap.get(name);
+    let handler = handlerMap.get(name);
     if (!handler) {
       throw new Error(`Unknown MCP tool: ${name}`);
+    }
+    if (args != null && Object.hasOwn(args, 'timeout')) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: 'agent_timeout_unavailable: timeout is not supported on the agent transport; omit timeout or use the raw MCP transport for cancellable long reads.',
+          },
+        ],
+      };
     }
     // Per-request connection override: if ALS has a connection, use it
     // instead of any shared/service-user destination connection.
@@ -2404,17 +2425,35 @@ async function buildEmbeddedMcpAdapter(
     }
     const effectiveContext = requestScope.context;
 
-    // For closure-based handlers, temporarily swap group.context
-    // so they pick up per-request connection.
-    let prevGroupContexts: HandlerContext[] | undefined;
-    try {
-      if (requestScope && handlerGroups) {
-        prevGroupContexts = handlerGroups.map((g) => g.context);
-        for (const g of handlerGroups) {
-          g.context = effectiveContext;
-        }
+    if (
+      (name === 'RuntimeRunClass' || name === 'RuntimeRunProgram') &&
+      args?.background === true
+    ) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: 'background_runs_unavailable: the hub has no background store; use foreground execution.',
+          },
+        ],
+      };
+    }
+    // Each call owns its groups for its entire lifetime, including resolver awaits.
+    // Long reads use the request connection and trackCall; no server timeout or
+    // fresh-session orchestration is applied on the agent transport.
+    const callExporter = new HandlerExporter(getHandlerExporterConfig());
+    const groups = (
+      callExporter as unknown as {
+        handlerGroups: Array<{ context: HandlerContext }>;
       }
-
+    ).handlerGroups;
+    for (const group of groups) group.context = effectiveContext;
+    handler = callExporter
+      .getHandlerEntries()
+      .find((e) => e.toolDefinition.name === name)?.handler;
+    if (!handler) throw new Error(`Unknown MCP tool: ${name}`);
+    try {
       // Handlers from HandlerExporter have two signatures:
       // - length >= 2: (context, args) => ... (direct handlers)
       // - length === 1: (args) => ... (closure-based, uses group.context)
@@ -2424,12 +2463,6 @@ async function buildEmbeddedMcpAdapter(
           ? handler(effectiveContext, args)
           : (handler as unknown as (a: typeof args) => unknown)(args);
 
-      // No cloud-llm-hub-side timeout wrapper, and the connector sets none on
-      // an SAP call either: the consumer bounds its own wait by closing the
-      // connection. Destination availability is covered by the ProbeDestination
-      // reachability check; a Promise.race here only cut heavy work the ABAP
-      // layer allows (e.g. where-used scans).
-      //
       // Registered before it is awaited. An ADT call is asynchronous in
       // substance: the slot, and the ADT session, must outlive it even when
       // everything waiting on it has stopped.
@@ -2465,13 +2498,6 @@ async function buildEmbeddedMcpAdapter(
       // into the message; this re-raises it in a form that survives the
       // embedded wrapper's string-only return.
       throw asOutage(err, destinationName) ?? err;
-    } finally {
-      // Restore shared group.context after per-request override
-      if (prevGroupContexts && handlerGroups) {
-        for (let i = 0; i < handlerGroups.length; i++) {
-          handlerGroups[i].context = prevGroupContexts[i];
-        }
-      }
     }
   }
 
@@ -2484,8 +2510,11 @@ async function buildEmbeddedMcpAdapter(
         annotations: (
           e.toolDefinition as { annotations?: ToolEffectAnnotations }
         ).annotations,
-        description: e.toolDefinition.description,
-        inputSchema: toJsonSchema(e.toolDefinition.inputSchema),
+        description: agentToolDescription(e.toolDefinition.description),
+        inputSchema: agentToolSchema(
+          e.toolDefinition.name,
+          toJsonSchema(e.toolDefinition.inputSchema),
+        ),
       }));
       // Append cloud-local GetDumpSection unless a core tool already claims the
       // name (same dedupe policy as the corpus). Its inputSchema is already a

@@ -16,7 +16,8 @@
 
 const EXEC_MARKER = /\[SmartAgent: Executing ([A-Za-z0-9_]+)\.\.\.\]/g;
 
-const WRITE_TOOL = /^(?:Create|Update|Delete|Activate)/i;
+const WRITE_TOOL =
+  /^(?:Create|Update|Delete|Activate|SortAndCompressTransportTask$|MoveTransportObjects$|DiscardBackgroundRun$)/i;
 
 // Completed-write assertions. Passive forms need a completion cue (has been /
 // was / successfully); active/first-person forms are matched directly. All

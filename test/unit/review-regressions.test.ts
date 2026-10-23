@@ -56,7 +56,7 @@ it('checker blocks writes before dispatch, permits reads, and leaves executor un
     runWithReadOnlyTools(() => invoke('CreateClass', 'high')),
   ).toThrow(/read.only/i);
   expect(adapter).not.toHaveBeenCalled();
-  runWithReadOnlyTools(() => invoke('ReadClass', 'readonly'));
+  runWithReadOnlyTools(() => invoke('GetClass', 'readonly'));
   invoke('CreateClass', 'high');
   expect(adapter).toHaveBeenCalledTimes(2);
 });

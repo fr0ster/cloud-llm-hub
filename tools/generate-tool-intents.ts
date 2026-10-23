@@ -45,7 +45,7 @@ async function main() {
   const exporter = new HandlerExporter({
     includeReadOnly: true,
     includeHighLevel: true,
-    includeLowLevel: false,
+    includeDebug: false,
     includeSystem: true,
     includeSearch: true,
   });
@@ -72,6 +72,26 @@ async function main() {
     tools.push({ name: cl.name, text: baseToolText(cl) });
   }
   console.log(`Tools (incl. cloud-local): ${tools.length}`);
+
+  // Reproducible retrieval intents from upstream, without model credentials.
+  if (process.argv.includes('--from-search')) {
+    const cache = Object.fromEntries(
+      tools.map((tool) => [
+        tool.name,
+        {
+          text: tool.text,
+          enriched: tool.text.includes('\nIntent:')
+            ? tool.text
+            : `${tool.text}\nIntent: ${tool.text.split('\n')[1]?.replace('Description: ', '') ?? tool.name}`,
+        },
+      ]),
+    );
+    fs.writeFileSync(OUTPUT, `${JSON.stringify(cache, null, 2)}\n`);
+    console.log(
+      `Wrote ${tools.length} intents from upstream search metadata/descriptions.`,
+    );
+    return;
+  }
 
   // Create LLM for enrichment
   const llm = await makeHubLlm(

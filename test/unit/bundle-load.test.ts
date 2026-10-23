@@ -51,15 +51,15 @@ describe('fingerprintMatches', () => {
 
 describe('planBundleLoad', () => {
   const runtimeDocs = [
-    doc('ReadTable', 'Tool: ReadTable\ntext'),
+    doc('GetTable', 'Tool: GetTable\ntext'),
     doc('GetX', 'Tool: GetX\ntext'),
   ];
 
   it('happy path: all texts match → everything loads, NOTHING to supplement (zero embedding)', () => {
     const b = bundle([
       {
-        id: 'tool:ReadTable',
-        text: 'Tool: ReadTable\ntext',
+        id: 'tool:GetTable',
+        text: 'Tool: GetTable\ntext',
         vector: [1, 0, 0],
       },
       { id: 'tool:GetX', text: 'Tool: GetX\ntext', vector: [0, 1, 0] },
@@ -68,42 +68,42 @@ describe('planBundleLoad', () => {
     expect(plan.usable).toBe(true);
     expect(plan.supplementNames).toEqual([]);
     expect(plan.toLoad.map((e) => e.id).sort()).toEqual([
+      'tool:GetTable',
       'tool:GetX',
-      'tool:ReadTable',
     ]);
-    expect(plan.toLoad.find((e) => e.id === 'tool:ReadTable')?.vector).toEqual([
+    expect(plan.toLoad.find((e) => e.id === 'tool:GetTable')?.vector).toEqual([
       1, 0, 0,
     ]);
   });
 
   it('per-entry supplement — cached tool whose text CHANGED is supplemented, the rest load', () => {
     const b = bundle([
-      { id: 'tool:ReadTable', text: 'OLD TEXT', vector: [1, 0, 0] },
+      { id: 'tool:GetTable', text: 'OLD TEXT', vector: [1, 0, 0] },
       { id: 'tool:GetX', text: 'Tool: GetX\ntext', vector: [0, 1, 0] },
     ]);
     const plan = planBundleLoad(b, runtimeDocs, FP);
     expect(plan.toLoad.map((e) => e.id)).toEqual(['tool:GetX']);
-    expect(plan.supplementNames).toEqual(['ReadTable']);
+    expect(plan.supplementNames).toEqual(['GetTable']);
   });
 
   it('per-entry supplement — a runtime tool ABSENT from the bundle is supplemented', () => {
     const b = bundle([
       {
-        id: 'tool:ReadTable',
-        text: 'Tool: ReadTable\ntext',
+        id: 'tool:GetTable',
+        text: 'Tool: GetTable\ntext',
         vector: [1, 0, 0],
       },
     ]);
     const plan = planBundleLoad(b, runtimeDocs, FP);
-    expect(plan.toLoad.map((e) => e.id)).toEqual(['tool:ReadTable']);
+    expect(plan.toLoad.map((e) => e.id)).toEqual(['tool:GetTable']);
     expect(plan.supplementNames).toEqual(['GetX']);
   });
 
   it('fingerprint mismatch → whole bundle unusable, everything supplements', () => {
     const b = bundle([
       {
-        id: 'tool:ReadTable',
-        text: 'Tool: ReadTable\ntext',
+        id: 'tool:GetTable',
+        text: 'Tool: GetTable\ntext',
         vector: [1, 0, 0],
       },
     ]);
@@ -113,18 +113,18 @@ describe('planBundleLoad', () => {
     });
     expect(plan.usable).toBe(false);
     expect(plan.toLoad).toEqual([]);
-    expect(plan.supplementNames.sort()).toEqual(['GetX', 'ReadTable']);
+    expect(plan.supplementNames.sort()).toEqual(['GetTable', 'GetX']);
   });
 
   it('no bundle → unusable, everything supplements', () => {
     const plan = planBundleLoad(null, runtimeDocs, FP);
     expect(plan.usable).toBe(false);
-    expect(plan.supplementNames.sort()).toEqual(['GetX', 'ReadTable']);
+    expect(plan.supplementNames.sort()).toEqual(['GetTable', 'GetX']);
   });
 
   it('carries exposition through to the loaded entry', () => {
-    const docs = [doc('ReadTable', 'T', 'readonly')];
-    const b = bundle([{ id: 'tool:ReadTable', text: 'T', vector: [1, 0, 0] }]);
+    const docs = [doc('GetTable', 'T', 'readonly')];
+    const b = bundle([{ id: 'tool:GetTable', text: 'T', vector: [1, 0, 0] }]);
     const plan = planBundleLoad(b, docs, FP);
     expect(plan.toLoad[0].exposition).toBe('readonly');
   });

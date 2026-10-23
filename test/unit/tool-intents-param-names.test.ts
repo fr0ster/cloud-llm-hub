@@ -9,7 +9,7 @@ import { baseToolText } from '../../srv/agent-manager';
 describe('baseToolText', () => {
   it('lists the parameter names of a JSON Schema input', () => {
     const text = baseToolText({
-      name: 'ReadClass',
+      name: 'GetClass',
       description: 'Read a class.',
       inputSchema: {
         type: 'object',
@@ -17,8 +17,8 @@ describe('baseToolText', () => {
         required: ['class_name'],
       },
     });
-    expect(text).toBe(
-      'Tool: ReadClass\nDescription: Read a class.\nParameters: class_name, version',
+    expect(text).toContain(
+      'Tool: GetClass\nDescription: Read a class.\nParameters: class_name, version',
     );
   });
 

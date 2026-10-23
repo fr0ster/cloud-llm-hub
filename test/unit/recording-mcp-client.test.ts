@@ -18,13 +18,13 @@ describe('RecordingMcpClient', () => {
 
     const client = new RecordingMcpClient(inner);
     const res = await client.callTool(
-      'ReadTable',
+      'GetTable',
       { table: 'T000' },
       { trace: { traceId: 't1' } },
     );
 
     expect(inner.callTool).toHaveBeenCalledWith(
-      'ReadTable',
+      'GetTable',
       { table: 'T000' },
       { trace: { traceId: 't1' } },
     );
@@ -38,7 +38,7 @@ describe('RecordingMcpClient', () => {
 
     const client = new RecordingMcpClient(inner);
     const res = await client.callTool(
-      'ReadTable',
+      'GetTable',
       {},
       { trace: { traceId: 't1' } },
     );
@@ -56,14 +56,14 @@ describe('RecordingMcpClient', () => {
 
     const client = new RecordingMcpClient(inner);
     await client.callTool(
-      'ReadTable',
+      'GetTable',
       { table: 'T000' },
       { trace: { traceId: 't1' } },
     );
 
     const records = client.getToolRecords('t1');
     expect(records).toHaveLength(1);
-    expect(records[0].call.name).toBe('ReadTable');
+    expect(records[0].call.name).toBe('GetTable');
     expect(records[0].call.arguments).toEqual({ table: 'T000' });
     expect(records[0].result).toEqual({ content: 'hello', isError: false });
   });
@@ -200,7 +200,7 @@ it('checker writes and unknown tools never reach the MCP adapter, reads work, ex
   const inner = fakeInner();
   const tools = [
     {
-      name: 'ReadTable',
+      name: 'GetTable',
       description: '',
       inputSchema: {},
       annotations: { readOnlyHint: true },
@@ -226,7 +226,7 @@ it('checker writes and unknown tools never reach the MCP adapter, reads work, ex
   );
   expect(unknown.ok && unknown.value.isError).toBe(true);
   expect(inner.callTool).not.toHaveBeenCalled();
-  await runWithReadOnlyTools(() => client.callTool('ReadTable', {}));
+  await runWithReadOnlyTools(() => client.callTool('GetTable', {}));
   await client.callTool('CreateClass', {});
   expect(inner.callTool).toHaveBeenCalledTimes(2);
 });
@@ -255,14 +255,14 @@ it('checker listing uses annotations before names independently of exposition an
       ],
   );
   const offered = await runWithReadOnlyTools(() => client.listTools());
-  expect(offered.ok && offered.value.map((t) => t.name)).toEqual([
-    'GetTable',
-    'RuntimeRunClass',
-  ]);
+  expect(offered.ok && offered.value.map((t) => t.name)).toEqual(['GetTable']);
   expect(
     await runWithReadOnlyTools(() => client.callTool('RuntimeRunClass', {})),
-  ).toMatchObject({ ok: true, value: { content: 'ok' } });
-  expect(inner.callTool).toHaveBeenCalledTimes(1);
+  ).toMatchObject({
+    ok: true,
+    value: { content: expect.stringContaining('checker tools are read-only') },
+  });
+  expect(inner.callTool).not.toHaveBeenCalled();
 });
 
 it.each([

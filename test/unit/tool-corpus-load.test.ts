@@ -26,8 +26,8 @@ import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 
 const docs = [
   {
-    id: 'tool:ReadClass',
-    name: 'ReadClass',
+    id: 'tool:GetClass',
+    name: 'GetClass',
     text: 'read a class',
     exposition: 'read',
     cached: true,
@@ -331,7 +331,7 @@ describe('loadToolCorpus, vector backend with a matching bundle', () => {
         error: { message: 'store down' },
       }))) as never;
     await expect(loadToolCorpus(p as never, docs)).rejects.toThrow(
-      /tool:ReadClass: store down/,
+      /tool:GetClass: store down/,
     );
   });
 });

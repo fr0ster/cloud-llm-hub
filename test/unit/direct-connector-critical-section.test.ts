@@ -21,7 +21,6 @@ import type { AddressInfo } from 'node:net';
 import { BasicAuthProvider } from '@mcp-abap-adt/auth-providers';
 import {
   AdtOnPremConnector,
-  getTimeout,
   OnPremHttpTransport,
 } from '@mcp-abap-adt/connection';
 
@@ -85,7 +84,7 @@ const isLogoff = (s: string) => s.includes('/sap/public/bc/icf/logoff');
 const unlock = {
   url: '/sap/bc/adt/oo/classes/zcl_probe?_action=UNLOCK&lockHandle=h',
   method: 'POST',
-  timeout: getTimeout('default'),
+  timeout: 0,
 };
 const sapConfig = () => ({
   url,
@@ -175,7 +174,7 @@ describe('direct connector teardown during a critical section', () => {
       });
     conn.beginCriticalSection();
     expect(() => conn.endCriticalSection()).toThrow('base failed');
-    await conn.endSession(); // would hang if the gate were left closed
+    await conn.closeHubSession(); // would hang if the gate were left closed
     expect(disconnect).toHaveBeenCalledTimes(1);
     base.mockRestore();
     disconnect.mockRestore();

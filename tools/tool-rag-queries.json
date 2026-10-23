@@ -19,21 +19,21 @@
   },
   {
     "q": "Show me the source code of class ZCL_DEMO",
-    "expect": ["ReadClass", "GetClass"],
-    "relevant": ["ReadClass", "GetClass"],
-    "required": [["ReadClass", "GetClass"]]
+    "expect": ["GetClass"],
+    "relevant": ["GetClass"],
+    "required": [["GetClass"]]
   },
   {
     "q": "Покажи код програми ZREP_DEMO",
-    "expect": ["ReadProgram", "GetProgram"],
-    "relevant": ["ReadProgram", "GetProgram"],
-    "required": [["ReadProgram", "GetProgram"]]
+    "expect": ["GetProgram"],
+    "relevant": ["GetProgram"],
+    "required": [["GetProgram"]]
   },
   {
     "q": "What fields does table MARA have?",
-    "expect": ["ReadTable", "GetTable"],
-    "relevant": ["ReadTable", "GetTable", "GetTypeInfo"],
-    "required": [["ReadTable", "GetTable"]]
+    "expect": ["GetTable"],
+    "relevant": ["GetTable", "GetTypeInfo"],
+    "required": [["GetTable"]]
   },
   {
     "q": "Show the first 10 rows of table T001",
@@ -43,21 +43,21 @@
   },
   {
     "q": "Read the CDS view I_PRODUCT",
-    "expect": ["ReadView", "GetView", "ReadDdl", "GetDdl"],
-    "relevant": ["ReadDdl", "GetDdl"],
-    "required": [["ReadDdl", "GetDdl"]]
+    "expect": ["GetDdl"],
+    "relevant": ["GetDdl"],
+    "required": [["GetDdl"]]
   },
   {
     "q": "Show the behavior definition of ZI_TRAVEL",
-    "expect": ["ReadBehaviorDefinition", "GetBehaviorDefinition"],
-    "relevant": ["ReadBehaviorDefinition", "GetBehaviorDefinition"],
-    "required": [["ReadBehaviorDefinition", "GetBehaviorDefinition"]]
+    "expect": ["GetBehaviorDefinition"],
+    "relevant": ["GetBehaviorDefinition"],
+    "required": [["GetBehaviorDefinition"]]
   },
   {
     "q": "Покажи функціональний модуль BAPI_USER_GET_DETAIL",
-    "expect": ["ReadFunctionModule", "GetFunctionModule"],
-    "relevant": ["ReadFunctionModule", "GetFunctionModule"],
-    "required": [["ReadFunctionModule", "GetFunctionModule"]]
+    "expect": ["GetFunctionModule"],
+    "relevant": ["GetFunctionModule"],
+    "required": [["GetFunctionModule"]]
   },
   {
     "q": "Find all classes whose name starts with Z",
@@ -85,13 +85,13 @@
   },
   {
     "q": "Покажи короткі дампи за сьогодні",
-    "expect": ["RuntimeListFeeds", "RuntimeListDumps"],
+    "expect": ["RuntimeListFeeds"],
     "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"],
     "required": [["RuntimeListFeeds"]]
   },
   {
     "q": "Show ST22 runtime errors for user DEVELOPER",
-    "expect": ["RuntimeListFeeds", "RuntimeListDumps"],
+    "expect": ["RuntimeListFeeds"],
     "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"],
     "required": [["RuntimeListFeeds"]]
   },
@@ -121,9 +121,9 @@
   },
   {
     "q": "Які об'єкти в транспорті DEVK900001?",
-    "expect": ["ReadTransportObjects", "GetTransport"],
-    "relevant": ["ReadTransportObjects", "GetTransport"],
-    "required": [["ReadTransportObjects", "GetTransport"]]
+    "expect": ["GetTransport"],
+    "relevant": ["GetTransport"],
+    "required": [["GetTransport"]]
   },
   {
     "q": "List my open transport requests",
@@ -157,14 +157,14 @@
   },
   {
     "q": "Create a CDS view ZI_DEMO in $TMP",
-    "expect": ["CreateDdl", "CreateView"],
+    "expect": ["CreateDdl"],
     "relevant": ["CreateDdl", "UpdateDdl"],
     "required": [["CreateDdl"]]
   },
   {
     "q": "Update the source code of program ZREP_DEMO",
     "expect": ["UpdateProgram"],
-    "relevant": ["UpdateProgram", "ReadProgram", "GetProgram"],
+    "relevant": ["UpdateProgram", "GetProgram"],
     "required": [["UpdateProgram"]]
   },
   {
@@ -214,27 +214,18 @@
     "q": "Find where-used of table ZDEMO_T_ORDER and show the source of the users",
     "multi": true,
     "expect": ["GetWhereUsed"],
-    "relevant": [
-      "GetWhereUsed",
-      "ReadClass",
-      "GetClass",
-      "ReadProgram",
-      "GetProgram",
-      "GetInclude",
-      "ReadFunctionModule",
-      "GetFunctionModule"
-    ],
+    "relevant": ["GetWhereUsed", "GetClass", "GetProgram", "GetInclude", "GetFunctionModule"],
     "required": [
       ["GetWhereUsed"],
-      ["ReadClass", "GetClass", "ReadProgram", "GetProgram", "GetInclude", "ReadFunctionModule", "GetFunctionModule"]
+      ["GetClass", "GetProgram", "GetInclude", "GetFunctionModule"]
     ]
   },
   {
     "q": "Прочитай останній дамп і відкрий програму, в якій він стався",
     "multi": true,
     "expect": ["RuntimeListFeeds"],
-    "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection", "ReadProgram", "GetProgram", "GetInclude"],
-    "required": [["RuntimeListFeeds"], ["RuntimeGetDumpById", "GetDumpSection"], ["ReadProgram", "GetProgram", "GetInclude"]]
+    "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection", "GetProgram", "GetInclude"],
+    "required": [["RuntimeListFeeds"], ["RuntimeGetDumpById", "GetDumpSection"], ["GetProgram", "GetInclude"]]
   },
   {
     "q": "Create table ZDEMO_T_ORDER in $TMP and activate it",
@@ -247,14 +238,14 @@
     "q": "Read class ZCL_DEMO, add a method to it and activate the class",
     "multi": true,
     "expect": ["UpdateClass"],
-    "relevant": ["ReadClass", "GetClass", "UpdateClass", "CheckClass", "ActivateClass", "ActivateObjects"],
-    "required": [["ReadClass", "GetClass"], ["UpdateClass"], ["ActivateClass", "ActivateObjects"]]
+    "relevant": ["GetClass", "UpdateClass", "CheckClass", "ActivateClass", "ActivateObjects"],
+    "required": [["GetClass"], ["UpdateClass"], ["ActivateClass", "ActivateObjects"]]
   },
   {
     "q": "Створи транспорт для пакета ZDEMO_LAB і додай туди клас ZCL_DEMO",
     "multi": true,
     "expect": ["CreateTransport"],
-    "relevant": ["CreateTransport", "CreateTransportTask", "AddTransportObject", "ReadTransportObjects"],
+    "relevant": ["CreateTransport", "CreateTransportTask", "AddTransportObject", "GetTransport"],
     "required": [["CreateTransport"], ["AddTransportObject"]]
   },
   {
@@ -275,8 +266,8 @@
     "q": "Знайди програми за маскою ZREP* і покажи код першої",
     "multi": true,
     "expect": ["SearchObject"],
-    "relevant": ["SearchObject", "ReadProgram", "GetProgram"],
-    "required": [["SearchObject"], ["ReadProgram", "GetProgram"]]
+    "relevant": ["SearchObject", "GetProgram"],
+    "required": [["SearchObject"], ["GetProgram"]]
   },
   {
     "q": "Create domain ZDEMO_D_STATUS and data element ZDEMO_E_STATUS based on it, then activate both",
@@ -334,9 +325,9 @@
   {
     "q": "Покажи поля таблиці ZDEMO_T_ORDER і перші 20 записів",
     "multi": true,
-    "expect": ["ReadTable", "GetTable"],
-    "relevant": ["ReadTable", "GetTable", "GetTypeInfo", "GetTableContents", "GetSqlQuery"],
-    "required": [["ReadTable", "GetTable"], ["GetTableContents", "GetSqlQuery"]]
+    "expect": ["GetTable"],
+    "relevant": ["GetTable", "GetTypeInfo", "GetTableContents", "GetSqlQuery"],
+    "required": [["GetTable"], ["GetTableContents", "GetSqlQuery"]]
   },
   {
     "q": "Write ABAP Unit tests for CDS view ZI_DEMO_ORDER",
@@ -510,13 +501,13 @@
     ]
   }
 ,
-  {"q": "Zeige die Felder der Tabelle MARA", "expect": ["ReadTable", "GetTable"], "relevant": ["ReadTable", "GetTable", "GetTypeInfo"], "required": [["ReadTable", "GetTable"]]},
+  {"q": "Zeige die Felder der Tabelle MARA", "expect": ["GetTable"], "relevant": ["GetTable", "GetTypeInfo"], "required": [["GetTable"]]},
   {"q": "Welche Pakete gibt es in $TMP?", "expect": ["GetPackageContents", "GetPackageTree"], "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"], "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]},
-  {"q": "Zeige den Quellcode der Klasse ZCL_DEMO", "expect": ["ReadClass", "GetClass"], "relevant": ["ReadClass", "GetClass"], "required": [["ReadClass", "GetClass"]]},
+  {"q": "Zeige den Quellcode der Klasse ZCL_DEMO", "expect": ["GetClass"], "relevant": ["GetClass"], "required": [["GetClass"]]},
   {"q": "Finde alle Klassen, deren Name mit Z beginnt", "expect": ["SearchObject"], "relevant": ["SearchObject"], "required": [["SearchObject"]]},
-  {"q": "pokazhy korotki dampy za sohodni", "expect": ["RuntimeListFeeds", "RuntimeListDumps"], "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"], "required": [["RuntimeListFeeds"]]},
+  {"q": "pokazhy korotki dampy za sohodni", "expect": ["RuntimeListFeeds"], "relevant": ["RuntimeListFeeds", "RuntimeGetDumpById", "GetDumpSection"], "required": [["RuntimeListFeeds"]]},
   {"q": "znaydy klasy, shcho pochynayutsya na Z", "expect": ["SearchObject"], "relevant": ["SearchObject"], "required": [["SearchObject"]]},
-  {"q": "pokazhy polya tablytsi MARA", "expect": ["ReadTable", "GetTable"], "relevant": ["ReadTable", "GetTable", "GetTypeInfo"], "required": [["ReadTable", "GetTable"]]},
+  {"q": "pokazhy polya tablytsi MARA", "expect": ["GetTable"], "relevant": ["GetTable", "GetTypeInfo"], "required": [["GetTable"]]},
   {"q": "yaki pakety ye v $TMP?", "expect": ["GetPackageContents", "GetPackageTree"], "relevant": ["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"], "required": [["GetPackageContents", "GetPackageTree", "GetObjectsList", "GetObjectsByType", "GetObjectInfo"]]},
   {"q": "Wie geht es dir?", "negative": true},
   {"q": "Erzaehle mir einen Witz", "negative": true},

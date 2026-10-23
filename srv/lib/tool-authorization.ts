@@ -62,7 +62,11 @@ export function assertToolAllowed(
     );
   }
 
-  if (!allowed.includes(toolExposition as ExpositionLevel)) {
+  if (
+    !allowed.includes(toolExposition as ExpositionLevel) ||
+    (allowed.every(isReadOnlyExposition) &&
+      !isReadOnlyTool(toolName, annotations))
+  ) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: it belongs to the "${toolExposition}" group and ` +
         `your roles grant only [${allowed.join(', ')}]. ` +
@@ -84,11 +88,24 @@ export interface ToolEffectAnnotations {
   destructiveHint?: boolean;
 }
 
-/** Effect classification for checker scope only; role groups remain independent. */
+/** Effect classification shared by checker scope and reader-only role grants. */
 export function isReadOnlyTool(
   name: string,
   annotations?: ToolEffectAnnotations,
 ): boolean {
+  if (
+    [
+      'RuntimeRunClass',
+      'RuntimeRunProgram',
+      'RuntimeCreateProfilerTraceParameters',
+      'UpdatePackage',
+      'DeletePackage',
+      'SortAndCompressTransportTask',
+      'MoveTransportObjects',
+      'DiscardBackgroundRun',
+    ].includes(name)
+  )
+    return false;
   if (annotations?.readOnlyHint === true) return true;
   if (
     annotations?.destructiveHint === true ||

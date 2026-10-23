@@ -173,7 +173,10 @@ export async function resolveSystemIdentity(
   const lookup = async (): Promise<SystemIdentity> => {
     let value: SystemIdentity;
     try {
-      const info = await getSystemInformation(connection);
+      const answer = await getSystemInformation(connection);
+      if (!answer.ok) throw answer.getError();
+      const result = answer.getResult().value;
+      const info = result.present ? result.info : undefined;
       value =
         info?.userName || info?.systemID
           ? {

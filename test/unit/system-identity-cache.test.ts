@@ -1,3 +1,14 @@
+const systemAnswer = (
+  info: { userName?: string; systemID?: string } | null,
+) => ({
+  ok: true as const,
+  getResult: () => ({
+    value: info
+      ? { present: true as const, info }
+      : { present: false as const },
+  }),
+});
+
 import { getSystemInformation } from '@mcp-abap-adt/adt-clients/core';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
@@ -12,7 +23,8 @@ import {
 jest.mock('@mcp-abap-adt/adt-clients/core', () => ({
   getSystemInformation: jest.fn(),
 }));
-const token = (user: string, exp = Math.floor(Date.now() / 1000) + 3600) =>
+const defaultTokenExpiry = Math.floor(Date.now() / 1000) + 3600;
+const token = (user: string, exp = defaultTokenExpiry) =>
   `header.${Buffer.from(JSON.stringify({ sub: user, exp })).toString('base64url')}.signature`;
 const input = (user: string) => ({
   destinationName: 'SAP',
@@ -34,7 +46,7 @@ beforeEach(() => jest.mocked(getSystemInformation).mockReset());
 it('reuses identity across requests and separates principals without retaining tokens', async () => {
   jest
     .mocked(getSystemInformation)
-    .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+    .mockResolvedValue(systemAnswer({ userName: 'USER', systemID: 'DEV' }));
   await resolveSystemIdentity(connection('one'));
   await resolveSystemIdentity(connection('one'));
   expect(getSystemInformation).toHaveBeenCalledTimes(1);
@@ -90,7 +102,7 @@ it('expires a cached identity at JWT exp', async () => {
   try {
     jest
       .mocked(getSystemInformation)
-      .mockResolvedValue({ userName: 'USER', systemID: 'DEV' });
+      .mockResolvedValue(systemAnswer({ userName: 'USER', systemID: 'DEV' }));
     await resolveSystemIdentity(connection('expiring'));
     jest.advanceTimersByTime(3600001);
     await resolveSystemIdentity(connection('expiring'));
@@ -130,8 +142,12 @@ it.each(userDependentAuthenticationTypes)(
     };
     jest
       .mocked(getSystemInformation)
-      .mockResolvedValueOnce({ userName: 'USER_A', systemID: 'DEV' })
-      .mockResolvedValueOnce({ userName: 'USER_B', systemID: 'DEV' });
+      .mockResolvedValueOnce(
+        systemAnswer({ userName: 'USER_A', systemID: 'DEV' }),
+      )
+      .mockResolvedValueOnce(
+        systemAnswer({ userName: 'USER_B', systemID: 'DEV' }),
+      );
     expect(await resolveSystemIdentity(connect('a'))).toEqual({
       responsible: 'USER_A',
       masterSystem: 'DEV',
@@ -180,7 +196,7 @@ it('shares OAuth2ClientCredentials identity across JWT users', async () => {
   };
   jest
     .mocked(getSystemInformation)
-    .mockResolvedValue({ userName: 'TECH', systemID: 'DEV' });
+    .mockResolvedValue(systemAnswer({ userName: 'TECH', systemID: 'DEV' }));
   await resolveSystemIdentity(connect('a'));
   expect(await resolveSystemIdentity(connect('b'))).toEqual({
     responsible: 'TECH',
@@ -229,8 +245,8 @@ it.each(
     };
     jest
       .mocked(getSystemInformation)
-      .mockResolvedValueOnce({ userName: 'ALICE' })
-      .mockResolvedValueOnce({ userName: 'BOB' });
+      .mockResolvedValueOnce(systemAnswer({ userName: 'ALICE' }))
+      .mockResolvedValueOnce(systemAnswer({ userName: 'BOB' }));
     expect(await resolveSystemIdentity(connect('alice'))).toEqual({
       responsible: 'ALICE',
     });
@@ -321,8 +337,12 @@ it.each(['basic', 'jwt'] as const)(
     };
     jest
       .mocked(getSystemInformation)
-      .mockResolvedValueOnce({ userName: 'FIRST', systemID: 'ONE' })
-      .mockResolvedValueOnce({ userName: 'SECOND', systemID: 'TWO' });
+      .mockResolvedValueOnce(
+        systemAnswer({ userName: 'FIRST', systemID: 'ONE' }),
+      )
+      .mockResolvedValueOnce(
+        systemAnswer({ userName: 'SECOND', systemID: 'TWO' }),
+      );
     expect(
       await resolveSystemIdentity(connect('HTTPS://FIRST.sap:443/')),
     ).toEqual({
@@ -376,8 +396,8 @@ it('separates direct SAP JWT users and ignores the hub bearer and its expiry', a
   };
   jest
     .mocked(getSystemInformation)
-    .mockResolvedValueOnce({ userName: 'SAP_A' })
-    .mockResolvedValueOnce({ userName: 'SAP_B' });
+    .mockResolvedValueOnce(systemAnswer({ userName: 'SAP_A' }))
+    .mockResolvedValueOnce(systemAnswer({ userName: 'SAP_B' }));
   expect(await resolveSystemIdentity(connect('a', 'hub'))).toEqual({
     responsible: 'SAP_A',
   });
@@ -552,8 +572,12 @@ it('leaves unsupported and ambiguous credentials uncached', () => {
 it('separates destination routes with the same URL, client and JWT', async () => {
   jest
     .mocked(getSystemInformation)
-    .mockResolvedValueOnce({ userName: 'USER', systemID: 'SITE_A' })
-    .mockResolvedValueOnce({ userName: 'USER', systemID: 'SITE_B' });
+    .mockResolvedValueOnce(
+      systemAnswer({ userName: 'USER', systemID: 'SITE_A' }),
+    )
+    .mockResolvedValueOnce(
+      systemAnswer({ userName: 'USER', systemID: 'SITE_B' }),
+    );
   const connect = (destinationName: string) => {
     const conn = {} as IAbapConnection;
     bindSystemIdentity(conn, { ...input('routing'), destinationName });

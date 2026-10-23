@@ -5,6 +5,7 @@ import {
   type RequestContext,
   runWithRequestContext,
   type SystemContextResolver,
+  type SystemContextRules,
 } from '@mcp-abap-adt/lib/request-context';
 import { getSystemContext } from '@mcp-abap-adt/lib/utils';
 import {
@@ -89,3 +90,13 @@ export async function runWithRequestSystem<T>(
   };
   return runWithRequestContext(ctx, fn);
 }
+
+/** Preserve the hub's explicit-header, system-user, then login precedence. */
+export const requestSystemContextRules: SystemContextRules = {
+  parametersFor(lookup, call) {
+    const responsible =
+      call.responsible ?? lookup.system?.responsible ?? call.login;
+    const masterSystem = call.masterSystem ?? lookup.system?.masterSystem;
+    return responsible || masterSystem ? { responsible, masterSystem } : null;
+  },
+};

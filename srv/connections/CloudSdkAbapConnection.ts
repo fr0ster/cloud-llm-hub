@@ -438,6 +438,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return this.closeSession();
   }
 
+  /** v20 owns fresh connections through disconnect(), including their SAP logoff. */
+  disconnect(): Promise<void> {
+    return this.close();
+  }
+
   private closed = false;
 
   /** Refuse a request after {@link close}, unless it belongs to an open section. */
@@ -453,7 +458,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
     this.refuseIfClosed();
     // Pre-fetch CSRF token so the first POST doesn't need to fetch lazily.
     // Optional — refreshCsrf handles on-demand fetch if token is missing.
-    await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
+    try {
+      await this.ensureFreshCsrfToken(CSRF_CONFIG.ENDPOINT);
+    } catch (error) {
+      // A failed logon that already received a SAP session spends this instance.
+      if (this.hasServerIssuedSession()) await this.close();
+      throw error;
+    }
   }
 
   /**
@@ -998,8 +1009,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
     };
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: Generic type parameters with default any match IAbapConnection interface signature
-  async makeAdtRequest<T = any, D = any>(
+  async makeAdtRequest<T = unknown, D = unknown>(
     options: AbapRequestOptions,
   ): Promise<IAdtWireResponse<T, D>> {
     this.refuseIfClosed();

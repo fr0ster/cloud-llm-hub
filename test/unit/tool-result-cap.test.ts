@@ -102,7 +102,7 @@ test('normal chat client and recording worker both cap results; reviewer sees th
   const inner: IMcpClient = {
     listTools: async () => ({
       ok: true,
-      value: [{ name: 'ReadTable', description: '', inputSchema: {} }],
+      value: [{ name: 'GetTable', description: '', inputSchema: {} }],
     }),
     callTool: async () => ({
       ok: true,
@@ -114,7 +114,7 @@ test('normal chat client and recording worker both cap results; reviewer sees th
   for (const client of [chat, worker]) {
     await client.listTools();
     const result = await client.callTool(
-      'ReadTable',
+      'GetTable',
       {},
       { trace: { traceId: 't' } },
     );
@@ -169,7 +169,7 @@ test('truncation logging includes only known name and lengths, once per result',
 });
 test('honesty reviewer is told which portion was visible to the worker', () => {
   const outcome = parseToolOutcome({
-    call: { id: 'read', name: 'ReadTable', arguments: {} },
+    call: { id: 'read', name: 'GetTable', arguments: {} },
     result: { content: 'abcde\n[result truncated]', isError: false },
     ...{
       truncation: {
