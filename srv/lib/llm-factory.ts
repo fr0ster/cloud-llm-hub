@@ -24,9 +24,12 @@ import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
 import type { LlmProvider } from '../agent-config';
+import { captureLlm } from './context-capture';
 
 export interface HubLlmConfig {
   provider: LlmProvider;
+  component?: 'chat' | 'other';
+  contextCapture?: 'off' | 'stats';
   /** API key for openai / anthropic / deepseek. Unused for sap-ai-sdk. */
   apiKey?: string;
   /** Base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM). */
@@ -174,10 +177,14 @@ export async function makeHubLlm(
     }
   }
 
-  return new LlmAdapter(new LlmProviderBridge(provider), {
-    model: provider.model,
-    getModels: () => provider.getModels?.() ?? Promise.resolve([]),
-    getEmbeddingModels: () =>
-      provider.getEmbeddingModels?.() ?? Promise.resolve([]),
-  });
+  return captureLlm(
+    new LlmAdapter(new LlmProviderBridge(provider), {
+      model: provider.model,
+      getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+      getEmbeddingModels: () =>
+        provider.getEmbeddingModels?.() ?? Promise.resolve([]),
+    }),
+    cfg.component,
+    cfg.contextCapture,
+  );
 }
