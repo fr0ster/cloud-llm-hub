@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.8.0] - 2026-10-23
+
+### Changed
+
+- **The dialogue planner is checked against the task board.** Built on
+  llm-agent 30.7.0: every turn shows the board (`[tasks]`), the conversation
+  keeps what the planner actually did (`[actions]`), and an event turn whose
+  plan is still active but where nothing runs and nothing was started gets a
+  bounded corrective turn instead of stalling on a claim. Only the accepted
+  reply is streamed. The plan status (`active`, `waiting_user`, `done`) is kept
+  with the persisted dialogue state. `LLM_AGENT_DIALOGUE_MAX_CORRECTIONS`
+  (default `2`, `0` disables) sets the bound.
+- **Collections the planner creates for the user are persistent.** `rag_add`
+  takes `scope: user | session`; dialogue workers default to `user`, so the
+  collection shows in MANAGE in every session instead of disappearing with the
+  session. Reads prefer the user collection. The client/REST path keeps its
+  default.
+
 ## [8.7.0] - 2026-10-23
 
 ### Added
