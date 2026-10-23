@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.6.0] - 2026-10-23
+
+### Added
+
+- **`LLM_AGENT_CONTEXT_CAPTURE=off|stats`** (default `off`). With `stats`,
+  every LLM call the hub makes logs one content-free line on the
+  `context-capture` logger: the component (planner, executor, checker, chat,
+  other), task and session ids, the model, message and character counts per
+  role, the three largest tool results by tool name and size, the number and
+  size of tool definitions, and the provider-reported tokens. Message text,
+  tool arguments and tool results are never logged; a tool name is logged only
+  when it is one of the tools passed to the call. Telemetry failures never
+  change the LLM call.
+
+### Changed
+
+- **The dialogue planner writes a brief for every task.** `goal` says what to
+  achieve; `context` carries the constraints of the overall request that apply
+  to the step, the facts it needs from earlier results, the done criterion and
+  what to return. The worker sees only the brief; steps stay small; the planner
+  tells the user when it narrows the scope.
+
 ## [8.5.0] - 2026-10-23
 
 ### Added

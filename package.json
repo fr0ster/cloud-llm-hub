@@ -1,6 +1,6 @@
 {
   "name": "cloud-llm-hub",
-  "version": "8.5.0",
+  "version": "8.6.0",
   "description": "A simple CAP project.",
   "dependencies": {
     "@mcp-abap-adt/anthropic-llm": "^30.6.0",
