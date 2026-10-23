@@ -24,74 +24,80 @@ export function captureLlm(
   component: Component = 'other',
   mode: 'off' | 'stats' = parseContextCapture(),
 ): ILlm {
-  function start(
-    messages: Message[],
-    tools: Parameters<ILlm['chat']>[1],
-    model?: string,
-  ) {
+  function start(messages: Message[], tools: Parameters<ILlm['chat']>[1]) {
     if (mode !== 'stats') return () => {};
-    const roles = {
-      system: { messages: 0, characters: 0 },
-      user: { messages: 0, characters: 0 },
-      assistant: { messages: 0, characters: 0 },
-      tool: { messages: 0, characters: 0 },
-    };
-    const names = new Map<string, string>();
-    for (const message of messages)
-      for (const call of message.tool_calls ?? [])
-        names.set(call.id, call.function.name);
-    const results: Array<{ tool: string; characters: number }> = [];
-    for (const message of messages) {
-      roles[message.role].messages++;
-      roles[message.role].characters +=
-        (message.content?.length ?? 0) +
-        (message.tool_calls?.reduce(
-          (n, call) => n + JSON.stringify(call).length,
-          0,
-        ) ?? 0);
-      if (message.role === 'tool')
-        results.push({
-          tool: names.get(message.tool_call_id ?? '') ?? 'unknown',
-          characters: message.content?.length ?? 0,
-        });
-    }
-    const context = scope.getStore();
-    const stats = {
-      component:
-        component === 'other' ? 'other' : (context?.component ?? component),
-      taskId: context?.taskId,
-      sessionKey: context?.sessionKey ?? getRequestSessionId(),
-      model: model ?? llm.model,
-      messageCount: messages.length,
-      roles,
-      toolResultCount: results.length,
-      largestToolResults: results
-        .sort((a, b) => b.characters - a.characters)
-        .slice(0, 3),
-      toolDefinitionCount: tools?.length ?? 0,
-      toolDefinitionCharacters:
-        tools?.reduce((n, tool) => n + JSON.stringify(tool).length, 0) ?? 0,
-    };
     return (usage?: LlmUsage) => {
-      // Explicit allowlist: never serialize the response, errors, or raw usage.
-      cds.log('context-capture').info(
-        JSON.stringify({
-          ...stats,
-          ...(typeof usage?.promptTokens === 'number'
-            ? { inputTokens: usage.promptTokens }
-            : {}),
-          ...(typeof usage?.completionTokens === 'number'
-            ? { outputTokens: usage.completionTokens }
-            : {}),
-        }),
-      );
+      try {
+        const roles = {
+          system: { messages: 0, characters: 0 },
+          user: { messages: 0, characters: 0 },
+          assistant: { messages: 0, characters: 0 },
+          tool: { messages: 0, characters: 0 },
+        };
+        const allowedNames = new Set(tools?.map((tool) => tool.name));
+        const names = new Map<string, string>();
+        for (const message of messages)
+          for (const call of message.tool_calls ?? [])
+            names.set(
+              call.id,
+              allowedNames.has(call.function.name)
+                ? call.function.name
+                : 'unlisted',
+            );
+        const results: Array<{ tool: string; characters: number }> = [];
+        for (const message of messages) {
+          roles[message.role].messages++;
+          roles[message.role].characters +=
+            (message.content?.length ?? 0) +
+            (message.tool_calls?.reduce(
+              (n, call) => n + JSON.stringify(call).length,
+              0,
+            ) ?? 0);
+          if (message.role === 'tool')
+            results.push({
+              tool: names.get(message.tool_call_id ?? '') ?? 'unlisted',
+              characters: message.content?.length ?? 0,
+            });
+        }
+        const context = scope.getStore();
+        const stats = {
+          component:
+            component === 'other' ? 'other' : (context?.component ?? component),
+          taskId: context?.taskId,
+          sessionKey: context?.sessionKey ?? getRequestSessionId(),
+          model: llm.model,
+          messageCount: messages.length,
+          roles,
+          toolResultCount: results.length,
+          largestToolResults: results
+            .sort((a, b) => b.characters - a.characters)
+            .slice(0, 3),
+          toolDefinitionCount: tools?.length ?? 0,
+          toolDefinitionCharacters:
+            tools?.reduce((n, tool) => n + JSON.stringify(tool).length, 0) ?? 0,
+        };
+        // Explicit allowlist: never serialize the response, errors, or raw usage.
+        cds.log('context-capture').info(
+          JSON.stringify({
+            ...stats,
+            ...(typeof usage?.promptTokens === 'number'
+              ? { inputTokens: usage.promptTokens }
+              : {}),
+            ...(typeof usage?.completionTokens === 'number'
+              ? { outputTokens: usage.completionTokens }
+              : {}),
+          }),
+        );
+      } catch {
+        // Telemetry must never affect the call or stream.
+      }
     };
   }
   return new Proxy(llm, {
     get(target, property) {
       if (property === 'chat')
         return async (...args: Parameters<ILlm['chat']>) => {
-          const finish = start(args[0], args[1], args[2]?.model);
+          const finish = start(args[0], args[1]);
           let usage: LlmUsage | undefined;
           try {
             const result = await target.chat(...args);
@@ -103,7 +109,7 @@ export function captureLlm(
         };
       if (property === 'streamChat')
         return async function* (...args: Parameters<ILlm['streamChat']>) {
-          const finish = start(args[0], args[1], args[2]?.model);
+          const finish = start(args[0], args[1]);
           let usage: LlmUsage | undefined;
           try {
             for await (const result of target.streamChat(...args)) {
