@@ -49,7 +49,7 @@ test('planner grounds task reports in tool results and delegates the next step i
   for (const rule of [
     'Start every turn by calling list_tasks; report tasks only as list_tasks returns them.',
     'A task exists only after delegate_task has returned its id; never name a task id that list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.',
-    'When the plan has a next step and no task is running, delegate it in this same turn; never end a turn with a promise to start work later.',
+    'When the plan has a next step that is ready to run (no open question for the user, its inputs known) and no task is running, delegate it in this same turn; never end a turn with a promise to start work later. If the step needs a decision from the user, ask instead.',
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM.split('\n')).toContain(rule);
 });
