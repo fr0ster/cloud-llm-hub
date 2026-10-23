@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [8.6.1] - 2026-10-23
+
+### Fixed
+
+- **The dialogue planner no longer claims work it did not start.** It twice
+  ended a turn saying it had started the next batch, even naming a task id,
+  without calling `delegate_task`, so nothing ran and the dialogue stalled. New
+  prompt rules: start every turn with `list_tasks` and report tasks as it
+  returns them; a task exists only once `delegate_task` returned its id; when a
+  ready step (no open user question, inputs known) is next and nothing runs,
+  delegate it in the same turn instead of promising it; ask when the step needs
+  a user decision.
+
 ## [8.6.0] - 2026-10-23
 
 ### Added
