@@ -65,6 +65,10 @@ function describeTool(t: string | ToolOutcome): string {
   if (typeof t === 'string') return t;
   const parts = [t.ok ? 'ok' : 'failed'];
   if (t.status) parts.push(`status=${t.status}`);
+  if (t.truncation)
+    parts.push(
+      `result truncated: ${t.truncation.keptLength} of ${t.truncation.originalLength} characters shown to worker; omitted content is unknown`,
+    );
   if (t.error) parts.push(`error=${t.error}`);
   return `${t.name} → ${parts.join(', ')}`;
 }

@@ -2,6 +2,7 @@ import { type ILlm, InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
   buildAgentForDestination,
+  buildExecutorWorker,
   buildPlannerAgent,
   CHECKER_DESCRIPTION,
   EXECUTOR_DESCRIPTION,
@@ -12,10 +13,15 @@ import {
   initProviders,
   releasePlannerAgent,
 } from '../../srv/agent-manager';
-import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-tools';
+import {
+  DialogueRagMcpClient,
+  runWithDialogueRagTools,
+} from '../../srv/lib/dialogue-rag-tools';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
+import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import { CollectionRegistry } from '../../srv/rag-collections';
 import { runWithSessionId } from '../../srv/request-session';
 
 test('verification always belongs to the checker', () => {
@@ -202,3 +208,116 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     'If a step fails twice the same way, stop and report to the planner instead of retrying.',
   );
 });
+
+test('planner defines independently checkable results and paged enumeration', () => {
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'A step states the result it must produce, not how to produce it; the worker chooses the tools and the way.',
+  );
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'Make each step the smallest result that can be checked on its own: one object, one fact or one stored record.',
+  );
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'To process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.',
+  );
+});
+
+test.each(['adaptive', 'dialogue'] as const)(
+  '%s tool loop sends capped text to the model',
+  async (coordinator) => {
+    const seen: string[] = [];
+    const name = coordinator === 'dialogue' ? 'rag_list' : 'ReadTable';
+    const modelName = `cap-${coordinator}`;
+    const response: ILlm['chat'] = async (messages, tools) => {
+      const results = messages.filter((m) => m.role === 'tool');
+      if (results.length) {
+        seen.push(...results.map((m) => String(m.content)));
+        return { ok: true, value: { content: 'done', finishReason: 'stop' } };
+      }
+      if (tools?.some((t) => t.name === name))
+        return {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [
+              {
+                id: 'read',
+                name,
+                arguments: { collection: 'results', id: 'large' },
+              },
+            ],
+            finishReason: 'tool_calls',
+          },
+        };
+      return {
+        ok: true,
+        value: { content: 'select read tool', finishReason: 'stop' },
+      };
+    };
+    const model: ILlm = {
+      model: modelName,
+      chat: response,
+      streamChat: async function* (messages, tools, options) {
+        yield await response(messages, tools, options);
+      },
+    };
+    jest.mocked(makeHubLlm).mockResolvedValue(model);
+    const cappedConfig: AgentConfig = {
+      ...config,
+      agent: {
+        ...config.agent,
+        chatCoordinator: coordinator,
+        mode: 'hard',
+        toolResultMaxChars: 100,
+      },
+    };
+    initProviders(await startProviders(cappedConfig));
+    await getSmartAgent(modelName);
+    const registry = new CollectionRegistry();
+    const inner = {
+      listTools: async () => ({
+        ok: true as const,
+        value: [
+          { name: 'ReadTable', description: 'Read table', inputSchema: {} },
+        ],
+      }),
+      callTool: async () => ({
+        ok: true as const,
+        value: { content: 'x'.repeat(1000), isError: false },
+      }),
+    };
+    const client =
+      coordinator === 'dialogue'
+        ? new RecordingMcpClient(
+            new DialogueRagMcpClient(inner, () => registry),
+            undefined,
+            100,
+          )
+        : inner;
+    const worker = await buildExecutorWorker(
+      client,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      cappedConfig,
+    );
+    await runWithSessionId(
+      'cap-test',
+      () =>
+        runWithDialogueRagTools(async () => {
+          if (coordinator === 'dialogue')
+            await client.callTool('rag_add', {
+              collection: 'results',
+              id: 'large',
+              text: 'x'.repeat(1000),
+            });
+          await worker.run({
+            task: `Use ${name} to read the result`,
+            history: [],
+          });
+        }),
+      [],
+      'alice',
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.join('\n')).toContain('[result truncated: 100 of');
+    expect(seen.join('\n')).not.toContain('x'.repeat(101));
+  },
+);

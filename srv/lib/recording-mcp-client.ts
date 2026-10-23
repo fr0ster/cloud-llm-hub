@@ -7,12 +7,14 @@ import type {
   Result,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { parseToolResultMaxChars } from '../agent-config';
 import { isReadOnlyTools } from '../request-session';
 import { isOutageError } from './mcp-outage';
 import {
   isReadOnlyTool,
   type ToolEffectAnnotations,
 } from './tool-authorization';
+import { capToolResult, type ToolResultTruncation } from './tool-result-cap';
 import { isWriteTool } from './write-guardrail';
 
 /**
@@ -64,10 +66,12 @@ function isTransportFailure(error: unknown): boolean {
  * bucket. A call made without a `trace.traceId` retains nothing.
  *
  * Deliberately dumb: it does NOT parse or interpret `McpToolResult.content` —
- * that belongs to the reviewer (a later step). It only ever forwards the
- * inner client's `Result` unchanged; never swallows or reshapes errors.
+ * that belongs to the reviewer (a later step). It caps oversized model-visible
+ * content and otherwise forwards the inner client's `Result` unchanged;
+ * never swallows or reshapes errors.
  */
 export class RecordingMcpClient implements IMcpClient {
+  private readonly knownNames = new Set<string>();
   private readonly deltas = new Map<string, ToolCallRecord[]>();
 
   /** Present iff `inner` implements it, so callers relying on `?.` see the
@@ -79,6 +83,7 @@ export class RecordingMcpClient implements IMcpClient {
   constructor(
     private readonly inner: IMcpClient,
     _expositionFor?: (name: string) => string | undefined,
+    private readonly maxChars = parseToolResultMaxChars(),
   ) {
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
@@ -88,6 +93,8 @@ export class RecordingMcpClient implements IMcpClient {
 
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
     const result = await this.inner.listTools(options);
+    if (result.ok)
+      for (const tool of result.value) this.knownNames.add(tool.name);
     if (!isReadOnlyTools() || !result.ok) return result;
     return {
       ok: true,
@@ -142,14 +149,28 @@ export class RecordingMcpClient implements IMcpClient {
     // colon, which looks like a formatting bug rather than the true state
     // ("no answer has arrived"). This is read ONLY while unanswered — the
     // very next line below always overwrites it once one arrives.
-    const record: ToolCallRecord & { answered?: boolean } = {
+    const record: ToolCallRecord & {
+      answered?: boolean;
+      truncation?: ToolResultTruncation;
+    } = {
       call: { id: '', name, arguments: args },
       result: { content: 'no answer yet', isError: true },
       answered: false,
     };
     if (traceId) this.deltaFor(traceId).push(record);
 
-    const res = await this.inner.callTool(name, args, options);
+    let res = await this.inner.callTool(name, args, options);
+    if (res.ok) {
+      const capped = capToolResult(
+        res.value,
+        this.maxChars,
+        this.knownNames.has(name) ? name : undefined,
+      );
+      if (capped.truncation) {
+        record.truncation = capped.truncation;
+        res = { ...res, value: capped.result };
+      }
+    }
     // Reached only when an answer came back — including an ANSWERED `ok:false`
     // (the adapter never throws; see `isTransportFailure` above). A THROWN
     // error (a raw inner client, or a future adapter that does reject) skips
